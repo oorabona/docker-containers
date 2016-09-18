@@ -1,0 +1,3 @@
+[submodule "nginx-rancher-rp"]
+	path = nginx-rancher-rp
+	url = https://github.com/oorabona/nginx-rancher-rp
