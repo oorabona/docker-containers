@@ -23,7 +23,7 @@ if [ "$2" = 'logstash' ]; then
   for conf in ${CONFD_SUBDIRS}; do
     if [ -d "${conf}" ]; then
       echo "Running... $@ -f $conf/"
-      $@ -f $conf/ &
+      LS_CONF_DIR=$LS_CONF_DIR/$conf $@ -f $conf/ &
     else
       echo "Skipped $conf as directory does not exists." 1>&2
     fi
