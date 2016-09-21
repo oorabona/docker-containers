@@ -9,8 +9,11 @@ ADD ./docker-entrypoint.sh /docker-entrypoint.sh
 
 RUN chmod +x /confd /docker-entrypoint.sh
 
+# Add minimal software
+RUN apt-get update && apt-get install -y wget curl sha1sum
+
 # Add this repository to install Curator packages
-RUN wget -qO - https://packages.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add - \
+RUN wget -qO - https://packages.elastic.co/GPG-KEY-elasticsearch | apt-key add - \
   && echo "deb http://packages.elastic.co/curator/4/debian stable main" > /etc/apt/sources.list.d/curator.list \
   && apt-get update \
   && apt-get install -y python-elasticsearch-curator
