@@ -15,6 +15,7 @@ fi
 # If we are going to run "logstash", check environment variable "CONFD_SUBDIRS"
 # and load logstash configuration files in a one directory-per-configuration scheme.
 if [ "$2" = 'logstash' ]; then
+  setcap 'cap_net_bind_service=+ep' $(readlink -f "$(which java)")
   if [ "$CONFD_SUBDIRS" = '*' ]; then
     echo "Starting logstash with all conf.d/* subdirs"
   else
