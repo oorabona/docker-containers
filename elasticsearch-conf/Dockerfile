@@ -10,7 +10,7 @@ ADD ./docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /confd /docker-entrypoint.sh
 
 # Add minimal software
-RUN apt-get update && apt-get install -y wget curl sha1sum
+RUN apt-get update && apt-get install -y wget curl
 
 # Add this repository to install Curator packages
 RUN wget -qO - https://packages.elastic.co/GPG-KEY-elasticsearch | apt-key add - \
@@ -18,7 +18,7 @@ RUN wget -qO - https://packages.elastic.co/GPG-KEY-elasticsearch | apt-key add -
   && apt-get update \
   && apt-get install -y python-elasticsearch-curator
 
-# Add Watcher
+# Add Watcher and Marvel
 ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/license/2.4.0/license-2.4.0.zip /tmp
 ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/watcher/2.4.0/watcher-2.4.0.zip /tmp
 ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/marvel-agent/2.4.0/marvel-agent-2.4.0.zip /tmp
