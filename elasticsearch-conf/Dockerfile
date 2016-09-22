@@ -24,7 +24,7 @@ ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/w
 ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/marvel-agent/2.4.0/marvel-agent-2.4.0.zip /usr/share/elasticsearch/plugins/
 
 # Simplified exposed volumes
-VOLUME ["/data/confd", "/opt/rancher/bin", "/usr/share/elasticsearch/config"]
+VOLUME ["/data/confd", "/opt/rancher/bin", "/usr/share/elasticsearch/config", "/usr/share/elasticsearch/plugins"]
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
