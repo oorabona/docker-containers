@@ -10,7 +10,7 @@ done
 
 if [ -f "$PLUGIN_TXT" ]; then
     for plugin in $(<"${PLUGIN_TXT}"); do
-        /usr/share/elasticsearch/bin/plugin install file:///tmp/${plugin}*.zip
+        /usr/share/elasticsearch/bin/plugin install file:///usr/share/elasticsearch/plugins/${plugin}*.zip
     done
 fi
 
