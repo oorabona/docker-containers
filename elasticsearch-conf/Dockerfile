@@ -18,13 +18,8 @@ RUN wget -qO - https://packages.elastic.co/GPG-KEY-elasticsearch | apt-key add -
   && apt-get update \
   && apt-get install -y python-elasticsearch-curator
 
-# Add Watcher and Marvel
-ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/license/2.4.0/license-2.4.0.zip /usr/share/elasticsearch/plugins/
-ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/watcher/2.4.0/watcher-2.4.0.zip /usr/share/elasticsearch/plugins/
-ADD https://download.elastic.co/elasticsearch/release/org/elasticsearch/plugin/marvel-agent/2.4.0/marvel-agent-2.4.0.zip /usr/share/elasticsearch/plugins/
-
 # Simplified exposed volumes
-VOLUME ["/data/confd", "/opt/rancher/bin", "/usr/share/elasticsearch/config", "/usr/share/elasticsearch/plugins"]
+VOLUME ["/data/confd", "/opt/rancher/bin", "/usr/share/elasticsearch/config"]
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
