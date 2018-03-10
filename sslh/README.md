@@ -4,22 +4,33 @@ This image is based on the work done by [amondit](https://github.com/amondit/ssl
 
 ## What changes ?
 
-- It is now bound to the latest version of ubuntu.
+- It is now bound to [Bitnami Minideb](https://github.com/bitnami/minideb) base image.
 - It is built from sources from [Github](https://github.com/yrutschle/sslh).
-- By default, **COMMAND** is set to `-V` (show version)
+- By default, container **COMMAND** is set to `-V` (show version)
 - There is a `docker-entrypoint.sh` to help handle with command line arguments
 
-Means that if you want to run it, you just need to change **COMMAND** to `-f` as
-the **DEFAULT_CMD** is already set to what should be the basic command line for `sslh`.
+## How to run it ?
+
+The **DEFAULT_CMD** variable (see [docker-entrypoint](docker-entrypoint.sh#L2)) is already set to what should be the basic command line for `sslh`.
+
+> `"-p ${LISTEN_IP}:${LISTEN_PORT} --ssh ${SSH_HOST}:${SSH_PORT} --ssl ${HTTPS_HOST}:${HTTPS_PORT} --openvpn ${OPENVPN_HOST}:${OPENVPN_PORT}"`
+
+You just need to change **COMMAND** to `-f` as stated in `sslh` docs:
 
 > `-f` means **keep process in foreground** which is what Docker expects for the main process.
 The container will stop when the process exits.
 
-> **DEFAULT_CMD** set to `"-p ${LISTEN_IP}:${LISTEN_PORT} --ssh ${SSH_HOST}:${SSH_PORT} --ssl ${HTTPS_HOST}:${HTTPS_PORT} --openvpn ${OPENVPN_HOST}:${OPENVPN_PORT}"`
-
-So you only need to change above mentionned environment variables to make it work in your environment.
-
 ## Examples
+
+To configure endpoints, you may need to change the following environment variables:
+- LISTEN_IP (*default*: **0.0.0.0**)
+- LISTEN_PORT (*default*: **443**)
+- SSH_HOST (*default*: **localhost**)
+- SSH_PORT (*default*: **22**)
+- OPENVPN_HOST (*default*: **localhost**)
+- OPENVPN_PORT (*default*: **1194**)
+- HTTPS_HOST (*default*: **localhost**)
+- HTTPS_PORT (*default*: **8443**)
 
 ### Using plain Docker CLI
 
@@ -29,8 +40,10 @@ $ docker run -d -e SSH_HOST=192.168.1.2 -e SSH_PORT=1234 -e OPENVPN_HOST=192.168
 
 ### Using docker-compose
 
+In the following example, we keep the default values for
+
 ```yaml
-version: '2'
+version: '3'
 services:
   sslh:
     image: oorabona/sslh
@@ -43,12 +56,12 @@ services:
       - 0.0.0.0:443:443
     command:
       - -f
-    restart: until-stopped
+    restart: unless-stopped
 ```
 
 And to launch it:
 
-```sh
+```
 $ docker-compose -f your-compose.yml up -d
 ```
 
