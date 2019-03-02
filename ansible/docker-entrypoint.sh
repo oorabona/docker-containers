@@ -4,9 +4,9 @@
 HOST_UID=$(stat -c %u .)
 HOST_GID=$(stat -c %g .)
 
-# And we change ansible UID/GID according to the host UID/GID
-sudo usermod -u $HOST_UID ansible
-sudo groupmod -g $HOST_GID ansible
+# And we change ansible UID/GID according to the host UID/GID (discard stderr)
+sudo usermod -u $HOST_UID ansible 2>/dev/null
+sudo groupmod -g $HOST_GID ansible 2>/dev/null
 
 # Chown working directory (/home/ansible/playbook) to `ansible` user
 sudo chown -R ansible. .
