@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN set -ex  && \
     apt-get update -y  &&  apt-get -y dist-upgrade                    && \
     apt-get install -y python python-pip dnsutils sudo curl vim       \
-                       openssh-client openssl                         && \
+                       openssh-client openssl boxes                   && \
     apt-get install --fix-missing                                     && \
     python -m pip install -U pip                                      && \
     echo "==[ Adding hosts for convenience... ]=="                    && \
