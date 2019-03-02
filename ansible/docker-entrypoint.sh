@@ -11,9 +11,20 @@ sudo groupmod -g $HOST_GID ansible
 # Chown working directory (/home/ansible/playbook) to `ansible` user
 sudo chown -R ansible. .
 
+# Show a nice intro message :)
+ansible_env=$(echo $ANSIBLE_ENV|tr a-z A-Z)
+
+boxes -d columns << eof
+Launching oorabona/ansible Docker container in ${ansible_env} environment, welcome !
+Ansible version is : $(ansible --version|head -1)
+Running $(ansible --version|grep version)
+eof
+
+# Let's make some room after...
+echo
+
 # Run addon script before anything else (e.g: extra init steps)
-if [ -x ${ADDONSCRIPT} ]
-then
+if [[ -x "${ADDONSCRIPT}" ]]; then
   . "${ADDONSCRIPT}"
 fi
 
