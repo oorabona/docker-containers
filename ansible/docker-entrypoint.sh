@@ -26,6 +26,9 @@ echo
 # Run addon script before anything else (e.g: extra init steps)
 if [[ -x "${ADDONSCRIPT}" ]]; then
   . "${ADDONSCRIPT}"
+elif [[ ! -z "${ADDONSCRIPT}" ]]; then
+  echo "Add-on script set to '${ADDONSCRIPT}' but not found/executable ! Aborting."
+  exit 1
 fi
 
 case "$1" in
