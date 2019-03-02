@@ -39,7 +39,6 @@ RUN set -ex  && \
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
 WORKDIR  /home/ansible/playbook
-ONBUILD COPY --chown=ansible . .
 
 # Adding extra libs from pip
 ONBUILD RUN if [ -r requirements.txt ]; then \
