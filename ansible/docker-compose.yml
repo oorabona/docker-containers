@@ -1,13 +1,17 @@
-version: "3.3"
+version: "3"
 services:
-  ansible:
-    image: oorabona/ansible:latest
-    container_name: ansible
-    build:
-      context: .
-
   ansible-dev:
     image: oorabona/ansible:dev
     container_name: ansible-dev
     build:
       context: .
+      args:
+        ANSIBLE_ENV: dev
+
+  ansible-prod:
+    image: oorabona/ansible:prod
+    container_name: ansible-prod
+    build:
+      context: .
+      args:
+        ANSIBLE_ENV: prod
