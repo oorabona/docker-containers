@@ -1,7 +1,11 @@
 FROM ubuntu:18.04
 MAINTAINER Olivier Orabona <olivier.orabona@gmail.com>
 
-ENV DEBIAN_FRONTEND=noninteractive
+# This helps in detecting which Docker container version you use
+ARG ANSIBLE_ENV
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ANSIBLE_ENV=$ANSIBLE_ENV
 
 # Update system and install prerequisites
 # Then we remove what should not be necessary anymore and clean
@@ -28,7 +32,7 @@ RUN useradd -ms /bin/bash -G sudo ansible                             && \
 USER ansible
 WORKDIR  /home/ansible/
 
-ENV PATH="/home/ansible/.local/bin:${PATH}"
+ENV PATH="/home/ansible/.local/bin:${PATH}" \
     ADDONSCRIPT="/addon.sh"
 
 RUN set -ex  && \
