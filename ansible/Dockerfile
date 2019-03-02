@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Then we remove what should not be necessary anymore and clean
 # python -m pip is required as per this ref bug : https://github.com/pypa/pip/issues/5599
 RUN set -ex  && \
-    apt-get update -y  &&  apt-get dist-upgrade                       && \
+    apt-get update -y  &&  apt-get -y dist-upgrade                    && \
     apt-get install -y python python-pip dnsutils sudo curl vim       \
                        openssh-client openssl                         && \
     apt-get install --fix-missing                                     && \
