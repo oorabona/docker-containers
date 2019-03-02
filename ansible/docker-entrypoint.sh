@@ -8,6 +8,9 @@ HOST_GID=$(stat -c %g .)
 sudo usermod -u $HOST_UID ansible
 sudo groupmod -g $HOST_GID ansible
 
+# Chown working directory (/home/ansible/playbook) to `ansible` user
+sudo chown -R ansible. .
+
 case "$1" in
   playbook|vault )
     shift
