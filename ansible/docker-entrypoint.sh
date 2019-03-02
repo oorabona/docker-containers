@@ -44,7 +44,7 @@ case "$1" in
     exec "$@"
 esac
 
-if [ ! -z ${DEBUG} ]
+if [ ! -z ${WAIT_BEFORE_EXIT} ]
 then
-  read -p "DEBUG environment variable set to ${DEBUG} ... Press <ENTER> key to finish."
+  read -p "Press <ENTER> key to finish."
 fi
