@@ -11,6 +11,12 @@ sudo groupmod -g $HOST_GID ansible
 # Chown working directory (/home/ansible/playbook) to `ansible` user
 sudo chown -R ansible. .
 
+# Run addon script before anything else (e.g: extra init steps)
+if [ -x ${ADDONSCRIPT} ]
+then
+  . "${ADDONSCRIPT}"
+fi
+
 case "$1" in
   playbook|vault )
     shift
