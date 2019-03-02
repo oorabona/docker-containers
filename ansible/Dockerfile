@@ -29,6 +29,7 @@ USER ansible
 WORKDIR  /home/ansible/
 
 ENV PATH="/home/ansible/.local/bin:${PATH}"
+    ADDONSCRIPT="/addon.sh"
 
 RUN set -ex  && \
     pip install virtualenv --user && \
@@ -36,7 +37,8 @@ RUN set -ex  && \
     pip install --user -U pyasn1 setuptools paramiko cffi cryptography pycrypto ansible && \
     mkdir .ssh
 
-COPY docker-entrypoint.sh /docker-entrypoint.sh
+# Copy both docker-entrypoint.sh and addon.sh to /
+COPY *.sh /
 
 WORKDIR  /home/ansible/playbook
 
