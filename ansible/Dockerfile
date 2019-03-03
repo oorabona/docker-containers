@@ -19,7 +19,7 @@ RUN set -ex  && \
     python$PYTHON_VERSION -m pip install -U pip                             && \
     echo "==[ Adding hosts for convenience... ]=="                          && \
     mkdir -p /etc/ansible                                                   && \
-    echo 'localhost ansible_python_interpreter=/usr/bin/python$PYTHON_VERSION' > /etc/ansible/hosts
+    echo "localhost ansible_python_interpreter=/usr/bin/python$PYTHON_VERSION" > /etc/ansible/hosts
 
 # Create ansible user and drop privileges as soon as we can :)
 # Note, we need to create $HOME for all plugins/modules related stuff required by
