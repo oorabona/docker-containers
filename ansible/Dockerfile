@@ -3,6 +3,7 @@ MAINTAINER Olivier Orabona <olivier.orabona@gmail.com>
 
 # This helps in detecting which Docker container version you use
 ARG ANSIBLE_ENV
+ARG PYTHON_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive \
     ANSIBLE_ENV=$ANSIBLE_ENV
@@ -11,14 +12,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Then we remove what should not be necessary anymore and clean
 # python -m pip is required as per this ref bug : https://github.com/pypa/pip/issues/5599
 RUN set -ex  && \
-    apt-get update -y  &&  apt-get -y dist-upgrade                    && \
-    apt-get install -y python python-pip dnsutils sudo curl vim       \
-                       openssh-client openssl boxes                   && \
-    apt-get install --fix-missing                                     && \
-    python -m pip install -U pip                                      && \
-    echo "==[ Adding hosts for convenience... ]=="                    && \
-    mkdir -p /etc/ansible                                             && \
-    echo 'localhost' > /etc/ansible/hosts
+    apt-get update -y  &&  apt-get -y dist-upgrade                          && \
+    apt-get install -y python$PYTHON_VERSION python$PYTHON_VERSION-pip         \
+                       dnsutils sudo curl vim openssh-client openssl boxes  && \
+    apt-get install --fix-missing                                           && \
+    python$PYTHON_VERSION -m pip install -U pip                             && \
+    echo "==[ Adding hosts for convenience... ]=="                          && \
+    mkdir -p /etc/ansible                                                   && \
+    echo 'localhost ansible_python_interpreter=/usr/bin/python$PYTHON_VERSION' > /etc/ansible/hosts
 
 # Create ansible user and drop privileges as soon as we can :)
 # Note, we need to create $HOME for all plugins/modules related stuff required by
@@ -36,9 +37,9 @@ ENV PATH="/home/ansible/.local/bin:${PATH}" \
     ADDONSCRIPT="/addon.sh"
 
 RUN set -ex  && \
-    pip install virtualenv --user && \
+    pip$PYTHON_VERSION install virtualenv --user && \
     virtualenv ansible && \
-    pip install --user -U pyasn1 setuptools paramiko cffi cryptography pycrypto ansible && \
+    pip$PYTHON_VERSION install --user -U pyasn1 setuptools paramiko cffi cryptography pycrypto ansible && \
     mkdir .ssh
 
 # Copy both docker-entrypoint.sh and addon.sh to /
@@ -48,7 +49,7 @@ WORKDIR  /home/ansible/playbook
 
 # Adding extra libs from pip
 ONBUILD RUN if [ -r requirements.txt ]; then \
-              pip install --user -r requirements.txt; \
+              pip$PYTHON_VERSION install --user -r requirements.txt; \
             fi
 
 # Adding extra libs from ansible-galaxy

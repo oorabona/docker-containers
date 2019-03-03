@@ -15,3 +15,12 @@ services:
       context: .
       args:
         ANSIBLE_ENV: prod
+
+  ansible-py3-dev:
+    image: oorabona/ansible:py3-dev
+    container_name: ansible-py3-dev
+    build:
+      context: .
+      args:
+        ANSIBLE_ENV: dev
+        PYTHON_VERSION: 3
