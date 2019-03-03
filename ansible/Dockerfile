@@ -38,7 +38,6 @@ ENV PATH="/home/ansible/.local/bin:${PATH}" \
 
 RUN set -ex  && \
     pip$PYTHON_VERSION install virtualenv --user && \
-    virtualenv ansible && \
     pip$PYTHON_VERSION install --user -U pyasn1 setuptools paramiko cffi cryptography pycrypto ansible && \
     mkdir .ssh
 
