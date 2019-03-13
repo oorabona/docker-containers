@@ -46,14 +46,14 @@ COPY *.sh /
 
 WORKDIR  /home/ansible/playbook
 
+# Copy ansible repository
+ONBUILD ARG sourcePath=.
+ONBUILD COPY $sourcePath .
+
 # Adding extra libs from pip
 ONBUILD RUN if [ -r requirements.txt ]; then \
               pip$PYTHON_VERSION install --user -r requirements.txt; \
             fi
-
-# Copy ansible repository
-ONBUILD ARG sourcePath=.
-ONBUILD COPY $sourcePath .
 
 # Adding extra libs from ansible-galaxy
 ONBUILD RUN if [ -r requirements.yml ]; then \
