@@ -1,0 +1,9 @@
+version: "3"
+services:
+  wordpress:
+    image: oorabona/wordpress:7.2-fpm
+    container_name: wordpress-7.2-fpm
+    build:
+      context: .
+      args:
+        PHP_VERSION: 7.2-fpm
