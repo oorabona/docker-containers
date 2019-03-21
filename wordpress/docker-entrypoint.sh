@@ -58,12 +58,11 @@ if [[ "$1" == apache2* ]] || [ "$1" == php-fpm ]; then
 elif [[ "$1" == deploy ]]; then
 	echo $@
 	site=$2
-	home_url="$3"
-	from_home_url="$4"
+	new_home_url="$3"
 
-	if [[ -z "$site" || -z "$home_url" || -z "$from_home_url" ]]; then
-		echo "deploy <site_path> <site_url> <from_url>"
-		echo "All options mandatory !"
+	if [[ -z "$site" || -z "$new_home_url" ]]; then
+		echo "deploy <site_path> <site_url> [from_url]"
+		echo "e.g. deploy wp_pbs www.pbs.site uat.pbs.site"
 		exit 1
 	fi
 
@@ -106,7 +105,7 @@ elif [[ "$1" == deploy ]]; then
 	# https://github.com/WordPress/WordPress/commit/1acedc542fba2482bab88ec70d4bea4b997a92e4
 	wordpressList=$(find * -maxdepth 0 -type d)
 	echo "Found the following sites: ${wordpressList}"
-	deployList=${deploy:-$wordpressList}
+	deployList=${site:-$wordpressList}
 	echo "Going to deploy the following site(s): ${deployList}"
 
 	# see http://stackoverflow.com/a/2705678/433558
@@ -144,7 +143,7 @@ elif [[ "$1" == deploy ]]; then
 		echo "Processing $wordpress ..."
 		pushd $wordpress
 
-		WORDPRESS_DB_USER=${wordpress}
+		WORDPRESS_DB_USER=${wordpress/-/_}
 		WORDPRESS_DB_NAME=${WORDPRESS_DB_USER}
 		echo "Wordpress DB user ${WORDPRESS_DB_USER}"
 		WORDPRESS_DB_PASSWORD=$(getpw)
@@ -191,15 +190,19 @@ elif [[ "$1" == deploy ]]; then
 		fi
 
 		# load data from sql dump if any
-		if [ -r ${wordpress}.sql ]; then
-			wp db import ${wordpress}.sql
+		for sqlfile in *.sql; do
+			wp db import ${sqlfile}
 			# mysql -u${WORDPRESS_DB_USER} -p${WORDPRESS_DB_PASSWORD} -h${WORDPRESS_DB_HOST} ${WORDPRESS_DB_NAME} < ${wordpress}.sql
-		fi
+		done
 
 		# Use WP CLI to change URL
-		wp option update home "${home_url}"
-		wp option update siteurl "${home_url}"
-		wp search-replace "${from_home_url}" "${home_url}" --skip-columns=guid
+		wp_home_url=$(wp option get home)
+		from_home_url=${from_home_url:-$wp_home_url}
+		new_home_url="https://${wp_home_url}"
+		echo "Updating site from ${from_home_url} to new ${new_home_url}"
+		wp option update home "${new_home_url}"
+		wp option update siteurl "${new_home_url}"
+		wp search-replace "${from_home_url}" "${new_home_url}" --skip-columns=guid
 		popd
 	done
 
