@@ -6,7 +6,9 @@ ARG ANSIBLE_ENV
 ARG PYTHON_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    ANSIBLE_ENV=$ANSIBLE_ENV
+    ANSIBLE_ENV=$ANSIBLE_ENV \
+    PATH="/home/ansible/.local/bin:${PATH}" \
+    ADDONSCRIPT="/addon.sh"
 
 # Update system and install prerequisites
 # Then we remove what should not be necessary anymore and clean
@@ -21,6 +23,9 @@ RUN set -ex  && \
     mkdir -p /etc/ansible                                                   && \
     echo "localhost ansible_python_interpreter=/usr/bin/python$PYTHON_VERSION" > /etc/ansible/hosts
 
+# Copy all shell scripts to /
+COPY *.sh /
+
 # Create ansible user and drop privileges as soon as we can :)
 # Note, we need to create $HOME for all plugins/modules related stuff required by
 # Python and Ansible. Since it *seems* pointless to enable "password protection"
@@ -28,21 +33,15 @@ RUN set -ex  && \
 # unfortunately not what we want. So we need to add an exception in the sudoers.
 RUN useradd -ms /bin/bash -G sudo ansible                             && \
     echo "ansible ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers            && \
-    mkdir -p /home/ansible/playbook
+    chmod +x /*.sh
 
 USER ansible
 WORKDIR  /home/ansible/
 
-ENV PATH="/home/ansible/.local/bin:${PATH}" \
-    ADDONSCRIPT="/addon.sh"
-
 RUN set -ex  && \
     pip$PYTHON_VERSION install virtualenv --user && \
     pip$PYTHON_VERSION install --user -U pyasn1 setuptools paramiko cffi cryptography pycrypto ansible && \
-    mkdir .ssh
-
-# Copy both docker-entrypoint.sh and addon.sh to /
-COPY *.sh /
+    mkdir .ssh playbook
 
 WORKDIR  /home/ansible/playbook
 
