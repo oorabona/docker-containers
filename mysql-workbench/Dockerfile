@@ -5,4 +5,4 @@ ENV DEBIAN_FRONTEND noninteractive
 
 RUN install_packages mysql-workbench
 
-CMD mysql-workbench
+CMD ["mysql-workbench"]
