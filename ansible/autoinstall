@@ -1,0 +1,4 @@
+#!/bin/bash -e
+NEW_DEPS=$(comm -23 <(xargs -n1 <<< "$@" | sort) <(apt-mark showmanual | sort))
+apt install -y --no-install-recommends --no-install-suggests $NEW_DEPS
+apt-mark auto $NEW_DEPS
