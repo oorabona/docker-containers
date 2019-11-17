@@ -2,27 +2,32 @@
 
 This container contains latest version (to date) of [Ansible](https://www.ansible.com).
 
-## What it has inside
+# What it has inside
 
-Everything needed to run playbooks, with a `docker-entrypoint` which has the following capabilities:
+Everything needed to run playbooks, with a `docker-entrypoint` shell script which has the following capabilities:
 
 - run playbooks
 - add extra `Ansible` packages, through the use of the  `requirements.yml` file
-- wait for keypress when in `DEBUG` mode
+- add extra `Python` packages, using the `requirements.txt` file
+- wait for keypress when `WAIT_BEFORE_EXIT` environment variable is set
 
-> The latest is useful when you want to debug what is happening in the container before it goes into stopped/destroyed state.
+> `WAIT_BEFORE_EXIT` is useful mostly when doing debug or at least when you are
+in tty-enabled shell. Unacceptable behaviors can otherwise happen.
 
-When building this container, it adds all of your current `Ansible` configuration into `/tmp` directory.
+By using bind mounting, this Docker container can be reused in all your `Ansible` configurations.
 
-It also provides a `VOLUME /tmp`, allowing you to use it as a development container too using `bind` mounting.
+It may be useful to rebuild it when doing some customization, like adding packages (e.g `awscli`) or loading ssh keys ...
 
-## Building notes
+# Build notes
 
-TODO
+You can use this Dockerfile to install whichever `Ansible` version you want, but by default it is the latest.
 
-## Running notes
+Among others `gcc` and the `gcc` suite are installed _temporarily_. Means that once installation is complete, these packages will be removed automatically.
 
-TODO
+Although subject to various opinions, decision has been made from the very beginning to install `Ansible` under its own user and not as `root`. Not only for security reasons but also because of _bind mounting hell_ where temporary files from inside the containers created with `root` user could lead to some issues outside the container, on the host.
+
+Last but not least, this container builds `Ansible` for use with `Python 3.x`.
+No backward compatibility work will be done. Deal with that, *Python 2.x is dead* :wink:
 
 # Last words
 

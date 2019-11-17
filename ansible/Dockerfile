@@ -1,16 +1,12 @@
-ARG DISTRIB=ubuntu
-ARG VERSION=18.04
-FROM ${DISTRIB}:${VERSION}
+ARG OS_VERSION=18.04
+FROM ubuntu:${OS_VERSION}
 
+ARG VERSION=latest
 LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
-# Default Python version will be 2.7 since python 3+ is named 'python3'
-ARG PYTHON_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/home/ansible/.local/bin:${PATH}" \
-    ADDONSCRIPT="/addon.sh" \
-    PYTHON_VERSION=${PYTHON_VERSION}
+    ADDONSCRIPT="/addon.sh"
 
 COPY autoinstall /usr/local/bin
 # Update system and install prerequisites
@@ -20,24 +16,25 @@ RUN set -ex \
     && chmod +x /usr/local/bin/autoinstall \
     && apt-get update -y  &&  apt-get -y dist-upgrade                          \
     && apt-get install -y --no-install-recommends --no-install-suggests        \
-                        python$PYTHON_VERSION python$PYTHON_VERSION-pip        \
+                        python3 python3-pip inotify-tools python3-setuptools   \
                         dnsutils sudo curl vim openssh-client openssl boxes    \
-                        inotify-tools python$PYTHON_VERSION-setuptools         \
     && apt-get install --fix-missing                                           \
-# save list of currently-installed packages so build dependencies can be cleanly removed later
-    && autoinstall build-essential g++ gcc python$PYTHON_VERSION-dev \
-# Make sure we really have the latest versions of every package :)
-    && pip$PYTHON_VERSION install -U pyasn1 setuptools paramiko cffi \
-      cryptography pycrypto ansible \
+# save list of currently-installed packages so build dependencies can be
+# cleanly removed later
+    && autoinstall build-essential g++ gcc python3-dev \
+# Make sure we really have the latest versions of every package,
+# and for Ansible, the package version of our build ARG defined on top.
+    && pip3 install -U pyasn1 setuptools paramiko cffi \
+      cryptography pycrypto ansible==${VERSION#?} \
     && apt-get remove --purge --auto-remove -y  \
     && rm -rf /var/lib/apt/lists/* /tmp/* /usr/share/doc/* /usr/share/man/*   \
     && echo "==[ Adding hosts for convenience... ]=="                          \
     && mkdir -p /etc/ansible                                                   \
-    && echo "localhost ansible_python_interpreter=/usr/bin/python$PYTHON_VERSION" > /etc/ansible/hosts
+    && echo "localhost ansible_python_interpreter=/usr/bin/python3" > /etc/ansible/hosts
 
 # Create ansible user and drop privileges as soon as we can :)
-# Note, we need to create $HOME for all plugins/modules related stuff required by
-# Python and Ansible. Since it *seems* pointless to enable password protection.
+# Note, we need to create $HOME for all plugins/modules related stuff required by Python and Ansible.
+# It *seems* pointless to enable password protection.
 RUN useradd -ms /bin/bash -G sudo ansible \
     && echo "ansible ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
