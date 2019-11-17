@@ -1,26 +1,10 @@
 version: "3"
 services:
-  ansible-dev:
-    image: oorabona/ansible:dev
-    container_name: ansible-dev
+  ansible:
+    image: oorabona/ansible:${VERSION}
+    container_name: ansible
     build:
       context: .
       args:
-        ANSIBLE_ENV: dev
-
-  ansible-prod:
-    image: oorabona/ansible:prod
-    container_name: ansible-prod
-    build:
-      context: .
-      args:
-        ANSIBLE_ENV: prod
-
-  ansible-py3-dev:
-    image: oorabona/ansible:py3-dev
-    container_name: ansible-py3-dev
-    build:
-      context: .
-      args:
-        ANSIBLE_ENV: dev
-        PYTHON_VERSION: 3
+        VERSION: ${VERSION:-latest}
+        OS_VERSION: ${OS_VERSION:-latest}
