@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+git-latest-tag() {
+  echo $(git ls-remote --tags --sort="v:refname" git@github.com:$1/$2.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | tail -n1 | sed 's/.*\///; s/\^{}//')
+}
+
+git-check-tag() {
+  git ls-remote --tags --sort="v:refname" git@github.com:$1/$2.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | grep $3 | sed 's/.*\///; s/\^{}//'
+}
+
+# Entrypoint in case this script is run directly.
+if [[ "$0" == *"git-tags" ]]
+then
+  git-tags "$@"
+fi
