@@ -5,7 +5,7 @@ services:
       context: .
       args:
         RESTY_IMAGE_TAG: ${VERSION:-latest}
-    image: oorabona/openresty:${VERSION}
+    image: oorabona/openresty:${TAG}
     ports:
       - 80:80
       - 443:443

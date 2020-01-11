@@ -6,7 +6,7 @@ services:
       args:
         VERSION: ${VERSION:-latest}
         OS_VERSION: ${OS_VERSION:-latest}
-    image: oorabona/sslh:${VERSION}
+    image: oorabona/sslh:${TAG}
     ports:
       - 443:443
     environment:
