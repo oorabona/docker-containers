@@ -3,7 +3,7 @@ ARG TERRAFORM_VERSION=0.11.13
 FROM hashicorp/terraform:${TERRAFORM_VERSION} AS terraform
 
 FROM alpine:latest
-LABEL maintainer="olivier.orabona@gmail.com"
+LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 # Environment variables
 ENV CONFIGFILE=config.json
