@@ -4,12 +4,31 @@ This is my own Docker repository for `Dockerfile`s and their corresponding `dock
 
 Idea behind this is to allow easy maintenance of all packages I found useful to containerize.
 
-## How to run
+---
 
-You can use the convenience script [here](run.sh) and the main [services file](services.yml) to get prebuilt Docker images and play with dockerized applications.
+Each directory with a Dockerfile relates to a container and will have repository of the same name in Docker Hub.
 
-At the moment only these are considered *applications* :
-- mysql-workbench
+# How to build
+
+To build, enjoy the simplicity of:
+```
+$ ./make build <target>
+```
+
+To push, just:
+```
+$ ./make push <target>
+```
+
+To run, with `docker-compose run --rm`:
+```
+$ ./make run <target>
+```
+
+To view available target list:
+```
+$ ./make list
+```
 
 # Feedback
 
