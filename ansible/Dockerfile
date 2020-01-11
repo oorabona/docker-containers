@@ -8,12 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/home/ansible/.local/bin:${PATH}" \
     ADDONSCRIPT="/addon.sh"
 
-COPY autoinstall /usr/local/bin
 # Update system and install prerequisites
 # Then we remove what should not be necessary anymore and clean
 # DEPRECATED: python -m pip is required as per this ref bug : https://github.com/pypa/pip/issues/5599
 RUN set -ex \
-    && chmod +x /usr/local/bin/autoinstall \
     && apt-get update -y  &&  apt-get -y dist-upgrade                          \
     && apt-get install -y --no-install-recommends --no-install-suggests        \
                         python3 python3-pip inotify-tools python3-setuptools   \
@@ -21,12 +19,12 @@ RUN set -ex \
     && apt-get install --fix-missing                                           \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
-    && autoinstall build-essential g++ gcc python3-dev \
+    && apt-get install -y build-essential g++ gcc python3-dev \
 # Make sure we really have the latest versions of every package,
 # and for Ansible, the package version of our build ARG defined on top.
     && pip3 install -U pyasn1 setuptools paramiko cffi \
       cryptography pycrypto ansible==${VERSION#?} \
-    && apt-get remove --purge --auto-remove -y  \
+    && apt-get remove --purge --auto-remove -y build-essential g++ gcc python3-dev \
     && rm -rf /var/lib/apt/lists/* /tmp/* /usr/share/doc/* /usr/share/man/*   \
     && echo "==[ Adding hosts for convenience... ]=="                          \
     && mkdir -p /etc/ansible                                                   \
