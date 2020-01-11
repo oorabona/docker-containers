@@ -21,49 +21,50 @@ help() {
   log_help help "This help"
   log_help "build <target> [version]" "Build <target> container using [version]"
   log_help "push <target> [version] " "Push built <target> container [version] to repository"
+  log_help "run <target> [version]  " "Run built <target> container [version]"
   echo
   log_help "<target>" "Can be one of: $(echo $targets| tr '\n' ' ')"
   log_help "[version]" "Existing version, by default it is set to latest (auto discover)"
 }
 
-build() {
+run() {
   if [ ! -d "$1" ]; then
     log_error "$1 is not a valid target !"
   fi
   local target=$1
+  local wantedVersion=${2:-latest}
   pushd ${target}
-  versions=$(./version.sh ${2:-latest})
-  if [ -e "$versions" ]; then
-    log_error "Version checking returned false, please ensure version is correct: $2"
-  fi
-  for version in $versions; do
-    export VERSION=$version
-    log_success "Building ${target} ${VERSION}"
-    docker-compose build
-  done
+  log_success "Running ${target} ${wantedVersion}"
+  TAG=${wantedVersion} docker-compose run --rm ${target}
   popd
 }
 
-push() {
+make() {
+  local op=$1 ; shift
   if [ ! -d "$1" ]; then
     log_error "$1 is not a valid target !"
   fi
   local target=$1
+  local wantedVersion=${2:-latest}
   pushd ${target}
-  versions=$(./version.sh ${2:-latest})
+  versions=$(./version.sh ${wantedVersion})
   if [ -e "$versions" ]; then
     log_error "Version checking returned false, please ensure version is correct: $2"
   fi
   for version in $versions; do
-    export VERSION=$version
-    log_success "Pushing ${target} ${VERSION}"
-    docker-compose push
+    export VERSION=$version TAG=$version
+    log_success "$op ${target} ${VERSION} (tag: $TAG)"
+    docker-compose $op
   done
+  if [ "$wantedVersion" == "latest" ]
+  then
+    TAG=latest docker-compose $op
+  fi
   popd
 }
 
 case "$1" in
-  push ) push $2 $3 ;;
-  build ) build $2 $3 ;;
+  push|build ) make $1 $2 $3 ;;
+  run ) run $2 $3 ;;
   * ) help ;;
 esac

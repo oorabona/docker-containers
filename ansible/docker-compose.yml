@@ -1,7 +1,7 @@
 version: "3"
 services:
   ansible:
-    image: oorabona/ansible:${VERSION}
+    image: oorabona/ansible:${TAG}
     container_name: ansible
     build:
       context: .
