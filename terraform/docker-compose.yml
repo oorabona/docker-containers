@@ -2,7 +2,7 @@ version: "3"
 services:
   terraform:
     container_name: terraform
-    image: oorabona/terraform:${TAG}
+    image: oorabona/terraform:${TAG:-latest}
     build:
       context: .
       args:
