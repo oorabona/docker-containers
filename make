@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+export DOCKER_CLI_EXPERIMENTAL=enabled
+export NPROC=$(nproc)
+
 # Helper functions
 log_success() {
   echo -e "\033[32m>> $@\033[39m"
@@ -53,7 +57,7 @@ make() {
   fi
   for version in $versions; do
     export VERSION=$version TAG=$version
-    log_success "$op ${target} ${VERSION} (tag: $TAG)"
+    log_success "$op ${target} ${VERSION} (tag: $TAG) | nproc: ${NPROC}"
     docker-compose $op
   done
   if [ "$wantedVersion" == "latest" ]
