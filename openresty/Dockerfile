@@ -131,7 +131,7 @@ RUN set -ex \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
     && cd /tmp \
-    && curl -fSL https://github.com/openresty/openresty/releases/download/v${RESTY_VERSION}/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
+    && curl -fSL https://openresty.org/download/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
     && tar xzf openresty-${RESTY_VERSION}.tar.gz \
     && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
     && tar zxf ngx_http_proxy_connect_module.tar.gz \
