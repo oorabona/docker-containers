@@ -19,7 +19,7 @@ log_help() {
 [ -r "$CONFIG_MK" ] && source "$CONFIG_MK"
 [ -r "$DEPLOY_MK" ] && source "$DEPLOY_MK"
 
-targets=$(find -name "docker-compose.yml" | cut -d'/' -f2 )
+targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
 
 help() {
   log_help help "This help"
@@ -43,6 +43,19 @@ run() {
   popd
 }
 
+do_it() {
+  local op=$1
+  if [ -r "docker-compose.yml" ]
+  then
+    docker-compose $op
+  elif [ -x "$op" ]
+  then
+    . "$op"
+  else
+    log_error "No build script found in $PWD, aborting."
+  fi
+}
+
 make() {
   local op=$1 ; shift
   if [ ! -d "$1" ]; then
@@ -58,11 +71,12 @@ make() {
   for version in $versions; do
     export VERSION=$version TAG=$version
     log_success "$op ${target} ${VERSION} (tag: $TAG) | nproc: ${NPROC}"
-    docker-compose $op
+    do_it $op
   done
   if [ "$wantedVersion" == "latest" ]
   then
-    TAG=latest docker-compose $op
+    export TAG=latest
+    do_it $op
   fi
   popd
 }
