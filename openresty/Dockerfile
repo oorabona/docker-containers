@@ -9,6 +9,7 @@ FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
 LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 # Docker Build Arguments
+ARG ENABLE_HTTP_PROXY_CONNECT="false"
 ARG RESTY_VERSION="1.15.8.2"
 ARG RESTY_OPENSSL_VERSION="1.1.1c"
 ARG RESTY_PCRE_VERSION="8.43"
@@ -132,14 +133,18 @@ RUN set -ex \
     && make -j${RESTY_J} install \
     && cd /tmp \
     && curl -fSL https://openresty.org/download/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
-    && tar xzf openresty-${RESTY_VERSION}.tar.gz \
+    && tar xzf openresty-${RESTY_VERSION}.tar.gz
+
+RUN [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ] \
     && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
     && tar zxf ngx_http_proxy_connect_module.tar.gz \
     && cd /tmp/openresty-${RESTY_VERSION} \
     && eval ./configure ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
     && cd build/nginx-1.15.8/ \
     && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_101504.patch \
-    && cd - \
+    && cd -
+
+RUN true \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
     && cd /tmp \
