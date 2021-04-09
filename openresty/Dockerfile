@@ -10,12 +10,12 @@ LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
+
 ARG RESTY_VERSION="1.15.8.2"
 ARG RESTY_OPENSSL_VERSION="1.1.1c"
 ARG RESTY_PCRE_VERSION="8.43"
 ARG RESTY_J="4"
 ARG RESTY_CONFIG_OPTIONS="\
-    --add-module=/tmp/ngx_http_proxy_connect_module-master \
     --with-compat \
     --with-file-aio \
     --with-http_addition_module \
@@ -75,6 +75,7 @@ LABEL resty_eval_pre_configure="${RESTY_EVAL_PRE_CONFIGURE}"
 LABEL resty_eval_post_make="${RESTY_EVAL_POST_MAKE}"
 LABEL luarocks_version="${LUAROCKS_VERSION}"
 
+# STEP 1 - Bootstrap : download and build prerequisites
 RUN set -ex \
     && apk add --no-cache --virtual .build-deps \
         build-base \
@@ -135,16 +136,20 @@ RUN set -ex \
     && curl -fSL https://openresty.org/download/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
     && tar xzf openresty-${RESTY_VERSION}.tar.gz
 
-RUN [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ] \
-    && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
-    && tar zxf ngx_http_proxy_connect_module.tar.gz \
+# STEP 2 - Configure OpenResty
+RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
+    curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
+    && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-master ${RESTY_CONFIG_OPTIONS}" \
+    && tar zxf ngx_http_proxy_connect_module.tar.gz; fi \
     && cd /tmp/openresty-${RESTY_VERSION} \
     && eval ./configure ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
-    && cd build/nginx-1.15.8/ \
-    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_101504.patch \
-    && cd -
+    && if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
+    cd build/nginx-1.15.8/ \
+    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_1018.patch \
+    && cd - ; fi
 
-RUN true \
+# STEP 3 - Build OpenResty and luarocks, then unwind all dev files/packages
+RUN cd /tmp/openresty-${RESTY_VERSION} \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
     && cd /tmp \
