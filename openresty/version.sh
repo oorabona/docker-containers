@@ -1,7 +1,7 @@
-source "../helpers/docker-tags"
+source "../helpers/git-tags"
 
 if [ "$1" == "latest" ]; then
-  docker-latest-tag openresty/openresty "^[0-9][^r|c]*alpine-fat$"
+  git-latest-tag openresty openresty | cut -c2-
 else
-  docker-check-tag openresty/openresty "^${1}*alpine-fat$"
+  git-check-tag openresty openresty ${1} | cut -c2-
 fi
