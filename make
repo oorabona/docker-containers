@@ -69,8 +69,8 @@ make() {
     log_error "Version checking returned false, please ensure version is correct: $2"
   fi
   for version in $versions; do
-    export VERSION=$version TAG=$version
-    log_success "$op ${target} ${VERSION} (tag: $TAG) | nproc: ${NPROC}"
+    export WANTED=$wantedVersion VERSION=$version TAG=$version
+    log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
     do_it $op
   done
   if [ "$wantedVersion" == "latest" ]
