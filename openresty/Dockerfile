@@ -46,7 +46,7 @@ ARG RESTY_CONFIG_OPTIONS="\
     --with-stream_ssl_module \
     --with-threads \
     "
-ARG RESTY_CONFIG_OPTIONS_MORE=""
+ARG RESTY_CONFIG_OPTIONS_MORE="-j${RESTY_J}"
 ARG RESTY_LUAJIT_OPTIONS="--with-luajit-xcflags='-DLUAJIT_NUMMODE=2 -DLUAJIT_ENABLE_LUA52COMPAT'"
 ARG RESTY_ADD_PACKAGE_BUILDDEPS=""
 ARG RESTY_ADD_PACKAGE_RUNDEPS=""
@@ -138,15 +138,16 @@ RUN set -ex \
 
 # STEP 2 - Configure OpenResty
 RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
-    curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
+    cd /tmp \
+    && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
     && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-master ${RESTY_CONFIG_OPTIONS}" \
     && tar zxf ngx_http_proxy_connect_module.tar.gz; fi \
     && cd /tmp/openresty-${RESTY_VERSION} \
     && eval ./configure ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
     && if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
-    cd build/nginx-1.15.8/ \
-    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_1018.patch \
-    && cd - ; fi
+    cd build/nginx-* \
+    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_1018.patch ; \
+    fi
 
 # STEP 3 - Build OpenResty and luarocks, then unwind all dev files/packages
 RUN cd /tmp/openresty-${RESTY_VERSION} \
