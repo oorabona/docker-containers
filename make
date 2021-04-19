@@ -52,7 +52,7 @@ do_it() {
   then
     . "$op"
   else
-    log_error "No build script found in $PWD, aborting."
+    log_error "No ${op} script found in $PWD, aborting."
   fi
 }
 
