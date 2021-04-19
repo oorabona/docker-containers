@@ -160,8 +160,8 @@ RUN cd /tmp/openresty-${RESTY_VERSION} \
     && cd /tmp/luarocks-${LUAROCKS_VERSION} \
     && export PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin \
     && ./configure \
-    && make \
-    && make install \
+    && make -j${RESTY_J} \
+    && make -j${RESTY_J} install \
     && cd /tmp \
     && if [ -n "${RESTY_EVAL_POST_MAKE}" ]; then eval $(echo ${RESTY_EVAL_POST_MAKE}); fi \
     && rm -rf \
