@@ -22,13 +22,33 @@ log_help() {
 targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
 
 help() {
+  echo Commands:
   log_help help "This help"
   log_help "build <target> [version]" "Build <target> container using [version]"
-  log_help "push <target> [version] " "Push built <target> container [version] to repository"
-  log_help "run <target> [version]  " "Run built <target> container [version]"
+  log_help "push <target> [version]" "Push built <target> container [version] to repository"
+  log_help "run <target> [version]" "Run built <target> container [version]"
+  log_help "version <target>" "Get latest version of <target>"
   echo
-  log_help "<target>" "Can be one of: $(echo $targets| tr '\n' ' ')"
+  echo Where:
   log_help "[version]" "Existing version, by default it is set to latest (auto discover)"
+  echo
+  echo List of possible targets:
+  log_help "$(echo $targets| tr ' ' '\n')"
+}
+
+version() {
+  if [ ! -d "$1" ]; then
+    log_error "$1 is not a valid target !"
+  fi
+  local target=$1
+  pushd ${target}
+  versions=$(./version.sh latest)
+  if [ -e "$versions" ]; then
+    log_error "Could not retrieve the latest version."
+  else
+    log_success "$versions"
+  fi
+  popd
 }
 
 run() {
@@ -84,5 +104,6 @@ make() {
 case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
+  version ) version $2 ;;
   * ) help ;;
 esac
