@@ -2,6 +2,7 @@
 
 export DOCKER_CLI_EXPERIMENTAL=enabled
 export NPROC=$(nproc)
+export DOCKERCOMPOSE="docker-compose"
 
 # Helper functions
 log_success() {
@@ -59,7 +60,7 @@ run() {
   local wantedVersion=${2:-latest}
   pushd ${target}
   log_success "Running ${target} ${wantedVersion}"
-  TAG=${wantedVersion} docker-compose run --rm ${target}
+  TAG=${wantedVersion} $DOCKERCOMPOSE run --rm ${target}
   popd
 }
 
@@ -67,7 +68,7 @@ do_it() {
   local op=$1
   if [ -r "docker-compose.yml" ]
   then
-    docker-compose $op
+    $DOCKERCOMPOSE $op
   elif [ -x "$op" ]
   then
     . "$op"
@@ -102,9 +103,16 @@ make() {
 }
 
 # Main entrypoint
-# If docker-compose is not found, just exit immediately
+# If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
-  log_error "docker-compose is not installed, aborting."
+  docker compose 2>/dev/null 1>&2
+  if [ $? -ne 0 ]; then
+    log_error "docker(-)compose is not installed, aborting."
+  fi
+  log_success "Found 'docker compose', continuing."
+  DOCKERCOMPOSE="docker compose"
+else
+  log_success "Found 'docker-compose', continuing."
 fi
 
 case "$1" in
