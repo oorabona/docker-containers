@@ -101,6 +101,12 @@ make() {
   popd
 }
 
+# Main entrypoint
+# If docker-compose is not found, just exit immediately
+if [ ! -x "$(command -v docker-compose)" ]; then
+  log_error "docker-compose is not installed, aborting."
+fi
+
 case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
