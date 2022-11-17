@@ -133,5 +133,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: oorabona/${{ matrix.job }}
-          short-description: ${{ steps.meta.outputs.labels }}
+          short-description: ${{ steps.meta.outputs.labels.description }}
           readme-filepath: ./${{ matrix.job }}/README.md
