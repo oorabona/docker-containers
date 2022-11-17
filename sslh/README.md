@@ -4,12 +4,12 @@ This image is based on the work done by [amondit](https://github.com/amondit/ssl
 
 ## What changes ?
 
-- It is now bound to [Bitnami Minideb](https://github.com/bitnami/minideb) base image.
+- It is now bound to [Alpine](https://hub.docker.com/_/alpine) base image.
 - It is built from sources from [Github](https://github.com/yrutschle/sslh).
 - By default, container **COMMAND** is set to `-V` (show version)
-- There is a `docker-entrypoint.sh` to help handle with command line arguments
+- There is a `docker-entrypoint.sh` to help handle command line arguments
 
-## How to run it ?
+##  How to run it ?
 
 The **DEFAULT_CMD** variable (see [docker-entrypoint](docker-entrypoint.sh#L2)) is already set to what should be the basic command line for `sslh`.
 
@@ -23,6 +23,7 @@ The container will stop when the process exits.
 ## Examples
 
 To configure endpoints, you may need to change the following environment variables:
+
 - LISTEN_IP (*default*: **0.0.0.0**)
 - LISTEN_PORT (*default*: **443**)
 - SSH_HOST (*default*: **localhost**)
@@ -35,7 +36,7 @@ To configure endpoints, you may need to change the following environment variabl
 ### Using plain Docker CLI
 
 ```sh
-$ docker run -d -e SSH_HOST=192.168.1.2 -e SSH_PORT=1234 -e OPENVPN_HOST=192.168.2.1 -e HTTPS_HOST=192.168.2.1 -p 0.0.0.0:443:443 oorabona/sslh -f
+docker run -d -e SSH_HOST=192.168.1.2 -e SSH_PORT=1234 -e OPENVPN_HOST=192.168.2.1 -e HTTPS_HOST=192.168.2.1 -p 0.0.0.0:443:443 oorabona/sslh -f
 ```
 
 ### Using docker-compose
@@ -61,19 +62,19 @@ services:
 
 And to launch it:
 
-```
-$ docker-compose -f your-compose.yml up -d
+```sh
+docker-compose -f your-compose.yml up -d
 ```
 
 ### Using Rancher
 
 Have a look at my own [Rancher Catalog](https://github.com/oorabona/rancher-catalog/tree/master/templates/sslh).
 
-# Licence
+## Licence
 
 MIT
 
-# TODO
+## TODO
 
 Automating test/publish when sslh source gets updated.
 Feedback & PR are of course most welcomed!
