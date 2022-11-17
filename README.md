@@ -8,28 +8,32 @@ Idea behind this is to allow easy maintenance of all packages I found useful to 
 
 Each directory with a Dockerfile relates to a container and will have repository of the same name in Docker Hub.
 
-# How to build
+## How to build
 
 To build, enjoy the simplicity of:
-```
-$ ./make build <target>
+
+```sh
+./make build <target>
 ```
 
 To push, just:
-```
-$ ./make push <target>
+
+```sh
+./make push <target>
 ```
 
 To run, with `docker-compose run --rm`:
-```
-$ ./make run <target>
+
+```sh
+./make run <target>
 ```
 
 To view available target list:
-```
-$ ./make list
+
+```sh
+./make list
 ```
 
-# Feedback
+## Feedback
 
 Feel free to pull request if you want to contribute ! :beer:
