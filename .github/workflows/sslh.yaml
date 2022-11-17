@@ -85,3 +85,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: oorabona/sslh
+          short-description: ${{ steps.meta.outputs.labels }}
+          readme-filepath: ./sslh/README.md
