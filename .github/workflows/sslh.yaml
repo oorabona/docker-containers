@@ -25,6 +25,13 @@ jobs:
         with:
           dir_names: "true"
           files_ignore: ".github/**"
+          json: "true"
+      - 
+        name: List all changed files
+        run: |
+          for file in ${{ steps.changed-files-dir-names.outputs.all_changed_files }}; do
+            echo "$file was changed"
+          done
 
   docker:
     needs: generate-job-strategy-matrix
