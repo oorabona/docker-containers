@@ -46,7 +46,7 @@ jobs:
         if: ${{ steps.changed-files-dir-names.outputs.all_changed_dirs == '' }}
         run: |
           echo "No directories were changed, we need to rebuild all images"
-          echo "matrix=['sslh']" >> $GITHUB_OUTPUT
+          echo "matrix=[\"sslh\"]" >> $GITHUB_OUTPUT
 
   docker:
     needs: generate-job-strategy-matrix
