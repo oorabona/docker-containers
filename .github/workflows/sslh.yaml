@@ -70,7 +70,7 @@ jobs:
         with:
           context: sslh/
           build-args: |
-            SSLH_VERSION: ${{ steps.sslh.outputs.version }}
+            SSLH_VERSION=${{ steps.sslh.outputs.version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/sslh:buildcache
           cache-to: type=registry,ref=oorabona/sslh:buildcache,mode=max
