@@ -108,18 +108,19 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       -
-        name: Get SSLH version
-        id: sslh
+        name: Get ${{ matrix.job }} version
+        id: get_version
+        working-directory: ${{ matrix.job }}
         run: |
-          version=$(git ls-remote --tags --sort="v:refname" https://github.com/yrutschle/sslh.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | tail -n1 | sed 's/.*\///; s/\^{}//')
+          version=$(bash version.sh latest)
           echo "version=${version}" >> $GITHUB_OUTPUT
       -
         name: Build and push
         uses: docker/build-push-action@v3
         with:
-          context: sslh/
+          context: ${{ matrix.job }}
           build-args: |
-            SSLH_VERSION=${{ steps.sslh.outputs.version }}
+            VERSION=${{ steps.get_version.outputs.version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/${{ matrix.job }}:buildcache
           cache-to: type=registry,ref=oorabona/${{ matrix.job }}:buildcache,mode=max
