@@ -4,7 +4,7 @@ services:
     build:
       context: .
       args:
-        SSLH_VERSION: ${VERSION:-latest}
+        VERSION: ${VERSION:-latest}
         OS_VERSION: ${OS_VERSION:-latest}
     image: oorabona/sslh:${TAG:-latest}
     ports:
