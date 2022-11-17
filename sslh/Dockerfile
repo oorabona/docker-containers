@@ -5,6 +5,8 @@ FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
 
 ARG SSLH_VERSION=latest
 LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
+LABEL description="SSLH (https://www.rutschle.net/tech/sslh.shtml) is a protocol multiplexer that allows several services to share the same port."
+LABEL version="${SSLH_VERSION}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
   LISTEN_IP=0.0.0.0 \
