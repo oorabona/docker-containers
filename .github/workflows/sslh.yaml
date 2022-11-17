@@ -58,6 +58,7 @@ jobs:
 
   docker:
     needs: generate-job-strategy-matrix
+    if: ${{ needs.generate-job-strategy-matrix.outputs.matrix != '' && toJson(fromJson(needs.generate-job-strategy-matrix.outputs.matrix)) != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
