@@ -35,6 +35,18 @@ jobs:
           for file in ${{ steps.changed-files-dir-names.outputs.all_changed_files }}; do
             echo "$file was changed"
           done
+      -
+        name: List all changed directories
+        run: |
+          for dir in ${{ steps.changed-files-dir-names.outputs.all_changed_dirs }}; do
+            echo "$dir was changed"
+          done
+      -
+        name: Do we need to rebuild all images?
+        if: ${{ steps.changed-files-dir-names.outputs.all_changed_dirs == '[]' }}
+        run: |
+          echo "No directories were changed, we need to rebuild all images"
+          echo "matrix=['sslh']" >> $GITHUB_OUTPUT
 
   docker:
     needs: generate-job-strategy-matrix
