@@ -63,7 +63,7 @@ jobs:
         id: sslh
         run: |
           version=$(git ls-remote --tags --sort="v:refname" https://github.com/yrutschle/sslh.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | tail -n1 | sed 's/.*\///; s/\^{}//')
-          echo "version=${version} >> $GITHUB_OUTPUT"
+          echo "version=${version}" >> $GITHUB_OUTPUT
       -
         name: Build and push
         uses: docker/build-push-action@v3
