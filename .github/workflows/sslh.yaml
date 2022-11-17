@@ -61,8 +61,8 @@ jobs:
       -
         name: Get SSLH version
         id: sslh
-        run: |
-          echo "::set-output name=version::$(curl -s https://api.github.com/repos/yrutschle/sslh/releases/latest | jq -r .tag_name)"
+        working-directory: ./sslh
+        run: echo "version=$(bash version.sh latest) >> $GITHUB_OUTPUT"
       -
         name: Build and push
         uses: docker/build-push-action@v3
