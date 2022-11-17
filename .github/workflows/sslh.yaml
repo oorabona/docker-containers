@@ -62,7 +62,7 @@ jobs:
         name: Build and push
         uses: docker/build-push-action@v3
         with:
-          context: .
+          context: sslh/
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/sslh:buildcache
           cache-to: type=registry,ref=oorabona/sslh:buildcache,mode=max
