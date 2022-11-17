@@ -14,43 +14,42 @@
 # docker-tags "library/mongo" "library/redis" "microsoft/nanoserver" "microsoft/dotnet" | jq --raw-output '.[][0:9]'
 
 # Kudos go to https://gist.github.com/robv8r/fa66f5e0fdf001f425fe9facf2db6d49
+token_uri="https://auth.docker.io/token"
+list_uri="https://registry-1.docker.io/v2/###IMAGE###/tags/list"
+
 DEFAULT_FILTER="^[0-9][^r|c]*alpine$"
 
-docker-latest-tag() {
-  image="$1"
-  filter=${2:-$DEFAULT_FILTER}
-  tags=`wget -q https://registry.hub.docker.com/v1/repositories/${image}/tags -O -  | sed -e 's/[][]//g' -e 's/"//g' -e 's/ //g' | tr '}' '\n'  | awk -F: '{print $3}' | grep -E "${filter}" | sort -Vr | head -n1`
-
-  # tags=` echo "${tags}" | grep "$2" `
-  echo ${tags}
+function get_token() {
+  local scope="repository:$1:pull"
+  curl -sSL "$token_uri?service=registry.docker.io&scope=$scope" | jq -r .token
 }
 
-docker-check-tag() {
-  image="$1"
-  filter=${2:-$DEFAULT_FILTER}
-  tags=`wget -q https://registry.hub.docker.com/v1/repositories/${image}/tags -O -  | sed -e 's/[][]//g' -e 's/"//g' -e 's/ //g' | tr '}' '\n'  | awk -F: '{print $3}' | grep -E "${filter}" | sort -Vr`
-
-  # tags=` echo "${tags}" | grep "$2" `
-  echo ${tags}
+function get_version() {
+  local image=$1
+  local token=$2
+  this_uri=$( echo -n "${list_uri}" | sed -e "s^###IMAGE###^${image}^" )
+  curl -Ss -H "Accept: application/json" -H "Authorization: Bearer $token" "${this_uri}" | jq .
 }
 
-docker-tags() {
-  arr=("$@")
-
-  for item in "${arr[@]}";
-  do
-    tokenUri="https://auth.docker.io/token"
-    data=("service=registry.docker.io" "scope=repository:$item:pull")
-    token="$(curl --silent --get --data-urlencode ${data[0]} --data-urlencode ${data[1]} $tokenUri | jq --raw-output '.token')"
-    listUri="https://registry-1.docker.io/v2/$item/tags/list"
-    authz="Authorization: Bearer $token"
-    result="$(curl --silent --get -H "Accept: application/json" -H "Authorization: Bearer $token" $listUri | jq --raw-output '.')"
-    echo $result
-  done
+function docker-latest-tag() {
+  local image=$1
+  local pattern=$2
+  local token=$(get_token $image)
+  local versions=$(get_version $image $token)
+  local latest=$(echo $versions | jq -r '.tags[]' | grep -E $pattern | sort -V | tail -n1)
+  echo $latest
 }
 
-# Entrypoint in case this script is run directly.
+function docker-check-tag() {
+  local image=$1
+  local tag=$2
+  local token=$(get_token $image)
+  local versions=$(get_version $image $token)
+  local found=$(echo $versions | jq -r '.tags[]' | grep -E $tag | sort -V | tail -n1)
+  echo $found
+}
+
 if [[ "$0" == *"docker-tags" ]]
 then
-  docker-check-tag "$@"
+  docker-tags "$@"
 fi
