@@ -68,7 +68,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: sslh/
-          env: |
+          build-args: |
             SSLH_VERSION: ${{ steps.sslh.outputs.version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/sslh:buildcache
