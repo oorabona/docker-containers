@@ -28,7 +28,6 @@ jobs:
         with:
           dir_names: "true"
           files_ignore: |
-            .github/**
             helpers/**
             .*
           json: "true"
@@ -48,7 +47,7 @@ jobs:
         name: Do we need to rebuild all images?
         id: rebuild-images
         run: |
-          if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == "" ]]; then
+          if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == ".github/workflows" ]]; then
             echo "All images need to be rebuilt"
             echo "matrix=[\"sslh\"]" >> $GITHUB_OUTPUT
           else
