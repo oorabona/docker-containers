@@ -27,7 +27,10 @@ jobs:
         uses: tj-actions/changed-files@v34
         with:
           dir_names: "true"
-          files_ignore: ".github/**"
+          files_ignore: |
+            .github/**
+            helpers/**
+            .*
           json: "true"
       - 
         name: List all changed files
