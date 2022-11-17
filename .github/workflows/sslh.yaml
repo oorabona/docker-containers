@@ -29,7 +29,6 @@ jobs:
           dir_names: "true"
           files_ignore: |
             helpers/**
-            ./**
           json: "true"
       - 
         name: List all changed files
@@ -50,6 +49,9 @@ jobs:
           if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == ".github/workflows" ]]; then
             echo "All images need to be rebuilt"
             echo "matrix=[\"sslh\"]" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.changed-files-dir-names.outputs.all_changed_dirs }}" == "." ]]; then
+            echo "No images need to be rebuilt"
+            echo "matrix=[]" >> $GITHUB_OUTPUT
           else
             echo "Only changed images need to be rebuilt"
             echo "matrix=${{ steps.changed-files-dir-names.outputs.all_changed_files }}" >> $GITHUB_OUTPUT
