@@ -13,8 +13,25 @@ on:
       - "main"
 
 jobs:
-  docker:
+  generate-job-strategy-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.changed-files-dir-names.outputs.matrix }}
+    steps:
+      -
+        name: Run changed-files with dir_names
+        id: changed-files-dir-names
+        uses: tj-actions/changed-files@v34
+        with:
+          dir_names: "true"
+          files_ignore: ".github/**"
+
+  docker:
+    needs: generate-job-strategy-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job: ${{ fromJson(needs.generate-job-strategy-matrix.outputs.matrix) }}
     steps:
       -
         name: Checkout
@@ -26,8 +43,8 @@ jobs:
         with:
           # list of Docker images to use as base name for tags
           images: |
-            oorabona/sslh
-            ghcr.io/oorabona/sslh
+            oorabona/${{ matrix.job }}
+            ghcr.io/oorabona/${{ matrix.job }}
           # generate Docker tags based on the following events/attributes
           tags: |
             type=schedule
@@ -72,8 +89,8 @@ jobs:
           build-args: |
             SSLH_VERSION=${{ steps.sslh.outputs.version }}
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=oorabona/sslh:buildcache
-          cache-to: type=registry,ref=oorabona/sslh:buildcache,mode=max
+          cache-from: type=registry,ref=oorabona/${{ matrix.job }}:buildcache
+          cache-to: type=registry,ref=oorabona/${{ matrix.job }}:buildcache,mode=max
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -84,6 +101,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: oorabona/sslh
+          repository: oorabona/${{ matrix.job }}
           short-description: ${{ steps.meta.outputs.labels }}
-          readme-filepath: ./sslh/README.md
+          readme-filepath: ./${{ matrix.job }}/README.md
