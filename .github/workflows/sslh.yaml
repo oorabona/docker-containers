@@ -29,7 +29,7 @@ jobs:
           dir_names: "true"
           files_ignore: |
             helpers/**
-            ./*
+            *
           json: "true"
       - 
         name: List all changed files
