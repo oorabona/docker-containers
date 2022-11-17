@@ -43,7 +43,7 @@ jobs:
           done
       -
         name: Do we need to rebuild all images?
-        if: ${{ steps.changed-files-dir-names.outputs.all_changed_dirs == '[]' }}
+        if: ${{ steps.changed-files-dir-names.outputs.all_changed_dirs == '' }}
         run: |
           echo "No directories were changed, we need to rebuild all images"
           echo "matrix=['sslh']" >> $GITHUB_OUTPUT
