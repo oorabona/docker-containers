@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 DEFAULT_CMD="-p ${LISTEN_IP}:${LISTEN_PORT} --ssh ${SSH_HOST}:${SSH_PORT} --tls ${HTTPS_HOST}:${HTTPS_PORT} --openvpn ${OPENVPN_HOST}:${OPENVPN_PORT}"
 
 set -e
