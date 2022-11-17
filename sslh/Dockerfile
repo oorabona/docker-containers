@@ -3,7 +3,7 @@ ARG OS_IMAGE_TAG="latest"
 
 FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
 
-ARG VERSION=latest
+ARG SSLH_VERSION=latest
 LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -29,8 +29,8 @@ RUN set -ex \
         pcre2-dev \
         make \
   && apk add --no-cache ca-certificates wget libconfig pcre2 \
-  && cd / && wget https://github.com/yrutschle/sslh/archive/$VERSION.tar.gz \
-  && tar zxvf $VERSION.tar.gz && cd /sslh* && make && make install \
+  && cd / && wget https://github.com/yrutschle/sslh/archive/$SSLH_VERSION.tar.gz \
+  && tar zxvf $SSLH_VERSION.tar.gz && cd /sslh* && make && make install \
   && rm -rf /sslh* \
   && chmod +x /docker-entrypoint.sh \
   && apk del .build-deps

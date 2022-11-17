@@ -59,10 +59,17 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       -
+        name: Get SSLH version
+        id: sslh
+        run: |
+          echo "::set-output name=version::$(curl -s https://api.github.com/repos/yrutschle/sslh/releases/latest | jq -r .tag_name)"
+      -
         name: Build and push
         uses: docker/build-push-action@v3
         with:
           context: sslh/
+          env: |
+            SSLH_VERSION: ${{ steps.sslh.outputs.version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/sslh:buildcache
           cache-to: type=registry,ref=oorabona/sslh:buildcache,mode=max
