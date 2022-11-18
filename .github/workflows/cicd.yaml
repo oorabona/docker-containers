@@ -48,7 +48,7 @@ jobs:
         run: |
           if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" =~ ".github/workflows" ]]; then
             echo "All images need to be rebuilt"
-            echo "matrix=[\"sslh\"]" >> $GITHUB_OUTPUT
+            echo "matrix=[\"sslh\", \"terraform\", \"ansible\"]" >> $GITHUB_OUTPUT
           elif [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == "." ]]; then
             echo "No images need to be rebuilt"
             echo "matrix=[]" >> $GITHUB_OUTPUT
