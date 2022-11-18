@@ -14,7 +14,7 @@ RUN set -ex \
         gnupg \
         wget \
     && apt-key adv --keyserver pgp.mit.edu --recv-keys 467B942D3A79BD29 \
-    && wget -qO - https://dev.mysql.com/get/mysql-apt-config_0.8.10-1_all.deb -O /tmp/mysql-apt-config.deb \
+    && wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.10-1_all.deb -O /tmp/mysql-apt-config.deb \
     && dpkg -i /tmp/mysql-apt-config.deb \
     && apt-get update && apt-get dist-upgrade -y && apt-get install -y mysql-workbench-community
 
