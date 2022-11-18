@@ -1,4 +1,4 @@
-ARG OS_VERSION=18.04
+ARG OS_VERSION=latest
 FROM ubuntu:${OS_VERSION}
 
 ARG VERSION=latest
