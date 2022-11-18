@@ -1,4 +1,4 @@
-name: sslh
+name: Build and Deploy
 
 on:
   schedule:
