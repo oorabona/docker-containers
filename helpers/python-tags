@@ -1,0 +1,7 @@
+# Get Python package latest version
+
+function get_pypi_latest_version() {
+	local package=$1
+	local version=$(curl -sSL https://pypi.org/pypi/${package}/json | jq -r '.info.version')
+	echo $version
+}
