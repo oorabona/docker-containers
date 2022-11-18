@@ -4,18 +4,18 @@ This [Docker](https://www.docker.com) image extends [Terraform](https://www.terr
 
 This allows enhancement and reusability (also known as **D**on't **R**epeat **Y**ourself) across your Terraform definitions.
 
-# How to use
+##  How to use
 
 In your Terraform registry, you just have to add `.j2` to your `.tf` files.
 All `.tf.j2` will be processed using a configuration file named `config.json`.
 
 This configuration file must reside in the root directory of your Terraform repository.
 
-# Parameters
+## Parameters
 
 * The environment variable `CONFIGFILE` (*default: `config.json`*) Jinja2 configuration file holding template parameters.
 
-# Volumes
+## Volumes
 
 In the container, `/data` is the base directory of your Terraform configuration.
 It is actually both a **WORKDIR** and a **VOLUME**.
