@@ -1,3 +1,3 @@
 source "../helpers/docker-tags"
 
-docker-latest-tag ubuntu "^${1}$"
+docker-latest-tag library/ubuntu "^${1}$"
