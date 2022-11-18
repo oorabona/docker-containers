@@ -10,9 +10,9 @@ Could probably do better by not installing all the dependencies but this would c
 
 First off, git clone the repository. Then:
 
-```
-$ cd mysql-workbench
-$ docker-compose build
+```sh
+cd mysql-workbench
+docker-compose build
 ```
 
 ## How to run
@@ -23,8 +23,8 @@ See [main README](README.md) for instructions on how to run this using shorthand
 
 You can also run it using :
 
-```
-$ docker run --rm -e DISPLAY=unix$DISPLAY -v $HOME/.mysql-workbench:/root/.mysql/workbench -v /tmp/.X11-unix --net host --name workbench oorabona/mysql-workbench
+```sh
+docker run --rm -e DISPLAY=unix$DISPLAY -v $HOME/.mysql-workbench:/root/.mysql/workbench -v /tmp/.X11-unix --net host --name workbench oorabona/mysql-workbench
 ```
 
 Enjoy ! :heart:
