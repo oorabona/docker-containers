@@ -69,6 +69,13 @@ jobs:
         name: Checkout
         uses: actions/checkout@v3
       -
+        name: Get ${{ matrix.job }} version
+        id: get_version
+        working-directory: ${{ matrix.job }}
+        run: |
+          version=$(bash version.sh latest)
+          echo "version=${version}" >> $GITHUB_OUTPUT
+      -
         name: Docker meta
         id: meta
         uses: docker/metadata-action@v4
@@ -86,6 +93,10 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha
+            # set latest tag for default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # set version from upstream repo version
+            type=raw,value=${{ steps.get_version.outputs.version }}
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -107,13 +118,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      -
-        name: Get ${{ matrix.job }} version
-        id: get_version
-        working-directory: ${{ matrix.job }}
-        run: |
-          version=$(bash version.sh latest)
-          echo "version=${version}" >> $GITHUB_OUTPUT
       -
         name: Build and push
         uses: docker/build-push-action@v3
