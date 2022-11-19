@@ -1,5 +1,11 @@
 # Terraform with Jinja2 templating support for extra fun 🏗️
 
+![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/terraform?sort=semver)
+![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/terraform?arch=amd64&sort=semver)
+![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/terraform?arch=arm64&sort=semver)
+![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/terraform)
+![Docker Stars](https://img.shields.io/docker/stars/oorabona/terraform)
+
 This image extends [Terraform](https://www.terraform.io) `.tf` with [JinJa2](http://jinja.pocoo.org/) templating engine.
 
 This allows enhancement and reusability (also known as **D**on't **R**epeat **Y**ourself) across your Terraform definitions.
