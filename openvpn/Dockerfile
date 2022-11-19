@@ -5,6 +5,7 @@ FROM alpine:${OS_VERSION}
 LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 ARG VERSION=latest
+ARG NPROC=1
 
 # Testing: pamtester
 # RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/testing/" >> /etc/apk/repositories && \
@@ -13,7 +14,7 @@ ARG VERSION=latest
 #     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
 RUN set -ex \
-    && apk add --update iptables bash ca-certificates wget linux-pam openssl \
+    && apk add --update iptables bash ca-certificates curl linux-pam openssl \
     && apk add --no-cache --virtual .build-deps \
         gcc \
         pkgconfig \
@@ -27,18 +28,19 @@ RUN set -ex \
         linux-pam-dev \
         automake \
         make \
-    && cd / && wget https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz \
-    && tar zxvf $VERSION.tar.gz && cd /openvpn* \
+    && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz --output openvpn.tgz \
+    && tar zxvf openvpn.tgz && cd openvpn* \
     # Opinionated but lzo and lz4 are not required for OpenVPN to work
     # and subject to security issues.
     && autoreconf -i -v -f \
     && ./configure --disable-lzo --disable-lz4 \
     # Do not try to install documentation
-    && make && make install-exec \
-    && rm -rf /openvpn* \
+    && echo "Building OpenVPN using ${NPROC} cores..." \
+    && make -j${NPROC} && make install-exec \
     && apk del .build-deps \
-    && wget -qO /usr/local/bin/ovpn https://raw.githubusercontent.com/oorabona/scripts/master/openvpn/setup.sh \
-    && chmod +x /usr/local/bin/ovpn \
+    && cd /usr/local/bin \
+    && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/master/openvpn/setup.sh --output ovpn \
+    && chmod +x ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
 # Needed by scripts
