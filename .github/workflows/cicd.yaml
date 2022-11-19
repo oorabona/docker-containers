@@ -131,7 +131,13 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
+      -
+        name: Get short description from README.md
+        id: get_short_description
+        working-directory: ${{ matrix.job }}
+        run: |
+          short_description=$(grep -m 1 -oP '(?<=^# ).*' README.md)
+          echo "short_description=${short_description}" >> $GITHUB_OUTPUT
       -
         name: Update repo description
         uses: peter-evans/dockerhub-description@v2
@@ -139,5 +145,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: oorabona/${{ matrix.job }}
-          short-description: ${{ steps.meta.outputs.labels.description }}
+          short-description: ${{ steps.get_short_description.outputs.short_description }}
           readme-filepath: ./${{ matrix.job }}/README.md
