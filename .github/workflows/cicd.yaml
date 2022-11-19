@@ -119,12 +119,19 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       -
+        name: Get number of vCPU
+        id: get_vcpu
+        run: |
+          vcpu=$(nproc)
+          echo "vcpu=${vcpu}" >> $GITHUB_OUTPUT
+      -
         name: Build and push
         uses: docker/build-push-action@v3
         with:
           context: ${{ matrix.job }}
           build-args: |
             VERSION=${{ steps.get_version.outputs.version }}
+            NPROC=${{ steps.get_vcpu.outputs.vcpu }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=oorabona/${{ matrix.job }}:buildcache
           cache-to: type=registry,ref=oorabona/${{ matrix.job }}:buildcache,mode=max
