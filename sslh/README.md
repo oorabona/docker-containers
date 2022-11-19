@@ -1,5 +1,11 @@
 # SSLH Docker image
 
+![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/sslh?sort=semver)
+![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/sslh?arch=amd64&sort=semver)
+![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/sslh?arch=arm64&sort=semver)
+![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/sslh)
+![Docker Stars](https://img.shields.io/docker/stars/oorabona/sslh)
+
 This image is based on the work done by [amondit](https://github.com/amondit/sslh).
 
 ## What changes ?

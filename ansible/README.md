@@ -1,5 +1,11 @@
 # Ansible built from sources with support for external plugins (Galaxy & Python) 💚
 
+![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/ansible?sort=semver)
+![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/ansible?arch=amd64&sort=semver)
+![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/ansible?arch=arm64&sort=semver)
+![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/ansible)
+![Docker Stars](https://img.shields.io/docker/stars/oorabona/ansible)
+
 This container contains latest version (to date) of [Ansible](https://www.ansible.com).
 
 ## What it has inside
