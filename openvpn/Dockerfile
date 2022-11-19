@@ -14,7 +14,7 @@ ARG NPROC=1
 #     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
 RUN set -ex \
-    && apk add --update iptables bash ca-certificates curl linux-pam openssl \
+    && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip \
     && apk add --no-cache --virtual .build-deps \
         gcc \
         pkgconfig \
@@ -26,14 +26,29 @@ RUN set -ex \
         libtool \
         openssl-dev \
         linux-pam-dev \
+        libselinux-dev \
+        nss-dev \
+        gnutls-dev \
         automake \
         make \
+        git \
     && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz --output openvpn.tgz \
+    # Download latest version of OpenSC pkcs11-helper from github
+    && PKCS11_HELPER_VERSION=$(git ls-remote --tags --sort="v:refname" https://github.com/opensc/pkcs11-helper.git | tail -n1 | awk '{print $2}' | sed 's/refs\/tags\///') \
+    && curl -sSL https://github.com/opensc/pkcs11-helper/archive/$PKCS11_HELPER_VERSION.tar.gz --output pkcs11-helper.tgz \
+    && tar zxvf pkcs11-helper.tgz \
+    && cd pkcs11-helper-$PKCS11_HELPER_VERSION \
+    && autoreconf -ivf \
+    && ./configure --enable-strict --enable-pedantic \
+    && make distcheck \
+    && make -j$NPROC \
+    && make install \
+    && cd /tmp \
     && tar zxvf openvpn.tgz && cd openvpn* \
     # Opinionated but lzo and lz4 are not required for OpenVPN to work
     # and subject to security issues.
-    && autoreconf -i -v -f \
-    && ./configure --disable-lzo --disable-lz4 \
+    && autoreconf -ivf \
+    && ./configure --disable-lzo --disable-lz4 --enable-pkcs11 --enable-iproute2 --enable-async-push --enable-selinux \
     # Do not try to install documentation
     && echo "Building OpenVPN using ${NPROC} cores..." \
     && make -j${NPROC} && make install-exec \
@@ -43,12 +58,7 @@ RUN set -ex \
     && chmod +x ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
-# Needed by scripts
-ENV OPENVPN=/etc/openvpn
-ENV EASYRSA=/usr/share/easy-rsa \
-    EASYRSA_CRL_DAYS=3650 \
-    EASYRSA_PKI=$OPENVPN/pki
-
+# Create a volume for the configuration
 VOLUME ["/etc/openvpn"]
 
 # Internally uses port 1194/udp, remap using `docker run -p 443:1194/tcp`
