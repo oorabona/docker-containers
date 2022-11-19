@@ -46,7 +46,7 @@ jobs:
         name: Do we need to rebuild all images?
         id: rebuild-images
         run: |
-          if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" =~ ".github/workflows" || ${{ github.event_name == 'schedule' }} ]]; then
+          if [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == *".github/workflows"* || "${{ github.event_name == 'schedule' }}" == "true" ]]; then
             echo "All images need to be rebuilt"
             echo "matrix=[\"sslh\", \"terraform\", \"ansible\"]" >> $GITHUB_OUTPUT
           elif [[ "${{ steps.changed-files-dir-names.outputs.all_changed_files }}" == "." ]]; then
