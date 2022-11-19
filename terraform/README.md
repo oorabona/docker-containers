@@ -1,6 +1,6 @@
-# Terraform
+# Terraform with Jinja2 templating support for extra fun 🏗️
 
-This [Docker](https://www.docker.com) image extends [Terraform](https://www.terraform.io) `.tf` with [JinJa2](http://jinja.pocoo.org/) templating engine.
+This image extends [Terraform](https://www.terraform.io) `.tf` with [JinJa2](http://jinja.pocoo.org/) templating engine.
 
 This allows enhancement and reusability (also known as **D**on't **R**epeat **Y**ourself) across your Terraform definitions.
 
@@ -22,4 +22,4 @@ It is actually both a **WORKDIR** and a **VOLUME**.
 
 For instance you can put the sample `docker-compose.yml` in the same repository of your Terraform code.
 
-If you do not want to proceed that way, `git` has also been installed in the container, allowing for in-container cloning.
+Alternatively, `git` has also been installed in the container, allowing for in-container cloning.
