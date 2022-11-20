@@ -69,13 +69,6 @@ jobs:
         name: Checkout
         uses: actions/checkout@v3
       -
-        name: Get ${{ matrix.job }} version
-        id: get_version
-        working-directory: ${{ matrix.job }}
-        run: |
-          version=$(bash version.sh latest)
-          echo "version=${version}" >> $GITHUB_OUTPUT
-      -
         name: Docker meta
         id: meta
         uses: docker/metadata-action@v4
@@ -124,6 +117,13 @@ jobs:
         run: |
           vcpu=$(nproc)
           echo "vcpu=${vcpu}" >> $GITHUB_OUTPUT
+      -
+        name: Get ${{ matrix.job }} version
+        id: get_version
+        working-directory: ${{ matrix.job }}
+        run: |
+          version=$(bash version.sh latest)
+          echo "version=${version}" >> $GITHUB_OUTPUT
       -
         name: Build and push
         uses: docker/build-push-action@v3
