@@ -50,9 +50,9 @@ jobs:
           vcpu=$(nproc)
           echo "vcpu=${vcpu}" >> $GITHUB_OUTPUT
       -
-        name: Get ${{ matrix.job }} version
+        name: Get ${{ github.event.inputs.container }} version
         id: get_version
-        working-directory: ${{ matrix.job }}
+        working-directory: ${{ github.event.inputs.container }}
         run: |
           version=$(bash version.sh ${{ github.event.inputs.version }})
           echo "version=${version}" >> $GITHUB_OUTPUT
@@ -63,8 +63,8 @@ jobs:
         with:
           # list of Docker images to use as base name for tags
           images: |
-            oorabona/${{ matrix.job }}
-            ghcr.io/oorabona/${{ matrix.job }}
+            oorabona/${{ github.event.inputs.container }}
+            ghcr.io/oorabona/${{ github.event.inputs.container }}
           # generate Docker tags based on the following events/attributes
           tags: |
             # set version from upstream repo version
@@ -73,21 +73,21 @@ jobs:
         name: Build and push
         uses: docker/build-push-action@v3
         with:
-          context: ${{ matrix.job }}
+          context: ${{ github.event.inputs.container }}
           build-args: |
             VERSION=${{ steps.get_version.outputs.version }}
             NPROC=${{ steps.get_vcpu.outputs.vcpu }}
           platforms: linux/amd64,linux/arm64
           # Force rebuild without cache
           cache-from: false
-          cache-to: type=registry,ref=oorabona/${{ matrix.job }}:buildcache,mode=max
+          cache-to: type=registry,ref=oorabona/${{ github.event.inputs.container }}:buildcache,mode=max
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
       -
         name: Get short description from README.md
         id: get_short_description
-        working-directory: ${{ matrix.job }}
+        working-directory: ${{ github.event.inputs.container }}
         run: |
           short_description=$(grep -m 1 -oP '(?<=^# ).*' README.md)
           echo "short_description=${short_description}" >> $GITHUB_OUTPUT
@@ -97,6 +97,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: oorabona/${{ matrix.job }}
+          repository: oorabona/${{ github.event.inputs.container }}
           short-description: ${{ steps.get_short_description.outputs.short_description }}
-          readme-filepath: ./${{ matrix.job }}/README.md
+          readme-filepath: ./${{ github.event.inputs.container }}/README.md
