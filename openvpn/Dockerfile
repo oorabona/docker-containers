@@ -50,7 +50,7 @@ RUN set -ex \
     && echo "Building OpenVPN using ${NPROC} cores..." \
     && make -j${NPROC} \
     # Compile also the plugins
-    && find src/plugins/ -type d -exec make -C {} -j${NPROC} \; -exec make -C {} install-exec \; \
+    && find src/plugins/ -type d -exec make -C {} -j${NPROC} \; -exec make -C {} install \; \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
