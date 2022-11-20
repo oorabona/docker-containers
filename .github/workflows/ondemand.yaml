@@ -29,6 +29,7 @@ jobs:
         uses: docker/setup-qemu-action@v2
       -
         name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v2
       -
         name: Login to Docker Hub
@@ -77,7 +78,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.get_version.outputs.version }}
             NPROC=${{ steps.get_vcpu.outputs.vcpu }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.buildx.outputs.platforms }}
           # Force rebuild without cache
           cache-from: false
           cache-to: type=registry,ref=oorabona/${{ github.event.inputs.container }}:buildcache,mode=max
