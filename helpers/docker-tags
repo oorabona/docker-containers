@@ -7,12 +7,6 @@
 # retrieve all tags for a single library
 # docker-tags "library/redis" | jq --raw-output '.[]'
 
-# retrieve all tags for multiple libraries
-# docker-tags "library/mongo" "library/redis" "microsoft/nanoserver" "microsoft/dotnet" | jq --raw-output '.[]'
-
-# retrieve first 10 tags for multiple libraries
-# docker-tags "library/mongo" "library/redis" "microsoft/nanoserver" "microsoft/dotnet" | jq --raw-output '.[][0:9]'
-
 # Kudos go to https://gist.github.com/robv8r/fa66f5e0fdf001f425fe9facf2db6d49
 token_uri="https://auth.docker.io/token"
 list_uri="https://registry-1.docker.io/v2/###IMAGE###/tags/list"
@@ -31,7 +25,7 @@ function get_version() {
   curl -Ss -H "Accept: application/json" -H "Authorization: Bearer $token" "${this_uri}" | jq .
 }
 
-function docker-latest-tag() {
+function latest-docker-tag() {
   local image=$1
   local pattern=$2
   local token=$(get_token $image)
@@ -40,7 +34,7 @@ function docker-latest-tag() {
   echo $latest
 }
 
-function docker-check-tag() {
+function check-docker-tag() {
   local image=$1
   local tag=$2
   local token=$(get_token $image)
@@ -49,7 +43,7 @@ function docker-check-tag() {
   echo $found
 }
 
-if [[ "$0" == *"docker-tags" ]]
+if [[ "$0" == *"docker-tag" ]]
 then
-  docker-tags "$@"
+  eval $(basename $0) $@
 fi
