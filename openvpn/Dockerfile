@@ -62,7 +62,7 @@ RUN set -ex \
 VOLUME ["/etc/openvpn"]
 
 # Internally uses port 1194/udp, remap using `docker run -p 443:1194/tcp`
-EXPOSE 1194/udp
+EXPOSE 1194/udp 1194/tcp
 
 # Environment variables
 # Later versions of EASYRSA seem to break the script
@@ -74,6 +74,3 @@ COPY openvpn-pam.conf /etc/pam.d/openvpn
 
 # Run OpenVPN setup script
 CMD ["ovpn"]
-
-# ADD ./bin /usr/local/bin
-# RUN chmod a+x /usr/local/bin/*
