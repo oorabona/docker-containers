@@ -69,25 +69,6 @@ jobs:
         name: Checkout
         uses: actions/checkout@v3
       -
-        name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          # list of Docker images to use as base name for tags
-          images: |
-            oorabona/${{ matrix.job }}
-            ghcr.io/oorabona/${{ matrix.job }}
-          # generate Docker tags based on the following events/attributes
-          tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
-            # set latest tag for default branch
-            type=raw,value=latest,enable={{is_default_branch}}
-            # set version from upstream repo version
-            type=raw,value=${{ steps.get_version.outputs.version }}
-      -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v2
       -
@@ -121,6 +102,25 @@ jobs:
         run: |
           version=$(bash version.sh latest)
           echo "version=${version}" >> $GITHUB_OUTPUT
+      -
+        name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          # list of Docker images to use as base name for tags
+          images: |
+            oorabona/${{ matrix.job }}
+            ghcr.io/oorabona/${{ matrix.job }}
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            # set latest tag for default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # set version from upstream repo version
+            type=raw,value=${{ steps.get_version.outputs.version }}
       -
         name: Build and push
         uses: docker/build-push-action@v3
