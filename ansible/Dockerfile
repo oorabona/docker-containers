@@ -16,10 +16,11 @@ RUN set -ex \
     && apt-get install -y --no-install-recommends --no-install-suggests        \
                         python3 python3-pip inotify-tools python3-setuptools   \
                         dnsutils sudo curl vim openssh-client openssl boxes    \
+                        libsodium \
     && apt-get install --fix-missing                                           \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
-    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc" \
+    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc libsodium-dev" \
 	&& export EXISTING_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $EXISTING_PACKAGES \
 	&& apt-get update && apt-get install -y --no-install-recommends $BUILD_PACKAGES \
 	&& export NEW_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $NEW_PACKAGES \
@@ -27,8 +28,9 @@ RUN set -ex \
 # Make sure we really have the latest versions of every package,
 # and for Ansible, the package version of our build ARG defined on top.
     && pip3 install --upgrade pip setuptools wheel \
-    && pip3 install -U pyasn1 setuptools paramiko cffi \
-      cryptography pycrypto ansible==${VERSION#?} \
+# https://github.com/pyca/pynacl/issues/553
+    && SODIUM_INSTALL=system pip3 install pynacl \
+    && pip3 install -U pyasn1 paramiko cffi cryptography pycrypto ansible==${VERSION#?} \
     && apt-get remove --purge -y $BUILD_PACKAGES $PACKAGES_TO_REMOVE \
     && rm -rf /var/lib/apt/lists/* /tmp/* /usr/share/doc/* /usr/share/man/*   \
     && echo "==[ Adding hosts for convenience... ]=="                          \
