@@ -26,6 +26,7 @@ RUN set -ex \
 	&& export PACKAGES_TO_REMOVE="$(comm -23 $NEW_PACKAGES $EXISTING_PACKAGES)" \
 # Make sure we really have the latest versions of every package,
 # and for Ansible, the package version of our build ARG defined on top.
+    && pip3 install --upgrade pip setuptools wheel \
     && pip3 install -U pyasn1 setuptools paramiko cffi \
       cryptography pycrypto ansible==${VERSION#?} \
     && apt-get remove --purge -y $BUILD_PACKAGES $PACKAGES_TO_REMOVE \
