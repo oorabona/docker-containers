@@ -7,7 +7,7 @@ LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 ARG VERSION=latest
 ARG NPROC=1
 
-# Testing: pamtester
+# Testing: pamtester is only available in edge, not for now.
 RUN set -ex \
     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip \
         google-authenticator libqrencode \
@@ -45,7 +45,7 @@ RUN set -ex \
     # and subject to security issues.
     && autoreconf -ivf \
     && ./configure --disable-lzo --disable-lz4 --enable-pkcs11 --enable-iproute2 --enable-async-push --enable-selinux \
-        --enable-plugin-auth-pam --enable-plugin-down-root --disable-debug --disable-systemd \
+        --enable-plugin-auth-pam --enable-plugin-down-root --disable-debug --disable-systemd --enable-comp-stub \
     # Do not try to install documentation
     && echo "Building OpenVPN using ${NPROC} cores..." \
     && make -j${NPROC} \
