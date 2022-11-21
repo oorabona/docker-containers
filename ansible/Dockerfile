@@ -19,12 +19,16 @@ RUN set -ex \
     && apt-get install --fix-missing                                           \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
-    && apt-get install -y build-essential g++ gcc python3-dev \
+    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev" \
+	&& export EXISTING_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $EXISTING_PACKAGES \
+	&& apt-get update && apt-get install -y --no-install-recommends $BUILD_PACKAGES \
+	&& export NEW_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $NEW_PACKAGES \
+	&& export PACKAGES_TO_REMOVE="$(comm -23 $NEW_PACKAGES $EXISTING_PACKAGES)" \
 # Make sure we really have the latest versions of every package,
 # and for Ansible, the package version of our build ARG defined on top.
     && pip3 install -U pyasn1 setuptools paramiko cffi \
       cryptography pycrypto ansible==${VERSION#?} \
-    && apt-get remove --purge --auto-remove -y build-essential g++ gcc python3-dev \
+    && apt-get remove --purge -y $BUILD_PACKAGES $PACKAGES_TO_REMOVE \
     && rm -rf /var/lib/apt/lists/* /tmp/* /usr/share/doc/* /usr/share/man/*   \
     && echo "==[ Adding hosts for convenience... ]=="                          \
     && mkdir -p /etc/ansible                                                   \
