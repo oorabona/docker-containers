@@ -19,7 +19,7 @@ RUN set -ex \
     && apt-get install --fix-missing                                           \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
-    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev" \
+    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc" \
 	&& export EXISTING_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $EXISTING_PACKAGES \
 	&& apt-get update && apt-get install -y --no-install-recommends $BUILD_PACKAGES \
 	&& export NEW_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $NEW_PACKAGES \
