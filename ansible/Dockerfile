@@ -16,7 +16,7 @@ RUN set -ex \
     && apt-get install -y --no-install-recommends --no-install-suggests        \
                         python3 python3-pip inotify-tools python3-setuptools   \
                         dnsutils sudo curl vim openssh-client openssl boxes    \
-                        libsodium \
+                        libsodium23 \
     && apt-get install --fix-missing                                           \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
