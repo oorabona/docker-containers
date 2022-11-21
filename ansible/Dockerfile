@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Update system and install prerequisites
 # Then we remove what should not be necessary anymore and clean
 # DEPRECATED: python -m pip is required as per this ref bug : https://github.com/pypa/pip/issues/5599
+# Kudos to https://github.com/rust-lang/cargo/issues/8719
 RUN --mount=type=tmpfs,target=/root/.cargo                              set -ex \
     && apt-get update -y  &&  apt-get -y dist-upgrade                           \
     && apt-get install -y --no-install-recommends --no-install-suggests         \
@@ -20,7 +21,7 @@ RUN --mount=type=tmpfs,target=/root/.cargo                              set -ex 
     && apt-get install --fix-missing                                            \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
-    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc cargo libsodium-dev" \
+    && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc cargo libsodium-dev libssl-dev" \
 	&& export EXISTING_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $EXISTING_PACKAGES \
 	&& apt-get update && apt-get install -y --no-install-recommends $BUILD_PACKAGES \
 	&& export NEW_PACKAGES="$(mktemp)" && apt-mark showauto | sort > $NEW_PACKAGES \
