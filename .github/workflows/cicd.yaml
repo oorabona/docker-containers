@@ -73,6 +73,7 @@ jobs:
         uses: docker/setup-qemu-action@v2
       -
         name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v2
       -
         name: Login to Docker Hub
@@ -124,6 +125,9 @@ jobs:
       # Since we are using only one tag for cache (buildcache), we need to check if the version we are going
       # to build will take advantage of the cache or not. If we build the same version, we can use it, otherwise
       # we ask to not use the cache.
+      # Or maybe we can just use the cache from GitHub?
+      # cache-from: type=gha
+      # cache-to: type=gha,mode=max
       -
         name: Should we use the cache for this build?
         id: use-cache
@@ -145,7 +149,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.get_version.outputs.version }}
             NPROC=${{ steps.get_vcpu.outputs.vcpu }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.buildx.outputs.platforms }}
           cache-from: ${{ steps.use-cache.outputs.use-cache }}
           cache-to: type=registry,ref=oorabona/${{ matrix.job }}:buildcache,mode=max
           push: ${{ github.event_name != 'pull_request' }}
