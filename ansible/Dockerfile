@@ -11,13 +11,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Update system and install prerequisites
 # Then we remove what should not be necessary anymore and clean
 # DEPRECATED: python -m pip is required as per this ref bug : https://github.com/pypa/pip/issues/5599
-RUN set -ex \
-    && apt-get update -y  &&  apt-get -y dist-upgrade                          \
-    && apt-get install -y --no-install-recommends --no-install-suggests        \
-                        python3 python3-pip inotify-tools python3-setuptools   \
-                        dnsutils sudo curl vim openssh-client openssl boxes    \
+RUN --mount=type=tmpfs,target=/root/.cargo                              set -ex \
+    && apt-get update -y  &&  apt-get -y dist-upgrade                           \
+    && apt-get install -y --no-install-recommends --no-install-suggests         \
+                        python3 python3-pip inotify-tools python3-setuptools    \
+                        dnsutils sudo curl vim openssh-client openssl boxes     \
                         libsodium23 \
-    && apt-get install --fix-missing                                           \
+    && apt-get install --fix-missing                                            \
 # save list of currently-installed packages so build dependencies can be
 # cleanly removed later
     && export BUILD_PACKAGES="build-essential g++ gcc python3-dev libffi-dev rustc cargo libsodium-dev" \
