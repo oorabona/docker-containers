@@ -128,6 +128,7 @@ OpenVPN is built from sources using the following options:
 - `--disable-systemd` option to disable the `systemd` support
 - `--disable-debug` option to make the binary smaller
 - `--disable-lzo` and `--disable-lz4` options to disable the `lzo` and `lz4` compression support (prone to side-channel attacks)
+- `--enable-comp-stub` option to disable all compression altogether (still allow limited interoperability with compression-enabled peers)
 
 ## Security
 
@@ -179,3 +180,4 @@ The container is configured to run with the following security labels:
 ## Other projects
 
 - [Dockovpn](https://github.com/dockovpn/dockovpn)
+- [Kyle Manna](https://github.com/kylemanna/docker-openvpn)
