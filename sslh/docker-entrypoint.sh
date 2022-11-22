@@ -5,7 +5,7 @@ set -e
 
 # Add sslh as command if needed
 if [ "${1:0:1}" = '-' ]; then
-	set -- sslh ${DEFAULT_CMD} "$@"
+	set -- ${USE_SSLH_FLAVOR} ${DEFAULT_CMD} "$@"
 fi
 
 echo "Running $@" 1>&2
