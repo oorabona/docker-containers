@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 
-git-latest-tag() {
-  echo $(git ls-remote --tags --sort="v:refname" https://github.com/$1/$2.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | tail -n1 | sed 's/.*\///; s/\^{}//')
+DEFAULT_VERSION_REGEX="v\d+(\.\d+)+$"
+
+latest-git-tag() {
+  local handle=$1
+  local repo=$2
+  local versionRegex=${3:-$DEFAULT_VERSION_REGEX}
+  echo $(git ls-remote --tags --sort="v:refname" https://github.com/$handle/$repo.git 2>/dev/null | grep -Po "$versionRegex" | tail -n1 | sed 's/.*\///; s/\^{}//')
 }
 
-git-check-tag() {
-  git ls-remote --tags --sort="v:refname" https://github.com/$1/$2.git 2>/dev/null | grep -Po "v\d+(\.\d+)+$" | grep $3 | sed 's/.*\///; s/\^{}//'
+check-git-tag() {
+  local handle=$1
+  local repo=$2
+  local version=$3
+  local versionRegex=${4:-$DEFAULT_VERSION_REGEX}
+  git ls-remote --tags --sort="v:refname" https://github.com/$handle/$repo.git 2>/dev/null | grep -Po "$versionRegex" | grep $version | sed 's/.*\///; s/\^{}//'
 }
 
 # Entrypoint in case this script is run directly.
 if [[ "$0" == *"git-tags" ]]
 then
-  git-tags "$@"
+  eval $(basename $0) $@
 fi
