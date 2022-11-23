@@ -31,7 +31,7 @@ RUN --mount=type=tmpfs,target=/root/.cargo                              set -ex 
     && pip3 install --upgrade pip setuptools wheel \
 # https://github.com/pyca/pynacl/issues/553
     && SODIUM_INSTALL=system pip3 install pynacl \
-    && pip3 install -U pyasn1 paramiko cffi cryptography pycrypto ansible==${VERSION#?} \
+    && pip3 install -U pyasn1 paramiko cffi cryptography pycrypto ansible==${VERSION} \
     && apt-get remove --purge -y $BUILD_PACKAGES $PACKAGES_TO_REMOVE \
     && rm -rf /var/lib/apt/lists/* /tmp/* /usr/share/doc/* /usr/share/man/*   \
     && echo "==[ Adding hosts for convenience... ]=="                          \
