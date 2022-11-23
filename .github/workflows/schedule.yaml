@@ -1,0 +1,28 @@
+name: Build and Deploy (schedule)
+
+on:
+  workflow_dispatch:
+    
+  schedule:
+    - cron: "0 10 * * *"
+
+jobs:
+  generate-job-strategy-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.rebuild-images.outputs.matrix }}
+    steps:
+      -
+        name: Do we need to rebuild all images?
+        id: rebuild-images
+        run: |
+          echo "All images need to be rebuilt"
+          echo "matrix=[\"sslh\", \"terraform\", \"ansible\", \"openvpn\"]" >> $GITHUB_OUTPUT
+
+  build:
+    needs: generate-job-strategy-matrix
+    if: ${{ needs.generate-job-strategy-matrix.outputs.matrix != '' && toJson(fromJson(needs.generate-job-strategy-matrix.outputs.matrix)) != '[]' }}
+    uses: ./.github/workflows/build.yaml
+    secrets: inherit
+    with:
+      matrix: ${{ fromJson(needs.generate-job-strategy-matrix.outputs.matrix) }}
