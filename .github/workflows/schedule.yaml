@@ -25,4 +25,4 @@ jobs:
     uses: ./.github/workflows/build.yaml
     secrets: inherit
     with:
-      matrix: ${{ fromJson(needs.generate-job-strategy-matrix.outputs.matrix) }}
+      matrix: ${{ toJson(fromJson(needs.generate-job-strategy-matrix.outputs.matrix)) }}
