@@ -22,7 +22,7 @@ jobs:
       -
         name: Run changed-files with dir_names
         id: changed-files-dir-names
-        uses: tj-actions/changed-files@v34
+        uses: tj-actions/changed-files@v41
         with:
           dir_names: "true"
           files_ignore: |
