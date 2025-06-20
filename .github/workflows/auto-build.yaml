@@ -135,7 +135,7 @@ jobs:
           else
             echo "No make script found, using docker build"
             cd "${{ matrix.container }}"
-            docker build -t temp-image .
+            docker build -t oorabona/${{ matrix.container }}:latest .
           fi
 
       - name: Tag and push to registries
