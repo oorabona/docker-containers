@@ -265,7 +265,7 @@ jobs:
 
       - name: Run Trivy vulnerability scanner
         if: steps.check-build.outputs.needs_build == 'true'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.11.0
         with:
           image-ref: '${{ env.REGISTRY_GHCR }}/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
           format: 'sarif'
