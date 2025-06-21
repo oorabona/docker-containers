@@ -8,6 +8,9 @@ on:
       - '.github/workflows/upstream-monitor.yaml'
       - '.github/actions/check-upstream-versions/**'
 
+permissions:
+  contents: read
+
 jobs:
   validate-version-scripts:
     runs-on: ubuntu-latest
