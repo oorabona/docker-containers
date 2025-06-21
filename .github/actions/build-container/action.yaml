@@ -1,51 +1,46 @@
-name: 'Build Container'
-description: 'Smart container build with multi-platform and multi-registry support'
-
+---
+name: Build Container
+description: Smart container build with multi-platform and multi-registry support
 inputs:
   container:
-    description: 'Container name to build'
+    description: Container name to build
     required: true
   force_rebuild:
-    description: 'Force rebuild even if image exists'
+    description: Force rebuild even if image exists
     required: false
     default: 'false'
   dockerhub_username:
-    description: 'Docker Hub username'
+    description: Docker Hub username
     required: false
   dockerhub_token:
-    description: 'Docker Hub token'
+    description: Docker Hub token
     required: false
   github_token:
-    description: 'GitHub token for GHCR'
+    description: GitHub token for GHCR
     required: true
-
 outputs:
   built:
-    description: 'Whether the container was built'
+    description: Whether the container was built
     value: ${{ steps.check-build.outputs.needs_build }}
   version:
-    description: 'Container version that was built'
+    description: Container version that was built
     value: ${{ steps.check-build.outputs.current_version }}
   image_name:
-    description: 'Full image name'
+    description: Full image name
     value: ${{ steps.check-build.outputs.image_name }}
-
 runs:
-  using: 'composite'
+  using: composite
   steps:
     - name: Set up QEMU for multi-architecture builds
       uses: docker/setup-qemu-action@v3
-
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ inputs.github_token }}
-
     - name: Log in to Docker Hub
       if: ${{ inputs.dockerhub_username != '' && inputs.dockerhub_token != '' }}
       uses: docker/login-action@v3
@@ -53,14 +48,12 @@ runs:
         registry: docker.io
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-
     - name: Check if build is needed
       id: check-build
       shell: bash
       run: |
         set -e
         container="${{ inputs.container }}"
-
         echo "🔍 Final build check for $container..."
 
         # Check if the container directory exists and has a Dockerfile
@@ -79,18 +72,15 @@ runs:
           current_version=$(bash version.sh 2>/dev/null || echo "")
           cd ..
         fi
-
         if [[ -z "$current_version" ]]; then
           echo "⚠️  No version.sh or unable to get version, using 'latest'"
           current_version="latest"
         fi
-
         echo "   📋 Current version: $current_version"
 
         # Set image names
         github_username="${{ github.repository_owner }}"
         image_name="${github_username}/${container}"
-
         needs_build=false
 
         # Force rebuild always builds
@@ -104,7 +94,6 @@ runs:
             local image_name=$2
             local tag=$3
             local full_name="${registry}/${image_name}:${tag}"
-
             if docker manifest inspect "$full_name" >/dev/null 2>&1; then
               return 0  # Image exists
             else
@@ -152,11 +141,9 @@ runs:
             echo "   📝 Build triggered by code changes"
           fi
         fi
-
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
-
     - name: Build and push Docker image
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       shell: bash
@@ -165,7 +152,6 @@ runs:
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
         image_name="${{ steps.check-build.outputs.image_name }}"
-
         echo "🔨 Building $container:$current_version..."
 
         # Prepare build tags
@@ -185,22 +171,20 @@ runs:
           $tags \
           --push \
           "$container/"
-
         echo "✅ Successfully built and pushed $container:$current_version"
-
     - name: Run Trivy vulnerability scanner
       if: steps.check-build.outputs.needs_build == 'true'
       uses: aquasecurity/trivy-action@v0.11.0
       with:
         image-ref: >-
-          ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}
-        format: 'sarif'
-        output: 'trivy-results.sarif'
+          ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version
+          }}
+        format: sarif
+        output: trivy-results.sarif
       continue-on-error: true
-
     - name: Upload Trivy scan results
       if: steps.check-build.outputs.needs_build == 'true'
       uses: github/codeql-action/upload-sarif@v2
       with:
-        sarif_file: 'trivy-results.sarif'
+        sarif_file: trivy-results.sarif
       continue-on-error: true
