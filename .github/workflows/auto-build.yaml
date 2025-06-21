@@ -1,21 +1,22 @@
+---
 name: Auto Build & Push
 
-on:
+'on':
   schedule:
     # Run twice daily to check for updates
     - cron: '0 6,18 * * *'
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - '*/Dockerfile'
       - '*/version.sh'
       - '**/*.sh'
       - 'make'
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - '*/Dockerfile'
-      - '*/version.sh' 
+      - '*/version.sh'
       - '**/*.sh'
       - 'make'
   workflow_dispatch:
@@ -60,44 +61,50 @@ jobs:
             echo "🎯 Building specific container: ${{ github.event.inputs.container }}"
             containers_to_build=("${{ github.event.inputs.container }}")
           else
-            echo "🔍 Detecting containers that need building..."
-            
-            for dir in */; do
-              container=${dir%/}
-              
-              # Skip if not a container directory
-              [ ! -f "$container/Dockerfile" ] && continue
-              
-              needs_build=false
-              
-              echo "📦 Checking $container..."
-              
-              # For push/PR events, check if this specific container was modified
-              if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
-                # Check if any files in this container directory were modified
-                if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-                  modified_files=$(git diff --name-only ${{ github.event.before }}..${{ github.sha }} 2>/dev/null | grep "^$container/" || true)
-                else
-                  # Fallback for first commit or when before is not available
-                  modified_files=$(git log --name-only --pretty=format: -1 ${{ github.sha }} | grep "^$container/" || true)
-                fi
-                
-                if [ -n "$modified_files" ]; then
-                  needs_build=true
-                  echo "   ✅ Container files modified, will build"
-                else
-                  echo "   ⏭️ No changes to this container, skipping"
-                fi
+          echo "🔍 Detecting containers that need building..."
+
+          for dir in */; do
+            container=${dir%/}
+
+            # Skip if not a container directory
+            [ ! -f "$container/Dockerfile" ] && continue
+
+            needs_build=false
+
+            echo "📦 Checking $container..."
+
+            # For push/PR events, check if container was modified
+            if [ "${{ github.event_name }}" = "push" ] || \
+               [ "${{ github.event_name }}" = "pull_request" ]; then
+              # Check if any files in this container directory were modified
+              if [ -n "${{ github.event.before }}" ] && \
+                 [ "${{ github.event.before }}" != \
+                   "0000000000000000000000000000000000000000" ]; then
+                modified_files=$(git diff --name-only \
+                  ${{ github.event.before }}..${{ github.sha }} \
+                  2>/dev/null | grep "^$container/" || true)
               else
-                # For scheduled runs or manual dispatch, check version and registry existence
-                needs_build=true  # Default to build for scheduled runs
-                echo "   ✅ Scheduled run - will check version and registry status"
+                # Fallback for first commit or when before is not available
+                modified_files=$(git log --name-only --pretty=format: -1 \
+                  ${{ github.sha }} | grep "^$container/" || true)
               fi
-              
-              if [ "$needs_build" = "true" ]; then
-                containers_to_build+=("$container")
+
+              if [ -n "$modified_files" ]; then
+                needs_build=true
+                echo "   ✅ Container files modified, will build"
+              else
+                echo "   ⏭️ No changes to this container, skipping"
               fi
-            done
+            else
+              # For scheduled runs or manual dispatch
+              needs_build=true
+              echo "   ✅ Scheduled run - will check version and registry status"
+            fi
+
+            if [ "$needs_build" = "true" ]; then
+              containers_to_build+=("$container")
+            fi
+          done
           fi
           
           # Create JSON array output
@@ -112,7 +119,7 @@ jobs:
 
   build-and-push:
     needs: detect-containers
-    if: needs.detect-containers.outputs.containers != '[]'
+    if: fromJson(needs.detect-containers.outputs.containers).length > 0
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -123,169 +130,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Build container
+        id: build
+        uses: ./.github/actions/build-container
         with:
-          registry: ${{ env.REGISTRY_GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY_DOCKER }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        continue-on-error: true
-
-      - name: Check if build is needed (final verification)
-        id: check-build
-        run: |
-          set -e
-          container="${{ matrix.container }}"
-          
-          echo "🔍 Final build check for $container..."
-          
-          # Check if the container directory exists and has a Dockerfile
-          if [[ ! -f "$container/Dockerfile" ]]; then
-            echo "❌ No Dockerfile found for $container"
-            echo "needs_build=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Get current version
-          current_version=""
-          if [[ -f "$container/version.sh" ]]; then
-            cd "$container"
-            current_version=$(bash version.sh 2>/dev/null || echo "")
-            cd ..
-          fi
-          
-          if [[ -z "$current_version" ]]; then
-            echo "⚠️  No version.sh or unable to get version, using 'latest'"
-            current_version="latest"
-          fi
-          
-          echo "   📋 Current version: $current_version"
-          
-          # Set image names
-          github_username="${{ github.repository_owner }}"
-          image_name="${github_username}/${container}"
-          
-          needs_build=false
-          
-          # Force rebuild always builds
-          if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
-            needs_build=true
-            echo "   🔄 Force rebuild requested"
-          else
-            # Function to check if image exists in a registry
-            check_image_exists() {
-              local registry=$1
-              local image_name=$2
-              local tag=$3
-              local full_name="${registry}/${image_name}:${tag}"
-              
-              if docker manifest inspect "$full_name" >/dev/null 2>&1; then
-                return 0  # Image exists
-              else
-                return 1  # Image doesn't exist
-              fi
-            }
-            
-            # Check registries only for scheduled runs
-            if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "   🔄 Checking if images exist in registries..."
-              
-              # Check GitHub Container Registry
-              ghcr_exists=false
-              if check_image_exists "${{ env.REGISTRY_GHCR }}" "$image_name" "$current_version"; then
-                echo "   ✅ Image exists in GHCR: ${{ env.REGISTRY_GHCR }}/$image_name:$current_version"
-                ghcr_exists=true
-              else
-                echo "   ❌ Image missing in GHCR: ${{ env.REGISTRY_GHCR }}/$image_name:$current_version"
-              fi
-              
-              # Check Docker Hub (only if credentials available)
-              dockerhub_exists=false
-              if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
-                if check_image_exists "${{ env.REGISTRY_DOCKER }}" "$image_name" "$current_version"; then
-                  echo "   ✅ Image exists in Docker Hub: ${{ env.REGISTRY_DOCKER }}/$image_name:$current_version"
-                  dockerhub_exists=true
-                else
-                  echo "   ❌ Image missing in Docker Hub: ${{ env.REGISTRY_DOCKER }}/$image_name:$current_version"
-                fi
-              else
-                dockerhub_exists=true  # Skip Docker Hub check if no credentials
-                echo "   ℹ️ Docker Hub credentials not configured, skipping check"
-              fi
-              
-              # Build if image doesn't exist in either registry
-              if [ "$ghcr_exists" = false ] || [ "$dockerhub_exists" = false ]; then
-                needs_build=true
-                echo "   🔨 Build needed: image missing in one or both registries"
-              else
-                echo "   ✅ Image exists in all target registries, no build needed"
-              fi
-            else
-              # For push/PR events, always build (we already filtered by modified files)
-              needs_build=true
-              echo "   📝 Build triggered by code changes"
-            fi
-          fi
-          
-          echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
-          echo "current_version=$current_version" >> $GITHUB_OUTPUT
-          echo "image_name=$image_name" >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image
-        if: steps.check-build.outputs.needs_build == 'true'
-        run: |
-          set -e
-          container="${{ matrix.container }}"
-          current_version="${{ steps.check-build.outputs.current_version }}"
-          image_name="${{ steps.check-build.outputs.image_name }}"
-          
-          echo "🔨 Building $container:$current_version..."
-          
-          # Build the image using buildx for multi-platform
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag "${{ env.REGISTRY_GHCR }}/$image_name:$current_version" \
-            --tag "${{ env.REGISTRY_GHCR }}/$image_name:latest" \
-            --tag "${{ env.REGISTRY_DOCKER }}/$image_name:$current_version" \
-            --tag "${{ env.REGISTRY_DOCKER }}/$image_name:latest" \
-            --push \
-            "$container/"
-          
-          echo "✅ Successfully built and pushed $container:$current_version"
-
-      - name: Run Trivy vulnerability scanner
-        if: steps.check-build.outputs.needs_build == 'true'
-        uses: aquasecurity/trivy-action@v0.11.0
-        with:
-          image-ref: '${{ env.REGISTRY_GHCR }}/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-        continue-on-error: true
-
-      - name: Upload Trivy scan results to GitHub Security tab
-        if: steps.check-build.outputs.needs_build == 'true'
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
+          container: ${{ matrix.container }}
+          force_rebuild: ${{ github.event.inputs.force_rebuild }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate build summary
         if: always()
         run: |
           container="${{ matrix.container }}"
-          needs_build="${{ steps.check-build.outputs.needs_build }}"
-          current_version="${{ steps.check-build.outputs.current_version }}"
-          image_name="${{ steps.check-build.outputs.image_name }}"
+          needs_build="${{ steps.build.outputs.built }}"
+          current_version="${{ steps.build.outputs.version }}"
+          image_name="${{ steps.build.outputs.image_name }}"
           
           echo "## 📦 Build Summary for \`$container\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -297,9 +158,9 @@ jobs:
           echo "| **Build Needed** | \`$needs_build\` |" >> $GITHUB_STEP_SUMMARY
           
           if [ "$needs_build" = "true" ]; then
-            echo "| **GHCR Image** | \`${{ env.REGISTRY_GHCR }}/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **GHCR Image** | \`ghcr.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
             if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
-              echo "| **Docker Hub Image** | \`${{ env.REGISTRY_DOCKER }}/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+              echo "| **Docker Hub Image** | \`docker.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ✅ Successfully built and pushed!" >> $GITHUB_STEP_SUMMARY
@@ -339,8 +200,9 @@ jobs:
           echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           
           containers='${{ needs.detect-containers.outputs.containers }}'
-          if [ "$containers" != "[]" ]; then
-            container_count=$(echo "$containers" | jq length)
+          container_count=$(echo "$containers" | jq length)
+          
+          if [ "$container_count" -gt 0 ]; then
             echo "| **Containers Processed** | $container_count |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Containers Processed** | 0 |" >> $GITHUB_STEP_SUMMARY
@@ -348,7 +210,7 @@ jobs:
           
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ "$containers" = "[]" ]; then
+          if [ "$container_count" -eq 0 ]; then
             echo "### ℹ️ No containers needed building" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY

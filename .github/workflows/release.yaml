@@ -71,8 +71,10 @@ jobs:
         id: containers
         run: |
           if [ -n "${{ github.event.inputs.containers }}" ]; then
-            # User specified containers
+            # User specified containers - trim whitespace
             containers="${{ github.event.inputs.containers }}"
+            # Remove all whitespace and split by comma
+            containers=$(echo "$containers" | sed 's/[[:space:]]//g')
             IFS=',' read -ra CONTAINER_ARRAY <<< "$containers"
           else
             # Find containers with recent changes (last 30 days)
