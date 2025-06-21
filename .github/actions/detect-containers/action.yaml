@@ -89,8 +89,29 @@ runs:
               fi
             else
               # For scheduled runs or manual dispatch, check version and registry existence
-              needs_build=true  # Default to build for scheduled runs
-              echo "   ✅ Scheduled run - will check version and registry status"
+              # Also check for upstream version changes
+              echo "   🔍 Checking upstream version changes..."
+              
+              # Get current and upstream versions
+              if [[ -f "$container/version.sh" ]]; then
+                cd "$container"
+                current_version=$(bash version.sh 2>/dev/null || echo "")
+                upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
+                cd ..
+                
+                if [[ -n "$current_version" && -n "$upstream_version" ]]; then
+                  if [[ "$current_version" != "$upstream_version" ]]; then
+                    needs_build=true
+                    echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
+                  else
+                    echo "   ⏭️ No upstream version changes detected ($current_version)"
+                  fi
+                else
+                  echo "   ⚠️ Could not determine versions - will skip"
+                fi
+              else
+                echo "   ⚠️ No version.sh found - will skip"
+              fi
             fi
 
             if [ "$needs_build" = "true" ]; then
