@@ -46,7 +46,7 @@ jobs:
         uses: ./.github/actions/check-upstream-versions
         with:
           container: ${{ github.event.inputs.container }}
-          dockerhub_username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           skip_registry_check: ${{ github.event.inputs.debug == 'true' && 'false' || 'false' }}
       - name: Display version information
         run: |
