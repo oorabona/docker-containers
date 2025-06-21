@@ -25,8 +25,6 @@ permissions:
 env:
   MAX_OPEN_PRS_PER_CONTAINER: 2  # Maximum open PRs allowed per container
   PR_AUTO_CLOSE_DAYS: 7         # Auto-close stale PRs after this many days
-  pull-requests: write
-  packages: read
 
 jobs:
   check-upstream-versions:
@@ -90,7 +88,7 @@ jobs:
     needs: check-upstream-versions
     if: >
       fromJson(needs.check-upstream-versions.outputs.update_count) > 0 &&
-      (github.event_name == 'schedule' || github.event.inputs.create_pr == 'true')
+      (github.event_name == 'schedule' || (github.event.inputs.create_pr != 'false' && github.event.inputs.create_pr != ''))
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -156,6 +154,13 @@ jobs:
         run: |
           echo "ℹ️  Skipping PR creation for ${{ matrix.container }} - PR already exists for version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}"
           echo "The existing PR will handle this update."
+
+      - name: Container update skipped
+        if: steps.update.outputs.skipped == 'true'
+        run: |
+          echo "⚠️  Container update skipped for ${{ matrix.container }}"
+          echo "Reason: ${{ steps.update.outputs.skip_reason }}"
+          echo "This indicates a configuration issue that should be investigated."
 
       - name: Comment on manual update needed
         if: steps.update.outputs.updated != 'true'
@@ -427,7 +432,9 @@ jobs:
           # Group PRs by container and close excess ones
           containers_with_prs=$(echo "$open_prs" | jq -r \
             '.[] | select(.title | test("update|bump|chore"; "i")) | .title' | \
-            grep -oE '\b[a-z0-9_-]+\b' | sort | uniq -c | sort -nr)
+            grep -oE 'Update [a-z0-9_-]+ to|chore\([a-z0-9_-]+\)|Bump [a-z0-9_-]+ to' | \
+            grep -oE '[a-z0-9_-]+' | grep -v '^Update$\|^to$\|^chore$\|^Bump$' | \
+            sort | uniq -c | sort -nr)
           
           excess_closed=0
           

@@ -47,7 +47,6 @@ runs:
           "Update $CONTAINER to version"
           "chore($CONTAINER): update to version"
           "Bump $CONTAINER to"
-          "[$CONTAINER]"
         )
         
         # Get all open PRs
