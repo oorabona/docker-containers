@@ -1,0 +1,129 @@
+name: 'Update Container Version'
+description: 'Updates a container version file with a new version'
+
+inputs:
+  container:
+    description: 'Container name to update'
+    required: true
+  new_version:
+    description: 'New version to set'
+    required: true
+  commit_changes:
+    description: 'Whether to commit the changes'
+    required: false
+    default: 'false'
+
+outputs:
+  updated:
+    description: 'Whether the version was actually updated'
+    value: ${{ steps.update.outputs.updated }}
+  old_version:
+    description: 'Previous version before update'
+    value: ${{ steps.update.outputs.old_version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Update version file
+      id: update
+      shell: bash
+      run: |
+        set -e
+        
+        container="${{ inputs.container }}"
+        new_version="${{ inputs.new_version }}"
+        
+        echo "🔄 Updating version for $container to $new_version..."
+        
+        # Check if container directory exists
+        if [[ ! -d "$container" ]]; then
+          echo "❌ Container directory $container does not exist"
+          echo "updated=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Check if version.sh exists
+        if [[ ! -f "$container/version.sh" ]]; then
+          echo "❌ No version.sh file found in $container"
+          echo "updated=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        cd "$container"
+        
+        # Get current version
+        old_version=$(bash version.sh 2>/dev/null || echo "unknown")
+        echo "old_version=$old_version" >> $GITHUB_OUTPUT
+        
+        # Check if update is needed
+        if [[ "$old_version" == "$new_version" ]]; then
+          echo "✅ Version is already $new_version, no update needed"
+          echo "updated=false" >> $GITHUB_OUTPUT
+          cd ..
+          exit 0
+        fi
+        
+        echo "📋 Current version: $old_version"
+        echo "📋 New version: $new_version"
+        
+        # Create backup
+        cp version.sh version.sh.backup
+        
+        # Escape the version strings for use in regex (escape dots, brackets, etc.)
+        escaped_old_version=$(printf '%s\n' "$old_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        escaped_new_version=$(printf '%s\n' "$new_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        
+        # Strategy 1: Try to replace hardcoded echo statements with exact quotes
+        if grep -q "^[[:space:]]*echo[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*echo[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated hardcoded echo statement"
+          echo "updated=true" >> $GITHUB_OUTPUT
+        # Strategy 2: Try to replace VERSION variable assignment
+        elif grep -q "^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated VERSION variable assignment"
+          echo "updated=true" >> $GITHUB_OUTPUT
+        # Strategy 3: Try to replace version in return statement
+        elif grep -q "^[[:space:]]*return[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*return[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated return statement"
+          echo "updated=true" >> $GITHUB_OUTPUT
+        # Strategy 4: Handle special cases
+        else
+          echo "⚠️ Could not automatically update version.sh with safe regex patterns"
+          echo "This container may use dynamic version detection or a complex version script."
+          echo ""
+          echo "Searched for patterns:"
+          echo "  - echo \"${old_version}\""
+          echo "  - VERSION=\"${old_version}\""
+          echo "  - return \"${old_version}\""
+          echo ""
+          echo "Version.sh content:"
+          cat version.sh
+          echo ""
+          echo "Please manually update the version.sh file to track version: $new_version"
+          echo "updated=false" >> $GITHUB_OUTPUT
+          
+          # Restore backup since we couldn't update
+          mv version.sh.backup version.sh
+        fi
+        
+        cd ..
+
+    - name: Commit changes
+      if: inputs.commit_changes == 'true' && steps.update.outputs.updated == 'true'
+      shell: bash
+      run: |
+        container="${{ inputs.container }}"
+        new_version="${{ inputs.new_version }}"
+        old_version="${{ steps.update.outputs.old_version }}"
+        
+        # Configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Add and commit the changes
+        git add "$container/version.sh"
+        git commit -m "chore($container): update version from $old_version to $new_version"
+        
+        echo "✅ Committed version update for $container"

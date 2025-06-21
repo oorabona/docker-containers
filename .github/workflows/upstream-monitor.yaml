@@ -1,0 +1,328 @@
+name: Upstream Version Monitor
+
+on:
+  schedule:
+    # Check for upstream updates twice daily (6 AM and 6 PM UTC)
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Specific container to check (leave empty for all)'
+        required: false
+        type: string
+      create_pr:
+        description: 'Create PR for version updates'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  check-upstream-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      containers_with_updates: ${{ steps.check.outputs.containers_with_updates }}
+      update_count: ${{ steps.check.outputs.update_count }}
+      version_info: ${{ steps.check.outputs.version_info }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check upstream versions
+        id: check
+        uses: ./.github/actions/check-upstream-versions
+        with:
+          container: ${{ github.event.inputs.container }}
+
+      - name: Display version information
+        run: |
+          echo "## 🔍 Upstream Version Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          update_count="${{ steps.check.outputs.update_count }}"
+          echo "**Updates Available:** $update_count containers" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$update_count" -gt 0 ]; then
+            echo "### 📦 Containers with Updates Available" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Container | Current Version | Upstream Version |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|----------------|------------------|" >> $GITHUB_STEP_SUMMARY
+            
+            # Parse version info and display
+            version_info='${{ steps.check.outputs.version_info }}'
+            containers_with_updates='${{ steps.check.outputs.containers_with_updates }}'
+            
+            # Parse the JSON arrays and display each container
+            echo "$containers_with_updates" | jq -r '.[]' | while read container; do
+              current=$(echo "$version_info" | jq -r --arg c "$container" '.[$c].current')
+              upstream=$(echo "$version_info" | jq -r --arg c "$container" '.[$c].upstream')
+              echo "| \`$container\` | \`$current\` | \`$upstream\` |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "### ✅ All containers are up to date!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No upstream version changes detected." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  update-versions:
+    needs: check-upstream-versions
+    if: >
+      fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0 &&
+      (github.event.inputs.create_pr != 'false' || github.event_name == 'schedule')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(needs.check-upstream-versions.outputs.containers_with_updates) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Update container version
+        id: update
+        uses: ./.github/actions/update-version
+        with:
+          container: ${{ matrix.container }}
+          new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          commit_changes: false
+
+      - name: Create Pull Request
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(${{ matrix.container }}): update to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}'
+          title: 'Update ${{ matrix.container }} to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}'
+          body: |
+            ## 🔄 Automated Version Update
+            
+            This PR updates the `${{ matrix.container }}` container to use the latest upstream version.
+            
+            **Changes:**
+            - **Container:** `${{ matrix.container }}`
+            - **Previous Version:** `${{ steps.update.outputs.old_version }}`
+            - **New Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
+            
+            **Upstream Source:** 
+            This update was detected by monitoring the upstream source for `${{ matrix.container }}`.
+            
+            **Next Steps:**
+            - ✅ Review the changes
+            - ✅ Merge this PR to trigger the container build
+            - ✅ The updated container will be automatically built and published
+            
+            ---
+            *This PR was created automatically by the Upstream Version Monitor workflow.*
+          branch: update/${{ matrix.container }}-${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          delete-branch: true
+          draft: false
+
+      - name: Comment on manual update needed
+        if: steps.update.outputs.updated != 'true'
+        run: |
+          version_info='${{ needs.check-upstream-versions.outputs.version_info }}'
+          current_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].current')
+          upstream_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].upstream')
+          
+          echo "## ⚠️ Manual Update Required" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The \`${{ matrix.container }}\` container requires manual version update." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Details:**" >> $GITHUB_STEP_SUMMARY
+          echo "- **Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current Version:** \`$current_version\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upstream Version:** \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please manually update the \`${{ matrix.container }}/version.sh\` file." >> $GITHUB_STEP_SUMMARY
+
+  trigger-build:
+    needs: [check-upstream-versions, update-versions]
+    if: always() && fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Validate updated containers using make script
+        run: |
+          # Make the make script executable
+          chmod +x make
+          
+          # Test version detection for updated containers
+          echo "## 🧪 Validating Updated Containers" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Container | Version Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|---------------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          containers='${{ needs.check-upstream-versions.outputs.containers_with_updates }}'
+          
+          # Parse containers and validate each one
+          echo "$containers" | jq -r '.[]' | while read container; do
+            if [[ -f "$container/version.sh" ]]; then
+              chmod +x "$container/version.sh"
+              cd "$container"
+              
+              # Test latest version retrieval
+              if latest_version=$(bash version.sh latest 2>/dev/null); then
+                echo "| \`$container\` | \`$latest_version\` | ✅ Valid |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| \`$container\` | Error | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+              fi
+              
+              cd ..
+            else
+              echo "| \`$container\` | No version.sh | ⚠️ Skipped |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Trigger auto-build workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
+            
+            // Trigger the auto-build workflow for containers with updates
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-build.yaml',
+              ref: 'main',
+              inputs: {
+                force_rebuild: 'true'
+              }
+            });
+            
+            console.log(`Triggered auto-build workflow for ${containers.length} containers with upstream updates`);
+
+      - name: Provide make script usage examples
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🛠️ Make Script Integration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "You can use the existing \`make\` script to work with these containers:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# List all available targets" >> $GITHUB_STEP_SUMMARY
+          echo "./make targets" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Check version for a specific container" >> $GITHUB_STEP_SUMMARY
+          echo "./make version WANTED=<container-name>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Build a specific container with version" >> $GITHUB_STEP_SUMMARY
+          echo "./make build WANTED=<container-name> VERSION=<version>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Build all containers" >> $GITHUB_STEP_SUMMARY
+          echo "./make build" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    needs: [check-upstream-versions, update-versions]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate comprehensive workflow summary
+        run: |
+          echo "# 🔍 Upstream Version Monitor - Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          update_count='${{ needs.check-upstream-versions.outputs.update_count }}'
+          
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Updates Found** | $update_count |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$update_count" -gt 0 ]; then
+            if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "| **Action Taken** | Pull requests created |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| **Action Taken** | Detection only |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| **Action Taken** | None needed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Upstream Version Monitoring Features:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Automatic detection** of upstream version changes" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Intelligent comparison** using existing version.sh scripts" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Automated PR creation** for version updates" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Integration** with existing build workflows" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Multi-source support** (Git tags, Docker Hub, PyPI)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Make script integration** for seamless container management" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show available containers with version.sh files
+          echo "### 📦 Container Status Overview" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Make make script executable
+          chmod +x make 2>/dev/null || true
+          
+          # Find all containers with Dockerfiles
+          echo "| Container | Version Script | Docker Compose | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|----------------|----------------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | while read dockerfile; do
+            container=$(dirname "$dockerfile" | sed 's|^\./||')
+            
+            version_status="❌ Missing"
+            if [[ -f "$container/version.sh" ]]; then
+              version_status="✅ Available"
+            fi
+            
+            compose_status="❌ Missing"
+            if [[ -f "$container/docker-compose.yml" ]]; then
+              compose_status="✅ Available"
+            fi
+            
+            overall_status="🔄 Monitored"
+            if [[ ! -f "$container/version.sh" ]]; then
+              overall_status="⏭️ Skipped"
+            fi
+            
+            echo "| \`$container\` | $version_status | $compose_status | $overall_status |" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🛠️ Integration with Make Script" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This monitoring system integrates seamlessly with the existing \`make\` script:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# List all available container targets" >> $GITHUB_STEP_SUMMARY
+          echo "./make targets" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Get version information for a container" >> $GITHUB_STEP_SUMMARY
+          echo "./make version WANTED=wordpress" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Build a container with specific version" >> $GITHUB_STEP_SUMMARY
+          echo "./make build WANTED=wordpress VERSION=6.1.1" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Build all containers" >> $GITHUB_STEP_SUMMARY
+          echo "./make build" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Push containers to registry" >> $GITHUB_STEP_SUMMARY
+          echo "./make push WANTED=wordpress" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "_🤖 Automated upstream monitoring powered by GitHub Actions and integrated with the make script infrastructure_" >> $GITHUB_STEP_SUMMARY
