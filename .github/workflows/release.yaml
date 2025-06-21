@@ -38,7 +38,7 @@ jobs:
           echo "Latest tag: $latest_tag"
 
           # Parse version
-          version=$(echo "$latest_tag" | sed 's/^v//')
+          version="${latest_tag#v}"
           IFS='.' read -ra VERSION_PARTS <<< "$version"
           major=${VERSION_PARTS[0]:-0}
           minor=${VERSION_PARTS[1]:-0}
