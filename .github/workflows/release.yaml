@@ -44,8 +44,12 @@ jobs:
           minor=${VERSION_PARTS[1]:-0}
           patch=${VERSION_PARTS[2]:-0}
           
+          # Normalize release type to lowercase for consistent matching
+          release_type=$(echo "${{ github.event.inputs.release_type }}" | tr '[:upper:]' '[:lower:]')
+          echo "Release type (normalized): $release_type"
+          
           # Increment based on release type
-          case "${{ github.event.inputs.release_type }}" in
+          case "$release_type" in
             "major")
               major=$((major + 1))
               minor=0
@@ -56,6 +60,10 @@ jobs:
               patch=0
               ;;
             "patch")
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "⚠️ Unknown release type '$release_type', defaulting to patch"
               patch=$((patch + 1))
               ;;
           esac
