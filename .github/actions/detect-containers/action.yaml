@@ -19,6 +19,10 @@ inputs:
   sha:
     description: 'Current commit SHA'
     required: true
+  force_rebuild:
+    description: 'Force rebuild even if image exists'
+    required: false
+    default: 'false'
 
 outputs:
   containers:
@@ -54,8 +58,13 @@ runs:
               continue
             fi
 
+            # Initialize needs_build to false; will be updated based on logic below
             needs_build=false
 
+            # If force_rebuild is true, override all other logic
+            if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+              needs_build=true
+            fi
             echo "📦 Checking $container (found Dockerfile at $dockerfile_path)..."
 
             # For push/PR events, check if this specific container was modified
@@ -86,7 +95,8 @@ runs:
 
             if [ "$needs_build" = "true" ]; then
               containers_to_build+=("$container")
-            fi          done < <(find . -name "Dockerfile" -not -path "./.git/*" -print0)
+            fi
+          done < <(find . -name "Dockerfile" -not -path "./.git/*" -print0)
         fi
 
         # Create JSON array output
