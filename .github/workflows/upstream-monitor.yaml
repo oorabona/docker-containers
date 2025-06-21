@@ -15,6 +15,11 @@ on:
         required: false
         default: true
         type: boolean
+      debug:
+        description: 'Enable debug output'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -25,6 +30,7 @@ permissions:
 env:
   MAX_OPEN_PRS_PER_CONTAINER: 2  # Maximum open PRs allowed per container
   PR_AUTO_CLOSE_DAYS: 7         # Auto-close stale PRs after this many days
+  DEBUG_OUTPUT: false            # Enable debug output for all runs (can be overridden by input)
 
 jobs:
   check-upstream-versions:
@@ -54,13 +60,17 @@ jobs:
           echo "**Updates Available:** $update_count containers" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Debug information
-          echo "### 🐛 Debug Information" >> $GITHUB_STEP_SUMMARY
-          echo "- Event name: \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Create PR input: \`${{ github.event.inputs.create_pr }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Containers with updates: \`${{ steps.check.outputs.containers_with_updates }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Update count: \`$update_count\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          # Conditional debug information based on input or environment variable
+          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          if [ "$debug_enabled" = "true" ]; then
+            echo "### 🐛 Debug Information" >> $GITHUB_STEP_SUMMARY
+            echo "- Event name: \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Create PR input: \`${{ github.event.inputs.create_pr }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Debug enabled: \`$debug_enabled\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Containers with updates: \`${{ steps.check.outputs.containers_with_updates }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Update count: \`$update_count\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           
           if [ "$update_count" -gt 0 ]; then
             echo "### 📦 Containers with Updates Available" >> $GITHUB_STEP_SUMMARY
@@ -161,6 +171,14 @@ jobs:
           echo "⚠️  Container update skipped for ${{ matrix.container }}"
           echo "Reason: ${{ steps.update.outputs.skip_reason }}"
           echo "This indicates a configuration issue that should be investigated."
+          
+          # Add debug information if enabled
+          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          if [ "$debug_enabled" = "true" ]; then
+            echo "🐛 Debug - Container: ${{ matrix.container }}"
+            echo "🐛 Debug - Skip reason: ${{ steps.update.outputs.skip_reason }}"
+            echo "🐛 Debug - Update output: ${{ steps.update.outputs.updated }}"
+          fi
 
       - name: Comment on manual update needed
         if: steps.update.outputs.updated != 'true'
@@ -376,6 +394,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🧹 Starting PR cleanup process..."
+          
+          # Check if debug is enabled
+          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          
+          if [ "$debug_enabled" = "true" ]; then
+            echo "🐛 Debug mode enabled for PR cleanup"
+            echo "🐛 MAX_OPEN_PRS_PER_CONTAINER: ${MAX_OPEN_PRS_PER_CONTAINER:-2}"
+            echo "🐛 PR_AUTO_CLOSE_DAYS: ${PR_AUTO_CLOSE_DAYS:-7}"
+          fi
           
           # Install GitHub CLI if needed
           if ! command -v gh >/dev/null 2>&1; then
