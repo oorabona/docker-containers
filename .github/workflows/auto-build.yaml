@@ -59,7 +59,7 @@ jobs:
           else
           echo "🔍 Detecting containers that need building..."
 
-          for container in $(find . -type f -name Dockerfile -exec dirname {} \; | sort -u); do
+          find . -type f -name Dockerfile -exec dirname {} \; | sort -u | while IFS= read -r -d '' container; do
             container=${container#./}
 
             # Skip if not a container directory (redundant but kept for clarity)
