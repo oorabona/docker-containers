@@ -50,7 +50,6 @@ runs:
         registry: docker.io
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-      continue-on-error: true
 
     - name: Check if build is needed
       id: check-build
