@@ -9,14 +9,12 @@ on:
     paths:
       - '*/Dockerfile'
       - '*/version.sh'
-      - '**/*.sh'
       - 'make'
   pull_request:
     branches: [main, master]
     paths:
       - '*/Dockerfile'
       - '*/version.sh'
-      - '**/*.sh'
       - 'make'
   workflow_dispatch:
     inputs:
