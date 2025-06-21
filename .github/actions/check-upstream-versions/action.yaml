@@ -1,0 +1,239 @@
+name: 'Check Upstream Versions'
+description: 'Checks if containers have newer upstream versions available using the existing make script infrastructure'
+
+inputs:
+  container:
+    description: 'Container name to check (optional, checks all if empty)'
+    required: false
+    default: ''
+
+outputs:
+  containers_with_updates:
+    description: 'JSON array of containers with upstream updates available'
+    value: ${{ steps.check-versions.outputs.containers_with_updates }}
+  update_count:
+    description: 'Number of containers with upstream updates'
+    value: ${{ steps.check-versions.outputs.update_count }}
+  version_info:
+    description: 'JSON object with version information for all checked containers'
+    value: ${{ steps.check-versions.outputs.version_info }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        
+        # Install curl if not available  
+        if ! command -v curl &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y curl
+        fi
+        
+        # Install git if not available
+        if ! command -v git &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y git
+        fi
+
+    - name: Check upstream versions
+      id: check-versions
+      shell: bash
+      run: |
+        set -e
+        
+        containers_with_updates=()
+        version_info="{}"
+        
+        # Make the main make script and version.sh files executable
+        chmod +x make 2>/dev/null || true
+        find . -name "version.sh" -exec chmod +x {} \; 2>/dev/null || true
+        
+        # Function to compare versions (semantic version comparison)
+        version_is_newer() {
+          local new_version="$1"
+          local current_version="$2"
+          
+          # If current is "latest", any specific version is considered newer
+          if [[ "$current_version" == "latest" ]]; then
+            return 0
+          fi
+          
+          # Basic version comparison using sort -V
+          if [[ "$(printf '%s\n' "$current_version" "$new_version" | sort -V | tail -n1)" == "$new_version" ]] && [[ "$current_version" != "$new_version" ]]; then
+            return 0
+          else
+            return 1
+          fi
+        }
+        
+        # Function to get current version using multiple strategies
+        get_current_version() {
+          local container="$1"
+          local current_version=""
+          
+          cd "$container"
+          
+          # Strategy 1: Try version.sh without arguments (for hardcoded versions like wordpress)
+          if [[ -f version.sh ]]; then
+            current_version=$(bash version.sh 2>/dev/null | grep -E '^[0-9v]' | head -1 || echo "")
+          fi
+          
+          # Strategy 2: Extract from docker-compose.yml default values  
+          if [[ -z "$current_version" && -f docker-compose.yml ]]; then
+            # Look for VERSION environment variable with defaults like ${VERSION:-1.2.3}
+            default_version=$(grep -E "VERSION.*:-" docker-compose.yml | head -1 | sed -n 's/.*:-\([^}]*\).*/\1/p' | tr -d ' ')
+            if [[ -n "$default_version" && "$default_version" != "latest" ]]; then
+              # Validate this version exists upstream
+              if [[ -f version.sh ]]; then
+                validated_version=$(bash version.sh "$default_version" 2>/dev/null | head -1 || echo "")
+                if [[ -n "$validated_version" ]]; then
+                  current_version="$default_version"
+                fi
+              else
+                current_version="$default_version"
+              fi
+            fi
+          fi
+          
+          # Strategy 3: Look for version files
+          if [[ -z "$current_version" ]]; then
+            for file in VERSION .version version.txt; do
+              if [[ -f "$file" ]]; then
+                file_version=$(cat "$file" | tr -d '[:space:]' | head -1)
+                if [[ -n "$file_version" ]]; then
+                  if [[ -f version.sh ]]; then
+                    validated_version=$(bash version.sh "$file_version" 2>/dev/null | head -1 || echo "")
+                    if [[ -n "$validated_version" ]]; then
+                      current_version="$file_version"
+                      break
+                    fi
+                  else
+                    current_version="$file_version"
+                    break
+                  fi
+                fi
+              fi
+            done
+          fi
+          
+          # Strategy 4: Extract from Dockerfile FROM statements
+          if [[ -z "$current_version" && -f Dockerfile ]]; then
+            # Look for specific versions in FROM statements
+            dockerfile_version=$(grep "^FROM.*:" Dockerfile | grep -v "latest" | grep -v "\${" | head -1 | sed -n 's/.*:\([^[:space:]]*\).*/\1/p')
+            if [[ -n "$dockerfile_version" ]]; then
+              if [[ -f version.sh ]]; then
+                validated_version=$(bash version.sh "$dockerfile_version" 2>/dev/null | head -1 || echo "")
+                if [[ -n "$validated_version" ]]; then
+                  current_version="$dockerfile_version"
+                fi
+              else
+                current_version="$dockerfile_version"
+              fi
+            fi
+          fi
+          
+          # Strategy 5: Fallback - if we have a version.sh, use "latest" as indicator
+          if [[ -z "$current_version" && -f version.sh ]]; then
+            current_version="latest"
+          fi
+          
+          cd ..
+          echo "$current_version"
+        }
+        
+        # Function to check if a container has upstream updates
+        check_container_updates() {
+          local container="$1"
+          
+          echo "🔍 Checking upstream versions for $container..."
+          
+          # Check if container directory exists and has a Dockerfile
+          if [[ ! -f "$container/Dockerfile" ]]; then
+            echo "   ⏭️ No Dockerfile found, skipping"
+            return
+          fi
+          
+          # Check if version.sh exists
+          if [[ ! -f "$container/version.sh" ]]; then
+            echo "   ⏭️ No version.sh found, skipping"
+            return
+          fi
+          
+          # Get current version
+          current_version=$(get_current_version "$container")
+          if [[ -z "$current_version" ]]; then
+            echo "   ⚠️ Could not determine current version"
+            return
+          fi
+          
+          # Get latest upstream version
+          cd "$container"
+          upstream_version=$(bash version.sh latest 2>/dev/null | head -1 || echo "")
+          cd ..
+          
+          if [[ -z "$upstream_version" ]]; then
+            echo "   ⚠️ Could not determine upstream version"
+            return
+          fi
+          
+          echo "   📋 Current: $current_version"
+          echo "   📋 Upstream: $upstream_version"
+          
+          # Update version_info JSON
+          version_info=$(echo "$version_info" | jq --arg container "$container" \
+            --arg current "$current_version" \
+            --arg upstream "$upstream_version" \
+            '. + {($container): {current: $current, upstream: $upstream}}')
+          
+          # Check if versions differ and if upstream is actually newer
+          if [[ "$current_version" != "$upstream_version" && "$upstream_version" != "latest" ]]; then
+            # Additional check: ensure upstream is actually newer
+            if [[ "$current_version" == "latest" ]] || version_is_newer "$upstream_version" "$current_version"; then
+              echo "   ✅ Update available: $current_version → $upstream_version"
+              containers_with_updates+=("$container")
+            else
+              echo "   ✅ Up to date (upstream: $upstream_version, current: $current_version)"
+            fi
+          else
+            echo "   ✅ Up to date"
+          fi
+        }
+        
+        # Main logic: Check specific container or all containers
+        if [ -n "${{ inputs.container }}" ]; then
+          echo "🎯 Checking specific container: ${{ inputs.container }}"
+          check_container_updates "${{ inputs.container }}"
+        else
+          echo "🔍 Checking all containers for upstream updates..."
+          
+          # Use the same discovery logic as the make script
+          # Find all container directories with Dockerfiles (excluding .git and helpers)
+          targets=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
+          
+          for container in $targets; do
+            check_container_updates "$container"
+          done
+        fi
+        
+        # Create JSON array output for containers with updates
+        if [ ${#containers_with_updates[@]} -eq 0 ]; then
+          echo "containers_with_updates=[]" >> $GITHUB_OUTPUT
+          echo "update_count=0" >> $GITHUB_OUTPUT
+          echo "📋 No containers have upstream updates available"
+        else
+          container_json=$(printf '%s\n' "${containers_with_updates[@]}" | jq -R . | jq -s -c .)
+          echo "containers_with_updates=$container_json" >> $GITHUB_OUTPUT
+          echo "update_count=${#containers_with_updates[@]}" >> $GITHUB_OUTPUT
+          echo "📋 Containers with updates: ${containers_with_updates[*]}"
+        fi
+        
+        # Output version info using heredoc to handle multiline JSON safely
+        {
+          echo "version_info<<EOF"
+          echo "$version_info"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
