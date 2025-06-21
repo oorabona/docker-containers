@@ -79,7 +79,7 @@ jobs:
   update-versions:
     needs: check-upstream-versions
     if: >
-      fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0 &&
+      needs.check-upstream-versions.outputs.update_count > 0 &&
       (github.event.inputs.create_pr != false || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     strategy:
