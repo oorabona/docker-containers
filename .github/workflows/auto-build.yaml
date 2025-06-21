@@ -35,10 +35,6 @@ permissions:
   contents: read
   packages: write
 
-env:
-  REGISTRY_GHCR: ghcr.io
-  REGISTRY_DOCKER: docker.io
-
 jobs:
   detect-containers:
     runs-on: ubuntu-latest
