@@ -90,6 +90,7 @@ runs:
             else
               # For scheduled runs or manual dispatch, check version and registry existence
               # Also check for upstream version changes
+              needs_build=false  # Initialize to false for scheduled runs
               echo "   🔍 Checking upstream version changes..."
               
               # Get current and upstream versions
