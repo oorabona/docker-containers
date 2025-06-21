@@ -1,0 +1,206 @@
+name: 'Build Container'
+description: 'Smart container build with multi-platform and multi-registry support'
+
+inputs:
+  container:
+    description: 'Container name to build'
+    required: true
+  force_rebuild:
+    description: 'Force rebuild even if image exists'
+    required: false
+    default: 'false'
+  dockerhub_username:
+    description: 'Docker Hub username'
+    required: false
+  dockerhub_token:
+    description: 'Docker Hub token'
+    required: false
+  github_token:
+    description: 'GitHub token for GHCR'
+    required: true
+
+outputs:
+  built:
+    description: 'Whether the container was built'
+    value: ${{ steps.check-build.outputs.needs_build }}
+  version:
+    description: 'Container version that was built'
+    value: ${{ steps.check-build.outputs.current_version }}
+  image_name:
+    description: 'Full image name'
+    value: ${{ steps.check-build.outputs.image_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up QEMU for multi-architecture builds
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
+    - name: Log in to Docker Hub
+      if: ${{ inputs.dockerhub_username != '' && inputs.dockerhub_token != '' }}
+      uses: docker/login-action@v3
+      with:
+        registry: docker.io
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Check if build is needed
+      id: check-build
+      shell: bash
+      run: |
+        set -e
+        container="${{ inputs.container }}"
+
+        echo "🔍 Final build check for $container..."
+
+        # Check if the container directory exists and has a Dockerfile
+        if [[ ! -f "$container/Dockerfile" ]]; then
+          echo "❌ No Dockerfile found for $container"
+          echo "needs_build=false" >> $GITHUB_OUTPUT
+          echo "current_version=latest" >> $GITHUB_OUTPUT
+          echo "image_name=${{ github.repository_owner }}/${container}" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Get current version
+        current_version=""
+        if [[ -f "$container/version.sh" ]]; then
+          cd "$container"
+          current_version=$(bash version.sh 2>/dev/null || echo "")
+          cd ..
+        fi
+
+        if [[ -z "$current_version" ]]; then
+          echo "⚠️  No version.sh or unable to get version, using 'latest'"
+          current_version="latest"
+        fi
+
+        echo "   📋 Current version: $current_version"
+
+        # Set image names
+        github_username="${{ github.repository_owner }}"
+        image_name="${github_username}/${container}"
+
+        needs_build=false
+
+        # Force rebuild always builds
+        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+          needs_build=true
+          echo "   🔄 Force rebuild requested"
+        else
+          # Function to check if image exists in a registry
+          check_image_exists() {
+            local registry=$1
+            local image_name=$2
+            local tag=$3
+            local full_name="${registry}/${image_name}:${tag}"
+
+            if docker manifest inspect "$full_name" >/dev/null 2>&1; then
+              return 0  # Image exists
+            else
+              return 1  # Image doesn't exist
+            fi
+          }
+
+          # Check registries for scheduled runs or manual dispatch
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "   🔄 Checking if images exist in registries..."
+
+            # Check GitHub Container Registry
+            ghcr_exists=false
+            if check_image_exists "ghcr.io" "$image_name" "$current_version"; then
+              echo "   ✅ Image exists in GHCR: ghcr.io/$image_name:$current_version"
+              ghcr_exists=true
+            else
+              echo "   ❌ Image missing in GHCR: ghcr.io/$image_name:$current_version"
+            fi
+
+            # Check Docker Hub (only if credentials available)
+            dockerhub_exists=false
+            if [ -n "${{ inputs.dockerhub_username }}" ]; then
+              if check_image_exists "docker.io" "$image_name" "$current_version"; then
+                echo "   ✅ Image exists in Docker Hub: docker.io/$image_name:$current_version"
+                dockerhub_exists=true
+              else
+                echo "   ❌ Image missing in Docker Hub: docker.io/$image_name:$current_version"
+              fi
+            else
+              dockerhub_exists=true  # Skip Docker Hub check if no credentials
+              echo "   ℹ️ Docker Hub credentials not configured, skipping check"
+            fi
+
+            # Build if image doesn't exist in either registry
+            if [ "$ghcr_exists" = false ] || [ "$dockerhub_exists" = false ]; then
+              needs_build=true
+              echo "   🔨 Build needed: image missing in one or both registries"
+            else
+              echo "   ✅ Image exists in all target registries, no build needed"
+            fi
+          else
+            # For push/PR events, always build (we already filtered by modified files)
+            needs_build=true
+            echo "   📝 Build triggered by code changes"
+          fi
+        fi
+
+        echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
+        echo "current_version=$current_version" >> $GITHUB_OUTPUT
+        echo "image_name=$image_name" >> $GITHUB_OUTPUT
+
+    - name: Build and push Docker image
+      if: ${{ steps.check-build.outputs.needs_build == 'true' }}
+      shell: bash
+      run: |
+        set -e
+        container="${{ inputs.container }}"
+        current_version="${{ steps.check-build.outputs.current_version }}"
+        image_name="${{ steps.check-build.outputs.image_name }}"
+
+        echo "🔨 Building $container:$current_version..."
+
+        # Prepare build tags
+        tags=""
+        tags="$tags --tag ghcr.io/$image_name:$current_version"
+        tags="$tags --tag ghcr.io/$image_name:latest"
+
+        # Add Docker Hub tags if credentials available
+        if [ -n "${{ inputs.dockerhub_username }}" ]; then
+          tags="$tags --tag docker.io/$image_name:$current_version"
+          tags="$tags --tag docker.io/$image_name:latest"
+        fi
+
+        # Build the image using buildx for multi-platform
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $tags \
+          --push \
+          "$container/"
+
+        echo "✅ Successfully built and pushed $container:$current_version"
+
+    - name: Run Trivy vulnerability scanner
+      if: steps.check-build.outputs.needs_build == 'true'
+      uses: aquasecurity/trivy-action@v0.11.0
+      with:
+        image-ref: >-
+          ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+      continue-on-error: true
+
+    - name: Upload Trivy scan results
+      if: steps.check-build.outputs.needs_build == 'true'
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+      continue-on-error: true

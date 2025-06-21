@@ -1,0 +1,179 @@
+name: Auto Build & Push
+
+on:
+  schedule:
+    # Run twice daily to check for updates
+    - cron: '0 6,18 * * *'
+  push:
+    branches: [main, master]
+    paths:
+      - '*/Dockerfile'
+      - '*/version.sh'
+      - 'make'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '*/Dockerfile'
+      - '*/version.sh'
+      - 'make'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Specific container to build (leave empty for all)'
+        required: false
+        type: string
+      force_rebuild:
+        description: 'Force rebuild even if no updates'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-containers:
+    runs-on: ubuntu-latest
+    outputs:
+      containers: ${{ steps.detect.outputs.containers }}
+      count: ${{ steps.detect.outputs.count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect containers to build
+        id: detect
+        uses: ./.github/actions/detect-containers
+        with:
+          container: ${{ github.event.inputs.container }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          event_name: ${{ github.event_name }}
+          event_before: ${{ github.event.before }}
+          sha: ${{ github.sha }}
+
+  build-and-push:
+    needs: detect-containers
+    if: fromJson(needs.detect-containers.outputs.containers).length > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(needs.detect-containers.outputs.containers) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build container
+        id: build
+        uses: ./.github/actions/build-container
+        with:
+          container: ${{ matrix.container }}
+          force_rebuild: ${{ github.event.inputs.force_rebuild }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate build summary
+        if: always()
+        run: |
+          container="${{ matrix.container }}"
+          needs_build="${{ steps.build.outputs.built }}"
+          current_version="${{ steps.build.outputs.version }}"
+          image_name="${{ steps.build.outputs.image_name }}"
+
+          echo "## 📦 Build Summary for \`$container\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Container** | \`$container\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Version** | \`$current_version\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Needed** | \`$needs_build\` |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$needs_build" = "true" ]; then
+            echo "| **GHCR Image** | \`ghcr.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+              echo "| **Docker Hub Image** | \`docker.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ Successfully built and pushed!" >> $GITHUB_STEP_SUMMARY
+
+            echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "- 📝 **Trigger**: Code changes detected in container files" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+              echo "- 🔄 **Trigger**: Force rebuild requested" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- 🔍 **Trigger**: Scheduled check found missing/outdated images" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ⏭️ Build skipped" >> $GITHUB_STEP_SUMMARY
+
+            echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Images already exist in all target registries" >> $GITHUB_STEP_SUMMARY
+            echo "- 📋 Version \`$current_version\` is up to date" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    needs: [detect-containers, build-and-push]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate workflow summary
+        run: |
+          echo "# 🚀 Auto Build & Push - Workflow Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch/Ref** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+
+          containers='${{ needs.detect-containers.outputs.containers }}'
+          container_count='${{ needs.detect-containers.outputs.count }}'
+
+          if [ "$container_count" -gt 0 ]; then
+            echo "| **Containers Processed** | $container_count |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Containers Processed** | 0 |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$container_count" -eq 0 ]; then
+            echo "### ℹ️ No containers needed building" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "- 📝 No container files were modified in this commit" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
+              echo "- 🔍 No new upstream versions detected" >> $GITHUB_STEP_SUMMARY
+            fi
+          elif [ "${{ needs.build-and-push.result }}" = "success" ]; then
+            echo "### ✅ All builds completed successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**🎯 Smart Detection Features:**" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Automatic triggering** on container file changes" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Registry verification** to avoid duplicate builds" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Multi-platform** builds (amd64 + arm64)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Security scanning** with Trivy" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.build-and-push.result }}" = "skipped" ]; then
+            echo "### ⏭️ Builds were skipped" >> $GITHUB_STEP_SUMMARY
+            echo "All target images already exist and are up to date." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Some builds failed or were cancelled" >> $GITHUB_STEP_SUMMARY
+            echo "Check the individual job logs above for details." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY

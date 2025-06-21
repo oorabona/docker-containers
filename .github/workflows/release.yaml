@@ -1,0 +1,204 @@
+name: Release Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Type of release'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      containers:
+        description: 'Containers to include (comma-separated, leave empty for recent changes)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate release version
+        id: version
+        run: |
+          # Get latest tag
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $latest_tag"
+
+          # Parse version
+          version="${latest_tag#v}"
+          IFS='.' read -ra VERSION_PARTS <<< "$version"
+          major=${VERSION_PARTS[0]:-0}
+          minor=${VERSION_PARTS[1]:-0}
+          patch=${VERSION_PARTS[2]:-0}
+
+          # Normalize release type to lowercase for consistent matching
+          release_type=$(echo "${{ github.event.inputs.release_type }}" | tr '[:upper:]' '[:lower:]')
+          echo "Release type (normalized): $release_type"
+
+          # Increment based on release type
+          case "$release_type" in
+            "major")
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            "minor")
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            "patch")
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "⚠️ Unknown release type '$release_type', defaulting to patch"
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          new_version="$major.$minor.$patch"
+          release_name="v$new_version"
+
+          echo "version=$new_version" >> $GITHUB_OUTPUT
+          echo "name=$release_name" >> $GITHUB_OUTPUT
+          echo "New version: $release_name"
+
+      - name: Determine containers for release
+        id: containers
+        run: |
+          if [ -n "${{ github.event.inputs.containers }}" ]; then
+            # User specified containers - trim whitespace
+            containers="${{ github.event.inputs.containers }}"
+            # Remove all whitespace and split by comma
+            containers=$(echo "$containers" | sed 's/[[:space:]]//g')
+            IFS=',' read -ra CONTAINER_ARRAY <<< "$containers"
+          else
+            # Find containers with recent changes (last 30 days)
+            containers=()
+            since_date=$(date -d '30 days ago' '+%Y-%m-%d')
+
+            for container_dir in */; do
+              container=${container_dir%/}
+
+              # Skip if not a container directory
+              [ ! -f "$container/Dockerfile" ] && continue
+
+              # Check for recent commits
+              if git log --since="$since_date" --oneline -- "$container" | grep -q .; then
+                containers+=("$container")
+              fi
+            done
+
+            # If no recent changes, include all containers
+            if [ ${#containers[@]} -eq 0 ]; then
+              containers=($(find . -name "Dockerfile" -not -path "./.git/*" | \
+                          sed 's|./||' | sed 's|/Dockerfile||' | sort))
+            fi
+
+            CONTAINER_ARRAY=("${containers[@]}")
+          fi
+
+          echo "Containers for release: ${CONTAINER_ARRAY[*]}"
+
+          # Store for use in release notes
+          printf '%s\n' "${CONTAINER_ARRAY[@]}" > containers_list.txt
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          # Get latest tag for changelog generation
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          echo "# Release ${{ steps.version.outputs.name }}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "## 🚀 What's New" >> release_notes.md
+
+          # Add containers information
+          echo "### 📦 Updated Containers" >> release_notes.md
+
+          while read -r container; do
+            if [ -f "$container/version.sh" ]; then
+              cd "$container"
+              version=$(bash version.sh latest 2>/dev/null || echo "latest")
+              cd ..
+              echo "- **$container**: \`$version\`" >> release_notes.md
+            else
+              echo "- **$container**: latest" >> release_notes.md
+            fi
+          done < containers_list.txt
+
+          echo "" >> release_notes.md
+          echo "### 🔄 Changes" >> release_notes.md
+
+          # Generate changelog if we have a previous tag
+          if [ -n "$latest_tag" ]; then
+            git log --pretty=format:"- %s (%h)" "$latest_tag"..HEAD --no-merges >> release_notes.md
+          else
+            echo "- Initial release" >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "### 🐳 Container Images" >> release_notes.md
+
+          echo "All containers are available on:" >> release_notes.md
+
+          while read -r container; do
+            echo "#### $container" >> release_notes.md
+
+            echo "\`\`\`bash" >> release_notes.md
+            echo "# Docker Hub" >> release_notes.md
+            echo "docker pull oorabona/$container:latest" >> release_notes.md
+
+            echo "# GitHub Container Registry" >> release_notes.md
+            echo "docker pull ghcr.io/${{ github.repository_owner }}/$container:latest" >> release_notes.md
+            echo "\`\`\`" >> release_notes.md
+
+          done < containers_list.txt
+
+          # Output for next step
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.name }}" -m "Release ${{ steps.version.outputs.name }}"
+          git push origin "${{ steps.version.outputs.name }}"
+
+      - name: Create GitHub Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: '${{ steps.version.outputs.name }}',
+              name: 'Release ${{ steps.version.outputs.name }}',
+              body: `${{ steps.release-notes.outputs.body }}`,
+              draft: false,
+              prerelease: false
+            });
+
+            console.log(`Created release: ${release.html_url}`);
+
+            // Add summary
+            await core.summary
+              .addHeading('🎉 Release Created Successfully!')
+              .addRaw(`**Release**: [${release.tag_name}](${release.html_url})`)
+              .addRaw(`**Version**: ${release.tag_name}`)
+              .write();
