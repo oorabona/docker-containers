@@ -294,9 +294,9 @@ runs:
         else
           echo "🔍 Checking all containers for upstream updates..."
           
-          # Use the same discovery logic as the make script
-          # Find all container directories with Dockerfiles (excluding .git and helpers)
-          targets=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
+          # Use version.sh scripts to discover containers (this is the source of truth)
+          # Find all container directories with version.sh scripts (excluding .git and helpers)
+          targets=$(find . -name "version.sh" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
           
           for container in $targets; do
             check_container_updates "$container"
