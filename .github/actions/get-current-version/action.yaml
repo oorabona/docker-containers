@@ -1,0 +1,114 @@
+name: 'Get Current Container Version'
+description: 'Determines the current version of a container using the same logic as the make script'
+
+inputs:
+  container:
+    description: 'Container name to get version for'
+    required: true
+
+outputs:
+  version:
+    description: 'Current version of the container'
+    value: ${{ steps.get-version.outputs.version }}
+  source:
+    description: 'Source where the version was found'
+    value: ${{ steps.get-version.outputs.source }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get current version
+      id: get-version
+      shell: bash
+      run: |
+        set -e
+        
+        container="${{ inputs.container }}"
+        
+        # Check if container directory exists
+        if [[ ! -d "$container" ]]; then
+          echo "❌ Container directory $container does not exist"
+          echo "version=" >> $GITHUB_OUTPUT
+          echo "source=not_found" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Check if version.sh exists
+        if [[ ! -f "$container/version.sh" ]]; then
+          echo "❌ No version.sh file found in $container"
+          echo "version=" >> $GITHUB_OUTPUT
+          echo "source=no_version_script" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        cd "$container"
+        current_version=""
+        source_info=""
+        
+        # Method 1: Try calling version.sh without arguments (hardcoded versions)
+        if [[ -z "$current_version" ]]; then
+          test_version=$(bash version.sh 2>/dev/null | head -1 || echo "")
+          # Check if it returned a valid version (not empty and not an error message)
+          if [[ -n "$test_version" && ! "$test_version" =~ ^(Error|error|ERROR) ]]; then
+            # Validate it's a real version by checking if it exists upstream
+            validated=$(bash version.sh "$test_version" 2>/dev/null | head -1 || echo "")
+            if [[ -n "$validated" && "$validated" == "$test_version" ]]; then
+              current_version="$test_version"
+              source_info="version_script_default"
+            fi
+          fi
+        fi
+        
+        # Method 2: Extract from docker-compose.yml VERSION defaults
+        if [[ -z "$current_version" && -f docker-compose.yml ]]; then
+          version_default=$(grep -E "VERSION.*:-.*" docker-compose.yml | head -1 | sed -n 's/.*:-\([^}]*\).*/\1/p' | tr -d ' ')
+          if [[ -n "$version_default" && "$version_default" != "latest" ]]; then
+            validated=$(bash version.sh "$version_default" 2>/dev/null | head -1 || echo "")
+            if [[ -n "$validated" ]]; then
+              current_version="$validated"
+              source_info="docker_compose_default"
+            fi
+          fi
+        fi
+        
+        # Method 3: Look for version files
+        if [[ -z "$current_version" ]]; then
+          for file in VERSION .version version.txt; do
+            if [[ -f "$file" ]]; then
+              file_version=$(cat "$file" | tr -d '[:space:]' | head -1)
+              if [[ -n "$file_version" ]]; then
+                validated=$(bash version.sh "$file_version" 2>/dev/null | head -1 || echo "")
+                if [[ -n "$validated" ]]; then
+                  current_version="$validated"
+                  source_info="version_file_$file"
+                  break
+                fi
+              fi
+            fi
+          done
+        fi
+        
+        # Method 4: Extract from Dockerfile FROM statements
+        if [[ -z "$current_version" && -f Dockerfile ]]; then
+          dockerfile_version=$(grep "^FROM" Dockerfile | grep -v "latest" | grep -v "alpine$" | head -1 | sed -n 's/.*:\([^[:space:]]*\).*/\1/p')
+          if [[ -n "$dockerfile_version" && "$dockerfile_version" != "\${VERSION}" ]]; then
+            validated=$(bash version.sh "$dockerfile_version" 2>/dev/null | head -1 || echo "")
+            if [[ -n "$validated" ]]; then
+              current_version="$validated"
+              source_info="dockerfile_from"
+            fi
+          fi
+        fi
+        
+        cd ..
+        
+        if [[ -n "$current_version" ]]; then
+          echo "✅ Found current version for $container: $current_version (source: $source_info)"
+          echo "version=$current_version" >> $GITHUB_OUTPUT
+          echo "source=$source_info" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Could not determine current version for $container"
+          echo "version=" >> $GITHUB_OUTPUT
+          echo "source=unknown" >> $GITHUB_OUTPUT
+          exit 1
+        fi

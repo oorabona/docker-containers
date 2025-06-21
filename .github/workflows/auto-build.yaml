@@ -1,9 +1,6 @@
 name: Auto Build & Push
 
 on:
-  schedule:
-    # Run twice daily to check for updates
-    - cron: '0 6,18 * * *'
   push:
     branches: [main, master]
     paths:
@@ -24,6 +21,11 @@ on:
         type: string
       force_rebuild:
         description: 'Force rebuild even if no updates'
+        required: false
+        default: false
+        type: boolean
+      triggered_by_upstream:
+        description: 'Triggered by upstream version changes'
         required: false
         default: false
         type: boolean
@@ -108,6 +110,8 @@ jobs:
               echo "- 📝 **Trigger**: Code changes detected in container files" >> $GITHUB_STEP_SUMMARY
             elif [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
               echo "- 🔄 **Trigger**: Force rebuild requested" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ github.event.inputs.triggered_by_upstream }}" = "true" ]; then
+              echo "- 🔄 **Trigger**: Upstream version changes detected" >> $GITHUB_STEP_SUMMARY
             else
               echo "- 🔍 **Trigger**: Scheduled check found missing/outdated images" >> $GITHUB_STEP_SUMMARY
             fi
@@ -154,6 +158,8 @@ jobs:
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
             if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "- 📝 No container files were modified in this commit" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ github.event.inputs.triggered_by_upstream }}" = "true" ]; then
+              echo "- ✅ No upstream version changes detected" >> $GITHUB_STEP_SUMMARY
             else
               echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
               echo "- 🔍 No new upstream versions detected" >> $GITHUB_STEP_SUMMARY
@@ -163,6 +169,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**🎯 Smart Detection Features:**" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Automatic triggering** on container file changes" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Upstream version monitoring** for automatic updates" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Registry verification** to avoid duplicate builds" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-platform** builds (amd64 + arm64)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY

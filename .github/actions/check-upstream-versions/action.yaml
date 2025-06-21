@@ -1,0 +1,193 @@
+name: 'Check Upstream Versions'
+description: 'Checks if containers have newer upstream versions available using the existing make script infrastructure'
+
+inputs:
+  container:
+    description: 'Container name to check (optional, checks all if empty)'
+    required: false
+    default: ''
+
+outputs:
+  containers_with_updates:
+    description: 'JSON array of containers with upstream updates available'
+    value: ${{ steps.check-versions.outputs.containers_with_updates }}
+  update_count:
+    description: 'Number of containers with upstream updates'
+    value: ${{ steps.check-versions.outputs.update_count }}
+  version_info:
+    description: 'JSON object with version information for all checked containers'
+    value: ${{ steps.check-versions.outputs.version_info }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        # Check what we need to install
+        missing_packages=()
+        
+        if ! command -v jq &> /dev/null; then
+          missing_packages+=("jq")
+        fi
+        
+        if ! command -v curl &> /dev/null; then
+          missing_packages+=("curl")
+        fi
+        
+        if ! command -v git &> /dev/null; then
+          missing_packages+=("git")
+        fi
+        
+        # Install all missing packages at once
+        if [ ${#missing_packages[@]} -gt 0 ]; then
+          echo "Installing missing packages: ${missing_packages[*]}"
+          sudo apt-get update && sudo apt-get install -y "${missing_packages[@]}"
+        else
+          echo "All required packages are already installed"
+        fi
+
+    - name: Check upstream versions
+      id: check-versions
+      shell: bash
+      run: |
+        set -e
+        
+        containers_with_updates=()
+        version_info="{}"
+        
+        # Make version.sh files executable
+        find . -name "version.sh" -exec chmod +x {} \; 2>/dev/null || true
+        
+        # Simple version comparison
+        version_is_newer() {
+          local new_version="$1"
+          local current_version="$2"
+          
+          # If current is "latest", any specific version is newer
+          if [[ "$current_version" == "latest" ]]; then
+            return 0
+          fi
+          
+          # Simple comparison - if they're different, consider it an update
+          if [[ "$new_version" != "$current_version" ]]; then
+            return 0
+          else
+            return 1
+          fi
+        }
+        
+        # Function to get current published version from registries
+        get_current_published_version() {
+          local container="$1"
+          local published_version=""
+          
+          # Check Docker Hub first
+          local dockerhub_url="https://hub.docker.com/v2/repositories/library/$container/tags/?page_size=1&ordering=-last_updated"
+          published_version=$(curl -s "$dockerhub_url" 2>/dev/null | jq -r '.results[0].name // empty' 2>/dev/null || echo "")
+          
+          # If not found on Docker Hub, try with namespace (user might have custom namespace)
+          if [[ -z "$published_version" || "$published_version" == "null" ]]; then
+            # Try common namespaces or extract from docker-compose.yml
+            for namespace in "" "library/" "$USER/" "$(whoami)/"; do
+              if [[ -n "$namespace" ]]; then
+                local namespaced_url="https://hub.docker.com/v2/repositories/${namespace}$container/tags/?page_size=1&ordering=-last_updated"
+                published_version=$(curl -s "$namespaced_url" 2>/dev/null | jq -r '.results[0].name // empty' 2>/dev/null || echo "")
+                if [[ -n "$published_version" && "$published_version" != "null" ]]; then
+                  break
+                fi
+              fi
+            done
+          fi
+          
+          # Fallback: assume no current published version (will trigger update)
+          if [[ -z "$published_version" || "$published_version" == "null" ]]; then
+            published_version="none"
+          fi
+          
+          echo "$published_version"
+        }
+        
+        # Function to check if a container has upstream updates
+        check_container_updates() {
+          local container="$1"
+          
+          echo "🔍 Checking upstream versions for $container..."
+          
+          # Check if container directory exists and has required files
+          if [[ ! -f "$container/Dockerfile" ]]; then
+            echo "   ⏭️ No Dockerfile found, skipping"
+            return
+          fi
+          
+          if [[ ! -f "$container/version.sh" ]]; then
+            echo "   ⏭️ No version.sh found, skipping"
+            return
+          fi
+          
+          cd "$container"
+          
+          # Get the current published version from registries
+          current_version=$(get_current_published_version "$container")
+          
+          # Get the latest upstream version
+          upstream_version=$(bash version.sh latest 2>/dev/null | head -1 || echo "")
+          
+          cd ..
+          
+          if [[ -z "$upstream_version" ]]; then
+            echo "   ⚠️ Could not determine upstream version"
+            return
+          fi
+          
+          echo "   📋 Published: $current_version"
+          echo "   📋 Upstream: $upstream_version"
+          
+          # Update version_info JSON
+          version_info=$(echo "$version_info" | jq --arg container "$container" \
+            --arg current "$current_version" \
+            --arg upstream "$upstream_version" \
+            '. + {($container): {current: $current, upstream: $upstream}}')
+          
+          # Check if we need an update
+          if version_is_newer "$upstream_version" "$current_version"; then
+            echo "   ✅ Update available: $current_version → $upstream_version"
+            containers_with_updates+=("$container")
+          else
+            echo "   ✅ Up to date"
+          fi
+        }
+        
+        # Main logic: Check specific container or all containers
+        if [ -n "${{ inputs.container }}" ]; then
+          echo "🎯 Checking specific container: ${{ inputs.container }}"
+          check_container_updates "${{ inputs.container }}"
+        else
+          echo "🔍 Checking all containers for upstream updates..."
+          
+          # Find all containers with version.sh files
+          targets=$(find . -name "version.sh" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
+          
+          for container in $targets; do
+            check_container_updates "$container"
+          done
+        fi
+        
+        # Output results
+        if [ ${#containers_with_updates[@]} -eq 0 ]; then
+          echo "containers_with_updates=[]" >> $GITHUB_OUTPUT
+          echo "update_count=0" >> $GITHUB_OUTPUT
+          echo "📋 No containers have upstream updates available"
+        else
+          container_json=$(printf '%s\n' "${containers_with_updates[@]}" | jq -R . | jq -s -c .)
+          echo "containers_with_updates=$container_json" >> $GITHUB_OUTPUT
+          echo "update_count=${#containers_with_updates[@]}" >> $GITHUB_OUTPUT
+          echo "📋 Containers with updates: ${containers_with_updates[*]}"
+        fi
+        
+        # Output version info
+        {
+          echo "version_info<<EOF"
+          echo "$version_info"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT

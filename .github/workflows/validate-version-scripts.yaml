@@ -1,0 +1,53 @@
+name: Validate Version Scripts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '**/version.sh'
+      - '.github/workflows/upstream-monitor.yaml'
+      - '.github/actions/check-upstream-versions/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl git
+
+      - name: Make scripts executable
+        run: |
+          chmod +x make
+          chmod +x test-version-scripts.sh
+          find . -name "version.sh" -exec chmod +x {} \;
+
+      - name: Test all version.sh scripts
+        run: |
+          ./test-version-scripts.sh
+
+      - name: Test upstream monitoring action
+        uses: ./.github/actions/check-upstream-versions
+        with:
+          container: wordpress
+
+      - name: Display test results
+        run: |
+          echo "## 🧪 Version Script Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All version.sh scripts have been tested and validated." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ What was tested:" >> $GITHUB_STEP_SUMMARY
+          echo "- Each version.sh script can retrieve latest upstream versions" >> $GITHUB_STEP_SUMMARY
+          echo "- Each version.sh script can validate specific versions" >> $GITHUB_STEP_SUMMARY
+          echo "- The upstream monitoring action works correctly" >> $GITHUB_STEP_SUMMARY
+          echo "- Integration with the existing make script infrastructure" >> $GITHUB_STEP_SUMMARY
