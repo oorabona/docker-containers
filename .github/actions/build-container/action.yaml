@@ -65,6 +65,8 @@ runs:
         if [[ ! -f "$container/Dockerfile" ]]; then
           echo "❌ No Dockerfile found for $container"
           echo "needs_build=false" >> $GITHUB_OUTPUT
+          echo "current_version=latest" >> $GITHUB_OUTPUT
+          echo "image_name=${{ github.repository_owner }}/${container}" >> $GITHUB_OUTPUT
           exit 0
         fi
         
