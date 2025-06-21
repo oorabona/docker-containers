@@ -1,11 +1,19 @@
 name: 'Check Upstream Versions'
-description: 'Checks if containers have newer upstream versions available using the existing make script infrastructure'
+description: 'Checks if containers have newer upstream versions available and compares against published registry versions'
 
 inputs:
   container:
     description: 'Container name to check (optional, checks all if empty)'
     required: false
     default: ''
+  dockerhub_username:
+    description: 'Docker Hub username (optional, for registry checks)'
+    required: false
+    default: ''
+  skip_registry_check:
+    description: 'Skip checking registry versions'
+    required: false
+    default: 'false'
 
 outputs:
   containers_with_updates:
@@ -51,6 +59,65 @@ runs:
         # Make the main make script and version.sh files executable
         chmod +x make 2>/dev/null || true
         find . -name "version.sh" -exec chmod +x {} \; 2>/dev/null || true
+        
+        # Function to check if image exists in a registry
+        check_image_exists() {
+          local registry=$1
+          local image_name=$2
+          local tag=$3
+          local full_name="${registry}/${image_name}:${tag}"
+          
+          # Add timeout to avoid hanging
+          if timeout 30 docker manifest inspect "$full_name" >/dev/null 2>&1; then
+            return 0  # Image exists
+          else
+            return 1  # Image doesn't exist or timeout
+          fi
+        }
+        
+        # Function to check if version exists in registries
+        check_registries() {
+          local container=$1
+          local version=$2
+          local image_name="$container"
+          
+          if [ "${{ inputs.skip_registry_check }}" = "true" ]; then
+            echo "   ℹ️ Registry check skipped"
+            return 1  # Assume doesn't exist to trigger build
+          fi
+          
+          echo "   🔍 Checking if $version exists in registries..."
+          
+          # Check GitHub Container Registry
+          ghcr_exists=false
+          if check_image_exists "ghcr.io" "$image_name" "$version"; then
+            echo "   ✅ Found in GHCR: ghcr.io/$image_name:$version"
+            ghcr_exists=true
+          else
+            echo "   ❌ Not found in GHCR: ghcr.io/$image_name:$version"
+          fi
+          
+          # Check Docker Hub (if username provided)
+          dockerhub_exists=false
+          if [ -n "${{ inputs.dockerhub_username }}" ]; then
+            if check_image_exists "docker.io" "$image_name" "$version"; then
+              echo "   ✅ Found in Docker Hub: docker.io/$image_name:$version"
+              dockerhub_exists=true
+            else
+              echo "   ❌ Not found in Docker Hub: docker.io/$image_name:$version"
+            fi
+          else
+            echo "   ℹ️ Docker Hub username not provided, skipping Docker Hub check"
+            dockerhub_exists=false
+          fi
+          
+          # Return true if image exists in at least one registry
+          if [ "$ghcr_exists" = "true" ] || [ "$dockerhub_exists" = "true" ]; then
+            return 0  # Image exists in at least one registry
+          else
+            return 1  # Image doesn't exist in any checked registry
+          fi
+        }
         
         # Function to compare versions (semantic version comparison)
         version_is_newer() {
@@ -183,23 +250,40 @@ runs:
           echo "   📋 Current: $current_version"
           echo "   📋 Upstream: $upstream_version"
           
-          # Update version_info JSON
+          # Update version_info JSON with initial data
           version_info=$(echo "$version_info" | jq --arg container "$container" \
             --arg current "$current_version" \
             --arg upstream "$upstream_version" \
-            '. + {($container): {current: $current, upstream: $upstream}}')
+            '. + {($container): {current: $current, upstream: $upstream, registry_status: "unknown"}}')
           
           # Check if versions differ and if upstream is actually newer
           if [[ "$current_version" != "$upstream_version" && "$upstream_version" != "latest" ]]; then
             # Additional check: ensure upstream is actually newer
             if [[ "$current_version" == "latest" ]] || version_is_newer "$upstream_version" "$current_version"; then
-              echo "   ✅ Update available: $current_version → $upstream_version"
-              containers_with_updates+=("$container")
+              echo "   🔍 Upstream version $upstream_version is newer than current $current_version"
+              
+              # Check if this version already exists in registries
+              if check_registries "$container" "$upstream_version"; then
+                echo "   ✅ Version $upstream_version already published to registry - skipping PR"
+                # Update registry status in version_info
+                version_info=$(echo "$version_info" | jq --arg container "$container" \
+                  '.[$container].registry_status = "published"')
+              else
+                echo "   🚀 Version $upstream_version not found in registries - update needed"
+                containers_with_updates+=("$container")
+                # Update registry status in version_info
+                version_info=$(echo "$version_info" | jq --arg container "$container" \
+                  '.[$container].registry_status = "needs_build"')
+              fi
             else
               echo "   ✅ Up to date (upstream: $upstream_version, current: $current_version)"
+              version_info=$(echo "$version_info" | jq --arg container "$container" \
+                '.[$container].registry_status = "up_to_date"')
             fi
           else
             echo "   ✅ Up to date"
+            version_info=$(echo "$version_info" | jq --arg container "$container" \
+              '.[$container].registry_status = "up_to_date"')
           fi
         }
         

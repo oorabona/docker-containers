@@ -18,6 +18,9 @@ outputs:
   old_version:
     description: Previous version before update
     value: ${{ steps.update.outputs.old_version }}
+  skip_reason:
+    description: Reason for skipping the update if applicable
+    value: ${{ steps.update.outputs.skip_reason }}
 runs:
   using: composite
   steps:
@@ -34,14 +37,16 @@ runs:
         if [[ ! -d "$container" ]]; then
           echo "❌ Container directory $container does not exist"
           echo "updated=false" >> $GITHUB_OUTPUT
-          exit 1
+          echo "skip_reason=Directory $container not found" >> $GITHUB_OUTPUT
+          exit 0
         fi
 
         # Check if version.sh exists
         if [[ ! -f "$container/version.sh" ]]; then
           echo "❌ No version.sh file found in $container"
           echo "updated=false" >> $GITHUB_OUTPUT
-          exit 1
+          echo "skip_reason=version.sh not found in $container" >> $GITHUB_OUTPUT
+          exit 0
         fi
         cd "$container"
 
