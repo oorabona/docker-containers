@@ -1,6 +1,9 @@
 name: Auto Build & Push
 
 on:
+  schedule:
+    # Run twice daily to check for updates and upstream version changes
+    - cron: '0 6,18 * * *'
   push:
     branches: [main, master]
     paths:
@@ -63,6 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 3  # Limit parallel builds to reduce resource contention
       matrix:
         container: ${{ fromJson(needs.detect-containers.outputs.containers) }}
 
@@ -70,7 +74,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build container
+      - name: Build container with retry logic
         id: build
         uses: ./.github/actions/build-container
         with:
@@ -79,6 +83,55 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Retry build on failure
+        if: steps.build.outcome == 'failure'
+        id: retry
+        uses: ./.github/actions/build-container
+        with:
+          container: ${{ matrix.container }}
+          force_rebuild: true  # Force rebuild on retry
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Handle build failure
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        run: |
+          echo "❌ Build failed for ${{ matrix.container }} after retry"
+          echo "## 🚨 Build Failed: ${{ matrix.container }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Attempt:** Initial build + 1 retry" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Possible causes:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
+          echo "- Upstream dependency changes" >> $GITHUB_STEP_SUMMARY
+          echo "- Dockerfile syntax errors" >> $GITHUB_STEP_SUMMARY
+          echo "- Registry authentication issues" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check the build logs above for detailed error messages" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test the build locally: \`./make build ${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check if the container's version.sh script is working" >> $GITHUB_STEP_SUMMARY
+          exit 1
+
+      - name: Report successful build
+        if: steps.build.outcome == 'success' || steps.retry.outcome == 'success'
+        run: |
+          attempt="first attempt"
+          if [ "${{ steps.build.outcome }}" = "failure" ]; then
+            attempt="retry attempt"
+          fi
+          echo "✅ Build succeeded for ${{ matrix.container }} on $attempt"
+          echo "## ✅ Build Successful: ${{ matrix.container }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Attempt:** $attempt" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
 
       - name: Generate build summary
         if: always()

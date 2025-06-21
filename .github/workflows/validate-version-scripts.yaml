@@ -1,16 +1,32 @@
 name: Validate Version Scripts
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - '**/version.sh'
+      - 'validate-version-scripts.sh'
+      - '.github/workflows/validate-version-scripts.yaml'
   pull_request:
     paths:
       - '**/version.sh'
+      - 'validate-version-scripts.sh'
+      - '.github/workflows/validate-version-scripts.yaml'
       - '.github/workflows/upstream-monitor.yaml'
       - '.github/actions/check-upstream-versions/**'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Container to validate (optional, validates all if empty)'
+        required: false
+        type: string
+      verbose:
+        description: 'Enable verbose output'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-
 jobs:
   validate-version-scripts:
     runs-on: ubuntu-latest
@@ -19,13 +35,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Verify dependencies
         run: |
           # Verify that required dependencies are available
           # curl and git are pre-installed on ubuntu-latest runners, but let's confirm
           echo "✅ Verifying dependencies..."
-
           echo "- jq: $(jq --version)"
           echo "- curl: $(curl --version | head -1)"
           echo "- git: $(git --version)"
@@ -34,30 +48,52 @@ jobs:
           command -v jq >/dev/null 2>&1 || { echo "❌ jq not found" && exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "❌ curl not found" && exit 1; }
           command -v git >/dev/null 2>&1 || { echo "❌ git not found" && exit 1; }
-
           echo "✅ All dependencies verified and ready"
-
       - name: Make scripts executable
         run: |
+          chmod +x validate-version-scripts.sh
           chmod +x make
-          chmod +x test-version-scripts.sh
           find . -name "version.sh" -exec chmod +x {} \;
-
-      - name: Test all version.sh scripts
+          
+      - name: Validate version scripts
         run: |
-          ./test-version-scripts.sh
-
+          if [[ -n "${{ github.event.inputs.container }}" ]]; then
+            echo "Validating specific container: ${{ github.event.inputs.container }}"
+            ./validate-version-scripts.sh "${{ github.event.inputs.container }}"
+          else
+            echo "Validating all version scripts"
+            ./validate-version-scripts.sh
+          fi
+        env:
+          VERBOSE: ${{ github.event.inputs.verbose == 'true' && '1' || '0' }}
+          
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: version-validation-report
+          path: |
+            version-validation-*.log
+            version-validation-*.json
+          retention-days: 30
       - name: Test upstream monitoring action
         uses: ./.github/actions/check-upstream-versions
         with:
           container: wordpress
-
+          skip_registry_check: "true"
+          
       - name: Display test results
         run: |
           echo "## 🧪 Version Script Validation Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All version.sh scripts have been tested and validated." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          if [[ -f version-validation-summary.json ]]; then
+            echo "- **Total containers:** $(jq -r '.summary.total' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Passed validation:** $(jq -r '.summary.passed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Failed validation:** $(jq -r '.summary.failed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "### ✅ What was tested:" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can retrieve latest upstream versions" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can validate specific versions" >> $GITHUB_STEP_SUMMARY

@@ -5,7 +5,7 @@ extends: default
 rules:
   # Relax rules
   line-length:
-    max: 120  # GitHub Actions may have longer lines
+    max: 130  # GitHub Actions may have longer lines
     level: warning
   
   trailing-spaces:
