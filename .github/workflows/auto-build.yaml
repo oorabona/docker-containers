@@ -74,15 +74,18 @@ jobs:
               
               # For push/PR events, check if this specific container was modified
               if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
-                # Check if any files in this container directory were modified
-                if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-                  modified_files=$(git diff --name-only ${{ github.event.before }}..${{ github.sha }} 2>/dev/null | grep "^$container/" || true)
-                else
-                  # Fallback for first commit or when before is not available
-                  modified_files=$(git log --name-only --pretty=format: -1 ${{ github.sha }} | grep "^$container/" || true)
+                # Precompute the list of all modified files once
+                if [ -z "${MODIFIED_FILES}" ]; then
+                  if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+                    MODIFIED_FILES=$(git diff --name-only ${{ github.event.before }}..${{ github.sha }} 2>/dev/null)
+                  else
+                    # Fallback for first commit or when before is not available
+                    MODIFIED_FILES=$(git log --name-only --pretty=format: -1 ${{ github.sha }})
+                  fi
                 fi
                 
-                if [ -n "$modified_files" ]; then
+                # Check if any files in this container directory were modified
+                if echo "$MODIFIED_FILES" | grep -q "^$container/"; then
                   needs_build=true
                   echo "   ✅ Container files modified, will build"
                 else
