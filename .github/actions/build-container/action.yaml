@@ -90,7 +90,7 @@ runs:
         needs_build=false
         
         # Force rebuild always builds
-        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+        if ${{ inputs.force_rebuild }}; then
           needs_build=true
           echo "   🔄 Force rebuild requested"
         else
