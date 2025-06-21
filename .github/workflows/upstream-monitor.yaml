@@ -143,8 +143,7 @@ jobs:
           echo "Please manually update the \`${{ matrix.container }}/version.sh\` file." >> $GITHUB_STEP_SUMMARY
   trigger-build:
     needs: [check-upstream-versions, update-versions]
-    if: always() && fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length
-      > 0
+    if: always() && needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
