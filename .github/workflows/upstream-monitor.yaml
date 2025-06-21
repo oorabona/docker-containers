@@ -80,7 +80,7 @@ jobs:
     needs: check-upstream-versions
     if: >
       fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0 &&
-      (github.event.inputs.create_pr != 'false' || github.event_name == 'schedule')
+      (github.event.inputs.create_pr != false || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
