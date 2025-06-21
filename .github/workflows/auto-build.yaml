@@ -1,4 +1,3 @@
----
 name: Auto Build & Push
 
 on:
@@ -39,79 +38,23 @@ jobs:
   detect-containers:
     runs-on: ubuntu-latest
     outputs:
-      containers: ${{ steps.find-containers.outputs.containers }}
+      containers: ${{ steps.detect.outputs.containers }}
+      count: ${{ steps.detect.outputs.count }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Find containers to build
-        id: find-containers
-        run: |
-          set -e
-          containers_to_build=()
-          
-          # If specific container requested via workflow_dispatch
-          if [ -n "${{ github.event.inputs.container }}" ]; then
-            echo "🎯 Building specific container: ${{ github.event.inputs.container }}"
-            containers_to_build=("${{ github.event.inputs.container }}")
-          else
-            echo "🔍 Detecting containers that need building..."
-            
-            # Use find with null-delimited output for robustness
-            while IFS= read -r -d '' dockerfile_path; do
-              container=$(dirname "$dockerfile_path" | sed 's|^\./||')
-              
-              # Skip if already processed (in case of multiple Dockerfiles in same dir)
-              if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
-                continue
-              fi
-              
-              needs_build=false
-              
-              echo "📦 Checking $container (found Dockerfile at $dockerfile_path)..."
-              
-              # For push/PR events, check if this specific container was modified
-              if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
-                # Precompute the list of all modified files once
-                if [ -z "${MODIFIED_FILES}" ]; then
-                  if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-                    MODIFIED_FILES=$(git diff --name-only ${{ github.event.before }}..${{ github.sha }} 2>/dev/null)
-                  else
-                    # Fallback for first commit or when before is not available
-                    MODIFIED_FILES=$(git log --name-only --pretty=format: -1 ${{ github.sha }})
-                  fi
-                fi
-                
-                # Check if any files in this container directory were modified
-                if echo "$MODIFIED_FILES" | grep -q "^$container/"; then
-                  needs_build=true
-                  echo "   ✅ Container files modified, will build"
-                else
-                  echo "   ⏭️ No changes to this container, skipping"
-                fi
-              else
-                # For scheduled runs or manual dispatch, check version and registry existence
-                needs_build=true  # Default to build for scheduled runs
-                echo "   ✅ Scheduled run - will check version and registry status"
-              fi
-              
-              if [ "$needs_build" = "true" ]; then
-                containers_to_build+=("$container")
-              fi
-            done < <(find . -name "Dockerfile" -not -path "./.git/*" -print0)
-          fi
-          
-          # Create JSON array output
-          if [ ${#containers_to_build[@]} -eq 0 ]; then
-            echo "containers=[]" >> $GITHUB_OUTPUT
-            echo "📋 No containers need building"
-          else
-            container_json=$(printf '%s\n' "${containers_to_build[@]}" | jq -R . | jq -s -c .)
-            echo "containers=$container_json" >> $GITHUB_OUTPUT
-            echo "📋 Found containers to build: ${containers_to_build[*]}"
-          fi
+      - name: Detect containers to build
+        id: detect
+        uses: ./.github/actions/detect-containers
+        with:
+          container: ${{ github.event.inputs.container }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          event_name: ${{ github.event_name }}
+          event_before: ${{ github.event.before }}
+          sha: ${{ github.sha }}
 
   build-and-push:
     needs: detect-containers
@@ -121,7 +64,7 @@ jobs:
       fail-fast: false
       matrix:
         container: ${{ fromJson(needs.detect-containers.outputs.containers) }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -143,7 +86,7 @@ jobs:
           needs_build="${{ steps.build.outputs.built }}"
           current_version="${{ steps.build.outputs.version }}"
           image_name="${{ steps.build.outputs.image_name }}"
-          
+
           echo "## 📦 Build Summary for \`$container\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
@@ -152,7 +95,7 @@ jobs:
           echo "| **Version** | \`$current_version\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build Needed** | \`$needs_build\` |" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "$needs_build" = "true" ]; then
             echo "| **GHCR Image** | \`ghcr.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
             if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
@@ -160,7 +103,7 @@ jobs:
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ✅ Successfully built and pushed!" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
             if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "- 📝 **Trigger**: Code changes detected in container files" >> $GITHUB_STEP_SUMMARY
@@ -172,7 +115,7 @@ jobs:
           else
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ⏭️ Build skipped" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Images already exist in all target registries" >> $GITHUB_STEP_SUMMARY
             echo "- 📋 Version \`$current_version\` is up to date" >> $GITHUB_STEP_SUMMARY
@@ -194,18 +137,18 @@ jobs:
           echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Branch/Ref** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          
+
           containers='${{ needs.detect-containers.outputs.containers }}'
-          container_count=$(echo "$containers" | jq length)
-          
+          container_count='${{ needs.detect-containers.outputs.count }}'
+
           if [ "$container_count" -gt 0 ]; then
             echo "| **Containers Processed** | $container_count |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Containers Processed** | 0 |" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "$container_count" -eq 0 ]; then
             echo "### ℹ️ No containers needed building" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -232,7 +175,7 @@ jobs:
             echo "### ❌ Some builds failed or were cancelled" >> $GITHUB_STEP_SUMMARY
             echo "Check the individual job logs above for details." >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY
