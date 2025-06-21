@@ -1,0 +1,16 @@
+{
+  "action": "workflow_dispatch",
+  "inputs": {
+    "container": "",
+    "create_pr": "true", 
+    "debug": "true",
+    "dry_run": "true"
+  },
+  "workflow": {
+    "name": "Upstream Version Monitor"
+  },
+  "repository": {
+    "name": "docker-containers",
+    "full_name": "test/docker-containers"
+  }
+}
