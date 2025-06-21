@@ -69,20 +69,34 @@ runs:
         # Create backup
         cp version.sh version.sh.backup
         
-        # Strategy 1: Try to replace hardcoded version string
-        if grep -q "echo.*\"$old_version\"" version.sh; then
-          sed -i "s/echo.*\"$old_version\"/echo \"$new_version\"/" version.sh
-          echo "✅ Updated hardcoded version string"
+        # Escape the version strings for use in regex (escape dots, brackets, etc.)
+        escaped_old_version=$(printf '%s\n' "$old_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        escaped_new_version=$(printf '%s\n' "$new_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        
+        # Strategy 1: Try to replace hardcoded echo statements with exact quotes
+        if grep -q "^[[:space:]]*echo[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*echo[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated hardcoded echo statement"
           echo "updated=true" >> $GITHUB_OUTPUT
-        # Strategy 2: Try to replace version assignment
-        elif grep -q "^VERSION.*=.*$old_version" version.sh; then
-          sed -i "s/^VERSION.*=.*$old_version.*/VERSION=\"$new_version\"/" version.sh
-          echo "✅ Updated VERSION variable"
+        # Strategy 2: Try to replace VERSION variable assignment
+        elif grep -q "^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated VERSION variable assignment"
           echo "updated=true" >> $GITHUB_OUTPUT
-        # Strategy 3: Handle special cases
+        # Strategy 3: Try to replace version in return statement
+        elif grep -q "^[[:space:]]*return[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
+          sed -i "s/^\\([[:space:]]*return[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          echo "✅ Updated return statement"
+          echo "updated=true" >> $GITHUB_OUTPUT
+        # Strategy 4: Handle special cases
         else
-          echo "⚠️ Could not automatically update version.sh"
+          echo "⚠️ Could not automatically update version.sh with safe regex patterns"
           echo "This container may use dynamic version detection or a complex version script."
+          echo ""
+          echo "Searched for patterns:"
+          echo "  - echo \"${old_version}\""
+          echo "  - VERSION=\"${old_version}\""
+          echo "  - return \"${old_version}\""
           echo ""
           echo "Version.sh content:"
           cat version.sh
