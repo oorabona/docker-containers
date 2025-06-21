@@ -15,11 +15,23 @@ on:
         required: false
         default: true
         type: boolean
+      debug:
+        description: 'Enable debug output'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   packages: read
+
+# Configuration for PR management
+env:
+  MAX_OPEN_PRS_PER_CONTAINER: 2  # Maximum open PRs allowed per container
+  PR_AUTO_CLOSE_DAYS: 7         # Auto-close stale PRs after this many days
+  DEBUG_OUTPUT: false            # Enable debug output for all runs (can be overridden by input)
 
 jobs:
   check-upstream-versions:
@@ -44,21 +56,41 @@ jobs:
         run: |
           echo "## 🔍 Upstream Version Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           update_count="${{ steps.check.outputs.update_count }}"
           echo "**Updates Available:** $update_count containers" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
+          # Conditional debug information based on input or environment variable
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
+
+          if [ "$debug_enabled" = "true" ]; then
+            echo "### 🐛 Debug Information" >> $GITHUB_STEP_SUMMARY
+            echo "- Event name: \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Create PR input: \`${{ github.event.inputs.create_pr }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Debug enabled: \`$debug_enabled\`" >> $GITHUB_STEP_SUMMARY
+            containers_debug="${{ steps.check.outputs.containers_with_updates }}"
+            echo "- Containers with updates: \`$containers_debug\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Update count: \`$update_count\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
           if [ "$update_count" -gt 0 ]; then
             echo "### 📦 Containers with Updates Available" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Container | Current Version | Upstream Version |" >> $GITHUB_STEP_SUMMARY
             echo "|-----------|----------------|------------------|" >> $GITHUB_STEP_SUMMARY
-            
+
             # Parse version info and display
             version_info='${{ steps.check.outputs.version_info }}'
             containers_with_updates='${{ steps.check.outputs.containers_with_updates }}'
-            
+
             # Parse the JSON arrays and display each container
             echo "$containers_with_updates" | jq -r '.[]' | while read container; do
               current=$(echo "$version_info" | jq -r --arg c "$container" '.[$c].current')
@@ -74,8 +106,8 @@ jobs:
   update-versions:
     needs: check-upstream-versions
     if: >
-      fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0 &&
-      (github.event.inputs.create_pr != 'false' || github.event_name == 'schedule')
+      fromJson(needs.check-upstream-versions.outputs.update_count) > 0 &&
+      (github.event_name == 'schedule' || github.event.inputs.create_pr != 'false')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -96,36 +128,85 @@ jobs:
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           commit_changes: false
 
-      - name: Create Pull Request
+      - name: Close duplicate PRs
+        id: close_duplicates
         if: steps.update.outputs.updated == 'true'
+        uses: ./.github/actions/close-duplicate-prs
+        with:
+          container: ${{ matrix.container }}
+          new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Pull Request
+        if: steps.update.outputs.updated == 'true' && steps.close_duplicates.outputs.existing_pr_found != 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: 'chore(${{ matrix.container }}): update to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}'
-          title: 'Update ${{ matrix.container }} to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}'
+          commit-message: >
+            chore(${{ matrix.container }}): update to version
+            ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          title: >
+            Update ${{ matrix.container }} to version
+            ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           body: |
             ## 🔄 Automated Version Update
-            
+
             This PR updates the `${{ matrix.container }}` container to use the latest upstream version.
-            
+
             **Changes:**
             - **Container:** `${{ matrix.container }}`
             - **Previous Version:** `${{ steps.update.outputs.old_version }}`
-            - **New Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
-            
-            **Upstream Source:** 
+            - **New Version:** `${{
+                fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream
+              }}`
+
+            **Upstream Source:**
             This update was detected by monitoring the upstream source for `${{ matrix.container }}`.
-            
+
             **Next Steps:**
             - ✅ Review the changes
             - ✅ Merge this PR to trigger the container build
             - ✅ The updated container will be automatically built and published
-            
+
             ---
             *This PR was created automatically by the Upstream Version Monitor workflow.*
-          branch: update/${{ matrix.container }}-${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          branch: >
+            update/${{ matrix.container }}-${{
+              fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream
+            }}
           delete-branch: true
           draft: false
+
+      - name: PR already exists
+        if: >
+          steps.update.outputs.updated == 'true' &&
+          steps.close_duplicates.outputs.existing_pr_found == 'true'
+        run: |
+          version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}"
+          echo "ℹ️  Skipping PR creation for ${{ matrix.container }} - PR already exists for version $version"
+          echo "The existing PR will handle this update."
+
+      - name: Container update skipped
+        if: steps.update.outputs.skipped == 'true'
+        run: |
+          echo "⚠️  Container update skipped for ${{ matrix.container }}"
+          echo "Reason: ${{ steps.update.outputs.skip_reason }}"
+          echo "This indicates a configuration issue that should be investigated."
+
+          # Add debug information if enabled
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
+
+          if [ "$debug_enabled" = "true" ]; then
+            echo "🐛 Debug - Container: ${{ matrix.container }}"
+            echo "🐛 Debug - Skip reason: ${{ steps.update.outputs.skip_reason }}"
+            echo "🐛 Debug - Update output: ${{ steps.update.outputs.updated }}"
+          fi
 
       - name: Comment on manual update needed
         if: steps.update.outputs.updated != 'true'
@@ -133,7 +214,7 @@ jobs:
           version_info='${{ needs.check-upstream-versions.outputs.version_info }}'
           current_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].current')
           upstream_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].upstream')
-          
+
           echo "## ⚠️ Manual Update Required" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "The \`${{ matrix.container }}\` container requires manual version update." >> $GITHUB_STEP_SUMMARY
@@ -147,40 +228,40 @@ jobs:
 
   trigger-build:
     needs: [check-upstream-versions, update-versions]
-    if: always() && fromJson(needs.check-upstream-versions.outputs.containers_with_updates).length > 0
+    if: always() && fromJson(needs.check-upstream-versions.outputs.update_count) > 0
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - name: Validate updated containers using make script
         run: |
           # Make the make script executable
           chmod +x make
-          
+
           # Test version detection for updated containers
           echo "## 🧪 Validating Updated Containers" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Container | Version Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|---------------|--------|" >> $GITHUB_STEP_SUMMARY
-          
+
           containers='${{ needs.check-upstream-versions.outputs.containers_with_updates }}'
-          
+
           # Parse containers and validate each one
           echo "$containers" | jq -r '.[]' | while read container; do
             if [[ -f "$container/version.sh" ]]; then
               chmod +x "$container/version.sh"
               cd "$container"
-              
+
               # Test latest version retrieval
               if latest_version=$(bash version.sh latest 2>/dev/null); then
                 echo "| \`$container\` | \`$latest_version\` | ✅ Valid |" >> $GITHUB_STEP_SUMMARY
               else
                 echo "| \`$container\` | Error | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
               fi
-              
+
               cd ..
             else
               echo "| \`$container\` | No version.sh | ⚠️ Skipped |" >> $GITHUB_STEP_SUMMARY
@@ -192,7 +273,7 @@ jobs:
         with:
           script: |
             const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
-            
+
             // Trigger the auto-build workflow for containers with updates
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -203,7 +284,7 @@ jobs:
                 force_rebuild: 'true'
               }
             });
-            
+
             console.log(`Triggered auto-build workflow for ${containers.length} containers with upstream updates`);
 
       - name: Provide make script usage examples
@@ -241,17 +322,19 @@ jobs:
         run: |
           echo "# 🔍 Upstream Version Monitor - Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           update_count='${{ needs.check-upstream-versions.outputs.update_count }}'
-          
+
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Updates Found** | $update_count |" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "$update_count" -gt 0 ]; then
-            if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            create_pr="${{ github.event.inputs.create_pr }}"
+            event_name="${{ github.event_name }}"
+            if [ "$create_pr" != "false" ] || [ "$event_name" = "schedule" ]; then
               echo "| **Action Taken** | Pull requests created |" >> $GITHUB_STEP_SUMMARY
             else
               echo "| **Action Taken** | Detection only |" >> $GITHUB_STEP_SUMMARY
@@ -259,7 +342,7 @@ jobs:
           else
             echo "| **Action Taken** | None needed |" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🎯 Upstream Version Monitoring Features:" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Automatic detection** of upstream version changes" >> $GITHUB_STEP_SUMMARY
@@ -269,43 +352,41 @@ jobs:
           echo "- ✅ **Multi-source support** (Git tags, Docker Hub, PyPI)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Make script integration** for seamless container management" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           # Show available containers with version.sh files
           echo "### 📦 Container Status Overview" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           # Make make script executable
           chmod +x make 2>/dev/null || true
-          
+
           # Find all containers with Dockerfiles
           echo "| Container | Version Script | Docker Compose | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|----------------|----------------|--------|" >> $GITHUB_STEP_SUMMARY
-          
+
           find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | while read dockerfile; do
             container=$(dirname "$dockerfile" | sed 's|^\./||')
-            
+
             version_status="❌ Missing"
             if [[ -f "$container/version.sh" ]]; then
               version_status="✅ Available"
             fi
-            
+
             compose_status="❌ Missing"
             if [[ -f "$container/docker-compose.yml" ]]; then
               compose_status="✅ Available"
             fi
-            
+
             overall_status="🔄 Monitored"
             if [[ ! -f "$container/version.sh" ]]; then
               overall_status="⏭️ Skipped"
             fi
-            
+
             echo "| \`$container\` | $version_status | $compose_status | $overall_status |" >> $GITHUB_STEP_SUMMARY
           done
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🛠️ Integration with Make Script" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This monitoring system integrates seamlessly with the existing \`make\` script:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "# List all available container targets" >> $GITHUB_STEP_SUMMARY
@@ -325,4 +406,179 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "_🤖 Automated upstream monitoring powered by GitHub Actions and integrated with the make script infrastructure_" >> $GITHUB_STEP_SUMMARY
+          echo "🤖 *This summary was automatically generated by the workflow.*" >> $GITHUB_STEP_SUMMARY
+
+  # Job to clean up stale and excessive PRs to prevent accumulation
+  cleanup-stale-prs:
+    needs: check-upstream-versions
+    if: always()  # Run regardless of other job results
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clean up stale PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🧹 Starting PR cleanup process..."
+
+          # Check if debug is enabled
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
+
+          if [ "$debug_enabled" = "true" ]; then
+            echo "🐛 Debug mode enabled for PR cleanup"
+            echo "🐛 MAX_OPEN_PRS_PER_CONTAINER: ${MAX_OPEN_PRS_PER_CONTAINER:-2}"
+            echo "🐛 PR_AUTO_CLOSE_DAYS: ${PR_AUTO_CLOSE_DAYS:-7}"
+          fi
+
+          # Verify GitHub CLI is available (pre-installed on ubuntu-latest)
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "❌ GitHub CLI not available - this should not happen on GitHub-hosted runners"
+            echo "GitHub CLI is pre-installed on ubuntu-latest runners by default"
+            exit 1
+          fi
+
+          # Get all open PRs created by automation
+          open_prs=$(gh pr list --state open --json number,title,headRefName,createdAt,author --limit 100)
+
+          if [ "$open_prs" = "[]" ]; then
+            echo "✅ No open PRs found"
+            exit 0
+          fi
+
+          # Current timestamp for age calculation
+          current_timestamp=$(date +%s)
+          max_age_seconds=$((${PR_AUTO_CLOSE_DAYS:-7} * 24 * 60 * 60))
+
+          pr_age_days="${PR_AUTO_CLOSE_DAYS:-7}"
+          echo "🔍 Checking for stale PRs (older than $pr_age_days days)..."
+
+          # Find PRs created by github-actions[bot] with automation titles
+          # Use AND logic to ensure we only close automation PRs, never community PRs
+          automated_prs=$(echo "$open_prs" | jq -r \
+            '.[] | select(.author.login == "github-actions[bot]" and
+                          (.title | test("update|bump|chore"; "i"))) | .number')
+
+          stale_closed=0
+          date_parsing_failures=0
+
+          for pr_number in $automated_prs; do
+            if [ -n "$pr_number" ]; then
+              # Get PR creation date
+              pr_created=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
+                '.[] | select(.number == ($num | tonumber)) | .createdAt')
+
+              # Parse creation timestamp with proper error handling
+              if pr_created_timestamp=$(date -d "$pr_created" +%s 2>/dev/null); then
+                pr_age_seconds=$((current_timestamp - pr_created_timestamp))
+
+                if [ "$pr_age_seconds" -gt "$max_age_seconds" ]; then
+                  pr_title=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
+                    '.[] | select(.number == ($num | tonumber)) | .title')
+
+                  echo "🗑️  Closing stale PR #$pr_number: '$pr_title' (age: $((pr_age_seconds / 86400)) days)"
+
+                  # Add comment and close using proper escaping
+                  days="${PR_AUTO_CLOSE_DAYS:-7}"
+                  comment_body="🕒 Automatic Closure - Stale PR - This automated PR has been open "
+                  comment_body+="for more than $days days and is being automatically closed. "
+                  comment_body+="Reasons for closure: The version update may no longer be current, "
+                  comment_body+="a newer version might be available, or manual intervention may be needed. "
+                  comment_body+="If this update is still needed, please check for newer versions, "
+                  comment_body+="create a fresh PR with the latest updates, "
+                  comment_body+="or manually trigger the upstream monitor workflow. "
+                  comment_body+="Closed automatically by the Upstream Version Monitor cleanup process."
+                  gh pr comment "$pr_number" --body "$comment_body"
+
+                  gh pr close "$pr_number" --comment "Automatically closed due to age (${PR_AUTO_CLOSE_DAYS:-7}+ days)"
+                  ((stale_closed++))
+                fi
+              else
+                # Date parsing failed - skip this PR with warning
+                echo "⚠️  Warning: Could not parse creation date for PR #$pr_number (date: '$pr_created')"
+                echo "   Skipping age check for this PR to avoid accidental closure"
+                ((date_parsing_failures++))
+
+                if [ "$debug_enabled" = "true" ]; then
+                  debug_msg="🐛 Debug - Failed to parse date: '$pr_created' for PR #$pr_number"
+                  echo "$debug_msg"
+                fi
+              fi
+            fi
+          done
+
+          echo "🧹 Checking for excessive PRs per container..."
+
+          # Group PRs by container and close excess ones
+          # Only consider PRs created by github-actions[bot] to avoid closing community PRs
+          containers_with_prs=$(echo "$open_prs" | jq -r \
+            '.[] | select(.author.login == "github-actions[bot]" and
+                          (.title | test("update|bump|chore"; "i"))) | .title' | \
+            grep -oE 'Update [a-z0-9_-]+ to|chore\([a-z0-9_-]+\)|Bump [a-z0-9_-]+ to' | \
+            grep -oE '[a-z0-9_-]+' | \
+            grep -v '^Update$\|^to$\|^chore$\|^Bump$' | \
+            sort | uniq -c | sort -nr)
+
+          excess_closed=0
+
+          while read count container; do
+            max_prs="${MAX_OPEN_PRS_PER_CONTAINER:-2}"
+            if [ "$count" -gt "$max_prs" ]; then
+              echo "⚠️  Container '$container' has $count open PRs (max: $max_prs)"
+
+              # Get PRs for this container, sorted by creation date (oldest first)
+              # Only consider automation PRs to avoid closing community PRs
+              container_prs=$(echo "$open_prs" | jq -r \
+                --arg container "$container" \
+                '.[] | select(.author.login == "github-actions[bot]" and
+                              (.title | test($container; "i"))) | [.createdAt, .number] | @tsv' | \
+                sort | head -n $((count - max_prs)))
+
+              # Close the oldest PRs
+              echo "$container_prs" | while read created_at pr_number; do
+                if [ -n "$pr_number" ]; then
+                  echo "🗑️  Closing excess PR #$pr_number for container '$container'"
+
+                  comment_body="📈 Automatic Closure - Too Many Open PRs - This PR is being automatically closed "
+                  comment_body+="because there are too many open update PRs for $container. "
+                  comment_body+="Current limit: $max_prs open PRs per container. Found: $count open PRs. "
+                  comment_body+="The most recent PRs will be kept open for review. "
+                  comment_body+="Closed automatically by the Upstream Version Monitor cleanup process."
+                  gh pr comment "$pr_number" --body "$comment_body"
+
+                  gh pr close "$pr_number" --comment "Automatically closed due to PR limit exceeded"
+                  ((excess_closed++))
+                fi
+              done
+            fi
+          done <<< "$containers_with_prs"
+
+          # Summary
+          total_closed=$((stale_closed + excess_closed))
+
+          if [ "$total_closed" -gt 0 ]; then
+            echo "✅ Cleanup complete: Closed $total_closed PRs ($stale_closed stale, $excess_closed excess)"
+          else
+            echo "✅ No cleanup needed - all PRs are within limits"
+          fi
+
+          # Add to workflow summary
+          echo "### 🧹 PR Cleanup Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stale PRs closed:** $stale_closed (older than $pr_age_days days)" >> $GITHUB_STEP_SUMMARY
+          cleanup_max_prs="${MAX_OPEN_PRS_PER_CONTAINER:-2}"
+          excess_msg="- **Excess PRs closed:** $excess_closed (over limit of $cleanup_max_prs per container)"
+          echo "$excess_msg" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total PRs closed:** $total_closed" >> $GITHUB_STEP_SUMMARY
+          if [ "$date_parsing_failures" -gt 0 ]; then
+            warning_msg="- **⚠️ Date parsing warnings:** $date_parsing_failures PRs had unparseable creation dates "
+            warning_msg+="and were skipped"
+            echo "$warning_msg" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
