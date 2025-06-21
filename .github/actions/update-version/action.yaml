@@ -20,6 +20,9 @@ outputs:
   old_version:
     description: 'Previous version before update'
     value: ${{ steps.update.outputs.old_version }}
+  skip_reason:
+    description: 'Reason for skipping update (if applicable)'
+    value: ${{ steps.update.outputs.skip_reason }}
 
 runs:
   using: 'composite'
@@ -29,16 +32,17 @@ runs:
       shell: bash
       run: |
         set -e
-        
+
         container="${{ inputs.container }}"
         new_version="${{ inputs.new_version }}"
-        
+
         # Set default outputs to ensure they're always defined
         echo "updated=false" >> $GITHUB_OUTPUT
         echo "skipped=false" >> $GITHUB_OUTPUT
-        
+        echo "skip_reason=" >> $GITHUB_OUTPUT
+
         echo "🔄 Updating version for $container to $new_version..."
-        
+
         # Check if container directory exists
         if [[ ! -d "$container" ]]; then
           echo "❌ Container directory $container does not exist"
@@ -46,7 +50,7 @@ runs:
           echo "skip_reason=container_directory_not_found" >> $GITHUB_OUTPUT
           exit 0  # Exit gracefully but mark as skipped
         fi
-        
+
         # Check if version.sh exists
         if [[ ! -f "$container/version.sh" ]]; then
           echo "❌ No version.sh file found in $container"
@@ -54,13 +58,13 @@ runs:
           echo "skip_reason=version_script_not_found" >> $GITHUB_OUTPUT
           exit 0  # Exit gracefully but mark as skipped
         fi
-        
+
         cd "$container"
-        
+
         # Get current version
         old_version=$(bash version.sh 2>/dev/null || echo "unknown")
         echo "old_version=$old_version" >> $GITHUB_OUTPUT
-        
+
         # Check if update is needed
         if [[ "$old_version" == "$new_version" ]]; then
           echo "✅ Version is already $new_version, no update needed"
@@ -68,30 +72,35 @@ runs:
           cd ..
           exit 0
         fi
-        
+
         echo "📋 Current version: $old_version"
         echo "📋 New version: $new_version"
-        
+
         # Create backup
         cp version.sh version.sh.backup
-        
+
         # Escape the version strings for use in regex (escape dots, brackets, etc.)
         escaped_old_version=$(printf '%s\n' "$old_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
         escaped_new_version=$(printf '%s\n' "$new_version" | sed 's/[[\.*^$()+?{|]/\\&/g')
-        
+
         # Strategy 1: Try to replace hardcoded echo statements with exact quotes
         if grep -q "^[[:space:]]*echo[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
-          sed -i "s/^\\([[:space:]]*echo[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          pattern="s/^\\([[:space:]]*echo[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/"
+          sed -i "$pattern" version.sh
           echo "✅ Updated hardcoded echo statement"
           echo "updated=true" >> $GITHUB_OUTPUT
         # Strategy 2: Try to replace VERSION variable assignment
-        elif grep -q "^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
-          sed -i "s/^\\([[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+        version_pattern="^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$"
+        elif grep -q "$version_pattern" version.sh; then
+          pattern="s/^\\([[:space:]]*VERSION[[:space:]]*=[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$"
+          pattern+="/\\1${escaped_new_version}\\2/"
+          sed -i "$pattern" version.sh
           echo "✅ Updated VERSION variable assignment"
           echo "updated=true" >> $GITHUB_OUTPUT
         # Strategy 3: Try to replace version in return statement
         elif grep -q "^[[:space:]]*return[[:space:]]*[\"']${escaped_old_version}[\"'][[:space:]]*$" version.sh; then
-          sed -i "s/^\\([[:space:]]*return[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/" version.sh
+          pattern="s/^\\([[:space:]]*return[[:space:]]*[\"']\\)${escaped_old_version}\\([\"'][[:space:]]*\\)$/\\1${escaped_new_version}\\2/"
+          sed -i "$pattern" version.sh
           echo "✅ Updated return statement"
           echo "updated=true" >> $GITHUB_OUTPUT
         # Strategy 4: Handle special cases
@@ -109,11 +118,11 @@ runs:
           echo ""
           echo "Please manually update the version.sh file to track version: $new_version"
           echo "updated=false" >> $GITHUB_OUTPUT
-          
+
           # Restore backup since we couldn't update
           mv version.sh.backup version.sh
         fi
-        
+
         cd ..
 
     - name: Commit changes
@@ -123,13 +132,13 @@ runs:
         container="${{ inputs.container }}"
         new_version="${{ inputs.new_version }}"
         old_version="${{ steps.update.outputs.old_version }}"
-        
+
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        
+
         # Add and commit the changes
         git add "$container/version.sh"
         git commit -m "chore($container): update version from $old_version to $new_version"
-        
+
         echo "✅ Committed version update for $container"
