@@ -389,11 +389,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup GitHub CLI
-        uses: cli/gh-action@v1
-        with:
-          version: latest
-
       - name: Clean up stale PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -441,20 +436,30 @@ jobs:
               pr_created=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
                 '.[] | select(.number == ($num | tonumber)) | .createdAt')
               
-              pr_created_timestamp=$(date -d "$pr_created" +%s 2>/dev/null || echo "0")
-              pr_age_seconds=$((current_timestamp - pr_created_timestamp))
-              
-              if [ "$pr_age_seconds" -gt "$max_age_seconds" ]; then
-                pr_title=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
-                  '.[] | select(.number == ($num | tonumber)) | .title')
+              # Parse creation timestamp with proper error handling
+              if pr_created_timestamp=$(date -d "$pr_created" +%s 2>/dev/null); then
+                pr_age_seconds=$((current_timestamp - pr_created_timestamp))
                 
-                echo "🗑️  Closing stale PR #$pr_number: '$pr_title' (age: $((pr_age_seconds / 86400)) days)"
+                if [ "$pr_age_seconds" -gt "$max_age_seconds" ]; then
+                  pr_title=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
+                    '.[] | select(.number == ($num | tonumber)) | .title')
+                  
+                  echo "🗑️  Closing stale PR #$pr_number: '$pr_title' (age: $((pr_age_seconds / 86400)) days)"
+                  
+                  # Add comment and close
+                  gh pr comment "$pr_number" --body "🕒 Automatic Closure - Stale PR\n\nThis automated PR has been open for more than ${PR_AUTO_CLOSE_DAYS:-7} days and is being automatically closed.\n\nReasons for closure:\n- The version update may no longer be current\n- A newer version might be available\n- Manual intervention may be needed\n\nIf this update is still needed, please:\n1. Check for newer versions\n2. Create a fresh PR with the latest updates\n3. Or manually trigger the upstream monitor workflow\n\nClosed automatically by the Upstream Version Monitor cleanup process."
+                  
+                  gh pr close "$pr_number" --comment "Automatically closed due to age (${PR_AUTO_CLOSE_DAYS:-7}+ days)"
+                  ((stale_closed++))
+                fi
+              else
+                # Date parsing failed - skip this PR with warning
+                echo "⚠️  Warning: Could not parse creation date for PR #$pr_number (date: '$pr_created')"
+                echo "   Skipping age check for this PR to avoid accidental closure"
                 
-                # Add comment and close
-                gh pr comment "$pr_number" --body "🕒 Automatic Closure - Stale PR\n\nThis automated PR has been open for more than ${PR_AUTO_CLOSE_DAYS:-7} days and is being automatically closed.\n\nReasons for closure:\n- The version update may no longer be current\n- A newer version might be available\n- Manual intervention may be needed\n\nIf this update is still needed, please:\n1. Check for newer versions\n2. Create a fresh PR with the latest updates\n3. Or manually trigger the upstream monitor workflow\n\nClosed automatically by the Upstream Version Monitor cleanup process."
-                
-                gh pr close "$pr_number" --comment "Automatically closed due to age (${PR_AUTO_CLOSE_DAYS:-7}+ days)"
-                ((stale_closed++))
+                if [ "$debug_enabled" = "true" ]; then
+                  echo "🐛 Debug - Failed to parse date: '$pr_created' for PR #$pr_number"
+                fi
               fi
             fi
           done
@@ -508,6 +513,9 @@ jobs:
           echo "- **Stale PRs closed:** $stale_closed (older than ${PR_AUTO_CLOSE_DAYS:-7} days)" >> $GITHUB_STEP_SUMMARY
           echo "- **Excess PRs closed:** $excess_closed (over limit of ${MAX_OPEN_PRS_PER_CONTAINER:-2} per container)" >> $GITHUB_STEP_SUMMARY
           echo "- **Total PRs closed:** $total_closed" >> $GITHUB_STEP_SUMMARY
+          if grep -q "Could not parse creation date" <<< "$(echo)"; then
+            echo "- **⚠️ Date parsing warnings:** Some PRs had unparseable creation dates and were skipped" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
      
