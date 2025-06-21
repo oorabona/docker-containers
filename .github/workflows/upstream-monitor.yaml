@@ -2,7 +2,7 @@ name: Upstream Version Monitor
 on:
   schedule:
     # Check for upstream updates twice daily (6 AM and 6 PM UTC)
-    - cron: 0 6,18 * * *
+    - cron: '0 6,18 * * *'
   workflow_dispatch:
     inputs:
       container:
@@ -14,9 +14,15 @@ on:
         required: false
         default: true
         type: boolean
+      debug:
+        description: Enable debug output
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   packages: read
 # Configuration for PR management
 env:
@@ -40,6 +46,8 @@ jobs:
         uses: ./.github/actions/check-upstream-versions
         with:
           container: ${{ github.event.inputs.container }}
+          dockerhub_username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          skip_registry_check: ${{ github.event.inputs.debug == 'true' && 'false' || 'false' }}
       - name: Display version information
         run: |
           echo "## 🔍 Upstream Version Check Results" >> $GITHUB_STEP_SUMMARY
