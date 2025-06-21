@@ -3,6 +3,7 @@
 export DOCKER_CLI_EXPERIMENTAL=enabled
 export NPROC=$(nproc)
 export DOCKERCOMPOSE="docker-compose"
+export DOCKEROPTS="${DOCKEROPTS:-}"
 
 # Helper functions
 log_success() {
@@ -60,7 +61,7 @@ run() {
   local wantedVersion=${2:-latest}
   pushd ${target}
   log_success "Running ${target} ${wantedVersion}"
-  TAG=${wantedVersion} $DOCKERCOMPOSE run --rm ${target}
+  TAG=${wantedVersion} $DOCKERCOMPOSE run $DOCKEROPTS --rm ${target}
   popd
 }
 
@@ -68,7 +69,7 @@ do_it() {
   local op=$1
   if [ -r "docker-compose.yml" ]
   then
-    $DOCKERCOMPOSE $op
+    $DOCKERCOMPOSE $op $DOCKEROPTS
   elif [ -x "$op" ]
   then
     . "$op"
