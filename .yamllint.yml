@@ -1,0 +1,31 @@
+---
+# Configuration yamllint pour les workflows GitHub Actions
+extends: default
+
+rules:
+  # Relaxer les règles pour les workflows GitHub Actions
+  line-length:
+    max: 120  # GitHub Actions peut avoir des lignes plus longues
+    level: warning
+  
+  trailing-spaces:
+    level: warning  # Pas critique pour le fonctionnement
+  
+  document-start:
+    present: false  # Pas obligatoire pour GitHub Actions
+  
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']
+    check-keys: false  # Permet 'on:' dans les workflows
+  
+  brackets:
+    max-spaces-inside: 1
+    max-spaces-inside-empty: 0
+  
+  comments:
+    min-spaces-from-content: 1
+  
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
