@@ -82,8 +82,9 @@ runs:
                 if ! echo "$pr_title $pr_body $pr_branch" | grep -q "$NEW_VERSION"; then
                   echo "🗑️  Closing outdated PR #$pr_number (different version)"
                   
-                  # Add a comment explaining the closure
-                  gh pr comment "$pr_number" --body "🔄 **Automated Closure**
+                  # Add a comment explaining the closure using heredoc for better readability
+                  gh pr comment "$pr_number" --body "$(cat <<EOF
+🔄 **Automated Closure**
 
 This PR is being automatically closed because a newer version update for \`$CONTAINER\` is available.
 
@@ -92,7 +93,9 @@ This PR is being automatically closed because a newer version update for \`$CONT
 A new PR will be created with the latest version update.
 
 ---
-*Closed automatically by the Upstream Version Monitor workflow.*"
+*Closed automatically by the Upstream Version Monitor workflow.*
+EOF
+)"
                   
                   # Close the PR
                   gh pr close "$pr_number" --comment "Superseded by newer version update"
