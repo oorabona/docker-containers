@@ -263,20 +263,22 @@ jobs:
           # Make make script executable
           chmod +x make 2>/dev/null || true
 
-          # Find all containers with Dockerfiles
-          echo "| Container | Version Script | Docker Compose | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|----------------|----------------|--------|" >> $GITHUB_STEP_SUMMARY
-          find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | while read dockerfile; do
-            container=$(dirname "$dockerfile" | sed 's|^\./||')
+          # Find all containers with version.sh scripts
+          echo "| Container | Version Script | Docker Compose | Dockerfile | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|----------------|----------------|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          find . -name "version.sh" -not -path "./.git/*" -not -path "./helpers/*" | while read version_script; do
+            container=$(dirname "$version_script" | sed 's|^\./||')
             
-            version_status="❌ Missing"
-            if [[ -f "$container/version.sh" ]]; then
-              version_status="✅ Available"
-            fi
+            version_status="✅ Available"
             
             compose_status="❌ Missing"
             if [[ -f "$container/docker-compose.yml" ]]; then
               compose_status="✅ Available"
+            fi
+            
+            dockerfile_status="❌ Missing"
+            if [[ -f "$container/Dockerfile" ]]; then
+              dockerfile_status="✅ Available"
             fi
             
             overall_status="🔄 Monitored"
@@ -284,7 +286,7 @@ jobs:
               overall_status="⏭️ Skipped"
             fi
             
-            echo "| \`$container\` | $version_status | $compose_status | $overall_status |" >> $GITHUB_STEP_SUMMARY
+            echo "| \`$container\` | $version_status | $compose_status | $dockerfile_status | $overall_status |" >> $GITHUB_STEP_SUMMARY
           done
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🛠️ Integration with Make Script" >> $GITHUB_STEP_SUMMARY

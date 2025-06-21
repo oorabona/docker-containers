@@ -12,8 +12,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Test configuration
-readonly TEST_CONTAINER="wordpress"  # Use a simple container for testing
+# Default configuration
+DEFAULT_CONTAINER="wordpress"  # Use a simple container for testing
 readonly ACT_PLATFORM="ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest"
 
 # Create timestamped log directory
@@ -572,11 +572,59 @@ main() {
     fi
 }
 
+# Show usage function
+show_usage() {
+    echo "🧪 GitHub Actions Local Test Suite"
+    echo "=================================="
+    echo ""
+    echo "Usage: $0 [COMMAND] [OPTIONS]"
+    echo ""
+    echo "Commands:"
+    echo "  syntax       Test workflow YAML syntax only"
+    echo "  validate     Test version script validation workflow"
+    echo "  upstream     Test upstream monitoring workflow"
+    echo "  build        Test auto-build workflow"
+    echo "  actions      Test individual actions"
+    echo "  all          Run complete test suite (default)"
+    echo "  help         Show this help message"
+    echo ""
+    echo "Options:"
+    echo "  -c, --container NAME    Test with specific container (default: wordpress)"
+    echo "  -v, --verbose          Enable verbose output"
+    echo "  --dry-run             Show what would be tested without running"
+    echo ""
+    echo "Environment Variables:"
+    echo "  FULL_TEST=true         Enable full integration testing with real API calls"
+    echo "  ACT_PLATFORM=...       Override the act platform (default: ubuntu-latest)"
+    echo ""
+    echo "Examples:"
+    echo "  $0                     Run all tests with default settings"
+    echo "  $0 syntax              Test YAML syntax only"
+    echo "  $0 validate -c sslh    Test validation with sslh container"
+    echo "  $0 upstream --verbose  Test upstream monitoring with verbose output"
+    echo "  $0 -c debian all       Run all tests with debian container"
+    echo "  $0 --dry-run          Show what tests would run"
+    echo "  FULL_TEST=true $0      Run full integration tests"
+    echo ""
+    echo "Available containers:"
+    find . -maxdepth 1 -type d -name "*" ! -name ".*" ! -name "backup-*" ! -name "docs" ! -name "helpers" | sort | sed 's|^./|  |'
+    echo ""
+    echo "Prerequisites:"
+    echo "  ✓ gh CLI (GitHub CLI) - required"
+    echo "  ✓ gh act extension (installed automatically)"
+    echo "  ✓ Docker (running)"
+    echo ""
+    echo "Installation:"
+    echo "  gh CLI: https://cli.github.com/manual/installation"
+    echo "  gh act:  gh extension install nektos/gh-act"
+    echo "  Docker: https://docs.docker.com/get-docker/"
+}
+
 # Parse command line arguments
 COMMAND=""
-CONTAINER="$TEST_CONTAINER"
-VERBOSE=false
-DRY_RUN=false
+CONTAINER="${CONTAINER:-$DEFAULT_CONTAINER}"  # Use already parsed container or default
+VERBOSE="${VERBOSE:-false}"  # Use already parsed verbose or default
+DRY_RUN="${DRY_RUN:-false}"  # Use already parsed dry_run or default
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -612,50 +660,6 @@ done
 if [[ -z "$COMMAND" ]]; then
     COMMAND="all"
 fi
-
-# Show usage function
-show_usage() {
-    echo "🧪 GitHub Actions Local Test Suite"
-    echo "=================================="
-    echo ""
-    echo "Usage: $0 [COMMAND] [OPTIONS]"
-    echo ""
-    echo "Commands:"
-    echo "  syntax       Test workflow YAML syntax only"
-    echo "  validate     Test version script validation workflow"
-    echo "  upstream     Test upstream monitoring workflow"
-    echo "  build        Test auto-build workflow"
-    echo "  actions      Test individual actions"
-    echo "  all          Run complete test suite (default)"
-    echo "  help         Show this help message"
-    echo ""
-    echo "Options:"
-    echo "  -c, --container NAME    Test with specific container (default: wordpress)"
-    echo "  -v, --verbose          Enable verbose output"
-    echo "  --dry-run             Show what would be tested without running"
-    echo ""
-    echo "Environment Variables:"
-    echo "  FULL_TEST=true         Enable full integration testing with real API calls"
-    echo "  ACT_PLATFORM=...       Override the act platform (default: ubuntu-latest)"
-    echo ""
-    echo "Examples:"
-    echo "  $0                     Run all tests with default settings"
-    echo "  $0 syntax              Test YAML syntax only"
-    echo "  $0 validate -c sslh    Test validation with sslh container"
-    echo "  $0 upstream --verbose  Test upstream monitoring with verbose output"
-    echo "  $0 --dry-run          Show what tests would run"
-    echo "  FULL_TEST=true $0      Run full integration tests"
-    echo ""
-    echo "Prerequisites:"
-    echo "  ✓ gh CLI (GitHub CLI) - required"
-    echo "  ✓ gh act extension (installed automatically)"
-    echo "  ✓ Docker (running)"
-    echo ""
-    echo "Installation:"
-    echo "  gh CLI: https://cli.github.com/manual/installation"
-    echo "  gh act:  gh extension install nektos/gh-act"
-    echo "  Docker: https://docs.docker.com/get-docker/"
-}
 
 # Run tests
 main "$@"
