@@ -183,13 +183,43 @@ runs:
         fi
         cache_to="$cache_to --cache-to type=registry,ref=ghcr.io/$image_name:buildcache,mode=max"
 
-        # Detect available platforms (fallback if arm64 not available)
-        available_platforms="linux/amd64"
-        if docker buildx inspect --bootstrap | grep -q "linux/arm64"; then
-          available_platforms="linux/amd64,linux/arm64"
-          echo "   🏗️ Building for multiple architectures: $available_platforms"
+        # Detect available platforms using reliable Docker Buildx query
+        echo "   🔍 Detecting available build platforms..."
+        
+        # Get the current builder and its supported platforms
+        current_builder=$(docker buildx inspect --bootstrap 2>/dev/null | grep "^Name:" | head -1 | awk '{print $2}' || echo "default")
+        
+        # Use docker buildx ls with JSON output for reliable platform detection
+        supported_platforms=""
+        if builder_info=$(docker buildx ls --format json 2>/dev/null); then
+          # Extract platforms for the current builder using jq
+          supported_platforms=$(echo "$builder_info" | jq -r --arg builder "$current_builder" 'select(.name == $builder) | .platforms[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+        fi
+        
+        # Fallback method: use docker buildx inspect with more reliable parsing
+        if [[ -z "$supported_platforms" ]]; then
+          echo "   ℹ️ Using fallback platform detection method..."
+          # Get platforms from inspect output, looking for the Platforms line specifically
+          if platforms_line=$(docker buildx inspect --bootstrap 2>/dev/null | grep "^Platforms:" | head -1); then
+            supported_platforms=$(echo "$platforms_line" | sed 's/^Platforms: *//' | tr ' ' ',')
+          fi
+        fi
+        
+        # Determine which platforms to build for
+        available_platforms="linux/amd64"  # Always default to amd64
+        
+        if [[ -n "$supported_platforms" ]]; then
+          echo "   📋 Builder supports platforms: $supported_platforms"
+          
+          # Check if arm64 is supported (check for various arm64 variants)
+          if echo "$supported_platforms" | grep -qE "(linux/arm64|linux/aarch64)"; then
+            available_platforms="linux/amd64,linux/arm64"
+            echo "   🏗️ Building for multiple architectures: $available_platforms"
+          else
+            echo "   🏗️ ARM64 not supported, building for single architecture: $available_platforms"
+          fi
         else
-          echo "   🏗️ Building for single architecture: $available_platforms"
+          echo "   ⚠️ Could not detect supported platforms, defaulting to: $available_platforms"
         fi
 
         # Build the image with enhanced caching and platform support
