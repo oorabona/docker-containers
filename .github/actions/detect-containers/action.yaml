@@ -1,43 +1,44 @@
----
-name: Detect Containers to Build
-description: Intelligently detects which containers need building based on changes
-  and registry status
+name: 'Detect Containers to Build'
+description: 'Intelligently detects which containers need building based on changes and registry status'
+
 inputs:
   container:
-    description: Specific container to build (overrides detection)
+    description: 'Specific container to build (overrides detection)'
     required: false
     default: ''
   github_token:
-    description: GitHub token for API access
+    description: 'GitHub token for API access'
     required: true
   event_name:
-    description: GitHub event name
+    description: 'GitHub event name'
     required: true
   event_before:
-    description: GitHub event before SHA
+    description: 'GitHub event before SHA'
     required: false
     default: ''
   sha:
-    description: Current commit SHA
+    description: 'Current commit SHA'
     required: true
   force_rebuild:
-    description: Force rebuild even if image exists
+    description: 'Force rebuild even if image exists'
     required: false
     default: 'false'
+
 outputs:
   containers:
-    description: JSON array of containers that need building
+    description: 'JSON array of containers that need building'
     value: ${{ steps.find-containers.outputs.containers }}
   count:
-    description: Number of containers to build
+    description: 'Number of containers to build'
     value: ${{ steps.find-containers.outputs.count }}
+
 runs:
-  using: composite
+  using: 'composite'
   steps:
     - name: Find containers to build
       id: find-containers
       shell: bash
-      run: |-
+      run: |
         set -e
         containers_to_build=()
 
@@ -89,30 +90,24 @@ runs:
             else
               # For scheduled runs or manual dispatch, check version and registry existence
               # Also check for upstream version changes
-              needs_build=false  # Initialize to false for scheduled runs
               echo "   🔍 Checking upstream version changes..."
-
+              
               # Get current and upstream versions
-              if [[ -f "$container/version.sh" ]]; then
-                cd "$container"
-                current_version=$(bash version.sh 2>/dev/null || echo "")
-                upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
-                cd ..
-
-                if [[ -n "$current_version" && -n "$upstream_version" ]]; then
-                  if [[ "$current_version" != "$upstream_version" ]]; then
-                    needs_build=true
-                    echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
-                  else
-                    echo "   ⏭️ No upstream version changes detected ($current_version)"
-                  fi
-                else
-                  echo "   ⚠️ Could not determine versions - will skip"
-                fi
+              cd "$container"
+              current_version=$(bash version.sh 2>/dev/null || echo "")
+              upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
+              cd ..
+              
+              if [[ -n "$current_version" && -n "$upstream_version" && "$current_version" != "$upstream_version" ]]; then
+                needs_build=true
+                echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
               else
-                echo "   ⚠️ No version.sh found - will skip"
+                # Fallback to registry existence check for scheduled runs
+                needs_build=true  # Will be refined in build-container action
+                echo "   ✅ Scheduled run - will check version and registry status"
               fi
             fi
+
             if [ "$needs_build" = "true" ]; then
               containers_to_build+=("$container")
             fi
