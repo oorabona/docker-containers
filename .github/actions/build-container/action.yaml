@@ -47,7 +47,7 @@ runs:
         password: ${{ inputs.github_token }}
 
     - name: Log in to Docker Hub
-      if: inputs.dockerhub_username != ''
+      if: ${{ inputs.dockerhub_username != '' && inputs.dockerhub_token != '' }}
       uses: docker/login-action@v3
       with:
         registry: docker.io
@@ -158,7 +158,7 @@ runs:
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
 
     - name: Build and push Docker image
-      if: steps.check-build.outputs.needs_build == 'true'
+      if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       shell: bash
       run: |
         set -e
