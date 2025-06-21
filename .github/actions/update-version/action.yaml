@@ -31,6 +31,10 @@ runs:
         set -e
         container="${{ inputs.container }}"
         new_version="${{ inputs.new_version }}"
+        
+        # Initialize default output values
+        echo "skip_reason=" >> $GITHUB_OUTPUT
+        
         echo "🔄 Updating version for $container to $new_version..."
 
         # Check if container directory exists
