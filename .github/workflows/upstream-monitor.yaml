@@ -26,6 +26,7 @@ permissions:
   pull-requests: write
   issues: write
   packages: read
+  actions: write
 
 # Configuration for PR management
 env:
@@ -272,20 +273,29 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
+            try {
+              const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
 
-            // Trigger the auto-build workflow for containers with updates
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'auto-build.yaml',
-              ref: 'main',
-              inputs: {
-                force_rebuild: 'true'
-              }
-            });
+              // Trigger the auto-build workflow for containers with updates
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'auto-build.yaml',
+                ref: 'main',
+                inputs: {
+                  force_rebuild: 'true'
+                }
+              });
 
-            console.log(`Triggered auto-build workflow for ${containers.length} containers with upstream updates`);
+              console.log(`✅ Successfully triggered auto-build workflow for ${containers.length} containers with upstream updates`);
+            } catch (error) {
+              console.error('❌ Failed to trigger auto-build workflow:', error.message);
+              console.error('This may be due to missing permissions or workflow not found.');
+              console.error('Please ensure the auto-build.yaml workflow exists and has workflow_dispatch trigger.');
+              
+              // Don't fail the entire workflow, just log the error
+              console.log('⚠️  Continuing without triggering auto-build. Manual build may be required.');
+            }
 
       - name: Provide make script usage examples
         run: |
