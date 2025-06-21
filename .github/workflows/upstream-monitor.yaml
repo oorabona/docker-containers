@@ -25,6 +25,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  packages: read
 
 # Configuration for PR management
 env:
@@ -429,6 +430,7 @@ jobs:
             '.[] | select(.author.login == "github-actions[bot]" or (.title | test("update|bump|chore"; "i"))) | .number')
           
           stale_closed=0
+          date_parsing_failures=0
           
           for pr_number in $automated_prs; do
             if [ -n "$pr_number" ]; then
@@ -456,6 +458,7 @@ jobs:
                 # Date parsing failed - skip this PR with warning
                 echo "⚠️  Warning: Could not parse creation date for PR #$pr_number (date: '$pr_created')"
                 echo "   Skipping age check for this PR to avoid accidental closure"
+                ((date_parsing_failures++))
                 
                 if [ "$debug_enabled" = "true" ]; then
                   echo "🐛 Debug - Failed to parse date: '$pr_created' for PR #$pr_number"
@@ -513,8 +516,8 @@ jobs:
           echo "- **Stale PRs closed:** $stale_closed (older than ${PR_AUTO_CLOSE_DAYS:-7} days)" >> $GITHUB_STEP_SUMMARY
           echo "- **Excess PRs closed:** $excess_closed (over limit of ${MAX_OPEN_PRS_PER_CONTAINER:-2} per container)" >> $GITHUB_STEP_SUMMARY
           echo "- **Total PRs closed:** $total_closed" >> $GITHUB_STEP_SUMMARY
-          if grep -q "Could not parse creation date" <<< "$(echo)"; then
-            echo "- **⚠️ Date parsing warnings:** Some PRs had unparseable creation dates and were skipped" >> $GITHUB_STEP_SUMMARY
+          if [ "$date_parsing_failures" -gt 0 ]; then
+            echo "- **⚠️ Date parsing warnings:** $date_parsing_failures PRs had unparseable creation dates and were skipped" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
