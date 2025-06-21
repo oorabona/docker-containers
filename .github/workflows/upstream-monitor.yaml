@@ -425,9 +425,10 @@ jobs:
             echo "🐛 PR_AUTO_CLOSE_DAYS: ${PR_AUTO_CLOSE_DAYS:-7}"
           fi
           
-          # Install GitHub CLI if needed
+          # Verify GitHub CLI is available (pre-installed on ubuntu-latest)
           if ! command -v gh >/dev/null 2>&1; then
-            echo "❌ GitHub CLI not available - this should not happen with setup-gh action"
+            echo "❌ GitHub CLI not available - this should not happen on GitHub-hosted runners"
+            echo "GitHub CLI is pre-installed on ubuntu-latest runners by default"
             exit 1
           fi
           
@@ -445,9 +446,10 @@ jobs:
           
           echo "🔍 Checking for stale PRs (older than ${PR_AUTO_CLOSE_DAYS:-7} days)..."
           
-          # Find PRs created by github-actions[bot] or automation
+          # Find PRs created by github-actions[bot] with automation titles
+          # Use AND logic to ensure we only close automation PRs, never community PRs
           automated_prs=$(echo "$open_prs" | jq -r \
-            '.[] | select(.author.login == "github-actions[bot]" or (.title | test("update|bump|chore"; "i"))) | .number')
+            '.[] | select(.author.login == "github-actions[bot]" and (.title | test("update|bump|chore"; "i"))) | .number')
           
           stale_closed=0
           date_parsing_failures=0
@@ -490,8 +492,9 @@ jobs:
           echo "🧹 Checking for excessive PRs per container..."
           
           # Group PRs by container and close excess ones
+          # Only consider PRs created by github-actions[bot] to avoid closing community PRs
           containers_with_prs=$(echo "$open_prs" | jq -r \
-            '.[] | select(.title | test("update|bump|chore"; "i")) | .title' | \
+            '.[] | select(.author.login == "github-actions[bot]" and (.title | test("update|bump|chore"; "i"))) | .title' | \
             grep -oE 'Update [a-z0-9_-]+ to|chore\([a-z0-9_-]+\)|Bump [a-z0-9_-]+ to' | \
             grep -oE '[a-z0-9_-]+' | grep -v '^Update$\|^to$\|^chore$\|^Bump$' | \
             sort | uniq -c | sort -nr)
@@ -503,9 +506,10 @@ jobs:
               echo "⚠️  Container '$container' has $count open PRs (max: ${MAX_OPEN_PRS_PER_CONTAINER:-2})"
               
               # Get PRs for this container, sorted by creation date (oldest first)
+              # Only consider automation PRs to avoid closing community PRs
               container_prs=$(echo "$open_prs" | jq -r \
                 --arg container "$container" \
-                '.[] | select(.title | test($container; "i")) | [.createdAt, .number] | @tsv' | \
+                '.[] | select(.author.login == "github-actions[bot]" and (.title | test($container; "i"))) | [.createdAt, .number] | @tsv' | \
                 sort | head -n $((count - ${MAX_OPEN_PRS_PER_CONTAINER:-2})))
               
               # Close the oldest PRs
