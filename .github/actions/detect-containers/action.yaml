@@ -50,11 +50,16 @@ runs:
           echo "🔍 Detecting containers that need building..."
 
           # Use find with null-delimited output for robustness
-          while IFS= read -r -d '' dockerfile_path; do
-            container=$(dirname "$dockerfile_path" | sed 's|^\./||')
+          while IFS= read -r -d '' version_script_path; do
+            container=$(dirname "$version_script_path" | sed 's|^\./||')
 
-            # Skip if already processed (in case of multiple Dockerfiles in same dir)
+            # Skip if already processed (in case of multiple version.sh in same dir)
             if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
+              continue
+            fi
+
+            # Skip helper directories and non-container directories
+            if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" ]]; then
               continue
             fi
 
@@ -65,7 +70,7 @@ runs:
             if [ "${{ inputs.force_rebuild }}" = "true" ]; then
               needs_build=true
             fi
-            echo "📦 Checking $container (found Dockerfile at $dockerfile_path)..."
+            echo "📦 Checking $container (found version.sh at $version_script_path)..."
 
             # For push/PR events, check if this specific container was modified
             if [ "${{ inputs.event_name }}" = "push" ] || [ "${{ inputs.event_name }}" = "pull_request" ]; then
@@ -90,35 +95,28 @@ runs:
             else
               # For scheduled runs or manual dispatch, check version and registry existence
               # Also check for upstream version changes
-              needs_build=false  # Initialize to false for scheduled runs
               echo "   🔍 Checking upstream version changes..."
               
               # Get current and upstream versions
-              if [[ -f "$container/version.sh" ]]; then
-                cd "$container"
-                current_version=$(bash version.sh 2>/dev/null || echo "")
-                upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
-                cd ..
-                
-                if [[ -n "$current_version" && -n "$upstream_version" ]]; then
-                  if [[ "$current_version" != "$upstream_version" ]]; then
-                    needs_build=true
-                    echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
-                  else
-                    echo "   ⏭️ No upstream version changes detected ($current_version)"
-                  fi
-                else
-                  echo "   ⚠️ Could not determine versions - will skip"
-                fi
+              cd "$container"
+              current_version=$(bash version.sh 2>/dev/null || echo "")
+              upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
+              cd ..
+              
+              if [[ -n "$current_version" && -n "$upstream_version" && "$current_version" != "$upstream_version" ]]; then
+                needs_build=true
+                echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
               else
-                echo "   ⚠️ No version.sh found - will skip"
+                # Fallback to registry existence check for scheduled runs
+                needs_build=true  # Will be refined in build-container action
+                echo "   ✅ Scheduled run - will check version and registry status"
               fi
             fi
 
             if [ "$needs_build" = "true" ]; then
               containers_to_build+=("$container")
             fi
-          done < <(find . -name "Dockerfile" -not -path "./.git/*" -print0)
+          done < <(find . -name "version.sh" -not -path "./.git/*" -print0)
         fi
 
         # Create JSON array output

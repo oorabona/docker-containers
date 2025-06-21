@@ -1,0 +1,80 @@
+name: Setup GitHub CLI
+description: Ensures GitHub CLI is available, installing it if necessary
+inputs:
+  github_token:
+    description: GitHub token for API access
+    required: false
+    default: ""
+outputs:
+  available:
+    description: Whether GitHub CLI is available after setup
+    value: ${{ steps.setup_gh.outputs.available }}
+  version:
+    description: The GitHub CLI version that was set up
+    value: ${{ steps.setup_gh.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - name: Setup GitHub CLI
+      id: setup_gh
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |-
+        set -e
+        
+        echo "🔍 Checking GitHub CLI availability..."
+        
+        # Check if gh command is available, try to install if missing
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "⚠️  GitHub CLI (gh) not found, attempting to install..."
+          
+          # Try to install gh using apt (works in Ubuntu containers)
+          if command -v apt-get >/dev/null 2>&1; then
+            echo "📦 Installing GitHub CLI via apt..."
+            # Update package list and install gh
+            sudo apt-get update -qq 2>/dev/null || apt-get update -qq 2>/dev/null || true
+            sudo apt-get install -y gh 2>/dev/null || apt-get install -y gh 2>/dev/null || {
+              echo "❌ Failed to install gh via apt"
+              echo "ℹ️  GitHub CLI operations will be skipped"
+              echo "ℹ️  This would work in GitHub Actions (gh pre-installed)"
+              echo "available=false" >> $GITHUB_OUTPUT
+              echo "version=" >> $GITHUB_OUTPUT
+              exit 0
+            }
+            echo "✅ GitHub CLI installed successfully via apt"
+          else
+            echo "❌ No package manager available for GitHub CLI installation"
+            echo "ℹ️  GitHub CLI operations will be skipped"
+            echo "ℹ️  This would work in GitHub Actions (gh pre-installed)"
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "version=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        else
+          echo "✅ GitHub CLI (gh) is already available"
+        fi
+        
+        # Get version and confirm availability
+        if command -v gh >/dev/null 2>&1; then
+          gh_version=$(gh --version | head -n1 | cut -d' ' -f3 2>/dev/null || echo "unknown")
+          echo "📋 GitHub CLI version: $gh_version"
+          echo "available=true" >> $GITHUB_OUTPUT
+          echo "version=$gh_version" >> $GITHUB_OUTPUT
+          
+          # Test basic functionality if token is provided
+          if [ -n "$GH_TOKEN" ]; then
+            echo "🔑 Testing GitHub CLI authentication..."
+            if gh auth status >/dev/null 2>&1; then
+              echo "✅ GitHub CLI authentication successful"
+            else
+              echo "⚠️  GitHub CLI authentication failed (expected in local testing)"
+            fi
+          else
+            echo "ℹ️  No GitHub token provided, skipping authentication test"
+          fi
+        else
+          echo "❌ GitHub CLI setup failed"
+          echo "available=false" >> $GITHUB_OUTPUT
+          echo "version=" >> $GITHUB_OUTPUT
+        fi
