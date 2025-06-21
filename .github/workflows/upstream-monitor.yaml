@@ -62,7 +62,14 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Conditional debug information based on input or environment variable
-          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
+          
           if [ "$debug_enabled" = "true" ]; then
             echo "### 🐛 Debug Information" >> $GITHUB_STEP_SUMMARY
             echo "- Event name: \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
@@ -174,7 +181,14 @@ jobs:
           echo "This indicates a configuration issue that should be investigated."
           
           # Add debug information if enabled
-          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
+          
           if [ "$debug_enabled" = "true" ]; then
             echo "🐛 Debug - Container: ${{ matrix.container }}"
             echo "🐛 Debug - Skip reason: ${{ steps.update.outputs.skip_reason }}"
@@ -397,7 +411,13 @@ jobs:
           echo "🧹 Starting PR cleanup process..."
           
           # Check if debug is enabled
-          debug_enabled="${{ github.event.inputs.debug || env.DEBUG_OUTPUT }}"
+          # Explicit boolean evaluation to ensure reliable string comparison
+          debug_input="${{ github.event.inputs.debug }}"
+          debug_env="${{ env.DEBUG_OUTPUT }}"
+          debug_enabled="false"
+          if [ "$debug_input" = "true" ] || [ "$debug_env" = "true" ]; then
+            debug_enabled="true"
+          fi
           
           if [ "$debug_enabled" = "true" ]; then
             echo "🐛 Debug mode enabled for PR cleanup"
