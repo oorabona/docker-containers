@@ -1,4 +1,3 @@
----
 name: Build Container
 description: Smart container build with multi-platform and multi-registry support
 inputs:

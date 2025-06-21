@@ -1,60 +1,54 @@
-name: 'Update Container Version'
-description: 'Updates a container version file with a new version'
-
+name: Update Container Version
+description: Updates a container version file with a new version
 inputs:
   container:
-    description: 'Container name to update'
+    description: Container name to update
     required: true
   new_version:
-    description: 'New version to set'
+    description: New version to set
     required: true
   commit_changes:
-    description: 'Whether to commit the changes'
+    description: Whether to commit the changes
     required: false
     default: 'false'
-
 outputs:
   updated:
-    description: 'Whether the version was actually updated'
+    description: Whether the version was actually updated
     value: ${{ steps.update.outputs.updated }}
   old_version:
-    description: 'Previous version before update'
+    description: Previous version before update
     value: ${{ steps.update.outputs.old_version }}
-
 runs:
-  using: 'composite'
+  using: composite
   steps:
     - name: Update version file
       id: update
       shell: bash
       run: |
         set -e
-        
         container="${{ inputs.container }}"
         new_version="${{ inputs.new_version }}"
-        
         echo "🔄 Updating version for $container to $new_version..."
-        
+
         # Check if container directory exists
         if [[ ! -d "$container" ]]; then
           echo "❌ Container directory $container does not exist"
           echo "updated=false" >> $GITHUB_OUTPUT
           exit 1
         fi
-        
+
         # Check if version.sh exists
         if [[ ! -f "$container/version.sh" ]]; then
           echo "❌ No version.sh file found in $container"
           echo "updated=false" >> $GITHUB_OUTPUT
           exit 1
         fi
-        
         cd "$container"
-        
+
         # Get current version
         old_version=$(bash version.sh 2>/dev/null || echo "unknown")
         echo "old_version=$old_version" >> $GITHUB_OUTPUT
-        
+
         # Check if update is needed
         if [[ "$old_version" == "$new_version" ]]; then
           echo "✅ Version is already $new_version, no update needed"
@@ -62,13 +56,12 @@ runs:
           cd ..
           exit 0
         fi
-        
         echo "📋 Current version: $old_version"
         echo "📋 New version: $new_version"
-        
+
         # Create backup
         cp version.sh version.sh.backup
-        
+
         # Strategy 1: Try to replace hardcoded version string
         if grep -q "echo.*\"$old_version\"" version.sh; then
           sed -i "s/echo.*\"$old_version\"/echo \"$new_version\"/" version.sh
@@ -93,23 +86,20 @@ runs:
           # Restore backup since we couldn't update
           mv version.sh.backup version.sh
         fi
-        
         cd ..
-
     - name: Commit changes
       if: inputs.commit_changes == 'true' && steps.update.outputs.updated == 'true'
       shell: bash
-      run: |
+      run: |-
         container="${{ inputs.container }}"
         new_version="${{ inputs.new_version }}"
         old_version="${{ steps.update.outputs.old_version }}"
-        
+
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        
+
         # Add and commit the changes
         git add "$container/version.sh"
         git commit -m "chore($container): update version from $old_version to $new_version"
-        
         echo "✅ Committed version update for $container"
