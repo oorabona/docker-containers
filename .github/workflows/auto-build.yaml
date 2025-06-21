@@ -49,6 +49,7 @@ jobs:
         uses: ./.github/actions/detect-containers
         with:
           container: ${{ github.event.inputs.container }}
+          force_rebuild: ${{ github.event.inputs.force_rebuild }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           event_name: ${{ github.event_name }}
           event_before: ${{ github.event.before }}
