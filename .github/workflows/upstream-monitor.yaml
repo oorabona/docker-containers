@@ -34,6 +34,12 @@ env:
   PR_AUTO_CLOSE_DAYS: 7         # Auto-close stale PRs after this many days
   DEBUG_OUTPUT: false            # Enable debug output for all runs (can be overridden by input)
 
+# Configuration for PR management
+env:
+  MAX_OPEN_PRS_PER_CONTAINER: 2  # Maximum open PRs allowed per container
+  PR_AUTO_CLOSE_DAYS: 7         # Auto-close stale PRs after this many days
+  DEBUG_OUTPUT: false            # Enable debug output for all runs (can be overridden by input)
+
 jobs:
   check-upstream-versions:
     runs-on: ubuntu-latest
