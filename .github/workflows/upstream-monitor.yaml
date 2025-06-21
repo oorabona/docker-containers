@@ -389,6 +389,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup GitHub CLI
+        uses: actions/setup-gh@v1
+        with:
+          version: latest
+
       - name: Clean up stale PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -406,8 +411,8 @@ jobs:
           
           # Install GitHub CLI if needed
           if ! command -v gh >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y gh
+            echo "❌ GitHub CLI not available - this should not happen with setup-gh action"
+            exit 1
           fi
           
           # Get all open PRs created by automation
