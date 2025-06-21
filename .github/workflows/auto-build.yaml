@@ -1,7 +1,7 @@
 ---
 name: Auto Build & Push
 
-'on':
+on:
   schedule:
     # Run twice daily to check for updates
     - cron: '0 6,18 * * *'
