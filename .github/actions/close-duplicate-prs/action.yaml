@@ -1,4 +1,3 @@
----
 name: Close Duplicate PRs
 description: Closes existing PRs for the same container version update to prevent
   duplicates
@@ -23,13 +22,11 @@ runs:
       uses: vegardit/gha-setup-jq@v1
       with:
         version: latest
-        
     - name: Setup GitHub CLI
       id: setup_gh
       uses: ./.github/actions/setup-github-cli
       with:
         github_token: ${{ inputs.github_token }}
-        
     - name: Close duplicate PRs
       id: check_duplicates
       shell: bash
@@ -39,9 +36,8 @@ runs:
         NEW_VERSION: ${{ inputs.new_version }}
       run: |-
         set -e
-        
         echo "🔍 Checking for existing PRs for container: $CONTAINER"
-        
+
         # Check if GitHub CLI is available from setup step
         if [ "${{ steps.setup_gh.outputs.available }}" != "true" ]; then
           echo "⚠️  GitHub CLI not available, skipping PR cleanup"
@@ -49,7 +45,6 @@ runs:
           echo "existing_pr_found=false" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
         echo "✅ GitHub CLI available (version: ${{ steps.setup_gh.outputs.version }})"
 
         # Define search patterns for PRs that should be closed
@@ -74,17 +69,14 @@ runs:
           # Find PRs matching this pattern
           matching_prs=$(echo "$open_prs" | jq -r --arg pattern "$pattern" \
             '.[] | select(.title | test($pattern; "i")) | .number')
-
           for pr_number in $matching_prs; do
             if [ -n "$pr_number" ]; then
               # Get PR details
               pr_info=$(echo "$open_prs" | jq -r --arg num "$pr_number" \
                 '.[] | select(.number == ($num | tonumber))')
-
               pr_title=$(echo "$pr_info" | jq -r '.title')
               pr_branch=$(echo "$pr_info" | jq -r '.headRefName')
               pr_body=$(echo "$pr_info" | jq -r '.body // ""')
-
               echo "📋 Found potential duplicate PR #$pr_number: '$pr_title'"
 
               # Check if this is for the same container
@@ -112,7 +104,6 @@ runs:
                     echo "🌿 Deleting branch: $pr_branch"
                     git push origin --delete "$pr_branch" 2>/dev/null || echo "⚠️  Branch $pr_branch already deleted or doesn't exist"
                   fi
-
                   ((closed_count++))
                 else
                   echo "⚠️  PR #$pr_number is for the same version ($NEW_VERSION) - skipping closure"

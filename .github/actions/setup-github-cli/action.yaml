@@ -1,4 +1,3 @@
----
 name: Setup GitHub CLI
 description: Ensures GitHub CLI is available, installing it if necessary
 inputs:
