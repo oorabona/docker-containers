@@ -25,6 +25,23 @@ jobs:
         with:
           version: latest
 
+      - name: Verify dependencies
+        run: |
+          # Verify that required dependencies are available
+          # curl and git are pre-installed on ubuntu-latest runners, but let's confirm
+          echo "✅ Verifying dependencies..."
+          
+          echo "- jq: $(jq --version)"
+          echo "- curl: $(curl --version | head -1)"
+          echo "- git: $(git --version)"
+          
+          # Verify all dependencies are available
+          command -v jq >/dev/null 2>&1 || { echo "❌ jq not found" && exit 1; }
+          command -v curl >/dev/null 2>&1 || { echo "❌ curl not found" && exit 1; }
+          command -v git >/dev/null 2>&1 || { echo "❌ git not found" && exit 1; }
+          
+          echo "✅ All dependencies verified and ready"
+
       - name: Make scripts executable
         run: |
           chmod +x make

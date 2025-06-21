@@ -10,6 +10,10 @@ inputs:
   github_token:
     description: 'GitHub token for API access'
     required: true
+outputs:
+  existing_pr_found:
+    description: 'Whether an existing PR was found for this container/version combination'
+    value: ${{ steps.check_duplicates.outputs.existing_pr_found }}
 runs:
   using: 'composite'
   steps:
@@ -19,11 +23,12 @@ runs:
         version: latest
 
     - name: Setup GitHub CLI
-      uses: actions/setup-gh@v1
+      uses: cli/gh-action@v1
       with:
         version: latest
 
     - name: Close duplicate PRs
+      id: check_duplicates
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
