@@ -47,7 +47,7 @@ jobs:
         with:
           container: ${{ github.event.inputs.container }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          skip_registry_check: ${{ github.event.inputs.debug == 'true' && 'false' || 'false' }}
+          skip_registry_check: ${{ github.event.inputs.debug == 'true' && 'true' || 'false' }}
       - name: Display version information
         run: |
           echo "## 🔍 Upstream Version Check Results" >> $GITHUB_STEP_SUMMARY
