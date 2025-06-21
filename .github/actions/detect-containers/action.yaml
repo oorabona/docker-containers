@@ -67,7 +67,8 @@ runs:
                   MODIFIED_FILES=$(git diff --name-only ${{ inputs.event_before }}..${{ inputs.sha }} 2>/dev/null)
                 else
                   # Fallback for first commit or when before is not available
-                  MODIFIED_FILES=$(git log --name-only --pretty=format: -1 ${{ inputs.sha }})                fi
+                  MODIFIED_FILES=$(git log --name-only --pretty=format: -1 ${{ inputs.sha }})
+                fi
               fi
 
               # Check if any files in this container directory were modified
