@@ -314,7 +314,7 @@ jobs:
           upstream_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].upstream')
           change_type="${{ steps.classify.outputs.change_type }}"
           
-          echo "## � Action Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 📝 Action Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version Change:** \`$current_version\` → \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
