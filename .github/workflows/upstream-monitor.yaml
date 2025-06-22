@@ -91,47 +91,193 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - name: Update container version
+      - name: Classify version change
+        id: classify
+        run: |
+          current_version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].current }}"
+          new_version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}"
+          
+          # Make script executable
+          chmod +x .github/scripts/classify-version-change.sh
+          
+          # Classify the version change
+          change_type=$(.github/scripts/classify-version-change.sh "$current_version" "$new_version")
+          echo "change_type=$change_type" >> $GITHUB_OUTPUT
+          echo "current_version=$current_version" >> $GITHUB_OUTPUT
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          
+          echo "## 🔍 Version Change Classification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Change:** \`$current_version\` → \`$new_version\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Classification:** \`$change_type\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$change_type" == "major" ]]; then
+            echo "🔎 **Major version change detected** - Will create PR for review" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "🚀 **Minor/patch update detected** - Will attempt auto-build" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # For minor updates: Try auto-build first
+      - name: Attempt auto-build (minor updates)
+        if: steps.classify.outputs.change_type == 'minor'
+        id: auto_build
+        run: |
+          echo "## 🚀 Auto-Build Attempt" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Attempting direct build and push for minor update..." >> $GITHUB_STEP_SUMMARY
+          
+          # Make make script executable
+          chmod +x make
+          
+          # Set build status
+          build_success="false"
+          
+          # Try building with make script
+          if ./make build WANTED="${{ matrix.container }}" 2>&1 | tee build.log; then
+            echo "✅ Build completed successfully" >> $GITHUB_STEP_SUMMARY
+            
+            # Try pushing if build succeeded
+            if ./make push WANTED="${{ matrix.container }}" 2>&1 | tee push.log; then
+              echo "✅ Push completed successfully" >> $GITHUB_STEP_SUMMARY
+              build_success="true"
+              
+              # Update CHANGELOG.md
+              timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+              container="${{ matrix.container }}"
+              current="${{ steps.classify.outputs.current_version }}"
+              new="${{ steps.classify.outputs.new_version }}"
+              
+              # Create changelog entry
+              changelog_entry="- 🚀 \`$container\`: $current → $new (auto-built at $timestamp)"
+              
+              # Add entry to CHANGELOG.md under Auto-Built section
+              if grep -q "### Auto-Built (Minor/Patch Updates)" CHANGELOG.md; then
+                # Replace the "_No builds yet_" line or add to existing entries
+                if grep -q "_No builds yet_" CHANGELOG.md; then
+                  sed -i "s/_No builds yet_/$changelog_entry/" CHANGELOG.md
+                else
+                  # Add after the Auto-Built header
+                  sed -i "/### Auto-Built (Minor\/Patch Updates)/a $changelog_entry" CHANGELOG.md
+                fi
+              fi
+              
+              # Commit changelog update
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add CHANGELOG.md
+              git commit -m "📝 Add auto-build entry: $container $current → $new" || true
+              git push || true
+              
+            else
+              echo "❌ Push failed" >> $GITHUB_STEP_SUMMARY
+              cat push.log >> $GITHUB_STEP_SUMMARY || true
+            fi
+          else
+            echo "❌ Build failed" >> $GITHUB_STEP_SUMMARY
+            cat build.log >> $GITHUB_STEP_SUMMARY || true
+          fi
+          
+          echo "build_success=$build_success" >> $GITHUB_OUTPUT
+          
+          if [[ "$build_success" == "true" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 **Auto-build completed successfully!** Container is now available with the latest version." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Auto-build failed** - Will fall back to PR creation for manual review." >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # For major updates OR failed auto-builds: Create PR  
+      - name: Update container version (for PR creation)
+        if: steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true')
         id: update
         uses: ./.github/actions/update-version
         with:
           container: ${{ matrix.container }}
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           commit_changes: false
-      - name: Close duplicate PRs
+          
+      - name: Close duplicate PRs (for PR creation)
+        if: steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true')
         id: close_duplicates
         uses: ./.github/actions/close-duplicate-prs
         with:
           container: ${{ matrix.container }}
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Create rebuild marker (for PR creation)
+        if: steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true')
+        run: |
+          # Create a rebuild marker file to ensure we have changes to commit
+          mkdir -p ${{ matrix.container }}
+          echo "# Last Rebuild Information" > ${{ matrix.container }}/LAST_REBUILD.md
+          echo "" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "**Container:** ${{ matrix.container }}" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "**Rebuild Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "**Upstream Version:** ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "**Previous Version:** ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].current }}" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "**Change Type:** ${{ steps.classify.outputs.change_type }}" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "" >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "This file is automatically updated when a new upstream version is detected." >> ${{ matrix.container }}/LAST_REBUILD.md
+          echo "It serves as a trigger for the build process and provides rebuild history." >> ${{ matrix.container }}/LAST_REBUILD.md
+          
+          # Update CHANGELOG.md for PR entries
+          timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          container="${{ matrix.container }}"
+          current="${{ steps.classify.outputs.current_version }}"
+          new="${{ steps.classify.outputs.new_version }}"
+          change_type="${{ steps.classify.outputs.change_type }}"
+          
+          if [[ "$change_type" == "major" ]]; then
+            changelog_entry="- 📝 \`$container\`: $current → $new (major update - PR required at $timestamp)"
+            section="### PR Review Required (Major Updates)"
+          else
+            changelog_entry="- 📝 \`$container\`: $current → $new (auto-build failed - PR fallback at $timestamp)"
+            section="### PR Review Required (Major Updates)"
+          fi
+          
+          # Add entry to CHANGELOG.md
+          if grep -q "$section" CHANGELOG.md; then
+            if grep -q "_No major updates yet_" CHANGELOG.md; then
+              sed -i "s/_No major updates yet_/$changelog_entry/" CHANGELOG.md
+            else
+              sed -i "/$section/a $changelog_entry" CHANGELOG.md
+            fi
+          fi
       - name: Create Pull Request
-        if: steps.close_duplicates.outputs.existing_pr_found != 'true'
+        if: (steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true')) && steps.close_duplicates.outputs.existing_pr_found != 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: >-
-            build(${{ matrix.container }}): rebuild with upstream version
+            build(${{ matrix.container }}): ${{ steps.classify.outputs.change_type }} update to version
             ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           title: >-
-            Rebuild ${{ matrix.container }} with upstream version
+            ${{ steps.classify.outputs.change_type == 'major' && '🔄 Major Update' || '⚠️ Auto-Build Failed' }}: 
+            ${{ matrix.container }} to version
             ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           body: |
-            ## 🔄 Automated Rebuild for New Upstream Version
+            ## ${{ steps.classify.outputs.change_type == 'major' && '🔄 Major Version Update Detected' || '⚠️ Auto-Build Failed - Manual Review Required' }}
 
-            This PR triggers a rebuild of the `${{ matrix.container }}` container to use the latest upstream version.
+            This PR ${{ steps.classify.outputs.change_type == 'major' && 'updates' || 'attempts to update' }} the `${{ matrix.container }}` container to use the latest upstream version.
 
             **Changes:**
             - **Container:** `${{ matrix.container }}`
             - **Previous Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].current }}`
             - **New Upstream Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
+            - **Change Type:** `${{ steps.classify.outputs.change_type }}`
+            - **Rebuild Marker:** `${{ matrix.container }}/LAST_REBUILD.md` (added to trigger the rebuild)
 
             **Why this PR:**
-            This container uses dynamic version detection in its `version.sh` script. No files need to be updated - 
-            merging this PR will trigger the auto-build workflow to rebuild the container with the latest upstream version.
+            ${{ steps.classify.outputs.change_type == 'major' && 'This appears to be a major version change that requires manual review before building.' || 'The automated build process failed, so manual review and intervention is required.' }}
+            
+            ${{ steps.classify.outputs.change_type == 'major' && '⚠️ **Major version changes may introduce breaking changes** - please review the upstream changelog before merging.' || '🔍 **Auto-build logs are available in the workflow run** - check for build errors before merging.' }}
 
             **Automated Build Process:**
-            - ✅ Review this PR (no code changes needed)
+            - ✅ Review this PR carefully ${{ steps.classify.outputs.change_type == 'major' && '(major version change)' || '(build failure analysis)' }}
             - ✅ **Merge this PR** to trigger the rebuild
             - 🚀 **Auto-build workflow will automatically trigger** when merged
             - 📦 Updated container will be built and pushed to Docker Hub and GHCR
@@ -140,15 +286,16 @@ jobs:
             1. When this PR is merged, the auto-build workflow will detect the change
             2. The container will be built with the new upstream version `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
             3. The updated container will be pushed to registries
-            4. No manual intervention required! 🎉
+            4. The CHANGELOG.md will be updated to reflect the successful build
 
             ---
             *This PR was created automatically by the Upstream Version Monitor workflow.*
           branch: update/${{ matrix.container }}-${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           delete-branch: true
           draft: false
+          
       - name: Skip PR creation due to existing PR
-        if: steps.close_duplicates.outputs.existing_pr_found == 'true'
+        if: (steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true')) && steps.close_duplicates.outputs.existing_pr_found == 'true'
         run: |
           echo "## ℹ️ Existing PR Found" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -159,21 +306,37 @@ jobs:
           echo "**Reason:** Same version update already has an open PR" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Please review and merge the existing PR to proceed with the update." >> $GITHUB_STEP_SUMMARY
-      - name: Summary of rebuild trigger
+          
+      - name: Summary of action taken
         run: |
           version_info='${{ needs.check-upstream-versions.outputs.version_info }}'
           current_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].current')
           upstream_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].upstream')
-          echo "## 🚀 Rebuild Triggered" >> $GITHUB_STEP_SUMMARY
+          change_type="${{ steps.classify.outputs.change_type }}"
+          
+          echo "## � Action Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "A PR has been created to rebuild \`${{ matrix.container }}\` with the latest upstream version." >> $GITHUB_STEP_SUMMARY
+          echo "**Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version Change:** \`$current_version\` → \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Change Type:** \`$change_type\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Details:**" >> $GITHUB_STEP_SUMMARY
-          echo "- **Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current Version:** \`$current_version\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Upstream Version:** \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The container uses dynamic version detection, so no files were modified in this PR." >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$change_type" == "minor" ]]; then
+            if [[ "${{ steps.auto_build.outputs.build_success }}" == "true" ]]; then
+              echo "✅ **Auto-build completed successfully!**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "The container has been built and pushed to registries automatically." >> $GITHUB_STEP_SUMMARY
+              echo "No manual intervention required." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **Auto-build failed - PR created for manual review.**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Please check the build logs and review the created PR." >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "🔎 **Major version change - PR created for manual review.**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please review the upstream changes and approve the PR when ready." >> $GITHUB_STEP_SUMMARY
+          fi
   validate-updates:
     needs: [check-upstream-versions, update-versions]
     if: always() && fromJson(needs.check-upstream-versions.outputs.update_count) > 0
@@ -216,27 +379,31 @@ jobs:
       - name: Provide next steps guidance
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔄 Next Steps - Automated Build Process" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Next Steps - Hybrid Automation Process" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "✅ **Pull requests have been created** for containers with updates." >> $GITHUB_STEP_SUMMARY
+          
+          update_count="${{ needs.check-upstream-versions.outputs.update_count }}"
+          
+          if [ "$update_count" -gt 0 ]; then
+            echo "✅ **Container updates have been processed using our hybrid approach:**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Automated Build Flow:**" >> $GITHUB_STEP_SUMMARY
-            echo "1. 📝 Review the created PRs for accuracy" >> $GITHUB_STEP_SUMMARY
-            echo "2. ✅ Merge the PRs to apply version updates" >> $GITHUB_STEP_SUMMARY
-            echo "3. 🚀 **Auto-build workflow will automatically trigger** when PRs are merged" >> $GITHUB_STEP_SUMMARY
-            echo "4. 📦 Updated containers will be built and pushed to registries" >> $GITHUB_STEP_SUMMARY
+            echo "**🚀 Auto-Build (Minor/Patch Updates):**" >> $GITHUB_STEP_SUMMARY
+            echo "- Minor and patch updates are built and pushed automatically" >> $GITHUB_STEP_SUMMARY
+            echo "- Successful builds are logged to \`CHANGELOG.md\`" >> $GITHUB_STEP_SUMMARY
+            echo "- No manual intervention required for these updates" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Why this flow?**" >> $GITHUB_STEP_SUMMARY
-            echo "- Ensures proper review of version changes" >> $GITHUB_STEP_SUMMARY
-            echo "- Triggers builds only after approval" >> $GITHUB_STEP_SUMMARY
-            echo "- Maintains audit trail through Git history" >> $GITHUB_STEP_SUMMARY
+            echo "**� PR Review (Major Updates or Failed Auto-Builds):**" >> $GITHUB_STEP_SUMMARY
+            echo "- Major version changes require manual review before building" >> $GITHUB_STEP_SUMMARY
+            echo "- Failed auto-builds fall back to PR creation for investigation" >> $GITHUB_STEP_SUMMARY
+            echo "- Review and merge these PRs to trigger builds" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Benefits of this approach:**" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚡ **Faster minor updates** - immediate builds without PR overhead" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 **Careful major updates** - human review for potentially breaking changes" >> $GITHUB_STEP_SUMMARY
+            echo "- 📋 **Complete audit trail** - all builds tracked in CHANGELOG.md" >> $GITHUB_STEP_SUMMARY
+            echo "- 🛡️ **Fallback safety** - failed auto-builds become PRs for investigation" >> $GITHUB_STEP_SUMMARY
           else
-            echo "ℹ️ **Detection only mode** - No PRs were created." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "To create PRs and trigger builds:" >> $GITHUB_STEP_SUMMARY
-            echo "- Run this workflow with \`create_pr: true\`" >> $GITHUB_STEP_SUMMARY
-            echo "- Or let the scheduled run handle it automatically" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ **All containers are up to date** - No actions needed." >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🛠️ Make Script Integration" >> $GITHUB_STEP_SUMMARY
@@ -281,33 +448,28 @@ jobs:
           echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Updates Found** | $update_count |" >> $GITHUB_STEP_SUMMARY
           if [ "$update_count" -gt 0 ]; then
-            if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-              echo "| **Action Taken** | Pull requests created |" >> $GITHUB_STEP_SUMMARY
-              echo "| **Next Step** | Merge PRs to trigger builds |" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "| **Action Taken** | Detection only |" >> $GITHUB_STEP_SUMMARY
-              echo "| **Next Step** | Enable create_pr to generate PRs |" >> $GITHUB_STEP_SUMMARY
-            fi
+            echo "| **Action Taken** | Hybrid approach: auto-build + selective PRs |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Next Step** | Check CHANGELOG.md for auto-builds, review PRs for major updates |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Action Taken** | None needed |" >> $GITHUB_STEP_SUMMARY
             echo "| **Next Step** | All containers up to date |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🎯 Upstream Version Monitoring Features:" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Hybrid Automation Features:" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Automatic detection** of upstream version changes" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Intelligent comparison** using existing version.sh scripts" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Duplicate PR prevention** with automatic cleanup" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Automated PR creation** for version updates" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Automated builds** triggered when PRs are merged" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Multi-source support** (Git tags, Docker Hub, PyPI)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Intelligent classification** of major vs minor updates" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Auto-build for minor updates** with immediate deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **PR review for major updates** requiring careful attention" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Fallback PR creation** when auto-builds fail" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Timeline-based changelog** tracking all build activity" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Make script integration** for seamless container management" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔄 Complete Automation Flow:" >> $GITHUB_STEP_SUMMARY
           echo "1. 🔍 **Monitor upstream** versions (this workflow)" >> $GITHUB_STEP_SUMMARY
-          echo "2. 📝 **Create PRs** for version updates" >> $GITHUB_STEP_SUMMARY
-          echo "3. ✅ **Review and merge** PRs" >> $GITHUB_STEP_SUMMARY
-          echo "4. 🚀 **Auto-build workflow** triggers on merge" >> $GITHUB_STEP_SUMMARY
-          echo "5. 📦 **Build and push** updated containers to registries" >> $GITHUB_STEP_SUMMARY
+          echo "2. 🏷️ **Classify version changes** (major vs minor)" >> $GITHUB_STEP_SUMMARY
+          echo "3. 🚀 **Auto-build minor updates** or 📝 **create PRs for major updates**" >> $GITHUB_STEP_SUMMARY
+          echo "4. � **Update CHANGELOG.md** with build results" >> $GITHUB_STEP_SUMMARY
+          echo "5. 📦 **Deploy to registries** (auto-build) or **await PR merge** (major updates)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Show available containers with version.sh files
