@@ -43,6 +43,6 @@ runs:
           exit 0
         fi
         
-        # Make the script executable and run it
-        chmod +x .github/scripts/close-duplicate-prs.sh
-        .github/scripts/close-duplicate-prs.sh
+        # Ensure script is executable and run it
+        chmod +x $GITHUB_WORKSPACE/.github/scripts/close-duplicate-prs.sh
+        $GITHUB_WORKSPACE/.github/scripts/close-duplicate-prs.sh
