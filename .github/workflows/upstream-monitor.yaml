@@ -183,19 +183,30 @@ jobs:
       - name: Trigger auto-build workflow
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
-            // Trigger the auto-build workflow for containers with updates
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'auto-build.yaml',
-              ref: 'main',
-              inputs: {
-                force_rebuild: 'true'
+            try {
+              const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
+              // Trigger the auto-build workflow for containers with updates
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'auto-build.yaml',
+                ref: 'master',
+                inputs: {
+                  force_rebuild: 'true'
+                }
+              });
+              console.log(`✅ Successfully triggered auto-build workflow for ${containers.length} containers with upstream updates`);
+            } catch (error) {
+              if (error.status === 403) {
+                console.log(`⚠️ Unable to trigger auto-build workflow automatically (insufficient permissions)`);
+                console.log(`ℹ️ To enable automatic workflow triggering, add a Personal Access Token with 'actions:write' permission as repository secret 'PAT_ACTIONS'`);
+                console.log(`📝 You can manually trigger the auto-build workflow from the Actions tab`);
+              } else {
+                throw error;
               }
-            });
-            console.log(`Triggered auto-build workflow for ${containers.length} containers with upstream updates`);
+            }
       - name: Provide make script usage examples
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -216,6 +227,11 @@ jobs:
           echo "# Build all containers" >> $GITHUB_STEP_SUMMARY
           echo "./make build" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Auto-Build Integration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The workflow will attempt to automatically trigger the auto-build workflow." >> $GITHUB_STEP_SUMMARY
+          echo "If you see permission errors, you can manually trigger it from the Actions tab." >> $GITHUB_STEP_SUMMARY
   summary:
     needs: [check-upstream-versions, update-versions]
     if: always()
