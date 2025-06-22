@@ -261,6 +261,11 @@ jobs:
           echo "# Build all containers" >> $GITHUB_STEP_SUMMARY
           echo "./make build" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Auto-Build Integration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The workflow will attempt to automatically trigger the auto-build workflow." >> $GITHUB_STEP_SUMMARY
+          echo "If you see permission errors, you can manually trigger it from the Actions tab." >> $GITHUB_STEP_SUMMARY
   summary:
     needs: [check-upstream-versions, update-versions, validate-updates]
     if: always()
