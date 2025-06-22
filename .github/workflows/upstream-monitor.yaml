@@ -29,6 +29,7 @@ env:
   MAX_OPEN_PRS_PER_CONTAINER: 2  # Maximum open PRs allowed per container
   PR_AUTO_CLOSE_DAYS: 7  # Auto-close stale PRs after this many days
   DEBUG_OUTPUT: false  # Enable debug output for all runs (can be overridden by input)
+  # Note: Duplicate PR handling is automatically managed by the close-duplicate-prs action
 jobs:
   check-upstream-versions:
     runs-on: ubuntu-latest
@@ -60,11 +61,10 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Container | Current Version | Upstream Version |" >> $GITHUB_STEP_SUMMARY
             echo "|-----------|----------------|------------------|" >> $GITHUB_STEP_SUMMARY
-            
+
             # Parse version info and display
             version_info='${{ steps.check.outputs.version_info }}'
             containers_with_updates='${{ steps.check.outputs.containers_with_updates }}'
-            
             # Parse the JSON arrays and display each container
             echo "$containers_with_updates" | jq -r '.[]' | while read container; do
               current=$(echo "$version_info" | jq -r --arg c "$container" '.[$c].current')
@@ -99,32 +99,70 @@ jobs:
           container: ${{ matrix.container }}
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           commit_changes: false
-      - name: Create Pull Request
+      - name: Close duplicate PRs
         if: steps.update.outputs.updated == 'true'
+        id: close_duplicates
+        uses: ./.github/actions/close-duplicate-prs
+        with:
+          container: ${{ matrix.container }}
+          new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Pull Request
+        if: steps.update.outputs.updated == 'true' && steps.close_duplicates.outputs.existing_pr_found != 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: 'chore(${{ matrix.container }}): update to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}'
-          title: Update ${{ matrix.container }} to version ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          commit-message: >-
+            chore(${{ matrix.container }}): update to version
+            ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          title: >-
+            Update ${{ matrix.container }} to version
+            ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           body: |
             ## 🔄 Automated Version Update
+
             This PR updates the `${{ matrix.container }}` container to use the latest upstream version.
+
             **Changes:**
             - **Container:** `${{ matrix.container }}`
             - **Previous Version:** `${{ steps.update.outputs.old_version }}`
             - **New Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
-            **Upstream Source:** 
+
+            **Upstream Source:**
             This update was detected by monitoring the upstream source for `${{ matrix.container }}`.
-            **Next Steps:**
-            - ✅ Review the changes
-            - ✅ Merge this PR to trigger the container build
-            - ✅ The updated container will be automatically built and published
+
+            **Automated Build Process:**
+            - ✅ Review the changes in this PR
+            - ✅ **Merge this PR** to apply the version update
+            - 🚀 **Auto-build workflow will automatically trigger** when merged
+            - 📦 Updated container will be built and pushed to Docker Hub and GHCR
+
+            **What happens next:**
+            1. When this PR is merged, the `version.sh` file will be updated
+            2. The auto-build workflow will detect the change and automatically start
+            3. The container will be built with the new version and pushed to registries
+            4. No manual intervention required! 🎉
+
             ---
             *This PR was created automatically by the Upstream Version Monitor workflow.*
-          branch: update/${{ matrix.container }}-${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream
+          branch: >-
+            update/${{ matrix.container }}-${{
+            fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream
             }}
           delete-branch: true
           draft: false
+      - name: Skip PR creation due to existing PR
+        if: steps.update.outputs.updated == 'true' && steps.close_duplicates.outputs.existing_pr_found == 'true'
+        run: |
+          echo "## ℹ️ Existing PR Found" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          container_version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}"
+          echo "A PR already exists for \`${{ matrix.container }}\` version \`$container_version\`." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** Skipped creating duplicate PR" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** Same version update already has an open PR" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please review and merge the existing PR to proceed with the update." >> $GITHUB_STEP_SUMMARY
       - name: Comment on manual update needed
         if: steps.update.outputs.updated != 'true'
         run: |
@@ -141,7 +179,7 @@ jobs:
           echo "- **Upstream Version:** \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Please manually update the \`${{ matrix.container }}/version.sh\` file." >> $GITHUB_STEP_SUMMARY
-  trigger-build:
+  validate-updates:
     needs: [check-upstream-versions, update-versions]
     if: always() && fromJson(needs.check-upstream-versions.outputs.update_count) > 0
     runs-on: ubuntu-latest
@@ -167,52 +205,48 @@ jobs:
             if [[ -f "$container/version.sh" ]]; then
               chmod +x "$container/version.sh"
               cd "$container"
-              
+
               # Test latest version retrieval
               if latest_version=$(bash version.sh latest 2>/dev/null); then
                 echo "| \`$container\` | \`$latest_version\` | ✅ Valid |" >> $GITHUB_STEP_SUMMARY
               else
                 echo "| \`$container\` | Error | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
               fi
-              
+
               cd ..
             else
               echo "| \`$container\` | No version.sh | ⚠️ Skipped |" >> $GITHUB_STEP_SUMMARY
             fi
           done
-      - name: Trigger auto-build workflow
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            try {
-              const containers = ${{ needs.check-upstream-versions.outputs.containers_with_updates }};
-              // Trigger the auto-build workflow for containers with updates
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'auto-build.yaml',
-                ref: 'master',
-                inputs: {
-                  force_rebuild: 'true'
-                }
-              });
-              console.log(`✅ Successfully triggered auto-build workflow for ${containers.length} containers with upstream updates`);
-            } catch (error) {
-              if (error.status === 403) {
-                console.log(`⚠️ Unable to trigger auto-build workflow automatically (insufficient permissions)`);
-                console.log(`ℹ️ To enable automatic workflow triggering, add a Personal Access Token with 'actions:write' permission as repository secret 'PAT_ACTIONS'`);
-                console.log(`📝 You can manually trigger the auto-build workflow from the Actions tab`);
-              } else {
-                throw error;
-              }
-            }
-      - name: Provide make script usage examples
+      - name: Provide next steps guidance
         run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Next Steps - Automated Build Process" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "✅ **Pull requests have been created** for containers with updates." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Automated Build Flow:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. 📝 Review the created PRs for accuracy" >> $GITHUB_STEP_SUMMARY
+            echo "2. ✅ Merge the PRs to apply version updates" >> $GITHUB_STEP_SUMMARY
+            echo "3. 🚀 **Auto-build workflow will automatically trigger** when PRs are merged" >> $GITHUB_STEP_SUMMARY
+            echo "4. 📦 Updated containers will be built and pushed to registries" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Why this flow?**" >> $GITHUB_STEP_SUMMARY
+            echo "- Ensures proper review of version changes" >> $GITHUB_STEP_SUMMARY
+            echo "- Triggers builds only after approval" >> $GITHUB_STEP_SUMMARY
+            echo "- Maintains audit trail through Git history" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Detection only mode** - No PRs were created." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "To create PRs and trigger builds:" >> $GITHUB_STEP_SUMMARY
+            echo "- Run this workflow with \`create_pr: true\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Or let the scheduled run handle it automatically" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🛠️ Make Script Integration" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "You can use the existing \`make\` script to work with these containers:" >> $GITHUB_STEP_SUMMARY
+          echo "You can also manually work with containers using the \`make\` script:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "# List all available targets" >> $GITHUB_STEP_SUMMARY
@@ -233,7 +267,7 @@ jobs:
           echo "The workflow will attempt to automatically trigger the auto-build workflow." >> $GITHUB_STEP_SUMMARY
           echo "If you see permission errors, you can manually trigger it from the Actions tab." >> $GITHUB_STEP_SUMMARY
   summary:
-    needs: [check-upstream-versions, update-versions]
+    needs: [check-upstream-versions, update-versions, validate-updates]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -254,20 +288,31 @@ jobs:
           if [ "$update_count" -gt 0 ]; then
             if [ "${{ github.event.inputs.create_pr }}" != "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
               echo "| **Action Taken** | Pull requests created |" >> $GITHUB_STEP_SUMMARY
+              echo "| **Next Step** | Merge PRs to trigger builds |" >> $GITHUB_STEP_SUMMARY
             else
               echo "| **Action Taken** | Detection only |" >> $GITHUB_STEP_SUMMARY
+              echo "| **Next Step** | Enable create_pr to generate PRs |" >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "| **Action Taken** | None needed |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Next Step** | All containers up to date |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🎯 Upstream Version Monitoring Features:" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Automatic detection** of upstream version changes" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Intelligent comparison** using existing version.sh scripts" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Duplicate PR prevention** with automatic cleanup" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Automated PR creation** for version updates" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Integration** with existing build workflows" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Automated builds** triggered when PRs are merged" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Multi-source support** (Git tags, Docker Hub, PyPI)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Make script integration** for seamless container management" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Complete Automation Flow:" >> $GITHUB_STEP_SUMMARY
+          echo "1. 🔍 **Monitor upstream** versions (this workflow)" >> $GITHUB_STEP_SUMMARY
+          echo "2. 📝 **Create PRs** for version updates" >> $GITHUB_STEP_SUMMARY
+          echo "3. ✅ **Review and merge** PRs" >> $GITHUB_STEP_SUMMARY
+          echo "4. 🚀 **Auto-build workflow** triggers on merge" >> $GITHUB_STEP_SUMMARY
+          echo "5. 📦 **Build and push** updated containers to registries" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Show available containers with version.sh files
@@ -282,25 +327,26 @@ jobs:
           echo "|-----------|----------------|----------------|------------|--------|" >> $GITHUB_STEP_SUMMARY
           find . -name "version.sh" -not -path "./.git/*" -not -path "./helpers/*" | while read version_script; do
             container=$(dirname "$version_script" | sed 's|^\./||')
-            
+
             version_status="✅ Available"
-            
+
             compose_status="❌ Missing"
             if [[ -f "$container/docker-compose.yml" ]]; then
               compose_status="✅ Available"
             fi
-            
+
             dockerfile_status="❌ Missing"
             if [[ -f "$container/Dockerfile" ]]; then
               dockerfile_status="✅ Available"
             fi
-            
+
             overall_status="🔄 Monitored"
             if [[ ! -f "$container/version.sh" ]]; then
               overall_status="⏭️ Skipped"
             fi
-            
-            echo "| \`$container\` | $version_status | $compose_status | $dockerfile_status | $overall_status |" >> $GITHUB_STEP_SUMMARY
+
+            status_line="| \`$container\` | $version_status | $compose_status | $dockerfile_status | $overall_status |"
+            echo "$status_line" >> $GITHUB_STEP_SUMMARY
           done
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🛠️ Integration with Make Script" >> $GITHUB_STEP_SUMMARY
