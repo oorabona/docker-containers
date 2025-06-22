@@ -80,7 +80,7 @@ jobs:
     needs: check-upstream-versions
     if: >
       fromJson(needs.check-upstream-versions.outputs.update_count) > 0 &&
-      (github.event.inputs.create_pr != false || github.event_name == 'schedule')
+      (github.event.inputs.create_pr != 'false' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -108,39 +108,40 @@ jobs:
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Create Pull Request
-        if: steps.update.outputs.updated == 'true' && steps.close_duplicates.outputs.existing_pr_found != 'true'
+        if: steps.close_duplicates.outputs.existing_pr_found != 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: >-
-            chore(${{ matrix.container }}): update to version
+            build(${{ matrix.container }}): rebuild with upstream version
             ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           title: >-
-            Update ${{ matrix.container }} to version
+            Rebuild ${{ matrix.container }} with upstream version
             ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           body: |
-            ## 🔄 Automated Version Update
+            ## 🔄 Automated Rebuild for New Upstream Version
 
-            This PR updates the `${{ matrix.container }}` container to use the latest upstream version.
+            This PR triggers a rebuild of the `${{ matrix.container }}` container to use the latest upstream version.
 
             **Changes:**
             - **Container:** `${{ matrix.container }}`
-            - **Previous Version:** `${{ steps.update.outputs.old_version }}`
-            - **New Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
+            - **Previous Version:** `${{ steps.update.outputs.old_version || 'latest' }}`
+            - **New Upstream Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
 
-            **Upstream Source:**
-            This update was detected by monitoring the upstream source for `${{ matrix.container }}`.
+            **Why this PR:**
+            This container uses dynamic version detection in its `version.sh` script. No files need to be updated - 
+            merging this PR will trigger the auto-build workflow to rebuild the container with the latest upstream version.
 
             **Automated Build Process:**
-            - ✅ Review the changes in this PR
-            - ✅ **Merge this PR** to apply the version update
+            - ✅ Review this PR (no code changes needed)
+            - ✅ **Merge this PR** to trigger the rebuild
             - 🚀 **Auto-build workflow will automatically trigger** when merged
             - 📦 Updated container will be built and pushed to Docker Hub and GHCR
 
             **What happens next:**
-            1. When this PR is merged, the `version.sh` file will be updated
-            2. The auto-build workflow will detect the change and automatically start
-            3. The container will be built with the new version and pushed to registries
+            1. When this PR is merged, the auto-build workflow will detect the change
+            2. The container will be built with the new upstream version `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
+            3. The updated container will be pushed to registries
             4. No manual intervention required! 🎉
 
             ---
@@ -152,7 +153,7 @@ jobs:
           delete-branch: true
           draft: false
       - name: Skip PR creation due to existing PR
-        if: steps.update.outputs.updated == 'true' && steps.close_duplicates.outputs.existing_pr_found == 'true'
+        if: steps.close_duplicates.outputs.existing_pr_found == 'true'
         run: |
           echo "## ℹ️ Existing PR Found" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -163,22 +164,21 @@ jobs:
           echo "**Reason:** Same version update already has an open PR" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Please review and merge the existing PR to proceed with the update." >> $GITHUB_STEP_SUMMARY
-      - name: Comment on manual update needed
-        if: steps.update.outputs.updated != 'true'
+      - name: Summary of rebuild trigger
         run: |
           version_info='${{ needs.check-upstream-versions.outputs.version_info }}'
           current_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].current')
           upstream_version=$(echo "$version_info" | jq -r --arg c "${{ matrix.container }}" '.[$c].upstream')
-          echo "## ⚠️ Manual Update Required" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Rebuild Triggered" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The \`${{ matrix.container }}\` container requires manual version update." >> $GITHUB_STEP_SUMMARY
+          echo "A PR has been created to rebuild \`${{ matrix.container }}\` with the latest upstream version." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Details:**" >> $GITHUB_STEP_SUMMARY
           echo "- **Container:** \`${{ matrix.container }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Current Version:** \`$current_version\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Upstream Version:** \`$upstream_version\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Please manually update the \`${{ matrix.container }}/version.sh\` file." >> $GITHUB_STEP_SUMMARY
+          echo "The container uses dynamic version detection, so no files were modified in this PR." >> $GITHUB_STEP_SUMMARY
   validate-updates:
     needs: [check-upstream-versions, update-versions]
     if: always() && fromJson(needs.check-upstream-versions.outputs.update_count) > 0
