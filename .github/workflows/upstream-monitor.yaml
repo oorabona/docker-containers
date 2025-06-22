@@ -61,7 +61,6 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Container | Current Version | Upstream Version |" >> $GITHUB_STEP_SUMMARY
             echo "|-----------|----------------|------------------|" >> $GITHUB_STEP_SUMMARY
-
             # Parse version info and display
             version_info='${{ steps.check.outputs.version_info }}'
             containers_with_updates='${{ steps.check.outputs.containers_with_updates }}'
@@ -100,7 +99,6 @@ jobs:
           new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           commit_changes: false
       - name: Close duplicate PRs
-        if: steps.update.outputs.updated == 'true'
         id: close_duplicates
         uses: ./.github/actions/close-duplicate-prs
         with:
@@ -125,7 +123,7 @@ jobs:
 
             **Changes:**
             - **Container:** `${{ matrix.container }}`
-            - **Previous Version:** `${{ steps.update.outputs.old_version || 'latest' }}`
+            - **Previous Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].current }}`
             - **New Upstream Version:** `${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}`
 
             **Why this PR:**
@@ -146,10 +144,7 @@ jobs:
 
             ---
             *This PR was created automatically by the Upstream Version Monitor workflow.*
-          branch: >-
-            update/${{ matrix.container }}-${{
-            fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream
-            }}
+          branch: update/${{ matrix.container }}-${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
           delete-branch: true
           draft: false
       - name: Skip PR creation due to existing PR
