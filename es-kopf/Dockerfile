@@ -21,6 +21,10 @@ RUN curl -s -L "https://github.com/lmenezes/elasticsearch-kopf/archive/v${KOPF_V
 # logs
 VOLUME ["/var/log/nginx"]
 
+# Add healthcheck for nginx
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/_cluster/health || exit 1
+
 # ports
 EXPOSE 80 443
 
