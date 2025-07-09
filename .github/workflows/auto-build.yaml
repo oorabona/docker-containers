@@ -246,4 +246,4 @@ jobs:
     with:
       trigger_reason: "Post-build update after successful container builds"
     secrets: inherit
-# Fix: Update permissions for workflow compatibility
+# Permissions are required for updating version files, committing changes, and publishing packages during the auto-build process.
