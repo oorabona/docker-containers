@@ -12,7 +12,7 @@ define( 'FORCE_SSL_ADMIN', true );
 $envfile = __DIR__ . '/../.env';
 $env = getenv('WP_ENV');
 
-if (empty($env)) {
+if (!empty($env)) {
     $envfile = $envfile . '.' . $env;
 }
 
