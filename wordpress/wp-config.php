@@ -61,7 +61,7 @@ foreach ( $_saltKeys as $_saltKey ) {
 	if ( !defined( $_saltKey ) ) {
 		define(
 			$_saltKey,
-			empty( getenv( "WP_$_saltKey" ) ? 'changeme' : getenv( "WP_$_saltKey" ))
+			getenv( "WP_$_saltKey" ) ?: 'changeme'
 		);
 	}
 }
