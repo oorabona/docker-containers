@@ -238,3 +238,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY
+
+  update-dashboard:
+    needs: [detect-containers, build-and-push]
+    if: always() && needs.build-and-push.result == 'success'
+    uses: ./.github/workflows/update-dashboard.yaml
+    with:
+      trigger_reason: "Post-build update after successful container builds"
+    secrets: inherit

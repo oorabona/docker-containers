@@ -1,7 +1,13 @@
-source "../helpers/docker-tags"
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-tags"
 
-if [ "$1" == "latest" ]; then
-  latest-docker-tag library/debian "^(bookworm|bullseye|buster)$"
-else
-  check-docker-tag library/debian "^${1}$"
-fi
+case "${1:-current}" in
+    latest)
+        # Get latest version from official Debian registry
+        latest-docker-tag library/debian "^(bookworm|bullseye|buster)$"
+        ;;
+    current|*)
+        # Get our currently published version from Docker Hub
+        latest-docker-tag oorabona/debian "^(bookworm|bullseye|buster)$"
+        ;;
+esac

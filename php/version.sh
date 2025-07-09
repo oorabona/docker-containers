@@ -1,7 +1,13 @@
-source "../helpers/docker-tags"
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-tags"
 
-if [ "$1" == "latest" ]; then
-  latest-docker-tag library/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
-else
-  check-docker-tag library/php "^${1}$"
-fi
+case "${1:-current}" in
+    latest)
+        # Get latest version from official PHP registry
+        latest-docker-tag library/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
+        ;;
+    current|*)
+        # Get our currently published version from Docker Hub
+        latest-docker-tag oorabona/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
+        ;;
+esac

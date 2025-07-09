@@ -68,6 +68,10 @@ WORKDIR /var/www/
 
 EXPOSE 9000
 
+# Add healthcheck to verify PHP-FPM is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD php-fpm -t || exit 1
+
 USER wordpress
 
 ENTRYPOINT ["docker-entrypoint.sh"]

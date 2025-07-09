@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  openresty:
+    build:
+      context: .
+      args:
+        RESTY_IMAGE_BASE: ${RESTY_IMAGE_BASE:-alpine}
+        RESTY_IMAGE_TAG: ${RESTY_IMAGE_TAG:-latest}
+    image: ${DOCKER_REGISTRY:-}openresty:${TAG:-latest}
+    container_name: openresty
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./conf.d:/usr/local/openresty/nginx/conf/conf.d
+      - ./lua:/usr/local/openresty/lualib/app
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
