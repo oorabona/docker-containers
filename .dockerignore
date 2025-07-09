@@ -1,0 +1,48 @@
+# Version control
+.git/
+.gitignore
+.gitmodules
+
+# Documentation (not needed in containers)
+README.md
+docs/
+*.md
+
+# Development and testing files
+test-logs/
+test-*.json
+test-*.sh
+audit-*.sh
+celebrate-*.sh
+fix-*.sh
+validate-*.sh
+
+# Environment files
+.env
+.env.*
+.actrc
+
+# Build artifacts
+*.log
+.docker/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Binary archives
+*.tar.gz
+*.zip
+
+# GitHub Actions (not needed in container context)
+.github/
+
+# Other containers (when building specific container)
+# This helps reduce build context size
+*/

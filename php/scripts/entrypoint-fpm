@@ -1,0 +1,22 @@
+#!/bin/sh
+# Reference: https://pracucci.com/php-on-kubernetes-application-logging-via-unix-pipe.html
+# Create a pipe used by the PHP app to write logs
+if [ ! -p /var/log/shared/pipe-from-app-to-stdout ]; then
+    mkfifo      /var/log/shared/pipe-from-app-to-stdout
+    chmod 777   /var/log/shared/pipe-from-app-to-stdout
+fi
+
+# Create a pipe used by the PHP app to write logs
+if [ ! -p /var/log/shared/pipe-from-app-to-stderr ]; then
+    mkfifo      /var/log/shared/pipe-from-app-to-stderr
+    chmod 777   /var/log/shared/pipe-from-app-to-stderr
+fi
+
+# Add php-fpm as command if needed
+if [ "${1:0:1}" = '-' ]; then
+	set -- php-fpm "$@"
+fi
+
+echo "Running $@" 1>&2
+
+exec "$@"

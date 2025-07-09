@@ -1,0 +1,12 @@
+# Optimized configuration for gh act local testing
+-P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest
+-P ubuntu-22.04=ghcr.io/catthehacker/ubuntu:act-22.04
+-P ubuntu-20.04=ghcr.io/catthehacker/ubuntu:act-20.04
+
+# Use smaller images for faster testing
+--use-gitignore=false
+--artifact-server-path=/tmp/artifacts
+--env-file=.env
+
+# Note: --ignore flag not supported in older gh act versions
+# If auto-build.yaml causes issues, rename it temporarily for testing

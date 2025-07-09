@@ -1,0 +1,21 @@
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "14"
+        LOCALES: "fr_FR en_US"
+    image: postgres:14-fr
+    container_name: postgres14
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+      PGHOST: "127.0.0.1"
+    env_file:
+      - /etc/docker/postgres.env
+    volumes:
+      - /var/lib/postgresql/data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
