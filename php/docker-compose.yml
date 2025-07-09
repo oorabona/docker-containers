@@ -1,0 +1,11 @@
+version: "3"
+services:
+  php:
+    container_name: php
+    image: oorabona/php:${TAG}
+    build:
+      context: .
+      network: host
+      args:
+        VERSION: ${VERSION}
+        NPROC: ${NPROC}

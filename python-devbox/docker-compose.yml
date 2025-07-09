@@ -1,9 +1,0 @@
-version: "3"
-services:
-  python-devbox:
-    image: oorabona/python-devbox:${PYTHON_VERSION:-3-slim}
-    container_name: python-devbox
-    build:
-      context: .
-      args:
-        python_version: ${PYTHON_VERSION:-3-slim}

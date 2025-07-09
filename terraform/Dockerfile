@@ -25,6 +25,10 @@ WORKDIR /data
 # Entrypoint to enable live customization
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
+# Add healthcheck to verify terraform is working
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD terraform version || exit 1
+
 # Main command
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
