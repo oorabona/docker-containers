@@ -2,7 +2,7 @@
 
 export DOCKER_CLI_EXPERIMENTAL=enabled
 export NPROC=$(nproc)
-export DOCKERCOMPOSE="docker-compose"
+export DOCKERCOMPOSE="docker compose"
 export DOCKEROPTS="${DOCKEROPTS:-}"
 
 # Helper functions
@@ -70,6 +70,9 @@ do_it() {
   if [ -r "docker-compose.yml" ]
   then
     $DOCKERCOMPOSE $op $DOCKEROPTS
+  elif [ -r "compose.yml" ]
+  then
+    $DOCKERCOMPOSE -f compose.yml $op $DOCKEROPTS
   elif [ -x "$op" ]
   then
     . "$op"
