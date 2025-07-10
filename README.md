@@ -43,6 +43,7 @@ docker-containers/
 - **Version Management**: Standardized version.sh scripts with multiple source strategies
 - **CI/CD Integration**: GitHub Actions workflows for building, testing, and deployment
 - **Security**: Health checks, non-root users, and automated security updates
+- **Shared Helper Functions**: Standardized version management with `helpers/docker-registry` eliminates code duplication
 
 ## 📦 Available Containers
 

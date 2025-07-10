@@ -54,16 +54,25 @@ execute_with_retry() {
     local timeout="$3"
     local retry_count=0
     local result=""
+    local exit_code=0
     
     while [ $retry_count -lt $MAX_RETRIES ]; do
         if [ "$mode" = "current" ]; then
-            result=$(timeout "$timeout" bash version.sh 2>/dev/null || echo "")
+            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
+            exit_code=$?
         else
-            result=$(timeout "$timeout" bash version.sh latest 2>/dev/null || echo "")
+            result=$(timeout "$timeout" bash version.sh latest 2>/dev/null)
+            exit_code=$?
+        fi
+        
+        # Handle special case for no published version
+        if [[ "$result" == "no-published-version" ]]; then
+            echo "$result"
+            return 2  # Special return code for no published version
         fi
         
         # Check if result is valid
-        if [[ -n "$result" && "$result" != "null" && "$result" != "unknown" ]]; then
+        if [[ $exit_code -eq 0 && -n "$result" && "$result" != "null" && "$result" != "unknown" ]]; then
             echo "$result"
             return 0
         fi
@@ -210,7 +219,9 @@ test_version_script() {
     # Test 1: Check current version (no arguments) with retries
     echo "  📋 Testing current version (with retries)..."
     current_version=$(execute_with_retry "$container" "current" "$TIMEOUT_CURRENT")
-    if [ $? -eq 0 ] && [ -n "$current_version" ]; then
+    current_exit_code=$?
+    
+    if [ $current_exit_code -eq 0 ] && [ -n "$current_version" ]; then
         # Validate format
         format_issues=$(validate_version_format "$current_version")
         if [ $? -eq 0 ]; then
@@ -221,6 +232,10 @@ test_version_script() {
             issues+=("current_format:$format_issues")
             has_errors=true
         fi
+    elif [ $current_exit_code -eq 2 ] && [ "$current_version" = "no-published-version" ]; then
+        log_warning "No published version found (container not yet published to registry)"
+        test_results+=("current_no_published")
+        # This is not considered an error for validation purposes
     else
         log_error "Failed to get current version after $MAX_RETRIES retries"
         issues+=("current_failed")
@@ -230,7 +245,9 @@ test_version_script() {
     # Test 2: Check latest version with retries
     echo "  📋 Testing latest version (with retries)..."
     latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
-    if [ $? -eq 0 ] && [ -n "$latest_version" ]; then
+    latest_exit_code=$?
+    
+    if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
         # Validate format
         format_issues=$(validate_version_format "$latest_version")
         if [ $? -eq 0 ]; then
@@ -238,14 +255,20 @@ test_version_script() {
             test_results+=("latest_ok")
             
             # Compare versions if both are available
-            if [[ -n "$current_version" && "$current_version" != "$latest_version" ]]; then
+            if [[ "$current_version" != "no-published-version" && -n "$current_version" && "$current_version" != "$latest_version" ]]; then
                 log_info "Version difference detected: $current_version → $latest_version"
+            elif [[ "$current_version" = "no-published-version" ]]; then
+                log_info "New container detected: no published version → $latest_version (ready for initial release)"
             fi
         else
             log_error "Latest version format issues: $format_issues"
             issues+=("latest_format:$format_issues")
             has_errors=true
         fi
+    elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
+        log_warning "No upstream version found (container may be deprecated or source unavailable)"
+        test_results+=("latest_no_published")
+        # This could indicate upstream source issues but isn't necessarily an error
     else
         log_error "Failed to get latest version after $MAX_RETRIES retries"
         issues+=("latest_failed")
