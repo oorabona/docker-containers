@@ -12,7 +12,7 @@ define( 'FORCE_SSL_ADMIN', true );
 $envfile = __DIR__ . '/../.env';
 $env = getenv('WP_ENV');
 
-if (empty($env)) {
+if (!empty($env)) {
     $envfile = $envfile . '.' . $env;
 }
 
@@ -61,7 +61,7 @@ foreach ( $_saltKeys as $_saltKey ) {
 	if ( !defined( $_saltKey ) ) {
 		define(
 			$_saltKey,
-			empty( getenv( "WP_$_saltKey" ) ? 'changeme' : getenv( "WP_$_saltKey" ))
+			getenv( "WP_$_saltKey" ) ?: 'changeme'
 		);
 	}
 }
@@ -154,7 +154,7 @@ define( 'WP_AUTO_UPDATE_CORE', false );
 
 /** Absolute path to the WordPress directory. */
 if ( !defined('ABSPATH') )
-	define('ABSPATH', dirname(__FILE__) . '/wordpress/');
+	define('ABSPATH', dirname(__FILE__) . '/');
 
 /** Sets up WordPress vars and included files. */
 require_once ABSPATH . 'wp-settings.php';
