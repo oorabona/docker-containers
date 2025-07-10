@@ -1,275 +1,251 @@
 # GitHub Actions Reference
 
-## Available Workflows
+This guide covers the automated workflows and actions used for container management.
 
-### 1. Upstream Version Monitor
+## Workflows
 
-**File**: `.github/workflows/upstream-monitor.yaml`
+### 1. Upstream Monitor (`upstream-monitor.yaml`)
 
-**Purpose**: Automatically monitors upstream sources for version updates and creates pull requests.
+Monitors upstream sources for version updates and creates PRs automatically.
 
-#### Triggers
-- **Schedule**: Runs twice daily (6 AM and 6 PM UTC)
-- **Manual**: Workflow dispatch with configurable inputs
+**Triggers:**
+- Schedule: 6 AM/6 PM UTC daily
+- Manual: `gh workflow run upstream-monitor.yaml`
 
-#### Inputs
-```yaml
-container:
-  description: Specific container to check (leave empty for all)
-  required: false
-  type: string
-
-create_pr:
-  description: Create PR for version updates
-  required: false
-  default: true
-  type: boolean
-
-debug:
-  description: Enable debug output
-  required: false
-  default: false
-  type: boolean
-```
-
-#### Outputs
-- Container update summary in GitHub Actions summary
-- Pull requests for version updates
-- Build trigger for updated containers
-
-### 2. Auto Build & Push
-
-**File**: `.github/workflows/auto-build.yaml`
-
-**Purpose**: Builds and pushes containers when changes are detected.
-
-#### Triggers
-- **Push**: To main/master branches affecting container files
-- **Pull Request**: To main/master branches
-- **Schedule**: Twice daily for upstream updates
-- **Manual**: Workflow dispatch
-
-#### Features
-- Multi-architecture builds (amd64, arm64)
-- Docker layer caching
-- Registry push automation
-- Build matrix for parallel execution
-
-### 3. Version Script Validation
-
-**File**: `.github/workflows/validate-version-scripts.yaml`
-
-**Purpose**: Validates that all version.sh scripts are functional.
-
-## Available Actions
-
-### 1. Check Upstream Versions
-
-**Path**: `.github/actions/check-upstream-versions`
-
-**Purpose**: Checks for upstream version updates for containers.
-
-#### Inputs
-```yaml
-container:
-  description: Container to check (optional)
-  required: false
-```
-
-#### Outputs
-```yaml
-containers_with_updates:
-  description: JSON array of containers with updates
-update_count:
-  description: Number of containers with updates
-version_info:
-  description: JSON object with version information
-```
-
-### 2. Update Version
-
-**Path**: `.github/actions/update-version`
-
-**Purpose**: Updates a container's version.sh file with a new version.
-
-#### Inputs
-```yaml
-container:
-  description: Container name to update
-  required: true
-new_version:
-  description: New version to set
-  required: true
-commit_changes:
-  description: Whether to commit the changes
-  required: false
-  default: 'false'
-```
-
-#### Outputs
-```yaml
-updated:
-  description: Whether the version was actually updated
-old_version:
-  description: Previous version before update
-skip_reason:
-  description: Reason for skipping if applicable
-```
-
-### 3. Build Container
-
-**Path**: `.github/actions/build-container`
-
-**Purpose**: Builds a specific container with optimizations.
-
-### 4. Detect Containers
-
-**Path**: `.github/actions/detect-containers`
-
-**Purpose**: Detects all containers in the repository with changes.
-
-### 5. Close Duplicate PRs
-
-**Path**: `.github/actions/close-duplicate-prs`
-
-**Purpose**: Manages and closes duplicate version update PRs.
-
-## Usage Examples
-
-### Manual Upstream Check
-
+**Key Inputs:**
 ```bash
-# Trigger upstream monitoring for all containers
-gh workflow run upstream-monitor.yaml
-
-# Trigger for specific container with debug
+# Check specific container with debug
 gh workflow run upstream-monitor.yaml \
   --field container=wordpress \
   --field debug=true \
-  --field create_pr=false
+  --field create_pr=true
 ```
 
-### Manual Build
+**Outputs:**
+- Container update summary
+- Pull requests for version updates
+- Automatic build triggers
 
+### 2. Auto Build (`auto-build.yaml`)
+
+Builds and pushes containers when changes are detected.
+
+**Triggers:**
+- Push to main/master (affecting container files)
+- Pull requests
+- Schedule (twice daily)
+- Manual dispatch
+
+**Features:**
+- Multi-architecture builds (amd64, arm64)
+- Smart change detection
+- Registry push automation
+- Build retry logic
+
+**Usage:**
 ```bash
 # Build all containers
 gh workflow run auto-build.yaml
 
-# Force rebuild specific container
+# Force rebuild specific container  
 gh workflow run auto-build.yaml \
   --field container=wordpress \
   --field force_rebuild=true
 ```
 
-### Using Actions in Other Workflows
+### 3. Version Validation (`validate-version-scripts.yaml`)
 
-```yaml
-- name: Check for updates
-  uses: ./.github/actions/check-upstream-versions
-  with:
-    container: wordpress
+Validates all version.sh scripts for functionality and standards compliance.
 
-- name: Update version
-  uses: ./.github/actions/update-version
-  with:
-    container: wordpress
-    new_version: "6.1.1"
-    commit_changes: true
+**Triggers:**
+- Changes to version.sh files
+- Manual dispatch
+
+**Local Testing:**
+```bash
+./validate-version-scripts.sh
 ```
 
-## Environment Variables
+## Reusable Actions
 
-### Workflow-level Environment Variables
+### Check Upstream Versions (`.github/actions/check-upstream-versions`)
 
-```yaml
-env:
-  MAX_OPEN_PRS_PER_CONTAINER: 2    # Max PRs per container
-  PR_AUTO_CLOSE_DAYS: 7           # Auto-close stale PRs
-  DEBUG_OUTPUT: false             # Default debug setting
+Checks for upstream version updates across containers.
+
+**Inputs:**
+- `container` (optional): Specific container to check
+
+**Outputs:**
+- `containers_with_updates`: JSON array of containers needing updates
+- `update_count`: Number of containers with updates
+- `version_info`: Detailed version information
+
+### Build Container (`.github/actions/build-container`)
+
+Builds a specific container with optimizations and error handling.
+
+**Inputs:**
+- `container`: Container name to build
+- `force_rebuild`: Force rebuild even if up-to-date
+- `dockerhub_username`, `dockerhub_token`, `github_token`: Registry credentials
+
+**Features:**
+- Multi-architecture support
+- Build caching
+- Registry push automation
+- Retry logic on failures
+
+### Detect Containers (`.github/actions/detect-containers`)
+
+Intelligently detects which containers need building based on changes.
+
+**Outputs:**
+- `containers`: JSON array of containers to build
+- `count`: Number of containers detected
+
+## Usage Examples
+
+### Manual Workflow Triggers
+
+```bash
+# Monitor all containers for updates
+gh workflow run upstream-monitor.yaml
+
+# Check specific container with debug output
+gh workflow run upstream-monitor.yaml \
+  --field container=ansible \
+  --field debug=true \
+  --field create_pr=false
+
+# Force rebuild all containers
+gh workflow run auto-build.yaml \
+  --field force_rebuild=true
+
+# Validate version scripts
+gh workflow run validate-version-scripts.yaml
 ```
 
-### Action-level Environment Variables
+### Using Actions in Custom Workflows
 
 ```yaml
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  DOCKER_BUILDKIT: 1
-  BUILDX_NO_DEFAULT_ATTESTATIONS: 1
+name: Custom Container Workflow
+on: workflow_dispatch
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for updates
+        id: check
+        uses: ./.github/actions/check-upstream-versions
+        with:
+          container: wordpress
+      
+      - name: Build if updated
+        if: steps.check.outputs.update_count > 0
+        uses: ./.github/actions/build-container
+        with:
+          container: wordpress
+          force_rebuild: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-## Permissions Required
+## Required Permissions
 
-### Repository Permissions
+Workflows require specific GitHub token permissions:
+
 ```yaml
 permissions:
-  contents: write      # For checking out and modifying files
-  pull-requests: write # For creating and managing PRs
-  issues: write        # For PR comments and cleanup
-  packages: read       # For accessing Docker registry
+  contents: write      # Read/modify repository files
+  pull-requests: write # Create and manage PRs  
+  packages: write      # Push to container registries
+  issues: write        # PR comments and management
 ```
 
-### Token Permissions
-- The default `GITHUB_TOKEN` has sufficient permissions for most operations
-- For advanced features, a custom PAT might be needed
+## Environment Configuration
 
-## Best Practices
+### Workflow Environment Variables
 
-### Workflow Design
-1. **Fail-fast principle**: Stop early on critical errors
-2. **Idempotent operations**: Safe to re-run workflows
-3. **Clear naming**: Descriptive job and step names
-4. **Error handling**: Graceful degradation on failures
+```yaml
+env:
+  DOCKER_BUILDKIT: 1                    # Enable BuildKit
+  BUILDX_NO_DEFAULT_ATTESTATIONS: 1     # Disable attestations
+  MAX_OPEN_PRS_PER_CONTAINER: 2         # Limit concurrent PRs
+  PR_AUTO_CLOSE_DAYS: 7                 # Auto-close stale PRs
+```
 
-### Action Development
-1. **Composite actions**: Use for reusable shell scripts
-2. **Input validation**: Validate all inputs
-3. **Output consistency**: Standardized output formats
-4. **Documentation**: Clear descriptions and examples
+### Registry Configuration
 
-### Security Considerations
-1. **Minimal permissions**: Only required permissions
-2. **Secret management**: Use GitHub Secrets
-3. **Input sanitization**: Validate untrusted inputs
-4. **Audit logging**: Track all significant actions
+```yaml
+env:
+  REGISTRY_URL: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
+  # Credentials via GitHub Secrets:
+  # DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+```
 
 ## Troubleshooting
 
 ### Common Issues
 
-#### Workflow Not Triggering
+**Workflow Not Triggering:**
 - Check branch protection rules
-- Verify file path filters
-- Check workflow permissions
+- Verify file path filters in workflow triggers
+- Ensure workflow permissions are correct
 
-#### Action Failing
-- Enable debug mode with `debug: true`
-- Check action logs for error details
-- Verify input parameters
+**Version Script Failures:**
+- Test script locally: `cd container && ./version.sh latest`
+- Check API rate limits and network connectivity
+- Verify JSON parsing with `jq`
 
-#### Version Detection Issues
-- Test version.sh script locally
-- Check network connectivity in actions
-- Verify API rate limits
+**Build Failures:**
+- Enable debug mode: `--field debug=true`
+- Check Docker daemon status
+- Verify registry credentials
+- Review build logs for specific errors
 
-### Debug Mode
+### Debug Techniques
 
-Enable debug output by setting the debug input to `true`:
+**Enable Debug Output:**
+```bash
+# For workflows
+gh workflow run upstream-monitor.yaml --field debug=true
 
-```yaml
-workflow_dispatch:
-  inputs:
-    debug:
-      default: true
+# For local testing
+DEBUG=1 ./make build wordpress
 ```
 
-Or set the environment variable:
+**Local Testing:**
+```bash
+# Test GitHub Actions locally
+./test-github-actions.sh
 
-```yaml
-env:
-  DEBUG_OUTPUT: true
+# Test specific workflow
+./test-github-actions.sh upstream -c wordpress --verbose
 ```
+
+## Best Practices
+
+### Workflow Design
+- Use descriptive job and step names
+- Implement proper error handling
+- Keep workflows idempotent (safe to re-run)
+- Use fail-fast for critical errors
+
+### Security
+- Use minimal required permissions
+- Store sensitive data in GitHub Secrets
+- Validate all user inputs
+- Audit workflow changes regularly
+
+### Performance
+- Use build caching where possible
+- Implement parallel execution for independent tasks
+- Optimize container builds with multi-stage Dockerfiles
+- Use specific action versions (not `@latest`)
 
 ---
 
-**Last Updated**: June 21, 2025
-**Maintained By**: DevOps Team
+**Last Updated**: July 2025
