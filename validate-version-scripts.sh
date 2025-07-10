@@ -245,7 +245,9 @@ test_version_script() {
     # Test 2: Check latest version with retries
     echo "  📋 Testing latest version (with retries)..."
     latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
-    if [ $? -eq 0 ] && [ -n "$latest_version" ]; then
+    latest_exit_code=$?
+    
+    if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
         # Validate format
         format_issues=$(validate_version_format "$latest_version")
         if [ $? -eq 0 ]; then
@@ -263,6 +265,10 @@ test_version_script() {
             issues+=("latest_format:$format_issues")
             has_errors=true
         fi
+    elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
+        log_warning "No upstream version found (container may be deprecated or source unavailable)"
+        test_results+=("latest_no_published")
+        # This could indicate upstream source issues but isn't necessarily an error
     else
         log_error "Failed to get latest version after $MAX_RETRIES retries"
         issues+=("latest_failed")
