@@ -148,9 +148,15 @@ get_latest_version() {
 case "${1:-current}" in
     latest) get_latest_version ;;
     current|*)
-      # Get our currently published version from Docker Hub
+      # For containers not yet published to registries:
+      # Return "no-published-version" and exit with code 1
+      # This is handled gracefully by validation and workflows
       source "$(dirname "$0")/../helpers/docker-tags"
-      latest-docker-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"  # Example with regex to match version string
+      if ! current_version=$(latest-docker-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"); then
+          echo "no-published-version"
+          exit 1
+      fi
+      echo "$current_version"
       ;;
 esac
 EOF
@@ -369,5 +375,44 @@ docker exec -it container-name sh
 - Document version source clearly
 
 ---
+
+## Shared Helper Functions
+
+### docker-registry Helper
+
+The `helpers/docker-registry` provides standardized version management functions to eliminate code duplication across version scripts.
+
+#### Key Functions
+
+```bash
+# Get current published version with graceful fallback
+get_current_published_version "owner/image" "regex_pattern"
+
+# Handle version requests with standardized pattern
+handle_version_request "$1" "owner/image" "regex_pattern" "upstream_function"
+```
+
+#### Usage Pattern
+
+```bash
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-registry"
+
+# Function to get latest upstream version
+get_latest_upstream() {
+    # Container-specific upstream logic (e.g., Docker Hub API, GitHub releases)
+    latest-docker-tag library/debian "^(bookworm|bullseye|buster)$"
+}
+
+# Use standardized version handling
+handle_version_request "$1" "oorabona/debian" "^(bookworm|bullseye|buster)$" "get_latest_upstream"
+```
+
+#### Benefits
+
+- **Eliminates code duplication** across version scripts
+- **Consistent error handling** with standardized no-published-version behavior  
+- **Automatic dependency management** (sources docker-tags and git-tags)
+- **Maintainable architecture** - changes made in one place
 
 **Last Updated**: July 2025

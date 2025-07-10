@@ -6,8 +6,6 @@ ARG RESTY_IMAGE_TAG="3.13"
 
 FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
 ARG RESTY_VERSION="1.19.3.1"

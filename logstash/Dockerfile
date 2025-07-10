@@ -1,5 +1,4 @@
 FROM logstash:2.4
-MAINTAINER Olivier ORABONA (olivier.orabona@gmail.com)
 
 ENV CONFD_SUBDIRS *
 
