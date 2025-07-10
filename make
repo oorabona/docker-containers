@@ -14,6 +14,10 @@ log_error() {
   >&2 echo -e "\033[31m>> $@\033[39m" && exit 1
 }
 
+log_warning() {
+  echo -e "\033[33m>> $@\033[39m"
+}
+
 log_help() {
   printf "\033[36m%-25s\033[0m %s\n" "$1" "$2"
 }
@@ -44,11 +48,23 @@ version() {
   fi
   local target=$1
   pushd ${target}
-  versions=$(./version.sh latest)
-  if [ -e "$versions" ]; then
+  versions=$(./version.sh latest 2>/dev/null)
+  exit_code=$?
+  if [ $exit_code -ne 0 ] || [ -z "$versions" ]; then
     log_error "Could not retrieve the latest version."
   else
     log_success "$versions"
+  fi
+  
+  # Also check current version
+  current_version=$(./version.sh current 2>/dev/null)
+  current_exit_code=$?
+  if [ $current_exit_code -eq 0 ] && [ -n "$current_version" ] && [ "$current_version" != "no-published-version" ]; then
+    log_success "Current published version: $current_version"
+  elif [ "$current_version" = "no-published-version" ]; then
+    log_warning "No published version found (container not yet released)"
+  else
+    log_warning "Could not retrieve current published version"
   fi
   popd
 }
@@ -89,10 +105,25 @@ make() {
   local target=$1
   local wantedVersion=${2:-latest}
   pushd ${target}
-  versions=$(./version.sh ${wantedVersion})
-  if [ -e "$versions" ]; then
-    log_error "Version checking returned false, please ensure version is correct: $2"
+  versions=$(./version.sh ${wantedVersion} 2>/dev/null)
+  exit_code=$?
+  
+  # Handle special cases
+  if [ "$versions" = "no-published-version" ]; then
+    log_warning "No published version found for $target, this will be an initial release"
+    # For no-published-version, we'll use the latest upstream version
+    versions=$(./version.sh latest 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$versions" ]; then
+      log_error "Could not determine version to build for $target"
+      popd
+      return 1
+    fi
+  elif [ $exit_code -ne 0 ] || [ -z "$versions" ]; then
+    log_error "Version checking returned false, please ensure version is correct: $wantedVersion"
+    popd
+    return 1
   fi
+  
   for version in $versions; do
     export WANTED=$wantedVersion VERSION=$version TAG=$version
     log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
