@@ -20,7 +20,6 @@ ARG OS_VERSION=latest
 FROM ubuntu:${OS_VERSION}
 
 ARG VERSION=latest
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/ansible-venv \
