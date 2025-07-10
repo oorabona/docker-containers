@@ -144,9 +144,21 @@ runs:
           
           cd "$container"
           
-          # Strategy 1: Try version.sh without arguments (for hardcoded versions like wordpress)
+          # Strategy 1: Try version.sh without arguments (for current published versions)
           if [[ -f version.sh ]]; then
-            current_version=$(bash version.sh 2>/dev/null | grep -E '^[0-9v]' | head -1 || echo "")
+            current_version=$(bash version.sh 2>/dev/null || echo "")
+            
+            # Handle special case for no published version
+            if [[ "$current_version" == "no-published-version" ]]; then
+              echo "no-published-version"
+              return
+            fi
+            
+            # Filter for valid version strings
+            if [[ -n "$current_version" && "$current_version" =~ ^[0-9v] ]]; then
+              echo "$current_version"
+              return
+            fi
           fi
           
           # Strategy 2: Extract from docker-compose.yml default values  
@@ -232,6 +244,32 @@ runs:
           
           # Get current version
           current_version=$(get_current_version "$container")
+          
+          # Handle special case for no published version
+          if [[ "$current_version" == "no-published-version" ]]; then
+            echo "   📦 No published version found (container not yet released)"
+            # For new containers, always consider them as having updates available
+            latest_version=""
+            cd "$container"
+            if [[ -f version.sh ]]; then
+              latest_version=$(bash version.sh latest 2>/dev/null || echo "")
+            fi
+            cd ..
+            
+            if [[ -n "$latest_version" ]]; then
+              echo "   🆕 New container ready for initial release: $latest_version"
+              containers_with_updates+=("$container")
+              container_info=$(jq -n \
+                --arg container "$container" \
+                --arg current "no-published-version" \
+                --arg latest "$latest_version" \
+                --arg status "new-container" \
+                '{container: $container, current_version: $current, latest_version: $latest, update_available: true, status: $status}')
+              version_info=$(echo "$version_info" | jq ". + [$container_info]")
+            fi
+            return
+          fi
+          
           if [[ -z "$current_version" ]]; then
             echo "   ⚠️ Could not determine current version"
             return

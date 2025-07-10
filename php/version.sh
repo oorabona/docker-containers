@@ -8,6 +8,10 @@ case "${1:-current}" in
         ;;
     current|*)
         # Get our currently published version from Docker Hub
-        latest-docker-tag oorabona/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
+        if ! current_version=$(latest-docker-tag oorabona/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"); then
+            echo "no-published-version"
+            exit 1
+        fi
+        echo "$current_version"
         ;;
 esac

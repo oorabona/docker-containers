@@ -148,9 +148,15 @@ get_latest_version() {
 case "${1:-current}" in
     latest) get_latest_version ;;
     current|*)
-      # Get our currently published version from Docker Hub
+      # For containers not yet published to registries:
+      # Return "no-published-version" and exit with code 1
+      # This is handled gracefully by validation and workflows
       source "$(dirname "$0")/../helpers/docker-tags"
-      latest-docker-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"  # Example with regex to match version string
+      if ! current_version=$(latest-docker-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"); then
+          echo "no-published-version"
+          exit 1
+      fi
+      echo "$current_version"
       ;;
 esac
 EOF
