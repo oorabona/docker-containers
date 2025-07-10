@@ -34,6 +34,7 @@ help() {
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
   log_help "version <target>" "Get latest version of <target>"
+  log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   echo
   echo Where:
   log_help "[version]" "Existing version, by default it is set to latest (auto discover)"
@@ -137,6 +138,72 @@ make() {
   popd
 }
 
+check_updates() {
+  local target=${1:-""}
+  local output_json="[]"
+  
+  # Determine targets to check
+  local check_targets
+  if [ -n "$target" ]; then
+    if [ ! -d "$target" ]; then
+      log_error "$target is not a valid target!"
+    fi
+    check_targets="$target"
+  else
+    check_targets="$targets"
+  fi
+  
+  # Check each target
+  for container in $check_targets; do
+    if [ ! -f "$container/version.sh" ]; then
+      continue # Skip containers without version.sh
+    fi
+    
+    pushd "$container" > /dev/null
+    
+    # Get current and latest versions (clean up output)
+    current_version=$(./version.sh current 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+    latest_version=$(./version.sh latest 2>/dev/null | head -1 | tr -d '\n' || echo "")
+    
+    # Determine update status
+    local update_available="false"
+    local status="up_to_date"
+    
+    if [ "$current_version" = "no-published-version" ]; then
+      if [ -n "$latest_version" ]; then
+        update_available="true"
+        status="new-container"
+      fi
+    elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
+      update_available="true"
+      status="update-available"
+    fi
+    
+    # Build JSON object for this container
+    container_json=$(jq -n \
+      --arg container "$container" \
+      --arg current "$current_version" \
+      --arg latest "$latest_version" \
+      --argjson update_available "$update_available" \
+      --arg status "$status" \
+      '{
+        container: $container,
+        current_version: $current,
+        latest_version: $latest,
+        update_available: $update_available,
+        status: $status
+      }')
+    
+    # Add to output array
+    output_json=$(echo "$output_json" | jq ". + [$container_json]")
+    
+    popd > /dev/null
+  done
+  
+  # Output the JSON array
+  echo "$output_json"
+}
+
 # Main entrypoint
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
@@ -154,5 +221,6 @@ case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
   version ) version $2 ;;
+  check-updates ) check_updates $2 ;;
   * ) help ;;
 esac
