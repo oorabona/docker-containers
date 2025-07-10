@@ -1,193 +1,65 @@
 # Testing Guide
 
-This guide explains how to test GitHub Actions workflows locally before pushing changes.
+Validate GitHub Actions workflows and containers locally before deployment.
 
 ## Quick Start
 
 ```bash
-# Test everything
+# Test all workflows
 ./test-github-actions.sh
 
-# Test specific components
-./test-github-actions.sh syntax
+# Test specific workflow
 ./test-github-actions.sh upstream -c sslh
-./test-github-actions.sh validate --verbose
+
+# Validate version scripts
+./validate-version-scripts.sh
 ```
 
 ## Prerequisites
 
-### Install GitHub CLI
-
-First, install the GitHub CLI:
-
+### GitHub CLI + act Extension
 ```bash
-# Ubuntu/Debian
+# Install GitHub CLI
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list
 sudo apt update && sudo apt install gh
 
-# macOS with Homebrew
-brew install gh
-
-# Windows with Chocolatey
-choco install gh
-
-# Windows with winget
-winget install --id GitHub.cli
-```
-
-### Install act as a GitHub CLI Extension
-
-Once GitHub CLI is installed, install act as an extension:
-
-```bash
-# Install the act extension
-gh extension install https://github.com/nektos/gh-act
-
-# Verify installation
-gh act --version
-
-# Alternative: Install from the GitHub CLI extension marketplace
+# Install act extension
 gh extension install nektos/gh-act
+gh act --version
 ```
 
-**Note:** Using `gh act` instead of standalone `act` provides better integration with GitHub CLI authentication and configuration.
-
-### Ensure Docker is Running
-
+### Docker Environment
 ```bash
-# Start Docker (Linux)
-sudo systemctl start docker
-
-# Check Docker status
+# Ensure Docker is running
+systemctl status docker
 docker info
 ```
 
-## Test Commands
+## Testing Workflows
 
-### Test Syntax Only
+### Syntax Validation
 ```bash
 ./test-github-actions.sh syntax
 ```
-Validates YAML syntax of all workflow files without executing them.
+Validates YAML syntax without execution.
 
-### Test Upstream Monitoring
+### Workflow Testing
 ```bash
-./test-github-actions.sh upstream
+# Test upstream monitoring
 ./test-github-actions.sh upstream -c wordpress --verbose
-```
-Tests the upstream version monitoring workflow with a specific container.
 
-### Test Auto-Build
-```bash
-./test-github-actions.sh build
-./test-github-actions.sh build -c nginx-rancher-rp
-```
-Tests the container auto-build workflow (dry-run only, no actual building).
+# Test auto-build workflow
+./test-github-actions.sh build -c sslh
 
-### Test Version Validation
-```bash
+# Test version validation
 ./test-github-actions.sh validate
-./test-github-actions.sh validate --verbose
-```
-Tests the version script validation workflow.
 
-### Test Individual Actions
-```bash
-./test-github-actions.sh actions
-./test-github-actions.sh actions -c terraform
-```
-Tests individual GitHub Actions in isolation.
-
-### Run Complete Test Suite
-```bash
+# Test complete suite
 ./test-github-actions.sh all
-./test-github-actions.sh  # same as 'all'
-```
-Runs all tests in sequence.
-
-## Advanced Testing
-
-### Full Integration Testing
-```bash
-FULL_TEST=true ./test-github-actions.sh
-```
-Enables real API calls and network operations (use with caution).
-
-### Dry Run Mode
-```bash
-./test-github-actions.sh --dry-run
-```
-Shows what tests would run without actually executing them.
-
-### Verbose Output
-```bash
-./test-github-actions.sh --verbose
-./test-github-actions.sh upstream -v
-```
-Enables detailed logging and command output.
-
-### Test Specific Container
-```bash
-./test-github-actions.sh upstream -c sslh
-./test-github-actions.sh build -c elasticsearch-conf
-```
-Tests workflows with a specific container instead of the default (wordpress).
-
-## Common Issues and Solutions
-
-### act Extension Not Found
-```bash
-# Install act as GitHub CLI extension
-gh extension install nektos/gh-act
-
-# Verify installation
-gh act --version
-
-# List installed extensions
-gh extension list
-
-# Update act extension
-gh extension upgrade nektos/gh-act
 ```
 
-### Docker Not Running
-```bash
-# Linux
-sudo systemctl start docker
-sudo usermod -aG docker $USER  # Add user to docker group
-
-# Verify
-docker info
-```
-
-### Workflow Syntax Errors
-```bash
-# Check syntax with gh act
-gh act -n -l
-
-# Validate specific workflow
-gh act -W .github/workflows/upstream-monitor.yaml -n
-```
-
-### Action Path Issues
-Ensure action references use correct paths:
-```yaml
-uses: ./.github/actions/check-upstream-versions  # Correct
-uses: .github/actions/check-upstream-versions    # Wrong
-```
-
-### Network/API Issues
-Some tests may fail due to:
-- Missing authentication tokens
-- Network connectivity issues  
-- Rate limiting
-
-These are expected in local testing and don't indicate problems with the workflow logic.
-
-## Workflow Triggers
-
-### Manual Triggers (GitHub CLI)
+### Manual Workflow Triggers
 ```bash
 # Trigger upstream monitoring
 gh workflow run upstream-monitor.yaml --field container=wordpress --field debug=true
@@ -195,59 +67,81 @@ gh workflow run upstream-monitor.yaml --field container=wordpress --field debug=
 # Trigger auto-build
 gh workflow run auto-build.yaml --field container=sslh
 
-# Trigger validation
-gh workflow run validate-version-scripts.yaml --field container=all
+# Trigger version validation
+gh workflow run validate-version-scripts.yaml
 ```
 
-### Local Triggers (gh act)
+## Container Testing
+
+### Version Script Validation
 ```bash
-# Trigger with specific inputs
-gh act workflow_dispatch -W .github/workflows/upstream-monitor.yaml \
-  --input container=wordpress \
-  --input debug=true \
-  --input create_pr=false
+# Test all version scripts
+./validate-version-scripts.sh
 
-# Test push event
-gh act push -W .github/workflows/auto-build.yaml
-
-# Test pull request event  
-gh act pull_request -W .github/workflows/validate-version-scripts.yaml
+# Test specific container
+cd container-name
+./version.sh current
+./version.sh latest
 ```
 
-## Test Development
-
-### Adding New Tests
-
-1. Add test function to `test-github-actions.sh`:
+### Build Testing
 ```bash
-test_my_feature() {
-    log_step "Testing My Feature"
-    # Test implementation
-}
+# Build specific container
+./make build container-name
+
+# Test container locally
+./make run container-name
+
+# Check container health
+docker ps
+docker logs container-name
 ```
 
-2. Add to main function:
+### Integration Testing
 ```bash
-case "$COMMAND" in
-    my-feature)
-        test_my_feature || ((failed_tests++))
-        ;;
-esac
+# Test complete workflow
+./test-all-containers.sh
+
+# Performance testing
+time ./make build wordpress
+docker images wordpress --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 ```
 
-3. Update usage documentation.
+## Troubleshooting
 
-### Debugging Tests
+### Common Issues
 
+**act Extension Issues:**
 ```bash
-# Enable verbose mode
+# Install/update act extension
+gh extension install nektos/gh-act
+gh extension upgrade nektos/gh-act
+gh extension list
+```
+
+**Docker/Podman Issues:**
+Please refer to [Docker](https://www.docker.com) or [Podman](https://podman.io).
+
+**Workflow Syntax Errors:**
+```bash
+# Validate workflow syntax
+gh act -n -l
+gh act -W .github/workflows/upstream-monitor.yaml -n
+```
+
+**Network/API Failures:**
+Expected in local testing - indicates rate limits or authentication issues, not workflow problems.
+
+### Debug Techniques
+
+**Verbose Testing:**
+```bash
 ./test-github-actions.sh --verbose
+gh act workflow_dispatch -W .github/workflows/upstream-monitor.yaml --verbose
+```
 
-# Check gh act version and platform
-gh act --version
-gh act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest --list
-
-# Test minimal workflow
+**Test Minimal Workflow:**
+```bash
 gh act -W - << 'EOF'
 name: Test
 on: push
@@ -257,28 +151,22 @@ jobs:
     steps:
       - run: echo "Hello World"
 EOF
+```
 
-# Debug specific workflow with verbose output
-gh act workflow_dispatch -W .github/workflows/upstream-monitor.yaml --verbose
-
-# List available events and jobs
+**Check Available Events:**
+```bash
 gh act -l
+gh act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest --list
 ```
 
 ## Best Practices
 
-1. **Always test locally** before pushing workflow changes
-2. **Use dry-run mode** when developing new tests
-3. **Test with different containers** to ensure workflows are generic
-4. **Check prerequisites** before running tests
-5. **Use verbose mode** when debugging issues
-6. **Keep tests fast** by using dry-run and skip flags where possible
+- **Test locally** before pushing workflow changes
+- **Use specific containers** for targeted testing
+- **Enable verbose mode** when debugging
+- **Validate syntax** first, then test execution
+- **Check prerequisites** before running tests
 
-## Further Reading
+---
 
-- [gh-act Extension](https://github.com/nektos/gh-act) - GitHub CLI extension for act
-- [act Documentation](https://github.com/nektos/act) - Original act project
-- [GitHub CLI Extensions](https://cli.github.com/manual/gh_extension) - Managing CLI extensions
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [Local Development Guide](LOCAL_DEVELOPMENT.md)
-- [GitHub Actions Guide](GITHUB_ACTIONS.md)
+**Last Updated**: July 2025
