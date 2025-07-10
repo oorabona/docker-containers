@@ -34,7 +34,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -246,3 +246,4 @@ jobs:
     with:
       trigger_reason: "Post-build update after successful container builds"
     secrets: inherit
+# Permissions are required for updating version files, committing changes, and publishing packages during the auto-build process.
