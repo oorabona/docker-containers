@@ -1,13 +1,10 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-tags"
+source "$(dirname "$0")/../helpers/docker-registry"
 
-case "${1:-current}" in
-    latest)
-        # Get latest version from official WordPress registry
-        latest-docker-tag library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"
-        ;;
-    current|*)
-        # Get our currently published version from Docker Hub
-        latest-docker-tag oorabona/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"
-        ;;
-esac
+# Function to get latest upstream version
+get_latest_upstream() {
+    latest-docker-tag library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"
+}
+
+# Use standardized version handling
+handle_version_request "$1" "oorabona/wordpress" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"

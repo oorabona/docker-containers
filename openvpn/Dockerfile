@@ -2,8 +2,6 @@
 ARG OS_VERSION=latest
 FROM alpine:${OS_VERSION}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 ARG VERSION=latest
 ARG NPROC=1
 
