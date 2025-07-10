@@ -237,7 +237,7 @@ jobs:
       - name: Create Pull Request
         if: (steps.classify.outputs.change_type == 'major' || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success != 'true') || (steps.classify.outputs.change_type == 'minor' && steps.auto_build.outputs.build_success == 'true')) && steps.close_duplicates.outputs.existing_pr_found != 'true'
         id: create_pr
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: >-
