@@ -1,69 +1,58 @@
 # Security Policy
 
-## Reporting Security Vulnerabilities
+## Reporting Vulnerabilities
 
-We take security seriously. If you discover a security vulnerability, please report it to us privately.
+### Report Security Issues
+Unless related to the current implementation of these containers, please forward upstream directly.
 
-### How to Report
+### Response Timeline
+- **Acknowledgment**: 24 hours
+- **Assessment**: 72 hours  
+- **Updates**: Regular progress reports
+- **Credit**: Recognition in advisory
 
-1. **Email**: Send details to security@example.com
-2. **GitHub**: Use the private security advisory feature
-3. **Include**: Detailed description, reproduction steps, and potential impact
-
-### What to Expect
-
-- **Acknowledgment** within 24 hours
-- **Initial assessment** within 72 hours
-- **Regular updates** on progress
-- **Credit** in security advisory (if desired)
-
-## Security Measures
+## Security Implementation
 
 ### Container Security
-
-- **Non-root execution** by default
-- **Minimal attack surface** using Alpine/distroless images
-- **Regular vulnerability scanning**
-- **Automated security updates**
+- **Non-root users** by default
+- **Minimal base images** (Alpine/distroless)
+- **Automated vulnerability scanning**
+- **Regular security updates**
 
 ### CI/CD Security
-
-- **Secrets management** via GitHub Secrets
+- **GitHub Secrets** for sensitive data
 - **Branch protection** rules enforced
-- **Signed commits** required
-- **Security scanning** in all workflows
+- **Workflow permissions** limited to minimum required
+- **Security scanning** in all pipelines
 
 ### Access Control
-
-- **Principle of least privilege**
-- **Regular access reviews**
+- **Least privilege** principle
+- **Regular access audits**
 - **Multi-factor authentication** required
-- **Audit logging** enabled
+- **Comprehensive audit logging**
 
 ## Supported Versions
 
-| Version | Supported          |
+| Version | Support Status     |
 | ------- | ------------------ |
-| Latest  | ✅ Yes             |
-| Previous| ✅ Yes (6 months)  |
-| Older   | ❌ No              |
+| Latest  | ✅ Fully supported |
+| Previous| ✅ 6 months        |
+| Older   | ❌ Not supported   |
 
-## Security Best Practices
+## Best Practices
 
 ### For Contributors
+- Never commit secrets or credentials
+- Use signed commits
+- Follow secure coding practices
+- Scan dependencies for vulnerabilities
 
-1. **Never commit secrets** or credentials
-2. **Use signed commits** when possible
-3. **Follow security coding practices**
-4. **Scan dependencies** for vulnerabilities
-
-### For Users
-
-1. **Use specific version tags** instead of `latest`
-2. **Regularly update** container images
-3. **Scan images** before deployment
-4. **Follow security hardening** guides
+### For Users  
+- Use specific version tags (not `latest`)
+- Update container images regularly
+- Scan images before deployment
+- Implement security hardening
 
 ---
 
-**Last Updated**: June 21, 2025
+**Last Updated**: July 2025
