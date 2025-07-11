@@ -1,18 +1,6 @@
 ARG OS_IMAGE_BASE="alpine"
-ARG OS_IMAGE_TAGCOPY docker-entrypoint.sh /
+ARG OS_IMAGE_TAG="latest"
 
-EXPOSE 443
-
-# Add healthcheck to verify SSLH is responding correctly
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD netstat -tuln | grep ':443' || exit 1
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
-
-# By default we return sslh version.
-CMD ["-V"]
-
-USER nobody
 FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
 
 ARG VERSION=latest

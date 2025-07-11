@@ -126,7 +126,12 @@ runs:
           echo "📋 No containers need building"
         else
           container_json=$(printf '%s\n' "${containers_to_build[@]}" | jq -R . | jq -s -c .)
-          echo "containers=$container_json" >> $GITHUB_OUTPUT
+          # Use heredoc to properly preserve JSON formatting
+          {
+            echo "containers<<EOF"
+            echo "$container_json"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "count=${#containers_to_build[@]}" >> $GITHUB_OUTPUT
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi

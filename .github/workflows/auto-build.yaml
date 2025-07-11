@@ -62,7 +62,7 @@ jobs:
 
   build-and-push:
     needs: detect-containers
-    if: fromJson(needs.detect-containers.outputs.containers).length > 0
+    if: needs.detect-containers.outputs.count > 0
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
