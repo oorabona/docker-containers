@@ -233,7 +233,7 @@ runs:
         echo "✅ Successfully built and pushed $container:$current_version for platforms: $available_platforms"
     - name: Run Trivy vulnerability scanner
       if: steps.check-build.outputs.needs_build == 'true'
-      uses: aquasecurity/trivy-action@v0.28.0
+      uses: aquasecurity/trivy-action@0.32.0
       with:
         image-ref: >-
           ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version
