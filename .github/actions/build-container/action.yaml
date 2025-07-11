@@ -32,7 +32,6 @@ runs:
   steps:
     - name: Set up QEMU for multi-architecture builds
       uses: docker/setup-qemu-action@v3
-      continue-on-error: true  # Allow failure in local testing
       
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
