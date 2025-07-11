@@ -51,13 +51,13 @@ runs:
         registry: docker.io
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-    - name: Check if build is needed
+    - name: Check if build is needed and get version
       id: check-build
       shell: bash
       run: |
         set -e
         container="${{ inputs.container }}"
-        echo "🔍 Final build check for $container..."
+        echo "🔍 Checking build requirements for $container..."
 
         # Check if the container directory exists and has a Dockerfile
         if [[ ! -f "$container/Dockerfile" ]]; then
@@ -68,169 +68,62 @@ runs:
           exit 0
         fi
 
-        # Get current version
+        # Get current version using make script
         current_version=""
-        if [[ -f "$container/version.sh" ]]; then
-          cd "$container"
-          current_version=$(bash version.sh 2>/dev/null || echo "")
-          cd ..
-        fi
-        if [[ -z "$current_version" ]]; then
-          echo "⚠️  No version.sh or unable to get version, using 'latest'"
+        if current_version=$(./make version "$container" 2>/dev/null); then
+          echo "   📋 Current version: $current_version"
+        else
+          echo "   ⚠️ Could not get version, using 'latest'"
           current_version="latest"
         fi
-        echo "   📋 Current version: $current_version"
 
         # Set image names
         github_username="${{ github.repository_owner }}"
         image_name="${github_username}/${container}"
-        needs_build=false
-
-        # Force rebuild always builds
+        
+        # For force rebuild or code changes, always build
+        needs_build=true
         if [ "${{ inputs.force_rebuild }}" = "true" ]; then
-          needs_build=true
           echo "   🔄 Force rebuild requested"
+        elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "   📝 Build triggered by code changes"
         else
-          # Function to check if image exists in a registry
-          check_image_exists() {
-            local registry=$1
-            local image_name=$2
-            local tag=$3
-            local full_name="${registry}/${image_name}:${tag}"
-            if docker manifest inspect "$full_name" >/dev/null 2>&1; then
-              return 0  # Image exists
-            else
-              return 1  # Image doesn't exist
-            fi
-          }
-
-          # Check registries for scheduled runs or manual dispatch
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "   🔄 Checking if images exist in registries..."
-
-            # Check GitHub Container Registry
-            ghcr_exists=false
-            if check_image_exists "ghcr.io" "$image_name" "$current_version"; then
-              echo "   ✅ Image exists in GHCR: ghcr.io/$image_name:$current_version"
-              ghcr_exists=true
-            else
-              echo "   ❌ Image missing in GHCR: ghcr.io/$image_name:$current_version"
-            fi
-
-            # Check Docker Hub (only if credentials available)
-            dockerhub_exists=false
-            if [ -n "${{ inputs.dockerhub_username }}" ]; then
-              if check_image_exists "docker.io" "$image_name" "$current_version"; then
-                echo "   ✅ Image exists in Docker Hub: docker.io/$image_name:$current_version"
-                dockerhub_exists=true
-              else
-                echo "   ❌ Image missing in Docker Hub: docker.io/$image_name:$current_version"
-              fi
-            else
-              dockerhub_exists=true  # Skip Docker Hub check if no credentials
-              echo "   ℹ️ Docker Hub credentials not configured, skipping check"
-            fi
-
-            # Build if image doesn't exist in either registry
-            if [ "$ghcr_exists" = false ] || [ "$dockerhub_exists" = false ]; then
-              needs_build=true
-              echo "   🔨 Build needed: image missing in one or both registries"
-            else
-              echo "   ✅ Image exists in all target registries, no build needed"
-            fi
-          else
-            # For push/PR events, always build (we already filtered by modified files)
-            needs_build=true
-            echo "   📝 Build triggered by code changes"
-          fi
+          echo "   🔄 Build triggered by schedule/dispatch"
         fi
+        
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
-    - name: Build and push Docker image
+
+    - name: Build and push using make script
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       shell: bash
       run: |
         set -e
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
-        image_name="${{ steps.check-build.outputs.image_name }}"
-        echo "🔨 Building $container:$current_version..."
-
-        # Prepare build tags
-        tags=""
-        tags="$tags --tag ghcr.io/$image_name:$current_version"
-        tags="$tags --tag ghcr.io/$image_name:latest"
-
-        # Add Docker Hub tags if credentials available
-        if [ -n "${{ inputs.dockerhub_username }}" ]; then
-          tags="$tags --tag docker.io/$image_name:$current_version"
-          tags="$tags --tag docker.io/$image_name:latest"
-        fi
-
-        # Prepare cache arguments
-        cache_from="--cache-from type=gha"
-        cache_to="--cache-to type=gha,mode=max"
         
-        # Add registry cache if available
-        if docker manifest inspect "ghcr.io/$image_name:buildcache" >/dev/null 2>&1; then
-          cache_from="$cache_from --cache-from type=registry,ref=ghcr.io/$image_name:buildcache"
-        fi
-        cache_to="$cache_to --cache-to type=registry,ref=ghcr.io/$image_name:buildcache,mode=max"
-
-        # Detect available platforms using reliable Docker Buildx query
-        echo "   🔍 Detecting available build platforms..."
+        echo "🔨 Building $container:$current_version using make script..."
         
-        # Get the current builder and its supported platforms
-        current_builder=$(docker buildx inspect --bootstrap 2>/dev/null | grep "^Name:" | head -1 | awk '{print $2}' || echo "default")
+        # Make the script executable
+        chmod +x make
         
-        # Use docker buildx ls with JSON output for reliable platform detection
-        supported_platforms=""
-        if builder_info=$(docker buildx ls --format json 2>/dev/null); then
-          # Extract platforms for the current builder using jq
-          supported_platforms=$(echo "$builder_info" | jq -r --arg builder "$current_builder" 'select(.name == $builder) | .platforms[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-        fi
-        
-        # Fallback method: use docker buildx inspect with more reliable parsing
-        if [[ -z "$supported_platforms" ]]; then
-          echo "   ℹ️ Using fallback platform detection method..."
-          # Get platforms from inspect output, looking for the Platforms line specifically
-          if platforms_line=$(docker buildx inspect --bootstrap 2>/dev/null | grep "^Platforms:" | head -1); then
-            supported_platforms=$(echo "$platforms_line" | sed 's/^Platforms: *//' | tr ' ' ',')
-          fi
-        fi
-        
-        # Determine which platforms to build for
-        available_platforms="linux/amd64"  # Always default to amd64
-        
-        if [[ -n "$supported_platforms" ]]; then
-          echo "   📋 Builder supports platforms: $supported_platforms"
+        # Use make script to build and push
+        # The make script handles all the complexity of building and pushing
+        if ./make build "$container" "$current_version"; then
+          echo "✅ Build successful"
           
-          # Check if arm64 is supported (check for various arm64 variants)
-          if echo "$supported_platforms" | grep -qE "(linux/arm64|linux/aarch64)"; then
-            available_platforms="linux/amd64,linux/arm64"
-            echo "   🏗️ Building for multiple architectures: $available_platforms"
+          # Push to registries using make script  
+          if ./make push "$container" "$current_version"; then
+            echo "✅ Push successful"
           else
-            echo "   🏗️ ARM64 not supported, building for single architecture: $available_platforms"
+            echo "⚠️ Push failed, but build succeeded"
+            exit 1
           fi
         else
-          echo "   ⚠️ Could not detect supported platforms, defaulting to: $available_platforms"
+          echo "❌ Build failed"
+          exit 1
         fi
-
-        # Build the image with enhanced caching and platform support
-        docker buildx build \
-          --platform "$available_platforms" \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
-          --build-arg VERSION="$current_version" \
-          $cache_from \
-          $cache_to \
-          $tags \
-          --push \
-          --provenance=false \
-          --sbom=false \
-          "$container/"
-        
-        echo "✅ Successfully built and pushed $container:$current_version for platforms: $available_platforms"
     - name: Run Trivy vulnerability scanner
       if: steps.check-build.outputs.needs_build == 'true'
       uses: aquasecurity/trivy-action@0.32.0
