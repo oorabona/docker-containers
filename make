@@ -33,7 +33,7 @@ help() {
   log_help "build <target> [version]" "Build <target> container using [version]"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
-  log_help "version <target>" "Get latest version of <target>"
+  log_help "version <target> [--bare]" "Get latest version of <target> (--bare for script-friendly output)"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   echo
   echo Where:
@@ -48,6 +48,27 @@ version() {
     log_error "$1 is not a valid target !"
   fi
   local target=$1
+  local bare_mode=false
+  
+  # Check for --bare flag
+  if [ "$2" = "--bare" ]; then
+    bare_mode=true
+  fi
+  
+  if [ "$bare_mode" = true ]; then
+    # Bare mode: just get the version without any formatting or extra output
+    pushd ${target} > /dev/null 2>&1
+    ./version.sh latest 2>/dev/null
+    local exit_code=$?
+    popd > /dev/null 2>&1
+    if [ $exit_code -ne 0 ]; then
+      echo "unknown"
+      exit 1
+    fi
+    return 0
+  fi
+  
+  # Regular mode with formatting and additional info
   pushd ${target}
   versions=$(./version.sh latest 2>/dev/null)
   exit_code=$?
@@ -205,6 +226,13 @@ check_updates() {
 }
 
 # Main entrypoint
+# Check for --bare mode early to skip Docker Compose detection
+if [[ "$1" == "version" && "$3" == "--bare" ]]; then
+  # Direct call to version function without Docker Compose detection
+  version "$2" "--bare"
+  exit $?
+fi
+
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
   docker compose 2>/dev/null 1>&2
@@ -220,7 +248,7 @@ fi
 case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
-  version ) version $2 ;;
+  version ) version $2 $3 ;;
   check-updates ) check_updates $2 ;;
   * ) help ;;
 esac

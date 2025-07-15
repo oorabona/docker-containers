@@ -68,10 +68,15 @@ runs:
           exit 0
         fi
 
-        # Get current version using make script
+        # Get current version using make script with --bare mode for clean output
         current_version=""
-        if current_version=$(./make version "$container" 2>/dev/null); then
-          echo "   📋 Current version: $current_version"
+        if current_version=$(./make version "$container" --bare 2>/dev/null); then
+          if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
+            echo "   📋 Current version: $current_version"
+          else
+            echo "   ⚠️ Could not get version, using 'latest'"
+            current_version="latest"
+          fi
         else
           echo "   ⚠️ Could not get version, using 'latest'"
           current_version="latest"
