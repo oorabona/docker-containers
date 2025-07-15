@@ -79,7 +79,7 @@ version() {
   
   if [ "$bare_mode" = true ]; then
     # Bare mode: just get the version without any formatting or extra output
-    pushd ${target} > /dev/null 2>&1
+    pushd "${target}" > /dev/null 2>&1
     ./version.sh latest 2>/dev/null
     local exit_code=$?
     popd > /dev/null 2>&1
