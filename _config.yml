@@ -1,0 +1,40 @@
+title: Docker Containers
+description: >-
+  Automated container management system with intelligent upstream monitoring,
+  version classification, and CI/CD pipelines.
+baseurl: ""
+url: "https://oorabona.github.io"
+
+# Build settings
+markdown: kramdown
+theme: minima
+plugins:
+  - jekyll-feed
+
+# Content settings
+show_excerpts: true
+
+# Navigation
+header_pages:
+  - dashboard.md
+  - docs/index.md
+
+# Footer
+github_username: oorabona
+
+# Exclude files from Jekyll build
+exclude:
+  - .github/
+  - test-logs/
+  - "*.sh"
+  - make
+  - Dockerfile
+  - docker-compose.yml
+  - compose.yml
+  - version.sh
+  - "*/Dockerfile"
+  - "*/version.sh"
+  - "*/docker-compose.yml"
+  - "*/compose.yml"
+  - node_modules/
+  - vendor/
