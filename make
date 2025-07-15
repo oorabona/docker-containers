@@ -55,15 +55,13 @@ version() {
         shift
         ;;
       -*)
-        echo "Unknown option: $1" >&2
-        exit 1
+        log_error "Unknown option: $1"
         ;;
       *)
         if [[ -z "$target" ]]; then
           target="$1"
         else
-          echo "Too many arguments. Usage: version <target> [--bare]" >&2
-          exit 1
+          log_error "Too many arguments. Usage: version <target> [--bare]"
         fi
         shift
         ;;
