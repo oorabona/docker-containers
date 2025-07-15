@@ -44,15 +44,39 @@ help() {
 }
 
 version() {
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
-  fi
-  local target=$1
+  local target=""
   local bare_mode=false
   
-  # Check for --bare flag
-  if [ "$2" = "--bare" ]; then
-    bare_mode=true
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --bare)
+        bare_mode=true
+        shift
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$target" ]]; then
+          target="$1"
+        else
+          echo "Too many arguments. Usage: version <target> [--bare]" >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  if [[ -z "$target" ]]; then
+    echo "Usage: version <target> [--bare]" >&2
+    exit 1
+  fi
+  
+  if [ ! -d "$target" ]; then
+    log_error "$target is not a valid target !"
   fi
   
   if [ "$bare_mode" = true ]; then
@@ -227,10 +251,16 @@ check_updates() {
 
 # Main entrypoint
 # Check for --bare mode early to skip Docker Compose detection
-if [[ "$1" == "version" && "$3" == "--bare" ]]; then
-  # Direct call to version function without Docker Compose detection
-  version "$2" "--bare"
-  exit $?
+if [[ "$1" == "version" ]]; then
+  # Check if --bare is anywhere in the arguments
+  for arg in "$@"; do
+    if [[ "$arg" == "--bare" ]]; then
+      # Direct call to version function without Docker Compose detection
+      shift  # Remove 'version' from arguments
+      version "$@"
+      exit $?
+    fi
+  done
 fi
 
 # If docker(-)compose is not found, just exit immediately
@@ -248,7 +278,7 @@ fi
 case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
-  version ) version $2 $3 ;;
+  version ) shift; version "$@" ;;
   check-updates ) check_updates $2 ;;
   * ) help ;;
 esac
