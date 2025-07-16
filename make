@@ -30,7 +30,7 @@ targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
 help() {
   echo Commands:
   log_help help "This help"
-  log_help "build <target> [version]" "Build <target> container using [version]"
+  log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
   log_help "version <target> [--bare]" "Get latest version of <target> (--bare for script-friendly output)"
@@ -149,8 +149,21 @@ make() {
   local target=$1
   local wantedVersion=${2:-latest}
   pushd ${target}
-  versions=$(./version.sh ${wantedVersion} 2>/dev/null)
-  exit_code=$?
+  
+  # Handle version detection logic properly
+  if [ "$wantedVersion" = "latest" ]; then
+    # Get latest upstream version
+    versions=$(./version.sh latest 2>/dev/null)
+    exit_code=$?
+  elif [ "$wantedVersion" = "current" ]; then
+    # Get current published version  
+    versions=$(./version.sh current 2>/dev/null)
+    exit_code=$?
+  else
+    # Use the specific version provided directly
+    versions="$wantedVersion"
+    exit_code=0
+  fi
   
   # Handle special cases
   if [ "$versions" = "no-published-version" ]; then
