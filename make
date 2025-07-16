@@ -37,7 +37,10 @@ help() {
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   echo
   echo Where:
-  log_help "[version]" "Existing version, by default it is set to latest (auto discover)"
+  log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
+  log_help "  latest" "Upstream version (fetched from source project/registry)"
+  log_help "  current" "Published version (what we currently have built/tagged)"
+  log_help "  <specific>" "Explicit version string (e.g., '1.2.3', '2024-01-15')"
   echo
   echo List of possible targets:
   log_help "$(echo $targets| tr ' ' '\n')"

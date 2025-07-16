@@ -86,8 +86,18 @@ update_changelog() {
                 next
             }
             
-            # Add entry before horizontal rule or end of section
-            found_section && /^---$/ {
+            # Add entry to existing subsection (after existing entries)
+            found_section && /^$/ && !added {
+                # Empty line in our subsection, add entry before it
+                print entry
+                print ""
+                added = 1
+                found_section = 0
+                next
+            }
+            
+            # Add entry before horizontal rule or next section
+            found_section && (/^---$/ || /^## / || /^### /) {
                 if (!added) {
                     print entry
                     print ""
@@ -153,12 +163,19 @@ update_changelog() {
         
         # Insert after the header but before first existing date section
         /^## [0-9]{4}-[0-9]{2}-[0-9]{2}$/ && !added {
+            # Determine complementary section name
+            if (section == "Auto-Built (Minor/Patch Updates)") {
+                other_section = "PR Review Required (Major Updates)"
+            } else {
+                other_section = "Auto-Built (Minor/Patch Updates)"
+            }
+            
             print "## " date
             print ""
             print "### " section
             print entry
             print ""
-            print "### " (section == "Auto-Built (Minor/Patch Updates)" ? "PR Review Required (Major Updates)" : "Auto-Built (Minor/Patch Updates)")
+            print "### " other_section
             print "_No builds yet_"
             print ""
             print $0
@@ -168,12 +185,19 @@ update_changelog() {
         
         # If no date sections found, add after initial description
         /^---$/ && !added {
+            # Determine complementary section name
+            if (section == "Auto-Built (Minor/Patch Updates)") {
+                other_section = "PR Review Required (Major Updates)"
+            } else {
+                other_section = "Auto-Built (Minor/Patch Updates)"
+            }
+            
             print "## " date
             print ""
             print "### " section
             print entry
             print ""
-            print "### " (section == "Auto-Built (Minor/Patch Updates)" ? "PR Review Required (Major Updates)" : "Auto-Built (Minor/Patch Updates)")
+            print "### " other_section
             print "_No builds yet_"
             print ""
             print $0
