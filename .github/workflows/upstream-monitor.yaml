@@ -103,8 +103,9 @@ jobs:
           echo "Date: $(date -u)" >> ${{ matrix.container }}/LAST_REBUILD.md
           echo "Type: ${{ steps.classify.outputs.change_type }}" >> ${{ matrix.container }}/LAST_REBUILD.md
           
-          # Update CHANGELOG
-          echo "- ${{ matrix.container }}: ${{ steps.classify.outputs.current_version }} -> ${{ steps.classify.outputs.new_version }} (${{ steps.classify.outputs.change_type }}, $(date -u))" >> CHANGELOG.md
+          # Update CHANGELOG with proper section management
+          chmod +x .github/scripts/update-changelog.sh
+          .github/scripts/update-changelog.sh "${{ matrix.container }}" "${{ steps.classify.outputs.current_version }}" "${{ steps.classify.outputs.new_version }}" "${{ steps.classify.outputs.change_type }}"
 
       - name: Create Pull Request
         if: steps.close_duplicates.outputs.existing_pr_found != 'true'
