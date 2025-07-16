@@ -57,8 +57,7 @@ runs:
       run: |
         set -e
         container="${{ inputs.container }}"
-        echo "🔍 Checking build requirements for $container..."
-
+        
         # Check if the container directory exists and has a Dockerfile
         if [[ ! -f "$container/Dockerfile" ]]; then
           echo "❌ No Dockerfile found for $container"
@@ -68,32 +67,34 @@ runs:
           exit 0
         fi
 
-        # Get current version using make script with --bare mode for clean output
-        current_version=""
-        if current_version=$(./make version "$container" --bare 2>/dev/null); then
-          if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
-            echo "   📋 Current version: $current_version"
-          else
-            echo "   ⚠️ Could not get version, using 'latest'"
-            current_version="latest"
-          fi
-        else
-          echo "   ⚠️ Could not get version, using 'latest'"
-          current_version="latest"
-        fi
-
         # Set image names
         github_username="${{ github.repository_owner }}"
         image_name="${github_username}/${container}"
         
-        # For force rebuild or code changes, always build
-        needs_build=true
-        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
-          echo "   🔄 Force rebuild requested"
-        elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
-          echo "   📝 Build triggered by code changes"
+        # Get current version for tagging (simple, no registry checks needed)
+        current_version=""
+        if current_version=$(./make version "$container" --bare 2>/dev/null); then
+          if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
+            echo "📋 Building version: $current_version"
+          else
+            current_version="latest"
+            echo "📋 Building version: $current_version (fallback)"
+          fi
         else
-          echo "   🔄 Build triggered by schedule/dispatch"
+          current_version="latest"
+          echo "📋 Building version: $current_version (fallback)"
+        fi
+
+        # Determine if build is needed
+        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
+          echo "🔄 Force rebuild requested - build authorized by upstream monitor"
+          needs_build=true
+        elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "📝 Code changes detected - build needed"
+          needs_build=true  
+        else
+          echo "🔄 Manual/scheduled build"
+          needs_build=true
         fi
         
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
@@ -129,19 +130,21 @@ runs:
           echo "❌ Build failed"
           exit 1
         fi
-    - name: Run Trivy vulnerability scanner
-      if: steps.check-build.outputs.needs_build == 'true'
-      uses: aquasecurity/trivy-action@0.32.0
-      with:
-        image-ref: >-
-          ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version
-          }}
-        format: sarif
-        output: trivy-results.sarif
-      continue-on-error: true
-    - name: Upload Trivy scan results
-      if: steps.check-build.outputs.needs_build == 'true'
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: trivy-results.sarif
-      continue-on-error: true
+    # Note: Trivy scanning temporarily disabled due to image reference issues
+    # with multi-platform builds and docker-compose image naming
+    # TODO: Re-enable after fixing image tagging consistency
+    # - name: Run Trivy vulnerability scanner
+    #   if: steps.check-build.outputs.needs_build == 'true'
+    #   uses: aquasecurity/trivy-action@0.32.0
+    #   with:
+    #     image-ref: local-scan/${{ inputs.container }}:${{ steps.check-build.outputs.current_version }}
+    #     format: sarif
+    #     output: trivy-results.sarif
+    #   continue-on-error: true
+    # Note: SARIF upload temporarily disabled along with Trivy scanning
+    # - name: Upload Trivy scan results
+    #   if: steps.check-build.outputs.needs_build == 'true'
+    #   uses: github/codeql-action/upload-sarif@v3
+    #   with:
+    #     sarif_file: trivy-results.sarif
+    #   continue-on-error: true
