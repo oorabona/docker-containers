@@ -1,4 +1,5 @@
-FROM logstash:2.4
+ARG VERSION=latest
+FROM logstash:${VERSION}
 
 ENV CONFD_SUBDIRS *
 

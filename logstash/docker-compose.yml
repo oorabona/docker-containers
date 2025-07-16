@@ -5,7 +5,7 @@ services:
     build:
       context: .
       args:
-        VERSION: ${VERSION:-2.4}
+        VERSION: ${VERSION:-latest}
     image: ${DOCKER_REGISTRY:-}logstash:${TAG:-latest}
     container_name: logstash
     ports:
