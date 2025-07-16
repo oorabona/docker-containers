@@ -22,19 +22,17 @@ header_pages:
 # Footer
 github_username: oorabona
 
-# Exclude files from Jekyll build
+# Include only specific files for Jekyll build (allowlist approach)
+include:
+  - "_*"           # Jekyll directories (_layouts, _includes, etc.)
+  - "*.md"         # All markdown files
+  - "*.html"       # All HTML files
+  - "docs/"        # Documentation directory
+  - "assets/"      # Assets directory (CSS, images, etc.)
+  - "_config.yml"  # This config file
+
+# Only exclude absolute essentials (override Jekyll defaults)
 exclude:
-  - .github/
-  - test-logs/
-  - "*.sh"
-  - make
-  - Dockerfile
-  - docker-compose.yml
-  - compose.yml
-  - version.sh
-  - "*/Dockerfile"
-  - "*/version.sh"
-  - "*/docker-compose.yml"
-  - "*/compose.yml"
   - node_modules/
   - vendor/
+  - Gemfile*
