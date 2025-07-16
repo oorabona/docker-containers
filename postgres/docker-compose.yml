@@ -6,7 +6,7 @@ services:
       args:
         VERSION: "14"
         LOCALES: "fr_FR en_US"
-    image: postgres:14-fr
+    image: oorabona/postgres:14-fr
     container_name: postgres14
     environment:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
