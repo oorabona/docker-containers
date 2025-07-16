@@ -141,8 +141,11 @@ jobs:
   trigger-auto-build:
     needs: [check-upstream-versions, create-update-prs]
     if: fromJson(needs.check-upstream-versions.outputs.update_count) > 0
+    strategy:
+      matrix:
+        container: ${{ fromJson(needs.check-upstream-versions.outputs.containers_with_updates) }}
     uses: ./.github/workflows/auto-build.yaml
     with:
-      container: ${{ join(fromJson(needs.check-upstream-versions.outputs.containers_with_updates), ',') }}
-      triggered_by_upstream: true
+      container: ${{ matrix.container }}
+      force_rebuild: true
     secrets: inherit
