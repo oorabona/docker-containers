@@ -1,3 +1,4 @@
+ARG VERSION=latest
 ARG PHP_VERSION=fpm
 FROM php:$PHP_VERSION
 
