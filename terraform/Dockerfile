@@ -1,5 +1,5 @@
 # Base image
-ARG VERSION=0.11.13
+ARG VERSION=latest
 FROM hashicorp/terraform:${VERSION} AS terraform
 
 FROM alpine:latest

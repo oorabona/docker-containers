@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       network: host
       args:
-        VERSION: "${VERSION:-sid}"
+        VERSION: "${VERSION:-latest}"
         LOCALES: "fr_FR en_US"
         USER: "${USER:-debian}"
         GROUP: "${GROUP:-debian}"
@@ -13,8 +13,8 @@ services:
         GROUPID: "${GID:-1000}"
         SHELL: "${SHELL:-/bin/bash}"
         PASSWORD: "${PASSWORD:-password}"
-    image: "debian:${VERSION:-sid}-fr"
-    container_name: "debian-${VERSION:-sid}"
+    image: "debian:${VERSION:-latest}-fr"
+    container_name: "debian-${VERSION:-latest}"
     environment:
       - DEBIAN_FRONTEND=noninteractive
     entrypoint: ["/bin/sh", "-c", "while :; do sleep 1; done"]  # Keep the container running
