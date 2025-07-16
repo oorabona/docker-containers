@@ -51,7 +51,7 @@ jobs:
 
   create-update-prs:
     needs: check-upstream-versions
-    if: fromJson(needs.check-upstream-versions.outputs.update_count) > 0
+    if: needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,8 +67,10 @@ jobs:
       - name: Classify version change
         id: classify
         run: |
-          current_version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].current }}"
-          new_version="${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}"
+          # Extract version info for this specific container from the JSON array
+          version_data=$(echo '${{ needs.check-upstream-versions.outputs.version_info }}' | jq -r '.[] | select(.container == "${{ matrix.container }}")')
+          current_version=$(echo "$version_data" | jq -r '.current_version')
+          new_version=$(echo "$version_data" | jq -r '.latest_version')
           
           chmod +x .github/scripts/classify-version-change.sh
           change_type=$(.github/scripts/classify-version-change.sh "$current_version" "$new_version")
@@ -85,7 +87,7 @@ jobs:
         uses: ./.github/actions/update-version
         with:
           container: ${{ matrix.container }}
-          new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          new_version: ${{ steps.classify.outputs.new_version }}
           commit_changes: false
           
       - name: Close duplicate PRs
@@ -93,7 +95,7 @@ jobs:
         uses: ./.github/actions/close-duplicate-prs
         with:
           container: ${{ matrix.container }}
-          new_version: ${{ fromJson(needs.check-upstream-versions.outputs.version_info)[matrix.container].upstream }}
+          new_version: ${{ steps.classify.outputs.new_version }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Create rebuild marker
@@ -140,7 +142,7 @@ jobs:
 
   trigger-auto-build:
     needs: [check-upstream-versions, create-update-prs]
-    if: fromJson(needs.check-upstream-versions.outputs.update_count) > 0
+    if: needs.check-upstream-versions.outputs.update_count > 0
     strategy:
       matrix:
         container: ${{ fromJson(needs.check-upstream-versions.outputs.containers_with_updates) }}

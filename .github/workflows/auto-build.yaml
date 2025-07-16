@@ -234,7 +234,7 @@ jobs:
             echo "- ✅ **Registry verification** to avoid duplicate builds" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-platform** builds (amd64 + arm64)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Security scanning** with Trivy" >> $GITHUB_STEP_SUMMARY
+            echo "- ⏸️ **Security scanning** (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.build-and-push.result }}" = "skipped" ]; then
             echo "### ⏭️ Builds were skipped" >> $GITHUB_STEP_SUMMARY
             echo "All target images already exist and are up to date." >> $GITHUB_STEP_SUMMARY
