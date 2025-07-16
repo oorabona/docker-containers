@@ -1,9 +1,19 @@
 name: Auto Build & Push
 
 on:
-  schedule:
-    # Run twice daily to check for updates and upstream version changes
-    - cron: '0 6,18 * * *'
+  # Triggered by upstream-monitor workflow
+  workflow_call:
+    inputs:
+      container:
+        description: 'Specific container to build (leave empty for all)'
+        required: false
+        type: string
+      triggered_by_upstream:
+        description: 'Triggered by upstream version changes'
+        required: false
+        default: false
+        type: boolean
+  # Triggered by container changes
   push:
     branches: [main, master]
     paths:
@@ -16,6 +26,7 @@ on:
       - '*/Dockerfile'
       - '*/version.sh'
       - 'make'
+  # Manual trigger
   workflow_dispatch:
     inputs:
       container:
@@ -24,11 +35,6 @@ on:
         type: string
       force_rebuild:
         description: 'Force rebuild even if no updates'
-        required: false
-        default: false
-        type: boolean
-      triggered_by_upstream:
-        description: 'Triggered by upstream version changes'
         required: false
         default: false
         type: boolean
@@ -55,7 +61,7 @@ jobs:
         id: detect
         uses: ./.github/actions/detect-containers
         with:
-          container: ${{ github.event.inputs.container }}
+          container: ${{ github.event.inputs.container || inputs.container }}
           force_rebuild: ${{ github.event.inputs.force_rebuild }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           event_name: ${{ github.event_name }}
@@ -165,7 +171,7 @@ jobs:
               echo "- 📝 **Trigger**: Code changes detected in container files" >> $GITHUB_STEP_SUMMARY
             elif [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
               echo "- 🔄 **Trigger**: Force rebuild requested" >> $GITHUB_STEP_SUMMARY
-            elif [ "${{ github.event.inputs.triggered_by_upstream }}" = "true" ]; then
+            elif [ "${{ github.event.inputs.triggered_by_upstream || inputs.triggered_by_upstream }}" = "true" ]; then
               echo "- 🔄 **Trigger**: Upstream version changes detected" >> $GITHUB_STEP_SUMMARY
             else
               echo "- 🔍 **Trigger**: Scheduled check found missing/outdated images" >> $GITHUB_STEP_SUMMARY
@@ -213,7 +219,7 @@ jobs:
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
             if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "- 📝 No container files were modified in this commit" >> $GITHUB_STEP_SUMMARY
-            elif [ "${{ github.event.inputs.triggered_by_upstream }}" = "true" ]; then
+            elif [ "${{ github.event.inputs.triggered_by_upstream || inputs.triggered_by_upstream }}" = "true" ]; then
               echo "- ✅ No upstream version changes detected" >> $GITHUB_STEP_SUMMARY
             else
               echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
