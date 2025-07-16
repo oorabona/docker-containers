@@ -1,25 +1,16 @@
 # GitHub Actions Reference
 
-This guide covers the automated workflows and actions used for container management.
+*Last Updated: July 17, 2025 - Optimized Architecture*
 
-## Workflows
+This guide covers the automated workflows and actions used for container management in our production-ready CI/CD system.
 
-### 1. Upstream Monitor (`upstream-monitor.yaml`)
+## 🎯 **Architecture Status: ✅ OPTIMIZED**
 
-Monitors upstream sources for version updates and creates PRs automatically.
-
-**Triggers:**
-- Schedule: 6 AM/6 PM UTC daily
-- Manual: `gh workflow run upstream-monitor.yaml`
-
-**Key Inputs:**
-```bash
-# Check specific container with debug
-gh workflow run upstream-monitor.yaml \
-  --field container=wordpress \
-  --field debug=true \
-  --field create_pr=true
-```
+- **4 Workflows**: All active and properly integrated
+- **6 Actions**: All used across workflows  
+- **Core Scripts**: Fully integrated with automation
+- **Make Script**: All functions utilized by workflows
+- **Recent Optimizations**: Trivy issues fixed, JSON parsing corrected, redundant checking removed
 
 ## Architecture Overview
 
@@ -27,58 +18,74 @@ Our GitHub Actions system uses a **hybrid approach** combining direct workflow c
 
 ```mermaid
 graph TD
-    A[upstream-monitor.yaml] -->|version changes| B[workflow_call matrix]
-    B -->|per container| C[auto-build.yaml]
-    C -->|workflow_call| D[update-dashboard.yaml]
+    A[upstream-monitor.yaml<br/>📅 Schedule: 6AM/6PM UTC] -->|version changes| B[Matrix Strategy<br/>🔄 One call per container]
+    B -->|workflow_call| C[auto-build.yaml<br/>🏗️ Build & Push]
+    C -->|workflow_call| D[update-dashboard.yaml<br/>📊 GitHub Pages]
     
-    E[Code Changes] -->|path filtering| C
-    F[validate-version-scripts.yaml] --> G[Standalone]
+    E[Code Changes<br/>📝 Push/PR] -->|path filtering| C
+    F[validate-version-scripts.yaml<br/>🧪 Quality Assurance] --> G[Standalone Testing]
     
-    A --> H[check-upstream-versions]
-    A --> I[update-version]
-    A --> J[close-duplicate-prs]
+    A --> H[check-upstream-versions<br/>📋 Version Detection]
+    A --> I[update-version<br/>📝 File Updates]
+    A --> J[close-duplicate-prs<br/>🔄 PR Management]
     
-    C --> K[detect-containers]
-    C --> L[build-container]
-    C --> M[setup-github-cli]
+    C --> K[detect-containers<br/>🔍 Change Detection]
+    C --> L[build-container<br/>🏗️ Build & Push]
+    C --> M[setup-github-cli<br/>⚙️ CLI Config]
     
     F --> H
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style D fill:#e8f5e8
+    style F fill:#fff3e0
 ```
 
 **Key Principles:**
-- **Hybrid Triggers**: Direct workflow_call for upstream changes, path filtering for code changes
-- **Matrix Strategy**: upstream-monitor calls auto-build once per updated container
-- **Clean Separation**: Each workflow has distinct, focused responsibilities
+- **🔄 Single Source of Truth**: upstream-monitor is the only scheduled workflow
+- **⚡ Optimized Flow**: Removed redundant version checking in build-container  
+- **🎯 Hybrid Triggers**: workflow_call for upstream changes, path filtering for code changes
+- **📋 Matrix Strategy**: upstream-monitor calls auto-build once per updated container
+- **🛡️ Clean Separation**: Each workflow has distinct, focused responsibilities
+- **🚀 Force Rebuild Trust**: build-container trusts upstream-monitor decisions
 - **Force Rebuild**: Upstream changes use force_rebuild to ensure containers are updated
 
-## Workflows
+## 🔄 **Workflows** (All Active)
 
-### 1. Upstream Monitor (`upstream-monitor.yaml`) - Primary Entry Point
+### 1. **Upstream Monitor** (`upstream-monitor.yaml`) - 📅 Primary Orchestrator
 
-The **core orchestrator** that monitors upstream sources and initiates the entire automation pipeline.
+The **core scheduler** that monitors upstream sources and initiates the entire automation pipeline.
+
+**Status**: ✅ **Recently Fixed** - JSON parsing errors resolved, matrix strategy optimized
 
 **Triggers:**
-- **Schedule**: 6 AM/6 PM UTC daily (ONLY workflow with schedule)
-- **Manual**: `gh workflow run upstream-monitor.yaml`
+- **🕕 Schedule**: 6 AM/6 PM UTC daily (**ONLY** workflow with schedule triggers)
+- **⚙️ Manual**: `gh workflow run upstream-monitor.yaml`
 
 **Responsibilities:**
-- Monitor upstream software versions
-- Create PRs for version updates  
-- **Trigger auto-build directly for upstream changes** (using matrix strategy)
-- Manage duplicate PR cleanup
+- 🔍 Monitor upstream software versions using `check-upstream-versions` action
+- 📝 Create PRs for version updates using `update-version` action
+- 🔄 Manage duplicate PR cleanup using `close-duplicate-prs` action  
+- **🚀 Trigger auto-build directly** using optimized matrix strategy (one call per container)
 
 **Key Inputs:**
 ```bash
 # Check specific container with debug
-gh workflow run upstream-monitor.yaml 
-  --field container=wordpress 
-  --field debug=true 
-  --field create_pr=true
+gh workflow run upstream-monitor.yaml \
+  --field container=wordpress \
+  --field debug=true
 ```
 
 **Workflow Chain:**
-1. Checks upstream versions using `check-upstream-versions` action
-2. Updates versions using `update-version` action
+```mermaid
+graph LR
+    A[Schedule/Manual] --> B[check-upstream-versions]
+    B --> C[Matrix: create-update-prs]
+    C --> D[update-version + close-duplicate-prs] 
+    D --> E[Create PRs + Auto-merge minor]
+    E --> F[Matrix: trigger-auto-build]
+    F --> G[auto-build.yaml]
+```
 3. Closes duplicate PRs using `close-duplicate-prs` action
 4. **Triggers auto-build using matrix strategy** (one call per container)
 
@@ -142,7 +149,6 @@ Validates all version.sh scripts for functionality and standards compliance.
 **Local Testing:**
 ```bash
 ./validate-version-scripts.sh
-```
 ```
 
 **Outputs:**
@@ -637,8 +643,3 @@ RUN --mount=type=cache,target=/var/cache/apt \
 2. **Secret Management**: Store credentials in GitHub Secrets, never in code
 3. **Version Pinning**: Use specific action versions (e.g., `@v4`) not `@latest`
 4. **Regular Audits**: Review workflow logs and update patterns quarterly
-
----
-
-**Last Updated**: June 2025  
-**Architecture Version**: Optimized Hierarchical (Single Entry Point)
