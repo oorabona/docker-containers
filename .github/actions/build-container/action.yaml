@@ -115,11 +115,11 @@ runs:
         
         # Use make script to build and push
         # The make script handles all the complexity of building and pushing
-        if ./make build "$container" latest; then
+        if ./make build "$container" "$current_version"; then
           echo "✅ Build successful"
           
           # Push to registries using make script  
-          if ./make push "$container" latest; then
+          if ./make push "$container" "$current_version"; then
             echo "✅ Push successful"
           else
             echo "⚠️ Push failed, but build succeeded"
