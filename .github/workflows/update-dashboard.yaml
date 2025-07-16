@@ -84,8 +84,28 @@ jobs:
           source: ./
           destination: ./_site
 
+      - name: Verify Jekyll build
+        run: |
+          echo "📂 Jekyll site contents:"
+          find ./_site -type f | head -20
+          echo ""
+          echo "📊 Site structure summary:"
+          echo "Total files: $(find ./_site -type f | wc -l)"
+          echo "HTML files: $(find ./_site -name '*.html' | wc -l)"
+          echo "CSS files: $(find ./_site -name '*.css' | wc -l)"
+          echo ""
+          echo "❌ Checking for unwanted files:"
+          if find ./_site -name "Dockerfile" -o -name "*.sh" -o -name "docker-compose.yml" | grep -q .; then
+            echo "⚠️  Found Docker/script files in site build!"
+            find ./_site -name "Dockerfile" -o -name "*.sh" -o -name "docker-compose.yml"
+          else
+            echo "✅ No unwanted Docker/script files found"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
 
   # Deployment job
   deploy:
