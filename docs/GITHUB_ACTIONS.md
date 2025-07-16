@@ -23,30 +23,33 @@ gh workflow run upstream-monitor.yaml \
 
 ## Architecture Overview
 
-Our GitHub Actions system uses a **hierarchical workflow design** with a single scheduled entry point to eliminate race conditions and ensure proper separation of concerns:
+Our GitHub Actions system uses a **hybrid approach** combining direct workflow calls for upstream changes with GitHub's native path filtering for code changes:
 
 ```mermaid
 graph TD
-    A[upstream-monitor.yaml] -->|workflow_call| B[auto-build.yaml]
-    B -->|workflow_call| C[update-dashboard.yaml]
-    D[validate-version-scripts.yaml] --> E[Standalone]
+    A[upstream-monitor.yaml] -->|version changes| B[workflow_call matrix]
+    B -->|per container| C[auto-build.yaml]
+    C -->|workflow_call| D[update-dashboard.yaml]
     
-    A --> F[check-upstream-versions]
-    A --> G[update-version]
-    A --> H[close-duplicate-prs]
+    E[Code Changes] -->|path filtering| C
+    F[validate-version-scripts.yaml] --> G[Standalone]
     
-    B --> I[detect-containers]
-    B --> J[build-container]
-    B --> K[setup-github-cli]
+    A --> H[check-upstream-versions]
+    A --> I[update-version]
+    A --> J[close-duplicate-prs]
     
-    D --> F
+    C --> K[detect-containers]
+    C --> L[build-container]
+    C --> M[setup-github-cli]
+    
+    F --> H
 ```
 
 **Key Principles:**
-- **Single Scheduled Entry Point**: Only `upstream-monitor.yaml` runs on schedule
-- **Clean Trigger Chain**: `upstream-monitor` → `auto-build` → `update-dashboard`
-- **No Race Conditions**: Workflows trigger sequentially via `workflow_call`
-- **Proper Separation**: Each workflow has distinct responsibilities
+- **Hybrid Triggers**: Direct workflow_call for upstream changes, path filtering for code changes
+- **Matrix Strategy**: upstream-monitor calls auto-build once per updated container
+- **Clean Separation**: Each workflow has distinct, focused responsibilities
+- **Force Rebuild**: Upstream changes use force_rebuild to ensure containers are updated
 
 ## Workflows
 
@@ -61,7 +64,7 @@ The **core orchestrator** that monitors upstream sources and initiates the entir
 **Responsibilities:**
 - Monitor upstream software versions
 - Create PRs for version updates  
-- Trigger auto-build workflow via `workflow_call`
+- **Trigger auto-build directly for upstream changes** (using matrix strategy)
 - Manage duplicate PR cleanup
 
 **Key Inputs:**
@@ -77,25 +80,25 @@ gh workflow run upstream-monitor.yaml
 1. Checks upstream versions using `check-upstream-versions` action
 2. Updates versions using `update-version` action
 3. Closes duplicate PRs using `close-duplicate-prs` action
-4. **Triggers** `auto-build.yaml` via `workflow_call`
+4. **Triggers auto-build using matrix strategy** (one call per container)
 
 ### 2. Auto Build (`auto-build.yaml`) - Build Orchestrator
 
 Builds and pushes containers when triggered by upstream monitor or code changes.
 
 **Triggers:**
-- **workflow_call**: From `upstream-monitor.yaml` (primary trigger)
-- **Push/PR**: Code changes affecting container files
+- **workflow_call with matrix**: From upstream-monitor (one call per updated container)
+- **Push/PR Events**: GitHub's native path filtering for container file changes
 - **Manual**: `gh workflow run auto-build.yaml`
 
 **Responsibilities:**
-- Detect which containers need building
-- Build and push containers to registries
+- Build specific containers (from upstream changes or code changes)
+- Push containers to registries
 - Trigger dashboard updates
 
 **Features:**
 - Multi-architecture builds (amd64, arm64)
-- Smart change detection via `detect-containers` action
+- **Hybrid detection**: Matrix for upstream changes, path filtering for code changes
 - Registry push automation via `build-container` action
 - Automatic dashboard updates
 
