@@ -640,5 +640,5 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 ---
 
-**Last Updated**: January 2025  
+**Last Updated**: June 2025  
 **Architecture Version**: Optimized Hierarchical (Single Entry Point)
