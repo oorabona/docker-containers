@@ -14,10 +14,12 @@ Monitors upstream sources for version updates and creates PRs automatically.
 
 **Key Inputs:**
 ```bash
-````markdown
-# GitHub Actions Reference
-
-This guide covers the automated workflows and actions used for container management.
+# Check specific container with debug
+gh workflow run upstream-monitor.yaml \
+  --field container=wordpress \
+  --field debug=true \
+  --field create_pr=true
+```
 
 ## Architecture Overview
 
