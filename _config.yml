@@ -7,7 +7,7 @@ url: "https://oorabona.github.io"
 
 # Build settings
 markdown: kramdown
-theme: minima
+theme: minima  # Keep as fallback, but we'll override with Tabler
 plugins:
   - jekyll-feed
 
@@ -22,17 +22,21 @@ header_pages:
 # Footer
 github_username: oorabona
 
-# Include only specific files for Jekyll build (allowlist approach)
-include:
-  - "_*"           # Jekyll directories (_layouts, _includes, etc.)
-  - "*.md"         # All markdown files
-  - "*.html"       # All HTML files
-  - "docs/"        # Documentation directory
-  - "assets/"      # Assets directory (CSS, images, etc.)
-  - "_config.yml"  # This config file
+# Custom settings for Tabler integration
+tabler:
+  version: "1.4.0"
+  cdn: true  # Use CDN for faster loading
+  
+# SEO and metadata
+title_separator: " | "
+description_extra: "Docker container monitoring dashboard"
 
-# Only exclude absolute essentials (override Jekyll defaults)
+# Whitelist approach: exclude everything, then include only what Jekyll needs
 exclude:
-  - node_modules/
-  - vendor/
-  - Gemfile*
+  - "**"            # Exclude everything first
+
+include:
+  - "_config.yml"   # This Jekyll config file
+  - "*.md"          # Root-level markdown files (README, DASHBOARD, etc.)
+  - "docs/**"       # All documentation content
+  - "_*"            # Jekyll system directories (layouts, includes, etc.)
