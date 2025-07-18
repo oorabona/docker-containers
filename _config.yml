@@ -39,14 +39,26 @@ tabler:
 title_separator: " | "
 description_extra: "Docker container monitoring dashboard"
 
-# Whitelist approach: exclude everything, then include only what Jekyll needs
+# Exclude unnecessary files but keep Jekyll functionality
 exclude:
-  - "**"            # Exclude everything first
+  - "Dockerfile*"
+  - "docker-compose*.yml"
+  - "*.sh"
+  - "make"
+  - "test-logs/"
+  - "helpers/"
+  - "*/Dockerfile"
+  - "*/docker-compose*.yml"
+  - "*/version.sh"
+  - "*/run.sh"
+  - "*/build"
+  - "*/addon.sh"
+  - "*/export.sh"
+  - "*/docker-entrypoint.sh"
+  - ".dashboard-stats"
 
+# Include essential Jekyll files (this overrides excludes for specific patterns)
 include:
-  - "_config.yml"   # This Jekyll config file
-  - "index.md"      # Main redirect page
-  - "dashboard.md"  # Main dashboard page
-  - "*.md"          # Other root-level markdown files
-  - "docs/**"       # All documentation content
-  - "_*"            # Jekyll system directories (layouts, includes, etc.)
+  - "_config.yml"
+  - "*.md"
+  - "docs/"
