@@ -22,8 +22,13 @@ header_pages:
 # Footer
 github_username: oorabona
 
-# Repository settings
+# Repository settings  
 repository: "docker-containers"
+
+# GitHub integration (fallbacks for Jekyll's built-in github metadata)
+github:
+  owner_name: oorabona
+  repository_name: docker-containers
 
 # Custom settings for Tabler integration
 tabler:
