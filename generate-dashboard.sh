@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-DASHBOARD_FILE="DASHBOARD.md"
+DASHBOARD_FILE="index.md"
 TEMP_FILE=$(mktemp)
 
 # Colors for terminal output
@@ -144,6 +144,12 @@ generate_dashboard() {
     
     # Generate dashboard header
     cat << EOF > "$TEMP_FILE"
+---
+layout: dashboard
+title: Container Dashboard
+permalink: /
+---
+
 # 📊 Container Dashboard
 
 *Last updated: $(date -u +"%Y-%m-%d %H:%M UTC")*
