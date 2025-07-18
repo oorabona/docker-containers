@@ -51,7 +51,7 @@ jobs:
           chmod +x generate-dashboard.sh
           
           # Set environment variables for dashboard context
-          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Code changes detected' }}"
+          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
           
           echo "🚀 Generating dashboard with context:"
