@@ -1,0 +1,42 @@
+<!-- Container Status Card Template -->
+<div class="col-sm-6 col-lg-4">
+  <div class="card">
+    <div class="card-status-top bg-{{ include.status_color | default: 'secondary' }}"></div>
+    <div class="card-body">
+      <div class="d-flex align-items-center">
+        <div class="subheader">{{ include.name }}</div>
+        <div class="ms-auto">
+          <span class="badge bg-{{ include.status_color | default: 'secondary' }} version-badge">
+            {{ include.current_version | default: 'unknown' }}
+          </span>
+        </div>
+      </div>
+      <div class="h3 m-0">{{ include.status_text | default: 'Unknown' }}</div>
+      
+      {% if include.latest_version %}
+      <div class="d-flex mt-2">
+        <div class="col">
+          <div class="font-weight-medium">Latest</div>
+          <div class="text-secondary">{{ include.latest_version }}</div>
+        </div>
+        <div class="col">
+          <div class="font-weight-medium">Registry</div>
+          <div class="text-secondary">
+            {% if include.build_status == 'success' %}
+              ✅ Published
+            {% elsif include.build_status == 'failed' %}
+              ❌ Failed
+            {% else %}
+              ⏳ Building
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+      
+      {% if include.description %}
+      <div class="text-secondary mt-2">{{ include.description }}</div>
+      {% endif %}
+    </div>
+  </div>
+</div>

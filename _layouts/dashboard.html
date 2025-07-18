@@ -1,0 +1,31 @@
+---
+layout: default
+---
+
+<!-- Tabler CSS -->
+<link href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css" rel="stylesheet"/>
+
+<div class="page-wrapper">
+  <div class="page-header d-print-none">
+    <div class="container-xl">
+      <div class="row g-2 align-items-center">
+        <div class="col">
+          <div class="page-pretitle">Container Management System</div>
+          <h2 class="page-title">{{ page.title }}</h2>
+        </div>
+        <div class="col-auto">
+          <span class="badge bg-green-lt">Last updated: {{ page.updated }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="page-body">
+    <div class="container-xl">
+      {{ content }}
+    </div>
+  </div>
+</div>
+
+<!-- Tabler JS -->
+<script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/js/tabler.min.js"></script>
