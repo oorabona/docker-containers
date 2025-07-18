@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-DASHBOARD_FILE="DASHBOARD.md"
+DASHBOARD_FILE="dashboard.md"
 TEMP_FILE=$(mktemp)
 
 # Colors for terminal output
@@ -142,8 +142,24 @@ generate_dashboard() {
     local total up_to_date updates_available success_rate
     IFS='|' read -r total up_to_date updates_available success_rate <<< "$stats"
     
-    # Generate dashboard header
+    # Export stats for potential use by workflow
+    echo "DASHBOARD_STATS_TOTAL=$total" > .dashboard-stats
+    echo "DASHBOARD_STATS_UP_TO_DATE=$up_to_date" >> .dashboard-stats
+    echo "DASHBOARD_STATS_UPDATES_AVAILABLE=$updates_available" >> .dashboard-stats
+    echo "DASHBOARD_STATS_SUCCESS_RATE=$success_rate" >> .dashboard-stats
+    
+    log_info "Statistics: $total total, $up_to_date up-to-date, $updates_available updates available, $success_rate% success rate"
+    
+    # Generate dashboard header with Jekyll front matter
     cat << EOF > "$TEMP_FILE"
+---
+layout: dashboard
+title: Container Dashboard
+permalink: /dashboard/
+updated: $(date -u +"%Y-%m-%d %H:%M UTC")
+description: Real-time status monitoring for Docker containers with automated upstream version tracking
+---
+
 # 📊 Container Dashboard
 
 *Last updated: $(date -u +"%Y-%m-%d %H:%M UTC")*
