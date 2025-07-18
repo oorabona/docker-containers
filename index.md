@@ -5,7 +5,7 @@ permalink: /
 redirect_to: /dashboard/
 ---
 
-# � Container Dashboard
+# 🐳 Container Dashboard
 
 **Dynamic statistics will be loaded...** 
 
