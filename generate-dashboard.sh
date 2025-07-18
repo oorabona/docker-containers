@@ -29,7 +29,12 @@ log_error() {
 # Function to get container version comparison
 get_container_versions() {
     local container=$1
-    cd "$container" 2>/dev/null || return 1
+    local current_version latest_version status_color status_text
+    
+    pushd "$container" >/dev/null 2>&1 || {
+        echo "unknown|unknown|secondary|Unknown Status"
+        return 1
+    }
     
     # Get current version (from version.sh with no args)
     current_version=$(timeout 30 ./version.sh 2>/dev/null || echo "unknown")
@@ -37,19 +42,22 @@ get_container_versions() {
     # Get latest version (from version.sh latest)
     latest_version=$(timeout 30 ./version.sh latest 2>/dev/null || echo "unknown")
     
-    cd - >/dev/null
+    popd >/dev/null 2>&1
     
-    # Determine status
+    # Determine status based on version comparison
     if [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
-        echo "unknown|secondary|Unknown Status"
+        status_color="secondary"
+        status_text="Unknown Status"
     elif [[ "$current_version" == "$latest_version" ]]; then
-        echo "green|Up to Date"
+        status_color="green"
+        status_text="Up to Date"
     else
-        echo "warning|Update Available"
+        status_color="warning"
+        status_text="Update Available"
     fi
     
-    echo "$current_version"
-    echo "$latest_version"
+    # Output structured data: current|latest|color|text
+    echo "${current_version}|${latest_version}|${status_color}|${status_text}"
 }
 
 # Function to generate container card include
@@ -62,15 +70,12 @@ generate_container_card() {
         description=$(head -n 5 "$container/README.md" | grep -v "^#" | head -n 1 | sed 's/^[[:space:]]*//')
     fi
     
-    # Get version information
+    # Get version information (structured output: current|latest|color|text)
     local version_info
     version_info=$(get_container_versions "$container")
-    local status_info=$(echo "$version_info" | head -n 1)
-    local current_version=$(echo "$version_info" | sed -n '2p')
-    local latest_version=$(echo "$version_info" | sed -n '3p')
     
-    local status_color=$(echo "$status_info" | cut -d'|' -f1)
-    local status_text=$(echo "$status_info" | cut -d'|' -f2)
+    # Parse structured output efficiently
+    IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
     
     # Generate Jekyll include call
     cat << EOF
@@ -98,16 +103,22 @@ calculate_stats() {
         
         total=$((total + 1))
         
+        # Get version information (structured output: current|latest|color|text)
         local version_info
         version_info=$(get_container_versions "$container")
-        local status_info=$(echo "$version_info" | head -n 1)
-        local status_color=$(echo "$status_info" | cut -d'|' -f1)
         
-        if [[ "$status_color" == "green" ]]; then
-            up_to_date=$((up_to_date + 1))
-        elif [[ "$status_color" == "warning" ]]; then
-            updates_available=$((updates_available + 1))
-        fi
+        # Parse structured output efficiently
+        local current_version latest_version status_color status_text
+        IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
+        
+        case "$status_color" in
+            "green")
+                up_to_date=$((up_to_date + 1))
+                ;;
+            "warning")
+                updates_available=$((updates_available + 1))
+                ;;
+        esac
     done
     
     local success_rate=100
@@ -115,6 +126,7 @@ calculate_stats() {
         success_rate=$(( (up_to_date * 100) / total ))
     fi
     
+    # Output structured stats: total|up_to_date|updates_available|success_rate
     echo "$total|$up_to_date|$updates_available|$success_rate"
 }
 
@@ -125,10 +137,10 @@ generate_dashboard() {
     # Calculate statistics
     local stats
     stats=$(calculate_stats)
-    local total=$(echo "$stats" | cut -d'|' -f1)
-    local up_to_date=$(echo "$stats" | cut -d'|' -f2)
-    local updates_available=$(echo "$stats" | cut -d'|' -f3)
-    local success_rate=$(echo "$stats" | cut -d'|' -f4)
+    
+    # Parse structured stats efficiently: total|up_to_date|updates_available|success_rate
+    local total up_to_date updates_available success_rate
+    IFS='|' read -r total up_to_date updates_available success_rate <<< "$stats"
     
     # Generate dashboard header
     cat << EOF > "$TEMP_FILE"
