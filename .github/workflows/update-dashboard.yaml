@@ -62,18 +62,23 @@ jobs:
           
           ./generate-dashboard.sh
           
-          # Create Jekyll-compatible dashboard page with Tabler layout
-          cat > dashboard.md << 'EOF'
+          # Create index.md that redirects to dashboard (main entry point)
+          cat > index.md << 'EOF'
           ---
           layout: dashboard
           title: Container Dashboard
-          permalink: /dashboard/
-          updated: $(date -u +"%Y-%m-%d %H:%M UTC")
-          description: Real-time status monitoring for Docker containers with automated upstream version tracking
+          permalink: /
+          redirect_to: /dashboard/
           ---
 
+          # 📊 Container Dashboard
+
+          Loading dashboard... If not redirected automatically, [click here](/dashboard/).
+
+          <script>
+          window.location.href = '/dashboard/';
+          </script>
           EOF
-          cat DASHBOARD.md >> dashboard.md
           
           echo "📊 Dashboard content prepared for Jekyll"
 
