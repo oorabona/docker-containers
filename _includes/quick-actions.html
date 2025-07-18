@@ -6,7 +6,7 @@
   <div class="card-body">
     <div class="row g-2">
       <div class="col-6 col-sm-4 col-md-2 col-xl-auto">
-        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}/actions" 
+        <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions" 
            class="btn btn-outline-primary w-100" target="_blank">
           <svg xmlns="http://www.w3.org/2000/svg" class="icon me-1" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
@@ -20,7 +20,7 @@
       </div>
       
       <div class="col-6 col-sm-4 col-md-2 col-xl-auto">
-        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}/actions/workflows/auto-build.yaml" 
+        <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions/workflows/auto-build.yaml" 
            class="btn btn-outline-success w-100" target="_blank">
           <svg xmlns="http://www.w3.org/2000/svg" class="icon me-1" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
@@ -32,7 +32,7 @@
       </div>
       
       <div class="col-6 col-sm-4 col-md-2 col-xl-auto">
-        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}/actions/workflows/validate-version-scripts.yaml" 
+        <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions/workflows/validate-version-scripts.yaml" 
            class="btn btn-outline-info w-100" target="_blank">
           <svg xmlns="http://www.w3.org/2000/svg" class="icon me-1" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
