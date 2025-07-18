@@ -39,7 +39,9 @@ tabler:
 title_separator: " | "
 description_extra: "Docker container monitoring dashboard"
 
-# Exclude unnecessary files but keep Jekyll functionality
+# Exclude unnecessary files to streamline the build process while preserving essential Jekyll functionality.
+# This approach replaces the previous whitelist method for better control and maintainability.
+# Key Jekyll functionality preserved includes processing of configuration files (_config.yml) and Markdown files (*.md).
 exclude:
   - "Dockerfile*"
   - "docker-compose*.yml"
