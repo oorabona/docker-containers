@@ -19,6 +19,9 @@ permissions:
   contents: write
   pull-requests: write
   actions: write  # For triggering auto-build workflow
+  packages: write  # Required for auto-build workflow to push container images
+  pages: write    # Required for auto-build workflow to update dashboard
+  id-token: write # Required for auto-build workflow OIDC authentication
 
 jobs:
   check-upstream-versions:
