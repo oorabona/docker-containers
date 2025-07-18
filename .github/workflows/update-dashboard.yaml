@@ -47,12 +47,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate dashboard content
-        if: ${{ github.event_name != 'push' }}  # Only generate for dashboard updates, not regular pushes
         run: |
           chmod +x generate-dashboard.sh
           
           # Set environment variables for dashboard context
-          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}"
+          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
           
           echo "🚀 Generating dashboard with context:"
@@ -61,6 +60,16 @@ jobs:
           echo ""
           
           ./generate-dashboard.sh
+          
+          # Verify dashboard.md was created
+          if [ ! -f "dashboard.md" ]; then
+            echo "❌ Error: dashboard.md was not generated!"
+            exit 1
+          fi
+          
+          echo "✅ Dashboard generated successfully"
+          echo "📄 Dashboard preview:"
+          head -n 10 dashboard.md
           
           # Source the generated statistics
           source .dashboard-stats
