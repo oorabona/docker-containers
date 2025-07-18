@@ -51,11 +51,7 @@ jobs:
           chmod +x generate-dashboard.sh
           
           # Set environment variables for dashboard context
-          if [ "${{ github.event_name }}" = "push" ]; then
-            export UPDATE_REASON="Code changes detected"
-          else
-            export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}"
-          fi
+          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Code changes detected' }}"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
           
           echo "🚀 Generating dashboard with context:"
