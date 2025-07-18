@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-DASHBOARD_FILE="dashboard.md"
+DASHBOARD_FILE="index.md"
 TEMP_FILE=$(mktemp)
 
 # Colors for terminal output
@@ -155,7 +155,7 @@ generate_dashboard() {
 ---
 layout: dashboard
 title: Container Dashboard
-permalink: /dashboard/
+permalink: /
 updated: $(date -u +"%Y-%m-%d %H:%M UTC")
 description: Real-time status monitoring for Docker containers with automated upstream version tracking
 ---
