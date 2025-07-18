@@ -16,7 +16,7 @@ show_excerpts: true
 
 # Navigation
 header_pages:
-  - dashboard.md
+  - index.md
   - docs/index.md
 
 # Footer
