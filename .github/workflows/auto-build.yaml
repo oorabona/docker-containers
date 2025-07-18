@@ -28,7 +28,7 @@ on:
       - '*/Dockerfile'
       - '*/version.sh'
       - '*/docker-compose.yml'
-      - '*/compose.yml'  
+      - '*/compose.yml'
       - 'make'
   # Manual trigger
   workflow_dispatch:

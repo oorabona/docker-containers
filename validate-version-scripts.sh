@@ -164,6 +164,7 @@ check_dependencies() {
 # Function to test a single version script
 test_version_script() {
     local container="$1"
+    local quick_mode="${2:-false}"
     local test_results=()
     local issues=()
     local has_errors=false
@@ -242,37 +243,42 @@ test_version_script() {
         has_errors=true
     fi
     
-    # Test 2: Check latest version with retries
-    echo "  📋 Testing latest version (with retries)..."
-    latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
-    latest_exit_code=$?
-    
-    if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
-        # Validate format
-        format_issues=$(validate_version_format "$latest_version")
-        if [ $? -eq 0 ]; then
-            log_success "Latest version: $latest_version"
-            test_results+=("latest_ok")
-            
-            # Compare versions if both are available
-            if [[ "$current_version" != "no-published-version" && -n "$current_version" && "$current_version" != "$latest_version" ]]; then
-                log_info "Version difference detected: $current_version → $latest_version"
-            elif [[ "$current_version" = "no-published-version" ]]; then
-                log_info "New container detected: no published version → $latest_version (ready for initial release)"
+    # Test 2: Check latest version with retries (skip in quick mode)
+    if [[ "$quick_mode" != "true" ]]; then
+        echo "  📋 Testing latest version (with retries)..."
+        latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
+        latest_exit_code=$?
+        
+        if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
+            # Validate format
+            format_issues=$(validate_version_format "$latest_version")
+            if [ $? -eq 0 ]; then
+                log_success "Latest version: $latest_version"
+                test_results+=("latest_ok")
+                
+                # Compare versions if both are available
+                if [[ "$current_version" != "no-published-version" && -n "$current_version" && "$current_version" != "$latest_version" ]]; then
+                    log_info "Version difference detected: $current_version → $latest_version"
+                elif [[ "$current_version" = "no-published-version" ]]; then
+                    log_info "New container detected: no published version → $latest_version (ready for initial release)"
+                fi
+            else
+                log_error "Latest version format issues: $format_issues"
+                issues+=("latest_format:$format_issues")
+                has_errors=true
             fi
+        elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
+            log_warning "No upstream version found (container may be deprecated or source unavailable)"
+            test_results+=("latest_no_published")
+            # This could indicate upstream source issues but isn't necessarily an error
         else
-            log_error "Latest version format issues: $format_issues"
-            issues+=("latest_format:$format_issues")
+            log_error "Failed to get latest version after $MAX_RETRIES retries"
+            issues+=("latest_failed")
             has_errors=true
         fi
-    elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
-        log_warning "No upstream version found (container may be deprecated or source unavailable)"
-        test_results+=("latest_no_published")
-        # This could indicate upstream source issues but isn't necessarily an error
     else
-        log_error "Failed to get latest version after $MAX_RETRIES retries"
-        issues+=("latest_failed")
-        has_errors=true
+        log_info "Skipping latest version check (quick mode enabled)"
+        test_results+=("latest_skipped")
     fi
     
     # Test 3: Performance check (measure execution time)
@@ -314,6 +320,7 @@ main() {
     local specific_container=""
     local verbose=false
     local show_help=false
+    local quick_mode=false
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -329,6 +336,10 @@ main() {
             -c|--container)
                 specific_container="$2"
                 shift 2
+                ;;
+            -q|--quick)
+                quick_mode=true
+                shift
                 ;;
             *)
                 specific_container="$1"
@@ -349,12 +360,14 @@ main() {
         echo "  -h, --help           Show this help message"
         echo "  -v, --verbose        Enable verbose output"
         echo "  -c, --container NAME Test specific container only"
+        echo "  -q, --quick          Quick mode - skip latest version checks"
         echo ""
         echo "EXAMPLES:"
         echo "  $0                   Test all containers"
         echo "  $0 wordpress         Test only wordpress container"
         echo "  $0 -c debian         Test only debian container"
         echo "  $0 -v                Test all containers with verbose output"
+        echo "  $0 --quick           Test all containers (current version only)"
         echo ""
         echo "CONFIGURATION:"
         echo "  Current version timeout: ${TIMEOUT_CURRENT}s"
@@ -381,7 +394,7 @@ main() {
         log_info "Testing specific container: $specific_container"
         ((total_containers++))
         
-        if test_version_script "$specific_container"; then
+        if test_version_script "$specific_container" "$quick_mode"; then
             ((passed_containers++))
             passed_list+=("$specific_container")
         else
@@ -411,7 +424,7 @@ main() {
         for container in $containers; do
             ((total_containers++))
             
-            if test_version_script "$container"; then
+            if test_version_script "$container" "$quick_mode"; then
                 ((passed_containers++))
                 passed_list+=("$container")
             else
