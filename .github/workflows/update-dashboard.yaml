@@ -62,18 +62,30 @@ jobs:
           
           ./generate-dashboard.sh
           
-          # Create Jekyll-compatible dashboard page with Tabler layout
-          cat > dashboard.md << 'EOF'
+          # Source the generated statistics
+          source .dashboard-stats
+          
+          echo "📊 Using dynamic statistics: Total=$DASHBOARD_STATS_TOTAL, Up-to-date=$DASHBOARD_STATS_UP_TO_DATE, Updates=$DASHBOARD_STATS_UPDATES_AVAILABLE, Success=$DASHBOARD_STATS_SUCCESS_RATE%"
+          
+          # Create index.md that redirects to dashboard with dynamic title and stats
+          cat > index.md << EOF
           ---
           layout: dashboard
-          title: Container Dashboard
-          permalink: /dashboard/
-          updated: $(date -u +"%Y-%m-%d %H:%M UTC")
-          description: Real-time status monitoring for Docker containers with automated upstream version tracking
+          title: Container Dashboard ($DASHBOARD_STATS_TOTAL containers)
+          permalink: /
+          redirect_to: /dashboard/
           ---
 
+          # 📊 Container Dashboard
+
+          **$DASHBOARD_STATS_TOTAL containers** | **$DASHBOARD_STATS_UP_TO_DATE up-to-date** | **$DASHBOARD_STATS_UPDATES_AVAILABLE updates available** | **$DASHBOARD_STATS_SUCCESS_RATE% success rate**
+
+          Loading dashboard... If not redirected automatically, [click here](/dashboard/).
+
+          <script>
+          window.location.href = '/dashboard/';
+          </script>
           EOF
-          cat DASHBOARD.md >> dashboard.md
           
           echo "📊 Dashboard content prepared for Jekyll"
 
