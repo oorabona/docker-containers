@@ -1,16 +1,12 @@
 #!/bin/bash
+source "$(dirname "$0")/../helpers/docker-registry"
 
-# Source the python helpers
-source "$(dirname "$0")/../helpers/python-tags"
+# Function to get latest upstream version
+get_latest_upstream() {
+    # Source the python helpers
+    source "$(dirname "$0")/../helpers/python-tags"
+    get_pypi_latest_version ansible
+}
 
-case "${1:-current}" in
-    latest)
-        # Get latest version from PyPI
-        get_pypi_latest_version ansible
-        ;;
-    current|*)
-        # Get our currently published version from Docker Hub
-        source "$(dirname "$0")/../helpers/docker-tags"
-        latest-docker-tag oorabona/ansible "^[0-9]+\.[0-9]+\.[0-9]+$"
-        ;;
-esac
+# Use standardized version handling
+handle_version_request "$1" "oorabona/ansible" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
