@@ -22,6 +22,9 @@ header_pages:
 # Footer
 github_username: oorabona
 
+# Repository settings
+repository: "docker-containers"
+
 # Custom settings for Tabler integration
 tabler:
   version: "1.4.0"
