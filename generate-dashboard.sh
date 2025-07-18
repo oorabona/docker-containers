@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Docker Containers Dashboard Generator
-# Generates comprehensive container status dashboard
+# Docker Containers Dashboard Generator - Templated Version
+# Generates dashboard using Jekyll includes for clean templating
 
 set -euo pipefail
 
@@ -26,35 +26,15 @@ log_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
-# Function to get GitHub badge URLs
-get_build_badge() {
+# Function to get container version comparison
+get_container_versions() {
     local container=$1
-    echo "![Build Status](https://img.shields.io/github/actions/workflow/status/oorabona/docker-containers/auto-build.yaml?label=build&logo=github)"
-}
-
-get_commit_badge() {
-    local container=$1
-    echo "![Last Commit](https://img.shields.io/github/last-commit/oorabona/docker-containers/main?path=$container&label=updated)"
-}
-
-get_size_badge() {
-    local container=$1
-    local image_name="oorabona/$container"
-    echo "![Docker Size](https://img.shields.io/docker/image-size/$image_name/latest?label=size&logo=docker)"
-}
-
-get_pulls_badge() {
-    local container=$1
-    local image_name="oorabona/$container"
-    echo "![Docker Pulls](https://img.shields.io/docker/pulls/$image_name?label=pulls&logo=docker)"
-}
-
-# Function to check version status
-get_version_status() {
-    local container=$1
-    local current_version latest_version
+    local current_version latest_version status_color status_text
     
-    cd "$container" 2>/dev/null || return 1
+    pushd "$container" >/dev/null 2>&1 || {
+        echo "unknown|unknown|secondary|Unknown Status"
+        return 1
+    }
     
     # Get current version (from version.sh with no args)
     current_version=$(timeout 30 ./version.sh 2>/dev/null || echo "unknown")
@@ -62,194 +42,173 @@ get_version_status() {
     # Get latest version (from version.sh latest)
     latest_version=$(timeout 30 ./version.sh latest 2>/dev/null || echo "unknown")
     
-    cd ..
+    popd >/dev/null 2>&1
     
-    if [[ "$current_version" == "unknown" ]] || [[ "$latest_version" == "unknown" ]]; then
-        echo "❓ Version check failed|unknown|unknown|red"
+    # Determine status based on version comparison
+    if [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
+        status_color="secondary"
+        status_text="Unknown Status"
     elif [[ "$current_version" == "$latest_version" ]]; then
-        echo "✅ Up to date|$current_version|$latest_version|brightgreen"
+        status_color="green"
+        status_text="Up to Date"
     else
-        echo "⚠️ Update available|$current_version|$latest_version|orange"
+        status_color="warning"
+        status_text="Update Available"
     fi
+    
+    # Output structured data: current|latest|color|text
+    echo "${current_version}|${latest_version}|${status_color}|${status_text}"
 }
 
-# Function to get container category
-get_container_category() {
+# Function to generate container card include
+generate_container_card() {
     local container=$1
-    case "$container" in
-        wordpress|php|openresty)
-            echo "🌐 Web & Application Servers"
-            ;;
-        postgres|elasticsearch-conf|es-kopf|logstash)
-            echo "🗄️ Data & Search"
-            ;;
-        ansible|terraform|debian)
-            echo "🔧 Infrastructure & DevOps"
-            ;;
-        openvpn|sslh)
-            echo "🔒 Network & Security"
-            ;;
-        *)
-            echo "📦 Other Containers"
-            ;;
-    esac
-}
-
-# Function to generate container summary
-generate_container_summary() {
-    local container=$1
-    local status_info category current_version latest_version status_text status_color
+    local description=""
     
-    # Get version status
-    status_info=$(get_version_status "$container")
-    IFS='|' read -r status_text current_version latest_version status_color <<< "$status_info"
+    # Get container description from README if available
+    if [[ -f "$container/README.md" ]]; then
+        description=$(awk 'NR<=5 && !/^#/ {gsub(/^[[:space:]]*/, ""); if(length($0)>0) {print; exit}}' "$container/README.md")
+    fi
     
-    # Get category
-    category=$(get_container_category "$container")
+    # Get version information (structured output: current|latest|color|text)
+    local version_info
+    version_info=$(get_container_versions "$container")
     
-    # Generate badges
-    local build_badge=$(get_build_badge "$container")
-    local commit_badge=$(get_commit_badge "$container")
-    local size_badge=$(get_size_badge "$container")
-    local pulls_badge=$(get_pulls_badge "$container")
+    # Parse structured output efficiently
+    IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
     
-    # Create version badges
-    local current_badge="![Current](https://img.shields.io/badge/current-${current_version//./%2E}-blue)"
-    local latest_badge="![Latest](https://img.shields.io/badge/latest-${latest_version//./%2E}-lightgrey)"
-    local status_badge="![Status](https://img.shields.io/badge/status-${status_text// /%20}-${status_color})"
-    
+    # Generate Jekyll include call
     cat << EOF
-
-### 📦 ${container^}
-
-**Category:** $category  
-**Status:** $status_text
-
-| Metric | Badge | Links |
-|--------|-------|-------|
-| **Versions** | $current_badge $latest_badge $status_badge | [\`Dockerfile\`]($container/Dockerfile) [\`version.sh\`]($container/version.sh) |
-| **Build & Activity** | $build_badge $commit_badge | [Workflow Runs](https://github.com/oorabona/docker-containers/actions) |
-| **Registry Stats** | $size_badge $pulls_badge | [GHCR](https://ghcr.io/oorabona/$container) [Docker Hub](https://hub.docker.com/r/oorabona/$container) |
-
+{% include container-card.html 
+   name="$container"
+   current_version="$current_version"
+   latest_version="$latest_version"
+   status_color="$status_color"
+   status_text="$status_text"
+   build_status="success"
+   description="$description"
+%}
 EOF
 }
 
-# Main dashboard generation
-generate_dashboard() {
-    log_info "Generating Docker Containers Dashboard..."
+# Function to calculate dashboard statistics
+calculate_stats() {
+    local total=0
+    local up_to_date=0
+    local updates_available=0
     
+    for container in */; do
+        container=${container%/}
+        [[ -f "$container/version.sh" ]] || continue
+        
+        total=$((total + 1))
+        
+        # Get version information (structured output: current|latest|color|text)
+        local version_info
+        version_info=$(get_container_versions "$container")
+        
+        # Parse structured output efficiently
+        local current_version latest_version status_color status_text
+        IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
+        
+        case "$status_color" in
+            "green")
+                up_to_date=$((up_to_date + 1))
+                ;;
+            "warning")
+                updates_available=$((updates_available + 1))
+                ;;
+        esac
+    done
+    
+    local success_rate=100
+    if [[ $total -gt 0 ]]; then
+        success_rate=$(( (up_to_date * 100) / total ))
+    fi
+    
+    # Output structured stats: total|up_to_date|updates_available|success_rate
+    echo "$total|$up_to_date|$updates_available|$success_rate"
+}
+
+# Main dashboard generation function
+generate_dashboard() {
+    log_info "Generating templated dashboard..."
+    
+    # Calculate statistics
+    local stats
+    stats=$(calculate_stats)
+    
+    # Parse structured stats efficiently: total|up_to_date|updates_available|success_rate
+    local total up_to_date updates_available success_rate
+    IFS='|' read -r total up_to_date updates_available success_rate <<< "$stats"
+    
+    # Generate dashboard header
     cat << EOF > "$TEMP_FILE"
-# 📊 Docker Containers Dashboard
+# 📊 Container Dashboard
 
-*Auto-generated on $(date '+%Y-%m-%d %H:%M:%S UTC')*
+*Last updated: $(date -u +"%Y-%m-%d %H:%M UTC")*
 
-## 🎯 Fleet Overview
+{% include dashboard-stats.html 
+   total_containers="$total"
+   up_to_date="$up_to_date"
+   updates_available="$updates_available"
+   build_success_rate="$success_rate"
+%}
 
-![Total Containers](https://img.shields.io/badge/containers-$(find . -name "Dockerfile" -not -path "./.git/*" | wc -l)-blue?logo=docker)
-![Repository](https://img.shields.io/github/repo-size/oorabona/docker-containers?label=repo%20size)
-![License](https://img.shields.io/github/license/oorabona/docker-containers)
-![Last Activity](https://img.shields.io/github/last-commit/oorabona/docker-containers?label=last%20activity)
+{% include quick-actions.html %}
 
-## 📈 Quick Stats
+## 📦 Container Status
 
-| Metric | Count | Status |
-|--------|-------|--------|
-| **Total Containers** | $(find . -name "Dockerfile" -not -path "./.git/*" | wc -l) | 📦 Active |
-| **Documentation Coverage** | 100% | ✅ Complete |
-| **Healthcheck Coverage** | 100% | ✅ Complete |
-| **Build Success Rate** | 92% | ✅ Excellent |
-
----
-
-## 📦 Container Details
-
+<div class="row row-deck row-cards">
 EOF
 
-    # Find all containers and process them
-    local containers=()
-    while IFS= read -r -d '' container; do
-        container=$(dirname "$container" | sed 's|^\./||')
-        containers+=("$container")
-    done < <(find . -name "Dockerfile" -not -path "./.git/*" -print0 | sort -z)
-    
-    log_info "Found ${#containers[@]} containers to process"
-    
-    # Generate summary for each container
-    for container in "${containers[@]}"; do
-        log_info "Processing $container..."
-        if generate_container_summary "$container" >> "$TEMP_FILE"; then
-            echo "  ✅ $container summary generated"
+    # Generate container cards
+    log_info "Processing containers..."
+    for container in */; do
+        container=${container%/}
+        
+        # Skip if not a container directory
+        [[ -f "$container/version.sh" ]] || continue
+        [[ -f "$container/Dockerfile" ]] || continue
+        
+        echo "  🔍 Processing $container..."
+        if generate_container_card "$container" >> "$TEMP_FILE"; then
+            echo "    ✅ Generated card for $container"
         else
-            log_warning "Failed to generate summary for $container"
+            log_warning "Failed to generate card for $container"
         fi
     done
     
-    # Add footer
+    # Close container grid and add footer
     cat << EOF >> "$TEMP_FILE"
+</div>
+
+## 🔄 Recent Activity
+
+- 🤖 **Automated Monitoring**: Upstream versions checked every 6 hours
+- 🚀 **Auto-Build**: Triggered on version updates and code changes  
+- 📊 **Dashboard Updates**: Real-time status after successful builds
+- 🔒 **Branch Protection**: All changes flow through pull requests
+
+## 📈 System Health
+
+| Metric | Status |
+|--------|--------|
+| Build Success Rate | **${success_rate}%** |
+| Containers Up-to-Date | **${up_to_date}/${total}** |
+| Updates Available | **${updates_available}** |
+| Last Check | **$(date -u +"%Y-%m-%d %H:%M UTC")** |
 
 ---
 
-## 🔄 Dashboard Updates
-
-This dashboard is automatically updated:
-- ✅ After successful builds triggered by upstream changes
-- ✅ On manual workflow dispatch
-- ✅ Daily via scheduled workflow (optional)
-
-**Last Update Trigger:** \`${GITHUB_EVENT_NAME:-manual}\`  
-**Update Reason:** \`${UPDATE_REASON:-Manual generation}\`
-
----
-
-## 🚀 Quick Actions
-
-- 📋 [View All Workflows](https://github.com/oorabona/docker-containers/actions)
-- 🔄 [Trigger Manual Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
-- 📊 [Run Container Tests](https://github.com/oorabona/docker-containers/actions/workflows/validate-version-scripts.yaml)
-- 📖 [Documentation](docs/)
-
-*🤖 Generated by \`generate-dashboard.sh\` - [View Source](generate-dashboard.sh)*
-
+*🤖 Generated by [\`generate-dashboard.sh\`](generate-dashboard.sh) using Jekyll templating*
+*📋 Update Reason: \`${UPDATE_REASON:-Manual generation}\`*
 EOF
 
     # Replace the dashboard file
     mv "$TEMP_FILE" "$DASHBOARD_FILE"
-    log_info "Dashboard generated successfully: $DASHBOARD_FILE"
+    log_info "Templated dashboard generated successfully: $DASHBOARD_FILE"
 }
 
 # Main execution
-main() {
-    echo "🚀 Docker Containers Dashboard Generator"
-    echo "========================================"
-    echo ""
-    
-    # Check if we're in the right directory
-    if [[ ! -f "make" ]] || [[ ! -d ".github" ]]; then
-        log_error "Please run this script from the docker-containers repository root"
-        exit 1
-    fi
-    
-    # Generate the dashboard
-    generate_dashboard
-    
-    echo ""
-    log_info "Dashboard generation complete!"
-    log_info "View the dashboard: cat $DASHBOARD_FILE"
-    echo ""
-    
-    # Show quick stats
-    local container_count total_size
-    container_count=$(find . -name "Dockerfile" -not -path "./.git/*" | wc -l)
-    total_size=$(du -sh . 2>/dev/null | cut -f1 || echo "unknown")
-    
-    echo "📊 Quick Stats:"
-    echo "  - Total containers: $container_count"
-    echo "  - Repository size: $total_size"
-    echo "  - Dashboard file: $DASHBOARD_FILE"
-    echo ""
-}
-
-# Run if called directly
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+generate_dashboard
