@@ -67,7 +67,7 @@ generate_container_card() {
     
     # Get container description from README if available
     if [[ -f "$container/README.md" ]]; then
-        description=$(head -n 5 "$container/README.md" | grep -v "^#" | head -n 1 | sed 's/^[[:space:]]*//')
+        description=$(awk 'NR<=5 && !/^#/ {gsub(/^[[:space:]]*/, ""); if(length($0)>0) {print; exit}}' "$container/README.md")
     fi
     
     # Get version information (structured output: current|latest|color|text)
