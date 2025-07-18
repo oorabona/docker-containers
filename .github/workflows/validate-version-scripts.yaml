@@ -54,7 +54,7 @@ jobs:
           chmod +x validate-version-scripts.sh
           chmod +x make
           find . -name "version.sh" -exec chmod +x {} \;
-          
+
       - name: Validate version scripts
         run: |
           if [[ -n "${{ github.event.inputs.container }}" ]]; then
@@ -66,7 +66,7 @@ jobs:
           fi
         env:
           VERBOSE: ${{ github.event.inputs.verbose == 'true' && '1' || '0' }}
-          
+
       - name: Upload validation report
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,7 +81,7 @@ jobs:
         with:
           container: wordpress
           skip_registry_check: "true"
-          
+
       - name: Display test results
         run: |
           echo "## 🧪 Version Script Validation Results" >> $GITHUB_STEP_SUMMARY
