@@ -16,7 +16,6 @@ show_excerpts: true
 
 # Navigation
 header_pages:
-  - index.md
   - dashboard.md
   - docs/index.md
 
@@ -41,8 +40,8 @@ exclude:
 
 include:
   - "_config.yml"   # This Jekyll config file
-  - "index.md"      # Main dashboard page
-  - "dashboard.md"  # Secondary dashboard page
+  - "index.md"      # Main redirect page
+  - "dashboard.md"  # Main dashboard page
   - "*.md"          # Other root-level markdown files
   - "docs/**"       # All documentation content
   - "_*"            # Jekyll system directories (layouts, includes, etc.)
