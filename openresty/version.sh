@@ -1,14 +1,12 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/git-tags"
+source "$(dirname "$0")/../helpers/docker-registry"
 
-case "${1:-current}" in
-    latest)
-        # Get latest version from upstream repository
-        latest-git-tag openresty openresty | cut -c2-
-        ;;
-    current|*)
-        # Get our currently published version from Docker Hub
-        source "$(dirname "$0")/../helpers/docker-tags"
-        latest-docker-tag oorabona/openresty "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"
-        ;;
-esac
+# Function to get latest upstream version
+get_latest_upstream() {
+    # Get latest version from upstream repository
+    source "$(dirname "$0")/../helpers/git-tags"
+    latest-git-tag openresty openresty | cut -c2-
+}
+
+# Use standardized version handling
+handle_version_request "$1" "oorabona/openresty" "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
