@@ -49,28 +49,28 @@ jobs:
       - name: Generate dashboard content
         run: |
           chmod +x generate-dashboard.sh
-          
+
           # Set environment variables for dashboard context
           export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
-          
+
           echo "🚀 Generating dashboard with context:"
           echo "  - Trigger: $GITHUB_EVENT_NAME"
           echo "  - Reason: $UPDATE_REASON"
           echo ""
-          
+
           ./generate-dashboard.sh
-          
+
           # Verify index.md was created
           if [ ! -f "index.md" ]; then
             echo "❌ Error: index.md was not generated!"
             exit 1
           fi
-          
+
           echo "✅ Dashboard generated successfully"
           echo "📄 Dashboard preview:"
           head -n 15 index.md
-          
+
           echo "📊 Dashboard content prepared for Jekyll"
 
       - name: Setup Pages
@@ -126,11 +126,11 @@ jobs:
           echo "| **Site URL** | [${{ steps.deployment.outputs.page_url }}](${{ steps.deployment.outputs.page_url }}) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Dashboard** | [${{ steps.deployment.outputs.page_url }}dashboard/](${{ steps.deployment.outputs.page_url }}dashboard/) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          
+
           if [ "${{ github.event_name }}" != "push" ]; then
             echo "| **Reason** | \`${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}\` |" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🌟 Live Site Features" >> $GITHUB_STEP_SUMMARY
           echo "- 📊 **Interactive Dashboard**: Real-time container status" >> $GITHUB_STEP_SUMMARY
