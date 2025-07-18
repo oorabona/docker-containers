@@ -63,4 +63,4 @@ exclude:
 include:
   - "_config.yml"
   - "*.md"
-  - "docs/"
+  - "docs/**"
