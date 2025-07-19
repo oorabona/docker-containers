@@ -67,6 +67,24 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      - name: Configure Git for HTTPS
+        run: |
+          # Ensure git remote uses HTTPS for token authentication
+          git remote set-url origin https://github.com/${{ github.repository }}.git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect test environment
+        id: env_check
+        run: |
+          if [ "$ACT" = "true" ]; then
+            echo "is_local_test=true" >> $GITHUB_OUTPUT
+            echo "🧪 Running in local test mode - will skip actual PR creation"
+          else
+            echo "is_local_test=false" >> $GITHUB_OUTPUT
+            echo "🚀 Running in production mode"
+          fi
+
       - name: Classify version change
         id: classify
         run: |
@@ -101,7 +119,7 @@ jobs:
           echo "Type: ${{ steps.classify.outputs.change_type }}" >> ${{ matrix.container }}/LAST_REBUILD.md
 
       - name: Create Pull Request
-        if: steps.close_duplicates.outputs.existing_pr_found != 'true'
+        if: steps.close_duplicates.outputs.existing_pr_found != 'true' && steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
         uses: peter-evans/create-pull-request@v7
         with:
@@ -130,6 +148,16 @@ jobs:
           gh pr merge ${{ steps.create_pr.outputs.pull-request-number }} --merge --auto
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show PR details (test mode)
+        if: steps.env_check.outputs.is_local_test == 'true'
+        run: |
+          echo "🧪 LOCAL TEST MODE - Would create PR with:"
+          echo "   Title: ${{ steps.classify.outputs.change_type == 'major' && '🔄 Major' || '🚀 Minor' }}: ${{ matrix.container }} to ${{ steps.classify.outputs.new_version }}"
+          echo "   Branch: update/${{ matrix.container }}-${{ steps.classify.outputs.new_version }}"
+          echo "   Change: ${{ steps.classify.outputs.current_version }} → ${{ steps.classify.outputs.new_version }} (${{ steps.classify.outputs.change_type }})"
+          echo "   Labels: automation, ${{ matrix.container }}, ${{ steps.classify.outputs.change_type }}"
+          echo "   Auto-merge: ${{ steps.classify.outputs.change_type == 'minor' && 'Yes (minor update)' || 'No (major update - requires manual review)' }}"
 
   trigger-auto-build:
     needs: [check-upstream-versions, create-update-prs]
