@@ -1,6 +1,6 @@
-ARG VERSION=${VERSION-:-}
+ARG VERSION
 FROM composer:latest AS composer
-FROM php:${VERSION}fpm-alpine AS php
+FROM php:${VERSION} AS php
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 
@@ -57,10 +57,10 @@ ENV COMPOSER_CACHE_DIR /var/www/.composer/
 
 # We do not want the www-data user anymore, we can stick with the default user nobody
 RUN deluser --remove-home www-data \
-    && mkdir -p ${COMPOSER_CACHE_DIR} /var/log/shared && chown -R nobody. /var/www/ /var/log/shared \
+    && mkdir -p ${COMPOSER_CACHE_DIR} /var/log/shared && chown -R nobody:nobody /var/www/ /var/log/shared \
 	&& mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
 	&& chmod +x /usr/local/bin/* \
-	&& chown -R nobody. /usr/local/etc/php-fpm.d \
+	&& chown -R nobody:nobody /usr/local/etc/php-fpm.d \
 	&& usermod -d /var/www/ nobody
 
 # Validate FPM config (must use the non-root user)
