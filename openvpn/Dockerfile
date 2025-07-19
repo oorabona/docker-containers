@@ -25,6 +25,8 @@ RUN set -ex \
         gnutls-dev \
         automake \
         make \
+        libcap-ng-dev \
+        libcap-dev \
         git \
     && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz --output openvpn.tgz \
     # Download latest version of OpenSC pkcs11-helper from github
