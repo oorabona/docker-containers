@@ -85,7 +85,7 @@ version() {
   # Get the latest upstream version (version.sh now single-purpose)
   pushd "${target}" > /dev/null 2>&1
   local latest_version
-  latest_version=$(./version.sh latest 2>/dev/null)
+  latest_version=$(./version.sh 2>/dev/null)
   local exit_code=$?
   
   # Validate the version output
@@ -253,7 +253,7 @@ make() {
   # Handle version detection logic properly
   if [ "$wantedVersion" = "latest" ]; then
     # Get latest upstream version
-    versions=$(./version.sh latest 2>/dev/null)
+    versions=$(./version.sh 2>/dev/null)
     exit_code=$?
   elif [ "$wantedVersion" = "current" ]; then
     # Get current published version using container-specific pattern
@@ -276,7 +276,7 @@ make() {
     log_warning "No published version found for $target, this will be an initial release"
     # For no-published-version, we'll use the latest upstream version
     # Try to get latest upstream version explicitly
-    versions=$(./version.sh latest 2>/dev/null)
+    versions=$(./version.sh 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$versions" ]; then
       log_error "Could not determine version to build for $target"
       popd
