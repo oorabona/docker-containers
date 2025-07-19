@@ -25,7 +25,7 @@ log_help() {
 [ -r "$CONFIG_MK" ] && source "$CONFIG_MK"
 [ -r "$DEPLOY_MK" ] && source "$DEPLOY_MK"
 
-targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
+targets=$(find -maxdepth 2 -name "Dockerfile" | cut -d'/' -f2 | sort -u)
 
 # Validate if a target is valid (has a Dockerfile)
 validate_target() {
@@ -85,11 +85,11 @@ version() {
   # Get the latest upstream version (version.sh now single-purpose)
   pushd "${target}" > /dev/null 2>&1
   local latest_version
-  latest_version=$(./version.sh 2>/dev/null)
+  latest_version=$(./version.sh latest 2>/dev/null)
   local exit_code=$?
   
   # Validate the version output
-  if [ $exit_code -eq 0 ] && [ -n "$latest_version" ] && [ "$latest_version" != "unknown" ]; then
+  if [ $exit_code -eq 0 ] && [ -n "$latest_version" ] && [ "$latest_version" != "unknown" ] && [ "$latest_version" != "no-published-version" ]; then
     echo "$latest_version"
   else
     log_error "Failed to get latest upstream version for $target"
@@ -102,7 +102,10 @@ version() {
   local current_version
   local pattern
   if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-    current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
+    current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
+  else
+    # Fallback: try common version pattern
+    current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null)
   fi
   
   if [ -n "$current_version" ]; then
@@ -129,6 +132,14 @@ run() {
 
 do_it() {
   local op=$1
+  
+  # For build and push operations, use buildx for multi-registry support
+  if [[ "$op" == "build" || "$op" == "push" ]]; then
+    do_buildx "$op"
+    return $?
+  fi
+  
+  # For other operations, use docker-compose as before
   if [ -r "docker-compose.yml" ]
   then
     $DOCKERCOMPOSE $op $DOCKEROPTS
@@ -140,6 +151,92 @@ do_it() {
     . "$op"
   else
     log_error "No ${op} script found in $PWD, aborting."
+  fi
+}
+
+# Check if multi-platform builds are supported (QEMU emulation)
+check_multiplatform_support() {
+  # Cache the result to avoid repeated checks
+  if [[ -n "${MULTIPLATFORM_SUPPORTED:-}" ]]; then
+    return $([ "$MULTIPLATFORM_SUPPORTED" = "true" ] && echo 0 || echo 1)
+  fi
+  
+  # Method 1: Check for QEMU ARM64 emulation via binfmt_misc
+  if [[ -f "/proc/sys/fs/binfmt_misc/qemu-aarch64" ]] || 
+     [[ -f "/proc/sys/fs/binfmt_misc/qemu-arm64" ]]; then
+    MULTIPLATFORM_SUPPORTED="true"
+    return 0
+  fi
+  
+  # Method 2: Check docker buildx supported platforms  
+  if command -v docker >/dev/null 2>&1; then
+    local platforms
+    if platforms=$(docker buildx inspect --bootstrap 2>/dev/null | grep -i "platforms:" 2>/dev/null); then
+      if echo "$platforms" | grep -q "linux/arm64"; then
+        MULTIPLATFORM_SUPPORTED="true"
+        return 0
+      fi
+    fi
+  fi
+  
+  # No multi-platform support found
+  MULTIPLATFORM_SUPPORTED="false"
+  return 1
+}
+
+do_buildx() {
+  local op=$1
+  local container=$(basename "$PWD")
+  local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+  
+  # Image names for multi-registry push
+  local dockerhub_image="docker.io/$github_username/$container"
+  local ghcr_image="ghcr.io/$github_username/$container"
+  
+  # Determine platform support proactively
+  local platforms
+  if check_multiplatform_support; then
+    platforms="linux/amd64,linux/arm64"
+    log_success "Building $container:$TAG using buildx (multi-platform: AMD64 + ARM64)"
+  else
+    platforms="linux/amd64"
+    log_success "Building $container:$TAG using buildx (AMD64 only - no QEMU emulation detected)"
+  fi
+  
+  local build_args=""
+  
+  # Add common build arguments if they're set
+  [[ -n "$VERSION" ]] && build_args="$build_args --build-arg VERSION=$VERSION"
+  [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+  
+  if [[ "$op" == "build" ]]; then
+    # Single build attempt with determined platform support
+    docker buildx build \
+      --platform "$platforms" \
+      $build_args \
+      -t "$dockerhub_image:$TAG" \
+      -t "$ghcr_image:$TAG" \
+      . || {
+      log_error "Build failed for $container:$TAG"
+      return 1
+    }
+    
+  elif [[ "$op" == "push" ]]; then
+    # Single build and push attempt with determined platform support
+    docker buildx build \
+      --platform "$platforms" \
+      --push \
+      $build_args \
+      -t "$dockerhub_image:$TAG" \
+      -t "$ghcr_image:$TAG" \
+      . || {
+      log_error "Build and push failed for $container:$TAG"
+      return 1
+    }
+    
+    log_success "✅ Successfully pushed to:"
+    log_success "  🐳 Docker Hub: $dockerhub_image:$TAG"
+    log_success "  📦 GHCR: $ghcr_image:$TAG"
   fi
 }
 
@@ -155,16 +252,17 @@ make() {
   
   # Handle version detection logic properly
   if [ "$wantedVersion" = "latest" ]; then
-    # Get latest upstream version (version.sh now single-purpose)
-    versions=$(./version.sh 2>/dev/null)
+    # Get latest upstream version
+    versions=$(./version.sh latest 2>/dev/null)
     exit_code=$?
   elif [ "$wantedVersion" = "current" ]; then
     # Get current published version using container-specific pattern
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      versions=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
+      versions=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
     else
-      versions="unknown"
+      # Fallback: try common version pattern
+      versions=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || echo "unknown")
     fi
     exit_code=$?
   else
@@ -177,8 +275,8 @@ make() {
   if [ "$versions" = "no-published-version" ]; then
     log_warning "No published version found for $target, this will be an initial release"
     # For no-published-version, we'll use the latest upstream version
-    # Try to get versions (version.sh now single-purpose for upstream)
-    versions=$(./version.sh 2>/dev/null)
+    # Try to get latest upstream version explicitly
+    versions=$(./version.sh latest 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$versions" ]; then
       log_error "Could not determine version to build for $target"
       popd
@@ -230,9 +328,10 @@ check_updates() {
     # Get current and latest versions using container-specific patterns
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     else
-      current_version="no-published-version"
+      # Fallback: try common version pattern  
+      current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     fi
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
     
