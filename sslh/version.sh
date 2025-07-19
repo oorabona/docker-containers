@@ -1,10 +1,12 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream SSLH version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version from GitHub releases
-get_latest_upstream() {
-    latest-git-tag yrutschle sslh "v.+$"
-}
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^v[0-9]+\.[0-9]+\.[0-9]+$"
+    exit 0
+fi
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/sslh" "^v[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
+# Get latest upstream version from GitHub releases using direct helper symlink
+"$(dirname "$0")/../helpers/latest-git-tag" yrutschle sslh "v.+$"

@@ -1,11 +1,12 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream Logstash version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    # Get latest version from official Logstash registry
-    latest-docker-tag library/logstash "^[0-9]+\.[0-9]+$"
-}
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^[0-9]+\.[0-9]+$"
+    exit 0
+fi
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/logstash" "^[0-9]+\.[0-9]+$" "get_latest_upstream"
+# Get latest upstream version from official Logstash registry using direct helper symlink
+"$(dirname "$0")/../helpers/latest-docker-tag" library/logstash "^[0-9]+\.[0-9]+$"

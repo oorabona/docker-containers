@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-source ../helpers/docker-tags
+source ../helpers/docker-tag
 
 # Get only the latest 10 (8 + light/latest) versions (tags)
-version_tags=$(docker-tags "hashicorp/terraform" | jq --raw-output '.tags[]' | grep -v '[beta|rc]' | sort -t. -k 1,1n -k 2,2n -k 3,3n | tail -n8)
+version_tags=$(latest-docker-tag "hashicorp/terraform" "^[0-9]+\.[0-9]+\.[0-9]+$" | head -8)
 tags=$(echo -e "$version_tags\nlight\nlatest")
 
 # For each tag found build

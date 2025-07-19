@@ -29,9 +29,13 @@ RUN set -ex \
         libev-dev \
         pcre2-dev \
         make \
+        autoconf \
+        automake \
   && apk add --no-cache ca-certificates wget libconfig pcre2 libev iptables socat \
   && wget https://github.com/yrutschle/sslh/archive/$VERSION.tar.gz \
-  && tar zxvf $VERSION.tar.gz && cd /sslh* && make -j${NPROC}\
+  && tar zxvf $VERSION.tar.gz && cd /sslh* \
+  && ./configure --enable-libconfig --enable-libev \
+  && make -j${NPROC} \
   && SSLH_BIN="sslh-fork sslh-select sslh-ev" \
   && strip $SSLH_BIN \
   && for bin in $SSLH_BIN; do mv /sslh*/$bin /usr/local/bin/$bin; done \
