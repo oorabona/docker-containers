@@ -18,7 +18,11 @@ check-git-tag() {
 }
 
 # Entrypoint in case this script is run directly.
-if [[ "$0" == *"git-tags" ]]
-then
-  eval $(basename $0) $@
+script_name=$(basename "$0")
+if [[ "$script_name" == "git-tags" ]]; then
+  eval $@
+elif [[ "$script_name" == "latest-git-tag" ]]; then
+  latest-git-tag $@
+elif [[ "$script_name" == "check-git-tag" ]]; then
+  check-git-tag $@
 fi
