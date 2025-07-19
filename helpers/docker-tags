@@ -1,85 +1,37 @@
 #!/usr/bin/env bash
 
-# Gets all tags for a given docker image with proper error handling
+# Gets all tags for a given docker image using skopeo for better performance and multi-registry support
 
-token_uri="https://auth.docker.io/token"
-list_uri="https://registry-1.docker.io/v2/###IMAGE###/tags/list"
-
-DEFAULT_FILTER="^[0-9][^r|c]*alpine$"
-
-function get_token() {
-  local scope="repository:$1:pull"
-  local token_response
-  token_response=$(curl -sSL --fail --max-time 30 "$token_uri?service=registry.docker.io&scope=$scope" 2>/dev/null)
-  if [[ $? -eq 0 && -n "$token_response" ]]; then
-    echo "$token_response" | jq -r '.token // empty' 2>/dev/null
-  fi
-}
-
-function get_version() {
-  local image=$1
-  local token=$2
-  
-  if [[ -z "$token" ]]; then
-    return 1
-  fi
-  
-  local this_uri=$(echo -n "${list_uri}" | sed -e "s^###IMAGE###^${image}^")
-  local response
-  local http_code
-  
-  # Get response with HTTP status code
-  response=$(curl -sSL --fail --max-time 30 \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $token" \
-    -w "HTTPSTATUS:%{http_code}" \
-    "${this_uri}" 2>/dev/null)
-  
-  http_code=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
-  response=$(echo "$response" | sed -E 's/HTTPSTATUS:[0-9]*$//')
-  
-  case "$http_code" in
-    200)
-      echo "$response" | jq . 2>/dev/null
-      ;;
-    404)
-      echo '{"error": "repository_not_found", "message": "Repository not found or no tags available"}'
-      return 1
-      ;;
-    *)
-      echo '{"error": "api_error", "message": "Failed to fetch repository information"}'
-      return 1
-      ;;
-  esac
-}
+# Skopeo container image for consistent behavior
+readonly SKOPEO_IMAGE="quay.io/skopeo/stable:latest"
 
 function latest-docker-tag() {
   local image=$1
   local pattern=$2
-  local token
-  local versions
-  local latest
+  local registry_url
   
-  token=$(get_token "$image")
-  if [[ -z "$token" ]]; then
-    return 1
+  # Determine registry URL format with proper library/ prefix handling
+  if [[ "$image" == quay.io/* ]] || [[ "$image" == ghcr.io/* ]]; then
+    # External registries - use as-is
+    registry_url="docker://$image"
+  elif [[ "$image" == */* ]]; then
+    # Docker Hub with namespace (e.g., "oorabona/php") - use as-is
+    registry_url="docker://$image"
+  else
+    # Docker Hub official images (e.g., "php") - needs library/ prefix
+    registry_url="docker://library/$image"
   fi
   
-  versions=$(get_version "$image" "$token")
-  if [[ $? -ne 0 ]]; then
-    return 1
-  fi
+  # Get all tags using skopeo and filter with pattern
+  local result
+  result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
+    jq -r '.Tags[]? // empty' 2>/dev/null | \
+    grep -E "$pattern" 2>/dev/null | \
+    sort -V | \
+    tail -n1)
   
-  # Check if we got an error response
-  local error=$(echo "$versions" | jq -r '.error // empty' 2>/dev/null)
-  if [[ -n "$error" ]]; then
-    return 1
-  fi
-  
-  latest=$(echo "$versions" | jq -r '.tags[]? // empty' 2>/dev/null | grep -E "$pattern" 2>/dev/null | sort -V | tail -n1)
-  
-  if [[ -n "$latest" && "$latest" != "null" ]]; then
-    echo "$latest"
+  if [[ -n "$result" && "$result" != "null" ]]; then
+    echo "$result"
     return 0
   else
     return 1
@@ -88,38 +40,37 @@ function latest-docker-tag() {
 
 function check-docker-tag() {
   local image=$1
-  local tag=$2
-  local token
-  local versions
-  local found
+  local tag_pattern=$2
+  local registry_url
   
-  token=$(get_token "$image")
-  if [[ -z "$token" ]]; then
-    return 1
+  # Determine registry URL format with proper library/ prefix handling
+  if [[ "$image" == quay.io/* ]] || [[ "$image" == ghcr.io/* ]]; then
+    # External registries - use as-is
+    registry_url="docker://$image"
+  elif [[ "$image" == */* ]]; then
+    # Docker Hub with namespace (e.g., "oorabona/php") - use as-is
+    registry_url="docker://$image"
+  else
+    # Docker Hub official images (e.g., "php") - needs library/ prefix
+    registry_url="docker://library/$image"
   fi
   
-  versions=$(get_version "$image" "$token")
-  if [[ $? -ne 0 ]]; then
-    return 1
-  fi
+  # Check if specific tag exists
+  local result
+  result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
+    jq -r '.Tags[]? // empty' 2>/dev/null | \
+    grep -E "$tag_pattern" 2>/dev/null | \
+    head -n1)
   
-  # Check if we got an error response
-  local error=$(echo "$versions" | jq -r '.error // empty' 2>/dev/null)
-  if [[ -n "$error" ]]; then
-    return 1
-  fi
-  
-  found=$(echo "$versions" | jq -r '.tags[]? // empty' 2>/dev/null | grep -E "$tag" 2>/dev/null | sort -V | tail -n1)
-  
-  if [[ -n "$found" && "$found" != "null" ]]; then
-    echo "$found"
+  if [[ -n "$result" && "$result" != "null" ]]; then
+    echo "$result"
     return 0
   else
     return 1
   fi
 }
 
-if [[ "$0" == *"docker-tag" ]]
+if [[ "$0" == *"docker-tags" ]]
 then
-  eval $(basename $0) $@
+  "$@"
 fi
