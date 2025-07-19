@@ -1,4 +1,3 @@
-ARG VERSION=latest
 FROM debian:bookworm-slim
 
 # Install dependencies
