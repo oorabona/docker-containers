@@ -55,19 +55,32 @@ function check-docker-tag() {
     registry_url="docker://library/$image"
   fi
   
-  # Check if specific tag exists
+  # Check if specific tag exists with enhanced error handling for CI
   local result
-  result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
-    jq -r '.Tags[]? // empty' 2>/dev/null | \
-    grep -E "$tag_pattern" 2>/dev/null | \
-    head -n1)
+  local retry_count=0
+  local max_retries=3
   
-  if [[ -n "$result" && "$result" != "null" ]]; then
-    echo "$result"
-    return 0
-  else
-    return 1
-  fi
+  while [ $retry_count -lt $max_retries ]; do
+    result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
+      jq -r '.Tags[]? // empty' 2>/dev/null | \
+      grep -E "$tag_pattern" 2>/dev/null | \
+      head -n1)
+    
+    if [[ -n "$result" && "$result" != "null" ]]; then
+      echo "$result"
+      return 0
+    else
+      retry_count=$((retry_count + 1))
+      if [ $retry_count -lt $max_retries ]; then
+        # Add exponential backoff for rate limiting
+        sleep_time=$((retry_count * 2))
+        >&2 echo "Docker Hub query failed, retrying in ${sleep_time}s... (${retry_count}/${max_retries})"
+        sleep $sleep_time
+      fi
+    fi
+  done
+  
+  return 1
 }
 
 # Handle execution - all script names containing "docker-tag" will execute

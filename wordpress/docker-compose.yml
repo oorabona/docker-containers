@@ -1,10 +1,9 @@
 version: "3"
 services:
   wordpress:
-    image: oorabona/wordpress:latest
-    container_name: wordpress-latest
+    image: oorabona/wordpress:${VERSION:-latest}
+    container_name: wordpress-${VERSION:-latest}
     build:
       context: .
       args:
-        VERSION: latest
-        PHP_VERSION: 7.2-fpm
+        PHP_VERSION: ${VERSION:-latest}
