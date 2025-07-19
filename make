@@ -135,20 +135,25 @@ do_it() {
   
   # For build and push operations, use buildx for multi-registry support
   if [[ "$op" == "build" || "$op" == "push" ]]; then
+    # First, check if there's a custom executable script to set build args
+    if [ -x "$op" ]; then
+      . "$op"
+    fi
+    # Then proceed with buildx (whether or not custom script existed)
     do_buildx "$op"
     return $?
   fi
   
-  # For other operations, use docker-compose as before
-  if [ -r "docker-compose.yml" ]
+  # For other operations, check for custom scripts or use docker-compose
+  if [ -x "$op" ]; then
+    . "$op"
+    return $?
+  elif [ -r "docker-compose.yml" ]
   then
     $DOCKERCOMPOSE $op $DOCKEROPTS
   elif [ -r "compose.yml" ]
   then
     $DOCKERCOMPOSE -f compose.yml $op $DOCKEROPTS
-  elif [ -x "$op" ]
-  then
-    . "$op"
   else
     log_error "No ${op} script found in $PWD, aborting."
   fi
@@ -208,6 +213,9 @@ do_buildx() {
   # Add common build arguments if they're set
   [[ -n "$VERSION" ]] && build_args="$build_args --build-arg VERSION=$VERSION"
   [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+  
+  # Add custom container-specific build args (set by custom build scripts)
+  [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
   
   if [[ "$op" == "build" ]]; then
     # Single build attempt with determined platform support
