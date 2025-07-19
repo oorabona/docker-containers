@@ -1,7 +1,11 @@
-source "../helpers/docker-tags"
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-registry"
 
-if [ "$1" == "latest" ]; then
-  latest-docker-tag library/logstash "^[0-9]+\.[0-9]+$"
-else
-  check-docker-tag library/logstash "^${1}$"
-fi
+# Function to get latest upstream version
+get_latest_upstream() {
+    # Get latest version from official Logstash registry
+    latest-docker-tag library/logstash "^[0-9]+\.[0-9]+$"
+}
+
+# Use standardized version handling
+handle_version_request "$1" "oorabona/logstash" "^[0-9]+\.[0-9]+$" "get_latest_upstream"

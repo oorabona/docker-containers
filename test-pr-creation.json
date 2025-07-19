@@ -1,0 +1,7 @@
+{
+  "inputs": {
+    "container": "debian",
+    "create_pr": "true",
+    "debug": "true"
+  }
+}

@@ -11,9 +11,16 @@ set -euo pipefail
 current_version="${1:-}"
 new_version="${2:-}"
 
-if [[ -z "$current_version" || -z "$new_version" ]]; then
+# Check for required new version
+if [[ -z "$new_version" ]]; then
     echo "Usage: $0 <current_version> <new_version>"
     exit 1
+fi
+
+# Handle case where current_version is empty (new container or no current version)
+if [[ -z "$current_version" ]]; then
+    echo "major"  # Treat new containers as major changes requiring review
+    exit 0
 fi
 
 # Function to extract major version from various formats

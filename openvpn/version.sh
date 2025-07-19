@@ -1,7 +1,12 @@
-source "../helpers/git-tags"
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-registry"
 
-if [ "$1" == "latest" ]; then
-	latest-git-tag openvpn openvpn
-else
-	check-git-tag openvpn openvpn $1
-fi
+# Function to get latest upstream version
+get_latest_upstream() {
+    # Get latest version from upstream repository
+    source "$(dirname "$0")/../helpers/git-tags"
+    latest-git-tag openvpn openvpn
+}
+
+# Use standardized version handling
+handle_version_request "$1" "oorabona/openvpn" "^v[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
