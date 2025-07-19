@@ -1,10 +1,12 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream PHP version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    latest-docker-tag library/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
-}
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"
+    exit 0
+fi
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/php" "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$" "get_latest_upstream"
+# Get latest upstream version from official PHP registry using direct helper symlink
+"$(dirname "$0")/../helpers/latest-docker-tag" library/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"

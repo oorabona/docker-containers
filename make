@@ -102,10 +102,10 @@ version() {
   local current_version
   local pattern
   if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-    current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
+    current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
   else
     # Fallback: try common version pattern
-    current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null)
+    current_version=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null)
   fi
   
   if [ -n "$current_version" ]; then
@@ -259,10 +259,10 @@ make() {
     # Get current published version using container-specific pattern
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      versions=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
+      versions=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
     else
       # Fallback: try common version pattern
-      versions=$(../helpers/docker-tags latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || echo "unknown")
+      versions=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || echo "unknown")
     fi
     exit_code=$?
   else
@@ -328,10 +328,10 @@ check_updates() {
     # Get current and latest versions using container-specific patterns
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     else
       # Fallback: try common version pattern  
-      current_version=$(../helpers/docker-tags latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     fi
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
     

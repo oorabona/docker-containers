@@ -1,12 +1,12 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream OpenVPN version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    # Get latest version from upstream repository
-    source "$(dirname "$0")/../helpers/git-tags"
-    latest-git-tag openvpn openvpn
-}
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^v[0-9]+\.[0-9]+\.[0-9]+$"
+    exit 0
+fi
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/openvpn" "^v[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
+# Get latest upstream version from GitHub releases using direct helper symlink
+"$(dirname "$0")/../helpers/latest-git-tag" openvpn openvpn
