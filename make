@@ -2,16 +2,20 @@
 
 export DOCKER_CLI_EXPERIMENTAL=enabled
 export NPROC=$(nproc)
-export DOCKERCOMPOSE="docker-compose"
+export DOCKERCOMPOSE="docker compose"
 export DOCKEROPTS="${DOCKEROPTS:-}"
 
 # Helper functions
 log_success() {
-  echo -e "\033[32m>> $@\033[39m"
+  >&2 echo -e "\033[32m>> $@\033[39m"
 }
 
 log_error() {
   >&2 echo -e "\033[31m>> $@\033[39m" && exit 1
+}
+
+log_warning() {
+  >&2 echo -e "\033[33m>> $@\033[39m"
 }
 
 log_help() {
@@ -23,39 +27,97 @@ log_help() {
 
 targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
 
+# Validate if a target is valid (has a Dockerfile)
+validate_target() {
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    return 1
+  fi
+  
+  if [[ ! -d "$target" ]]; then
+    return 1
+  fi
+  
+  if [[ ! -f "$target/Dockerfile" ]]; then
+    return 1
+  fi
+  
+  return 0
+}
+
 help() {
   echo Commands:
   log_help help "This help"
-  log_help "build <target> [version]" "Build <target> container using [version]"
+  log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
-  log_help "version <target>" "Get latest version of <target>"
+  log_help "version [target]" "Show latest upstream version for a container"
+  log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   echo
   echo Where:
-  log_help "[version]" "Existing version, by default it is set to latest (auto discover)"
+  log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
+  log_help "  latest" "Upstream version (fetched from source project/registry)"
+  log_help "  current" "Published version (what we currently have built/tagged)"
+  log_help "  <specific>" "Explicit version string (e.g., '1.2.3', '2024-01-15')"
   echo
   echo List of possible targets:
   log_help "$(echo $targets| tr ' ' '\n')"
 }
 
 version() {
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
+  local target="$1"
+  
+  if [[ -z "$target" ]]; then
+    echo "Usage: version <target>" >&2
+    exit 1
   fi
-  local target=$1
-  pushd ${target}
-  versions=$(./version.sh latest)
-  if [ -e "$versions" ]; then
-    log_error "Could not retrieve the latest version."
+  
+  if ! validate_target "$target"; then
+    log_error "$target is not a valid target (no Dockerfile found)!"
+    exit 1
+  fi
+  
+  if [ ! -f "$target/version.sh" ]; then
+    log_error "No version.sh script found in $target directory!"
+    exit 1
+  fi
+  
+  # Get the latest upstream version (version.sh now single-purpose)
+  pushd "${target}" > /dev/null 2>&1
+  local latest_version
+  latest_version=$(./version.sh 2>/dev/null)
+  local exit_code=$?
+  
+  # Validate the version output
+  if [ $exit_code -eq 0 ] && [ -n "$latest_version" ] && [ "$latest_version" != "unknown" ]; then
+    echo "$latest_version"
   else
-    log_success "$versions"
+    log_error "Failed to get latest upstream version for $target"
+    popd > /dev/null 2>&1
+    echo "unknown"
+    exit 1
   fi
-  popd
+  
+  # Check current published version using container-specific pattern
+  local current_version
+  local pattern
+  if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+    current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
+  fi
+  
+  if [ -n "$current_version" ]; then
+    log_success "Current published version: $current_version"
+  else
+    log_warning "No published version found (container not yet released)"
+  fi
+  
+  popd > /dev/null 2>&1
 }
 
 run() {
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
+  if ! validate_target "$1"; then
+    log_error "$1 is not a valid target (no Dockerfile found)!"
+    exit 1
   fi
   local target=$1
   local wantedVersion=${2:-latest}
@@ -70,6 +132,9 @@ do_it() {
   if [ -r "docker-compose.yml" ]
   then
     $DOCKERCOMPOSE $op $DOCKEROPTS
+  elif [ -r "compose.yml" ]
+  then
+    $DOCKERCOMPOSE -f compose.yml $op $DOCKEROPTS
   elif [ -x "$op" ]
   then
     . "$op"
@@ -80,16 +145,51 @@ do_it() {
 
 make() {
   local op=$1 ; shift
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
+  if ! validate_target "$1"; then
+    log_error "$1 is not a valid target (no Dockerfile found)!"
+    exit 1
   fi
   local target=$1
   local wantedVersion=${2:-latest}
   pushd ${target}
-  versions=$(./version.sh ${wantedVersion})
-  if [ -e "$versions" ]; then
-    log_error "Version checking returned false, please ensure version is correct: $2"
+  
+  # Handle version detection logic properly
+  if [ "$wantedVersion" = "latest" ]; then
+    # Get latest upstream version (version.sh now single-purpose)
+    versions=$(./version.sh 2>/dev/null)
+    exit_code=$?
+  elif [ "$wantedVersion" = "current" ]; then
+    # Get current published version using container-specific pattern
+    local pattern
+    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+      versions=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
+    else
+      versions="unknown"
+    fi
+    exit_code=$?
+  else
+    # Use the specific version provided directly
+    versions="$wantedVersion"
+    exit_code=0
   fi
+  
+  # Handle special cases
+  if [ "$versions" = "no-published-version" ]; then
+    log_warning "No published version found for $target, this will be an initial release"
+    # For no-published-version, we'll use the latest upstream version
+    # Try to get versions (version.sh now single-purpose for upstream)
+    versions=$(./version.sh 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$versions" ]; then
+      log_error "Could not determine version to build for $target"
+      popd
+      return 1
+    fi
+  elif [ $exit_code -ne 0 ] || [ -z "$versions" ]; then
+    log_error "Version checking returned false, please ensure version is correct: $wantedVersion"
+    popd
+    return 1
+  fi
+  
   for version in $versions; do
     export WANTED=$wantedVersion VERSION=$version TAG=$version
     log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
@@ -103,7 +203,78 @@ make() {
   popd
 }
 
-# Main entrypoint
+check_updates() {
+  local target=${1:-""}
+  local output_json="[]"
+  
+  # Determine targets to check
+  local check_targets
+  if [ -n "$target" ]; then
+    if ! validate_target "$target"; then
+      log_error "$target is not a valid target (no Dockerfile found)!"
+      exit 1
+    fi
+    check_targets="$target"
+  else
+    check_targets="$targets"
+  fi
+  
+  # Check each target
+  for container in $check_targets; do
+    if [ ! -f "$container/version.sh" ]; then
+      continue # Skip containers without version.sh
+    fi
+    
+    pushd "$container" > /dev/null
+    
+    # Get current and latest versions using container-specific patterns
+    local pattern
+    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+    else
+      current_version="no-published-version"
+    fi
+    latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
+    
+    # Determine update status
+    local update_available="false"
+    local status="up_to_date"
+    
+    if [ "$current_version" = "no-published-version" ]; then
+      if [ -n "$latest_version" ]; then
+        update_available="true"
+        status="new-container"
+      fi
+    elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
+      update_available="true"
+      status="update-available"
+    fi
+    
+    # Build JSON object for this container
+    container_json=$(jq -n \
+      --arg container "$container" \
+      --arg current "$current_version" \
+      --arg latest "$latest_version" \
+      --argjson update_available "$update_available" \
+      --arg status "$status" \
+      '{
+        container: $container,
+        current_version: $current,
+        latest_version: $latest,
+        update_available: $update_available,
+        status: $status
+      }')
+    
+    # Add to output array
+    output_json=$(echo "$output_json" | jq ". + [$container_json]")
+    
+    popd > /dev/null
+  done
+  
+  # Output the JSON array
+  echo "$output_json"
+}
+
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
   docker compose 2>/dev/null 1>&2
@@ -119,6 +290,7 @@ fi
 case "$1" in
   push|build ) make $1 $2 $3 ;;
   run ) run $2 $3 ;;
-  version ) version $2 ;;
+  version ) shift; version "$@" ;;
+  check-updates ) check_updates $2 ;;
   * ) help ;;
 esac

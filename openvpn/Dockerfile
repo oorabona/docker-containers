@@ -2,8 +2,6 @@
 ARG OS_VERSION=latest
 FROM alpine:${OS_VERSION}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 ARG VERSION=latest
 ARG NPROC=1
 
@@ -63,6 +61,10 @@ VOLUME ["/etc/openvpn"]
 
 # Internally uses port 1194/udp, remap using `docker run -p 443:1194/tcp`
 EXPOSE 1194/udp 1194/tcp
+
+# Add healthcheck to verify OpenVPN is accessible
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD openvpn --version || exit 1
 
 # Environment variables
 # Later versions of EASYRSA seem to break the script

@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  elasticsearch-conf:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-latest}
+    image: ${DOCKER_REGISTRY:-}elasticsearch-conf:${TAG:-latest}
+    container_name: elasticsearch-conf
+    environment:
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
+    volumes:
+      - es-config:/usr/share/elasticsearch/config
+      - ./conf.d:/data/confd
+    networks:
+      - elastic
+
+volumes:
+  es-config:
+
+networks:
+  elastic:
+    driver: bridge

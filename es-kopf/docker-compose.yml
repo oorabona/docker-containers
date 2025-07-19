@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  es-kopf:
+    build:
+      context: .
+    image: ${DOCKER_REGISTRY:-}es-kopf:${TAG:-latest}
+    container_name: es-kopf
+    ports:
+      - "8080:80"
+    environment:
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
+    networks:
+      - elastic
+
+networks:
+  elastic:
+    driver: bridge

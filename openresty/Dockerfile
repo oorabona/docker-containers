@@ -6,8 +6,6 @@ ARG RESTY_IMAGE_TAG="3.13"
 
 FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
 ARG RESTY_VERSION="1.19.3.1"
@@ -173,6 +171,10 @@ RUN cd /tmp/openresty-${RESTY_VERSION} \
 
 # Add additional binaries into PATH for convenience
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
+
+# Add healthcheck to verify OpenResty is responding
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/nginx_status || exit 1
 
 CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
 

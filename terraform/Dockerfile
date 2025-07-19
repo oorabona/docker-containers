@@ -1,9 +1,8 @@
 # Base image
-ARG VERSION=0.11.13
+ARG VERSION=latest
 FROM hashicorp/terraform:${VERSION} AS terraform
 
 FROM alpine:latest
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
 
 # Environment variables
 ENV CONFIGFILE=config.json
@@ -24,6 +23,10 @@ WORKDIR /data
 
 # Entrypoint to enable live customization
 COPY docker-entrypoint.sh /docker-entrypoint.sh
+
+# Add healthcheck to verify terraform is working
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD terraform version || exit 1
 
 # Main command
 ENTRYPOINT ["/docker-entrypoint.sh"]

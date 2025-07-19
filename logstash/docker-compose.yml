@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  logstash:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-latest}
+    image: ${DOCKER_REGISTRY:-}logstash:${TAG:-latest}
+    container_name: logstash
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    environment:
+      - LOGSTASH_CONFIG_DIR=/usr/share/logstash/pipeline
+    volumes:
+      - ./pipeline:/usr/share/logstash/pipeline
+      - ./config:/usr/share/logstash/config
+    networks:
+      - elastic
+
+networks:
+  elastic:
+    driver: bridge

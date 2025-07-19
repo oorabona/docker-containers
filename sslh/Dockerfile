@@ -7,8 +7,6 @@ ARG VERSION=latest
 ARG NPROC=1
 ARG USELIBCAP=1
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 ENV USE_CONFIG=/etc/sslh.cfg \
   USE_SSLH_FLAVOR=sslh-ev \
   LISTEN_IP=0.0.0.0 \

@@ -1,0 +1,66 @@
+title: Docker Containers
+description: >-
+  Automated container management system with intelligent upstream monitoring,
+  version classification, and CI/CD pipelines.
+baseurl: ""
+url: "https://oorabona.github.io"
+
+# Build settings
+markdown: kramdown
+theme: minima  # Keep as fallback, but we'll override with Tabler
+plugins:
+  - jekyll-feed
+
+# Content settings
+show_excerpts: true
+
+# Navigation
+header_pages:
+  - index.md
+  - docs/index.md
+
+# Footer
+github_username: oorabona
+
+# Repository settings  
+repository: "docker-containers"
+
+# GitHub integration (fallbacks for Jekyll's built-in github metadata)
+github:
+  owner_name: oorabona
+  repository_name: docker-containers
+
+# Custom settings for Tabler integration
+tabler:
+  version: "1.4.0"
+  cdn: true  # Use CDN for faster loading
+  
+# SEO and metadata
+title_separator: " | "
+description_extra: "Docker container monitoring dashboard"
+
+# Exclude unnecessary files to streamline the build process while preserving essential Jekyll functionality.
+# This approach replaces the previous whitelist method for better control and maintainability.
+# Key Jekyll functionality preserved includes processing of configuration files (_config.yml) and Markdown files (*.md).
+exclude:
+  - "Dockerfile*"
+  - "docker-compose*.yml"
+  - "*.sh"
+  - "make"
+  - "test-logs/"
+  - "helpers/"
+  - "*/Dockerfile"
+  - "*/docker-compose*.yml"
+  - "*/version.sh"
+  - "*/run.sh"
+  - "*/build"
+  - "*/addon.sh"
+  - "*/export.sh"
+  - "*/docker-entrypoint.sh"
+  - ".dashboard-stats"
+
+# Include essential Jekyll files (this overrides excludes for specific patterns)
+include:
+  - "_config.yml"
+  - "*.md"
+  - "docs/**"

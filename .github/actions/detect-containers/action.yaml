@@ -1,24 +1,11 @@
 name: 'Detect Containers to Build'
-description: 'Intelligently detects which containers need building based on changes and registry status'
+description: 'Detects which containers need building based on changes (GitHub handles path filtering)'
 
 inputs:
   container:
     description: 'Specific container to build (overrides detection)'
     required: false
     default: ''
-  github_token:
-    description: 'GitHub token for API access'
-    required: true
-  event_name:
-    description: 'GitHub event name'
-    required: true
-  event_before:
-    description: 'GitHub event before SHA'
-    required: false
-    default: ''
-  sha:
-    description: 'Current commit SHA'
-    required: true
   force_rebuild:
     description: 'Force rebuild even if image exists'
     required: false
@@ -42,18 +29,19 @@ runs:
         set -e
         containers_to_build=()
 
-        # If specific container requested via workflow_dispatch
+        # If specific container requested
         if [ -n "${{ inputs.container }}" ]; then
           echo "🎯 Building specific container: ${{ inputs.container }}"
           containers_to_build=("${{ inputs.container }}")
         else
           echo "🔍 Detecting containers that need building..."
-
-          # Use find with null-delimited output for robustness
+          
+          # Since GitHub already filtered by paths, any container with a version.sh
+          # in the changed files should be built. This is much simpler than manual git parsing.
           while IFS= read -r -d '' version_script_path; do
             container=$(dirname "$version_script_path" | sed 's|^\./||')
 
-            # Skip if already processed (in case of multiple version.sh in same dir)
+            # Skip if already processed
             if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
               continue
             fi
@@ -63,59 +51,8 @@ runs:
               continue
             fi
 
-            # Initialize needs_build to false; will be updated based on logic below
-            needs_build=false
-
-            # If force_rebuild is true, override all other logic
-            if [ "${{ inputs.force_rebuild }}" = "true" ]; then
-              needs_build=true
-            fi
-            echo "📦 Checking $container (found version.sh at $version_script_path)..."
-
-            # For push/PR events, check if this specific container was modified
-            if [ "${{ inputs.event_name }}" = "push" ] || [ "${{ inputs.event_name }}" = "pull_request" ]; then
-              # Precompute the list of all modified files once
-              if [ -z "${MODIFIED_FILES}" ]; then
-                if [ -n "${{ inputs.event_before }}" ] && \
-                   [ "${{ inputs.event_before }}" != "0000000000000000000000000000000000000000" ]; then
-                  MODIFIED_FILES=$(git diff --name-only ${{ inputs.event_before }}..${{ inputs.sha }} 2>/dev/null)
-                else
-                  # Fallback for first commit or when before is not available
-                  MODIFIED_FILES=$(git log --name-only --pretty=format: -1 ${{ inputs.sha }})
-                fi
-              fi
-
-              # Check if any files in this container directory were modified
-              if echo "$MODIFIED_FILES" | grep -q "^$container/"; then
-                needs_build=true
-                echo "   ✅ Container files modified, will build"
-              else
-                echo "   ⏭️ No changes to this container, skipping"
-              fi
-            else
-              # For scheduled runs or manual dispatch, check version and registry existence
-              # Also check for upstream version changes
-              echo "   🔍 Checking upstream version changes..."
-              
-              # Get current and upstream versions
-              cd "$container"
-              current_version=$(bash version.sh 2>/dev/null || echo "")
-              upstream_version=$(bash version.sh latest 2>/dev/null || echo "")
-              cd ..
-              
-              if [[ -n "$current_version" && -n "$upstream_version" && "$current_version" != "$upstream_version" ]]; then
-                needs_build=true
-                echo "   ✅ Upstream version change detected: $current_version → $upstream_version"
-              else
-                # Fallback to registry existence check for scheduled runs
-                needs_build=true  # Will be refined in build-container action
-                echo "   ✅ Scheduled run - will check version and registry status"
-              fi
-            fi
-
-            if [ "$needs_build" = "true" ]; then
-              containers_to_build+=("$container")
-            fi
+            echo "📦 Found container: $container"
+            containers_to_build+=("$container")
           done < <(find . -name "version.sh" -not -path "./.git/*" -print0)
         fi
 
@@ -126,7 +63,11 @@ runs:
           echo "📋 No containers need building"
         else
           container_json=$(printf '%s\n' "${containers_to_build[@]}" | jq -R . | jq -s -c .)
-          echo "containers=$container_json" >> $GITHUB_OUTPUT
+          {
+            echo "containers<<EOF"
+            echo "$container_json"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "count=${#containers_to_build[@]}" >> $GITHUB_OUTPUT
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi
