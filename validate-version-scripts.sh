@@ -133,13 +133,13 @@ check_dependencies() {
     local issues=()
     
     if grep -q "source.*helpers" version.sh 2>/dev/null; then
-        if [[ ! -f "../helpers/docker-tags" ]]; then
+        if [[ ! -f "../helpers/docker-tag" ]]; then
             issues+=("missing_helpers")
         else
             # Check if helpers script is executable
-            if [[ ! -x "../helpers/docker-tags" ]]; then
-                log_warning "helpers/docker-tags is not executable - fixing"
-                chmod +x "../helpers/docker-tags" 2>/dev/null || true
+            if [[ ! -x "../helpers/docker-tag" ]]; then
+                log_warning "helpers/docker-tag is not executable - fixing"
+                chmod +x "../helpers/docker-tag" 2>/dev/null || true
             fi
         fi
     fi
