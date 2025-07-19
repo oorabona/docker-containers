@@ -7,7 +7,7 @@ export DOCKEROPTS="${DOCKEROPTS:-}"
 
 # Helper functions
 log_success() {
-  echo -e "\033[32m>> $@\033[39m"
+  >&2 echo -e "\033[32m>> $@\033[39m"
 }
 
 log_error() {
@@ -15,7 +15,7 @@ log_error() {
 }
 
 log_warning() {
-  echo -e "\033[33m>> $@\033[39m"
+  >&2 echo -e "\033[33m>> $@\033[39m"
 }
 
 log_help() {
@@ -27,13 +27,31 @@ log_help() {
 
 targets=$(find -name "Dockerfile" | cut -d'/' -f2 )
 
+# Validate if a target is valid (has a Dockerfile)
+validate_target() {
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    return 1
+  fi
+  
+  if [[ ! -d "$target" ]]; then
+    return 1
+  fi
+  
+  if [[ ! -f "$target/Dockerfile" ]]; then
+    return 1
+  fi
+  
+  return 0
+}
+
 help() {
   echo Commands:
   log_help help "This help"
   log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
-  log_help "version <target> [--bare]" "Get latest version of <target> (--bare for script-friendly output)"
+  log_help "version [target]" "Show latest upstream version for a container"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   echo
   echo Where:
@@ -47,78 +65,59 @@ help() {
 }
 
 version() {
-  local target=""
-  local bare_mode=false
-  
-  # Parse arguments
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      --bare)
-        bare_mode=true
-        shift
-        ;;
-      -*)
-        log_error "Unknown option: $1"
-        ;;
-      *)
-        if [[ -z "$target" ]]; then
-          target="$1"
-        else
-          log_error "Too many arguments. Usage: version <target> [--bare]"
-        fi
-        shift
-        ;;
-    esac
-  done
+  local target="$1"
   
   if [[ -z "$target" ]]; then
-    echo "Usage: version <target> [--bare]" >&2
+    echo "Usage: version <target>" >&2
     exit 1
   fi
   
-  if [ ! -d "$target" ]; then
-    log_error "$target is not a valid target !"
+  if ! validate_target "$target"; then
+    log_error "$target is not a valid target (no Dockerfile found)!"
+    exit 1
   fi
   
-  if [ "$bare_mode" = true ]; then
-    # Bare mode: just get the version without any formatting or extra output
-    pushd "${target}" > /dev/null 2>&1
-    ./version.sh latest 2>/dev/null
-    local exit_code=$?
+  if [ ! -f "$target/version.sh" ]; then
+    log_error "No version.sh script found in $target directory!"
+    exit 1
+  fi
+  
+  # Get the latest upstream version (version.sh now single-purpose)
+  pushd "${target}" > /dev/null 2>&1
+  local latest_version
+  latest_version=$(./version.sh 2>/dev/null)
+  local exit_code=$?
+  
+  # Validate the version output
+  if [ $exit_code -eq 0 ] && [ -n "$latest_version" ] && [ "$latest_version" != "unknown" ]; then
+    echo "$latest_version"
+  else
+    log_error "Failed to get latest upstream version for $target"
     popd > /dev/null 2>&1
-    if [ $exit_code -ne 0 ]; then
-      echo "unknown"
-      exit 1
-    fi
-    return 0
+    echo "unknown"
+    exit 1
   fi
   
-  # Regular mode with formatting and additional info
-  pushd ${target}
-  versions=$(./version.sh latest 2>/dev/null)
-  exit_code=$?
-  if [ $exit_code -ne 0 ] || [ -z "$versions" ]; then
-    log_error "Could not retrieve the latest version."
-  else
-    log_success "$versions"
+  # Check current published version using container-specific pattern
+  local current_version
+  local pattern
+  if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+    current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
   fi
   
-  # Also check current version
-  current_version=$(./version.sh current 2>/dev/null)
-  current_exit_code=$?
-  if [ $current_exit_code -eq 0 ] && [ -n "$current_version" ] && [ "$current_version" != "no-published-version" ]; then
+  if [ -n "$current_version" ]; then
     log_success "Current published version: $current_version"
-  elif [ "$current_version" = "no-published-version" ]; then
-    log_warning "No published version found (container not yet released)"
   else
-    log_warning "Could not retrieve current published version"
+    log_warning "No published version found (container not yet released)"
   fi
-  popd
+  
+  popd > /dev/null 2>&1
 }
 
 run() {
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
+  if ! validate_target "$1"; then
+    log_error "$1 is not a valid target (no Dockerfile found)!"
+    exit 1
   fi
   local target=$1
   local wantedVersion=${2:-latest}
@@ -146,8 +145,9 @@ do_it() {
 
 make() {
   local op=$1 ; shift
-  if [ ! -d "$1" ]; then
-    log_error "$1 is not a valid target !"
+  if ! validate_target "$1"; then
+    log_error "$1 is not a valid target (no Dockerfile found)!"
+    exit 1
   fi
   local target=$1
   local wantedVersion=${2:-latest}
@@ -155,12 +155,17 @@ make() {
   
   # Handle version detection logic properly
   if [ "$wantedVersion" = "latest" ]; then
-    # Get latest upstream version
-    versions=$(./version.sh latest 2>/dev/null)
+    # Get latest upstream version (version.sh now single-purpose)
+    versions=$(./version.sh 2>/dev/null)
     exit_code=$?
   elif [ "$wantedVersion" = "current" ]; then
-    # Get current published version  
-    versions=$(./version.sh current 2>/dev/null)
+    # Get current published version using container-specific pattern
+    local pattern
+    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+      versions=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
+    else
+      versions="unknown"
+    fi
     exit_code=$?
   else
     # Use the specific version provided directly
@@ -172,7 +177,8 @@ make() {
   if [ "$versions" = "no-published-version" ]; then
     log_warning "No published version found for $target, this will be an initial release"
     # For no-published-version, we'll use the latest upstream version
-    versions=$(./version.sh latest 2>/dev/null)
+    # Try to get versions (version.sh now single-purpose for upstream)
+    versions=$(./version.sh 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$versions" ]; then
       log_error "Could not determine version to build for $target"
       popd
@@ -204,8 +210,9 @@ check_updates() {
   # Determine targets to check
   local check_targets
   if [ -n "$target" ]; then
-    if [ ! -d "$target" ]; then
-      log_error "$target is not a valid target!"
+    if ! validate_target "$target"; then
+      log_error "$target is not a valid target (no Dockerfile found)!"
+      exit 1
     fi
     check_targets="$target"
   else
@@ -220,9 +227,14 @@ check_updates() {
     
     pushd "$container" > /dev/null
     
-    # Get current and latest versions (clean up output)
-    current_version=$(./version.sh current 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
-    latest_version=$(./version.sh latest 2>/dev/null | head -1 | tr -d '\n' || echo "")
+    # Get current and latest versions using container-specific patterns
+    local pattern
+    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+    else
+      current_version="no-published-version"
+    fi
+    latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
     
     # Determine update status
     local update_available="false"
@@ -262,20 +274,6 @@ check_updates() {
   # Output the JSON array
   echo "$output_json"
 }
-
-# Main entrypoint
-# Check for --bare mode early to skip Docker Compose detection
-if [[ "$1" == "version" ]]; then
-  # Check if --bare is anywhere in the arguments
-  for arg in "$@"; do
-    if [[ "$arg" == "--bare" ]]; then
-      # Direct call to version function without Docker Compose detection
-      shift  # Remove 'version' from arguments
-      version "$@"
-      exit $?
-    fi
-  done
-fi
 
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
