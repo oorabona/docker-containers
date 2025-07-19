@@ -1,10 +1,14 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream Debian version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    latest-docker-tag library/debian "^(bookworm|bullseye|buster)$"
-}
+source "$(dirname "$0")/../helpers/docker-tags"
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/debian" "^(bookworm|bullseye|buster)$" "get_latest_upstream"
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^(bookworm|bullseye|buster)$"
+    exit 0
+fi
+
+# Get latest upstream version from official Debian registry
+latest-docker-tag library/debian "^(bookworm|bullseye|buster)$"

@@ -1,10 +1,14 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream PostgreSQL version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    latest-docker-tag library/postgres "^[0-9]+\.[0-9]+-alpine$"
-}
+source "$(dirname "$0")/../helpers/docker-tags"
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/postgres" "^[0-9]+\.[0-9]+-alpine$" "get_latest_upstream"
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^[0-9]+\.[0-9]+-alpine$"
+    exit 0
+fi
+
+# Get latest upstream version from official PostgreSQL registry
+latest-docker-tag library/postgres "^[0-9]+\.[0-9]+-alpine$"

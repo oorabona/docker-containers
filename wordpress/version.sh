@@ -1,10 +1,8 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream WordPress version
+# Returns latest WordPress version from official Docker registry
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    latest-docker-tag library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"
-}
+source "$(dirname "$0")/../helpers/docker-tags"
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/wordpress" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
+# Get latest upstream version from official WordPress registry
+latest-docker-tag library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"
