@@ -1,7 +1,13 @@
+#!/bin/bash
 # Get Python package latest version
 
 function get_pypi_latest_version() {
 	local package=$1
-	local version=$(curl -sSL https://pypi.org/pypi/${package}/json | jq -r '.info.version')
-	echo $version
+	local version=$(curl -s --fail --max-time 30 "https://pypi.org/pypi/${package}/json" | jq -r '.info.version' 2>/dev/null)
+	if [[ -n "$version" && "$version" != "null" ]]; then
+		echo "$version"
+	else
+		echo "unknown"
+		return 1
+	fi
 }

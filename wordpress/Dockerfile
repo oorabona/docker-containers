@@ -1,3 +1,4 @@
+ARG VERSION=latest
 ARG PHP_VERSION=fpm
 FROM php:$PHP_VERSION
 
@@ -67,6 +68,10 @@ VOLUME /var/www/
 WORKDIR /var/www/
 
 EXPOSE 9000
+
+# Add healthcheck to verify PHP-FPM is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD php-fpm -t || exit 1
 
 USER wordpress
 
