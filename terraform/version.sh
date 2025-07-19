@@ -1,11 +1,14 @@
 #!/bin/bash
-source "$(dirname "$0")/../helpers/docker-registry"
+# Single-purpose: Get latest upstream Terraform version
+# Also defines registry pattern for published versions
 
-# Function to get latest upstream version
-get_latest_upstream() {
-    # Get latest version from official Terraform registry
-    latest-docker-tag hashicorp/terraform "^[0-9]+\.[0-9]+\.[0-9]+$"
-}
+source "$(dirname "$0")/../helpers/docker-tags"
 
-# Use standardized version handling
-handle_version_request "$1" "oorabona/terraform" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^[0-9]+\.[0-9]+\.[0-9]+$"
+    exit 0
+fi
+
+# Get latest upstream version from HashiCorp registry
+latest-docker-tag hashicorp/terraform "^[0-9]+\.[0-9]+\.[0-9]+$"
