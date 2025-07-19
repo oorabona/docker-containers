@@ -6,7 +6,7 @@
 # Source all required helper functions
 # Use BASH_SOURCE to get the correct path to this helper file
 HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
-source "$HELPER_DIR/docker-tags"
+source "$HELPER_DIR/docker-tag"
 source "$HELPER_DIR/git-tags"
 
 # Get current published version from Docker registry with graceful fallback
