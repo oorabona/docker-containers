@@ -49,8 +49,9 @@ RUN set -ex \
     # Do not try to install documentation
     && echo "Building OpenVPN using ${NPROC} cores..." \
     && make -j${NPROC} \
-    # Compile also the plugins
-    && find src/plugins/ -type d -exec make -C {} -j${NPROC} \; -exec make -C {} install \; \
+    # Compile and install plugins (only in directories that have Makefiles)
+    && make -C src/plugins -j${NPROC} \
+    && make -C src/plugins install \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
