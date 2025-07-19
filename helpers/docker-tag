@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+# Gets all tags for a given docker image using skopeo for better performance and multi-registry support
+
+# Skopeo container image for consistent behavior
+readonly SKOPEO_IMAGE="quay.io/skopeo/stable:latest"
+
+function latest-docker-tag() {
+  local image=$1
+  local pattern=$2
+  local registry_url
+  
+  # Determine registry URL format with proper library/ prefix handling
+  if [[ "$image" == quay.io/* ]] || [[ "$image" == ghcr.io/* ]]; then
+    # External registries - use as-is
+    registry_url="docker://$image"
+  elif [[ "$image" == */* ]]; then
+    # Docker Hub with namespace (e.g., "oorabona/php") - use as-is
+    registry_url="docker://$image"
+  else
+    # Docker Hub official images (e.g., "php") - needs library/ prefix
+    registry_url="docker://library/$image"
+  fi
+  
+  # Get all tags using skopeo and filter with pattern
+  local result
+  result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
+    jq -r '.Tags[]? // empty' 2>/dev/null | \
+    grep -E "$pattern" 2>/dev/null | \
+    sort -V | \
+    tail -n1)
+  
+  if [[ -n "$result" && "$result" != "null" ]]; then
+    echo "$result"
+    return 0
+  else
+    return 1
+  fi
+}
+
+function check-docker-tag() {
+  local image=$1
+  local tag_pattern=$2
+  local registry_url
+  
+  # Determine registry URL format with proper library/ prefix handling
+  if [[ "$image" == quay.io/* ]] || [[ "$image" == ghcr.io/* ]]; then
+    # External registries - use as-is
+    registry_url="docker://$image"
+  elif [[ "$image" == */* ]]; then
+    # Docker Hub with namespace (e.g., "oorabona/php") - use as-is
+    registry_url="docker://$image"
+  else
+    # Docker Hub official images (e.g., "php") - needs library/ prefix
+    registry_url="docker://library/$image"
+  fi
+  
+  # Check if specific tag exists
+  local result
+  result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
+    jq -r '.Tags[]? // empty' 2>/dev/null | \
+    grep -E "$tag_pattern" 2>/dev/null | \
+    head -n1)
+  
+  if [[ -n "$result" && "$result" != "null" ]]; then
+    echo "$result"
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Handle execution - all script names containing "docker-tag" will execute
+if [[ "$0" == *"docker-tag"* ]]; then
+  script_name="$(basename "$0")"
+  case "$script_name" in
+    "latest-docker-tag")
+      latest-docker-tag "$@"
+      ;;
+    "check-docker-tag")
+      check-docker-tag "$@"
+      ;;
+    *)
+      # Called directly as docker-tag: docker-tag function_name args...
+      "$@"
+      ;;
+  esac
+fi

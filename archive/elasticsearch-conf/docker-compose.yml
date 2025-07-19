@@ -4,8 +4,6 @@ services:
   elasticsearch-conf:
     build:
       context: .
-      args:
-        VERSION: ${VERSION:-latest}
     image: ${DOCKER_REGISTRY:-}elasticsearch-conf:${TAG:-latest}
     container_name: elasticsearch-conf
     environment:
