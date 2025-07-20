@@ -40,7 +40,8 @@ services:
       - CONFIGFILE=config.json
 ```
 
-Place this alongside your Terraform code with templated `.tf.j2` files and a `config.json` parameters file.ocker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/terraform?sort=semver)
+Place this alongside your Terraform code with templated `.tf.j2` files and a `config.json` parameters file.
+![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/terraform?sort=semver)
 ![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/terraform?arch=amd64&sort=semver)
 ![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/terraform?arch=arm64&sort=semver)
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/terraform)
