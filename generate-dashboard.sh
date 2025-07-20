@@ -101,7 +101,7 @@ calculate_stats() {
         container=${container%/}
         
         # Skip helper directories, archived containers, and non-container directories
-        if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
+        if is_skip_directory "$container"; then
             continue
         fi
         
