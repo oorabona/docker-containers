@@ -76,11 +76,22 @@ jobs:
             version-validation-*.log
             version-validation-*.json
           retention-days: 30
+          if-no-files-found: ignore
+      - name: Detect containers for testing
+        id: detect-containers
+        uses: ./.github/actions/detect-containers
+        with:
+          force_rebuild: "true"  # Get all containers for comprehensive testing
+
       - name: Test upstream monitoring action
+        if: steps.detect-containers.outputs.count > 0
         uses: ./.github/actions/check-upstream-versions
         with:
-          container: wordpress
-          skip_registry_check: "true"
+          container: ${{ fromJson(steps.detect-containers.outputs.containers)[0] }}
+
+      - name: Test upstream monitoring action (all containers)
+        if: github.event.inputs.container == '' && steps.detect-containers.outputs.count > 1
+        uses: ./.github/actions/check-upstream-versions
 
       - name: Display test results
         run: |
@@ -94,8 +105,22 @@ jobs:
             echo "- **Passed validation:** $(jq -r '.summary.passed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
             echo "- **Failed validation:** $(jq -r '.summary.failed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
           fi
+          
+          # Show which containers were used for upstream monitoring tests
+          container_count="${{ steps.detect-containers.outputs.count }}"
+          if [ "$container_count" -gt 0 ]; then
+            containers="${{ steps.detect-containers.outputs.containers }}"
+            first_container=$(echo "$containers" | jq -r '.[0]')
+            echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
+            if [ "$container_count" -gt 1 ]; then
+              echo "- **Additional tests:** All-container upstream check" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- **Upstream monitoring test:** Skipped (no containers detected)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "### ✅ What was tested:" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can retrieve latest upstream versions" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can validate specific versions" >> $GITHUB_STEP_SUMMARY
-          echo "- The upstream monitoring action works correctly" >> $GITHUB_STEP_SUMMARY
+          echo "- The upstream monitoring action works with dynamically detected containers" >> $GITHUB_STEP_SUMMARY
           echo "- Integration with the existing make script infrastructure" >> $GITHUB_STEP_SUMMARY
