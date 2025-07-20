@@ -230,21 +230,32 @@ do_buildx() {
     }
     
   elif [[ "$op" == "push" ]]; then
-    # Single build and push attempt with determined platform support
-    docker buildx build \
-      --platform "$platforms" \
-      --push \
-      $build_args \
-      -t "$dockerhub_image:$TAG" \
-      -t "$ghcr_image:$TAG" \
-      . || {
-      log_error "Build and push failed for $container:$TAG"
-      return 1
-    }
+    # Push pre-built images to registries (avoids rebuild issue with custom build args)
+    log_success "Pushing $container:$TAG to multiple registries..."
     
-    log_success "✅ Successfully pushed to:"
-    log_success "  🐳 Docker Hub: $dockerhub_image:$TAG"
-    log_success "  📦 GHCR: $ghcr_image:$TAG"
+    # Check if local image exists
+    if ! docker image inspect "$dockerhub_image:$TAG" >/dev/null 2>&1; then
+      log_error "Local image $dockerhub_image:$TAG not found. Run 'make build $container' first."
+      return 1
+    fi
+    
+    # Push to Docker Hub
+    if docker push "$dockerhub_image:$TAG"; then
+      log_success "  🐳 Docker Hub: $dockerhub_image:$TAG"
+    else
+      log_error "Failed to push to Docker Hub"
+      return 1
+    fi
+    
+    # Push to GHCR
+    if docker push "$ghcr_image:$TAG"; then
+      log_success "  📦 GHCR: $ghcr_image:$TAG"
+    else
+      log_error "Failed to push to GHCR"
+      return 1
+    fi
+    
+    log_success "✅ Successfully pushed to both registries"
   fi
 }
 
