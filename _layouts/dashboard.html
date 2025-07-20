@@ -52,5 +52,64 @@
   
   <!-- Tabler JS -->
   <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/js/tabler.min.js"></script>
+  
+  <!-- Container Dashboard JavaScript -->
+  <script>
+    // Update pull command when registry is changed
+    function updatePullCommand(containerName, imageUrl) {
+      const input = document.getElementById('pull-' + containerName);
+      if (input) {
+        input.value = 'docker pull ' + imageUrl;
+      }
+    }
+
+    // Copy text to clipboard with visual feedback
+    function copyToClipboard(inputId, button) {
+      const input = document.getElementById(inputId);
+      if (!input) return;
+      
+      // Select and copy the text
+      input.select();
+      input.setSelectionRange(0, 99999); // For mobile devices
+      
+      try {
+        document.execCommand('copy');
+        
+        // Visual feedback
+        const originalText = button.innerHTML;
+        button.innerHTML = '✅';
+        button.classList.remove('btn-outline-secondary');
+        button.classList.add('btn-success');
+        
+        // Reset after 2 seconds
+        setTimeout(() => {
+          button.innerHTML = originalText;
+          button.classList.remove('btn-success');
+          button.classList.add('btn-outline-secondary');
+        }, 2000);
+        
+        // Deselect text
+        input.blur();
+      } catch (err) {
+        console.error('Failed to copy text: ', err);
+        // Fallback: show the text is selected for manual copy
+        button.innerHTML = '📋 Selected';
+      }
+    }
+
+    // Auto-focus copy functionality when clicked
+    document.addEventListener('DOMContentLoaded', function() {
+      // Make pull command inputs clickable to select all text
+      document.querySelectorAll('input[id^="pull-"]').forEach(input => {
+        input.addEventListener('click', function() {
+          this.select();
+        });
+        
+        input.addEventListener('focus', function() {
+          this.select();
+        });
+      });
+    });
+  </script>
 </body>
 </html>
