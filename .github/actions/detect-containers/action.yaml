@@ -12,8 +12,11 @@ inputs:
     default: 'false'
 
 outputs:
+  containers_list:
+    description: 'Comma-separated list of containers that need building'  
+    value: ${{ steps.find-containers.outputs.containers_list }}
   containers:
-    description: 'JSON array of containers that need building'
+    description: 'JSON array of containers that need building (converted from CSV for matrix compatibility)'
     value: ${{ steps.find-containers.outputs.containers }}
   count:
     description: 'Number of containers to build'
@@ -46,8 +49,8 @@ runs:
               continue
             fi
 
-            # Skip helper directories and non-container directories
-            if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" ]]; then
+            # Skip helper directories, archived containers, and non-container directories
+            if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* ]]; then
               continue
             fi
 
@@ -56,18 +59,17 @@ runs:
           done < <(find . -name "version.sh" -not -path "./.git/*" -print0)
         fi
 
-        # Create JSON array output
+        # Create outputs (CSV first, then JSON for matrix compatibility)
         if [ ${#containers_to_build[@]} -eq 0 ]; then
+          echo "containers_list=" >> $GITHUB_OUTPUT
           echo "containers=[]" >> $GITHUB_OUTPUT
           echo "count=0" >> $GITHUB_OUTPUT
           echo "📋 No containers need building"
         else
+          containers_csv=$(IFS=','; echo "${containers_to_build[*]}")
           container_json=$(printf '%s\n' "${containers_to_build[@]}" | jq -R . | jq -s -c .)
-          {
-            echo "containers<<EOF"
-            echo "$container_json"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
+          echo "containers_list=$containers_csv" >> $GITHUB_OUTPUT
+          echo "containers=$container_json" >> $GITHUB_OUTPUT
           echo "count=${#containers_to_build[@]}" >> $GITHUB_OUTPUT
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi

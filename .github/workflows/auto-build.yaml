@@ -13,15 +13,7 @@ on:
         required: false
         default: false
         type: boolean
-  # Triggered by container file changes (main automation)
-  push:
-    branches: [main, master]
-    paths:
-      - '*/Dockerfile'
-      - '*/version.sh'
-      - '*/docker-compose.yml'
-      - '*/compose.yml'
-      - 'make'
+  # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
     paths:
@@ -30,6 +22,7 @@ on:
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - 'make'
+      - '!archive/**'  # Exclude archived containers
   # Manual trigger
   workflow_dispatch:
     inputs:
@@ -69,6 +62,7 @@ jobs:
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
 
   build-and-push:
+    name: Build Container
     needs: detect-containers
     if: needs.detect-containers.outputs.count > 0
     runs-on: ubuntu-latest
@@ -147,7 +141,9 @@ jobs:
           container="${{ matrix.container }}"
           needs_build="${{ steps.build.outputs.built }}"
           current_version="${{ steps.build.outputs.version }}"
-          image_name="${{ steps.build.outputs.image_name }}"
+          # Construct image names to avoid secret masking
+          github_username="${{ github.repository_owner }}"
+          dockerhub_username="${{ secrets.DOCKERHUB_USERNAME }}"
 
           echo "## 📦 Build Summary for \`$container\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -159,9 +155,9 @@ jobs:
           echo "| **Build Needed** | \`$needs_build\` |" >> $GITHUB_STEP_SUMMARY
 
           if [ "$needs_build" = "true" ]; then
-            echo "| **GHCR Image** | \`ghcr.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
-            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
-              echo "| **Docker Hub Image** | \`docker.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **GHCR Image** | \`ghcr.io/${github_username}/${container}:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$dockerhub_username" ]; then
+              echo "| **Docker Hub Image** | \`docker.io/${dockerhub_username}/${container}:$current_version\` |" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ✅ Successfully built and pushed!" >> $GITHUB_STEP_SUMMARY
