@@ -1,10 +1,53 @@
 #!/bin/bash
-set -ex
-[[ "$WANTED" == "latest" ]] && exit 1
 
-docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-docker buildx create --name builder --driver docker-container --use
-docker buildx inspect --bootstrap
-docker buildx build --push --build-arg RESTY_J=${NPROC} --build-arg ENABLE_HTTP_PROXY_CONNECT=true --build-arg RESTY_VERSION=${VERSION:latest} --platform=linux/arm/v7,linux/amd64 -t oorabona/openresty-http-connect:${TAG} -t oorabona/openresty-http-connect:latest .
-docker buildx build --push --build-arg RESTY_J=${NPROC} --build-arg ENABLE_HTTP_PROXY_CONNECT=false --build-arg RESTY_VERSION=${VERSION:latest} --platform=linux/arm/v7,linux/amd64 -t oorabona/openresty:${TAG} -t oorabona/openresty:latest .
-docker buildx rm builder
+# Function to get latest compatible OpenSSL version
+get_openssl_version() {
+    # Latest stable OpenSSL 1.1.1 series (compatible with OpenResty)
+    echo "1.1.1w"
+}
+
+# Function to get OpenSSL patch version (for OpenResty patches)
+get_openssl_patch_version() {
+    # OpenResty patch version (usually older than the actual OpenSSL version)
+    echo "1.1.1f"
+}
+
+# Function to get latest compatible PCRE version  
+get_pcre_version() {
+    # Latest PCRE 8.x series (PCRE2 has compatibility issues with some OpenResty modules)
+    echo "8.45"
+}
+
+# Function to get latest LuaRocks version
+get_luarocks_version() {
+    # Latest stable LuaRocks
+    echo "3.11.1"
+}
+
+# Gather dependency versions dynamically
+OPENSSL_VERSION=$(get_openssl_version)
+OPENSSL_PATCH_VERSION=$(get_openssl_patch_version)
+PCRE_VERSION=$(get_pcre_version)
+LUAROCKS_VERSION=$(get_luarocks_version)
+
+echo "Building OpenResty ${VERSION} with dependencies:"
+echo "  OpenSSL: ${OPENSSL_VERSION}"
+echo "  OpenSSL Patch: ${OPENSSL_PATCH_VERSION}"
+echo "  PCRE: ${PCRE_VERSION}"
+echo "  LuaRocks: ${LUAROCKS_VERSION}"
+
+# Set custom build arguments for make script to use
+CUSTOM_BUILD_ARGS="--build-arg VERSION=${VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_VERSION=${VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_BASE=alpine"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_TAG=latest"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_OPENSSL_VERSION=${OPENSSL_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_OPENSSL_PATCH_VERSION=${OPENSSL_PATCH_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_PCRE_VERSION=${PCRE_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg LUAROCKS_VERSION=${LUAROCKS_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg ENABLE_HTTP_PROXY_CONNECT=false"
+
+# Export for make script to pick up
+export CUSTOM_BUILD_ARGS
+
+echo "Custom build args: ${CUSTOM_BUILD_ARGS}"

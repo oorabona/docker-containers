@@ -109,25 +109,17 @@ runs:
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
         
-        echo "🔨 Building $container:$current_version using make script..."
+        echo "🔨 Building and pushing $container:$current_version using make script..."
         
         # Make the script executable
         chmod +x make
         
-        # Use make script to build and push
-        # The make script handles all the complexity of building and pushing
-        if ./make build "$container" "$current_version"; then
-          echo "✅ Build successful"
-          
-          # Push to registries using make script  
-          if ./make push "$container" "$current_version"; then
-            echo "✅ Push successful"
-          else
-            echo "⚠️ Push failed, but build succeeded"
-            exit 1
-          fi
+        # Use make script to build and push in one operation
+        # In GitHub Actions, this does the efficient build+push directly
+        if ./make push "$container" "$current_version"; then
+          echo "✅ Build and push successful"
         else
-          echo "❌ Build failed"
+          echo "❌ Build and push failed"
           exit 1
         fi
     # Note: Trivy scanning temporarily disabled due to image reference issues

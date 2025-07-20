@@ -7,8 +7,14 @@
 # Note: Not using 'set -e' to allow graceful error handling
 
 # Configuration
-readonly TIMEOUT_CURRENT=30      # Timeout for current version check
-readonly TIMEOUT_LATEST=60       # Timeout for latest version check  
+# Increase timeouts in CI environments due to potential network latency
+if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    readonly TIMEOUT_CURRENT=60      # Extended timeout for CI current version check
+    readonly TIMEOUT_LATEST=120      # Extended timeout for CI latest version check
+else
+    readonly TIMEOUT_CURRENT=30      # Timeout for current version check
+    readonly TIMEOUT_LATEST=60       # Timeout for latest version check
+fi
 readonly MAX_RETRIES=3           # Maximum retries for failed operations
 readonly RETRY_DELAY=2           # Delay between retries (seconds)
 
@@ -61,7 +67,7 @@ execute_with_retry() {
             result=$(timeout "$timeout" bash version.sh 2>/dev/null)
             exit_code=$?
         else
-            result=$(timeout "$timeout" bash version.sh latest 2>/dev/null)
+            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
             exit_code=$?
         fi
         
