@@ -26,6 +26,18 @@ log_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
+# Function to check if a directory should be skipped
+is_skip_directory() {
+    local container=$1
+    
+    # Skip helper directories, archived containers, and non-container directories
+    if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
+        return 0  # True - should skip
+    fi
+    
+    return 1  # False - should not skip
+}
+
 # Function to get container version comparison
 get_container_versions() {
     local container=$1
@@ -64,10 +76,51 @@ get_container_versions() {
 generate_container_card() {
     local container=$1
     local description=""
+    local github_username="oorabona"  # TODO: Make this configurable
+    local dockerhub_username="oorabona"  # TODO: Make this configurable
     
     # Get container description from README if available
     if [[ -f "$container/README.md" ]]; then
-        description=$(awk 'NR<=5 && !/^#/ {gsub(/^[[:space:]]*/, ""); if(length($0)>0) {print; exit}}' "$container/README.md")
+        # Extract description from title or first meaningful paragraph
+        description=$(awk '
+            BEGIN { found_desc = 0 }
+            # Skip YAML frontmatter
+            /^---$/ && NR == 1 { in_frontmatter = 1; next }
+            /^---$/ && in_frontmatter { in_frontmatter = 0; next }
+            in_frontmatter { next }
+            
+            # Try to extract from H1 header (after cleaning up)
+            /^# / && !found_desc {
+                title = $0
+                gsub(/^# /, "", title)
+                # Remove "Docker Container" phrase (case insensitive) but keep emojis!
+                gsub(/[Dd]ocker [Cc]ontainer[[:space:]]*/, "", title)
+                # Clean up extra whitespace
+                gsub(/^[[:space:]]*/, "", title)
+                gsub(/[[:space:]]*$/, "", title)
+                gsub(/[[:space:]]+/, " ", title)
+                if (length(title) > 15 && length(title) < 120) {
+                    print title
+                    found_desc = 1
+                    next
+                }
+            }
+            
+            # Look for first substantial paragraph as fallback
+            /^[^#]/ && length($0) > 20 && !found_desc {
+                gsub(/^[[:space:]]*/, "")
+                gsub(/[[:space:]]*$/, "")
+                if (length($0) > 0) {
+                    print $0
+                    found_desc = 1
+                }
+            }
+        ' "$container/README.md")
+    fi
+    
+    # Fallback description if none found
+    if [[ -z "$description" ]]; then
+        description="Docker container for ${container}"
     fi
     
     # Get version information (structured output: current|latest|color|text)
@@ -77,7 +130,11 @@ generate_container_card() {
     # Parse structured output efficiently
     IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
     
-    # Generate Jekyll include call
+    # Generate Docker pull commands
+    local ghcr_image="ghcr.io/${github_username}/${container}:${current_version}"
+    local dockerhub_image="docker.io/${dockerhub_username}/${container}:${current_version}"
+    
+    # Generate Jekyll include call with enhanced data
     cat << EOF
 {% include container-card.html 
    name="$container"
@@ -87,6 +144,10 @@ generate_container_card() {
    status_text="$status_text"
    build_status="success"
    description="$description"
+   ghcr_image="$ghcr_image"
+   dockerhub_image="$dockerhub_image"
+   github_username="$github_username"
+   dockerhub_username="$dockerhub_username"
 %}
 EOF
 }
@@ -190,7 +251,7 @@ EOF
         container=${container%/}
         
         # Skip helper directories, archived containers, and non-container directories
-        if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
+        if is_skip_directory "$container"; then
             continue
         fi
         
