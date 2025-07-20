@@ -140,7 +140,9 @@ jobs:
           container="${{ matrix.container }}"
           needs_build="${{ steps.build.outputs.built }}"
           current_version="${{ steps.build.outputs.version }}"
-          image_name="${{ steps.build.outputs.image_name }}"
+          # Construct image names to avoid secret masking
+          github_username="${{ github.repository_owner }}"
+          dockerhub_username="${{ secrets.DOCKERHUB_USERNAME }}"
 
           echo "## 📦 Build Summary for \`$container\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -152,9 +154,9 @@ jobs:
           echo "| **Build Needed** | \`$needs_build\` |" >> $GITHUB_STEP_SUMMARY
 
           if [ "$needs_build" = "true" ]; then
-            echo "| **GHCR Image** | \`ghcr.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
-            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
-              echo "| **Docker Hub Image** | \`docker.io/$image_name:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **GHCR Image** | \`ghcr.io/${github_username}/${container}:$current_version\` |" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$dockerhub_username" ]; then
+              echo "| **Docker Hub Image** | \`docker.io/${dockerhub_username}/${container}:$current_version\` |" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ✅ Successfully built and pushed!" >> $GITHUB_STEP_SUMMARY
