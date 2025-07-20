@@ -1,5 +1,6 @@
-# Terraform DevOps## 🚀 Usage
+# Terraform DevOps
 
+## 🚀 Usage
 ### Jinja2 Templating
 Add `.j2` extension to Terraform files (`.tf.j2`) for template processing. Templates are rendered using variables from `config.json` in your repository root.
 
