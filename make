@@ -201,20 +201,35 @@ do_buildx() {
   # Detect container runtime for cache compatibility
   local cache_args=""
   local is_docker=false
-  if docker version 2>/dev/null | grep -q "Docker Engine"; then
-    # True Docker: supports GitHub Actions cache and --push
+  local runtime_info=""
+  
+  # Check if we're in GitHub Actions (which always uses Docker)
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    # GitHub Actions: always use Docker with GHA cache
     cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
     is_docker=true
+    runtime_info="GitHub Actions (Docker)"
+  elif docker version 2>/dev/null | grep -q "Docker Engine"; then
+    # Local Docker: supports GitHub Actions cache and --push
+    cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
+    is_docker=true  
+    runtime_info="Docker Engine"
   elif command -v podman >/dev/null 2>&1; then
     # Podman: has built-in layer caching, no additional cache args needed
     cache_args=""
     is_docker=false
+    runtime_info="Podman"
     log_success "Using Podman with built-in layer caching"
   else
     # Fallback: no cache
     cache_args=""
     is_docker=false
+    runtime_info="Unknown (no cache)"
     log_warn "No cache support detected"
+  fi
+  
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    log_success "Running in $runtime_info with GHA cache support"
   fi
   
   # Determine platform support proactively
@@ -241,19 +256,26 @@ do_buildx() {
   fi
   
   if [[ "$op" == "build" ]]; then
-    # Build for local development: single platform with --load
-    log_success "Building $container:$TAG locally (layered image)..."
-    docker buildx build \
-      --platform "$platforms" \
-      --load \
-      $cache_args \
-      $build_args \
-      $tag_args \
-      . || {
-      log_error "Build failed for $container:$TAG"
-      return 1
-    }
-    log_success "✅ Local build completed - layered image available in Docker daemon"
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      # GitHub Actions: skip separate build step, use push instead
+      log_success "GitHub Actions detected - using direct push workflow..."
+      log_success "Skipping separate build step (will build and push in one operation)"
+      return 0
+    else
+      # Local development: single platform with --load
+      log_success "Building $container:$TAG locally (layered image)..."
+      docker buildx build \
+        --platform linux/amd64 \
+        --load \
+        $cache_args \
+        $build_args \
+        $tag_args \
+        . || {
+        log_error "Build failed for $container:$TAG"
+        return 1
+      }
+      log_success "✅ Local build completed - layered image available in Docker daemon"
+    fi
     
   elif [[ "$op" == "push" ]]; then
     # Build and push for CI/CD: multi-platform with --push
@@ -263,8 +285,11 @@ do_buildx() {
       log_success "Building and pushing $container:$TAG (AMD64 only)..."
     fi
     
+    log_success "Runtime: $runtime_info | Docker mode: $is_docker | Cache: ${cache_args:-none}"
+    
     if [[ "$is_docker" == "true" ]]; then
       # Docker buildx: supports direct push
+      log_success "Using Docker buildx with --push flag..."
       docker buildx build \
         --platform "$platforms" \
         --push \
@@ -277,6 +302,7 @@ do_buildx() {
       }
     else
       # Podman: build then push separately
+      log_success "Using Podman build + separate push..."
       docker buildx build \
         --platform "$platforms" \
         $cache_args \
@@ -311,22 +337,32 @@ do_buildx() {
       fi
     fi
     
-    # Step 2: Replace with squashed versions (cleaner distribution)
+    # Step 2: Optional squashing (enabled by default for cleaner images)
     if [[ "${SQUASH_IMAGE:-true}" == "true" ]]; then
       log_success "Replacing with squashed versions for cleaner distribution..."
       
-      # Replace layered with squashed (same tag)
-      ./helpers/skopeo-squash "$dockerhub_image:$TAG" "$dockerhub_image:$TAG" dockerhub || {
+      # Replace layered with squashed (same tag) - using relative path to helpers
+      ../helpers/skopeo-squash "$dockerhub_image:$TAG" "$dockerhub_image:$TAG" dockerhub || {
         log_warn "Docker Hub squashing failed, keeping layered version"
       }
       
-      ./helpers/skopeo-squash "$ghcr_image:$TAG" "$ghcr_image:$TAG" ghcr || {
+      ../helpers/skopeo-squash "$ghcr_image:$TAG" "$ghcr_image:$TAG" ghcr || {
         log_warn "GHCR squashing failed, keeping layered version"
       }
       
-      log_success "✅ Published clean squashed images to registries"
+      # Handle latest tags if they exist
+      if [[ "$WANTED" == "latest" ]]; then
+        ../helpers/skopeo-squash "$dockerhub_image:latest" "$dockerhub_image:latest" dockerhub || {
+          log_warn "Docker Hub latest squashing failed, keeping layered version"
+        }
+        ../helpers/skopeo-squash "$ghcr_image:latest" "$ghcr_image:latest" ghcr || {
+          log_warn "GHCR latest squashing failed, keeping layered version"
+        }
+      fi
+      
+      log_success "✅ Published squashed images to registries"
     else
-      log_success "✅ Published layered images to registries"
+      log_success "✅ Published layered images to registries (squashing disabled)"
     fi
     
   else
