@@ -1,5 +1,7 @@
 # Ansible built from sources with support for external plugins (Galaxy & Python) 💚
 
+A multi-platform Ansible container built from source with comprehensive plugin support and optimized builds for AMD64, ARM64, and ARM/v7 architectures.
+
 ![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/ansible?sort=semver)
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/ansible)
 ![Docker Stars](https://img.shields.io/docker/stars/oorabona/ansible)
