@@ -10,9 +10,9 @@ get_tflint_version() {
     latest-git-tag terraform-linters tflint | sed 's/^v//'
 }
 
-# Function to get latest TFSec version
-get_tfsec_version() {
-    latest-git-tag aquasecurity tfsec | sed 's/^v//'
+# Function to get latest Trivy version (replacement for deprecated TFSec)
+get_trivy_version() {
+    latest-git-tag aquasecurity trivy | sed 's/^v//'
 }
 
 # Function to get latest Terragrunt version
@@ -64,7 +64,7 @@ get_gcp_cli_version() {
 
 # Gather tool versions dynamically
 TFLINT_VERSION=$(get_tflint_version)
-TFSEC_VERSION=$(get_tfsec_version)
+TRIVY_VERSION=$(get_trivy_version)
 TERRAGRUNT_VERSION=$(get_terragrunt_version)
 TERRAFORM_DOCS_VERSION=$(get_terraform_docs_version)
 GITHUB_CLI_VERSION=$(get_github_cli_version)
@@ -74,7 +74,7 @@ GCP_CLI_VERSION=$(get_gcp_cli_version)
 
 echo "Building Terraform ${VERSION} with tools:"
 echo "  TFLint: ${TFLINT_VERSION}"
-echo "  TFSec: ${TFSEC_VERSION}"
+echo "  Trivy: ${TRIVY_VERSION}"
 echo "  Terragrunt: ${TERRAGRUNT_VERSION}"
 echo "  Terraform-docs: ${TERRAFORM_DOCS_VERSION}"
 echo "  GitHub CLI: ${GITHUB_CLI_VERSION}"
@@ -84,7 +84,7 @@ echo "  GCP CLI: ${GCP_CLI_VERSION}"
 
 # Set custom build arguments for make script to use
 CUSTOM_BUILD_ARGS="--build-arg TFLINT_VERSION=${TFLINT_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg TFSEC_VERSION=${TFSEC_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg TRIVY_VERSION=${TRIVY_VERSION}"
 CUSTOM_BUILD_ARGS+=" --build-arg TERRAGRUNT_VERSION=${TERRAGRUNT_VERSION}"
 CUSTOM_BUILD_ARGS+=" --build-arg TERRAFORM_DOCS_VERSION=${TERRAFORM_DOCS_VERSION}"
 CUSTOM_BUILD_ARGS+=" --build-arg GITHUB_CLI_VERSION=${GITHUB_CLI_VERSION}"
