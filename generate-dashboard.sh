@@ -99,6 +99,12 @@ calculate_stats() {
     
     for container in */; do
         container=${container%/}
+        
+        # Skip helper directories, archived containers, and non-container directories
+        if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
+            continue
+        fi
+        
         [[ -f "$container/version.sh" ]] || continue
         
         total=$((total + 1))
@@ -182,6 +188,11 @@ EOF
     log_info "Processing containers..."
     for container in */; do
         container=${container%/}
+        
+        # Skip helper directories, archived containers, and non-container directories
+        if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
+            continue
+        fi
         
         # Skip if not a container directory
         [[ -f "$container/version.sh" ]] || continue
