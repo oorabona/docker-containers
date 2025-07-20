@@ -62,6 +62,7 @@ jobs:
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
 
   build-and-push:
+    name: Build Container
     needs: detect-containers
     if: needs.detect-containers.outputs.count > 0
     runs-on: ubuntu-latest
