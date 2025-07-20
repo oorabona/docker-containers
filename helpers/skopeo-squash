@@ -23,20 +23,26 @@ fi
 # Set up credentials based on registry type
 case "$REGISTRY_TYPE" in
     dockerhub)
-        if [[ -z "${DOCKER_USERNAME:-}" || -z "${DOCKER_PASSWORD:-}" ]]; then
-            echo "❌ Missing Docker Hub credentials (DOCKER_USERNAME, DOCKER_PASSWORD)"
+        # Use DOCKERHUB_USERNAME from secrets, fallback to DOCKER_USERNAME for backwards compatibility
+        USERNAME="${DOCKERHUB_USERNAME:-${DOCKER_USERNAME:-}}"
+        # Use DOCKERHUB_TOKEN from secrets, fallback to DOCKER_PASSWORD for backwards compatibility  
+        PASSWORD="${DOCKERHUB_TOKEN:-${DOCKER_PASSWORD:-}}"
+        if [[ -z "$USERNAME" || -z "$PASSWORD" ]]; then
+            echo "❌ Missing Docker Hub credentials (DOCKERHUB_USERNAME/DOCKERHUB_TOKEN or DOCKER_USERNAME/DOCKER_PASSWORD)"
             exit 1
         fi
-        SRC_CREDS="$DOCKER_USERNAME:$DOCKER_PASSWORD"
-        DEST_CREDS="$DOCKER_USERNAME:$DOCKER_PASSWORD"
+        SRC_CREDS="$USERNAME:$PASSWORD"
+        DEST_CREDS="$USERNAME:$PASSWORD"
         ;;
     ghcr)
-        if [[ -z "${DOCKER_USERNAME:-}" || -z "${GITHUB_TOKEN:-}" ]]; then
-            echo "❌ Missing GHCR credentials (DOCKER_USERNAME, GITHUB_TOKEN)"
+        # Use GITHUB_ACTOR for GHCR username, fallback to DOCKER_USERNAME
+        USERNAME="${GITHUB_ACTOR:-${DOCKER_USERNAME:-}}"
+        if [[ -z "$USERNAME" || -z "${GITHUB_TOKEN:-}" ]]; then
+            echo "❌ Missing GHCR credentials (GITHUB_ACTOR/GITHUB_TOKEN or DOCKER_USERNAME/GITHUB_TOKEN)"
             exit 1
         fi
-        SRC_CREDS="$DOCKER_USERNAME:$GITHUB_TOKEN"
-        DEST_CREDS="$DOCKER_USERNAME:$GITHUB_TOKEN"
+        SRC_CREDS="$USERNAME:$GITHUB_TOKEN"
+        DEST_CREDS="$USERNAME:$GITHUB_TOKEN"
         ;;
     *)
         echo "❌ Unknown registry type: $REGISTRY_TYPE"
