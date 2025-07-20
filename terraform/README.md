@@ -1,4 +1,6 @@
-# Terraform DevOps
+# Terraform DevOps Container
+
+A comprehensive Terraform container with advanced DevOps tooling for infrastructure as code. Features Jinja2 templating, security scanning with Trivy, linting, and automated validation workflows.
 
 ## 🚀 Usage
 ### Jinja2 Templating
