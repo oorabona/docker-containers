@@ -3,7 +3,7 @@ ARG VERSION=latest
 
 # Build arguments for tool versions
 ARG TFLINT_VERSION
-ARG TFSEC_VERSION
+ARG TRIVY_VERSION
 ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
 ARG GITHUB_CLI_VERSION
@@ -17,14 +17,17 @@ FROM hashicorp/terraform:${VERSION} AS terraform
 # Stage 2: Security tools
 FROM alpine:latest AS security-tools
 ARG TFLINT_VERSION
-ARG TFSEC_VERSION
+ARG TRIVY_VERSION
 RUN apk add --no-cache curl unzip ca-certificates && \
     # TFLint - Terraform linter
-    curl -fsSL https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip -o tflint.zip && \
+    echo "Downloading TFLint v${TFLINT_VERSION}" && \
+    curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" -o tflint.zip && \
     unzip tflint.zip && chmod +x tflint && \
-    # TFSec - Terraform security scanner  
-    curl -fsSL https://github.com/aquasecurity/tfsec/releases/download/v${TFSEC_VERSION}/tfsec-linux-amd64 -o tfsec && \
-    chmod +x tfsec
+    # Trivy - Security scanner (replaces deprecated TFSec)
+    echo "Downloading Trivy v${TRIVY_VERSION}" && \
+    curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz && \
+    tar -xzf trivy.tar.gz trivy && \
+    chmod +x trivy
 
 # Stage 3: DevOps tools
 FROM alpine:latest AS devops-tools
@@ -61,7 +64,7 @@ ENV CONFIGFILE=config.json
 COPY --from=terraform /bin/terraform /bin/
 
 # Copy security tools
-COPY --from=security-tools /tflint /tfsec /usr/local/bin/
+COPY --from=security-tools /tflint /trivy /usr/local/bin/
 
 # Copy DevOps tools  
 COPY --from=devops-tools /terragrunt /terraform-docs /gh /usr/local/bin/
@@ -91,6 +94,7 @@ RUN apk --no-cache add \
     && pip3 install --break-system-packages --no-cache-dir \
         awscli==${AWS_CLI_VERSION} \
         azure-cli==${AZURE_CLI_VERSION} \
+        j2cli \
     && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
     && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil \
     && ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq \
@@ -106,7 +110,7 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 
 # Add healthcheck to verify terraform and tools are working
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD terraform version && tflint --version && tfsec --version || exit 1
+    CMD terraform version && tflint --version && trivy --version || exit 1
 
 # Main command
 ENTRYPOINT ["/docker-entrypoint.sh"]
