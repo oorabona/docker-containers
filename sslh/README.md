@@ -1,44 +1,27 @@
-# SSLH Docker image
+# SSLH Container
 
-![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/sslh?sort=semver)
+A lightweight Alpine-based SSLH container for protocol multiplexing, allowing multiple services (SSH, HTTPS, OpenVPN) to share a single port. Built from source for optimal security and performance across multiple architectures.
+
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/sslh)
-![Docker Stars](https://img.shields.io/docker/stars/oorabona/sslh)
+![Docker Image Size](https://img.shields.io/docker/image-size/oorabona/sslh)
 
 ## Platforms
-
-- `amd64`
-
-![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/sslh?arch=amd64&sort=semver)
-
-- `arm64`
-
-![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/sslh?arch=arm64&sort=semver)
-
-- `arm/v7`
-
-![Docker Image Size ARM/v7 (latest semver)](https://img.shields.io/docker/image-size/oorabona/sslh?arch=arm&sort=semver)
-
-## About
-
-This is a simple `Alpine` based container with [SSLH](https://github.com/yrutschle/sslh) built from sources.
+- **amd64** - x86_64 systems
+- **arm64** - ARM 64-bit systems  
+- **arm/v7** - ARM 32-bit systems
 
 ## Features
 
-- It uses [Alpine](https://hub.docker.com/_/alpine) base image.
+- **Alpine-based** - Lightweight and secure
+- **Built from source** - Latest features and security fixes
+- **Multiple flavors** - sslh-fork, sslh-select, sslh-ev
+- **Non-root execution** - Runs as nobody user
+- **Stripped binaries** - Minimal size and attack surface
 
-> For its lightweight size and security.
-
-- It is built from sources from [Github](https://github.com/yrutschle/sslh).
-
-> For its latest features and security fixes it is not restricted in version number.
-
-- You can use a different flavor of `SSLH` by setting the `USE_SSLH_FLAVOR` environment variable.
-
-> As of v2.0+ the `SSLH` project has been split into multiple flavors:
->
-> - `sslh-fork`: the original `SSLH` project
-> - `sslh-select`: the original `SSLH` project with `select` instead of `epoll`
-> - `sslh-ev`: the original `SSLH` project with `libev`
+Available SSLH flavors (v2.0+):
+- `sslh-fork` - Original SSLH project
+- `sslh-select` - Uses select instead of epoll
+- `sslh-ev` - Uses libev (default)
 
 - All binaries are stripped.
 
