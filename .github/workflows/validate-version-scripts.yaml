@@ -70,9 +70,17 @@ jobs:
 
       - name: Test upstream monitoring action
         if: steps.detect-containers.outputs.count > 0
+        id: test-upstream
+        run: |
+          containers_list="${{ steps.detect-containers.outputs.containers_list }}"
+          first_container="${containers_list%%,*}"  # Get everything before first ,
+          echo "first_container=$first_container" >> $GITHUB_OUTPUT
+          
+      - name: Run upstream monitoring test
+        if: steps.detect-containers.outputs.count > 0
         uses: ./.github/actions/check-upstream-versions
         with:
-          container: ${{ fromJson(steps.detect-containers.outputs.containers)[0] }}
+          container: ${{ steps.test-upstream.outputs.first_container }}
 
       - name: Test upstream monitoring action (all containers)
         if: github.event.inputs.container == '' && steps.detect-containers.outputs.count > 1
@@ -90,8 +98,8 @@ jobs:
           # Show which containers were used for upstream monitoring tests
           container_count="${{ steps.detect-containers.outputs.count }}"
           if [ "$container_count" -gt 0 ]; then
-            containers="${{ steps.detect-containers.outputs.containers }}"
-            first_container=$(echo "$containers" | jq -r '.[0]')
+            containers_list="${{ steps.detect-containers.outputs.containers_list }}"
+            first_container="${containers_list%%,*}"  # Get everything before first ,
             echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
             if [ "$container_count" -gt 1 ]; then
               echo "- **Additional tests:** All-container upstream check" >> $GITHUB_STEP_SUMMARY
