@@ -45,15 +45,16 @@ COPY conf/fpm.conf  /usr/local/etc/php-fpm.d/
 COPY scripts/* /usr/local/bin/
 
 # Common PHP Frameworks Env Variables
-ENV APP_ENV prod
-ENV APP_DEBUG 0
-ENV APP_BASE_PATH /var/www/app/
+ENV APP_ENV=prod
+ENV APP_DEBUG=0
+ENV APP_BASE_PATH=/var/www/app/
 
 # A Json Object with remote repository token to clone private Repos with composer
 # Reference: https://getcomposer.org/doc/03-cli.md#composer-auth
-ARG COMPOSER_AUTH
-ENV COMPOSER_AUTH ${COMPOSER_AUTH}
-ENV COMPOSER_CACHE_DIR /var/www/.composer/
+# Note: This is for build-time use only, not recommended for sensitive data in production
+ARG COMPOSER_AUTH=""
+ENV COMPOSER_AUTH=${COMPOSER_AUTH}
+ENV COMPOSER_CACHE_DIR=/var/www/.composer/
 
 # We do not want the www-data user anymore, we can stick with the default user nobody
 RUN deluser --remove-home www-data \
