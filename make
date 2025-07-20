@@ -198,14 +198,31 @@ do_buildx() {
   local dockerhub_image="docker.io/$github_username/$container"
   local ghcr_image="ghcr.io/$github_username/$container"
   
+  # Detect container runtime for cache compatibility
+  local cache_args=""
+  local is_docker=false
+  if docker version 2>/dev/null | grep -q "Docker Engine"; then
+    # True Docker: supports GitHub Actions cache and --push
+    cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
+    is_docker=true
+  elif command -v podman >/dev/null 2>&1; then
+    # Podman: has built-in layer caching, no additional cache args needed
+    cache_args=""
+    is_docker=false
+    log_success "Using Podman with built-in layer caching"
+  else
+    # Fallback: no cache
+    cache_args=""
+    is_docker=false
+    log_warn "No cache support detected"
+  fi
+  
   # Determine platform support proactively
   local platforms
   if check_multiplatform_support; then
     platforms="linux/amd64,linux/arm64"
-    log_success "Building $container:$TAG using buildx (multi-platform: AMD64 + ARM64)"
   else
     platforms="linux/amd64"
-    log_success "Building $container:$TAG using buildx (AMD64 only - no QEMU emulation detected)"
   fi
   
   local build_args=""
@@ -217,45 +234,104 @@ do_buildx() {
   # Add custom container-specific build args (set by custom build scripts)
   [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
   
+  # Prepare tags - include "latest" if building latest version
+  local tag_args="-t $dockerhub_image:$TAG -t $ghcr_image:$TAG"
+  if [[ "$WANTED" == "latest" ]]; then
+    tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
+  fi
+  
   if [[ "$op" == "build" ]]; then
-    # Single build attempt with determined platform support
+    # Build for local development: single platform with --load
+    log_success "Building $container:$TAG locally (layered image)..."
     docker buildx build \
       --platform "$platforms" \
+      --load \
+      $cache_args \
       $build_args \
-      -t "$dockerhub_image:$TAG" \
-      -t "$ghcr_image:$TAG" \
+      $tag_args \
       . || {
       log_error "Build failed for $container:$TAG"
       return 1
     }
+    log_success "✅ Local build completed - layered image available in Docker daemon"
     
   elif [[ "$op" == "push" ]]; then
-    # Push pre-built images to registries (avoids rebuild issue with custom build args)
-    log_success "Pushing $container:$TAG to multiple registries..."
-    
-    # Check if local image exists
-    if ! docker image inspect "$dockerhub_image:$TAG" >/dev/null 2>&1; then
-      log_error "Local image $dockerhub_image:$TAG not found. Run 'make build $container' first."
-      return 1
-    fi
-    
-    # Push to Docker Hub
-    if docker push "$dockerhub_image:$TAG"; then
-      log_success "  🐳 Docker Hub: $dockerhub_image:$TAG"
+    # Build and push for CI/CD: multi-platform with --push
+    if check_multiplatform_support; then
+      log_success "Building and pushing $container:$TAG (multi-platform: AMD64 + ARM64)..."
     else
-      log_error "Failed to push to Docker Hub"
-      return 1
+      log_success "Building and pushing $container:$TAG (AMD64 only)..."
     fi
     
-    # Push to GHCR
-    if docker push "$ghcr_image:$TAG"; then
-      log_success "  📦 GHCR: $ghcr_image:$TAG"
+    if [[ "$is_docker" == "true" ]]; then
+      # Docker buildx: supports direct push
+      docker buildx build \
+        --platform "$platforms" \
+        --push \
+        $cache_args \
+        $build_args \
+        $tag_args \
+        . || {
+        log_error "Push failed for $container:$TAG"
+        return 1
+      }
     else
-      log_error "Failed to push to GHCR"
-      return 1
+      # Podman: build then push separately
+      docker buildx build \
+        --platform "$platforms" \
+        $cache_args \
+        $build_args \
+        $tag_args \
+        . || {
+        log_error "Build failed for $container:$TAG"
+        return 1
+      }
+      
+      # Push each tag separately
+      log_success "Pushing built images..."
+      docker push "$dockerhub_image:$TAG" || {
+        log_error "Failed to push $dockerhub_image:$TAG"
+        return 1
+      }
+      docker push "$ghcr_image:$TAG" || {
+        log_error "Failed to push $ghcr_image:$TAG"  
+        return 1
+      }
+      
+      # Push latest tags if they were created
+      if [[ "$WANTED" == "latest" ]]; then
+        docker push "$dockerhub_image:latest" || {
+          log_error "Failed to push $dockerhub_image:latest"
+          return 1
+        }
+        docker push "$ghcr_image:latest" || {
+          log_error "Failed to push $ghcr_image:latest"
+          return 1
+        }
+      fi
     fi
     
-    log_success "✅ Successfully pushed to both registries"
+    # Step 2: Replace with squashed versions (cleaner distribution)
+    if [[ "${SQUASH_IMAGE:-true}" == "true" ]]; then
+      log_success "Replacing with squashed versions for cleaner distribution..."
+      
+      # Replace layered with squashed (same tag)
+      ./helpers/skopeo-squash "$dockerhub_image:$TAG" "$dockerhub_image:$TAG" dockerhub || {
+        log_warn "Docker Hub squashing failed, keeping layered version"
+      }
+      
+      ./helpers/skopeo-squash "$ghcr_image:$TAG" "$ghcr_image:$TAG" ghcr || {
+        log_warn "GHCR squashing failed, keeping layered version"
+      }
+      
+      log_success "✅ Published clean squashed images to registries"
+    else
+      log_success "✅ Published layered images to registries"
+    fi
+    
+  else
+    log_error "Unknown operation: $op (use 'build' or 'push')"
+    return 1
   fi
 }
 
@@ -312,11 +388,6 @@ make() {
     log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
     do_it $op
   done
-  if [ "$wantedVersion" == "latest" ]
-  then
-    export TAG=latest
-    do_it $op
-  fi
   popd
 }
 
