@@ -17,6 +17,7 @@ RUN for l in ${LOCALES}; do \
 ENV LANG="${LOCALES%% *}.UTF-8"
 ENV LANGUAGE="${LOCALES%% *}.UTF-8"
 ENV LC_ALL="${LOCALES%% *}.UTF-8"
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Check if the shell exists in the image and install it if it doesn't
 RUN if [ ! -x ${SHELL} ]; then \

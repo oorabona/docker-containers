@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# Source the git-tags helper
+source "$(dirname "$0")/../helpers/git-tags"
+# Source the python-tags helper  
+source "$(dirname "$0")/../helpers/python-tags"
+
+# Function to get latest TFLint version
+get_tflint_version() {
+    latest-git-tag terraform-linters tflint | sed 's/^v//'
+}
+
+# Function to get latest Trivy version (replacement for deprecated TFSec)
+get_trivy_version() {
+    latest-git-tag aquasecurity trivy | sed 's/^v//'
+}
+
+# Function to get latest Terragrunt version
+get_terragrunt_version() {
+    latest-git-tag gruntwork-io terragrunt | sed 's/^v//'
+}
+
+# Function to get latest Terraform-docs version
+get_terraform_docs_version() {
+    latest-git-tag terraform-docs terraform-docs | sed 's/^v//'
+}
+
+# Function to get latest GitHub CLI version
+get_github_cli_version() {
+    latest-git-tag cli cli | sed 's/^v//'
+}
+
+# Function to get AWS CLI version
+get_aws_cli_version() {
+    local version=$(get_pypi_latest_version awscli)
+    if [[ "$version" == "unknown" ]]; then
+        echo "1.34.34"  # Fallback version
+    else
+        echo "$version"
+    fi
+}
+
+# Function to get Azure CLI version
+get_azure_cli_version() {
+    local version=$(get_pypi_latest_version azure-cli)
+    if [[ "$version" == "unknown" ]]; then
+        echo "2.67.0"  # Fallback version
+    else
+        echo "$version"
+    fi
+}
+
+# Function to get GCP CLI version
+get_gcp_cli_version() {
+    # Google Cloud SDK releases from GitHub
+    local version=$(latest-git-tag GoogleCloudPlatform cloud-sdk-docker | sed 's/^v//')
+    if [[ -z "$version" || "$version" == "unknown" ]]; then
+        # Fallback - GCP CLI version isn't critical for the installer script
+        echo "latest"
+    else
+        echo "$version"
+    fi
+}
+
+# Gather tool versions dynamically
+TFLINT_VERSION=$(get_tflint_version)
+TRIVY_VERSION=$(get_trivy_version)
+TERRAGRUNT_VERSION=$(get_terragrunt_version)
+TERRAFORM_DOCS_VERSION=$(get_terraform_docs_version)
+GITHUB_CLI_VERSION=$(get_github_cli_version)
+AWS_CLI_VERSION=$(get_aws_cli_version)
+AZURE_CLI_VERSION=$(get_azure_cli_version)
+GCP_CLI_VERSION=$(get_gcp_cli_version)
+
+echo "Building Terraform ${VERSION} with tools:"
+echo "  TFLint: ${TFLINT_VERSION}"
+echo "  Trivy: ${TRIVY_VERSION}"
+echo "  Terragrunt: ${TERRAGRUNT_VERSION}"
+echo "  Terraform-docs: ${TERRAFORM_DOCS_VERSION}"
+echo "  GitHub CLI: ${GITHUB_CLI_VERSION}"
+echo "  AWS CLI: ${AWS_CLI_VERSION}"
+echo "  Azure CLI: ${AZURE_CLI_VERSION}"
+echo "  GCP CLI: ${GCP_CLI_VERSION}"
+
+# Set custom build arguments for make script to use
+CUSTOM_BUILD_ARGS="--build-arg TFLINT_VERSION=${TFLINT_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg TRIVY_VERSION=${TRIVY_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg TERRAGRUNT_VERSION=${TERRAGRUNT_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg TERRAFORM_DOCS_VERSION=${TERRAFORM_DOCS_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg GITHUB_CLI_VERSION=${GITHUB_CLI_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg AWS_CLI_VERSION=${AWS_CLI_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg GCP_CLI_VERSION=${GCP_CLI_VERSION}"
+
+# Export for make script to pick up
+export CUSTOM_BUILD_ARGS
+
+echo "Custom build args: ${CUSTOM_BUILD_ARGS}"
