@@ -74,10 +74,19 @@ jobs:
         run: |
           containers_list="${{ steps.detect-containers.outputs.containers_list }}"
           first_container="${containers_list%%,*}"  # Get everything before first ,
-          echo "first_container=$first_container" >> $GITHUB_OUTPUT
           
-      - name: Run upstream monitoring test
-        if: steps.detect-containers.outputs.count > 0
+          # Verify the selected container actually exists and has required files
+          if [[ -d "$first_container" && -f "$first_container/Dockerfile" && -f "$first_container/version.sh" ]]; then
+            echo "✅ Selected container for upstream test: $first_container"
+            echo "first_container=$first_container" >> $GITHUB_OUTPUT
+            echo "test_single=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  First container ($first_container) is not valid, skipping single container test"
+            echo "test_single=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Run upstream monitoring test (single container)
+        if: steps.detect-containers.outputs.count > 0 && steps.test-upstream.outputs.test_single == 'true'
         uses: ./.github/actions/check-upstream-versions
         with:
           container: ${{ steps.test-upstream.outputs.first_container }}
@@ -98,9 +107,12 @@ jobs:
           # Show which containers were used for upstream monitoring tests
           container_count="${{ steps.detect-containers.outputs.count }}"
           if [ "$container_count" -gt 0 ]; then
-            containers_list="${{ steps.detect-containers.outputs.containers_list }}"
-            first_container="${containers_list%%,*}"  # Get everything before first ,
-            echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ steps.test-upstream.outputs.test_single }}" == "true" ]]; then
+              first_container="${{ steps.test-upstream.outputs.first_container }}"
+              echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **Upstream monitoring test:** Single container test skipped (no valid container found)" >> $GITHUB_STEP_SUMMARY
+            fi
             if [ "$container_count" -gt 1 ]; then
               echo "- **Additional tests:** All-container upstream check" >> $GITHUB_STEP_SUMMARY
             fi

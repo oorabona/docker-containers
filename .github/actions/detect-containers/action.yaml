@@ -39,10 +39,10 @@ runs:
         else
           echo "🔍 Detecting containers that need building..."
           
-          # Since GitHub already filtered by paths, any container with a version.sh
-          # in the changed files should be built. This is much simpler than manual git parsing.
-          while IFS= read -r -d '' version_script_path; do
-            container=$(dirname "$version_script_path" | sed 's|^\./||')
+          # Since GitHub already filtered by paths, find containers with both version.sh AND Dockerfile
+          # This ensures we only build complete containers
+          while IFS= read -r -d '' dockerfile_path; do
+            container=$(dirname "$dockerfile_path" | sed 's|^\./||')
 
             # Skip if already processed
             if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
@@ -54,9 +54,14 @@ runs:
               continue
             fi
 
-            echo "📦 Found container: $container"
-            containers_to_build+=("$container")
-          done < <(find . -name "version.sh" -not -path "./.git/*" -print0)
+            # Only include containers that have BOTH Dockerfile AND version.sh
+            if [[ -f "$container/version.sh" ]]; then
+              echo "📦 Found complete container: $container (has both Dockerfile and version.sh)"
+              containers_to_build+=("$container")
+            else
+              echo "⚠️  Skipping $container: has Dockerfile but no version.sh"
+            fi
+          done < <(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./archive/*" -print0)
         fi
 
         # Create outputs (CSV first, then JSON for matrix compatibility)
