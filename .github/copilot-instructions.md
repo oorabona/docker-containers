@@ -1,8 +1,15 @@
-# Docker Containers Repository - AI Agent Instructions
+# Docker Container- **Timeline Tracking**: Build history tracked in GitHub Actions and dashboard Repository - AI Agent Instructions
 
 ## 🎯 Repository Overview
 
-This is an **automated Docker container management system** with intelligent upstream monitoring, version classification, and CI/CD pipelines. The repository maintains multiple containerized applications with sophisticated automation for version detection, building, and deployment.
+This is an **automated Docker container management system   4. **Test the Container**:
+   ```bash
+   chmod +x version.sh
+   ./version.sh                       # Should return latest upstream version
+   ./version.sh --registry-pattern    # Should return regex pattern for registry matching
+   cd ..
+   ./make build my-app               # Test build process
+   ```intelligent upstream monitoring, version classification, and CI/CD pipelines. The repository maintains multiple containerized applications with sophisticated automation for version detection, building, and deployment.
 
 ### Core Architecture
 - **📦 Container-Centric**: Each directory represents a self-contained Docker application
@@ -20,13 +27,19 @@ docker-containers/
 │   ├── workflows/
 │   │   ├── upstream-monitor.yaml    # ⭐ Core automation workflow
 │   │   ├── auto-build.yaml         # ⭐ Container build & push system
+│   │   ├── update-dashboard.yaml   # Dashboard maintenance
 │   │   └── validate-version-scripts.yaml
 │   ├── actions/                    # Reusable GitHub Actions
+│   │   ├── build-container/        # Container build action
+│   │   ├── check-upstream-versions/ # Version checking action
+│   │   ├── close-duplicate-prs/    # PR management action
+│   │   ├── detect-containers/      # Container discovery action
+│   │   └── setup-github-cli/       # CLI setup action
 │   └── scripts/
 │       ├── classify-version-change.sh  # ⭐ Version classification logic
 │       └── close-duplicate-prs.sh
 ├── make                           # ⭐ Universal build script
-├── CHANGELOG.md                   # ⭐ Timeline-based build history
+├── CHANGELOG.md                   # ⭐ Timeline-based build history (tracked in GitHub Actions)
 ├── [container-name]/             # Individual container directories
 │   ├── Dockerfile                # Container definition
 │   ├── version.sh               # ⭐ Version detection script
@@ -45,18 +58,20 @@ docker-containers/
    - **Usage**: `./make build wordpress`, `./make version ansible`
 
 2. **`version.sh` Scripts** (Version Detection)
-   - **Two modes**: `./version.sh` (current) and `./version.sh latest` (upstream)
-   - **Multiple strategies**: Hardcoded versions, API calls, Docker Hub checks
+   - **Single-purpose**: Always returns latest upstream version (simplified from old two-mode system)
+   - **Registry pattern support**: `./version.sh --registry-pattern` returns regex for published versions
+   - **Multiple strategies**: Docker Hub API, PyPI integration, GitHub releases
    - **Examples**: 
-     - Hardcoded: `echo "6.1.1"` (wordpress)
-     - Dynamic: Docker Hub API calls (terraform)
-     - PyPI integration: Python package versions (ansible)
+     - Docker Hub: `latest-docker-tag library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$"` (wordpress)
+     - Docker Hub upstream: `latest-docker-tag hashicorp/terraform "^[0-9]+\.[0-9]+\.[0-9]+$"` (terraform)
+     - PyPI integration: `get_pypi_latest_version ansible` (ansible)
 
 3. **Version Classification System** (`.github/scripts/classify-version-change.sh`)
    - Determines **major** vs **minor** version changes
    - Supports multiple versioning schemes: semver, date-based, PHP-style
-   - **Major changes**: Require manual PR review
+   - **Major changes**: New containers or major version bumps require manual PR review
    - **Minor changes**: Eligible for auto-build + auto-merge
+   - **Special handling**: `no-published-version` treated as major (new container)
 
 ## 🔄 The Hybrid Automation Workflow
 
@@ -113,35 +128,30 @@ graph TD
    CMD ["my-app"]
    ```
 
-3. **Create `version.sh`** (choose appropriate strategy):
+   3. **Create `version.sh`** (choose appropriate strategy):
    ```bash
    #!/bin/bash
    # Choose one of these patterns:
    
-   # Pattern 1: Hardcoded version
-   echo "1.0.0"
+   # Pattern 1: Direct upstream Docker registry lookup
+   "$(dirname "$0")/../helpers/latest-docker-tag" owner/image "^[0-9]+\.[0-9]+\.[0-9]+$"
    
-   # Pattern 2: GitHub releases API
-   case "${1:-current}" in
-       latest)
-           curl -s "https://api.github.com/repos/owner/repo/releases/latest" | \
-             jq -r '.tag_name' | sed 's/^v//'
-           ;;
-       current|*)
-           echo "1.0.0"  # Current version
-           ;;
-   esac
-   
-   # Pattern 3: Use helper utilities
-   source "../helpers/docker-tags"
-   if [ "$1" == "latest" ]; then
-       latest-docker-tag owner/image "^[0-9]+\.[0-9]+\.[0-9]+$"
-   else
-       check-docker-tag owner/image "^${1}$"
+   # Pattern 2: PyPI package version lookup  
+   source "$(dirname "$0")/../helpers/python-tags"
+   if [ "$1" = "--registry-pattern" ]; then
+       echo "^[0-9]+\.[0-9]+\.[0-9]+$"
+       exit 0
    fi
-   ```
-
-4. **Test the Container**:
+   get_pypi_latest_version package-name
+   
+   # Pattern 3: GitHub releases API
+   if [ "$1" = "--registry-pattern" ]; then
+       echo "^[0-9]+\.[0-9]+\.[0-9]+$"
+       exit 0
+   fi
+   curl -s "https://api.github.com/repos/owner/repo/releases/latest" | \
+     jq -r '.tag_name' | sed 's/^v//'
+   ```4. **Test the Container**:
    ```bash
    chmod +x version.sh
    ./version.sh          # Should return current version
@@ -163,6 +173,7 @@ graph TD
 - `helpers/docker-tags`: Docker Hub API integration
 - `helpers/git-tags`: GitHub releases integration  
 - `helpers/python-tags`: PyPI package integration
+- `helpers/docker-registry`: Shared version detection functions
 
 ### Testing and Validation
 
@@ -190,6 +201,12 @@ graph TD
 #!/bin/bash
 # Standard header with description
 
+# For make script: registry pattern for published versions
+if [ "$1" = "--registry-pattern" ]; then
+    echo "^[0-9]+\.[0-9]+\.[0-9]+$"
+    exit 0
+fi
+
 # Helper function for error handling
 get_latest_version() {
     local version
@@ -202,15 +219,8 @@ get_latest_version() {
     fi
 }
 
-# Main switch statement
-case "${1:-current}" in
-    latest)
-        get_latest_version
-        ;;
-    current|*)
-        echo "1.0.0"  # Current hardcoded version
-        ;;
-esac
+# Single-purpose: always return latest upstream version
+get_latest_version
 ```
 
 ### Dockerfile Best Practices
@@ -273,7 +283,7 @@ esac
 - `make` - Core build system
 - `.github/workflows/upstream-monitor.yaml` - Main automation
 - `.github/scripts/classify-version-change.sh` - Version logic
-- `CHANGELOG.md` - Build history tracking
+- `CHANGELOG.md` - Build history tracking (tracked in GitHub Actions and dashboard)
 - Individual `*/version.sh` files - Version detection
 
 ### Integration Points:
@@ -287,6 +297,32 @@ esac
 - Containers build successfully with the `make` script
 - Automation workflows complete without manual intervention
 - Branch protection rules are respected via PR-centric approach
+
+## 💎 Programming Best Practices & Principles
+
+When working on this codebase, follow these fundamental principles:
+
+### **Top 10 Development Guidelines**
+
+1. **KISS (Keep It Simple, Stupid)**: Favor simple, readable solutions over complex ones
+2. **SOLID Principles**: Single responsibility, open/closed, Liskov substitution, interface segregation, dependency inversion
+3. **DRY (Don't Repeat Yourself)**: Use shared helpers like `helpers/docker-registry` instead of duplicating code
+4. **YAGNI (You Aren't Gonna Need It)**: Don't build features you don't currently need
+5. **Less Code is Better Code**: Every line of code is a liability - minimize when possible
+6. **Fail Fast**: Validate inputs early and provide clear error messages
+7. **Single Purpose Functions**: Each script/function should do one thing well
+8. **Defensive Programming**: Handle edge cases and network failures gracefully
+9. **Consistency Over Cleverness**: Follow existing patterns rather than inventing new ones
+10. **Test-Driven Mindset**: Write testable code and validate changes
+
+### **Repository-Specific Rules**
+
+- **No Unnecessary Files**: Don't create config files, wrappers, or abstractions unless they solve a real problem
+- **Leverage Existing Patterns**: Use established version script patterns rather than creating new approaches
+- **Shared Helpers First**: Check `helpers/` directory before writing duplicate functionality
+- **Minimal Dependencies**: Prefer shell built-ins and existing tools over adding new dependencies
+- **Direct Solutions**: If a one-liner solves the problem, don't write a function
+- **Preserve Working Systems**: This is a production system - don't fix what isn't broken
 
 ---
 
