@@ -1,0 +1,99 @@
+<!-- Quick Actions Component -->
+<div class="quick-actions">
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="action-card">
+        <div class="action-icon">🔄</div>
+        <div class="action-title">Auto Updates</div>
+        <div class="action-subtitle">Twice daily monitoring</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-card">
+        <div class="action-icon">🐳</div>
+        <div class="action-title">Multi-Registry</div>
+        <div class="action-subtitle">Docker Hub & GHCR</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-card">
+        <div class="action-icon">⚡</div>
+        <div class="action-title">CI/CD Ready</div>
+        <div class="action-subtitle">GitHub Actions</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="action-card">
+        <div class="action-icon">📊</div>
+        <div class="action-title">Live Dashboard</div>
+        <div class="action-subtitle">Real-time status</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="text-center">
+    <a href="https://github.com/oorabona/docker-containers" class="btn btn-primary me-2" target="_blank">
+      📝 View Source
+    </a>
+    <a href="https://github.com/oorabona/docker-containers/actions" class="btn btn-outline-primary me-2" target="_blank">
+      🔧 GitHub Actions
+    </a>
+    <a href="https://github.com/oorabona/docker-containers/blob/master/README.md" class="btn btn-outline-secondary" target="_blank">
+      📖 Documentation
+    </a>
+  </div>
+</div>
+
+<style>
+.quick-actions {
+  margin: 30px 0;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  border: 1px solid #e9ecef;
+}
+
+.action-card {
+  text-align: center;
+  padding: 20px 15px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+  transition: all 0.2s ease;
+  height: 100%;
+}
+
+.action-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  border-color: #007bff;
+}
+
+.action-icon {
+  font-size: 2em;
+  margin-bottom: 10px;
+}
+
+.action-title {
+  font-weight: bold;
+  font-size: 1.1em;
+  color: #343a40;
+  margin-bottom: 5px;
+}
+
+.action-subtitle {
+  font-size: 0.9em;
+  color: #6c757d;
+}
+
+@media (max-width: 768px) {
+  .action-card {
+    margin-bottom: 15px;
+  }
+  
+  .btn {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+}
+</style>
