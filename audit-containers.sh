@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Source shared logging utilities
+source "$(dirname "$0")/helpers/logging.sh"
+
 echo "🔍 Container Audit Report"
 echo "========================="
 echo ""
@@ -28,7 +31,6 @@ for dir in */; do
         else
             echo "  ❓ Check base image age"
         fi
-        
         # Check for version script
         if [[ -f "$dir/version.sh" ]]; then
             echo "  ✅ Has version script"
