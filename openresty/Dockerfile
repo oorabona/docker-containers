@@ -1,20 +1,22 @@
 # Dockerfile - alpine
 # https://github.com/openresty/docker-openresty
 
+# For Luarocks
+ARG LUAROCKS_VERSION
+
+ARG VERSION=latest
 ARG RESTY_IMAGE_BASE="alpine"
-ARG RESTY_IMAGE_TAG="3.13"
+ARG RESTY_IMAGE_TAG="latest"
 
 FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
-ARG RESTY_VERSION="1.19.3.1"
-ARG RESTY_OPENSSL_VERSION="1.1.1k"
-ARG RESTY_OPENSSL_PATCH_VERSION="1.1.1f"
+ARG RESTY_VERSION=${VERSION}
+ARG RESTY_OPENSSL_VERSION
+ARG RESTY_OPENSSL_PATCH_VERSION
 ARG RESTY_OPENSSL_URL_BASE="https://www.openssl.org/source"
-ARG RESTY_PCRE_VERSION="8.44"
+ARG RESTY_PCRE_VERSION
 ARG RESTY_J="4"
 ARG RESTY_CONFIG_OPTIONS="\
     --with-compat \
@@ -80,6 +82,7 @@ LABEL luarocks_version="${LUAROCKS_VERSION}"
 RUN set -ex \
     && apk add --no-cache --virtual .build-deps \
         build-base \
+        ca-certificates \
         coreutils \
         curl \
         gd-dev \
@@ -98,6 +101,7 @@ RUN set -ex \
         libxslt \
         zlib \
         ${RESTY_ADD_PACKAGE_RUNDEPS} \
+    && update-ca-certificates \
     && cd /tmp \
     && if [ -n "${RESTY_EVAL_PRE_CONFIGURE}" ]; then eval $(echo ${RESTY_EVAL_PRE_CONFIGURE}); fi \
     && cd /tmp \
@@ -122,7 +126,7 @@ RUN set -ex \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install_sw \
     && cd /tmp \
-    && curl -fSL https://ftp.pcre.org/pub/pcre/pcre-${RESTY_PCRE_VERSION}.tar.gz -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
+    && curl -fSL https://sourceforge.net/projects/pcre/files/pcre/${RESTY_PCRE_VERSION}/pcre-${RESTY_PCRE_VERSION}.tar.gz/download -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
     && tar xzf pcre-${RESTY_PCRE_VERSION}.tar.gz \
     && cd /tmp/pcre-${RESTY_PCRE_VERSION} \
     && ./configure \
@@ -173,6 +177,10 @@ RUN cd /tmp/openresty-${RESTY_VERSION} \
 
 # Add additional binaries into PATH for convenience
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
+
+# Add healthcheck to verify OpenResty is responding
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/nginx_status || exit 1
 
 CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
 

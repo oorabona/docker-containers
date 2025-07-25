@@ -1,0 +1,74 @@
+#!/bin/bash
+# Containerized skopeo helper for squashing images in registries
+
+set -euo pipefail
+
+# Usage: ./skopeo-squash <source-image> <dest-image> [registry-type]
+# registry-type: dockerhub (default) or ghcr
+
+SOURCE_IMAGE="${1:-}"
+DEST_IMAGE="${2:-}"
+REGISTRY_TYPE="${3:-dockerhub}"
+
+if [[ -z "$SOURCE_IMAGE" || -z "$DEST_IMAGE" ]]; then
+    echo "Usage: $0 <source-image> <dest-image> [registry-type]"
+    echo "  registry-type: dockerhub (default) or ghcr"
+    echo ""
+    echo "Examples:"
+    echo "  $0 docker.io/user/app:1.0 docker.io/user/app:1.0-squashed"
+    echo "  $0 ghcr.io/user/app:1.0 ghcr.io/user/app:1.0-squashed ghcr"
+    exit 1
+fi
+
+# Set up credentials based on registry type
+case "$REGISTRY_TYPE" in
+    dockerhub)
+        # Use DOCKERHUB_USERNAME from secrets, fallback to DOCKER_USERNAME for backwards compatibility
+        USERNAME="${DOCKERHUB_USERNAME:-${DOCKER_USERNAME:-}}"
+        # Use DOCKERHUB_TOKEN from secrets, fallback to DOCKER_PASSWORD for backwards compatibility  
+        PASSWORD="${DOCKERHUB_TOKEN:-${DOCKER_PASSWORD:-}}"
+        if [[ -z "$USERNAME" || -z "$PASSWORD" ]]; then
+            echo "❌ Missing Docker Hub credentials (DOCKERHUB_USERNAME/DOCKERHUB_TOKEN or DOCKER_USERNAME/DOCKER_PASSWORD)"
+            exit 1
+        fi
+        SRC_CREDS="$USERNAME:$PASSWORD"
+        DEST_CREDS="$USERNAME:$PASSWORD"
+        ;;
+    ghcr)
+        # Use GITHUB_ACTOR for GHCR username, fallback to DOCKER_USERNAME
+        USERNAME="${GITHUB_ACTOR:-${DOCKER_USERNAME:-}}"
+        if [[ -z "$USERNAME" || -z "${GITHUB_TOKEN:-}" ]]; then
+            echo "❌ Missing GHCR credentials (GITHUB_ACTOR/GITHUB_TOKEN or DOCKER_USERNAME/GITHUB_TOKEN)"
+            exit 1
+        fi
+        SRC_CREDS="$USERNAME:$GITHUB_TOKEN"
+        DEST_CREDS="$USERNAME:$GITHUB_TOKEN"
+        ;;
+    *)
+        echo "❌ Unknown registry type: $REGISTRY_TYPE"
+        exit 1
+        ;;
+esac
+
+echo "🔄 Squashing $SOURCE_IMAGE -> $DEST_IMAGE"
+
+# Run containerized skopeo with proper credentials
+docker run --rm \
+    -e DOCKER_USERNAME \
+    -e DOCKER_PASSWORD \
+    -e GITHUB_TOKEN \
+    quay.io/skopeo/stable:latest \
+    copy \
+    --src-creds "$SRC_CREDS" \
+    --dest-creds "$DEST_CREDS" \
+    --format v2s2 \
+    --compression-format gzip \
+    --override-os linux \
+    --override-arch amd64 \
+    "docker://$SOURCE_IMAGE" \
+    "docker://$DEST_IMAGE" || {
+    echo "❌ Squashing failed for $SOURCE_IMAGE"
+    exit 1
+}
+
+echo "✅ Successfully created squashed image: $DEST_IMAGE"

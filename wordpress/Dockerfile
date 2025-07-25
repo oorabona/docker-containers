@@ -8,7 +8,7 @@ RUN set -ex; \
 	apt-get -y dist-upgrade; \
 	apt-get install -y --no-install-recommends \
 		sudo \
-		mysql-client \
+		default-mysql-client \
 	; \
 	\
 	savedAptMark="$(apt-mark showmanual)"; \
@@ -16,9 +16,10 @@ RUN set -ex; \
 	apt-get install -y --no-install-recommends \
 		libjpeg-dev \
 		libpng-dev \
+		libzip-dev \
 	; \
 	\
-	docker-php-ext-configure gd --with-png-dir=/usr --with-jpeg-dir=/usr; \
+	docker-php-ext-configure gd --with-jpeg; \
 	docker-php-ext-install gd mysqli opcache zip; \
 	\
 # reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
@@ -67,6 +68,10 @@ VOLUME /var/www/
 WORKDIR /var/www/
 
 EXPOSE 9000
+
+# Add healthcheck to verify PHP-FPM is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD php-fpm -t || exit 1
 
 USER wordpress
 

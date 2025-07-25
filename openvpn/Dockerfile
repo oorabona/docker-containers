@@ -2,8 +2,6 @@
 ARG OS_VERSION=latest
 FROM alpine:${OS_VERSION}
 
-LABEL maintainer="Olivier Orabona <olivier.orabona@gmail.com>"
-
 ARG VERSION=latest
 ARG NPROC=1
 
@@ -27,6 +25,8 @@ RUN set -ex \
         gnutls-dev \
         automake \
         make \
+        libcap-ng-dev \
+        libcap-dev \
         git \
     && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz --output openvpn.tgz \
     # Download latest version of OpenSC pkcs11-helper from github
@@ -49,8 +49,9 @@ RUN set -ex \
     # Do not try to install documentation
     && echo "Building OpenVPN using ${NPROC} cores..." \
     && make -j${NPROC} \
-    # Compile also the plugins
-    && find src/plugins/ -type d -exec make -C {} -j${NPROC} \; -exec make -C {} install \; \
+    # Compile and install plugins (only in directories that have Makefiles)
+    && make -C src/plugins -j${NPROC} \
+    && make -C src/plugins install \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
@@ -63,6 +64,10 @@ VOLUME ["/etc/openvpn"]
 
 # Internally uses port 1194/udp, remap using `docker run -p 443:1194/tcp`
 EXPOSE 1194/udp 1194/tcp
+
+# Add healthcheck to verify OpenVPN is accessible
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD openvpn --version || exit 1
 
 # Environment variables
 # Later versions of EASYRSA seem to break the script

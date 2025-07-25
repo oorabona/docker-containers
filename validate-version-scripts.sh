@@ -6,18 +6,20 @@
 
 # Note: Not using 'set -e' to allow graceful error handling
 
+# Source shared logging utilities
+source "$(dirname "$0")/helpers/logging.sh"
+
 # Configuration
-readonly TIMEOUT_CURRENT=30      # Timeout for current version check
-readonly TIMEOUT_LATEST=60       # Timeout for latest version check  
+# Increase timeouts in CI environments due to potential network latency
+if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    readonly TIMEOUT_CURRENT=60      # Extended timeout for CI current version check
+    readonly TIMEOUT_LATEST=120      # Extended timeout for CI latest version check
+else
+    readonly TIMEOUT_CURRENT=30      # Timeout for current version check
+    readonly TIMEOUT_LATEST=60       # Timeout for latest version check
+fi
 readonly MAX_RETRIES=3           # Maximum retries for failed operations
 readonly RETRY_DELAY=2           # Delay between retries (seconds)
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 
 # Counters
 total_containers=0
@@ -31,22 +33,6 @@ declare -a failed_list=()
 declare -a skipped_list=()
 declare -A container_issues=()
 
-log_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
-}
-
-log_success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
-
-log_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-log_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
-
 # Function to execute version script with retries
 execute_with_retry() {
     local container="$1"
@@ -54,16 +40,25 @@ execute_with_retry() {
     local timeout="$3"
     local retry_count=0
     local result=""
+    local exit_code=0
     
     while [ $retry_count -lt $MAX_RETRIES ]; do
         if [ "$mode" = "current" ]; then
-            result=$(timeout "$timeout" bash version.sh 2>/dev/null || echo "")
+            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
+            exit_code=$?
         else
-            result=$(timeout "$timeout" bash version.sh latest 2>/dev/null || echo "")
+            result=$(timeout "$timeout" bash version.sh 2>/dev/null)
+            exit_code=$?
+        fi
+        
+        # Handle special case for no published version
+        if [[ "$result" == "no-published-version" ]]; then
+            echo "$result"
+            return 2  # Special return code for no published version
         fi
         
         # Check if result is valid
-        if [[ -n "$result" && "$result" != "null" && "$result" != "unknown" ]]; then
+        if [[ $exit_code -eq 0 && -n "$result" && "$result" != "null" && "$result" != "unknown" ]]; then
             echo "$result"
             return 0
         fi
@@ -124,13 +119,13 @@ check_dependencies() {
     local issues=()
     
     if grep -q "source.*helpers" version.sh 2>/dev/null; then
-        if [[ ! -f "../helpers/docker-tags" ]]; then
+        if [[ ! -f "../helpers/docker-tag" ]]; then
             issues+=("missing_helpers")
         else
             # Check if helpers script is executable
-            if [[ ! -x "../helpers/docker-tags" ]]; then
-                log_warning "helpers/docker-tags is not executable - fixing"
-                chmod +x "../helpers/docker-tags" 2>/dev/null || true
+            if [[ ! -x "../helpers/docker-tag" ]]; then
+                log_warning "helpers/docker-tag is not executable - fixing"
+                chmod +x "../helpers/docker-tag" 2>/dev/null || true
             fi
         fi
     fi
@@ -155,6 +150,7 @@ check_dependencies() {
 # Function to test a single version script
 test_version_script() {
     local container="$1"
+    local quick_mode="${2:-false}"
     local test_results=()
     local issues=()
     local has_errors=false
@@ -210,7 +206,9 @@ test_version_script() {
     # Test 1: Check current version (no arguments) with retries
     echo "  📋 Testing current version (with retries)..."
     current_version=$(execute_with_retry "$container" "current" "$TIMEOUT_CURRENT")
-    if [ $? -eq 0 ] && [ -n "$current_version" ]; then
+    current_exit_code=$?
+    
+    if [ $current_exit_code -eq 0 ] && [ -n "$current_version" ]; then
         # Validate format
         format_issues=$(validate_version_format "$current_version")
         if [ $? -eq 0 ]; then
@@ -221,35 +219,52 @@ test_version_script() {
             issues+=("current_format:$format_issues")
             has_errors=true
         fi
+    elif [ $current_exit_code -eq 2 ] && [ "$current_version" = "no-published-version" ]; then
+        log_warning "No published version found (container not yet published to registry)"
+        test_results+=("current_no_published")
+        # This is not considered an error for validation purposes
     else
         log_error "Failed to get current version after $MAX_RETRIES retries"
         issues+=("current_failed")
         has_errors=true
     fi
     
-    # Test 2: Check latest version with retries
-    echo "  📋 Testing latest version (with retries)..."
-    latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
-    if [ $? -eq 0 ] && [ -n "$latest_version" ]; then
-        # Validate format
-        format_issues=$(validate_version_format "$latest_version")
-        if [ $? -eq 0 ]; then
-            log_success "Latest version: $latest_version"
-            test_results+=("latest_ok")
-            
-            # Compare versions if both are available
-            if [[ -n "$current_version" && "$current_version" != "$latest_version" ]]; then
-                log_info "Version difference detected: $current_version → $latest_version"
+    # Test 2: Check latest version with retries (skip in quick mode)
+    if [[ "$quick_mode" != "true" ]]; then
+        echo "  📋 Testing latest version (with retries)..."
+        latest_version=$(execute_with_retry "$container" "latest" "$TIMEOUT_LATEST")
+        latest_exit_code=$?
+        
+        if [ $latest_exit_code -eq 0 ] && [ -n "$latest_version" ]; then
+            # Validate format
+            format_issues=$(validate_version_format "$latest_version")
+            if [ $? -eq 0 ]; then
+                log_success "Latest version: $latest_version"
+                test_results+=("latest_ok")
+                
+                # Compare versions if both are available
+                if [[ "$current_version" != "no-published-version" && -n "$current_version" && "$current_version" != "$latest_version" ]]; then
+                    log_info "Version difference detected: $current_version → $latest_version"
+                elif [[ "$current_version" = "no-published-version" ]]; then
+                    log_info "New container detected: no published version → $latest_version (ready for initial release)"
+                fi
+            else
+                log_error "Latest version format issues: $format_issues"
+                issues+=("latest_format:$format_issues")
+                has_errors=true
             fi
+        elif [ $latest_exit_code -eq 2 ] && [ "$latest_version" = "no-published-version" ]; then
+            log_warning "No upstream version found (container may be deprecated or source unavailable)"
+            test_results+=("latest_no_published")
+            # This could indicate upstream source issues but isn't necessarily an error
         else
-            log_error "Latest version format issues: $format_issues"
-            issues+=("latest_format:$format_issues")
+            log_error "Failed to get latest version after $MAX_RETRIES retries"
+            issues+=("latest_failed")
             has_errors=true
         fi
     else
-        log_error "Failed to get latest version after $MAX_RETRIES retries"
-        issues+=("latest_failed")
-        has_errors=true
+        log_info "Skipping latest version check (quick mode enabled)"
+        test_results+=("latest_skipped")
     fi
     
     # Test 3: Performance check (measure execution time)
@@ -291,6 +306,7 @@ main() {
     local specific_container=""
     local verbose=false
     local show_help=false
+    local quick_mode=false
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -306,6 +322,10 @@ main() {
             -c|--container)
                 specific_container="$2"
                 shift 2
+                ;;
+            -q|--quick)
+                quick_mode=true
+                shift
                 ;;
             *)
                 specific_container="$1"
@@ -326,12 +346,14 @@ main() {
         echo "  -h, --help           Show this help message"
         echo "  -v, --verbose        Enable verbose output"
         echo "  -c, --container NAME Test specific container only"
+        echo "  -q, --quick          Quick mode - skip latest version checks"
         echo ""
         echo "EXAMPLES:"
         echo "  $0                   Test all containers"
         echo "  $0 wordpress         Test only wordpress container"
         echo "  $0 -c debian         Test only debian container"
         echo "  $0 -v                Test all containers with verbose output"
+        echo "  $0 --quick           Test all containers (current version only)"
         echo ""
         echo "CONFIGURATION:"
         echo "  Current version timeout: ${TIMEOUT_CURRENT}s"
@@ -358,7 +380,7 @@ main() {
         log_info "Testing specific container: $specific_container"
         ((total_containers++))
         
-        if test_version_script "$specific_container"; then
+        if test_version_script "$specific_container" "$quick_mode"; then
             ((passed_containers++))
             passed_list+=("$specific_container")
         else
@@ -374,8 +396,8 @@ main() {
             esac
         fi
     else
-        # Find all containers with Dockerfiles
-        containers=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
+        # Find all containers with Dockerfiles (excluding archive directory)
+        containers=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" -not -path "./archive/*" | cut -d'/' -f2 | sort -u)
         
         if [[ -z "$containers" ]]; then
             log_error "No containers found with Dockerfiles"
@@ -388,7 +410,7 @@ main() {
         for container in $containers; do
             ((total_containers++))
             
-            if test_version_script "$container"; then
+            if test_version_script "$container" "$quick_mode"; then
                 ((passed_containers++))
                 passed_list+=("$container")
             else

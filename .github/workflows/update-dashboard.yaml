@@ -1,0 +1,180 @@
+name: Update Dashboard & Deploy Jekyll Site
+
+on:
+  workflow_call:
+    inputs:
+      trigger_reason:
+        description: 'Reason for dashboard update'
+        required: false
+        type: string
+        default: 'Automated update'
+  workflow_dispatch:
+    inputs:
+      trigger_reason:
+        description: 'Reason for dashboard update'
+        required: false
+        type: string
+        default: 'Manual update'
+  # Also trigger on pushes to master (for Jekyll site updates)
+  push:
+    branches: ["master"]
+    paths:
+      - "docs/**"
+      - "docs/site/_config.yml"
+      - "*.md"
+      - ".github/workflows/update-dashboard.yaml"
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # Build job with integrated dashboard generation
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate dashboard content
+        run: |
+          chmod +x generate-dashboard.sh
+
+          # Set environment variables for dashboard context
+          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
+          export GITHUB_EVENT_NAME="${{ github.event_name }}"
+
+          echo "🚀 Generating dashboard with context:"
+          echo "  - Trigger: $GITHUB_EVENT_NAME"
+          echo "  - Reason: $UPDATE_REASON"
+          echo ""
+
+          ./generate-dashboard.sh
+
+          # Verify index.md was created
+          if [ ! -f "index.md" ]; then
+            echo "❌ Error: index.md was not generated!"
+            exit 1
+          fi
+
+          echo "✅ Dashboard generated successfully"
+          echo "📄 Dashboard preview:"
+          head -n 15 index.md
+
+          echo "📊 Dashboard content prepared for Jekyll"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Setup Jekyll configuration
+        run: |
+          echo "📋 Setting up Jekyll configuration from docs/site/"
+          cp docs/site/_config.yml _config.yml
+          echo "✅ Jekyll configuration ready"
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+
+      - name: Verify Jekyll build
+        run: |
+          echo "📂 Jekyll site contents:"
+          find ./_site -type f | head -20
+          echo ""
+          echo "📊 Site structure summary:"
+          echo "Total files: $(find ./_site -type f | wc -l)"
+          echo "HTML files: $(find ./_site -name '*.html' | wc -l)"
+          echo "CSS files: $(find ./_site -name '*.css' | wc -l)"
+          echo ""
+          echo "❌ Checking for unwanted files:"
+          if find ./_site -name "Dockerfile" -o -name "*.sh" -o -name "docker-compose.yml" | grep -q .; then
+            echo "⚠️  Found Docker/script files in site build!"
+            find ./_site -name "Dockerfile" -o -name "*.sh" -o -name "docker-compose.yml"
+          else
+            echo "✅ No unwanted Docker/script files found"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  # Deployment job - only deploy from main/master branch or manual dispatch
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    # Only deploy if:
+    # 1. Triggered by push to master branch, OR
+    # 2. Manually dispatched from workflow_dispatch, OR  
+    # 3. Called from workflow_call but NOT from a pull request context
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_call' && github.ref == 'refs/heads/master')
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Create workflow summary
+        run: |
+          echo "# 📊 Dashboard & Jekyll Site Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Site URL** | [${{ steps.deployment.outputs.page_url }}](${{ steps.deployment.outputs.page_url }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Dashboard** | [${{ steps.deployment.outputs.page_url }}dashboard/](${{ steps.deployment.outputs.page_url }}dashboard/) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "| **Reason** | \`${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌟 Live Site Features" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 **Interactive Dashboard**: Real-time container status" >> $GITHUB_STEP_SUMMARY
+          echo "- 📚 **Documentation Hub**: Complete guides and APIs" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 **Workflow Integration**: Direct links to GitHub Actions" >> $GITHUB_STEP_SUMMARY
+          echo "- 📱 **Mobile Friendly**: Responsive Jekyll theme" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎨 **Professional Design**: GitHub's official Minima theme" >> $GITHUB_STEP_SUMMARY
+
+  # Summary for skipped deployments (PR contexts)
+  deploy-skipped:
+    runs-on: ubuntu-latest
+    needs: build
+    # Show summary when deployment is skipped (PR context)
+    if: github.event_name == 'workflow_call' && github.ref != 'refs/heads/master'
+    steps:
+      - name: Create skipped deployment summary
+        run: |
+          echo "# 📊 Dashboard Generated (Deployment Skipped)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | Dashboard built, deployment skipped |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Reason** | \`${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ℹ️ Deployment Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "GitHub Pages deployment only occurs from the \`master\` branch due to environment protection rules." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**✅ What was completed:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Dashboard content generated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- 🏗️ Jekyll site built and validated" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Deployment artifact prepared" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**🚀 Next steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Dashboard will be deployed automatically when changes are merged to \`master\`" >> $GITHUB_STEP_SUMMARY

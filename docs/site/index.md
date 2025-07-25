@@ -1,0 +1,163 @@
+---
+layout: dashboard
+title: Container Dashboard
+permalink: /
+updated: 2025-07-20 20:42 UTC
+description: Real-time status monitoring for Docker containers with automated upstream version tracking
+---
+
+# 📊 Container Dashboard
+
+*Last updated: 2025-07-20 20:42 UTC*
+
+{% include dashboard-stats.html 
+   total_containers="9"
+   up_to_date="9"
+   updates_available="0"
+   build_success_rate="100"
+%}
+
+{% include quick-actions.html %}
+
+## 📦 Container Status
+
+<div class="row row-deck row-cards">
+{% include container-card.html 
+   name="ansible"
+   current_version="11.8.0"
+   latest_version="11.8.0"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="Ansible built from sources with support for external plugins (Galaxy & Python) 💚"
+   ghcr_image="ghcr.io/oorabona/ansible:11.8.0"
+   dockerhub_image="docker.io/oorabona/ansible:11.8.0"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="debian"
+   current_version="trixie"
+   latest_version="trixie"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="Debian Base Container"
+   ghcr_image="ghcr.io/oorabona/debian:trixie"
+   dockerhub_image="docker.io/oorabona/debian:trixie"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="openresty"
+   current_version="1.27.1.2"
+   latest_version="1.27.1.2"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="OpenResty - High Performance Web Platform"
+   ghcr_image="ghcr.io/oorabona/openresty:1.27.1.2"
+   dockerhub_image="docker.io/oorabona/openresty:1.27.1.2"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="openvpn"
+   current_version="v2.6.14"
+   latest_version="v2.6.14"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="🔐 OpenVPN built from sources with advanced security features"
+   ghcr_image="ghcr.io/oorabona/openvpn:v2.6.14"
+   dockerhub_image="docker.io/oorabona/openvpn:v2.6.14"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="php"
+   current_version="8.4.10-fpm-alpine"
+   latest_version="8.4.10-fpm-alpine"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="PHP Development Container"
+   ghcr_image="ghcr.io/oorabona/php:8.4.10-fpm-alpine"
+   dockerhub_image="docker.io/oorabona/php:8.4.10-fpm-alpine"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="postgres"
+   current_version="17.5-alpine"
+   latest_version="17.5-alpine"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="PostgreSQL Database Container"
+   ghcr_image="ghcr.io/oorabona/postgres:17.5-alpine"
+   dockerhub_image="docker.io/oorabona/postgres:17.5-alpine"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="sslh"
+   current_version="v2.2.4"
+   latest_version="v2.2.4"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="A lightweight Alpine-based SSLH container for protocol multiplexing, allowing multiple services (SSH, HTTPS, OpenVPN) to share a single port. Built from source for optimal security and performance across multiple architectures."
+   ghcr_image="ghcr.io/oorabona/sslh:v2.2.4"
+   dockerhub_image="docker.io/oorabona/sslh:v2.2.4"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="terraform"
+   current_version="1.12.2"
+   latest_version="1.12.2"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="Terraform DevOps Container"
+   ghcr_image="ghcr.io/oorabona/terraform:1.12.2"
+   dockerhub_image="docker.io/oorabona/terraform:1.12.2"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+{% include container-card.html 
+   name="wordpress"
+   current_version="6.8.2"
+   latest_version="6.8.2"
+   status_color="green"
+   status_text="Up to Date"
+   build_status="success"
+   description="WordPress Container"
+   ghcr_image="ghcr.io/oorabona/wordpress:6.8.2"
+   dockerhub_image="docker.io/oorabona/wordpress:6.8.2"
+   github_username="oorabona"
+   dockerhub_username="oorabona"
+%}
+</div>
+
+## 🔄 Recent Activity
+
+- 🤖 **Automated Monitoring**: Upstream versions checked every 6 hours
+- 🚀 **Auto-Build**: Triggered on version updates and code changes  
+- 📊 **Dashboard Updates**: Real-time status after successful builds
+- 🔒 **Branch Protection**: All changes flow through pull requests
+
+## 📈 System Health
+
+| Metric | Status |
+|--------|--------|
+| Build Success Rate | **100%** |
+| Containers Up-to-Date | **9/9** |
+| Updates Available | **0** |
+| Last Check | **2025-07-20 20:43 UTC** |
+
+---
+
+*🤖 Generated by [`generate-dashboard.sh`](generate-dashboard.sh) using Jekyll templating*
+*📋 Update Reason: `Manual generation`*

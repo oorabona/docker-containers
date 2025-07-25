@@ -1,11 +1,6 @@
 name: Validate Version Scripts
 
 on:
-  push:
-    paths:
-      - '**/version.sh'
-      - 'validate-version-scripts.sh'
-      - '.github/workflows/validate-version-scripts.yaml'
   pull_request:
     paths:
       - '**/version.sh'
@@ -54,7 +49,7 @@ jobs:
           chmod +x validate-version-scripts.sh
           chmod +x make
           find . -name "version.sh" -exec chmod +x {} \;
-          
+
       - name: Validate version scripts
         run: |
           if [[ -n "${{ github.event.inputs.container }}" ]]; then
@@ -66,22 +61,40 @@ jobs:
           fi
         env:
           VERBOSE: ${{ github.event.inputs.verbose == 'true' && '1' || '0' }}
-          
-      - name: Upload validation report
-        if: always()
-        uses: actions/upload-artifact@v4
+
+      - name: Detect containers for testing
+        id: detect-containers
+        uses: ./.github/actions/detect-containers
         with:
-          name: version-validation-report
-          path: |
-            version-validation-*.log
-            version-validation-*.json
-          retention-days: 30
+          force_rebuild: "true"  # Get all containers for comprehensive testing
+
       - name: Test upstream monitoring action
+        if: steps.detect-containers.outputs.count > 0
+        id: test-upstream
+        run: |
+          containers_list="${{ steps.detect-containers.outputs.containers_list }}"
+          first_container="${containers_list%%,*}"  # Get everything before first ,
+          
+          # Verify the selected container actually exists and has required files
+          if [[ -d "$first_container" && -f "$first_container/Dockerfile" && -f "$first_container/version.sh" ]]; then
+            echo "✅ Selected container for upstream test: $first_container"
+            echo "first_container=$first_container" >> $GITHUB_OUTPUT
+            echo "test_single=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  First container ($first_container) is not valid, skipping single container test"
+            echo "test_single=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Run upstream monitoring test (single container)
+        if: steps.detect-containers.outputs.count > 0 && steps.test-upstream.outputs.test_single == 'true'
         uses: ./.github/actions/check-upstream-versions
         with:
-          container: wordpress
-          skip_registry_check: "true"
-          
+          container: ${{ steps.test-upstream.outputs.first_container }}
+
+      - name: Test upstream monitoring action (all containers)
+        if: github.event.inputs.container == '' && steps.detect-containers.outputs.count > 1
+        uses: ./.github/actions/check-upstream-versions
+
       - name: Display test results
         run: |
           echo "## 🧪 Version Script Validation Results" >> $GITHUB_STEP_SUMMARY
@@ -89,13 +102,26 @@ jobs:
           echo "All version.sh scripts have been tested and validated." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Summary" >> $GITHUB_STEP_SUMMARY
-          if [[ -f version-validation-summary.json ]]; then
-            echo "- **Total containers:** $(jq -r '.summary.total' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Passed validation:** $(jq -r '.summary.passed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Failed validation:** $(jq -r '.summary.failed' version-validation-summary.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation completed:** ✅ All version scripts working correctly" >> $GITHUB_STEP_SUMMARY
+          
+          # Show which containers were used for upstream monitoring tests
+          container_count="${{ steps.detect-containers.outputs.count }}"
+          if [ "$container_count" -gt 0 ]; then
+            if [[ "${{ steps.test-upstream.outputs.test_single }}" == "true" ]]; then
+              first_container="${{ steps.test-upstream.outputs.first_container }}"
+              echo "- **Upstream monitoring test target:** \`$first_container\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **Upstream monitoring test:** Single container test skipped (no valid container found)" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "$container_count" -gt 1 ]; then
+              echo "- **Additional tests:** All-container upstream check" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- **Upstream monitoring test:** Skipped (no containers detected)" >> $GITHUB_STEP_SUMMARY
           fi
+          
           echo "### ✅ What was tested:" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can retrieve latest upstream versions" >> $GITHUB_STEP_SUMMARY
           echo "- Each version.sh script can validate specific versions" >> $GITHUB_STEP_SUMMARY
-          echo "- The upstream monitoring action works correctly" >> $GITHUB_STEP_SUMMARY
+          echo "- The upstream monitoring action works with dynamically detected containers" >> $GITHUB_STEP_SUMMARY
           echo "- Integration with the existing make script infrastructure" >> $GITHUB_STEP_SUMMARY

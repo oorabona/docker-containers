@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+# Docker registry helper functions for version management
+# Provides standardized handling of published vs unpublished containers
+
+# Source all required helper functions
+# Use BASH_SOURCE to get the correct path to this helper file
+HELPER_DIR="$(dirname "${BASH_SOURCE[0]}")"
+source "$HELPER_DIR/docker-tag"
+source "$HELPER_DIR/git-tags"
+
+# Get current published version from Docker registry with graceful fallback
+# Usage: get_current_published_version "owner/image" "regex_pattern"
+# Returns: version string or "no-published-version" with exit code 1
+get_current_published_version() {
+    local image="$1"
+    local pattern="$2"
+    
+    if [[ -z "$image" || -z "$pattern" ]]; then
+        echo "Usage: get_current_published_version 'owner/image' 'regex_pattern'" >&2
+        exit 1
+    fi
+    
+    # Try to get current published version from Docker Hub/registry
+    if ! current_version=$(latest-docker-tag "$image" "$pattern"); then
+        echo "no-published-version"
+        exit 1
+    fi
+    
+    echo "$current_version"
+}
+
+# Standard version script pattern for containers
+# Usage: handle_version_request "$1" "owner/image" "regex_pattern" "upstream_source"
+# Where upstream_source is a function that returns the latest upstream version
+handle_version_request() {
+    local mode="${1:-current}"
+    local image="$2"
+    local pattern="$3"
+    local upstream_function="$4"
+    
+    case "$mode" in
+        latest)
+            if [[ -n "$upstream_function" && "$(type -t "$upstream_function")" == "function" ]]; then
+                "$upstream_function"
+            else
+                echo "Error: upstream function '$upstream_function' not defined" >&2
+                exit 1
+            fi
+            ;;
+        current|*)
+            get_current_published_version "$image" "$pattern"
+            ;;
+    esac
+}
+
+# For scripts that call this file directly
+if [[ "$0" == *"docker-registry" ]]; then
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: $0 <image> <pattern> [mode]"
+        echo "Example: $0 'oorabona/wordpress' '^[0-9]+\.[0-9]+\.[0-9]+$' current"
+        exit 1
+    fi
+    
+    get_current_published_version "$1" "$2"
+fi
