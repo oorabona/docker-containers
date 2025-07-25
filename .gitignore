@@ -14,6 +14,9 @@
 # Build artifacts
 *.log
 
+# Dashboard statistics (dynamically generated)
+.dashboard-stats
+
 # OS generated files
 .DS_Store
 .DS_Store?
