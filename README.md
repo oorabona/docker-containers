@@ -137,13 +137,22 @@ cd wordpress && ./version.sh latest
 
 2. **Create Dockerfile**: Follow existing patterns with health checks and non-root users
 
-3. **Create version.sh script**:
+3. **Create version.sh script** (using centralized pattern):
    ```bash
    #!/bin/bash
-   case "${1:-current}" in
-       latest) echo "$(get_latest_from_upstream)" ;;
-       current|*) echo "1.0.0" ;;
-   esac
+   source "$(dirname "$0")/../helpers/docker-registry"
+   
+   # Function to get latest upstream version
+   get_latest_upstream() {
+       # Container-specific upstream detection logic
+       # Examples:
+       # latest-docker-tag library/nginx "^[0-9]+\.[0-9]+\.[0-9]+$"
+       # latest-git-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"
+       # get_pypi_latest_version package-name
+   }
+   
+   # Use standardized version handling
+   handle_version_request "$1" "oorabona/my-app" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
    ```
 
 4. **Test locally**:
