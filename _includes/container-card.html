@@ -1,0 +1,99 @@
+<!-- Container Card Component -->
+<div class="col-md-6 col-lg-4">
+  <div class="card h-100">
+    <div class="card-header">
+      <h3 class="card-title">
+        <span class="me-2">📦</span>
+        {{ include.name | capitalize }}
+      </h3>
+      <div class="card-subtitle text-muted">
+        {{ include.description }}
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col-6">
+          <div class="mb-2">
+            <strong>Current:</strong>
+            <span class="badge bg-{{ include.status_color }} ms-1">{{ include.current_version }}</span>
+          </div>
+        </div>
+        <div class="col-6">
+          <div class="mb-2">
+            <strong>Latest:</strong>
+            <span class="badge bg-secondary ms-1">{{ include.latest_version }}</span>
+          </div>
+        </div>
+      </div>
+      
+      <div class="row mt-3">
+        <div class="col-12">
+          <div class="d-flex align-items-center">
+            {% if include.status_color == "green" %}
+              <span class="status-indicator status-green"></span>
+              <span class="text-success">{{ include.status_text }}</span>
+            {% elsif include.status_color == "orange" %}
+              <span class="status-indicator status-orange"></span>
+              <span class="text-warning">{{ include.status_text }}</span>
+            {% else %}
+              <span class="status-indicator status-red"></span>
+              <span class="text-danger">{{ include.status_text }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="card-footer">
+      <div class="row g-2">
+        <div class="col-6">
+          <a href="https://hub.docker.com/r/{{ include.dockerhub_username }}/{{ include.name }}" 
+             class="btn btn-outline-primary btn-sm w-100" target="_blank">
+            🐳 Docker Hub
+          </a>
+        </div>
+        <div class="col-6">
+          <a href="https://ghcr.io/{{ include.github_username }}/{{ include.name }}" 
+             class="btn btn-outline-secondary btn-sm w-100" target="_blank">
+            📦 GHCR
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.status-green {
+  background-color: #28a745;
+}
+
+.status-orange {
+  background-color: #ffc107;
+}
+
+.status-red {
+  background-color: #dc3545;
+}
+
+.card {
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.badge {
+  font-size: 0.75em;
+}
+</style>
