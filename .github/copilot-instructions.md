@@ -38,7 +38,11 @@ docker-containers/
 │   └── scripts/
 │       ├── classify-version-change.sh  # ⭐ Version classification logic
 │       └── close-duplicate-prs.sh
-├── make                           # ⭐ Universal build script
+├── make                           # ⭐ Universal build coordinator (simplified)
+├── scripts/                       # ⭐ Focused utility scripts
+│   ├── build-container.sh         # Single-purpose container building
+│   ├── push-container.sh          # Container publishing logic
+│   └── check-version.sh           # Version checking utility
 ├── CHANGELOG.md                   # ⭐ Timeline-based build history (tracked in GitHub Actions)
 ├── [container-name]/             # Individual container directories
 │   ├── Dockerfile                # Container definition
@@ -46,15 +50,18 @@ docker-containers/
 │   ├── docker-compose.yml       # Optional: compose configuration
 │   ├── LAST_REBUILD.md          # Rebuild trigger marker (PR-only)
 │   └── README.md               # Container documentation
-└── helpers/                    # Shared version detection utilities
+└── helpers/                    # Shared utilities (DRY principle)
+    ├── logging.sh              # ⭐ Centralized logging functions
+    └── [version-detection]     # Version detection utilities
 ```
 
 ### Critical Components You Must Understand
 
-1. **`make` Script** (Universal Build System)
-   - Single entry point for all container operations
-   - Handles building, pushing, running, and version checking
+1. **`make` Script** (Universal Build Coordinator)
+   - Simplified entry point for all container operations (~280 lines, down from 522)
+   - Uses focused scripts for complex operations (following single responsibility principle)
    - Integrates with both local development and CI/CD
+   - Sources shared logging utilities (DRY principle)
    - **Usage**: `./make build wordpress`, `./make version ansible`
 
 2. **`version.sh` Scripts** (Version Detection)
@@ -170,6 +177,7 @@ graph TD
 4. **Documentation**: Comment the version source clearly
 
 **Helper Utilities Available**:
+- `helpers/logging.sh`: Centralized logging functions with color-safe output
 - `helpers/docker-tags`: Docker Hub API integration
 - `helpers/git-tags`: GitHub releases integration  
 - `helpers/python-tags`: PyPI package integration
@@ -187,6 +195,8 @@ graph TD
    ```bash
    ./make build WANTED=container-name     # Build specific container
    ./make version WANTED=container-name   # Check version
+   scripts/build-container.sh wordpress   # Direct build testing
+   scripts/push-container.sh wordpress    # Direct push testing
    ```
 
 3. **Workflow Testing**:
@@ -306,7 +316,7 @@ When working on this codebase, follow these fundamental principles:
 
 1. **KISS (Keep It Simple, Stupid)**: Favor simple, readable solutions over complex ones
 2. **SOLID Principles**: Single responsibility, open/closed, Liskov substitution, interface segregation, dependency inversion
-3. **DRY (Don't Repeat Yourself)**: Use shared helpers like `helpers/docker-registry` instead of duplicating code
+3. **DRY (Don't Repeat Yourself)**: Use shared helpers like `helpers/docker-registry` and `helpers/logging.sh` instead of duplicating code
 4. **YAGNI (You Aren't Gonna Need It)**: Don't build features you don't currently need
 5. **Less Code is Better Code**: Every line of code is a liability - minimize when possible
 6. **Fail Fast**: Validate inputs early and provide clear error messages
