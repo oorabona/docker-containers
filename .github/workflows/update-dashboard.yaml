@@ -20,7 +20,7 @@ on:
     branches: ["master"]
     paths:
       - "docs/**"
-      - "_config.yml"
+      - "docs/site/_config.yml"
       - "*.md"
       - ".github/workflows/update-dashboard.yaml"
 
@@ -75,6 +75,12 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      - name: Setup Jekyll configuration
+        run: |
+          echo "📋 Setting up Jekyll configuration from docs/site/"
+          cp docs/site/_config.yml _config.yml
+          echo "✅ Jekyll configuration ready"
 
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1

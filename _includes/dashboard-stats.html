@@ -1,78 +1,68 @@
-<!-- Dashboard Statistics Summary -->
-<div class="row row-cards mb-3">
-  <div class="col-sm-6 col-lg-3">
-    <div class="card card-sm">
-      <div class="card-body">
-        <div class="row align-items-center">
-          <div class="col-auto">
-            <span class="bg-primary text-white avatar">
-              <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
-                <path d="M12 2l10 5-10 5-10-5 10-5"/>
-                <path d="M2 17l10 5 10-5"/>
-                <path d="M2 12l10 5 10-5"/>
-              </svg>
-            </span>
-          </div>
-          <div class="col">
-            <div class="font-weight-medium">{{ include.total_containers | default: 0 }}</div>
-            <div class="text-secondary">Total Containers</div>
-          </div>
-        </div>
-      </div>
+<!-- Dashboard Statistics Component -->
+<div class="dashboard-stats">
+  <div class="stats-grid">
+    <div class="stat-item">
+      <div class="stat-number">{{ include.total_containers }}</div>
+      <div class="stat-label">Total Containers</div>
     </div>
-  </div>
-  
-  <div class="col-sm-6 col-lg-3">
-    <div class="card card-sm">
-      <div class="card-body">
-        <div class="row align-items-center">
-          <div class="col-auto">
-            <span class="bg-success text-white avatar">✅</span>
-          </div>
-          <div class="col">
-            <div class="font-weight-medium">{{ include.up_to_date | default: 0 }}</div>
-            <div class="text-secondary">Up to Date</div>
-          </div>
-        </div>
-      </div>
+    <div class="stat-item">
+      <div class="stat-number">{{ include.up_to_date }}</div>
+      <div class="stat-label">Up to Date</div>
     </div>
-  </div>
-  
-  <div class="col-sm-6 col-lg-3">
-    <div class="card card-sm">
-      <div class="card-body">
-        <div class="row align-items-center">
-          <div class="col-auto">
-            <span class="bg-warning text-white avatar">⚠️</span>
-          </div>
-          <div class="col">
-            <div class="font-weight-medium">{{ include.updates_available | default: 0 }}</div>
-            <div class="text-secondary">Updates Available</div>
-          </div>
-        </div>
-      </div>
+    <div class="stat-item">
+      <div class="stat-number">{{ include.updates_available }}</div>
+      <div class="stat-label">Updates Available</div>
     </div>
-  </div>
-  
-  <div class="col-sm-6 col-lg-3">
-    <div class="card card-sm">
-      <div class="card-body">
-        <div class="row align-items-center">
-          <div class="col-auto">
-            <span class="bg-github text-white avatar">
-              <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
-                <path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.2 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/>
-              </svg>
-            </span>
-          </div>
-          <div class="col">
-            <div class="font-weight-medium">{{ include.build_success_rate | default: 0 }}%</div>
-            <div class="text-secondary">Build Success Rate</div>
-          </div>
-        </div>
-      </div>
+    <div class="stat-item">
+      <div class="stat-number">{{ include.build_success_rate }}%</div>
+      <div class="stat-label">Success Rate</div>
     </div>
   </div>
 </div>
+
+<style>
+.dashboard-stats {
+  margin: 20px 0;
+  padding: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 10px;
+  color: white;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 20px;
+  text-align: center;
+}
+
+.stat-item {
+  padding: 15px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+.stat-number {
+  font-size: 2.5em;
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.stat-label {
+  font-size: 0.9em;
+  opacity: 0.9;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+@media (max-width: 768px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .stat-number {
+    font-size: 2em;
+  }
+}
+</style>
