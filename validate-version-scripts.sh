@@ -6,6 +6,9 @@
 
 # Note: Not using 'set -e' to allow graceful error handling
 
+# Source shared logging utilities
+source "$(dirname "$0")/helpers/logging.sh"
+
 # Configuration
 # Increase timeouts in CI environments due to potential network latency
 if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -18,13 +21,6 @@ fi
 readonly MAX_RETRIES=3           # Maximum retries for failed operations
 readonly RETRY_DELAY=2           # Delay between retries (seconds)
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
 # Counters
 total_containers=0
 passed_containers=0
@@ -36,22 +32,6 @@ declare -a passed_list=()
 declare -a failed_list=()
 declare -a skipped_list=()
 declare -A container_issues=()
-
-log_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
-}
-
-log_success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
-
-log_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-log_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
 
 # Function to execute version script with retries
 execute_with_retry() {
@@ -416,8 +396,8 @@ main() {
             esac
         fi
     else
-        # Find all containers with Dockerfiles
-        containers=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" | cut -d'/' -f2 | sort -u)
+        # Find all containers with Dockerfiles (excluding archive directory)
+        containers=$(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./helpers/*" -not -path "./archive/*" | cut -d'/' -f2 | sort -u)
         
         if [[ -z "$containers" ]]; then
             log_error "No containers found with Dockerfiles"
