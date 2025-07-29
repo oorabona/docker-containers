@@ -1,0 +1,26 @@
+#!/bin/bash
+# PostGIS Geospatial Extension Configuration - Bash Script
+# Applied when 'postgis' extension is enabled
+
+cat << EOF
+# PostGIS Geospatial Extension Configuration
+
+# PostGIS Memory Settings
+work_mem = ${POSTGIS_WORK_MEM:-64MB}
+maintenance_work_mem = ${POSTGIS_MAINTENANCE_WORK_MEM:-256MB}
+
+# Spatial Index Settings
+effective_cache_size = ${POSTGIS_EFFECTIVE_CACHE_SIZE:-2GB}
+random_page_cost = ${POSTGIS_RANDOM_PAGE_COST:-1.1}
+
+# PostGIS Performance Settings
+postgis.gdal_enabled_drivers = '${POSTGIS_GDAL_ENABLED_DRIVERS:-ENABLE_ALL}'
+postgis.enable_outdb_rasters = '${POSTGIS_ENABLE_OUTDB_RASTERS:-off}'
+
+# Spatial Query Optimization
+max_parallel_workers_per_gather = ${POSTGIS_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
+
+# PostGIS-specific logging (for debugging)
+# log_min_duration_statement = 1000  # Log slow spatial queries
+
+EOF

@@ -1,0 +1,21 @@
+#!/bin/bash
+# pg_stat_statements Query Statistics Extension Configuration - Bash Script
+# Applied when 'pg_stat_statements' extension is enabled
+
+cat << EOF
+# pg_stat_statements Query Statistics Extension Configuration
+
+# pg_stat_statements Core Settings
+pg_stat_statements.max = $PG_STAT_STATEMENTS_MAX
+pg_stat_statements.track = $PG_STAT_STATEMENTS_TRACK
+pg_stat_statements.track_utility = on
+pg_stat_statements.track_planning = off
+
+# Query Normalization Settings
+pg_stat_statements.save = on
+
+# Performance Impact Control
+track_io_timing = on
+track_wal_io_timing = on
+
+EOF

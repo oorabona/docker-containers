@@ -7,9 +7,9 @@ services:
         VERSION: "15"
         LOCALES: "en_US fr_FR"
         POSTGRES_EXTENSION_PROFILE: ""
-        POSTGRES_EXTENSIONS: ""
+        POSTGRES_EXTENSIONS: "${POSTGRES_EXTENSIONS:-}"
         POSTGRES_MODE: "single"
-    image: oorabona/postgres:15-modern
+    image: postgres:local
     container_name: postgres-modern
     environment:
       # Basic PostgreSQL settings
@@ -31,10 +31,6 @@ services:
     volumes:
       # Data persistence
       - postgres_data:/var/lib/postgresql/data
-      
-      # Configuration overrides (optional)
-      - ./conf/postgresql.dev.conf:/etc/postgresql/postgresql.conf:ro
-      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       
       # Custom initialization scripts (optional)
       - ./custom-init:/docker-entrypoint-initdb.d/custom:ro

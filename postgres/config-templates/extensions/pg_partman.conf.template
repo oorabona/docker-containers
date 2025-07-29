@@ -1,0 +1,11 @@
+#!/bin/bash
+# pg_partman Extension Configuration - Bash Script
+# Applied when 'pg_partman' extension is enabled
+
+cat << EOF
+# pg_partman Extension Configuration
+
+# pg_partman specific settings would go here
+# Currently using default settings
+
+EOF

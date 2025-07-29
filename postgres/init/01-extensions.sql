@@ -43,13 +43,11 @@ BEGIN
             IF ext_name != '' THEN
                 -- Special handling for extensions with specific requirements
                 CASE ext_name
-                WHEN 'pg_net' THEN
-                    RAISE NOTICE 'Skipping pg_net - will be handled by migration script';
-                    CONTINUE;
                 WHEN 'pg_cron' THEN
                     RAISE NOTICE 'Skipping pg_cron - will be created in postgres database';
                     CONTINUE;
                 ELSE
+                    -- Now all extensions should work since shared_preload_libraries is configured at build time
                     PERFORM enable_extension_if_available(ext_name);
                 END CASE;
             END IF;

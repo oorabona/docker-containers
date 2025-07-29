@@ -1,0 +1,56 @@
+#!/bin/bash
+# Analytics Profile Configuration Template - Bash Script
+# Optimized for analytical workloads and OLAP queries
+
+cat << EOF
+# Analytics Profile Configuration
+
+# Connection Settings (fewer concurrent connections, more resources per query)
+max_connections = 50
+
+# Memory Settings (analytics optimized - high memory per query)
+shared_buffers = 2GB
+effective_cache_size = 8GB
+work_mem = 256MB  # High for sorting/joining large datasets
+maintenance_work_mem = 1GB  # High for index building
+
+# WAL Settings (less frequent checkpoints for long-running queries)
+checkpoint_completion_target = 0.9
+checkpoint_timeout = 30min
+max_wal_size = 8GB
+
+# Query Planner (analytics optimized)
+default_statistics_target = 1000  # More detailed stats
+from_collapse_limit = 16  # Allow complex joins
+join_collapse_limit = 16  # Allow complex joins
+
+# Parallel Processing (maximize for analytics)
+max_worker_processes = 16
+max_parallel_workers = 12
+max_parallel_workers_per_gather = 8
+max_parallel_maintenance_workers = 8
+
+# Analytics Query Optimization
+enable_partitionwise_join = on
+enable_partitionwise_aggregate = on
+force_parallel_mode = off
+
+# I/O Settings for Large Data Processing
+effective_io_concurrency = 300
+maintenance_io_concurrency = 100
+
+# Logging for Query Analysis
+log_min_duration_statement = 10000  # Log long analytical queries
+log_statement = 'mod'  # Log data modifications
+
+# Vacuum Settings for Analytics (less frequent, more thorough)
+autovacuum_naptime = 300s  # 5 minutes
+autovacuum_vacuum_scale_factor = 0.05  # 5%
+autovacuum_analyze_scale_factor = 0.02  # 2%
+
+# JIT Compilation for Complex Queries
+jit = on
+jit_above_cost = 500000
+jit_optimize_above_cost = 1000000
+
+EOF

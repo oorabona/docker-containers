@@ -1,0 +1,25 @@
+#!/bin/bash
+# pg_vector (Vector) Extension Configuration - Bash Script
+# Applied when 'vector' or 'pg_vector' extension is enabled
+
+cat << EOF
+# pg_vector (Vector) Extension Configuration
+
+# Vector Index Settings
+pg_vector.probes = ${PG_VECTOR_PROBES:-1}
+
+# Memory Settings for Vector Operations
+work_mem = ${PG_VECTOR_WORK_MEM:-256MB}
+maintenance_work_mem = ${PG_VECTOR_MAINTENANCE_WORK_MEM:-512MB}
+
+# Index Build Settings for Vector Indexes
+max_parallel_maintenance_workers = ${PG_VECTOR_MAX_PARALLEL_MAINTENANCE_WORKERS:-2}
+max_parallel_workers = ${PG_VECTOR_MAX_PARALLEL_WORKERS:-4}
+
+# Vector Query Performance
+effective_cache_size = ${PG_VECTOR_EFFECTIVE_CACHE_SIZE:-2GB}
+
+# Logging for Vector Operations (for debugging)
+# log_min_duration_statement = 0  # Uncomment for vector query debugging
+
+EOF

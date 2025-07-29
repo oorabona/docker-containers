@@ -1,0 +1,11 @@
+#!/bin/bash
+# pgjwt Extension Configuration - Bash Script
+# Applied when 'pgjwt' extension is enabled
+
+cat << EOF
+# pgjwt Extension Configuration
+
+# pgjwt has no specific configuration parameters
+# Extension provides JWT token functions
+
+EOF

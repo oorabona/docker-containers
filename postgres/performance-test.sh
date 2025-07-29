@@ -164,9 +164,9 @@ if [[ ",$INSTALLED_EXTENSIONS," == *",hypopg,"* ]]; then
     echo "🔍 Testing HypoPG with hypothetical index creation"
     
     # Create test table if it doesn't exist
-    psql -c "DROP TABLE IF EXISTS hypopg_test;" > /dev/null 2>&1
-    psql -c "CREATE TABLE hypopg_test (id SERIAL PRIMARY KEY, name TEXT, value INTEGER);" > /dev/null 2>&1
-    psql -c "INSERT INTO hypopg_test (name, value) SELECT 'item_' || i, i FROM generate_series(1, 1000) i;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "DROP TABLE IF EXISTS hypopg_test;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "CREATE TABLE hypopg_test (id SERIAL PRIMARY KEY, name TEXT, value INTEGER);" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "INSERT INTO hypopg_test (name, value) SELECT 'item_' || i, i FROM generate_series(1, 1000) i;" > /dev/null 2>&1
     
     # Create hypothetical index and test
     benchmark_sql "Creating hypothetical index" "
@@ -177,8 +177,8 @@ if [[ ",$INSTALLED_EXTENSIONS," == *",hypopg,"* ]]; then
     EXPLAIN SELECT * FROM hypopg_test WHERE value = 500;"
     
     # Cleanup
-    psql -c "SELECT hypopg_drop_index(indexrelid) FROM hypopg();" > /dev/null 2>&1
-    psql -c "DROP TABLE hypopg_test;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "SELECT hypopg_drop_index(indexrelid) FROM hypopg();" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "DROP TABLE hypopg_test;" > /dev/null 2>&1
 fi
 
 # Test pg_qualstats if installed (query predicate statistics)
@@ -187,12 +187,12 @@ if [[ ",$INSTALLED_EXTENSIONS," == *",pg_qualstats,"* ]]; then
     echo "🔍 Testing pg_qualstats with query statistics collection"
     
     # Reset statistics
-    psql -c "SELECT pg_qualstats_reset();" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "SELECT pg_qualstats_reset();" > /dev/null 2>&1
     
     # Generate some queries to collect statistics
-    psql -c "DROP TABLE IF EXISTS qualstats_test;" > /dev/null 2>&1
-    psql -c "CREATE TABLE qualstats_test (id SERIAL, name TEXT, status TEXT, created_at TIMESTAMP DEFAULT NOW());" > /dev/null 2>&1
-    psql -c "INSERT INTO qualstats_test (name, status) SELECT 'user_' || i, CASE WHEN i % 3 = 0 THEN 'active' ELSE 'inactive' END FROM generate_series(1, 1000) i;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "DROP TABLE IF EXISTS qualstats_test;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "CREATE TABLE qualstats_test (id SERIAL, name TEXT, status TEXT, created_at TIMESTAMP DEFAULT NOW());" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "INSERT INTO qualstats_test (name, status) SELECT 'user_' || i, CASE WHEN i % 3 = 0 THEN 'active' ELSE 'inactive' END FROM generate_series(1, 1000) i;" > /dev/null 2>&1
     
     # Execute various queries to generate statistics
     benchmark_sql "Generating queries for statistics collection" "
@@ -205,7 +205,7 @@ if [[ ",$INSTALLED_EXTENSIONS," == *",pg_qualstats,"* ]]; then
     SELECT COUNT(*) as collected_queries FROM pg_qualstats WHERE queryid IS NOT NULL;"
     
     # Cleanup
-    psql -c "DROP TABLE qualstats_test;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "DROP TABLE qualstats_test;" > /dev/null 2>&1
 fi
 
 # Test postgres_fdw if installed (foreign data wrapper)
@@ -221,7 +221,7 @@ if [[ ",$INSTALLED_EXTENSIONS," == *",postgres_fdw,"* ]]; then
     echo "✅ postgres_fdw configuration test successful"
     
     # Cleanup
-    psql -c "DROP SERVER IF EXISTS test_server CASCADE;" > /dev/null 2>&1
+    docker-compose exec postgres psql -U postgres -d myapp -c "DROP SERVER IF EXISTS test_server CASCADE;" > /dev/null 2>&1
 fi
 
 echo "=== 10. Query Performance Analysis ==="

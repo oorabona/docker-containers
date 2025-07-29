@@ -1,0 +1,11 @@
+#!/bin/bash
+# pg_trgm Extension Configuration - Bash Script
+# Applied when 'pg_trgm' extension is enabled
+
+cat << EOF
+# pg_trgm Extension Configuration
+
+# pg_trgm has no specific configuration parameters
+# Extension provides trigram matching for text search
+
+EOF

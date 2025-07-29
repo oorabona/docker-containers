@@ -1,0 +1,24 @@
+#!/bin/bash
+# pg_cron Job Scheduler Extension Configuration - Bash Script
+# Applied when 'pg_cron' extension is enabled
+
+cat << EOF
+# pg_cron Job Scheduler Extension Configuration
+
+# pg_cron Core Settings
+cron.database_name = '${PG_CRON_DATABASE_NAME:-postgres}'
+cron.log_statement = '${PG_CRON_LOG_STATEMENT:-on}'
+cron.log_min_messages = '${PG_CRON_LOG_MIN_MESSAGES:-warning}'
+
+# Job Execution Settings
+cron.max_running_jobs = ${PG_CRON_MAX_RUNNING_JOBS:-7}
+cron.use_background_workers = '${PG_CRON_USE_BACKGROUND_WORKERS:-on}'
+
+# Connection Settings for Job Execution
+max_worker_processes = ${POSTGRES_MAX_WORKER_PROCESSES:-8}
+cron.timezone = '${PG_CRON_TIMEZONE:-UTC}'
+
+# Security Settings
+cron.enable_superuser_jobs = '${PG_CRON_ENABLE_SUPERUSER_JOBS:-on}'
+
+EOF

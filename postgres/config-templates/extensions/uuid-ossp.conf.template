@@ -1,0 +1,11 @@
+#!/bin/bash
+# uuid-ossp Extension Configuration - Bash Script
+# Applied when 'uuid-ossp' extension is enabled
+
+cat << EOF
+# uuid-ossp Extension Configuration
+
+# uuid-ossp has no specific configuration parameters
+# Extension provides UUID generation functions
+
+EOF
