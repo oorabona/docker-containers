@@ -1,94 +1,85 @@
--- Extension initialization script
--- This script enables extensions based on environment variables
+-- Modern Extension Initialization (Refactored)
+-- Uses centralized extension-manager logic for consistency
+-- Simplified and optimized for the new architecture
 
-\echo 'Loading PostgreSQL extensions...'
+\echo 'Initializing PostgreSQL extensions with modern approach...'
 
--- Function to safely create extension if it doesn't exist
-CREATE OR REPLACE FUNCTION enable_extension_if_available(ext_name TEXT)
+-- Create helper function for safe extension enabling
+CREATE OR REPLACE FUNCTION enable_extension_safely(ext_name TEXT)
 RETURNS BOOLEAN AS $$
 BEGIN
     EXECUTE format('CREATE EXTENSION IF NOT EXISTS %I', ext_name);
-    RAISE NOTICE 'Extension % enabled successfully', ext_name;
+    RAISE NOTICE '✅ Extension % enabled successfully', ext_name;
     RETURN TRUE;
 EXCEPTION
     WHEN OTHERS THEN
-        RAISE WARNING 'Failed to enable extension %: %', ext_name, SQLERRM;
+        RAISE WARNING '❌ Failed to enable extension %: %', ext_name, SQLERRM;
         RETURN FALSE;
 END;
 $$ LANGUAGE plpgsql;
 
--- Enable core extensions that should always be available
-SELECT enable_extension_if_available('plpgsql');  -- PL/pgSQL (usually default)
-
--- Enable extensions based on list from entrypoint script
+-- Enable extensions from the extension-manager generated list
 DO $$
 DECLARE
     ext_list TEXT;
     ext_name TEXT;
     ext_array TEXT[];
+    success_count INTEGER := 0;
+    total_count INTEGER := 0;
 BEGIN
-    -- Read extensions list from file created by entrypoint
-    SELECT pg_read_file('/tmp/postgres_extensions.txt') INTO ext_list;
-    ext_list := trim(ext_list);
+    -- Read extensions list from file created by extension-manager
+    BEGIN
+        SELECT pg_read_file('/tmp/postgres_extensions.txt') INTO ext_list;
+        ext_list := trim(ext_list);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE NOTICE '🔍 No extensions file found, using minimal setup';
+            ext_list := '';
+    END;
     
     IF ext_list != '' THEN
-        RAISE NOTICE 'Loading extensions: %', ext_list;
-        -- Split comma-separated extensions
+        RAISE NOTICE '🔧 Loading extensions: %', ext_list;
         ext_array := string_to_array(ext_list, ',');
         
         FOREACH ext_name IN ARRAY ext_array
         LOOP
-            -- Trim whitespace and enable extension
             ext_name := trim(ext_name);
             IF ext_name != '' THEN
-                -- Special handling for extensions with specific requirements
+                total_count := total_count + 1;
+                
+                -- Skip extensions that require shared_preload_libraries
+                -- These are handled by the post-startup activation script
                 CASE ext_name
+                WHEN 'citus' THEN
+                    RAISE NOTICE '⏭️  Skipping citus - handled by post-startup activation';
+                    CONTINUE;
+                WHEN 'pg_search' THEN
+                    RAISE NOTICE '⏭️  Skipping pg_search - handled by post-startup activation';
+                    CONTINUE;
+                WHEN 'pg_net' THEN
+                    RAISE NOTICE '⏭️  Skipping pg_net - handled by post-startup activation';
+                    CONTINUE;
                 WHEN 'pg_cron' THEN
-                    RAISE NOTICE 'Skipping pg_cron - will be created in postgres database';
+                    RAISE NOTICE '⏭️  Skipping pg_cron - will be created in postgres database';
                     CONTINUE;
                 ELSE
-                    -- Now all extensions should work since shared_preload_libraries is configured at build time
-                    PERFORM enable_extension_if_available(ext_name);
+                    -- Enable regular extensions
+                    IF enable_extension_safely(ext_name) THEN
+                        success_count := success_count + 1;
+                    END IF;
                 END CASE;
             END IF;
         END LOOP;
+        
+        RAISE NOTICE '📊 Extension initialization: % successful out of % regular extensions', 
+            success_count, total_count - 4; -- Subtract shared_preload extensions
     ELSE
-        RAISE NOTICE 'No extensions specified in extensions file';
+        RAISE NOTICE '🔍 No extensions specified, using PostgreSQL defaults';
     END IF;
-EXCEPTION
-    WHEN OTHERS THEN
-        RAISE NOTICE 'Could not read extensions file, no custom extensions will be loaded';
-END $$;
-
--- Note: Citus configuration is now handled at build-time in postgresql.conf
--- This avoids ALTER SYSTEM restrictions in initialization functions
-SELECT CASE 
-    WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'citus') 
-    THEN 'Citus extension loaded successfully' 
-    ELSE 'Citus extension not found'
-END;
-
--- Create pg_cron in postgres database if requested
-DO $$
-BEGIN
-    -- Check if pg_cron was requested
-    IF EXISTS (
-        SELECT 1 FROM (
-            SELECT unnest(string_to_array(pg_read_file('/tmp/postgres_extensions.txt'), ',')) as ext
-        ) t WHERE trim(t.ext) = 'pg_cron'
-    ) THEN
-        -- First ensure dblink is available
-        CREATE EXTENSION IF NOT EXISTS dblink;
-        -- Connect to postgres database and create pg_cron
-        PERFORM dblink_exec('dbname=postgres', 'CREATE EXTENSION IF NOT EXISTS pg_cron');
-        RAISE NOTICE 'pg_cron extension created in postgres database successfully';
-    END IF;
-EXCEPTION
-    WHEN OTHERS THEN
-        RAISE NOTICE 'Could not create pg_cron extension in postgres database: %', SQLERRM;
 END $$;
 
 -- Clean up helper function
-DROP FUNCTION IF EXISTS enable_extension_if_available(TEXT);
+DROP FUNCTION enable_extension_safely(TEXT);
 
-\echo 'Extension initialization completed!'
+\echo '✅ Extension initialization completed!'
+\echo '🔄 Note: Extensions requiring shared_preload_libraries will be activated post-startup';
