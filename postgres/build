@@ -1,0 +1,194 @@
+#!/bin/bash
+# PostgreSQL Container Build Script
+# Handles extension profile loading, version management, and docker-compose build coordination
+
+set -euo pipefail
+
+# Color output for better UX
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Extension version management functions
+get_pgvector_version() {
+    if command -v curl >/dev/null 2>&1; then
+        LATEST=$(curl -s "https://api.github.com/repos/pgvector/pgvector/releases/latest" 2>/dev/null | \
+            grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+        if [[ -n "$LATEST" ]]; then
+            echo "$LATEST"
+        else
+            echo "v0.8.0"  # Fallback
+        fi
+    else
+        echo "v0.8.0"  # Fallback
+    fi
+}
+
+get_pgnet_version() {
+    if command -v curl >/dev/null 2>&1; then
+        LATEST=$(curl -s "https://api.github.com/repos/supabase/pg_net/releases/latest" 2>/dev/null | \
+            grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+        if [[ -n "$LATEST" ]]; then
+            echo "$LATEST"
+        else
+            echo "v0.19.3"  # Fallback
+        fi
+    else
+        echo "v0.19.3"  # Fallback
+    fi
+}
+
+get_pgpartman_version() {
+    if command -v curl >/dev/null 2>&1; then
+        LATEST=$(curl -s "https://api.github.com/repos/pgpartman/pg_partman/releases/latest" 2>/dev/null | \
+            grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+        if [[ -n "$LATEST" ]]; then
+            echo "$LATEST"
+        else
+            echo "v5.2.4"  # Fallback
+        fi
+    else
+        echo "v5.2.4"  # Fallback
+    fi
+}
+
+get_paradedb_version() {
+    if command -v curl >/dev/null 2>&1; then
+        LATEST=$(curl -s "https://api.github.com/repos/paradedb/paradedb/releases/latest" 2>/dev/null | \
+            grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+        if [[ -n "$LATEST" ]]; then
+            echo "$LATEST"
+        else
+            echo "v0.17.2"  # Fallback
+        fi
+    else
+        echo "v0.17.2"  # Fallback
+    fi
+}
+
+# Get extension versions
+PGVECTOR_VERSION=$(get_pgvector_version)
+PGNET_VERSION=$(get_pgnet_version)
+PGPARTMAN_VERSION=$(get_pgpartman_version)
+PARADEDB_VERSION=$(get_paradedb_version)
+
+log_info "Extension versions detected:"
+log_info "  pg_vector: $PGVECTOR_VERSION"
+log_info "  pg_net: $PGNET_VERSION"
+log_info "  pg_partman: $PGPARTMAN_VERSION"
+log_info "  ParadeDB: $PARADEDB_VERSION"
+
+# Check if .env file exists
+if [[ ! -f .env ]]; then
+    log_warning ".env file not found, using CI/CD mode with all extensions"
+    # For CI/CD: build with all available extensions
+    POSTGRES_EXTENSIONS="pg_vector,pg_net,pgjwt,pg_partman,pg_search,pg_analytics"
+    POSTGRES_EXTENSION_PROFILE=""
+    POSTGRES_MODE="single"
+    VERSION="15"
+else
+    # Source .env file to get variables
+    log_info "Loading configuration from .env..."
+    set -a  # Export all variables
+    source .env
+    set +a
+fi
+
+# Initialize extensions variable
+FINAL_EXTENSIONS=""
+
+# Priority 1: If POSTGRES_EXTENSIONS is already set, use it directly
+if [[ -n "${POSTGRES_EXTENSIONS:-}" ]]; then
+    log_info "Using custom POSTGRES_EXTENSIONS from .env"
+    FINAL_EXTENSIONS="$POSTGRES_EXTENSIONS"
+    log_success "Extensions selected: $FINAL_EXTENSIONS"
+else
+    # Priority 2: Load from profile if POSTGRES_EXTENSION_PROFILE is set
+    if [[ -n "${POSTGRES_EXTENSION_PROFILE:-}" ]]; then
+        PROFILE_FILE="extensions/profiles/${POSTGRES_EXTENSION_PROFILE}.conf"
+        
+        if [[ -f "$PROFILE_FILE" ]]; then
+            log_info "Loading extension profile: $POSTGRES_EXTENSION_PROFILE"
+            
+            # Read extensions from profile file (ignore comments and empty lines)
+            PROFILE_EXTENSIONS=$(grep -v '^#' "$PROFILE_FILE" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+            
+            if [[ -n "$PROFILE_EXTENSIONS" ]]; then
+                FINAL_EXTENSIONS="$PROFILE_EXTENSIONS"
+                log_success "Profile loaded: $POSTGRES_EXTENSION_PROFILE"
+                log_success "Extensions from profile: $FINAL_EXTENSIONS"
+            else
+                log_warning "Profile file $PROFILE_FILE is empty or contains only comments"
+            fi
+        else
+            log_error "Profile file not found: $PROFILE_FILE"
+            log_error "Available profiles:"
+            if [[ -d "extensions/profiles" ]]; then
+                ls -1 extensions/profiles/*.conf 2>/dev/null | sed 's/.*\//  - /' | sed 's/\.conf$//' || log_error "  No profiles found"
+            else
+                log_error "  extensions/profiles directory not found"
+            fi
+            exit 1
+        fi
+    else
+        log_warning "Neither POSTGRES_EXTENSIONS nor POSTGRES_EXTENSION_PROFILE is set"
+        log_warning "Building with minimal extensions (pg_vector only)"
+        FINAL_EXTENSIONS="pg_vector"
+    fi
+fi
+
+# Validate that we have at least pg_vector (always needed)
+if [[ "$FINAL_EXTENSIONS" != *"vector"* ]]; then
+    log_warning "vector/pg_vector not found in extension list, adding it (required for AI/ML features)"
+    if [[ -n "$FINAL_EXTENSIONS" ]]; then
+        FINAL_EXTENSIONS="vector,$FINAL_EXTENSIONS"
+    else
+        FINAL_EXTENSIONS="vector"
+    fi
+fi
+
+# Clean up duplicates and normalize extension names
+FINAL_EXTENSIONS=$(echo "$FINAL_EXTENSIONS" | sed 's/pg_vector/vector/g' | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+
+# Show final configuration
+log_info "Final build configuration:"
+log_info "  PostgreSQL Version: ${VERSION:-15}"
+log_info "  Extensions: $FINAL_EXTENSIONS"
+log_info "  Mode: ${POSTGRES_MODE:-single}"
+
+# Build with docker-compose using the computed extensions
+log_info "Starting Docker build..."
+export POSTGRES_EXTENSIONS="$FINAL_EXTENSIONS"
+
+# Set custom build arguments with dynamic versions
+CUSTOM_BUILD_ARGS="--build-arg POSTGRES_EXTENSIONS=$FINAL_EXTENSIONS"
+CUSTOM_BUILD_ARGS+=" --build-arg PGVECTOR_VERSION=$PGVECTOR_VERSION"
+CUSTOM_BUILD_ARGS+=" --build-arg PGNET_VERSION=$PGNET_VERSION"
+CUSTOM_BUILD_ARGS+=" --build-arg PGPARTMAN_VERSION=$PGPARTMAN_VERSION"
+CUSTOM_BUILD_ARGS+=" --build-arg PARADEDB_VERSION=$PARADEDB_VERSION"
+
+log_info "Build arguments: $CUSTOM_BUILD_ARGS"
+
+# Use docker-compose with build args
+docker-compose build $CUSTOM_BUILD_ARGS postgres
+
+log_success "Build completed successfully!"
+log_info "You can now run: docker-compose up"
