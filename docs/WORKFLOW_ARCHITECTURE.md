@@ -253,9 +253,9 @@ Build status will be available in GitHub Actions after merge.
 1. **Creation**: By `upstream-monitor` when update detected
 2. **Commit**: In automatic PR
 3. **Merge**: With PR (triggers `auto-build`)
-4. **Persistence**: Remains in repo as history
+4. **Persistence**: Remains in repo as rebuild trigger marker
 
-**Note**: Unlike an initial idea, this is **NOT** a cumulative `.version` file, but a per-rebuild marker.
+**Note**: This file is created/updated per upstream version change as a PR trigger mechanism.
 
 ## 🔍 Version Source of Truth
 
