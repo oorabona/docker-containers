@@ -37,31 +37,56 @@ runs:
           echo "🎯 Building specific container: ${{ inputs.container }}"
           containers_to_build=("${{ inputs.container }}")
         else
-          echo "🔍 Detecting containers that need building..."
+          echo "🔍 Detecting containers that need building based on changed files..."
           
-          # Since GitHub already filtered by paths, find containers with both version.sh AND Dockerfile
-          # This ensures we only build complete containers
-          while IFS= read -r -d '' dockerfile_path; do
-            container=$(dirname "$dockerfile_path" | sed 's|^\./||')
+          # Get list of valid containers from make script (source of truth)
+          valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null | grep -E "^[a-z]" | awk '{print $1}' || echo "")
+          
+          if [[ -z "$valid_containers" ]]; then
+            echo "⚠️  No valid containers found in make script"
+            valid_containers=""
+          else
+            echo "📋 Valid containers from make: $(echo "$valid_containers" | tr '\n' ' ')"
+          fi
+          
+          # Determine what files changed in this push/PR
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # For push events, compare with previous commit
+            changed_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # For PRs, compare with base branch
+            changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || echo "")
+          else
+            # For manual triggers or other events, check all containers
+            changed_files=""
+          fi
 
-            # Skip if already processed
-            if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
-              continue
-            fi
-
-            # Skip helper directories, archived containers, and non-container directories
-            if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* ]]; then
-              continue
-            fi
-
-            # Only include containers that have BOTH Dockerfile AND version.sh
-            if [[ -f "$container/version.sh" ]]; then
-              echo "📦 Found complete container: $container (has both Dockerfile and version.sh)"
-              containers_to_build+=("$container")
-            else
-              echo "⚠️  Skipping $container: has Dockerfile but no version.sh"
-            fi
-          done < <(find . -name "Dockerfile" -not -path "./.git/*" -not -path "./archive/*" -print0)
+          if [[ -n "$changed_files" ]]; then
+            echo "📝 Changed files:"
+            echo "$changed_files"
+            
+            # Extract container names from changed file paths
+            while IFS= read -r file; do
+              # Check if file is in a container directory (e.g., ansible/Dockerfile, debian/version.sh)
+              if [[ "$file" =~ ^([^/]+)/ ]]; then
+                container="${BASH_REMATCH[1]}"
+                
+                # Skip if already processed
+                if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
+                  continue
+                fi
+                
+                # Verify container is in make's valid list (source of truth)
+                if echo "$valid_containers" | grep -qx "$container"; then
+                  echo "📦 Container needs building: $container (changed files detected, validated by make)"
+                  containers_to_build+=("$container")
+                fi
+              fi
+            done <<< "$changed_files"
+          else
+            echo "ℹ️  No git diff available or manual trigger without specific container"
+            echo "ℹ️  Skipping auto-detection (use container input for manual builds)"
+          fi
         fi
 
         # Create outputs (CSV first, then JSON for matrix compatibility)
