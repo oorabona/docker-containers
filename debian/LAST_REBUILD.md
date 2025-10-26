@@ -3,7 +3,7 @@
 **Container:** debian  
 **Version Change:**  → trixie  
 **Change Type:** major  
-**Rebuild Date:** 2025-10-26T15:48:23Z  
+**Rebuild Date:** 2025-10-26T17:47:43Z  
 **Triggered By:** Upstream Monitor (automated)  
 **Reason:** New upstream version detected  
 
