@@ -39,7 +39,7 @@ validate_target() {
 help() {
   echo Commands:
   log_help help "This help"
-  log_help "list" "List all available containers"
+  log_help list "List all available containers"
   log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
