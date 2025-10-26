@@ -32,22 +32,29 @@ runs:
         set -e
         containers_to_build=()
 
-        # If specific container requested
+        # Get list of valid containers from make script (source of truth)
+        echo "🔍 Getting list of valid containers from make script..."
+        valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null || echo "")
+        
+        if [[ -z "$valid_containers" ]]; then
+          echo "⚠️  No valid containers found in make script"
+          exit 1
+        fi
+        
+        echo "📋 Valid containers from make: $(echo "$valid_containers" | tr '\n' ' ')"
+
+        # If specific container requested, validate it
         if [ -n "${{ inputs.container }}" ]; then
-          echo "🎯 Building specific container: ${{ inputs.container }}"
-          containers_to_build=("${{ inputs.container }}")
+          echo "🎯 Validating specific container: ${{ inputs.container }}"
+          if echo "$valid_containers" | grep -qx "${{ inputs.container }}"; then
+            containers_to_build=("${{ inputs.container }}")
+            echo "✅ Container validated"
+          else
+            echo "❌ Container '${{ inputs.container }}' not found in make list"
+            exit 1
+          fi
         else
           echo "🔍 Detecting containers that need building based on changed files..."
-          
-          # Get list of valid containers from make script (source of truth)
-          valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null | grep -E "^[a-z]" | awk '{print $1}' || echo "")
-          
-          if [[ -z "$valid_containers" ]]; then
-            echo "⚠️  No valid containers found in make script"
-            valid_containers=""
-          else
-            echo "📋 Valid containers from make: $(echo "$valid_containers" | tr '\n' ' ')"
-          fi
           
           # Determine what files changed in this push/PR
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -57,7 +64,7 @@ runs:
             # For PRs, compare with base branch
             changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || echo "")
           else
-            # For manual triggers or other events, check all containers
+            # For manual triggers or other events, no auto-detection
             changed_files=""
           fi
 
