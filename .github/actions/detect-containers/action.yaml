@@ -34,7 +34,7 @@ runs:
 
         # Get list of valid containers from make script (source of truth)
         echo "🔍 Getting list of valid containers from make script..."
-        valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null)
+        valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list)
         
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
@@ -61,13 +61,13 @@ runs:
             # For push events, use event SHAs (handles initial commit with all-zeros before SHA gracefully)
             if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
               # Initial commit - diff against empty tree
-              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null || echo "")
+              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null) || { echo "⚠️ Git diff failed (initial commit)"; changed_files=""; }
             else
-              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null || echo "")
+              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null) || { echo "⚠️ Git diff failed (push event)"; changed_files=""; }
             fi
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
-            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null || echo "")
+            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null) || { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
           else
             # For manual triggers or other events, no auto-detection
             changed_files=""
