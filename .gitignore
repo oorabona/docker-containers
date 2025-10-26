@@ -38,6 +38,3 @@ Thumbs.db
 # Docker volumes and runtime
 volumes/
 .docker/
-
-# Temporary rebuild markers
-*/LAST_REBUILD.md

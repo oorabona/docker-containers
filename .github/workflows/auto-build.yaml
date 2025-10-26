@@ -256,7 +256,13 @@ jobs:
 
   update-dashboard:
     needs: [detect-containers, build-and-push]
-    if: always() && needs.build-and-push.result == 'success'
+    # Only update dashboard after successful builds merged to master
+    # This prevents dashboard updates during PR testing
+    if: |
+      always() && 
+      needs.build-and-push.result == 'success' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml
     with:
       trigger_reason: "Post-build update after successful container builds"

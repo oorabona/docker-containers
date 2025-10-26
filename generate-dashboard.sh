@@ -33,16 +33,25 @@ get_container_versions() {
         return 1
     }
     
-    # Get current version (from version.sh with no args)
-    current_version=$(timeout 30 ./version.sh 2>/dev/null || echo "unknown")
+    # Get published version from oorabona/* registry (same logic as make script)
+    local pattern
+    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
+        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+    else
+        # Fallback: try common version pattern
+        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+    fi
     
-    # Get latest version (from version.sh latest)
-    latest_version=$(timeout 30 ./version.sh latest 2>/dev/null || echo "unknown")
+    # Get latest upstream version
+    latest_version=$(timeout 30 ./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "unknown")
     
     popd >/dev/null 2>&1
     
     # Determine status based on version comparison
-    if [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
+    if [[ "$current_version" == "no-published-version" ]]; then
+        status_color="warning"
+        status_text="Not Published Yet"
+    elif [[ "$current_version" == "unknown" || "$latest_version" == "unknown" ]]; then
         status_color="secondary"
         status_text="Unknown Status"
     elif [[ "$current_version" == "$latest_version" ]]; then
