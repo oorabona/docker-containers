@@ -128,7 +128,7 @@ jobs:
           | **Change Type** | \`${{ steps.classify.outputs.change_type }}\` |
           | **Rebuild Date** | $(date -u +"%Y-%m-%dT%H:%M:%SZ") |
           | **Triggered By** | Upstream Monitor (automated) |
-          | **Reason** | ${{ steps.classify.outputs.change_type == 'major' && '🔄 Major version update detected' || '🚀 Minor/patch version update detected' }} |
+          | **Reason** | ${{ steps.classify.outputs.reason }} |
           | **Detection Run** | [View Workflow]($WORKFLOW_URL) |
           
           ## Build Status
@@ -182,7 +182,7 @@ jobs:
             automation
             ${{ matrix.container }}
             ${{ steps.classify.outputs.change_type }}-update
-          assignees: ${{ steps.classify.outputs.change_type == 'major' && format('[{0}]', github.repository_owner) || '[]' }}
+          assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '' }}
 
       - name: Auto-merge minor updates
         if: steps.classify.outputs.change_type == 'minor' && steps.create_pr.outputs.pull-request-number
