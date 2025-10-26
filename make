@@ -39,6 +39,7 @@ validate_target() {
 help() {
   echo Commands:
   log_help help "This help"
+  log_help "list" "List all available containers"
   log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
   log_help "push <target> [version]" "Push built <target> container [version] to repository"
   log_help "run <target> [version]" "Run built <target> container [version]"
@@ -53,6 +54,13 @@ help() {
   echo
   echo List of possible targets:
   log_help "$(echo $targets| tr ' ' '\n')"
+}
+
+# List all available containers (one per line, for automation)
+list_containers() {
+  for target in $targets ; do
+    echo "$target"
+  done
 }
 
 version() {
@@ -238,5 +246,6 @@ case "$1" in
   run ) run $2 $3 ;;
   version ) shift; version "$@" ;;
   check-updates ) check_updates $2 ;;
+  list ) list_containers ;;
   * ) help ;;
 esac
