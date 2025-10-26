@@ -23,6 +23,17 @@ on:
       - '*/compose.yml'
       - 'make'
       - '!archive/**'  # Exclude archived containers
+  # Triggered on merge to master (actual deployment)
+  push:
+    branches: [main, master]
+    paths:
+      - '*/Dockerfile'
+      - '*/version.sh'
+      - '*/docker-compose.yml'
+      - '*/compose.yml'
+      - '*/LAST_REBUILD.md'
+      - 'make'
+      - '!archive/**'  # Exclude archived containers
   # Manual trigger
   workflow_dispatch:
     inputs:
