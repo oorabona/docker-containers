@@ -34,7 +34,7 @@ runs:
 
         # Get list of valid containers from make script (source of truth)
         echo "🔍 Getting list of valid containers from make script..."
-        valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null || echo "")
+        valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list 2>/dev/null)
         
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
@@ -58,8 +58,13 @@ runs:
           
           # Determine what files changed in this push/PR
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            # For push events, compare with before/after SHAs from the event payload (handles initial commit safely)
-            changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null || echo "")
+            # For push events, use event SHAs (handles initial commit with all-zeros before SHA gracefully)
+            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+              # Initial commit - diff against empty tree
+              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null || echo "")
+            else
+              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null || echo "")
+            fi
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
             changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null || echo "")
@@ -74,22 +79,23 @@ runs:
             
             # Extract container names from changed file paths
             while IFS= read -r file; do
+              # Skip root-level files (no slash in path)
+              if [[ ! "$file" =~ / ]]; then
+                continue
+              fi
+              
               # Extract the top-level directory from the file path
               container="${file%%/*}"
               
-              # Only process if the file is inside a subdirectory (not root files)
-              if [[ "$file" == "$container/"* ]]; then
-                
-                # Skip if already processed
-                if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
-                  continue
-                fi
-                
-                # Verify container is in make's valid list (source of truth)
-                if echo "$valid_containers" | grep -qx "$container"; then
-                  echo "📦 Container needs building: $container (changed files detected, validated by make)"
-                  containers_to_build+=("$container")
-                fi
+              # Skip if already processed
+              if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
+                continue
+              fi
+              
+              # Verify container is in make's valid list (source of truth)
+              if echo "$valid_containers" | grep -qx "$container"; then
+                echo "📦 Container needs building: $container (changed files detected, validated by make)"
+                containers_to_build+=("$container")
               fi
             done <<< "$changed_files"
           else
