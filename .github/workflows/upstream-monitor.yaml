@@ -182,7 +182,7 @@ jobs:
             automation
             ${{ matrix.container }}
             ${{ steps.classify.outputs.change_type }}-update
-          assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '' }}
+          assignees: ${{ steps.classify.outputs.change_type == 'major' && format('[{0}]', github.repository_owner) || '[]' }}
 
       - name: Auto-merge minor updates
         if: steps.classify.outputs.change_type == 'minor' && steps.create_pr.outputs.pull-request-number
