@@ -6,12 +6,8 @@
 -- Enable pg_stat_statements if available (handled by shared_preload_libraries)
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_stat_statements') THEN
-        -- Extension will be created by post-startup activation if needed
-        RAISE NOTICE '📊 pg_stat_statements will be activated automatically if configured';
-    ELSE
-        RAISE NOTICE '⚠️  pg_stat_statements not available in this build';
-    END IF;
+    -- Simple notification without complex queries
+    RAISE NOTICE '📊 pg_stat_statements will be activated automatically if configured';
 END $$;
 
 -- Create monitoring views for easy access to statistics

@@ -16,9 +16,9 @@ source "$(dirname "$0")/scripts/push-container.sh"
 [ -r "$CONFIG_MK" ] && source "$CONFIG_MK"
 [ -r "$DEPLOY_MK" ] && source "$DEPLOY_MK"
 
-targets=$(find -maxdepth 2 -name "Dockerfile" | cut -d'/' -f2 | sort -u)
+targets=$(find -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.template" \) | cut -d'/' -f2 | sort -u)
 
-# Validate if a target is valid (has a Dockerfile)
+# Validate if a target is valid (has a Dockerfile or Dockerfile.template with generator)
 validate_target() {
   local target="$1"
   if [[ -z "$target" ]]; then
@@ -29,11 +29,17 @@ validate_target() {
     return 1
   fi
   
-  if [[ ! -f "$target/Dockerfile" ]]; then
-    return 1
+  # Accept containers with Dockerfile
+  if [[ -f "$target/Dockerfile" ]]; then
+    return 0
   fi
   
-  return 0
+  # Accept containers with Dockerfile.template and generator script
+  if [[ -f "$target/Dockerfile.template" && -x "$target/generate-dockerfile.sh" ]]; then
+    return 0
+  fi
+  
+  return 1
 }
 
 help() {
@@ -112,7 +118,21 @@ do_buildx() {
   local container=$(basename "$PWD")
   
   if [[ "$op" == "build" ]]; then
-    # Use focused build utility
+    # Step 1: Evaluate container-specific build arguments if they exist
+    if [[ -x "./version.sh" ]] && grep -q -- "--build-args" "./version.sh"; then
+      log_info "Container '$container' has custom build arguments. Evaluating..."
+      eval $(./version.sh --build-args)
+    fi
+    
+    # Step 2: Generate dynamic Dockerfile if a generator script exists
+    if [[ -x "./generate-dockerfile.sh" ]]; then
+      log_info "Container '$container' has a dynamic Dockerfile generator. Running it..."
+      # Pass necessary variables to the generator script
+      export POSTGRES_EXTENSIONS
+      ./generate-dockerfile.sh
+    fi
+    
+    # Step 3: Use focused build utility
     build_container "$container" "$VERSION" "$TAG"
   elif [[ "$op" == "push" ]]; then
     # Use focused push utility  

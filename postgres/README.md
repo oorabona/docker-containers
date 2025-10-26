@@ -141,9 +141,10 @@ The system has been completely refactored for maintainability and performance:
 All configuration is generated during Docker build - no runtime file creation:
 ```bash
 # Configuration generated at build time
+# Configuration generated at build time
 /etc/postgresql/generated/postgresql.conf          # Main config
-/usr/local/bin/activate-extensions.sql            # Extension activation
-/tmp/postgres_extensions.txt                      # Extension list for SQL
+/var/lib/postgresql/activate-extensions.sql       # Extension activation
+/var/lib/postgresql/postgres_extensions.txt       # Extension list for SQL
 ```
 
 ## ⚡ Performance Validation
@@ -457,7 +458,7 @@ WHERE datname = current_database();
 ### Intelligent Testing Framework
 The `performance-test.sh` script features adaptive testing:
 
-- **Smart Detection**: Reads `/tmp/postgres_extensions.txt` to identify installed extensions
+- **Smart Detection**: Reads `/var/lib/postgresql/postgres_extensions.txt` to identify installed extensions
 - **Adaptive Testing**: Only tests what's actually installed
 - **Performance Validation**: All extensions tested under realistic load  
 - **Production Ready**: Validates 19 extensions automatically

@@ -1,0 +1,13 @@
+# --- Build ParadeDB extensions ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        gnupg \
+        lsb-release \
+    && curl -fsSL https://downloads.paradedb.com/paradedb-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/paradedb-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/paradedb-keyring.gpg] https://downloads.paradedb.com/deb/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/paradedb.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        postgresql-$PG_MAJOR_VERSION-pg-search \
+        postgresql-$PG_MAJOR_VERSION-pg-analytics \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

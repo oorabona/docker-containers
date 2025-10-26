@@ -27,14 +27,14 @@ log_error() {
 detect_enabled_extensions() {
     local extensions=""
     
-    # Priority 1: Use POSTGRES_EXTENSIONS if specified
-    if [[ -n "$POSTGRES_EXTENSIONS" ]]; then
-        extensions="$POSTGRES_EXTENSIONS"
-        log_info "Using extensions from POSTGRES_EXTENSIONS: $extensions"
-    # Priority 2: Load from profile if specified  
-    elif [[ -n "$POSTGRES_EXTENSION_PROFILE" ]]; then
+    # Priority 1: Load from profile if specified  
+    if [[ -n "$POSTGRES_EXTENSION_PROFILE" ]]; then
         extensions=$(load_extensions_from_profile "$POSTGRES_EXTENSION_PROFILE")
         log_info "Using extensions from profile '$POSTGRES_EXTENSION_PROFILE': $extensions"
+    # Priority 2: Use POSTGRES_EXTENSIONS if specified
+    elif [[ -n "$POSTGRES_EXTENSIONS" ]]; then
+        extensions="$POSTGRES_EXTENSIONS"
+        log_info "Using extensions from POSTGRES_EXTENSIONS: $extensions"
     else
         log_warning "No extensions or profile specified, using base configuration only"
         extensions=""

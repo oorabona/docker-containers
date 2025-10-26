@@ -4,30 +4,28 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: "15"
-        LOCALES: "en_US fr_FR"
-        POSTGRES_EXTENSION_PROFILE: ""
-        POSTGRES_EXTENSIONS: "${POSTGRES_EXTENSIONS:-}"
-        POSTGRES_MODE: "single"
-    image: postgres:local
-    container_name: postgres-modern
+        PG_BASE_VERSION: ${PG_BASE_VERSION}
+        POSTGRES_MAJOR_VERSION: ${POSTGRES_MAJOR_VERSION}
+        PGVECTOR_VERSION: ${PGVECTOR_VERSION}
+        PGNET_VERSION: ${PGNET_VERSION}
+        PGPARTMAN_VERSION: ${PGPARTMAN_VERSION}
+        PARADEDB_VERSION: ${PARADEDB_VERSION}
+        PGJWT_VERSION: ${PGJWT_VERSION}
+        POSTGRES_EXTENSIONS: ${POSTGRES_EXTENSIONS}
+        SHARED_PRELOAD_LIBRARIES: ${SHARED_PRELOAD_LIBRARIES}
+    image: oorabona/postgres:${POSTGRES_VERSION}${POSTGRES_EXTENSION_PROFILE:+-${POSTGRES_EXTENSION_PROFILE}}
+    container_name: postgres
+    env_file:
+      - .env
     environment:
       # Basic PostgreSQL settings
       POSTGRES_DB: "${POSTGRES_DB:-postgres}"
       POSTGRES_USER: "${POSTGRES_USER:-postgres}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
       
-      # Extension configuration
-      POSTGRES_EXTENSION_PROFILE: "${POSTGRES_EXTENSION_PROFILE:-supabase}"
-      POSTGRES_EXTENSIONS: "${POSTGRES_EXTENSIONS:-}"
-      POSTGRES_MODE: "${POSTGRES_MODE:-single}"
-      POSTGRES_LOCALES: "en_US fr_FR"
-      
       # Performance tuning
-      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=peer"
+      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=md5"
       
-    env_file:
-      - .env
     volumes:
       # Data persistence
       - postgres_data:/var/lib/postgresql/data

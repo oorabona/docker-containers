@@ -1,0 +1,13 @@
+# --- Build pg_partman extension ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        postgresql-server-dev-$PG_MAJOR_VERSION \
+    && git clone --branch v$PGPARTMAN_VERSION https://github.com/pgpartman/pg_partman.git /tmp/pg_partman \
+    && cd /tmp/pg_partman \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/pg_partman \
+    && apt-get purge -y build-essential git \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

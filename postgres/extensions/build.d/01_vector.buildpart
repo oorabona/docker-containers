@@ -1,0 +1,14 @@
+# --- Build pgvector extension ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        postgresql-server-dev-$PG_MAJOR_VERSION \
+    && git clone --branch v$PGVECTOR_VERSION https://github.com/pgvector/pgvector.git /tmp/pgvector \
+    && cd /tmp/pgvector \
+    && make \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/pgvector \
+    && apt-get purge -y build-essential git \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

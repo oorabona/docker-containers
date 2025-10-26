@@ -33,7 +33,6 @@ max_parallel_maintenance_workers = 8
 # Analytics Query Optimization
 enable_partitionwise_join = on
 enable_partitionwise_aggregate = on
-force_parallel_mode = off
 
 # I/O Settings for Large Data Processing
 effective_io_concurrency = 300
