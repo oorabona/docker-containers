@@ -1,0 +1,34 @@
+#!/bin/bash
+# Citus Distributed PostgreSQL Configuration - Bash Script
+# Applied when 'citus' extension is enabled
+
+cat << EOF
+# Citus Distributed PostgreSQL Configuration
+
+# Citus Core Settings
+citus.shard_count = $CITUS_SHARD_COUNT
+citus.shard_replication_factor = $CITUS_SHARD_REPLICATION_FACTOR
+citus.use_secondary_nodes = '$CITUS_USE_SECONDARY_NODES'
+
+# Distributed Transaction Settings  
+max_prepared_transactions = $CITUS_MAX_PREPARED_TRANSACTIONS
+
+# Connection Settings for Distributed Queries
+citus.max_worker_nodes_tracked = 1024
+citus.node_connection_timeout = 30000
+
+# Performance Settings
+citus.limit_clause_row_fetch_count = 100
+citus.count_distinct_error_rate = 0.0
+
+# Coordinator/Worker Mode Settings
+citus.enable_repartition_joins = off
+citus.enable_repartitioned_insert_select = on
+
+# Multi-tenant settings  
+citus.multi_task_query_log_level = off
+
+# SSL Configuration for distributed connections
+citus.node_conninfo = 'sslmode=prefer'
+
+EOF

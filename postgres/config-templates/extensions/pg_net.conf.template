@@ -1,0 +1,33 @@
+#!/bin/bash
+# pg_net HTTP Client Extension Configuration - Bash Script
+# Applied when 'pg_net' extension is enabled
+
+cat << EOF
+# pg_net HTTP Client Extension Configuration
+
+# Core pg_net Settings
+pg_net.database_name = '${PG_NET_DATABASE_NAME:-postgres}'
+pg_net.ttl = ${PG_NET_TTL:-300}
+pg_net.batch_size = ${PG_NET_BATCH_SIZE:-100}
+
+# Background Worker Settings for HTTP Processing
+max_worker_processes = ${POSTGRES_MAX_WORKER_PROCESSES:-8}
+
+# Connection Pool Settings for HTTP Requests
+pg_net.worker_url_check = '${PG_NET_WORKER_URL_CHECK:-on}'
+
+# Timeout Settings
+pg_net.timeout = ${PG_NET_TIMEOUT:-5}
+
+# Security Settings for HTTP Requests
+EOF
+
+# Only set allowed_domains if not empty
+if [[ -n "${PG_NET_ALLOWED_DOMAINS:-}" ]]; then
+    echo "pg_net.allowed_domains = '${PG_NET_ALLOWED_DOMAINS}'"
+fi
+
+# Only set blocked_domains if not empty
+if [[ -n "${PG_NET_BLOCKED_DOMAINS:-}" ]]; then
+    echo "pg_net.blocked_domains = '${PG_NET_BLOCKED_DOMAINS}'"
+fi

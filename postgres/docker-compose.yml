@@ -4,18 +4,79 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: "14"
-        LOCALES: "fr_FR en_US"
-    image: oorabona/postgres:14-fr
-    container_name: postgres14
-    environment:
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-      POSTGRES_HOST_AUTH_METHOD: "trust"
-      PGHOST: "127.0.0.1"
+        PG_BASE_VERSION: ${PG_BASE_VERSION}
+        POSTGRES_MAJOR_VERSION: ${POSTGRES_MAJOR_VERSION}
+        PGVECTOR_VERSION: ${PGVECTOR_VERSION}
+        PGNET_VERSION: ${PGNET_VERSION}
+        PGPARTMAN_VERSION: ${PGPARTMAN_VERSION}
+        PARADEDB_VERSION: ${PARADEDB_VERSION}
+        PGJWT_VERSION: ${PGJWT_VERSION}
+        POSTGRES_EXTENSIONS: ${POSTGRES_EXTENSIONS}
+        SHARED_PRELOAD_LIBRARIES: ${SHARED_PRELOAD_LIBRARIES}
+    image: oorabona/postgres:${POSTGRES_VERSION}${POSTGRES_EXTENSION_PROFILE:+-${POSTGRES_EXTENSION_PROFILE}}
+    container_name: postgres
     env_file:
-      - /etc/docker/postgres.env
+      - .env
+    environment:
+      # Basic PostgreSQL settings
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      
+      # Performance tuning
+      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=md5"
+      
     volumes:
-      - /var/lib/postgresql/data:/var/lib/postgresql/data
+      # Data persistence
+      - postgres_data:/var/lib/postgresql/data
+      
+      # Custom initialization scripts (optional)
+      - ./custom-init:/docker-entrypoint-initdb.d/custom:ro
+      
+      # Logs
+      - postgres_logs:/var/log/postgresql
+      
     ports:
-      - "127.0.0.1:5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - postgres_network
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@example.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    depends_on:
+      - postgres
+    networks:
+      - postgres_network
+    profiles:
+      - admin
+
+volumes:
+  postgres_data:
+    driver: local
+  postgres_logs:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  postgres_network:
+    driver: bridge

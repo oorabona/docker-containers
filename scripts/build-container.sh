@@ -1,120 +1,109 @@
 #!/usr/bin/env bash
 
-# Container build utility - focused on building containers only
+# Container build utility - simplified using docker compose
 # Part of make script decomposition for better Single Responsibility
 
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 
-# Function to check if multi-platform builds are supported (QEMU emulation)
-check_multiplatform_support() {
-    # Cache the result to avoid repeated checks
-    if [[ -n "${MULTIPLATFORM_SUPPORTED:-}" ]]; then
-        return $([ "$MULTIPLATFORM_SUPPORTED" = "true" ] && echo 0 || echo 1)
-    fi
-    
-    # Method 1: Check for QEMU ARM64 emulation via binfmt_misc
-    if [[ -f "/proc/sys/fs/binfmt_misc/qemu-aarch64" ]] || 
-       [[ -f "/proc/sys/fs/binfmt_misc/qemu-arm64" ]]; then
-        MULTIPLATFORM_SUPPORTED="true"
-        return 0
-    fi
-    
-    # Method 2: Check docker buildx supported platforms  
-    if command -v docker >/dev/null 2>&1; then
-        local platforms
-        if platforms=$(docker buildx inspect --bootstrap 2>/dev/null | grep -i "platforms:" 2>/dev/null); then
-            if echo "$platforms" | grep -q "linux/arm64"; then
-                MULTIPLATFORM_SUPPORTED="true"
-                return 0
-            fi
-        fi
-    fi
-    
-    # No multi-platform support found
-    MULTIPLATFORM_SUPPORTED="false"
-    return 1
-}
-
-# Build container function
+# Build container function using docker compose
 build_container() {
     local container="$1"
     local version="$2"
     local tag="$3"
     
-    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
-    local dockerhub_image="docker.io/$github_username/$container"
-    local ghcr_image="ghcr.io/$github_username/$container"
+    log_info "Building $container:$tag using docker compose..."
     
-    # Determine platform support
-    local platforms
-    if check_multiplatform_support; then
-        platforms="linux/amd64,linux/arm64"
-    else
-        platforms="linux/amd64"
+    # Ensure we have a docker-compose.yml in current directory
+    if [[ ! -f "docker-compose.yml" ]]; then
+        log_error "No docker-compose.yml found in $(pwd)"
+        return 1
     fi
     
-    # Detect container runtime for cache compatibility
-    local cache_args=""
-    local runtime_info=""
+    # Export variables for docker-compose
+    export VERSION="$version"
+    export TAG="$tag" 
+    export NPROC="${NPROC:-$(nproc)}"
+    # Fixed namespace: oorabona/ (no variable needed)
+    export DOCKER_BUILDKIT=1  # Enable BuildKit for multi-platform support
     
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: always use Docker with GHA cache
-        cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
-        runtime_info="GitHub Actions (Docker)"
-    elif docker version 2>/dev/null | grep -q "Docker Engine"; then
-        # Local Docker: supports GitHub Actions cache
-        cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
-        runtime_info="Docker Engine"
-    elif command -v podman >/dev/null 2>&1; then
-        # Podman: has built-in layer caching
-        cache_args=""
-        runtime_info="Podman"
-        log_success "Using Podman with built-in layer caching"
-    else
-        # Fallback: no cache
-        cache_args=""
-        runtime_info="Unknown (no cache)"
-        log_warning "No cache support detected"
+    # Export custom build args if they exist (e.g., for PostgreSQL)
+    if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
+        # Parse CUSTOM_BUILD_ARGS and export as environment variables
+        # Convert "--build-arg KEY=VALUE" to "export KEY=VALUE"
+        eval "$(echo "$CUSTOM_BUILD_ARGS" | sed -E 's/--build-arg ([^=]+)=([^ ]+)/export \1="\2";/g')"
     fi
     
-    # Prepare build arguments
-    local build_args=""
-    [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
-    [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
-    [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
-    
-    # Prepare tags
-    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$tag" == "latest" ]]; then
-        tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-    fi
-    
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: skip separate build step, use push instead
-        log_success "GitHub Actions detected - using direct push workflow..."
-        log_success "Skipping separate build step (will build and push in one operation)"
-        return 0
-    else
-        # Local development: single platform with --load
-        log_success "Building $container:$tag locally (layered image)..."
-        log_success "Runtime: $runtime_info | Platform: linux/amd64 | Cache: ${cache_args:-none}"
+    # Check if container has docker-compose.yml
+    if [[ -f "docker-compose.yml" ]]; then
+        log_info "Using container-specific docker-compose.yml"
         
-        docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            $cache_args \
-            $build_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
+        # Build using docker compose (handles platforms, cache, etc.)
+        # Force rebuild without cache for Podman compatibility
+        if docker compose build --no-cache; then
+            log_success "✅ Docker compose build completed for $container:$tag"
+            
+            # Get the expected image name from docker-compose configuration
+            local expected_image
+            expected_image=$(docker compose config --format json | jq -r '.services | to_entries[0].value.image // empty')
+            
+            # Find the actual built image (podman/docker often tags differently)
+            # Look for all possible image names that podman/docker might create
+            local actual_images=(
+                "localhost/$container:$version"
+                "docker.io/library/$container:$version" 
+                "$container:$version"
+            )
+            
+            local found_image=""
+            for img in "${actual_images[@]}"; do
+                if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^$img$"; then
+                    found_image="$img"
+                    log_info "Found built image: $found_image"
+                    break
+                fi
+            done
+            
+            # Re-tag with correct namespace if an image was found
+            if [[ -n "$found_image" && -n "$expected_image" ]]; then
+                log_info "Re-tagging $found_image -> $expected_image"
+                docker tag "$found_image" "$expected_image" || log_warning "Failed to re-tag image"
+                
+                # Also create the standard oorabona namespace tag
+                local standard_tag="oorabona/$container:$version"
+                if [[ "$standard_tag" != "$expected_image" ]]; then
+                    log_info "Creating standard tag: $standard_tag"
+                    docker tag "$found_image" "$standard_tag" || log_warning "Failed to create standard tag"
+                fi
+            fi
+            
+            # Tag the built image with version if different from 'latest'
+            if [[ "$tag" != "latest" && "$tag" != "$version" ]]; then
+                if [[ -n "$expected_image" ]]; then
+                    docker tag "$expected_image" "${expected_image%:*}:$tag" || log_warning "Failed to tag image with $tag"
+                fi
+            fi
+        else
+            log_error "Docker compose build failed for $container"
             return 1
-        }
+        fi
+    else
+        log_warning "No docker-compose.yml found, falling back to direct docker build"
         
-        log_success "✅ Local build completed - layered image available in Docker daemon"
+        # Fallback for containers without compose file
+        local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+        local image_name="${DOCKER_REGISTRY:-}$github_username/$container:$tag"
+        
+        if docker build -t "$image_name" .; then
+            log_success "✅ Direct docker build completed for $container:$tag"
+        else
+            log_error "Direct docker build failed for $container"
+            return 1
+        fi
     fi
+    
+    return 0
 }
 
-# Export functions for use by make script
-export -f check_multiplatform_support
+# Export function for use by make script
 export -f build_container

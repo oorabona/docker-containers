@@ -1,0 +1,17 @@
+#!/bin/bash
+# HypoPG Hypothetical Indexes Extension Configuration - Bash Script
+# Applied when 'hypopg' extension is enabled (universal extension)
+
+cat << EOF
+# HypoPG Hypothetical Indexes Extension Configuration
+
+# Memory settings for hypothetical index analysis
+work_mem = $HYPOPG_WORK_MEM
+
+# Enable HypoPG for query planning analysis
+# (No specific configuration parameters - works with standard planner settings)
+
+# Logging for index analysis (optional)
+# log_min_duration_statement = 500  # Uncomment to log slow queries for index analysis
+
+EOF

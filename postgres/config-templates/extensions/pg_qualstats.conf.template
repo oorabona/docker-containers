@@ -1,0 +1,23 @@
+#!/bin/bash
+# pg_qualstats Query Predicate Statistics Extension Configuration - Bash Script
+# Applied when 'pg_qualstats' extension is enabled (universal extension)
+
+cat << EOF
+# pg_qualstats Query Predicate Statistics Extension Configuration
+
+# pg_qualstats Core Settings
+pg_qualstats.max = ${PG_QUALSTATS_MAX:-1000}
+pg_qualstats.resolve_oids = '${PG_QUALSTATS_RESOLVE_OIDS:-on}'
+pg_qualstats.enabled = '${PG_QUALSTATS_ENABLED:-on}'
+pg_qualstats.track_constants = '${PG_QUALSTATS_TRACK_CONSTANTS:-on}'
+
+# Sample rate for query predicate collection
+pg_qualstats.sample_rate = ${PG_QUALSTATS_SAMPLE_RATE:-0.1}
+
+# Performance impact control
+track_io_timing = '${PG_QUALSTATS_TRACK_IO_TIMING:-on}'
+
+# Logging for query analysis debugging
+# log_min_duration_statement = 1000  # Uncomment for query analysis debugging
+
+EOF

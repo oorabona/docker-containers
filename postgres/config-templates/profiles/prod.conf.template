@@ -1,0 +1,56 @@
+#!/bin/bash
+# Production Profile Configuration Template - Bash Script
+# Optimized for production performance and reliability
+
+cat << EOF
+# Production Profile Configuration
+
+# Connection Settings (production scale)
+max_connections = ${POSTGRES_MAX_CONNECTIONS:-200}
+superuser_reserved_connections = ${POSTGRES_SUPERUSER_RESERVED_CONNECTIONS:-5}
+
+# Memory Settings (production tuned)
+shared_buffers = ${POSTGRES_SHARED_BUFFERS:-1GB}
+effective_cache_size = ${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
+work_mem = ${POSTGRES_WORK_MEM:-8MB}
+maintenance_work_mem = ${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+
+# WAL Settings (production optimized)
+wal_buffers = ${POSTGRES_WAL_BUFFERS:-32MB}
+checkpoint_completion_target = 0.9
+checkpoint_timeout = ${POSTGRES_CHECKPOINT_TIMEOUT:-15min}
+max_wal_size = ${POSTGRES_MAX_WAL_SIZE:-4GB}
+min_wal_size = ${POSTGRES_MIN_WAL_SIZE:-1GB}
+
+# Query Planner (production optimized)
+default_statistics_target = ${POSTGRES_DEFAULT_STATISTICS_TARGET:-500}
+effective_io_concurrency = ${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+
+# Logging (production minimal but sufficient)
+log_statement = '${POSTGRES_LOG_STATEMENT:-ddl}'
+log_min_duration_statement = ${POSTGRES_LOG_MIN_DURATION_STATEMENT:-5000}
+log_connections = ${POSTGRES_LOG_CONNECTIONS:-off}
+log_disconnections = ${POSTGRES_LOG_DISCONNECTIONS:-off}
+log_checkpoints = on
+log_lock_waits = on
+
+# Production Safety Settings
+fsync = on
+synchronous_commit = on
+full_page_writes = on
+wal_log_hints = on
+
+# Performance Settings
+effective_io_concurrency = ${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+random_page_cost = ${POSTGRES_RANDOM_PAGE_COST:-1.1}
+
+# Autovacuum (production tuned)
+autovacuum_max_workers = ${POSTGRES_AUTOVACUUM_MAX_WORKERS:-4}
+autovacuum_naptime = ${POSTGRES_AUTOVACUUM_NAPTIME:-30s}
+
+# Connection Pooling Friendly
+tcp_keepalives_idle = ${POSTGRES_TCP_KEEPALIVES_IDLE:-600}
+tcp_keepalives_interval = ${POSTGRES_TCP_KEEPALIVES_INTERVAL:-30}
+tcp_keepalives_count = ${POSTGRES_TCP_KEEPALIVES_COUNT:-3}
+
+EOF

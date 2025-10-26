@@ -1,0 +1,205 @@
+services:
+  # Citus Coordinator Node
+  postgres-coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "15"
+        LOCALES: "en_US fr_FR"
+    image: oorabona/postgres:15-modern
+    container_name: postgres-coordinator
+    environment:
+      # Basic PostgreSQL settings
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      
+      # Citus configuration
+      POSTGRES_EXTENSION_PROFILE: "${POSTGRES_EXTENSION_PROFILE:-analytics}"
+      POSTGRES_MODE: "coordinator"
+      POSTGRES_LOCALES: "en_US fr_FR"
+      
+    env_file:
+      - .env
+    volumes:
+      - coordinator_data:/var/lib/postgresql/data
+      - ./conf/postgresql.prod.conf:/etc/postgresql/postgresql.conf:ro
+      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - coordinator_logs:/var/log/postgresql
+      
+    ports:
+      - "${COORDINATOR_PORT:-5432}:5432"
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - citus_network
+    
+    command: >
+      bash -c "
+        # Wait for coordinator to be ready, then add worker nodes
+        while ! pg_isready -h localhost -p 5432; do sleep 1; done;
+        sleep 10;
+        psql -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres} -c \"
+          SELECT citus_add_node('postgres-worker1', 5432);
+          SELECT citus_add_node('postgres-worker2', 5432);
+        \" || true;
+        postgres;
+      "
+
+  # Citus Worker Node 1
+  postgres-worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "15"
+        LOCALES: "en_US fr_FR"
+    image: oorabona/postgres:15-modern
+    container_name: postgres-worker1
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      
+      POSTGRES_EXTENSION_PROFILE: "${POSTGRES_EXTENSION_PROFILE:-analytics}"
+      POSTGRES_MODE: "worker"
+      POSTGRES_COORDINATOR_HOST: "postgres-coordinator"
+      POSTGRES_LOCALES: "en_US fr_FR"
+      
+    env_file:
+      - .env
+    volumes:
+      - worker1_data:/var/lib/postgresql/data
+      - ./conf/postgresql.prod.conf:/etc/postgresql/postgresql.conf:ro
+      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - worker1_logs:/var/log/postgresql
+      
+    ports:
+      - "${WORKER1_PORT:-5433}:5432"
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - citus_network
+    depends_on:
+      - postgres-coordinator
+
+  # Citus Worker Node 2
+  postgres-worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "15"
+        LOCALES: "en_US fr_FR"
+    image: oorabona/postgres:15-modern
+    container_name: postgres-worker2
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      
+      POSTGRES_EXTENSION_PROFILE: "${POSTGRES_EXTENSION_PROFILE:-analytics}"
+      POSTGRES_MODE: "worker"
+      POSTGRES_COORDINATOR_HOST: "postgres-coordinator"
+      POSTGRES_LOCALES: "en_US fr_FR"
+      
+    env_file:
+      - .env
+    volumes:
+      - worker2_data:/var/lib/postgresql/data
+      - ./conf/postgresql.prod.conf:/etc/postgresql/postgresql.conf:ro
+      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - worker2_logs:/var/log/postgresql
+      
+    ports:
+      - "${WORKER2_PORT:-5434}:5432"
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - citus_network
+    depends_on:
+      - postgres-coordinator
+
+  # Connection pooler
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: pgbouncer
+    environment:
+      DATABASES_HOST: postgres-coordinator
+      DATABASES_PORT: 5432
+      DATABASES_USER: "${POSTGRES_USER:-postgres}"
+      DATABASES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      DATABASES_DBNAME: "${POSTGRES_DB:-postgres}"
+      POOL_MODE: session
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+    depends_on:
+      - postgres-coordinator
+    networks:
+      - citus_network
+
+  # Optional: pgAdmin for cluster management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin-cluster
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@example.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgladmin
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    depends_on:
+      - postgres-coordinator
+    networks:
+      - citus_network
+    profiles:
+      - admin
+
+volumes:
+  coordinator_data:
+    driver: local
+  worker1_data:
+    driver: local
+  worker2_data:
+    driver: local
+  coordinator_logs:
+    driver: local
+  worker1_logs:
+    driver: local
+  worker2_logs:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  citus_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

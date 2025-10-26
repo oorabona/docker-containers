@@ -1,0 +1,15 @@
+# --- Build pg_net extension ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        libcurl4-gnutls-dev \
+        postgresql-server-dev-$PG_MAJOR_VERSION \
+    && git clone --branch v$PGNET_VERSION https://github.com/supabase/pg_net.git /tmp/pg_net \
+    && cd /tmp/pg_net \
+    && make \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/pg_net \
+    && apt-get purge -y build-essential git libcurl4-gnutls-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

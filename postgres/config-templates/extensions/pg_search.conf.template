@@ -1,0 +1,29 @@
+#!/bin/bash
+# pg_search (ParadeDB) Full-Text Search Configuration - Bash Script
+# Applied when 'pg_search' extension is enabled
+
+cat << EOF
+# pg_search (ParadeDB) Full-Text Search Configuration
+
+# Full-Text Search Memory Settings
+work_mem = ${PG_SEARCH_WORK_MEM:-128MB}
+maintenance_work_mem = ${PG_SEARCH_MAINTENANCE_WORK_MEM:-512MB}
+
+# BM25 Index Performance Settings
+effective_cache_size = ${PG_SEARCH_EFFECTIVE_CACHE_SIZE:-2GB}
+
+# Parallel Processing for Search Indexes
+max_parallel_maintenance_workers = ${PG_SEARCH_MAX_PARALLEL_MAINTENANCE_WORKERS:-4}
+max_parallel_workers_per_gather = ${PG_SEARCH_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
+
+# Search Query Performance
+default_statistics_target = ${PG_SEARCH_DEFAULT_STATISTICS_TARGET:-1000}
+
+# ParadeDB-specific Settings
+pg_search.tokenizer = '${PG_SEARCH_TOKENIZER:-default}'
+pg_search.normalizer = '${PG_SEARCH_NORMALIZER:-lowercase}'
+
+# Search Logging (for debugging)
+# log_min_duration_statement = 500  # Log slow search queries
+
+EOF

@@ -9,7 +9,7 @@ source "$(dirname "$0")/helpers/logging.sh"
 # Source build utilities for platform detection
 source "$(dirname "$0")/scripts/build-container.sh"
 
-# Push container function
+# Push container function - re-tag and push existing local image
 push_container() {
     local container="$1"
     local version="$2"
@@ -17,20 +17,30 @@ push_container() {
     local wanted="$4"
     
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"  
+    local local_image="oorabona/$container:$version"
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
+    
+    log_info "Building and pushing $container:$tag to registries (multi-platform)..."
+    
+    # Check if local image exists for reference
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^$local_image$"; then
+        log_warning "Local image $local_image not found. Building from scratch..."
+    else
+        log_info "Using local image $local_image as reference for build"
+    fi
     
     # Determine platform support
     local platforms
     if check_multiplatform_support; then
         platforms="linux/amd64,linux/arm64"
-        log_success "Building and pushing $container:$tag (multi-platform: AMD64 + ARM64)..."
+        log_info "Building for multiple platforms: AMD64 + ARM64"
     else
         platforms="linux/amd64"
-        log_success "Building and pushing $container:$tag (AMD64 only)..."
+        log_info "Building for single platform: AMD64 only"
     fi
     
-    # Detect container runtime
+    # Detect container runtime for caching
     local cache_args=""
     local is_docker=false
     local runtime_info=""
@@ -53,13 +63,25 @@ push_container() {
         runtime_info="Unknown (no cache)"
     fi
     
-    log_success "Runtime: $runtime_info | Docker mode: $is_docker | Cache: ${cache_args:-none}"
+    log_info "Runtime: $runtime_info | Platforms: $platforms"
     
-    # Prepare build arguments
+    # Prepare build arguments (get from current environment)
     local build_args=""
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
     [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
     [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
+    
+    # Add any build args from .env if it exists
+    if [[ -f ".env" ]]; then
+        while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^#.*$ ]] || [[ -z "$key" ]] && continue
+            # Add build args for extension versions and postgres settings
+            if [[ "$key" =~ ^(POSTGRES_|PG|SHARED_PRELOAD_LIBRARIES) ]]; then
+                build_args="$build_args --build-arg $key=$value"
+            fi
+        done < .env
+    fi
     
     # Prepare tags - include "latest" if building latest version
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
@@ -67,55 +89,18 @@ push_container() {
         tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
     fi
     
-    if [[ "$is_docker" == "true" ]]; then
-        # Docker buildx: supports direct push
-        log_success "Using Docker buildx with --push flag..."
-        docker buildx build \
-            --platform "$platforms" \
-            --push \
-            $cache_args \
-            $build_args \
-            $tag_args \
-            . || {
-            log_error "Push failed for $container:$tag"
-            return 1
-        }
-    else
-        # Podman: build then push separately
-        log_success "Using Podman build + separate push..."
-        docker buildx build \
-            --platform "$platforms" \
-            $cache_args \
-            $build_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
-            return 1
-        }
-        
-        # Push each tag separately
-        log_success "Pushing built images..."
-        docker push "$dockerhub_image:$tag" || {
-            log_error "Failed to push $dockerhub_image:$tag"
-            return 1
-        }
-        docker push "$ghcr_image:$tag" || {
-            log_error "Failed to push $ghcr_image:$tag"  
-            return 1
-        }
-        
-        # Push latest tags if they were created
-        if [[ "$wanted" == "latest" ]]; then
-            docker push "$dockerhub_image:latest" || {
-                log_error "Failed to push $dockerhub_image:latest"
-                return 1
-            }
-            docker push "$ghcr_image:latest" || {
-                log_error "Failed to push $ghcr_image:latest"
-                return 1
-            }
-        fi
-    fi
+    # Build and push using docker buildx (supports multi-platform)
+    log_info "Building and pushing with docker buildx..."
+    docker buildx build \
+        --platform "$platforms" \
+        --push \
+        $cache_args \
+        $build_args \
+        $tag_args \
+        . || {
+        log_error "Multi-platform build and push failed for $container:$tag"
+        return 1
+    }
     
     # Optional squashing (enabled by default for cleaner images)
     if [[ "${SQUASH_IMAGE:-true}" == "true" ]]; then

@@ -1,0 +1,11 @@
+#!/bin/bash
+# pgcrypto Extension Configuration - Bash Script
+# Applied when 'pgcrypto' extension is enabled
+
+cat << EOF
+# pgcrypto Extension Configuration
+
+# pgcrypto has no specific configuration parameters
+# Extension provides cryptographic functions for PostgreSQL
+
+EOF

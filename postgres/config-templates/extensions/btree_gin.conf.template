@@ -1,0 +1,11 @@
+#!/bin/bash
+# btree_gin Extension Configuration - Bash Script
+# Applied when 'btree_gin' extension is enabled
+
+cat << EOF
+# btree_gin Extension Configuration
+
+# btree_gin has no specific configuration parameters
+# Extension provides GIN indexing for btree-equivalent data types
+
+EOF

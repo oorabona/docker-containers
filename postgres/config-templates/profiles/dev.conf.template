@@ -1,0 +1,44 @@
+#!/bin/bash
+# Development Profile Configuration Template - Bash Script
+# Optimized for development and debugging
+
+cat << EOF
+# Development Profile Configuration
+
+# Connection Settings (lower limits for dev)
+max_connections = ${POSTGRES_MAX_CONNECTIONS:-50}
+
+# Memory Settings (conservative for development machines)
+shared_buffers = ${POSTGRES_SHARED_BUFFERS:-128MB}
+effective_cache_size = ${POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+work_mem = ${POSTGRES_WORK_MEM:-2MB}
+maintenance_work_mem = ${POSTGRES_MAINTENANCE_WORK_MEM:-32MB}
+
+# WAL Settings (less aggressive for development)
+checkpoint_completion_target = 0.7
+max_wal_size = ${POSTGRES_MAX_WAL_SIZE:-512MB}
+min_wal_size = ${POSTGRES_MIN_WAL_SIZE:-32MB}
+
+# Logging (verbose for development and debugging)
+log_statement = '${POSTGRES_LOG_STATEMENT:-all}'
+log_min_duration_statement = ${POSTGRES_LOG_MIN_DURATION_STATEMENT:-250}
+log_connections = ${POSTGRES_LOG_CONNECTIONS:-on}
+log_disconnections = ${POSTGRES_LOG_DISCONNECTIONS:-on}
+log_lock_waits = on
+log_temp_files = 0
+
+# Development-friendly settings
+fsync = ${POSTGRES_FSYNC:-off}  # Faster writes in dev (unsafe for production!)
+synchronous_commit = ${POSTGRES_SYNCHRONOUS_COMMIT:-off}  # Async commits in dev
+full_page_writes = ${POSTGRES_FULL_PAGE_WRITES:-off}  # Reduce I/O in dev
+
+# Query Performance Debugging
+auto_explain.log_min_duration = ${AUTO_EXPLAIN_LOG_MIN_DURATION:-1000}
+auto_explain.log_analyze = ${AUTO_EXPLAIN_LOG_ANALYZE:-on}
+auto_explain.log_buffers = ${AUTO_EXPLAIN_LOG_BUFFERS:-on}
+
+# Development Extensions
+track_functions = all
+track_io_timing = on
+
+EOF

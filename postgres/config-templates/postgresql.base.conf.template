@@ -1,0 +1,71 @@
+#!/bin/bash
+# PostgreSQL Base Configuration Template - Bash Script
+# This file is sourced at runtime to generate postgresql.conf
+
+cat << EOF
+# PostgreSQL Base Configuration - Generated $(date)
+
+# Connection Settings
+max_connections = $POSTGRES_MAX_CONNECTIONS
+superuser_reserved_connections = $POSTGRES_SUPERUSER_RESERVED_CONNECTIONS
+
+# Memory Settings
+shared_buffers = $POSTGRES_SHARED_BUFFERS
+effective_cache_size = $POSTGRES_EFFECTIVE_CACHE_SIZE
+work_mem = $POSTGRES_WORK_MEM
+maintenance_work_mem = $POSTGRES_MAINTENANCE_WORK_MEM
+dynamic_shared_memory_type = posix
+
+# WAL Settings
+wal_level = replica
+wal_buffers = $POSTGRES_WAL_BUFFERS
+checkpoint_completion_target = 0.9
+checkpoint_timeout = $POSTGRES_CHECKPOINT_TIMEOUT
+max_wal_size = $POSTGRES_MAX_WAL_SIZE
+min_wal_size = $POSTGRES_MIN_WAL_SIZE
+
+# Query Planner
+default_statistics_target = $POSTGRES_DEFAULT_STATISTICS_TARGET
+random_page_cost = $POSTGRES_RANDOM_PAGE_COST
+effective_io_concurrency = $POSTGRES_EFFECTIVE_IO_CONCURRENCY
+
+# Logging
+log_destination = 'stderr'
+logging_collector = off
+log_min_duration_statement = $POSTGRES_LOG_MIN_DURATION_STATEMENT
+log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+log_statement = '$POSTGRES_LOG_STATEMENT'
+log_connections = $POSTGRES_LOG_CONNECTIONS
+log_disconnections = $POSTGRES_LOG_DISCONNECTIONS
+
+# Performance
+autovacuum = on
+track_activities = on
+track_counts = on
+track_functions = $POSTGRES_TRACK_FUNCTIONS
+
+# Locale Settings
+EOF
+
+# Only set locale if variable is not empty
+if [[ -n "$POSTGRES_LOCALE" ]]; then
+    cat << EOF
+lc_messages = '$POSTGRES_LOCALE'
+lc_monetary = '$POSTGRES_LOCALE'
+lc_numeric = '$POSTGRES_LOCALE'
+lc_time = '$POSTGRES_LOCALE'
+EOF
+fi
+
+# Only set timezone if variable is not empty
+if [[ -n "$POSTGRES_TIMEZONE" ]]; then
+    cat << EOF
+
+# Timezone
+timezone = '$POSTGRES_TIMEZONE'
+EOF
+fi
+
+cat << EOF
+
+EOF
