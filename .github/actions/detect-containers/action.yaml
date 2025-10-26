@@ -58,11 +58,11 @@ runs:
           
           # Determine what files changed in this push/PR
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            # For push events, compare with previous commit
-            changed_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+            # For push events, compare with before/after SHAs from the event payload (handles initial commit safely)
+            changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null || echo "")
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs, compare with base branch
-            changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || echo "")
+            # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
+            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null || echo "")
           else
             # For manual triggers or other events, no auto-detection
             changed_files=""
@@ -74,9 +74,11 @@ runs:
             
             # Extract container names from changed file paths
             while IFS= read -r file; do
-              # Check if file is in a container directory (e.g., ansible/Dockerfile, debian/version.sh)
-              if [[ "$file" =~ ^([^/]+)/ ]]; then
-                container="${BASH_REMATCH[1]}"
+              # Extract the top-level directory from the file path
+              container="${file%%/*}"
+              
+              # Only process if the file is inside a subdirectory (not root files)
+              if [[ "$file" == "$container/"* ]]; then
                 
                 # Skip if already processed
                 if [[ " ${containers_to_build[*]} " =~ " ${container} " ]]; then
