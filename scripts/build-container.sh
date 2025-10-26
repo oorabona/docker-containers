@@ -90,11 +90,25 @@ build_container() {
         tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
     fi
     
+    # Build behavior depends on context
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: skip separate build step, use push instead
-        log_success "GitHub Actions detected - using direct push workflow..."
-        log_success "Skipping separate build step (will build and push in one operation)"
-        return 0
+        # GitHub Actions: build locally without pushing (use --load)
+        # This ensures PR builds validate without polluting registries
+        log_success "GitHub Actions detected - building locally for validation..."
+        log_success "Runtime: $runtime_info | Platform: linux/amd64 | Cache: ${cache_args:-none}"
+        
+        docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            $cache_args \
+            $build_args \
+            $tag_args \
+            . || {
+            log_error "Build failed for $container:$tag"
+            return 1
+        }
+        
+        log_success "✅ Build completed - image loaded locally (no push)"
     else
         # Local development: single platform with --load
         log_success "Building $container:$tag locally (layered image)..."
