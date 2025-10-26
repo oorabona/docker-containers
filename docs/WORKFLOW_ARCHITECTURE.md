@@ -2,14 +2,14 @@
 
 ## 📊 Overview
 
-Ce document décrit l'architecture complète du système d'automatisation des containers Docker, incluant la détection des versions, le build, le push et la mise à jour du dashboard.
+This document describes the complete architecture of the Docker container automation system, including version detection, build, push, and dashboard updates.
 
-## 🔄 Flux Complet d'Automatisation
+## 🔄 Complete Automation Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    UPSTREAM VERSION MONITOR                          │
-│                    (Cron: 2x/jour)                                  │
+│                    (Cron: 2x/day)                                   │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
@@ -34,7 +34,7 @@ Ce document décrit l'architecture complète du système d'automatisation des co
                                 │ classify-version-     │
                                 │ change.sh             │
                                 │                       │
-                                │ Détermine: major vs   │
+                                │ Determines: major vs  │
                                 │ minor change          │
                                 └───────┬───────────────┘
                                         │
@@ -65,8 +65,8 @@ Ce document décrit l'architecture complète du système d'automatisation des co
                     │ detect-containers    │
                     │ action               │
                     │                      │
-                    │ Détecte containers   │
-                    │ modifiés via git diff│
+                    │ Detects modified     │
+                    │ containers via diff  │
                     └──────────┬───────────┘
                                │
                                ▼
@@ -103,7 +103,7 @@ Ce document décrit l'architecture complète du système d'automatisation des co
                                    │ Generate        │
                                    │ Dashboard       │
                                    │                 │
-                                   │ - Analyse       │
+                                   │ - Analyze       │
                                    │   registries    │
                                    │ - Build Jekyll  │
                                    │ - Deploy to     │
@@ -111,70 +111,70 @@ Ce document décrit l'architecture complète du système d'automatisation des co
                                    └─────────────────┘
 ```
 
-## 🎯 Détail des Workflows
+## 🎯 Workflow Details
 
 ### 1. upstream-monitor.yaml
 
-**Déclencheur** :
-- Cron : `0 6,18 * * *` (6h et 18h UTC, 2x/jour)
-- Manual : `workflow_dispatch`
+**Triggers**:
+- Cron: `0 6,18 * * *` (6am and 6pm UTC, 2x/day)
+- Manual: `workflow_dispatch`
 
-**Processus** :
-1. **check-upstream-versions** : Utilise le script `make check-updates` pour :
-   - Lire `version.sh` de chaque container (version upstream)
-   - Comparer avec `oorabona/*` sur Docker Hub/GHCR (version publiée)
-   - Retourner JSON avec containers nécessitant une mise à jour
+**Process**:
+1. **check-upstream-versions**: Uses `make check-updates` script to:
+   - Read `version.sh` from each container (upstream version)
+   - Compare with `oorabona/*` on Docker Hub/GHCR (published version)
+   - Return JSON with containers needing updates
 
-2. **classify-version-change** : Détermine le type de changement :
-   - `major` : Changement de version majeure ou nouveau container
-   - `minor` : Changement mineur/patch
+2. **classify-version-change**: Determines change type:
+   - `major`: Major version change or new container
+   - `minor`: Minor/patch change
 
-3. **Create Pull Request** : Crée une PR avec :
-   - Fichier `LAST_REBUILD.md` comme marker
-   - Titre indiquant le type (🔄 Major ou 🚀 Minor)
-   - Description avec détails du changement
+3. **Create Pull Request**: Creates PR with:
+   - `LAST_REBUILD.md` file as marker
+   - Title indicating type (🔄 Major or 🚀 Minor)
+   - Description with change details
 
-4. **Auto-merge** (si minor) : Active l'auto-merge sur la PR
+4. **Auto-merge** (if minor): Enables auto-merge on PR
 
-**Outputs** :
-- PR créée et éventuellement auto-merged
-- `LAST_REBUILD.md` contient l'historique du rebuild
+**Outputs**:
+- PR created and potentially auto-merged
+- `LAST_REBUILD.md` contains rebuild history
 
 ### 2. auto-build.yaml
 
-**Déclencheur** :
-- `pull_request` : Sur modifications de Dockerfile, version.sh, etc.
-- `push` (master) : Après merge d'une PR
-- `workflow_call` : Appelé par d'autres workflows
-- `workflow_dispatch` : Trigger manuel
+**Triggers**:
+- `pull_request`: On modifications to Dockerfile, version.sh, etc.
+- `push` (master): After PR merge
+- `workflow_call`: Called by other workflows
+- `workflow_dispatch`: Manual trigger
 
-**Processus** :
+**Process**:
 
-#### Job 1 : detect-containers
-- Utilise `.github/actions/detect-containers`
-- Stratégies de détection :
-  - **workflow_dispatch avec force_rebuild** : Tous les containers
-  - **workflow_dispatch avec container spécifique** : Container ciblé
-  - **push/PR** : Git diff pour détecter fichiers modifiés
-  - **workflow_call** : Container passé en input
+#### Job 1: detect-containers
+- Uses `.github/actions/detect-containers`
+- Detection strategies:
+  - **workflow_dispatch with force_rebuild**: All containers
+  - **workflow_dispatch with specific container**: Targeted container
+  - **push/PR**: Git diff to detect modified files
+  - **workflow_call**: Container passed as input
 
-#### Job 2 : build-and-push
-- Matrice : Un job par container détecté
-- Étapes :
-  1. **Checkout** : Clone le repo
-  2. **Login registries** : Docker Hub + GHCR (si push vers master)
-  3. **Build** : Utilise `.github/actions/build-container`
-     - Sur PR : Build local uniquement (`--load`)
-     - Sur push master : Build + Push (`--push`)
-  4. **Retry** : Si échec, retry une fois
-  5. **Summary** : Génère résumé GitHub avec liens vers images
+#### Job 2: build-and-push
+- Matrix: One job per detected container
+- Steps:
+  1. **Checkout**: Clone repo
+  2. **Login registries**: Docker Hub + GHCR (if push to master)
+  3. **Build**: Uses `.github/actions/build-container`
+     - On PR: Local build only (`--load`)
+     - On push master: Build + Push (`--push`)
+  4. **Retry**: If failure, retry once
+  5. **Summary**: Generates GitHub summary with links to images
 
-**Comportement selon event** :
-- **PR** : BUILD uniquement (test de validité)
-- **Push master** : BUILD + PUSH (déploiement)
+**Behavior by event**:
+- **PR**: BUILD only (validation test)
+- **Push master**: BUILD + PUSH (deployment)
 
-#### Job 3 : update-dashboard
-**Condition stricte** :
+#### Job 3: update-dashboard
+**Strict condition**:
 ```yaml
 if: |
   always() && 
@@ -183,52 +183,52 @@ if: |
   github.ref == 'refs/heads/master'
 ```
 
-**Pourquoi cette condition ?**
-- Évite les updates pendant les PRs (test mode)
-- Garantit que seuls les builds réussis déclenchent le dashboard
-- S'assure qu'on est sur master (déploiement production)
+**Why this condition?**
+- Avoids updates during PRs (test mode)
+- Ensures only successful builds trigger dashboard
+- Confirms we're on master (production deployment)
 
 ### 3. update-dashboard.yaml
 
-**Déclencheur** :
-- `workflow_call` : Appelé par auto-build
-- `push` (master) : Sur modifications docs/ ou *.md
-- `workflow_dispatch` : Trigger manuel
+**Triggers**:
+- `workflow_call`: Called by auto-build
+- `push` (master): On docs/ or *.md modifications
+- `workflow_dispatch`: Manual trigger
 
-**Processus** :
+**Process**:
 
-#### Job 1 : build
-1. **Generate dashboard** : Exécute `generate-dashboard.sh`
-   - Parcourt tous les containers
-   - Appelle `helpers/latest-docker-tag oorabona/<container>` pour version publiée
-   - Appelle `version.sh` pour version upstream
-   - Compare et détermine le statut (Up to date / Update available / Not published)
-   - Génère `index.md` avec Jekyll includes
+#### Job 1: build
+1. **Generate dashboard**: Executes `generate-dashboard.sh`
+   - Iterates through all containers
+   - Calls `helpers/latest-docker-tag oorabona/<container>` for published version
+   - Calls `version.sh` for upstream version
+   - Compares and determines status (Up to date / Update available / Not published)
+   - Generates `index.md` with Jekyll includes
 
-2. **Build Jekyll** : Compile le site statique
-   - Utilise `_config.yml` de `docs/site/`
-   - Templates dans `_layouts/` et `_includes/`
-   - Génère `./_site`
+2. **Build Jekyll**: Compiles static site
+   - Uses `_config.yml` from `docs/site/`
+   - Templates in `_layouts/` and `_includes/`
+   - Generates `./_site`
 
-3. **Upload artifact** : Prépare le site pour déploiement
+3. **Upload artifact**: Prepares site for deployment
 
-#### Job 2 : deploy
-**Condition** :
+#### Job 2: deploy
+**Condition**:
 ```yaml
 if: github.event_name == 'push' || 
     github.event_name == 'workflow_dispatch' || 
     (github.event_name == 'workflow_call' && github.ref == 'refs/heads/master')
 ```
 
-- Déploie sur GitHub Pages
-- URL : https://oorabona.github.io/docker-containers/
+- Deploys to GitHub Pages
+- URL: https://oorabona.github.io/docker-containers/
 
-## 📝 Fichier LAST_REBUILD.md
+## 📝 LAST_REBUILD.md File
 
-### Utilité
-- **Marker pour PR** : GitHub requiert au moins 1 fichier modifié pour créer une PR
-- **Trigger workflow** : Présent dans les `paths` d'`auto-build.yaml`
-- **Documentation** : Historique des rebuilds avec métadonnées
+### Purpose
+- **PR Marker**: GitHub requires at least 1 modified file to create a PR
+- **Workflow Trigger**: Present in `auto-build.yaml` `paths`
+- **Documentation**: Rebuild history with metadata
 
 ### Format
 ```markdown
@@ -249,30 +249,30 @@ Build status will be available in GitHub Actions after merge.
 *Auto-generated by docker-containers automation system*
 ```
 
-### Cycle de vie
-1. **Création** : Par `upstream-monitor` lors de détection d'update
-2. **Commit** : Dans la PR automatique
-3. **Merge** : Avec la PR (trigger `auto-build`)
-4. **Persistence** : Reste dans le repo comme historique
+### Lifecycle
+1. **Creation**: By `upstream-monitor` when update detected
+2. **Commit**: In automatic PR
+3. **Merge**: With PR (triggers `auto-build`)
+4. **Persistence**: Remains in repo as history
 
-**Note** : Contrairement à une idée initiale, ce n'est **PAS** un fichier `.version` cumulatif, mais un marker par rebuild.
+**Note**: Unlike an initial idea, this is **NOT** a cumulative `.version` file, but a per-rebuild marker.
 
-## 🔍 Source de Vérité pour les Versions
+## 🔍 Version Source of Truth
 
-### Versions Upstream (source)
-- **Défini dans** : `<container>/version.sh`
-- **Stratégies** :
-  - Docker Hub API : `helpers/latest-docker-tag owner/image "pattern"`
-  - PyPI : `helpers/python-tags` → `get_pypi_latest_version package`
-  - GitHub Releases : API GitHub
-  - Custom : Script spécifique au container
+### Upstream Versions (source)
+- **Defined in**: `<container>/version.sh`
+- **Strategies**:
+  - Docker Hub API: `helpers/latest-docker-tag owner/image "pattern"`
+  - PyPI: `helpers/python-tags` → `get_pypi_latest_version package`
+  - GitHub Releases: GitHub API
+  - Custom: Container-specific script
 
-### Versions Publiées (ce qu'on a déployé)
-- **Source** : `oorabona/*` sur Docker Hub et GHCR
-- **Méthode** : `helpers/latest-docker-tag oorabona/<container> "pattern"`
-- **Pattern** : Défini via `version.sh --registry-pattern`
+### Published Versions (what we deployed)
+- **Source**: `oorabona/*` on Docker Hub and GHCR
+- **Method**: `helpers/latest-docker-tag oorabona/<container> "pattern"`
+- **Pattern**: Defined via `version.sh --registry-pattern`
 
-### Comparaison
+### Comparison
 ```bash
 # Dans make check-updates et generate-dashboard.sh
 current=$(helpers/latest-docker-tag "oorabona/$container" "$pattern")
@@ -283,142 +283,142 @@ if [ "$current" != "$latest" ]; then
 fi
 ```
 
-**Pourquoi oorabona/* et non l'upstream ?**
-- On compare notre version publiée vs l'upstream
-- Permet de savoir si **nous** devons rebuilder
-- Évite les rebuilds inutiles si déjà à jour
+**Why oorabona/* and not upstream?**
+- We compare our published version vs upstream
+- Allows us to know if **we** need to rebuild
+- Avoids unnecessary rebuilds if already up-to-date
 
-## 🎯 Cas d'Usage
+## 🎯 Use Cases
 
-### Nouveau Container
-1. **Détection** : `current_version = "no-published-version"`
-2. **Classification** : Traité comme `major` (review requise)
-3. **PR** : Créée sans auto-merge
-4. **Review** : Manuelle obligatoire
-5. **Merge** : Déclenche build + dashboard
+### New Container
+1. **Detection**: `current_version = "no-published-version"`
+2. **Classification**: Treated as `major` (review required)
+3. **PR**: Created without auto-merge
+4. **Review**: Manual required
+5. **Merge**: Triggers build + dashboard
 
-### Update Minor
-1. **Détection** : `current 1.0.0 → latest 1.0.1`
-2. **Classification** : `minor`
-3. **PR** : Créée avec auto-merge enabled
-4. **Auto-merge** : Après checks réussis
-5. **Build** : Automatique sur master
-6. **Dashboard** : Mis à jour automatiquement
+### Minor Update
+1. **Detection**: `current 1.0.0 → latest 1.0.1`
+2. **Classification**: `minor`
+3. **PR**: Created with auto-merge enabled
+4. **Auto-merge**: After successful checks
+5. **Build**: Automatic on master
+6. **Dashboard**: Updated automatically
 
-### Update Major
-1. **Détection** : `current 1.0.0 → latest 2.0.0`
-2. **Classification** : `major`
-3. **PR** : Créée sans auto-merge
-4. **Review** : Manuelle (breaking changes possibles)
-5. **Merge** : Manuel après validation
-6. **Build** : Automatique sur master
-7. **Dashboard** : Mis à jour automatiquement
+### Major Update
+1. **Detection**: `current 1.0.0 → latest 2.0.0`
+2. **Classification**: `major`
+3. **PR**: Created without auto-merge
+4. **Review**: Manual (possible breaking changes)
+5. **Merge**: Manual after validation
+6. **Build**: Automatic on master
+7. **Dashboard**: Updated automatically
 
 ### Force Rebuild (manual)
-1. **Trigger** : `workflow_dispatch` avec `force_rebuild: true`
-2. **Detection** : Ignore la comparaison de versions
-3. **Build** : Tous les containers (ou spécifique)
-4. **Dashboard** : Mis à jour si push vers master
+1. **Trigger**: `workflow_dispatch` with `force_rebuild: true`
+2. **Detection**: Ignores version comparison
+3. **Build**: All containers (or specific)
+4. **Dashboard**: Updated if push to master
 
 ## 🐛 Troubleshooting
 
-### Dashboard pas à jour après build
-**Symptôme** : Container publié sur Docker Hub mais dashboard affiche ancienne version
+### Dashboard not updated after build
+**Symptom**: Container published on Docker Hub but dashboard shows old version
 
-**Causes possibles** :
-1. ❌ Build fait depuis une PR (pas de push vers master)
-2. ❌ Condition `update-dashboard` pas remplie
-3. ❌ Cache Docker Hub API (délai propagation)
+**Possible causes**:
+1. ❌ Build from PR (no push to master)
+2. ❌ `update-dashboard` condition not met
+3. ❌ Docker Hub API cache (propagation delay)
 
-**Solution** :
+**Solution**:
 ```bash
-# Vérifier le workflow run
+# Check workflow run
 gh run list --workflow=auto-build.yaml
 
-# Vérifier si update-dashboard a été appelé
+# Check if update-dashboard was called
 gh run view <run-id> --log | grep "update-dashboard"
 
-# Trigger manuel du dashboard
+# Manual dashboard trigger
 gh workflow run update-dashboard.yaml
 ```
 
-### PR pas créée pour nouvelle version
-**Symptôme** : Version upstream plus récente mais pas de PR
+### PR not created for new version
+**Symptom**: Newer upstream version but no PR
 
-**Causes possibles** :
-1. ❌ `version.sh` retourne erreur
-2. ❌ Pattern de registry incorrect
-3. ❌ Timeout lors de l'appel API
+**Possible causes**:
+1. ❌ `version.sh` returns error
+2. ❌ Incorrect registry pattern
+3. ❌ API call timeout
 
-**Solution** :
+**Solution**:
 ```bash
-# Tester localement
+# Test locally
 cd ansible
-./version.sh  # Doit retourner version upstream
-./version.sh --registry-pattern  # Doit retourner regex pattern
+./version.sh  # Should return upstream version
+./version.sh --registry-pattern  # Should return regex pattern
 
-# Tester la comparaison
+# Test comparison
 ./make check-updates ansible
 
-# Vérifier logs upstream-monitor
+# Check upstream-monitor logs
 gh run list --workflow=upstream-monitor.yaml
 ```
 
-### Build échoue sur PR
-**Symptôme** : Build fail uniquement sur PR, pas localement
+### Build fails on PR
+**Symptom**: Build fails only on PR, not locally
 
-**Causes possibles** :
-1. ❌ Différence environnement (GitHub Actions vs local)
-2. ❌ Secrets/variables pas disponibles sur PR fork
-3. ❌ Registry authentication (normal sur PR)
+**Possible causes**:
+1. ❌ Environment difference (GitHub Actions vs local)
+2. ❌ Secrets/variables not available on PR fork
+3. ❌ Registry authentication (normal on PR)
 
-**Solution** :
-- Sur PR, le build ne DOIT PAS pusher (comportement normal)
-- Vérifier que `BUILD_MODE=local` lors des PR
-- Logs dans GitHub Actions summary
+**Solution**:
+- On PR, build should NOT push (normal behavior)
+- Verify `BUILD_MODE=local` during PRs
+- Logs in GitHub Actions summary
 
-## 📊 Métriques & Monitoring
+## 📊 Metrics & Monitoring
 
-### Indicateurs de Santé
-- **Build success rate** : Visible dans GitHub Actions
-- **Dashboard sync lag** : Comparer registry vs dashboard
-- **PR auto-merge rate** : minor updates (devrait être ~80%)
-- **Version detection accuracy** : Upstream vs published
+### Health Indicators
+- **Build success rate**: Visible in GitHub Actions
+- **Dashboard sync lag**: Compare registry vs dashboard
+- **PR auto-merge rate**: minor updates (should be ~80%)
+- **Version detection accuracy**: Upstream vs published
 
-### Commandes Utiles
+### Useful Commands
 ```bash
-# Lister tous les workflows runs
+# List all workflow runs
 gh run list --limit 50
 
-# Voir détails d'un run
+# View run details
 gh run view <run-id>
 
-# Télécharger logs
+# Download logs
 gh run download <run-id>
 
-# Trigger manuel upstream monitor
+# Manual upstream monitor trigger
 gh workflow run upstream-monitor.yaml
 
-# Forcer rebuild de tous les containers
+# Force rebuild all containers
 gh workflow run auto-build.yaml -f force_rebuild=true
 
-# Mettre à jour dashboard
+# Update dashboard
 gh workflow run update-dashboard.yaml
 ```
 
-## 🔐 Permissions Requises
+## 🔐 Required Permissions
 
 ### GITHUB_TOKEN
-- `contents: write` : Commit LAST_REBUILD.md, créer PRs
-- `packages: write` : Push vers GHCR
-- `pages: write` : Déployer GitHub Pages
-- `pull-requests: write` : Gérer PRs (créer, merge, close)
+- `contents: write`: Commit LAST_REBUILD.md, create PRs
+- `packages: write`: Push to GHCR
+- `pages: write`: Deploy GitHub Pages
+- `pull-requests: write`: Manage PRs (create, merge, close)
 
 ### Secrets
-- `DOCKERHUB_USERNAME` : Nom d'utilisateur Docker Hub
-- `DOCKERHUB_TOKEN` : Token d'authentification Docker Hub
+- `DOCKERHUB_USERNAME`: Docker Hub username
+- `DOCKERHUB_TOKEN`: Docker Hub authentication token
 
-## 📚 Références
+## 📚 References
 
 - [GitHub Actions Docs](https://docs.github.com/en/actions)
 - [Docker Buildx](https://docs.docker.com/buildx/)
@@ -427,5 +427,5 @@ gh workflow run update-dashboard.yaml
 
 ---
 
-**Dernière mise à jour** : 26 Octobre 2025  
-**Auteur** : Docker Containers Automation System
+**Last Updated**: October 26, 2025  
+**Author**: Docker Containers Automation System

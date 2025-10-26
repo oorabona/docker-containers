@@ -38,8 +38,8 @@ get_container_versions() {
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
         current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     else
-        # Fallback: try common version pattern
-        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+        # Fallback: comprehensive semver pattern matching major.minor.patch with optional pre-release and build metadata
+        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     fi
     
     # Get latest upstream version
