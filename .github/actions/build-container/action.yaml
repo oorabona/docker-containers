@@ -104,22 +104,36 @@ runs:
     - name: Build and push using make script
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         set -e
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
         
-        echo "🔨 Building and pushing $container:$current_version using make script..."
+        echo "🔨 Building $container:$current_version using make script..."
         
         # Make the script executable
         chmod +x make
         
-        # Use make script to build and push in one operation
-        # In GitHub Actions, this does the efficient build+push directly
-        if ./make push "$container" "$current_version"; then
-          echo "✅ Build and push successful"
+        # The make script handles all the complexity of building and pushing
+        if ./make build "$container" "$current_version"; then
+          echo "✅ Build successful"
+          
+          # Push to registries using make script
+          # Skip push on pull_request events (test build only)
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "⏭️ Skipping push (pull request - test build only)"
+          else
+            if ./make push "$container" "$current_version"; then
+              echo "✅ Push successful"
+            else
+              echo "⚠️ Push failed, but build succeeded"
+              exit 1
+            fi
+          fi
         else
-          echo "❌ Build and push failed"
+          echo "❌ Build failed"
           exit 1
         fi
     # Note: Trivy scanning temporarily disabled due to image reference issues
