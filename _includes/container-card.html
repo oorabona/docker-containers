@@ -29,14 +29,17 @@
       <div class="row mt-3">
         <div class="col-12">
           <div class="d-flex align-items-center">
-            {% if include.status_color == "green" %}
-              <span class="status-indicator status-green"></span>
+            {% if include.status_color == "success" %}
+              <span class="status-indicator status-success"></span>
               <span class="text-success">{{ include.status_text }}</span>
-            {% elsif include.status_color == "orange" %}
-              <span class="status-indicator status-orange"></span>
+            {% elsif include.status_color == "warning" %}
+              <span class="status-indicator status-warning"></span>
               <span class="text-warning">{{ include.status_text }}</span>
+            {% elsif include.status_color == "secondary" %}
+              <span class="status-indicator status-secondary"></span>
+              <span class="text-secondary">{{ include.status_text }}</span>
             {% else %}
-              <span class="status-indicator status-red"></span>
+              <span class="status-indicator status-danger"></span>
               <span class="text-danger">{{ include.status_text }}</span>
             {% endif %}
           </div>
@@ -72,16 +75,20 @@
   margin-right: 8px;
 }
 
-.status-green {
+.status-success {
   background-color: #28a745;
 }
 
-.status-orange {
+.status-warning {
   background-color: #ffc107;
 }
 
-.status-red {
+.status-danger {
   background-color: #dc3545;
+}
+
+.status-secondary {
+  background-color: #6c757d;
 }
 
 .card {
