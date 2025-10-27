@@ -92,14 +92,22 @@ jobs:
           new_version=$(echo "$version_data" | jq -r '.latest_version')
 
           chmod +x .github/scripts/classify-version-change.sh
-          change_type=$(.github/scripts/classify-version-change.sh "$current_version" "$new_version")
+          
+          # Run classification and capture outputs (format: change_type=X, reason=Y)
+          classification_output=$(.github/scripts/classify-version-change.sh "$current_version" "$new_version")
+          
+          # Parse outputs
+          change_type=$(echo "$classification_output" | grep "^change_type=" | cut -d= -f2)
+          reason=$(echo "$classification_output" | grep "^reason=" | cut -d= -f2-)
 
           echo "change_type=$change_type" >> $GITHUB_OUTPUT
           echo "current_version=$current_version" >> $GITHUB_OUTPUT
           echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          echo "reason=$reason" >> $GITHUB_OUTPUT
 
           echo "Container: ${{ matrix.container }}"
           echo "Change: $current_version -> $new_version ($change_type)"
+          echo "Reason: $reason"
 
       - name: Close duplicate PRs
         id: close_duplicates
