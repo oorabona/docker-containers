@@ -99,11 +99,21 @@ jobs:
           # Parse outputs using a loop for maintainability
           change_type=""
           reason=""
-          while IFS='=' read -r key value; do
-            case "$key" in
-              change_type) change_type="$value" ;;
-              reason) reason="$value" ;;
-              *) ;; # ignore other keys for now
+          while IFS= read -r line; do
+            # Skip empty lines and lines without '='
+            [ -z "$line" ] && continue
+            case "$line" in
+              *=*)
+                key="${line%%=*}"
+                value="${line#*=}"
+                case "$key" in
+                  change_type) change_type="$value" ;;
+                  reason) reason="$value" ;;
+                  *) ;; # ignore other keys for now
+                esac
+                ;;
+              *)
+                ;; # skip lines without '='
             esac
           done <<< "$classification_output"
 
