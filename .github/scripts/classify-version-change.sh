@@ -4,12 +4,16 @@
 # Determines if a version change is major (requires PR) or minor/patch (auto-build)
 #
 # Usage: ./classify-version-change.sh <current_version> <new_version>
-# Outputs: Printed as two separate lines:
+# 
+# Output: Always exactly two lines, in this order:
 #   change_type=VALUE
 #   reason=DESCRIPTION
+#   (No other output will be produced except on error)
+# 
 # Where:
 #   - change_type: "major" or "minor"
 #   - reason: Human-readable description of the change
+# 
 # Examples:
 #   change_type=major
 #   reason=🆕 New container - first publication
