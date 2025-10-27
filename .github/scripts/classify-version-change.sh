@@ -4,7 +4,7 @@
 # Determines if a version change is major (requires PR) or minor/patch (auto-build)
 #
 # Usage: ./classify-version-change.sh <current_version> <new_version>
-# Returns: "major" or "minor" 
+# Outputs: change_type=major|minor, reason=description
 
 set -euo pipefail
 
@@ -19,7 +19,8 @@ fi
 
 # Handle case where current_version is empty (new container or no current version)
 if [[ -z "$current_version" ]]; then
-    echo "major"  # Treat new containers as major changes requiring review
+    echo "change_type=major"
+    echo "reason=🆕 New container - first publication"
     exit 0
 fi
 
@@ -88,7 +89,9 @@ fi
 
 # Compare major versions
 if [[ "$current_major" != "$new_major" ]]; then
-    echo "major"
+    echo "change_type=major"
+    echo "reason=🔄 Major version update detected ($current_major → $new_major)"
 else
-    echo "minor"
+    echo "change_type=minor"
+    echo "reason=🚀 Minor/patch version update detected"
 fi
