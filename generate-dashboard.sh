@@ -55,7 +55,7 @@ get_container_versions() {
         status_color="secondary"
         status_text="Unknown Status"
     elif [[ "$current_version" == "$latest_version" ]]; then
-        status_color="green"
+        status_color="success"  # Bootstrap class
         status_text="Up to Date"
     else
         status_color="warning"
