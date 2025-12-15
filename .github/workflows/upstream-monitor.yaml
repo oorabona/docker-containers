@@ -191,7 +191,7 @@ jobs:
       - name: Create Pull Request
         if: steps.close_duplicates.outputs.existing_pr_found != 'true' && steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "build(${{ matrix.container }}): update to ${{ steps.classify.outputs.new_version }}"
