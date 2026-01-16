@@ -107,6 +107,79 @@ time ./make build wordpress
 docker images wordpress --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 ```
 
+## Unit Testing (bats-core)
+
+Shell script unit tests using [bats-core](https://github.com/bats-core/bats-core).
+
+### Quick Start
+```bash
+# Run all unit tests
+./tests/run-tests.sh
+
+# Run specific test file
+bats tests/unit/logging.bats
+
+# Run with TAP output
+bats --tap tests/unit/
+```
+
+### Test Structure
+```
+tests/
+├── run-tests.sh          # Test runner (installs bats if needed)
+├── test_helper.bash      # Shared utilities and mocking support
+├── unit/
+│   ├── logging.bats      # helpers/logging.sh tests (16 tests)
+│   ├── build-container.bats   # scripts/build-container.sh tests (13 tests)
+│   ├── push-container.bats    # scripts/push-container.sh tests (20 tests)
+│   └── check-version.bats     # scripts/check-version.sh tests (14 tests)
+└── fixtures/             # Test fixtures (mock containers, etc.)
+```
+
+### Test Coverage
+
+| Script | Functions Tested | Test Count |
+|--------|------------------|------------|
+| `helpers/logging.sh` | `log_success`, `log_error`, `log_warning`, `log_info`, `log_step`, `log_help` | 16 |
+| `scripts/build-container.sh` | `check_multiplatform_support`, `build_container` | 13 |
+| `scripts/push-container.sh` | `retry_with_backoff`, `get_platform_config`, `get_build_args`, `push_ghcr`, `push_dockerhub`, `push_container` | 20 |
+| `scripts/check-version.sh` | `get_build_version`, `check_container_version` | 14 |
+| **Total** | **10 functions** | **63 tests** |
+
+### Writing New Tests
+
+```bash
+#!/usr/bin/env bats
+
+load "../test_helper"
+
+setup() {
+    setup_temp_dir
+    source "$HELPERS_DIR/logging.sh"
+}
+
+teardown() {
+    teardown_temp_dir
+}
+
+@test "my_function returns expected value" {
+    run my_function "arg1"
+    [ "$status" -eq 0 ]
+    [ "$output" = "expected" ]
+}
+```
+
+### Helper Functions
+
+The `test_helper.bash` provides:
+
+| Function | Purpose |
+|----------|---------|
+| `setup_temp_dir` | Create isolated temp directory |
+| `teardown_temp_dir` | Clean up temp directory |
+| `create_mock_container` | Create mock container with version.sh |
+| `assert_output_contains` | Check output contains substring |
+
 ## Troubleshooting
 
 ### Common Issues
@@ -169,4 +242,4 @@ gh act -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest --list
 
 ---
 
-**Last Updated**: July 2025
+**Last Updated**: January 2026
