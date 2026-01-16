@@ -5,10 +5,10 @@
 | **Container** | `openvpn` |
 | **Version Change** | `v2.6.15` → `v2.6.17` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2025-11-28T18:11:03Z |
+| **Rebuild Date** | 2026-01-16T18:12:46Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/19771129031) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/21076269369) |
 
 ## Build Status
 
