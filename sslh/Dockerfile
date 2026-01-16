@@ -47,6 +47,10 @@ COPY docker-entrypoint.sh /
 
 EXPOSE 443
 
+# Health check - verify sslh is listening on configured port
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD socat -u OPEN:/dev/null "TCP:127.0.0.1:${LISTEN_PORT:-443},connect-timeout=5" || exit 1
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
 # By default we return sslh version.
