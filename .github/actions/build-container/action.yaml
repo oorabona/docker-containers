@@ -4,6 +4,10 @@ inputs:
   container:
     description: Container name to build
     required: true
+  version:
+    description: Version to build (if empty, will be auto-detected)
+    required: false
+    default: ''
   platform:
     description: Target platform (e.g., linux/amd64 or linux/arm64)
     required: false
@@ -94,18 +98,22 @@ runs:
         github_username="${{ github.repository_owner }}"
         image_name="${github_username}/${container}"
 
-        # Get current version for tagging (simple, no registry checks needed)
-        current_version=""
-        if current_version=$(./make version "$container" 2>/dev/null); then
+        # Get current version for tagging
+        # Priority: 1) input version, 2) ./make version, 3) fallback to "latest"
+        current_version="${{ inputs.version }}"
+
+        if [[ -n "$current_version" && "$current_version" != "unknown" && "$current_version" != "latest" ]]; then
+          echo "::notice::Using provided version: $current_version"
+        elif current_version=$(./make version "$container" 2>/dev/null); then
           if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
-            echo "::notice::Building version: $current_version"
+            echo "::notice::Detected version: $current_version"
           else
             current_version="latest"
-            echo "::notice::Building version: $current_version (fallback)"
+            echo "::notice::Using fallback version: $current_version"
           fi
         else
           current_version="latest"
-          echo "::notice::Building version: $current_version (fallback)"
+          echo "::notice::Using fallback version: $current_version"
         fi
 
         # Determine if build is needed
