@@ -40,9 +40,6 @@ retry_with_backoff() {
 get_platform_config() {
     local tag="$1"
 
-    # Debug: show BUILD_PLATFORM value
-    log_success "DEBUG: BUILD_PLATFORM='${BUILD_PLATFORM:-<unset>}'"
-
     # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         PLATFORM_CONFIG_PLATFORMS="$BUILD_PLATFORM"
