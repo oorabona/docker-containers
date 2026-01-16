@@ -9,34 +9,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
+source "$PROJECT_ROOT/helpers/retry.sh"
 
 # Source build utilities for platform detection
 source "$SCRIPT_DIR/build-container.sh"
-
-# Retry with exponential backoff
-# Usage: retry_with_backoff <max_attempts> <initial_delay> <command...>
-retry_with_backoff() {
-    local max_attempts=$1
-    local delay=$2
-    shift 2
-    local attempt=1
-
-    while [[ $attempt -le $max_attempts ]]; do
-        if "$@"; then
-            return 0
-        fi
-
-        if [[ $attempt -lt $max_attempts ]]; then
-            log_warning "Attempt $attempt/$max_attempts failed, retrying in ${delay}s..."
-            sleep "$delay"
-            delay=$((delay * 2))  # Exponential backoff
-        fi
-        ((attempt++))
-    done
-
-    log_error "All $max_attempts attempts failed"
-    return 1
-}
 
 # Get platform configuration - sets global variables
 # After calling: PLATFORM_CONFIG_PLATFORMS, PLATFORM_CONFIG_SUFFIX, PLATFORM_CONFIG_EFFECTIVE_TAG
