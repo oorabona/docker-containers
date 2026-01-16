@@ -252,18 +252,28 @@ Checks for upstream version updates across containers using individual `version.
 
 **Used by:** `auto-build.yaml`
 
-Builds a specific container using the universal `make` script with enhanced error handling.
+Builds a specific container using the universal `make` script with enhanced error handling and security scanning.
 
 **Inputs:**
 - `container`: Container name to build
 - `force_rebuild`: Force rebuild even if up-to-date
 - `dockerhub_username`, `dockerhub_token`, `github_token`: Registry credentials
+- `scan_vulnerabilities`: Enable Trivy security scanning (default: `true`)
+- `vulnerability_severity`: Minimum severity to fail build - `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (default: `CRITICAL`)
 
 **Key Features:**
 - Delegates to universal `make` script with `--bare` mode
 - Multi-registry support (Docker Hub + GHCR)
+- **Security scanning with Trivy** (CVE detection)
+- SARIF reports uploaded to GitHub Security tab
 - Proper exit code handling
 - Build status reporting
+
+**Security Scanning:**
+- Scans for OS and library vulnerabilities after build
+- Blocks push on CRITICAL vulnerabilities by default
+- Generates SARIF reports for GitHub Security integration
+- PR builds show results without blocking
 
 ### Detect Containers (`.github/actions/detect-containers`)
 
