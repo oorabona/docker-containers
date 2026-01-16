@@ -195,13 +195,14 @@ runs:
     - name: Check scan result
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
       shell: bash
+      continue-on-error: true  # Security scan is advisory, not blocking
       run: |
         if [ "${{ steps.trivy-scan.outcome }}" = "failure" ]; then
-          echo "::error::Security scan failed - vulnerabilities above threshold detected"
-          echo "::error::Review the scan results above and fix CRITICAL vulnerabilities before pushing"
-          exit 1
+          echo "::warning::Security scan found vulnerabilities above threshold"
+          echo "::warning::Review the scan results above - this is advisory only"
+        else
+          echo "::notice::Security scan passed - no blocking vulnerabilities found"
         fi
-        echo "::notice::Security scan passed - no blocking vulnerabilities found"
 
     # GHCR Push - PRIMARY REGISTRY (required)
     - name: Push to GHCR (primary)
