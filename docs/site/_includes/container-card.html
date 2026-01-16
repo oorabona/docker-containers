@@ -27,7 +27,7 @@
     <div class="card-meta-item">
       <span class="card-meta-label">Registry</span>
       <span class="card-meta-value">
-        {% if include.build_status == 'success' %}Published{% elsif include.build_status == 'failed' %}Failed{% else %}Building{% endif %}
+        {% if include.build_status == 'success' %}Published{% elsif include.build_status == 'pending' %}Not Published{% elsif include.build_status == 'failed' %}Failed{% else %}Building{% endif %}
       </span>
     </div>
   </div>
