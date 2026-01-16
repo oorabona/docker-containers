@@ -47,6 +47,7 @@ help() {
   log_help "run <target> [version]" "Run built <target> container [version]"
   log_help "version [target]" "Show latest upstream version for a container"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
+  log_help "sizes [target]" "Show image sizes (all or specific container)"
   echo
   echo Where:
   log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
@@ -63,6 +64,40 @@ list_containers() {
   for target in $targets ; do
     echo "$target"
   done
+}
+
+# Show image sizes for containers
+show_sizes() {
+  local target="$1"
+  local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+
+  echo "Container Image Sizes"
+  echo "====================="
+  echo ""
+  printf "%-20s %-30s %s\n" "CONTAINER" "IMAGE" "SIZE"
+  printf "%-20s %-30s %s\n" "---------" "-----" "----"
+
+  if [[ -n "$target" ]]; then
+    # Show specific container
+    docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
+      | grep -E "(ghcr.io|docker.io)/$github_username/$target:" \
+      | while IFS=$'\t' read -r image size; do
+          printf "%-20s %-30s %s\n" "$target" "$image" "$size"
+        done
+  else
+    # Show all containers
+    for container in $targets; do
+      docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
+        | grep -E "(ghcr.io|docker.io)/$github_username/$container:" \
+        | head -1 \
+        | while IFS=$'\t' read -r image size; do
+            printf "%-20s %-30s %s\n" "$container" "$image" "$size"
+          done
+    done
+  fi
+
+  echo ""
+  echo "Tip: See docs/CONTAINER_SIZE_OPTIMIZATION.md for optimization guidelines"
 }
 
 version() {
@@ -282,5 +317,6 @@ case "$1" in
   version ) shift; version "$@" ;;
   check-updates ) check_updates $2 ;;
   list ) list_containers ;;
+  sizes ) show_sizes $2 ;;
   * ) help ;;
 esac
