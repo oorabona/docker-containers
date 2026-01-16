@@ -235,10 +235,31 @@ jobs:
 
       - name: Get container version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x make
-          version=$(./make version "${{ matrix.container }}" 2>/dev/null || echo "latest")
+          container="${{ matrix.container }}"
+          github_username="${{ github.repository_owner }}"
+
+          # Try ./make version first
+          version=$(./make version "$container" 2>/dev/null || echo "")
+
+          if [[ -z "$version" || "$version" == "unknown" || "$version" == "latest" ]]; then
+            echo "::notice::./make version failed, querying GHCR for recent tags..."
+            # Fallback: query GHCR for the most recent versioned tag (not 'latest')
+            # Look for tags pushed in the last hour that match version-arch pattern
+            version=$(gh api "users/${github_username}/packages/container/${container}/versions" \
+              --jq '[.[] | select(.metadata.container.tags | length > 0) | .metadata.container.tags[]] | map(select(test("^v?[0-9].*-amd64$"))) | first | sub("-amd64$"; "")' \
+              2>/dev/null || echo "latest")
+          fi
+
+          if [[ -z "$version" ]]; then
+            version="latest"
+          fi
+
           echo "version=$version" >> $GITHUB_OUTPUT
+          echo "::notice::Using version: $version"
 
       # GHCR Manifest - PRIMARY (required)
       - name: Create GHCR multi-arch manifest (primary)
