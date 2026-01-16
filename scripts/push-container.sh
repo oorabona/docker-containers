@@ -22,9 +22,13 @@ push_container() {
 
     # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     local platforms
+    local platform_suffix=""
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         platforms="$BUILD_PLATFORM"
-        log_success "Pushing $container:$tag for native platform: $platforms"
+        # Extract arch from platform (e.g., linux/amd64 -> amd64)
+        local arch="${platforms#linux/}"
+        platform_suffix="-${arch}"
+        log_success "Pushing $container:$tag$platform_suffix for native platform: $platforms"
     elif check_multiplatform_support; then
         platforms="linux/amd64,linux/arm64"
         log_success "Building and pushing $container:$tag (multi-platform: AMD64 + ARM64)..."
@@ -64,9 +68,12 @@ push_container() {
     [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
     [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
     
-    # Prepare tags - include "latest" if building latest version
-    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$wanted" == "latest" ]]; then
+    # Prepare tags - use platform suffix for native CI builds to avoid overwrites
+    local effective_tag="${tag}${platform_suffix}"
+    local tag_args="-t $dockerhub_image:$effective_tag -t $ghcr_image:$effective_tag"
+
+    # For multi-platform local builds (no suffix), also tag as latest if requested
+    if [[ -z "$platform_suffix" && "$wanted" == "latest" ]]; then
         tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
     fi
     
@@ -121,18 +128,19 @@ push_container() {
     fi
     
     # Optional squashing (enabled by default for cleaner images)
-    if [[ "${SQUASH_IMAGE:-true}" == "true" ]]; then
+    # Skip squashing for platform-specific tags (will be done on final manifest)
+    if [[ "${SQUASH_IMAGE:-true}" == "true" && -z "$platform_suffix" ]]; then
         log_success "Replacing with squashed versions for cleaner distribution..."
-        
+
         # Replace layered with squashed (same tag) - using relative path to helpers
-        ../helpers/skopeo-squash "$dockerhub_image:$tag" "$dockerhub_image:$tag" dockerhub || {
+        ../helpers/skopeo-squash "$dockerhub_image:$effective_tag" "$dockerhub_image:$effective_tag" dockerhub || {
             log_warning "Docker Hub squashing failed, keeping layered version"
         }
-        
-        ../helpers/skopeo-squash "$ghcr_image:$tag" "$ghcr_image:$tag" ghcr || {
+
+        ../helpers/skopeo-squash "$ghcr_image:$effective_tag" "$ghcr_image:$effective_tag" ghcr || {
             log_warning "GHCR squashing failed, keeping layered version"
         }
-        
+
         # Handle latest tags if they exist
         if [[ "$wanted" == "latest" ]]; then
             ../helpers/skopeo-squash "$dockerhub_image:latest" "$dockerhub_image:latest" dockerhub || {
@@ -142,8 +150,10 @@ push_container() {
                 log_warning "GHCR latest squashing failed, keeping layered version"
             }
         fi
-        
+
         log_success "✅ Published squashed images to registries"
+    elif [[ -n "$platform_suffix" ]]; then
+        log_success "✅ Published platform-specific image $effective_tag (squashing deferred to manifest)"
     else
         log_success "✅ Published layered images to registries (squashing disabled)"
     fi
