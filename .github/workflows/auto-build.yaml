@@ -239,47 +239,73 @@ jobs:
           version=$(./make version "${{ matrix.container }}" 2>/dev/null || echo "latest")
           echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Create and push multi-arch manifest
+      # GHCR Manifest - PRIMARY (required)
+      - name: Create GHCR multi-arch manifest (primary)
+        id: ghcr-manifest
         env:
           CONTAINER: ${{ matrix.container }}
           VERSION: ${{ steps.version.outputs.version }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -e
-          echo "🔗 Creating multi-arch manifest for $CONTAINER:$VERSION"
-
-          # GHCR manifest - combine platform-specific tags
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
-          echo "📦 Combining $ghcr_image:$VERSION-amd64 and $ghcr_image:$VERSION-arm64"
-          docker buildx imagetools create -t "$ghcr_image:$VERSION" -t "$ghcr_image:latest" \
-            "$ghcr_image:$VERSION-amd64" \
-            "$ghcr_image:$VERSION-arm64" || {
-            echo "⚠️ GHCR manifest creation failed - trying single platform fallback"
-            docker buildx imagetools create -t "$ghcr_image:$VERSION" \
-              "$ghcr_image:$VERSION-amd64" 2>/dev/null || \
-            docker buildx imagetools create -t "$ghcr_image:$VERSION" \
-              "$ghcr_image:$VERSION-arm64" 2>/dev/null || \
-            echo "❌ No platform-specific images found for GHCR"
-          }
 
-          # Docker Hub manifest (if credentials available)
-          if [[ -n "$DOCKERHUB_USERNAME" ]]; then
-            dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
-            echo "📦 Combining $dockerhub_image:$VERSION-amd64 and $dockerhub_image:$VERSION-arm64"
-            docker buildx imagetools create -t "$dockerhub_image:$VERSION" -t "$dockerhub_image:latest" \
-              "$dockerhub_image:$VERSION-amd64" \
-              "$dockerhub_image:$VERSION-arm64" || {
-              echo "⚠️ Docker Hub manifest creation failed - trying single platform fallback"
-              docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
-                "$dockerhub_image:$VERSION-amd64" 2>/dev/null || \
-              docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
-                "$dockerhub_image:$VERSION-arm64" 2>/dev/null || \
-              echo "❌ No platform-specific images found for Docker Hub"
-            }
+          echo "::group::Creating GHCR manifest for $CONTAINER:$VERSION"
+
+          # Try multi-arch manifest first
+          if docker buildx imagetools create -t "$ghcr_image:$VERSION" -t "$ghcr_image:latest" \
+            "$ghcr_image:$VERSION-amd64" \
+            "$ghcr_image:$VERSION-arm64" 2>/dev/null; then
+            echo "::notice::GHCR multi-arch manifest created successfully"
+          # Fallback to single platform
+          elif docker buildx imagetools create -t "$ghcr_image:$VERSION" -t "$ghcr_image:latest" \
+            "$ghcr_image:$VERSION-amd64" 2>/dev/null; then
+            echo "::warning::GHCR manifest created with amd64 only (arm64 not available)"
+          elif docker buildx imagetools create -t "$ghcr_image:$VERSION" -t "$ghcr_image:latest" \
+            "$ghcr_image:$VERSION-arm64" 2>/dev/null; then
+            echo "::warning::GHCR manifest created with arm64 only (amd64 not available)"
+          else
+            echo "::error::No platform-specific images found for GHCR"
+            exit 1
           fi
 
-          echo "✅ Multi-arch manifest created for $CONTAINER:$VERSION"
+          echo "::endgroup::"
+
+      # Docker Hub Manifest - SECONDARY (optional, can fail)
+      - name: Create Docker Hub multi-arch manifest (secondary)
+        env:
+          CONTAINER: ${{ matrix.container }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          # Skip if no Docker Hub credentials
+          if [[ -z "$DOCKERHUB_USERNAME" ]]; then
+            echo "::notice::Skipping Docker Hub manifest (no credentials)"
+            exit 0
+          fi
+
+          dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
+
+          echo "::group::Creating Docker Hub manifest for $CONTAINER:$VERSION"
+
+          # Try multi-arch manifest first
+          if docker buildx imagetools create -t "$dockerhub_image:$VERSION" -t "$dockerhub_image:latest" \
+            "$dockerhub_image:$VERSION-amd64" \
+            "$dockerhub_image:$VERSION-arm64" 2>/dev/null; then
+            echo "::notice::Docker Hub multi-arch manifest created successfully"
+          # Fallback to single platform
+          elif docker buildx imagetools create -t "$dockerhub_image:$VERSION" -t "$dockerhub_image:latest" \
+            "$dockerhub_image:$VERSION-amd64" 2>/dev/null; then
+            echo "::warning::Docker Hub manifest created with amd64 only"
+          elif docker buildx imagetools create -t "$dockerhub_image:$VERSION" -t "$dockerhub_image:latest" \
+            "$dockerhub_image:$VERSION-arm64" 2>/dev/null; then
+            echo "::warning::Docker Hub manifest created with arm64 only"
+          else
+            echo "::warning::Docker Hub manifest creation failed - images available on GHCR only"
+          fi
+
+          echo "::endgroup::"
+        continue-on-error: true
 
   summary:
     needs: [detect-containers, build-and-push, create-manifest]

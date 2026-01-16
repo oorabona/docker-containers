@@ -31,39 +31,50 @@ outputs:
   image_name:
     description: Full image name
     value: ${{ steps.check-build.outputs.image_name }}
+  ghcr_pushed:
+    description: Whether GHCR push succeeded
+    value: ${{ steps.push-ghcr.outputs.success }}
+  dockerhub_pushed:
+    description: Whether Docker Hub push succeeded
+    value: ${{ steps.push-dockerhub.outputs.success }}
 runs:
   using: composite
   steps:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
-        # Use docker-container driver for better layer caching
-        # Native runners build their own platform, no QEMU needed
-        driver-opts: |
-          network=host
+        # Use docker driver to avoid pulling moby/buildkit from Docker Hub
+        # This makes builds resilient to Docker Hub outages
+        driver: docker
+        install: true
+
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ inputs.github_token }}
+
     - name: Log in to Docker Hub
       if: ${{ inputs.dockerhub_username != '' && inputs.dockerhub_token != '' }}
+      id: dockerhub-login
       uses: docker/login-action@v3
       with:
         registry: docker.io
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+      continue-on-error: true
+
     - name: Check if build is needed and get version
       id: check-build
       shell: bash
       run: |
         set -e
         container="${{ inputs.container }}"
-        
+
         # Check if the container directory exists and has a Dockerfile
         if [[ ! -f "$container/Dockerfile" ]]; then
-          echo "❌ No Dockerfile found for $container"
+          echo "::error::No Dockerfile found for $container"
           echo "needs_build=false" >> $GITHUB_OUTPUT
           echo "current_version=latest" >> $GITHUB_OUTPUT
           echo "image_name=${{ github.repository_owner }}/${container}" >> $GITHUB_OUTPUT
@@ -73,91 +84,111 @@ runs:
         # Set image names
         github_username="${{ github.repository_owner }}"
         image_name="${github_username}/${container}"
-        
+
         # Get current version for tagging (simple, no registry checks needed)
         current_version=""
         if current_version=$(./make version "$container" 2>/dev/null); then
           if [[ -n "$current_version" && "$current_version" != "unknown" ]]; then
-            echo "📋 Building version: $current_version"
+            echo "::notice::Building version: $current_version"
           else
             current_version="latest"
-            echo "📋 Building version: $current_version (fallback)"
+            echo "::notice::Building version: $current_version (fallback)"
           fi
         else
           current_version="latest"
-          echo "📋 Building version: $current_version (fallback)"
+          echo "::notice::Building version: $current_version (fallback)"
         fi
 
         # Determine if build is needed
         if [ "${{ inputs.force_rebuild }}" = "true" ]; then
-          echo "🔄 Force rebuild requested - build authorized by upstream monitor"
+          echo "::notice::Force rebuild requested"
           needs_build=true
         elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
-          echo "📝 Code changes detected - build needed"
-          needs_build=true  
+          echo "::notice::Code changes detected - build needed"
+          needs_build=true
         else
-          echo "🔄 Manual/scheduled build"
+          echo "::notice::Manual/scheduled build"
           needs_build=true
         fi
-        
+
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
 
-    - name: Build and push using make script
+    - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
+      id: build
       shell: bash
       env:
-        EVENT_NAME: ${{ github.event_name }}
         BUILD_PLATFORM: ${{ inputs.platform }}
       run: |
         set -e
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
         platform="${BUILD_PLATFORM:-linux/amd64}"
-        arch="${platform#linux/}"  # Extract arch from platform (e.g., amd64 from linux/amd64)
 
-        echo "🔨 Building $container:$current_version for $platform (native runner)..."
-
-        # Make the script executable
+        echo "::group::Building $container:$current_version for $platform"
         chmod +x make
 
-        # The make script handles all the complexity of building and pushing
         if ! ./make build "$container" "$current_version"; then
-          echo "❌ Build failed"
+          echo "::error::Build failed for $container"
           exit 1
         fi
 
-        echo "✅ Build successful"
+        echo "::endgroup::"
+        echo "::notice::Build successful for $container:$current_version"
 
-        # Push to registries using make script
-        # Skip push on pull_request events (test build only)
-        if [[ "${EVENT_NAME:-}" == "pull_request" ]]; then
-          echo "⏭️ Skipping push (pull request - test build only)"
-          exit 0
-        fi
+    # GHCR Push - PRIMARY REGISTRY (required)
+    - name: Push to GHCR (primary)
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' }}
+      id: push-ghcr
+      shell: bash
+      env:
+        BUILD_PLATFORM: ${{ inputs.platform }}
+      run: |
+        set -e
+        container="${{ inputs.container }}"
+        current_version="${{ steps.check-build.outputs.current_version }}"
 
-        if ! ./make push "$container" "$current_version"; then
-          echo "❌ Push failed"
+        echo "::group::Pushing to GHCR (primary registry)"
+
+        if ./make push ghcr "$container" "$current_version"; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "::notice::GHCR push successful"
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::GHCR push failed"
           exit 1
         fi
 
-        echo "✅ Push successful for $platform"
-    # Note: Trivy scanning temporarily disabled due to image reference issues
-    # with multi-platform builds and docker-compose image naming
-    # TODO: Re-enable after fixing image tagging consistency
-    # - name: Run Trivy vulnerability scanner
-    #   if: steps.check-build.outputs.needs_build == 'true'
-    #   uses: aquasecurity/trivy-action@0.32.0
-    #   with:
-    #     image-ref: local-scan/${{ inputs.container }}:${{ steps.check-build.outputs.current_version }}
-    #     format: sarif
-    #     output: trivy-results.sarif
-    #   continue-on-error: true
-    # Note: SARIF upload temporarily disabled along with Trivy scanning
-    # - name: Upload Trivy scan results
-    #   if: steps.check-build.outputs.needs_build == 'true'
-    #   uses: github/codeql-action/upload-sarif@v3
-    #   with:
-    #     sarif_file: trivy-results.sarif
-    #   continue-on-error: true
+        echo "::endgroup::"
+
+    # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
+    - name: Push to Docker Hub (secondary)
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
+      id: push-dockerhub
+      shell: bash
+      env:
+        BUILD_PLATFORM: ${{ inputs.platform }}
+      run: |
+        container="${{ inputs.container }}"
+        current_version="${{ steps.check-build.outputs.current_version }}"
+
+        echo "::group::Pushing to Docker Hub (secondary registry)"
+
+        if ./make push dockerhub "$container" "$current_version"; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "::notice::Docker Hub push successful"
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::warning::Docker Hub push failed - images available on GHCR only"
+        fi
+
+        echo "::endgroup::"
+      continue-on-error: true
+
+    - name: Skip push for pull request
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      run: |
+        echo "::notice::Skipping push (pull request - test build only)"
