@@ -13,6 +13,7 @@ doc-meta:
 
 | Category | Document | Status |
 |----------|----------|--------|
+| Container Config | [CONTAINER_CONFIG.md](CONTAINER_CONFIG.md) | canonical |
 | GitHub Actions | [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md) | canonical |
 | Workflow Architecture | [WORKFLOW_ARCHITECTURE.md](WORKFLOW_ARCHITECTURE.md) | canonical |
 | Local Development | [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) | canonical |
