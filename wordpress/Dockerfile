@@ -20,7 +20,10 @@ RUN set -ex; \
 	; \
 	\
 	docker-php-ext-configure gd --with-jpeg; \
-	docker-php-ext-install gd mysqli opcache zip; \
+	# Install extensions one by one (opcache may already be built-in on PHP 8.4+)
+	docker-php-ext-install gd mysqli zip; \
+	# Only install opcache if not already present
+	php -m | grep -qi opcache || docker-php-ext-install opcache; \
 	\
 # reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
 	apt-mark auto '.*' > /dev/null; \
