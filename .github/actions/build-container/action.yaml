@@ -21,6 +21,14 @@ inputs:
   github_token:
     description: GitHub token for GHCR
     required: true
+  scan_vulnerabilities:
+    description: Enable Trivy vulnerability scanning (true/false)
+    required: false
+    default: 'true'
+  vulnerability_severity:
+    description: Minimum severity to fail build (CRITICAL, HIGH, MEDIUM, LOW)
+    required: false
+    default: 'CRITICAL'
 outputs:
   built:
     description: Whether the container was built
@@ -37,6 +45,9 @@ outputs:
   dockerhub_pushed:
     description: Whether Docker Hub push succeeded
     value: ${{ steps.push-dockerhub.outputs.success }}
+  scan_passed:
+    description: Whether security scan passed (or was skipped)
+    value: ${{ steps.trivy-scan.outcome != 'failure' || inputs.scan_vulnerabilities != 'true' }}
 runs:
   using: composite
   steps:
@@ -135,6 +146,63 @@ runs:
 
         echo "::endgroup::"
         echo "::notice::Build successful for $container:$current_version"
+
+    # Security Scanning with Trivy
+    # Note: Image is tagged as ghcr.io/owner/container:version by the build step
+    - name: Cache Trivy vulnerability database
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/trivy
+        key: trivy-db-${{ runner.os }}-${{ hashFiles('.github/actions/build-container/action.yaml') }}
+        restore-keys: |
+          trivy-db-${{ runner.os }}-
+
+    - name: Scan for vulnerabilities (Trivy)
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' }}
+      id: trivy-scan
+      uses: aquasecurity/trivy-action@0.29.0
+      with:
+        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
+        format: 'table'
+        exit-code: '1'
+        severity: '${{ inputs.vulnerability_severity }},CRITICAL'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        cache-dir: ~/.cache/trivy
+      continue-on-error: ${{ github.event_name == 'pull_request' }}
+
+    - name: Generate SARIF report
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
+      uses: aquasecurity/trivy-action@0.29.0
+      with:
+        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'LOW,MEDIUM,HIGH,CRITICAL'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        cache-dir: ~/.cache/trivy
+      continue-on-error: true
+
+    - name: Upload SARIF to GitHub Security
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+        category: 'container-${{ inputs.container }}'
+      continue-on-error: true
+
+    - name: Check scan result
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
+      shell: bash
+      run: |
+        if [ "${{ steps.trivy-scan.outcome }}" = "failure" ]; then
+          echo "::error::Security scan failed - vulnerabilities above threshold detected"
+          echo "::error::Review the scan results above and fix CRITICAL vulnerabilities before pushing"
+          exit 1
+        fi
+        echo "::notice::Security scan passed - no blocking vulnerabilities found"
 
     # GHCR Push - PRIMARY REGISTRY (required)
     - name: Push to GHCR (primary)
