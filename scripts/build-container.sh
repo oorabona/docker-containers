@@ -60,15 +60,23 @@ build_container() {
     # Detect container runtime for cache compatibility
     local cache_args=""
     local runtime_info=""
-    
+    local cache_image="ghcr.io/$github_username/$container:buildcache"
+
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: always use Docker with GHA cache
-        cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
-        runtime_info="GitHub Actions (Docker)"
+        # GitHub Actions: use registry cache (persists across workflows)
+        # Registry cache is more reliable than GHA cache for multi-platform builds
+        cache_args="--cache-from type=registry,ref=$cache_image"
+        runtime_info="GitHub Actions (registry cache)"
+        log_success "Using registry cache: $cache_image"
     elif docker version 2>/dev/null | grep -q "Docker Engine"; then
-        # Local Docker: supports GitHub Actions cache
-        cache_args="--cache-from type=gha --cache-to type=gha,mode=max"
-        runtime_info="Docker Engine"
+        # Local Docker: try registry cache if logged in, otherwise inline cache
+        if docker pull "$cache_image" 2>/dev/null; then
+            cache_args="--cache-from type=registry,ref=$cache_image"
+            runtime_info="Docker Engine (registry cache)"
+        else
+            cache_args=""
+            runtime_info="Docker Engine (no cache - login to GHCR for cache)"
+        fi
     elif command -v podman >/dev/null 2>&1; then
         # Podman: has built-in layer caching
         cache_args=""
