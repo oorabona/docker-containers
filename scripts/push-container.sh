@@ -80,16 +80,29 @@ push_container() {
     if [[ "$is_docker" == "true" ]]; then
         # Docker buildx: supports direct push
         log_success "Using Docker buildx with --push flag..."
+        log_success "Tags: $tag_args"
+        log_success "Platform: $platforms"
+        log_success "Build args: $build_args"
+
+        # For native platform builds, don't use GHA cache with push (can cause issues)
+        local push_cache_args=""
+        if [[ -z "$platform_suffix" ]]; then
+            push_cache_args="$cache_args"
+        fi
+
         docker buildx build \
             --platform "$platforms" \
             --push \
-            $cache_args \
+            --provenance=false \
+            $push_cache_args \
             $build_args \
             $tag_args \
             . || {
-            log_error "Push failed for $container:$tag"
+            log_error "Push failed for $container:$effective_tag"
             return 1
         }
+
+        log_success "Push completed for $effective_tag"
     else
         # Podman: build then push separately
         log_success "Using Podman build + separate push..."
