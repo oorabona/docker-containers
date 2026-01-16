@@ -7,7 +7,8 @@ _No tasks currently in progress_
 ## Pending
 
 ### High Priority
-- [ ] Add container health checks to all images (HEALTHCHECK in Dockerfiles)
+
+_No high priority tasks remaining_
 
 ### Medium Priority
 
@@ -25,6 +26,7 @@ _No tasks currently in progress_
 
 ## Completed
 
+- [x] ✅ Add container health checks - added HEALTHCHECK to sslh, verified 9/9 containers (2026-01-16)
 - [x] ✅ Auto-PR for upstream updates - already implemented in upstream-monitor.yaml (2026-01-16)
 - [x] ✅ Review and stabilize upstream-monitor workflow - fix checkout@v6 bug, fix jq interpolation (2026-01-16)
 - [x] ✅ Fix multi-arch manifest creation - explicit BUILD_PLATFORM export in composite action (2026-01-16)
