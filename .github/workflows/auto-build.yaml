@@ -61,7 +61,7 @@ jobs:
       count: ${{ steps.detect.outputs.count }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -73,25 +73,34 @@ jobs:
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
 
   build-and-push:
-    name: Build Container
+    name: Build ${{ matrix.container }} (${{ matrix.arch }})
     needs: detect-containers
     if: needs.detect-containers.outputs.count > 0
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 3  # Limit parallel builds to reduce resource contention
+      max-parallel: 4  # Allow more parallel builds since we're splitting by platform
       matrix:
         container: ${{ fromJson(needs.detect-containers.outputs.containers) }}
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm64
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Build container with retry logic
         id: build
         uses: ./.github/actions/build-container
         with:
           container: ${{ matrix.container }}
+          platform: ${{ matrix.platform }}
           force_rebuild: ${{ github.event.inputs.force_rebuild }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -104,6 +113,7 @@ jobs:
         uses: ./.github/actions/build-container
         with:
           container: ${{ matrix.container }}
+          platform: ${{ matrix.platform }}
           force_rebuild: true  # Force rebuild on retry
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -193,8 +203,68 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-  summary:
+  create-manifest:
+    name: Create Multi-Arch Manifest
     needs: [detect-containers, build-and-push]
+    if: |
+      needs.build-and-push.result == 'success' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        container: ${{ fromJson(needs.detect-containers.outputs.containers) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Get container version
+        id: version
+        run: |
+          chmod +x make
+          version=$(./make version "${{ matrix.container }}" 2>/dev/null || echo "latest")
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Create and push multi-arch manifest
+        env:
+          CONTAINER: ${{ matrix.container }}
+          VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -e
+          echo "🔗 Creating multi-arch manifest for $CONTAINER:$VERSION"
+
+          # GHCR manifest
+          ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
+          docker buildx imagetools create -t "$ghcr_image:$VERSION" \
+            "$ghcr_image:$VERSION" || echo "GHCR manifest already exists or single-platform"
+
+          # Docker Hub manifest (if credentials available)
+          if [[ -n "$DOCKERHUB_USERNAME" ]]; then
+            dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
+            docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
+              "$dockerhub_image:$VERSION" || echo "Docker Hub manifest already exists or single-platform"
+          fi
+
+          echo "✅ Multi-arch manifest created for $CONTAINER:$VERSION"
+
+  summary:
+    needs: [detect-containers, build-and-push, create-manifest]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -239,7 +309,7 @@ jobs:
             echo "- ✅ **Automatic triggering** on container file changes" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Upstream version monitoring** for automatic updates" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Registry verification** to avoid duplicate builds" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Multi-platform** builds (amd64 + arm64)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Native multi-platform** builds (amd64 + arm64 on native runners)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY
             echo "- ⏸️ **Security scanning** (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.build-and-push.result }}" = "skipped" ]; then
@@ -255,12 +325,13 @@ jobs:
           echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY
 
   update-dashboard:
-    needs: [detect-containers, build-and-push]
-    # Only update dashboard after successful builds merged to master
+    needs: [detect-containers, build-and-push, create-manifest]
+    # Only update dashboard after successful builds and manifests merged to master
     # This prevents dashboard updates during PR testing
     if: |
-      always() && 
+      always() &&
       needs.build-and-push.result == 'success' &&
+      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml

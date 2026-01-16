@@ -4,6 +4,10 @@ inputs:
   container:
     description: Container name to build
     required: true
+  platform:
+    description: Target platform (e.g., linux/amd64 or linux/arm64)
+    required: false
+    default: 'linux/amd64'
   force_rebuild:
     description: Force rebuild even if image exists
     required: false
@@ -30,13 +34,10 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Set up QEMU for multi-architecture builds
-      uses: docker/setup-qemu-action@v3
-      
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
-        platforms: linux/amd64,linux/arm64
+        platforms: ${{ inputs.platform }}
         driver: docker-container
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
@@ -106,37 +107,40 @@ runs:
       shell: bash
       env:
         EVENT_NAME: ${{ github.event_name }}
+        BUILD_PLATFORM: ${{ inputs.platform }}
       run: |
         set -e
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
-        
-        echo "🔨 Building $container:$current_version using make script..."
-        
+        platform="${BUILD_PLATFORM:-linux/amd64}"
+        arch="${platform#linux/}"  # Extract arch from platform (e.g., amd64 from linux/amd64)
+
+        echo "🔨 Building $container:$current_version for $platform (native runner)..."
+
         # Make the script executable
         chmod +x make
-        
+
         # The make script handles all the complexity of building and pushing
         if ! ./make build "$container" "$current_version"; then
           echo "❌ Build failed"
           exit 1
         fi
-        
+
         echo "✅ Build successful"
-        
+
         # Push to registries using make script
         # Skip push on pull_request events (test build only)
         if [[ "${EVENT_NAME:-}" == "pull_request" ]]; then
           echo "⏭️ Skipping push (pull request - test build only)"
           exit 0
         fi
-        
+
         if ! ./make push "$container" "$current_version"; then
           echo "❌ Push failed"
           exit 1
         fi
-        
-        echo "✅ Push successful"
+
+        echo "✅ Push successful for $platform"
     # Note: Trivy scanning temporarily disabled due to image reference issues
     # with multi-platform builds and docker-compose image naming
     # TODO: Re-enable after fixing image tagging consistency
