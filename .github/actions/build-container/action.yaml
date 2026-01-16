@@ -156,6 +156,11 @@ runs:
 
     # Security Scanning with Trivy
     # Note: Image is tagged as ghcr.io/owner/container:version by the build step
+    - name: Ensure Trivy cache directory exists
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' }}
+      shell: bash
+      run: mkdir -p ~/.cache/trivy
+
     - name: Cache Trivy vulnerability database
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' }}
       uses: actions/cache@v4
