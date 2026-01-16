@@ -52,6 +52,7 @@ permissions:
   packages: write
   pages: write
   id-token: write
+  security-events: write  # Required for uploading SARIF to GitHub Security
 
 jobs:
   detect-containers:
