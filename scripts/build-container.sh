@@ -41,14 +41,17 @@ build_container() {
     local container="$1"
     local version="$2"
     local tag="$3"
-    
+
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
-    
-    # Determine platform support
+
+    # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     local platforms
-    if check_multiplatform_support; then
+    if [[ -n "${BUILD_PLATFORM:-}" ]]; then
+        platforms="$BUILD_PLATFORM"
+        log_success "Using native platform: $platforms"
+    elif check_multiplatform_support; then
         platforms="linux/amd64,linux/arm64"
     else
         platforms="linux/amd64"
@@ -95,10 +98,10 @@ build_container() {
         # GitHub Actions: build locally without pushing (use --load)
         # This ensures PR builds validate without polluting registries
         log_success "GitHub Actions detected - building locally for validation..."
-        log_success "Runtime: $runtime_info | Platform: linux/amd64 | Cache: ${cache_args:-none}"
-        
+        log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
+
         docker buildx build \
-            --platform linux/amd64 \
+            --platform "$platforms" \
             --load \
             $cache_args \
             $build_args \
@@ -107,15 +110,15 @@ build_container() {
             log_error "Build failed for $container:$tag"
             return 1
         }
-        
+
         log_success "✅ Build completed - image loaded locally (no push)"
     else
         # Local development: single platform with --load
         log_success "Building $container:$tag locally (layered image)..."
-        log_success "Runtime: $runtime_info | Platform: linux/amd64 | Cache: ${cache_args:-none}"
-        
+        log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
+
         docker buildx build \
-            --platform linux/amd64 \
+            --platform "$platforms" \
             --load \
             $cache_args \
             $build_args \
@@ -124,7 +127,7 @@ build_container() {
             log_error "Build failed for $container:$tag"
             return 1
         }
-        
+
         log_success "✅ Local build completed - layered image available in Docker daemon"
     fi
 }
