@@ -16,12 +16,12 @@ _No medium priority tasks remaining_
 
 ### Low Priority
 
-- [ ] E2E container tests - start container, verify service, stop
 - [ ] Consolidate duplicate shell functions
 - [ ] Add container size optimization
 
 ## Completed
 
+- [x] ✅ E2E container tests - docker-compose + healthcheck validation (2026-01-16)
 - [x] ✅ Registry cleanup automation - GHCR monthly cleanup workflow (2026-01-16)
 - [x] ✅ Build notifications - GitHub default email notifications on failures (2026-01-16)
 - [x] ✅ Improve test coverage for build scripts - 63 unit tests via bats-core (2026-01-16)
