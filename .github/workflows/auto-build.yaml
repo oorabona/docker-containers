@@ -249,16 +249,34 @@ jobs:
           set -e
           echo "🔗 Creating multi-arch manifest for $CONTAINER:$VERSION"
 
-          # GHCR manifest
+          # GHCR manifest - combine platform-specific tags
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
-          docker buildx imagetools create -t "$ghcr_image:$VERSION" \
-            "$ghcr_image:$VERSION" || echo "GHCR manifest already exists or single-platform"
+          echo "📦 Combining $ghcr_image:$VERSION-amd64 and $ghcr_image:$VERSION-arm64"
+          docker buildx imagetools create -t "$ghcr_image:$VERSION" -t "$ghcr_image:latest" \
+            "$ghcr_image:$VERSION-amd64" \
+            "$ghcr_image:$VERSION-arm64" || {
+            echo "⚠️ GHCR manifest creation failed - trying single platform fallback"
+            docker buildx imagetools create -t "$ghcr_image:$VERSION" \
+              "$ghcr_image:$VERSION-amd64" 2>/dev/null || \
+            docker buildx imagetools create -t "$ghcr_image:$VERSION" \
+              "$ghcr_image:$VERSION-arm64" 2>/dev/null || \
+            echo "❌ No platform-specific images found for GHCR"
+          }
 
           # Docker Hub manifest (if credentials available)
           if [[ -n "$DOCKERHUB_USERNAME" ]]; then
             dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
-            docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
-              "$dockerhub_image:$VERSION" || echo "Docker Hub manifest already exists or single-platform"
+            echo "📦 Combining $dockerhub_image:$VERSION-amd64 and $dockerhub_image:$VERSION-arm64"
+            docker buildx imagetools create -t "$dockerhub_image:$VERSION" -t "$dockerhub_image:latest" \
+              "$dockerhub_image:$VERSION-amd64" \
+              "$dockerhub_image:$VERSION-arm64" || {
+              echo "⚠️ Docker Hub manifest creation failed - trying single platform fallback"
+              docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
+                "$dockerhub_image:$VERSION-amd64" 2>/dev/null || \
+              docker buildx imagetools create -t "$dockerhub_image:$VERSION" \
+                "$dockerhub_image:$VERSION-arm64" 2>/dev/null || \
+              echo "❌ No platform-specific images found for Docker Hub"
+            }
           fi
 
           echo "✅ Multi-arch manifest created for $CONTAINER:$VERSION"
