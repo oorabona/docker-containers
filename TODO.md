@@ -14,7 +14,6 @@ _No high priority tasks remaining_
 
 - [ ] Build notifications - Slack/Discord/email alerts on failures, daily digest
 - [ ] Improve test coverage for build scripts
-- [ ] Document container configuration options
 
 ### Low Priority
 
@@ -25,6 +24,7 @@ _No high priority tasks remaining_
 
 ## Completed
 
+- [x] ✅ Document container configuration options - CONTAINER_CONFIG.md created (2026-01-16)
 - [x] ✅ Improve CI build caching - registry cache via GHCR buildcache tag (2026-01-16)
 - [x] ✅ Add container health checks - added HEALTHCHECK to sslh, verified 9/9 containers (2026-01-16)
 - [x] ✅ Auto-PR for upstream updates - already implemented in upstream-monitor.yaml (2026-01-16)
