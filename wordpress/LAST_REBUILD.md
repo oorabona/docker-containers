@@ -5,10 +5,10 @@
 | **Container** | `wordpress` |
 | **Version Change** | `` → `6.9.0` |
 | **Change Type** | `major` |
-| **Rebuild Date** | 2025-12-04T06:12:25Z |
+| **Rebuild Date** | 2026-01-16T18:12:41Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🆕 New container - first publication |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/19919534861) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/21076269369) |
 
 ## Build Status
 
