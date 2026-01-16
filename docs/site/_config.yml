@@ -7,7 +7,7 @@ url: "https://oorabona.github.io"
 
 # Build settings
 markdown: kramdown
-theme: minima  # Keep as fallback, but we'll override with Tabler
+# theme: minima  # Disabled - using custom glassmorphism layouts
 plugins:
   - jekyll-feed
 
