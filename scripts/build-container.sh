@@ -4,7 +4,10 @@
 # Part of make script decomposition for better Single Responsibility
 
 # Source shared logging utilities
-source "$(dirname "$0")/helpers/logging.sh"
+# Use BASH_SOURCE[0] instead of $0 to work correctly when sourced
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$PROJECT_ROOT/helpers/logging.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {

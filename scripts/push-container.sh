@@ -5,10 +5,13 @@
 # Supports separate GHCR and Docker Hub pushes for resilience
 
 # Source shared logging utilities
-source "$(dirname "$0")/helpers/logging.sh"
+# Use BASH_SOURCE[0] instead of $0 to work correctly when sourced
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$PROJECT_ROOT/helpers/logging.sh"
 
 # Source build utilities for platform detection
-source "$(dirname "$0")/scripts/build-container.sh"
+source "$SCRIPT_DIR/build-container.sh"
 
 # Retry with exponential backoff
 # Usage: retry_with_backoff <max_attempts> <initial_delay> <command...>
