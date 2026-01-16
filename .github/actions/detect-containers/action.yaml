@@ -141,8 +141,10 @@ runs:
             version="latest"
           fi
           echo "  → $container: $version"
-          versions_json=$(echo "$versions_json" | jq --arg c "$container" --arg v "$version" '. + {($c): $v}')
+          versions_json=$(echo "$versions_json" | jq -c --arg c "$container" --arg v "$version" '. + {($c): $v}')
         done
 
+        # Output as single-line JSON (GitHub Actions requirement)
+        versions_json=$(echo "$versions_json" | jq -c .)
         echo "versions=$versions_json" >> $GITHUB_OUTPUT
         echo "📋 Versions computed: $versions_json"
