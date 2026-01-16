@@ -79,9 +79,13 @@ jobs:
 
       - name: Setup Jekyll configuration
         run: |
-          echo "📋 Setting up Jekyll configuration from docs/site/"
+          echo "📋 Setting up Jekyll from docs/site/"
           cp docs/site/_config.yml _config.yml
+          cp -r docs/site/_includes _includes
+          cp -r docs/site/_layouts _layouts
           echo "✅ Jekyll configuration ready"
+          echo "📂 Includes: $(ls _includes/)"
+          echo "📂 Layouts: $(ls _layouts/)"
 
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
