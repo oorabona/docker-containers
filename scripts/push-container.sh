@@ -35,28 +35,28 @@ retry_with_backoff() {
     return 1
 }
 
-# Get platform configuration
-# Sets: platforms, platform_suffix, effective_tag
+# Get platform configuration - sets global variables
+# After calling: PLATFORM_CONFIG_PLATFORMS, PLATFORM_CONFIG_SUFFIX, PLATFORM_CONFIG_EFFECTIVE_TAG
 get_platform_config() {
     local tag="$1"
 
     # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
-        platforms="$BUILD_PLATFORM"
-        local arch="${platforms#linux/}"
-        platform_suffix="-${arch}"
-        effective_tag="${tag}${platform_suffix}"
-        log_success "Native platform: $platforms (tag: $effective_tag)"
+        PLATFORM_CONFIG_PLATFORMS="$BUILD_PLATFORM"
+        local arch="${PLATFORM_CONFIG_PLATFORMS#linux/}"
+        PLATFORM_CONFIG_SUFFIX="-${arch}"
+        PLATFORM_CONFIG_EFFECTIVE_TAG="${tag}${PLATFORM_CONFIG_SUFFIX}"
+        log_success "Native platform: $PLATFORM_CONFIG_PLATFORMS (tag: $PLATFORM_CONFIG_EFFECTIVE_TAG)"
     elif check_multiplatform_support; then
-        platforms="linux/amd64,linux/arm64"
-        platform_suffix=""
-        effective_tag="$tag"
-        log_success "Multi-platform: $platforms"
+        PLATFORM_CONFIG_PLATFORMS="linux/amd64,linux/arm64"
+        PLATFORM_CONFIG_SUFFIX=""
+        PLATFORM_CONFIG_EFFECTIVE_TAG="$tag"
+        log_success "Multi-platform: $PLATFORM_CONFIG_PLATFORMS"
     else
-        platforms="linux/amd64"
-        platform_suffix=""
-        effective_tag="$tag"
-        log_success "Single platform: $platforms"
+        PLATFORM_CONFIG_PLATFORMS="linux/amd64"
+        PLATFORM_CONFIG_SUFFIX=""
+        PLATFORM_CONFIG_EFFECTIVE_TAG="$tag"
+        log_success "Single platform: $PLATFORM_CONFIG_PLATFORMS"
     fi
 }
 
@@ -85,9 +85,11 @@ push_ghcr() {
 
     log_success "=== Pushing to GHCR (primary registry) ==="
 
-    # Get platform configuration
-    local platforms platform_suffix effective_tag
+    # Get platform configuration (sets PLATFORM_CONFIG_* globals)
     get_platform_config "$tag"
+    local platforms="$PLATFORM_CONFIG_PLATFORMS"
+    local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
+    local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
     # Prepare build arguments
     local build_args
@@ -143,9 +145,11 @@ push_dockerhub() {
 
     log_success "=== Pushing to Docker Hub (secondary registry) ==="
 
-    # Get platform configuration
-    local platforms platform_suffix effective_tag
+    # Get platform configuration (sets PLATFORM_CONFIG_* globals)
     get_platform_config "$tag"
+    local platforms="$PLATFORM_CONFIG_PLATFORMS"
+    local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
+    local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
     # Prepare build arguments
     local build_args
