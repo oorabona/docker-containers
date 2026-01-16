@@ -2,13 +2,12 @@
 
 ## In Progress
 
-- [ ] 🟡 Resilient multi-registry push (GHCR primary, Docker Hub secondary) — platform suffix bug in progress
+_No tasks currently in progress_
 
 ## Pending
 
 ### High Priority
 - [ ] Auto-PR for upstream updates - create PR automatically when new versions detected
-- [ ] Fix multi-arch manifest creation - platform suffix tags not being created correctly
 - [ ] Review and stabilize upstream-monitor workflow
 - [ ] Add container health checks to all images (HEALTHCHECK in Dockerfiles)
 
@@ -28,9 +27,10 @@
 
 ## Completed
 
+- [x] ✅ Fix multi-arch manifest creation - explicit BUILD_PLATFORM export in composite action (2026-01-16)
+- [x] ✅ Resilient multi-registry push (GHCR primary, Docker Hub secondary) (2026-01-16)
 - [x] ✅ Security scanning with Trivy - CVE scanning, blocks on CRITICAL, SARIF reports (2026-01-16)
 - [x] ✅ Project initialized with /project-init (2026-01-16)
-- [x] ✅ Resilient push infrastructure - separate GHCR/Docker Hub functions (2026-01-16)
 - [x] ✅ Remove deprecated buildx install option (2026-01-16)
 
 ## Blocked / Deferred

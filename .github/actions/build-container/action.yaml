@@ -128,15 +128,14 @@ runs:
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       id: build
       shell: bash
-      env:
-        BUILD_PLATFORM: ${{ inputs.platform }}
       run: |
         set -e
+        # Export BUILD_PLATFORM explicitly (composite action env interpolation workaround)
+        export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
-        platform="${BUILD_PLATFORM:-linux/amd64}"
 
-        echo "::group::Building $container:$current_version for $platform"
+        echo "::group::Building $container:$current_version for $BUILD_PLATFORM"
         chmod +x make
 
         if ! ./make build "$container" "$current_version"; then
@@ -209,13 +208,14 @@ runs:
       if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' }}
       id: push-ghcr
       shell: bash
-      env:
-        BUILD_PLATFORM: ${{ inputs.platform }}
       run: |
         set -e
+        # Export BUILD_PLATFORM explicitly (composite action env interpolation workaround)
+        export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
 
+        echo "::notice::Pushing with BUILD_PLATFORM=$BUILD_PLATFORM"
         echo "::group::Pushing to GHCR (primary registry)"
 
         if ./make push ghcr "$container" "$current_version"; then
@@ -234,9 +234,9 @@ runs:
       if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
       id: push-dockerhub
       shell: bash
-      env:
-        BUILD_PLATFORM: ${{ inputs.platform }}
       run: |
+        # Export BUILD_PLATFORM explicitly (composite action env interpolation workaround)
+        export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
 
