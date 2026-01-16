@@ -127,16 +127,22 @@ generate_container_card() {
     # Generate Docker pull commands
     local ghcr_image="ghcr.io/${github_username}/${container}:${current_version}"
     local dockerhub_image="docker.io/${dockerhub_username}/${container}:${current_version}"
-    
+
+    # Determine build_status based on publication state
+    local build_status="success"
+    if [[ "$current_version" == "no-published-version" ]]; then
+        build_status="pending"
+    fi
+
     # Generate Jekyll include call with enhanced data
     cat << EOF
-{% include container-card.html 
+{% include container-card.html
    name="$container"
    current_version="$current_version"
    latest_version="$latest_version"
    status_color="$status_color"
    status_text="$status_text"
-   build_status="success"
+   build_status="$build_status"
    description="$description"
    ghcr_image="$ghcr_image"
    dockerhub_image="$dockerhub_image"
