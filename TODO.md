@@ -16,12 +16,13 @@ _No medium priority tasks remaining_
 
 ### Low Priority
 
-- [ ] Consolidate duplicate shell functions
-- [ ] Add container size optimization
+_No low priority tasks remaining_
 
 ## Completed
 
-- [x] ✅ E2E container tests - docker-compose + healthcheck validation (2026-01-16)
+- [x] ✅ Add container size optimization - docs + ./make sizes command (2026-01-16)
+- [x] ✅ Consolidate duplicate shell functions - helpers/retry.sh + logging.sh reuse (2026-01-16)
+- [x] ✅ E2E container tests - refactored with ./make build + test.sh scripts (2026-01-16)
 - [x] ✅ Registry cleanup automation - GHCR monthly cleanup workflow (2026-01-16)
 - [x] ✅ Build notifications - GitHub default email notifications on failures (2026-01-16)
 - [x] ✅ Improve test coverage for build scripts - 63 unit tests via bats-core (2026-01-16)
