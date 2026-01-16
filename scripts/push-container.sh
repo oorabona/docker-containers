@@ -82,6 +82,7 @@ push_ghcr() {
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local ghcr_image="ghcr.io/$github_username/$container"
+    local cache_image="ghcr.io/$github_username/$container:buildcache"
 
     log_success "=== Pushing to GHCR (primary registry) ==="
 
@@ -103,15 +104,20 @@ push_ghcr() {
         tag_args="$tag_args -t $ghcr_image:latest"
     fi
 
+    # Registry cache configuration (read and write)
+    local cache_args="--cache-from type=registry,ref=$cache_image --cache-to type=registry,ref=$cache_image,mode=max"
+
     log_success "Image: $ghcr_image:$effective_tag"
     log_success "Platform: $platforms"
     log_success "Build args: $build_args"
+    log_success "Cache: $cache_image"
 
-    # Build and push with retry
+    # Build and push with retry (includes cache update)
     retry_with_backoff 3 5 docker buildx build \
         --platform "$platforms" \
         --push \
         --provenance=false \
+        $cache_args \
         $build_args \
         $tag_args \
         . || {
@@ -142,6 +148,7 @@ push_dockerhub() {
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
+    local cache_image="ghcr.io/$github_username/$container:buildcache"
 
     log_success "=== Pushing to Docker Hub (secondary registry) ==="
 
@@ -163,15 +170,20 @@ push_dockerhub() {
         tag_args="$tag_args -t $dockerhub_image:latest"
     fi
 
+    # Registry cache configuration (read-only from GHCR - cache is written by push_ghcr)
+    local cache_args="--cache-from type=registry,ref=$cache_image"
+
     log_success "Image: $dockerhub_image:$effective_tag"
     log_success "Platform: $platforms"
     log_success "Build args: $build_args"
+    log_success "Cache: $cache_image (read-only)"
 
     # Build and push with retry (more attempts for Docker Hub as it's less reliable)
     retry_with_backoff 5 10 docker buildx build \
         --platform "$platforms" \
         --push \
         --provenance=false \
+        $cache_args \
         $build_args \
         $tag_args \
         . || {
