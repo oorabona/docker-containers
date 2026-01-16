@@ -173,7 +173,7 @@ calculate_stats() {
         IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
         
         case "$status_color" in
-            "green")
+            "success")
                 up_to_date=$((up_to_date + 1))
                 ;;
             "warning")
