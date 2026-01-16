@@ -7,7 +7,6 @@ _No tasks currently in progress_
 ## Pending
 
 ### High Priority
-- [ ] Auto-PR for upstream updates - create PR automatically when new versions detected
 - [ ] Add container health checks to all images (HEALTHCHECK in Dockerfiles)
 
 ### Medium Priority
@@ -26,6 +25,7 @@ _No tasks currently in progress_
 
 ## Completed
 
+- [x] ✅ Auto-PR for upstream updates - already implemented in upstream-monitor.yaml (2026-01-16)
 - [x] ✅ Review and stabilize upstream-monitor workflow - fix checkout@v6 bug, fix jq interpolation (2026-01-16)
 - [x] ✅ Fix multi-arch manifest creation - explicit BUILD_PLATFORM export in composite action (2026-01-16)
 - [x] ✅ Resilient multi-registry push (GHCR primary, Docker Hub secondary) (2026-01-16)
