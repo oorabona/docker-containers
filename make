@@ -41,7 +41,9 @@ help() {
   log_help help "This help"
   log_help list "List all available containers"
   log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
-  log_help "push <target> [version]" "Push built <target> container [version] to repository"
+  log_help "push <target> [version]" "Push to all registries (GHCR primary, Docker Hub secondary)"
+  log_help "push ghcr <target> [version]" "Push to GHCR only (GitHub Container Registry)"
+  log_help "push dockerhub <target> [version]" "Push to Docker Hub only"
   log_help "run <target> [version]" "Run built <target> container [version]"
   log_help "version [target]" "Show latest upstream version for a container"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
@@ -90,7 +92,8 @@ run() {
 
 do_it() {
   local op=$1
-  
+  local registry=${2:-""}
+
   # For build and push operations, use buildx for multi-registry support
   if [[ "$op" == "build" || "$op" == "push" ]]; then
     # First, check if there's a custom executable script to set build args
@@ -98,7 +101,7 @@ do_it() {
       . "$op"
     fi
     # Then proceed with buildx (whether or not custom script existed)
-    do_buildx "$op"
+    do_buildx "$op" "$registry"
     return $?
   fi
   
@@ -117,14 +120,26 @@ do_it() {
 
 do_buildx() {
   local op=$1
+  local registry=${2:-""}
   local container=$(basename "$PWD")
-  
+
   if [[ "$op" == "build" ]]; then
     # Use focused build utility
     build_container "$container" "$VERSION" "$TAG"
   elif [[ "$op" == "push" ]]; then
-    # Use focused push utility  
-    push_container "$container" "$VERSION" "$TAG" "$WANTED"
+    # Use focused push utilities with registry selection
+    case "$registry" in
+      ghcr)
+        push_ghcr "$container" "$VERSION" "$TAG" "$WANTED"
+        ;;
+      dockerhub)
+        push_dockerhub "$container" "$VERSION" "$TAG" "$WANTED"
+        ;;
+      *)
+        # Default: push to all registries (GHCR primary, Docker Hub secondary)
+        push_container "$container" "$VERSION" "$TAG" "$WANTED"
+        ;;
+    esac
   else
     log_error "Unknown operation: $op (use 'build' or 'push')"
     return 1
@@ -133,6 +148,14 @@ do_buildx() {
 
 make() {
   local op=$1 ; shift
+  local registry=""
+
+  # Check if first arg is a registry name (ghcr or dockerhub)
+  if [[ "$1" == "ghcr" || "$1" == "dockerhub" ]]; then
+    registry=$1
+    shift
+  fi
+
   if ! validate_target "$1"; then
     log_error "$1 is not a valid target (no Dockerfile found)!"
     exit 1
@@ -140,18 +163,22 @@ make() {
   local target=$1
   local wantedVersion=${2:-latest}
   pushd ${target}
-  
+
   # Use focused version utility
   versions=$(get_build_version "$target" "$wantedVersion")
   if [ $? -ne 0 ]; then
     popd
     return 1
   fi
-  
+
   for version in $versions; do
     export WANTED=$wantedVersion VERSION=$version TAG=$version
-    log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
-    do_it $op
+    if [[ -n "$registry" ]]; then
+      log_success "$op $registry ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
+    else
+      log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
+    fi
+    do_it $op "$registry"
   done
   popd
 }
@@ -242,7 +269,15 @@ else
 fi
 
 case "$1" in
-  push|build ) make $1 $2 $3 ;;
+  build ) make $1 $2 $3 ;;
+  push )
+    # Handle: push <target>, push ghcr <target>, push dockerhub <target>
+    if [[ "$2" == "ghcr" || "$2" == "dockerhub" ]]; then
+      make $1 $2 $3 $4
+    else
+      make $1 $2 $3
+    fi
+    ;;
   run ) run $2 $3 ;;
   version ) shift; version "$@" ;;
   check-updates ) check_updates $2 ;;
