@@ -12,17 +12,18 @@ _No high priority tasks remaining_
 
 ### Medium Priority
 
-- [ ] Build notifications - Slack/Discord/email alerts on failures, daily digest
+_No medium priority tasks remaining_
 
 ### Low Priority
 
-- [ ] Registry cleanup automation - remove old tags, keep N latest versions
 - [ ] E2E container tests - start container, verify service, stop
 - [ ] Consolidate duplicate shell functions
 - [ ] Add container size optimization
 
 ## Completed
 
+- [x] ✅ Registry cleanup automation - GHCR monthly cleanup workflow (2026-01-16)
+- [x] ✅ Build notifications - GitHub default email notifications on failures (2026-01-16)
 - [x] ✅ Improve test coverage for build scripts - 63 unit tests via bats-core (2026-01-16)
 - [x] ✅ Document container configuration options - CONTAINER_CONFIG.md created (2026-01-16)
 - [x] ✅ Improve CI build caching - registry cache via GHCR buildcache tag (2026-01-16)
