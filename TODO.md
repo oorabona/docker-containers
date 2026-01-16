@@ -8,7 +8,6 @@ _No tasks currently in progress_
 
 ### High Priority
 - [ ] Auto-PR for upstream updates - create PR automatically when new versions detected
-- [ ] Review and stabilize upstream-monitor workflow
 - [ ] Add container health checks to all images (HEALTHCHECK in Dockerfiles)
 
 ### Medium Priority
@@ -27,6 +26,7 @@ _No tasks currently in progress_
 
 ## Completed
 
+- [x] ✅ Review and stabilize upstream-monitor workflow - fix checkout@v6 bug, fix jq interpolation (2026-01-16)
 - [x] ✅ Fix multi-arch manifest creation - explicit BUILD_PLATFORM export in composite action (2026-01-16)
 - [x] ✅ Resilient multi-registry push (GHCR primary, Docker Hub secondary) (2026-01-16)
 - [x] ✅ Security scanning with Trivy - CVE scanning, blocks on CRITICAL, SARIF reports (2026-01-16)
