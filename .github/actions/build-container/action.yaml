@@ -169,7 +169,7 @@ runs:
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
-      continue-on-error: ${{ github.event_name == 'pull_request' }}
+      continue-on-error: true  # Scan is advisory - don't block builds on scan failures
 
     - name: Generate SARIF report
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
@@ -190,7 +190,8 @@ runs:
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}'
-      continue-on-error: true
+        wait-for-processing: false
+      continue-on-error: true  # Don't fail if SARIF upload fails (file may not exist)
 
     - name: Check scan result
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
