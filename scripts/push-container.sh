@@ -15,14 +15,17 @@ push_container() {
     local version="$2"
     local tag="$3"
     local wanted="$4"
-    
-    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"  
+
+    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
-    
-    # Determine platform support
+
+    # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     local platforms
-    if check_multiplatform_support; then
+    if [[ -n "${BUILD_PLATFORM:-}" ]]; then
+        platforms="$BUILD_PLATFORM"
+        log_success "Pushing $container:$tag for native platform: $platforms"
+    elif check_multiplatform_support; then
         platforms="linux/amd64,linux/arm64"
         log_success "Building and pushing $container:$tag (multi-platform: AMD64 + ARM64)..."
     else
