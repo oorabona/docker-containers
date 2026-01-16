@@ -32,7 +32,7 @@ jobs:
       version_info: ${{ steps.check.outputs.version_info }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -60,7 +60,7 @@ jobs:
         container: ${{ fromJson(needs.check-upstream-versions.outputs.containers_with_updates) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -87,7 +87,8 @@ jobs:
         id: classify
         run: |
           # Extract version info for this specific container from the JSON array
-          version_data=$(echo '${{ needs.check-upstream-versions.outputs.version_info }}' | jq -r '.[] | select(.container == "${{ matrix.container }}")')
+          container_name="${{ matrix.container }}"
+          version_data=$(echo '${{ needs.check-upstream-versions.outputs.version_info }}' | jq -r --arg c "$container_name" '.[] | select(.container == $c)')
           current_version=$(echo "$version_data" | jq -r '.current_version')
           new_version=$(echo "$version_data" | jq -r '.latest_version')
 
