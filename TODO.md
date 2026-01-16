@@ -2,30 +2,37 @@
 
 ## In Progress
 
-- [ ] 🟡 _No current task_
+- [ ] 🟡 Resilient multi-registry push (GHCR primary, Docker Hub secondary) — platform suffix bug in progress
 
 ## Pending
 
 ### High Priority
 
+- [ ] Security scanning with Trivy - scan images for CVE vulnerabilities, block critical issues
+- [ ] Auto-PR for upstream updates - create PR automatically when new versions detected
+- [ ] Fix multi-arch manifest creation - platform suffix tags not being created correctly
 - [ ] Review and stabilize upstream-monitor workflow
-- [ ] Add container health checks to all images
-- [ ] Improve test coverage for build scripts
+- [ ] Add container health checks to all images (HEALTHCHECK in Dockerfiles)
 
 ### Medium Priority
 
+- [ ] Improve CI build caching - persistent BuildKit cache, registry layer cache
+- [ ] Build notifications - Slack/Discord/email alerts on failures, daily digest
+- [ ] Improve test coverage for build scripts
 - [ ] Document container configuration options
-- [ ] Add multi-architecture build support (ARM64)
-- [ ] Create scope-specific backlogs for complex areas
 
 ### Low Priority
 
+- [ ] Registry cleanup automation - remove old tags, keep N latest versions
+- [ ] E2E container tests - start container, verify service, stop
 - [ ] Consolidate duplicate shell functions
 - [ ] Add container size optimization
 
 ## Completed
 
 - [x] ✅ Project initialized with /project-init (2026-01-16)
+- [x] ✅ Resilient push infrastructure - separate GHCR/Docker Hub functions (2026-01-16)
+- [x] ✅ Remove deprecated buildx install option (2026-01-16)
 
 ## Blocked / Deferred
 
