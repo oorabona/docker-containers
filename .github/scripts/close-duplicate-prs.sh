@@ -40,7 +40,11 @@ fi
 echo "✅ GitHub CLI available (version: $(gh --version | head -1))"
 
 # Define search patterns for PRs that should be closed
+# Current format: "🚀 Minor: container to X.Y.Z" or "🔄 Major: container to X.Y.Z"
 pr_title_patterns=(
+  "Minor: $CONTAINER to"
+  "Major: $CONTAINER to"
+  # Legacy patterns (for backward compatibility)
   "Update $CONTAINER to version"
   "chore($CONTAINER): update to version"
   "Rebuild $CONTAINER with upstream version"
