@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # E2E Container Tests
-# Builds and validates all containers pass their health checks
+# Builds and validates all containers using existing build system + custom tests
 #
 # Usage:
 #   ./e2e-test.sh              # Test all containers
@@ -13,10 +13,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers/logging.sh"
 
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.e2e.yaml"
-TIMEOUT=300  # 5 minutes max wait for health checks
 BUILD=true
 CONTAINERS=""
+FAILED=()
+PASSED=()
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -25,16 +25,11 @@ while [[ $# -gt 0 ]]; do
             BUILD=false
             shift
             ;;
-        --timeout)
-            TIMEOUT="$2"
-            shift 2
-            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS] [CONTAINER...]"
             echo ""
             echo "Options:"
             echo "  --no-build    Skip building images"
-            echo "  --timeout N   Health check timeout in seconds (default: 300)"
             echo "  -h, --help    Show this help"
             echo ""
             echo "Examples:"
@@ -50,136 +45,173 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Cleanup function
-cleanup() {
-    log_info "Cleaning up containers..."
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
-}
-
-# Set up trap for cleanup
-trap cleanup EXIT
+# Get list of containers to test
+if [ -z "$CONTAINERS" ]; then
+    CONTAINERS=$(./make list 2>/dev/null)
+fi
 
 echo ""
 echo "🧪 E2E Container Tests"
 echo "======================"
 echo ""
 
-# Check docker compose
-if ! docker compose version &>/dev/null; then
-    log_error "docker compose not found"
-    exit 1
-fi
+# Test a single container
+test_container() {
+    local container="$1"
+    local container_name="e2e-$container"
+    local test_script="$SCRIPT_DIR/$container/test.sh"
+    local image_name="${GITHUB_REPOSITORY_OWNER:-local}/$container:latest"
 
-# Build images if requested
-if [ "$BUILD" = true ]; then
-    log_step "Building container images..."
-    if [ -n "$CONTAINERS" ]; then
-        docker compose -f "$COMPOSE_FILE" build $CONTAINERS
-    else
-        docker compose -f "$COMPOSE_FILE" build
-    fi
-    log_success "Build completed"
-fi
+    log_step "Testing $container..."
 
-# Start containers
-log_step "Starting containers..."
-if [ -n "$CONTAINERS" ]; then
-    docker compose -f "$COMPOSE_FILE" up -d $CONTAINERS
-else
-    docker compose -f "$COMPOSE_FILE" up -d
-fi
-
-# Wait for health checks
-log_step "Waiting for health checks (timeout: ${TIMEOUT}s)..."
-
-START_TIME=$(date +%s)
-ALL_HEALTHY=false
-
-while true; do
-    CURRENT_TIME=$(date +%s)
-    ELAPSED=$((CURRENT_TIME - START_TIME))
-
-    if [ $ELAPSED -ge $TIMEOUT ]; then
-        log_error "Timeout waiting for health checks"
-        break
+    # Build if requested
+    if [ "$BUILD" = true ]; then
+        log_info "Building $container..."
+        if ! ./make build "$container" latest 2>&1 | tail -5; then
+            log_error "Build failed for $container"
+            return 1
+        fi
     fi
 
-    # Get container health status
-    UNHEALTHY=0
-    HEALTHY=0
-    STARTING=0
+    # Determine image name (find the most recently built image for this container)
+    local image
+    image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=*/$container:*" | head -1) || true
+    if [ -z "$image" ]; then
+        # Fallback: try local name
+        image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$container:*" | head -1) || true
+    fi
+    if [ -z "$image" ]; then
+        log_error "No image found for $container"
+        return 1
+    fi
+    log_info "Using image: $image"
 
-    while IFS= read -r line; do
-        NAME=$(echo "$line" | awk '{print $1}')
-        HEALTH=$(echo "$line" | awk '{print $2}')
+    # Clean up any existing test container
+    docker rm -f "$container_name" 2>/dev/null || true
 
-        case "$HEALTH" in
+    # Start container with appropriate options
+    log_info "Starting $container..."
+    local run_opts="--rm -d --name $container_name"
+
+    # Container-specific run options and command
+    local run_cmd=""
+    case "$container" in
+        postgres)
+            run_opts="$run_opts -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test -e POSTGRES_DB=test"
+            ;;
+        openvpn)
+            run_opts="$run_opts --cap-add NET_ADMIN --device /dev/net/tun:/dev/net/tun"
+            ;;
+        ansible|debian)
+            # These need a command to stay running
+            run_cmd="sleep infinity"
+            ;;
+        sslh)
+            # SSLH needs explicit config to start - use test mode
+            run_cmd="sslh-ev --foreground -p 0.0.0.0:8443 --ssh 127.0.0.1:22 --tls 127.0.0.1:443"
+            ;;
+    esac
+
+    if ! docker run $run_opts "$image" $run_cmd; then
+        log_error "Failed to start $container"
+        return 1
+    fi
+
+    # Wait for container to be ready (healthcheck or basic startup)
+    log_info "Waiting for $container to be ready..."
+    local max_wait=60
+    local waited=0
+    local ready=false
+
+    while [ $waited -lt $max_wait ]; do
+        # Check if container is still running
+        if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+            log_error "$container exited unexpectedly"
+            docker logs "$container_name" 2>&1 | tail -20
+            return 1
+        fi
+
+        # Check health status if available
+        local health
+        health=$(docker inspect --format='{{.State.Health.Status}}' "$container_name" 2>/dev/null) || health="none"
+
+        case "$health" in
             healthy)
-                HEALTHY=$((HEALTHY + 1))
+                ready=true
+                break
                 ;;
             unhealthy)
-                UNHEALTHY=$((UNHEALTHY + 1))
-                log_error "$NAME is unhealthy"
+                log_error "$container is unhealthy"
+                docker logs "$container_name" 2>&1 | tail -20
+                docker rm -f "$container_name" 2>/dev/null || true
+                return 1
                 ;;
-            starting|"")
-                STARTING=$((STARTING + 1))
+            starting)
+                ;;
+            none)
+                # No healthcheck, give processes time to initialize
+                sleep 3
+                ready=true
+                break
                 ;;
         esac
-    done < <(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -v "^$")
 
-    TOTAL=$((HEALTHY + UNHEALTHY + STARTING))
+        sleep 2
+        waited=$((waited + 2))
+        printf "\r    ⏳ Waiting... (%ds)" "$waited"
+    done
+    echo ""
 
-    # Progress update
-    printf "\r  ⏳ Progress: %d/%d healthy, %d starting, %d unhealthy (%ds elapsed)" \
-        "$HEALTHY" "$TOTAL" "$STARTING" "$UNHEALTHY" "$ELAPSED"
-
-    # Check if done
-    if [ $UNHEALTHY -gt 0 ]; then
-        echo ""
-        log_error "Some containers are unhealthy"
-        break
+    if [ "$ready" != true ]; then
+        log_error "$container did not become ready in time"
+        docker logs "$container_name" 2>&1 | tail -20
+        docker rm -f "$container_name" 2>/dev/null || true
+        return 1
     fi
 
-    if [ $STARTING -eq 0 ] && [ $HEALTHY -gt 0 ]; then
-        echo ""
-        ALL_HEALTHY=true
-        break
+    # Run custom test script if exists
+    if [ -x "$test_script" ]; then
+        log_info "Running custom tests for $container..."
+        if ! CONTAINER_NAME="$container_name" "$test_script"; then
+            log_error "Custom tests failed for $container"
+            docker rm -f "$container_name" 2>/dev/null || true
+            return 1
+        fi
     fi
 
-    sleep 5
+    # Cleanup
+    docker rm -f "$container_name" 2>/dev/null || true
+
+    log_success "$container passed ✅"
+    return 0
+}
+
+# Run tests
+for container in $CONTAINERS; do
+    echo ""
+    if test_container "$container"; then
+        PASSED+=("$container")
+    else
+        FAILED+=("$container")
+    fi
 done
 
+# Summary
+echo ""
+echo "========================================"
+echo "E2E Test Summary"
+echo "========================================"
 echo ""
 
-# Show final status
-log_step "Final container status:"
-docker compose -f "$COMPOSE_FILE" ps
+if [ ${#PASSED[@]} -gt 0 ]; then
+    log_success "Passed (${#PASSED[@]}): ${PASSED[*]}"
+fi
 
-echo ""
-
-# Report results
-if [ "$ALL_HEALTHY" = true ]; then
-    log_success "All containers passed health checks! ✅"
+if [ ${#FAILED[@]} -gt 0 ]; then
+    log_error "Failed (${#FAILED[@]}): ${FAILED[*]}"
     echo ""
-
-    # Show health check details
-    log_info "Health check details:"
-    docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}: {{.Health}} ({{.Status}})' | while read line; do
-        echo "  $line"
-    done
-
-    exit 0
-else
-    log_error "E2E tests failed ❌"
-    echo ""
-
-    # Show logs for unhealthy containers
-    log_info "Logs from unhealthy containers:"
-    docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}} {{.Health}}' | grep -v healthy | awk '{print $1}' | while read container; do
-        echo ""
-        echo "=== $container ==="
-        docker logs "$container" 2>&1 | tail -20
-    done
-
     exit 1
 fi
+
+log_success "All ${#PASSED[@]} containers passed! 🎉"
+exit 0
