@@ -71,33 +71,47 @@ show_sizes() {
   local target="$1"
   local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
 
+  echo ""
   echo "Container Image Sizes"
   echo "====================="
   echo ""
-  printf "%-20s %-30s %s\n" "CONTAINER" "IMAGE" "SIZE"
-  printf "%-20s %-30s %s\n" "---------" "-----" "----"
+  printf "%-15s  %-45s  %10s\n" "CONTAINER" "IMAGE" "SIZE"
+  printf "%-15s  %-45s  %10s\n" "───────────" "─────────────────────────────────────────" "────────"
 
   if [[ -n "$target" ]]; then
     # Show specific container
+    local found=false
     docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
-      | grep -E "(ghcr.io|docker.io)/$github_username/$target:" \
+      | grep -E "(ghcr.io|docker.io|localhost)/$github_username/$target:" \
       | while IFS=$'\t' read -r image size; do
-          printf "%-20s %-30s %s\n" "$target" "$image" "$size"
+          printf "%-15s  %-45s  %10s\n" "$target" "$image" "$size"
+          found=true
         done
+    if [[ "$found" == "false" ]]; then
+      printf "%-15s  %-45s  %10s\n" "$target" "(not built)" "-"
+    fi
   else
     # Show all containers
     for container in $targets; do
-      docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
-        | grep -E "(ghcr.io|docker.io)/$github_username/$container:" \
-        | head -1 \
-        | while IFS=$'\t' read -r image size; do
-            printf "%-20s %-30s %s\n" "$container" "$image" "$size"
-          done
+      local image_info
+      image_info=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
+        | grep -E "(ghcr.io|docker.io|localhost)/$github_username/$container:" \
+        | head -1)
+
+      if [[ -n "$image_info" ]]; then
+        local image size
+        image=$(echo "$image_info" | cut -f1)
+        size=$(echo "$image_info" | cut -f2)
+        printf "%-15s  %-45s  %10s\n" "$container" "$image" "$size"
+      else
+        printf "%-15s  %-45s  %10s\n" "$container" "(not built)" "-"
+      fi
     done
   fi
 
   echo ""
-  echo "Tip: See docs/CONTAINER_SIZE_OPTIMIZATION.md for optimization guidelines"
+  echo "Tip: Run './make build <container>' to build missing images"
+  echo "     See docs/CONTAINER_SIZE_OPTIMIZATION.md for optimization guidelines"
 }
 
 version() {
