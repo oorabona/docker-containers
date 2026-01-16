@@ -13,7 +13,7 @@ inputs:
 
 outputs:
   containers_list:
-    description: 'Comma-separated list of containers that need building'  
+    description: 'Comma-separated list of containers that need building'
     value: ${{ steps.find-containers.outputs.containers_list }}
   containers:
     description: 'JSON array of containers that need building (converted from CSV for matrix compatibility)'
@@ -21,6 +21,9 @@ outputs:
   count:
     description: 'Number of containers to build'
     value: ${{ steps.find-containers.outputs.count }}
+  versions:
+    description: 'JSON object mapping container names to their versions'
+    value: ${{ steps.compute-versions.outputs.versions }}
 
 runs:
   using: 'composite'
@@ -119,3 +122,27 @@ runs:
           echo "count=${#containers_to_build[@]}" >> $GITHUB_OUTPUT
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi
+
+    - name: Compute versions for detected containers
+      id: compute-versions
+      if: steps.find-containers.outputs.count != '0'
+      shell: bash
+      run: |
+        set -e
+        containers_json='${{ steps.find-containers.outputs.containers }}'
+
+        # Build a JSON object {container: version}
+        versions_json="{}"
+
+        for container in $(echo "$containers_json" | jq -r '.[]'); do
+          echo "🔍 Getting version for $container..."
+          version=$(./make version "$container" 2>/dev/null || echo "latest")
+          if [[ -z "$version" || "$version" == "unknown" ]]; then
+            version="latest"
+          fi
+          echo "  → $container: $version"
+          versions_json=$(echo "$versions_json" | jq --arg c "$container" --arg v "$version" '. + {($c): $v}')
+        done
+
+        echo "versions=$versions_json" >> $GITHUB_OUTPUT
+        echo "📋 Versions computed: $versions_json"
