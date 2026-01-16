@@ -7,8 +7,6 @@
 ## Pending
 
 ### High Priority
-
-- [ ] Security scanning with Trivy - scan images for CVE vulnerabilities, block critical issues
 - [ ] Auto-PR for upstream updates - create PR automatically when new versions detected
 - [ ] Fix multi-arch manifest creation - platform suffix tags not being created correctly
 - [ ] Review and stabilize upstream-monitor workflow
@@ -30,6 +28,7 @@
 
 ## Completed
 
+- [x] ✅ Security scanning with Trivy - CVE scanning, blocks on CRITICAL, SARIF reports (2026-01-16)
 - [x] ✅ Project initialized with /project-init (2026-01-16)
 - [x] ✅ Resilient push infrastructure - separate GHCR/Docker Hub functions (2026-01-16)
 - [x] ✅ Remove deprecated buildx install option (2026-01-16)
