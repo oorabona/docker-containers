@@ -1,6 +1,6 @@
 # GitHub Actions Reference
 
-*Last Updated: July 17, 2025 - Optimized Architecture*
+*Last Updated: January 16, 2026 - Added registry-based build caching*
 
 This guide covers the automated workflows and actions used for container management in our production-ready CI/CD system.
 
@@ -274,6 +274,13 @@ Builds a specific container using the universal `make` script with enhanced erro
 - Blocks push on CRITICAL vulnerabilities by default
 - Generates SARIF reports for GitHub Security integration
 - PR builds show results without blocking
+
+**Build Caching (Registry-based):**
+- Uses GHCR as persistent cache backend (`ghcr.io/<owner>/<container>:buildcache`)
+- Cache is read during build step (faster rebuilds)
+- Cache is written during GHCR push (updated after each build)
+- Docker Hub push uses read-only cache from GHCR
+- Significantly reduces build times for unchanged layers
 
 ### Detect Containers (`.github/actions/detect-containers`)
 

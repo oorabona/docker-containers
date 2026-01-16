@@ -12,7 +12,6 @@ _No high priority tasks remaining_
 
 ### Medium Priority
 
-- [ ] Improve CI build caching - persistent BuildKit cache, registry layer cache
 - [ ] Build notifications - Slack/Discord/email alerts on failures, daily digest
 - [ ] Improve test coverage for build scripts
 - [ ] Document container configuration options
@@ -26,6 +25,7 @@ _No high priority tasks remaining_
 
 ## Completed
 
+- [x] ✅ Improve CI build caching - registry cache via GHCR buildcache tag (2026-01-16)
 - [x] ✅ Add container health checks - added HEALTHCHECK to sslh, verified 9/9 containers (2026-01-16)
 - [x] ✅ Auto-PR for upstream updates - already implemented in upstream-monitor.yaml (2026-01-16)
 - [x] ✅ Review and stabilize upstream-monitor workflow - fix checkout@v6 bug, fix jq interpolation (2026-01-16)
