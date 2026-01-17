@@ -229,9 +229,9 @@ show_sizes() {
       # Get manifest sizes using appropriate method per registry
       local sizes=""
       if [[ "$registry" == "docker.io" ]]; then
-        sizes=$(get_dockerhub_sizes "$github_username" "$container" "$latest_tag" 2>/dev/null)
+        sizes=$(get_dockerhub_sizes "$github_username" "$container" "$latest_tag" 2>/dev/null) || true
       else
-        sizes=$(get_ghcr_sizes "$registry/$github_username/$container:$latest_tag" 2>/dev/null)
+        sizes=$(get_ghcr_sizes "$registry/$github_username/$container:$latest_tag" 2>/dev/null) || true
       fi
 
       if [[ -n "$sizes" && "$sizes" != *"null"* ]]; then
