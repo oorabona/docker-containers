@@ -245,6 +245,23 @@
       border-color: rgba(0, 0, 0, 0.1);
     }
 
+    /* Light theme buttons - white text on colored backgrounds for WCAG compliance */
+    [data-theme="light"] .btn-primary,
+    [data-theme="light"] .btn-success,
+    [data-theme="light"] .btn-warning,
+    [data-theme="light"] .btn-danger,
+    [data-theme="light"] .registry-btn.active {
+      color: #ffffff;
+    }
+
+    [data-theme="light"] .btn-primary:hover,
+    [data-theme="light"] .btn-success:hover,
+    [data-theme="light"] .btn-warning:hover,
+    [data-theme="light"] .btn-danger:hover,
+    [data-theme="light"] .registry-btn.active:hover {
+      color: #ffffff;
+    }
+
     /* Controls bar */
     .controls-bar {
       display: flex;
