@@ -358,6 +358,7 @@ make() {
   fi
   local target=$1
   local wantedVersion=${2:-latest}
+  local wantedTag=${3:-""}  # Optional: explicit tag (for variants, differs from version)
   pushd ${target}
 
   # Use focused version utility
@@ -368,7 +369,9 @@ make() {
   fi
 
   for version in $versions; do
-    export WANTED=$wantedVersion VERSION=$version TAG=$version
+    # Use explicit tag if provided, otherwise derive from version
+    local effective_tag="${wantedTag:-$version}"
+    export WANTED=$wantedVersion VERSION=$version TAG=$effective_tag
     if [[ -n "$registry" ]]; then
       log_success "$op $registry ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
     else
