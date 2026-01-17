@@ -147,14 +147,15 @@ build_container() {
 
         log_success "✅ Build completed - image loaded locally (no push)"
     else
-        # Local development: single platform with --load
-        # Images are pulled from registry if not available locally
+        # Local development: single platform with --load and --pull=never
+        # Uses locally-built images (run build-extensions --local-only first)
         log_success "Building $container:$tag locally (layered image)..."
         log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
 
         docker buildx build \
             --platform "$platforms" \
             --load \
+            --pull=never \
             $cache_args \
             $build_args \
             $tag_args \
