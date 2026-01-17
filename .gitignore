@@ -30,10 +30,25 @@ ehthumbs.db
 Thumbs.db
 
 # IDE files
-.vscode/
-.idea/
+.vscode
+.idea
 *.swp
 *.swo
+
+# Claude Code bind mounts
+.claude
+.mcp.json
+.bash_profile
+.bashrc
+.zshrc
+.zprofile
+.profile
+.ripgreprc
+.gitconfig
+
+# Jekyll build output
+docs/site/_site
+docs/site/.claude
 
 # Docker volumes and runtime
 volumes/
