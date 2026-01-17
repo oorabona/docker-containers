@@ -3,10 +3,13 @@ ARG OS_VERSION=latest
 FROM alpine:${OS_VERSION}
 
 ARG VERSION=latest
+ARG UPSTREAM_VERSION=""
 ARG NPROC=1
 
 # Testing: pamtester is only available in edge, not for now.
+# Use UPSTREAM_VERSION for downloads if provided, otherwise fall back to VERSION
 RUN set -ex \
+    && DOWNLOAD_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip \
         google-authenticator libqrencode \
     && apk add --no-cache --virtual .build-deps \
@@ -28,7 +31,7 @@ RUN set -ex \
         libcap-ng-dev \
         libcap-dev \
         git \
-    && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$VERSION.tar.gz --output openvpn.tgz \
+    && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$DOWNLOAD_VERSION.tar.gz --output openvpn.tgz \
     # Download latest version of OpenSC pkcs11-helper from github
     && PKCS11_HELPER_VERSION=$(git ls-remote --tags --sort="v:refname" https://github.com/opensc/pkcs11-helper.git | tail -n1 | awk '{print $2}' | sed 's/refs\/tags\///') \
     && curl -sSL https://github.com/opensc/pkcs11-helper/archive/$PKCS11_HELPER_VERSION.tar.gz --output pkcs11-helper.tgz \
