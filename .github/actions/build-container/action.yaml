@@ -230,14 +230,15 @@ runs:
 
         # For postgres builds: use GHCR cached base images if available
         # This avoids Docker Hub rate limits (200 pulls/6h)
+        # Note: cache_image uses current_tag (e.g., 17-alpine) not current_version (e.g., 17)
         if [[ "$container" == "postgres" ]]; then
           owner="${{ github.repository_owner }}"
-          cache_image="ghcr.io/$owner/postgres-base:${current_version}"
+          cache_image="ghcr.io/$owner/postgres-base:${current_tag}"
           if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
             echo "Using cached base image: $cache_image"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
-            echo "Cache not available, using Docker Hub directly"
+            echo "Cache not available for $cache_image, using Docker Hub directly"
           fi
         fi
 
