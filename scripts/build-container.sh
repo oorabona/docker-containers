@@ -142,13 +142,16 @@ build_container() {
 
         log_success "✅ Build completed - image loaded locally (no push)"
     else
-        # Local development: single platform with --load
+        # Local development: single platform with --load and --pull=never
+        # --pull=never uses local images if available, avoiding registry pulls
+        # This allows building with locally-built extension images
         log_success "Building $container:$tag locally (layered image)..."
         log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
 
         docker buildx build \
             --platform "$platforms" \
             --load \
+            --pull=never \
             $cache_args \
             $build_args \
             $tag_args \
@@ -162,30 +165,43 @@ build_container() {
 }
 
 # Build all variants for a container
-# Usage: build_container_variants <container> <base_version> [specific_variant]
+# Usage: build_container_variants <container> <major_version> [specific_variant]
 # If specific_variant is provided, only that variant is built
 # Returns JSON array of built variants for CI consumption
+#
+# Flow:
+#   1. major_version = "17" (passed directly, no extraction needed)
+#   2. base_image = "postgres:17-alpine" (major_version + base_suffix)
+#   3. output_tag = "17-full-alpine" (major_version + variant_suffix + base_suffix)
 build_container_variants() {
     local container="$1"
-    local base_version="$2"
+    local major_version="$2"
     local specific_variant="${3:-}"
     local container_dir="$PROJECT_ROOT/$container"
 
     # Check if container has variants
     if ! has_variants "$container_dir"; then
         log_info "$container has no variants, building single image..."
-        build_container "$container" "$base_version" "$base_version"
-        echo "[{\"name\":\"default\",\"tag\":\"$base_version\",\"flavor\":\"\",\"status\":\"built\"}]"
+        build_container "$container" "$major_version" "$major_version"
+        echo "[{\"name\":\"default\",\"tag\":\"$major_version\",\"flavor\":\"\",\"status\":\"built\"}]"
         return $?
     fi
 
+    # Get base suffix from variants.yaml (e.g., "-alpine")
+    local base_sfx
+    base_sfx=$(base_suffix "$container_dir")
+
+    # Construct the base image version for FROM statement (e.g., "17-alpine")
+    local base_image_version="${major_version}${base_sfx}"
+
     log_info "$container has variants, building multiple images..."
+    log_info "Major version: $major_version | Base image: postgres:$base_image_version"
 
     local results="["
     local first=true
     local failed=false
 
-    # Iterate through variants
+    # Iterate through variants for this major version
     while IFS= read -r variant_name; do
         [[ -z "$variant_name" ]] && continue
 
@@ -195,17 +211,17 @@ build_container_variants() {
         fi
 
         local variant_tag
-        variant_tag=$(variant_image_tag "$base_version" "$variant_name" "$container_dir")
+        variant_tag=$(variant_image_tag "$major_version" "$variant_name" "$container_dir")
         local flavor
-        flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$major_version")
         local description
-        description=$(variant_property "$container_dir" "$variant_name" "description")
+        description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
 
         log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
 
-        # Build the variant
+        # Build the variant - pass base_image_version (e.g., "17-alpine")
         local status="built"
-        if ! build_container "$container" "$base_version" "$variant_tag" "$flavor"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
@@ -220,7 +236,7 @@ build_container_variants() {
         first=false
 
         results+="{\"name\":\"$variant_name\",\"tag\":\"$variant_tag\",\"flavor\":\"$flavor\",\"description\":\"$description\",\"status\":\"$status\"}"
-    done < <(list_variants "$container_dir")
+    done < <(list_variants "$container_dir" "$major_version")
 
     results+="]"
     echo "$results"

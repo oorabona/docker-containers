@@ -50,10 +50,11 @@ versions:
         suffix: "-distributed"
         flavor: distributed
         description: "PostgreSQL + Citus for horizontal scaling"
-      - name: search
-        suffix: "-search"
-        flavor: search
-        description: "PostgreSQL + ParadeDB for full-text search (BM25)"
+      # search flavor disabled - ParadeDB requires Debian/glibc for pgrx
+      # - name: search
+      #   suffix: "-search"
+      #   flavor: search
+      #   description: "PostgreSQL + ParadeDB for full-text search (BM25)"
       - name: full
         suffix: "-full"
         flavor: full
@@ -83,10 +84,11 @@ versions:
         suffix: "-distributed"
         flavor: distributed
         description: "PostgreSQL + Citus for horizontal scaling"
-      - name: search
-        suffix: "-search"
-        flavor: search
-        description: "PostgreSQL + ParadeDB for full-text search (BM25)"
+      # search flavor disabled - ParadeDB requires Debian/glibc for pgrx
+      # - name: search
+      #   suffix: "-search"
+      #   flavor: search
+      #   description: "PostgreSQL + ParadeDB for full-text search (BM25)"
       - name: full
         suffix: "-full"
         flavor: full

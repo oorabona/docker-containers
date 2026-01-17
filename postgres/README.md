@@ -14,6 +14,12 @@ docker pull ghcr.io/oorabona/postgres:17-vector-alpine
 # With analytics extensions
 docker pull ghcr.io/oorabona/postgres:17-analytics-alpine
 
+# With TimescaleDB for time-series data
+docker pull ghcr.io/oorabona/postgres:17-timeseries-alpine
+
+# With Citus for distributed PostgreSQL
+docker pull ghcr.io/oorabona/postgres:17-distributed-alpine
+
 # All extensions included
 docker pull ghcr.io/oorabona/postgres:17-full-alpine
 ```
@@ -25,6 +31,8 @@ docker pull ghcr.io/oorabona/postgres:17-full-alpine
 | **base** | Standard PostgreSQL | Built-in only | General purpose, smallest size |
 | **vector** | AI/ML optimized | + pgvector | RAG, embeddings, semantic search |
 | **analytics** | Data warehouse | + pg_partman, hypopg, pg_qualstats | Large tables, query tuning |
+| **timeseries** | Time-series data | + TimescaleDB, pg_partman | IoT, metrics, logs |
+| **distributed** | Horizontal scaling | + Citus | Multi-node clusters, sharding |
 | **full** | Everything | All extensions | Development, testing |
 
 ### Flavor Details
@@ -77,16 +85,59 @@ SELECT hypopg_create_index('CREATE INDEX ON users(email)');
 EXPLAIN SELECT * FROM users WHERE email = 'test@example.com';
 ```
 
+#### Timeseries (`*-timeseries-alpine`)
+Includes base + extensions for time-series workloads:
+- **TimescaleDB** - High-performance time-series database
+- **pg_partman** - Automatic partition management
+
+```sql
+-- Create a hypertable for time-series data
+CREATE TABLE metrics (
+    time TIMESTAMPTZ NOT NULL,
+    device_id TEXT,
+    temperature DOUBLE PRECISION
+);
+
+SELECT create_hypertable('metrics', by_range('time'));
+
+-- Use time_bucket for aggregations
+SELECT time_bucket('1 hour', time) AS bucket,
+       device_id,
+       AVG(temperature) AS avg_temp
+FROM metrics
+WHERE time > NOW() - INTERVAL '1 day'
+GROUP BY bucket, device_id
+ORDER BY bucket DESC;
+```
+
+#### Distributed (`*-distributed-alpine`)
+Includes base + Citus for horizontal scaling:
+- **Citus** - Distributed PostgreSQL for multi-node clusters
+
+```sql
+-- Create a distributed table
+SELECT citus_set_coordinator_host('coordinator', 5432);
+SELECT create_distributed_table('events', 'tenant_id');
+
+-- Or create a reference table (replicated across nodes)
+SELECT create_reference_table('config');
+
+-- Queries are automatically distributed
+SELECT tenant_id, COUNT(*)
+FROM events
+GROUP BY tenant_id;
+```
+
 #### Full (`*-full-alpine`)
-All extensions for development and testing. Includes everything from vector and analytics flavors.
+All extensions for development and testing. Includes everything from all other flavors (vector, analytics, timeseries, distributed).
 
 ## Supported Versions
 
 | Version | Flavors | Status |
 |---------|---------|--------|
 | PostgreSQL 18 | base | Extensions not yet compatible |
-| PostgreSQL 17 | base, vector, analytics, full | **Recommended** |
-| PostgreSQL 16 | base, vector, analytics, full | LTS |
+| PostgreSQL 17 | base, vector, analytics, timeseries, distributed, full | **Recommended** |
+| PostgreSQL 16 | base, vector, analytics, timeseries, distributed, full | LTS |
 
 ### Image Tags
 
@@ -207,12 +258,14 @@ default_statistics_target = 100
 
 ### Compiled Extensions
 
-| Extension | Version | Description | Flavors |
-|-----------|---------|-------------|---------|
-| pgvector | 0.8.0 | Vector similarity search | vector, full |
-| pg_partman | 5.2.4 | Partition management | analytics, full |
-| hypopg | 1.4.1 | Hypothetical indexes | analytics, full |
-| pg_qualstats | 2.1.1 | Predicate statistics | analytics, full |
+| Extension | Version | Description | Flavors | License |
+|-----------|---------|-------------|---------|---------|
+| pgvector | 0.8.1 | Vector similarity search | vector, full | PostgreSQL |
+| pg_partman | 5.4.0 | Partition management | analytics, timeseries, full | PostgreSQL |
+| hypopg | 1.4.2 | Hypothetical indexes | analytics, full | PostgreSQL |
+| pg_qualstats | 2.1.3 | Predicate statistics | analytics, full | PostgreSQL |
+| TimescaleDB | 2.24.0 | Time-series database | timeseries, full | Apache-2.0 + TSL |
+| Citus | 13.2.0 | Distributed PostgreSQL | distributed, full | AGPL-3.0 |
 
 ### Built-in Extensions
 
@@ -502,11 +555,12 @@ To add an extension not yet supported:
 ### Planned Extensions
 
 - **ParadeDB** - Full-text search with BM25 (Elasticsearch alternative)
+  - *Note: Requires Debian/glibc for pgrx compilation, Alpine builds not supported*
 - **PostGIS** - Geospatial database extension
-- **TimescaleDB** - Time-series optimization
+  - *Complex dependencies, requires careful build configuration*
 
 ### Future Improvements
 
-- PostgreSQL 18 extension support
-- ARM64 optimized builds
+- PostgreSQL 18 extension support (once extensions are updated)
+- ARM64 optimized builds (native CI runners)
 - pg_stat_monitor integration

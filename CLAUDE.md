@@ -29,6 +29,7 @@ Custom Docker container images with automated upstream version monitoring and CI
 ```
 docker-containers/
 ├── docs/                    # Documentation (see DOCUMENTATION_INDEX.md)
+│   ├── DEVELOPMENT.md       # Internal dev guide (extensions, variants, build system)
 │   ├── GITHUB_ACTIONS.md    # CI/CD documentation
 │   ├── WORKFLOW_ARCHITECTURE.md
 │   ├── LOCAL_DEVELOPMENT.md
@@ -98,6 +99,7 @@ docker-containers/
 |--------|--------|
 | List containers | `./make list` |
 | Build | `./make build <target> [version]` |
+| Build extensions | `./make build-extensions <target> [version] [--local-only]` |
 | Push | `./make push <target> [version]` |
 | Run | `./make run <target> [version]` |
 | Check version | `./make version <target>` |

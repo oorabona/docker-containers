@@ -63,8 +63,13 @@ extensions:
       - cargo
       - clang
       - llvm-dev
+      - libclang-dev
     shared_preload: false # Not required for PG17+
     priority: 3
+    # NOTE: ParadeDB requires glibc (Debian) for compilation due to pgrx/bindgen
+    # Alpine/musl not supported - use postgres:XX-bookworm as base
+    requires_glibc: true
+    disabled: true  # Temporarily disabled until Debian-based build pipeline is ready
   citus:
     version: "13.2.0"
     description: "Distributed PostgreSQL for horizontal scaling"
