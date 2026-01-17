@@ -1,0 +1,74 @@
+# PostgreSQL Base Container (no compiled extensions)
+#
+# This Dockerfile is for PostgreSQL versions where extension images
+# don't exist yet (e.g., PG18). It includes only built-in extensions.
+#
+# Usage:
+#   docker build -f Dockerfile.base --build-arg VERSION=18-alpine .
+#
+# For versions with extension support, use the main Dockerfile instead.
+
+ARG VERSION=18-alpine
+
+# ============================================================================
+# Main Image
+# ============================================================================
+FROM postgres:${VERSION}
+
+# Build arguments
+ARG LOCALES=
+
+# Labels
+LABEL org.opencontainers.image.title="PostgreSQL base"
+LABEL org.opencontainers.image.description="PostgreSQL with built-in extensions only"
+LABEL org.opencontainers.image.vendor="oorabona"
+LABEL flavor="base"
+
+# Install locales if specified
+RUN if [ -n "${LOCALES}" ]; then \
+        for l in ${LOCALES}; do \
+            localedef -i $l -c -f UTF-8 -A /usr/share/locale/locale.alias ${l}.UTF-8; \
+        done; \
+    fi
+
+# Create initialization script for built-in extensions
+RUN printf '%s\n' \
+    '-- Initialize built-in extensions' \
+    '-- These are available in standard PostgreSQL' \
+    '' \
+    '-- Statistics and monitoring' \
+    'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;' \
+    '' \
+    '-- Cryptography' \
+    'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
+    '' \
+    '-- Data types' \
+    'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' \
+    '' \
+    '-- Indexing improvements' \
+    'CREATE EXTENSION IF NOT EXISTS btree_gin;' \
+    'CREATE EXTENSION IF NOT EXISTS btree_gist;' \
+    'CREATE EXTENSION IF NOT EXISTS pg_trgm;' \
+    > /docker-entrypoint-initdb.d/00-init-extensions.sql
+
+# Configure shared_preload_libraries (only pg_stat_statements for base)
+RUN echo "pg_stat_statements" > /etc/postgresql-preload.conf
+
+# Create startup script that configures shared_preload_libraries
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'PRELOAD=$(cat /etc/postgresql-preload.conf)' \
+    'exec docker-entrypoint.sh postgres -c shared_preload_libraries="$PRELOAD" "$@"' \
+    > /usr/local/bin/docker-entrypoint-wrapper.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint-wrapper.sh
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD pg_isready -U ${POSTGRES_USER:-postgres} || exit 1
+
+# Expose standard PostgreSQL port
+EXPOSE 5432
+
+# Use wrapper script that sets shared_preload_libraries
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-wrapper.sh"]
+CMD []

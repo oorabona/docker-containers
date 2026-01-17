@@ -175,6 +175,22 @@ base_suffix() {
     yq -r '.build.base_suffix // ""' "$variants_file" 2>/dev/null || echo ""
 }
 
+# Get custom dockerfile for a version (if specified)
+# Usage: version_dockerfile <container_dir> <pg_version>
+# Returns: dockerfile name (e.g., "Dockerfile.base") or empty for default
+version_dockerfile() {
+    local container_dir="$1"
+    local pg_version="$2"
+    local variants_file="$container_dir/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        echo ""
+        return
+    fi
+
+    yq -r ".versions[] | select(.tag == \"$pg_version\") | .dockerfile // \"\"" "$variants_file" 2>/dev/null || echo ""
+}
+
 # Check if variants require extensions to be built first
 requires_extensions() {
     local container_dir="$1"
@@ -244,7 +260,10 @@ list_build_matrix() {
             fi
             first=false
 
-            result+="{\"version\":\"$pg_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false")}"
+            local dockerfile
+            dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
+
+            result+="{\"version\":\"$pg_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"dockerfile\":\"$dockerfile\"}"
         done < <(list_variants "$container_dir" "$pg_version")
     done < <(list_versions "$container_dir")
 
@@ -294,4 +313,4 @@ list_variant_tags() {
 # Export functions for use in other scripts
 export -f has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant flavor_arg_name base_suffix
-export -f requires_extensions variant_image_tag list_build_matrix list_variant_tags
+export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_variant_tags

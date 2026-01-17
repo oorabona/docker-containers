@@ -193,6 +193,7 @@ runs:
                 tag=$(echo "$entry" | jq -r '.tag')
                 flavor=$(echo "$entry" | jq -r '.flavor')
                 is_default=$(echo "$entry" | jq -r '.default')
+                dockerfile=$(echo "$entry" | jq -r '.dockerfile // ""')
 
                 builds_json=$(echo "$builds_json" | jq -c \
                   --arg container "$container" \
@@ -201,10 +202,11 @@ runs:
                   --arg tag "$tag" \
                   --arg flavor "$flavor" \
                   --argjson is_default "$is_default" \
-                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: $is_default}]')
+                  --arg dockerfile "$dockerfile" \
+                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: $is_default, dockerfile: $dockerfile}]')
 
                 builds_count=$((builds_count + 1))
-                echo "  → PG$pg_version:$variant_name (tag: $tag, flavor: $flavor)"
+                echo "  → PG$pg_version:$variant_name (tag: $tag, flavor: $flavor${dockerfile:+, dockerfile: $dockerfile})"
               done < <(echo "$matrix_json" | jq -c '.[]')
             else
               # Old single-version structure - use version.sh
@@ -225,7 +227,7 @@ runs:
                   --arg tag "$variant_tag" \
                   --arg flavor "$flavor" \
                   --arg is_default "${is_default:-false}" \
-                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: ($is_default == "true")}]')
+                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: ($is_default == "true"), dockerfile: ""}]')
 
                 builds_count=$((builds_count + 1))
                 echo "  → Variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
@@ -238,7 +240,7 @@ runs:
               --arg container "$container" \
               --arg version "$version" \
               --arg tag "$version" \
-              '. + [{container: $container, version: $version, variant: "", tag: $tag, flavor: "", is_default: true}]')
+              '. + [{container: $container, version: $version, variant: "", tag: $tag, flavor: "", is_default: true, dockerfile: ""}]')
 
             builds_count=$((builds_count + 1))
             echo "📦 Container $container: single build (tag: $version)"

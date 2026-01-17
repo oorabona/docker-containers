@@ -213,6 +213,7 @@ jobs:
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
           variant: ${{ matrix.build.variant }}
+          dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
           force_rebuild: ${{ github.event.inputs.force_rebuild }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -230,6 +231,7 @@ jobs:
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
           variant: ${{ matrix.build.variant }}
+          dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
           force_rebuild: true  # Force rebuild on retry
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
