@@ -37,19 +37,19 @@
       --bg-gradient-3: #0f3460;
     }
 
-    /* Light theme */
+    /* Light theme - WCAG 2.2 compliant (4.5:1 minimum contrast for normal text) */
     [data-theme="light"] {
-      --glass-bg: rgba(255, 255, 255, 0.7);
-      --glass-border: rgba(0, 0, 0, 0.1);
-      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-      --text-primary: #1f2937;
-      --text-secondary: rgba(31, 41, 55, 0.8);
-      --text-muted: rgba(31, 41, 55, 0.5);
-      --accent-green: #059669;
-      --accent-yellow: #d97706;
-      --accent-blue: #2563eb;
-      --accent-purple: #7c3aed;
-      --accent-pink: #db2777;
+      --glass-bg: rgba(255, 255, 255, 0.85);
+      --glass-border: rgba(0, 0, 0, 0.15);
+      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+      --text-primary: #111827;
+      --text-secondary: #374151;
+      --text-muted: #4b5563;
+      --accent-green: #047857;
+      --accent-yellow: #b45309;
+      --accent-blue: #1d4ed8;
+      --accent-purple: #6d28d9;
+      --accent-pink: #be185d;
       --bg-gradient-1: #e0e7ff;
       --bg-gradient-2: #ddd6fe;
       --bg-gradient-3: #c7d2fe;
@@ -227,6 +227,22 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+
+    /* Light theme form elements */
+    [data-theme="light"] .search-input {
+      background: rgba(255, 255, 255, 0.6);
+      border-color: rgba(0, 0, 0, 0.15);
+    }
+
+    [data-theme="light"] .search-input:focus {
+      background: rgba(255, 255, 255, 0.9);
+      border-color: var(--accent-blue);
+    }
+
+    [data-theme="light"] .glass {
+      background: rgba(255, 255, 255, 0.75);
+      border-color: rgba(0, 0, 0, 0.1);
     }
 
     /* Controls bar */
