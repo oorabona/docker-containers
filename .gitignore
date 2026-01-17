@@ -17,8 +17,10 @@
 # Dashboard statistics (dynamically generated)
 .dashboard-stats
 
-# Generated dashboard index (recreated by generate-dashboard.sh)
+# Generated dashboard files (recreated by generate-dashboard.sh)
 index.md
+docs/site/_data/containers.yml
+docs/site/_data/stats.yml
 
 # OS generated files
 .DS_Store
