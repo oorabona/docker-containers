@@ -20,6 +20,10 @@ inputs:
     description: Variant name (for logging/identification)
     required: false
     default: ''
+  dockerfile:
+    description: Custom Dockerfile to use (relative to container directory, defaults to Dockerfile)
+    required: false
+    default: ''
   platform:
     description: Target platform (e.g., linux/amd64 or linux/arm64)
     required: false
@@ -101,15 +105,20 @@ runs:
         container="${{ inputs.container }}"
         variant="${{ inputs.variant }}"
         flavor="${{ inputs.flavor }}"
+        dockerfile="${{ inputs.dockerfile }}"
 
-        # Check if the container directory exists and has a Dockerfile
-        if [[ ! -f "$container/Dockerfile" ]]; then
-          echo "::error::No Dockerfile found for $container"
+        # Default to Dockerfile if not specified
+        [[ -z "$dockerfile" ]] && dockerfile="Dockerfile"
+
+        # Check if the container directory exists and has the specified Dockerfile
+        if [[ ! -f "$container/$dockerfile" ]]; then
+          echo "::error::Dockerfile '$dockerfile' not found for $container"
           echo "needs_build=false" >> $GITHUB_OUTPUT
           echo "current_version=latest" >> $GITHUB_OUTPUT
           echo "current_tag=latest" >> $GITHUB_OUTPUT
           echo "image_name=${{ github.repository_owner }}/${container}" >> $GITHUB_OUTPUT
           echo "flavor=" >> $GITHUB_OUTPUT
+          echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
           exit 0
         fi
 
@@ -163,6 +172,7 @@ runs:
         echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
         echo "flavor=$flavor" >> $GITHUB_OUTPUT
+        echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
 
     - name: Run container prebuild (if exists)
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -200,24 +210,25 @@ runs:
         current_tag="${{ steps.check-build.outputs.current_tag }}"
         flavor="${{ steps.check-build.outputs.flavor }}"
         variant="${{ inputs.variant }}"
+        dockerfile="${{ steps.check-build.outputs.dockerfile }}"
 
-        # Set CUSTOM_BUILD_ARGS if flavor is provided (for variant builds)
-        if [[ -n "$flavor" ]]; then
-          export CUSTOM_BUILD_ARGS="--build-arg FLAVOR=$flavor"
-          echo "::notice::Building with FLAVOR=$flavor"
-        fi
-
-        # Log variant info
+        # Log build info
         if [[ -n "$variant" ]]; then
-          echo "::group::Building $container:$current_tag (variant: $variant) for $BUILD_PLATFORM"
+          echo "::group::Building $container:$current_tag (variant: $variant, dockerfile: $dockerfile) for $BUILD_PLATFORM"
         else
-          echo "::group::Building $container:$current_tag for $BUILD_PLATFORM"
+          echo "::group::Building $container:$current_tag (dockerfile: $dockerfile) for $BUILD_PLATFORM"
         fi
 
-        chmod +x make
+        # Source build utilities and call build_container directly
+        # This bypasses make's variant expansion since CI already expands variants
+        source ./helpers/logging.sh
+        source ./helpers/variant-utils.sh
+        source ./scripts/build-container.sh
 
-        # Use tag for building (may differ from version for variants)
-        if ! ./make build "$container" "$current_version" "$current_tag"; then
+        cd "$container"
+
+        # Call build_container with all parameters: container version tag flavor dockerfile
+        if ! build_container "$container" "$current_version" "$current_tag" "$flavor" "$dockerfile"; then
           echo "::error::Build failed for $container:$current_tag"
           exit 1
         fi
@@ -246,7 +257,7 @@ runs:
       id: trivy-scan
       uses: aquasecurity/trivy-action@0.29.0
       with:
-        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
+        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'table'
         exit-code: '1'
         severity: '${{ inputs.vulnerability_severity }},CRITICAL'
@@ -259,7 +270,7 @@ runs:
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
       uses: aquasecurity/trivy-action@0.29.0
       with:
-        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_version }}'
+        image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'sarif'
         output: 'trivy-results.sarif'
         severity: 'LOW,MEDIUM,HIGH,CRITICAL'
