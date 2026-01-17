@@ -136,8 +136,10 @@ format_number() {
 }
 
 # Get GHCR image sizes (compressed) for all architectures
+# Usage: get_ghcr_sizes <image> [tag]
 get_ghcr_sizes() {
     local image=$1
+    local tag=${2:-latest}
     local token manifest sizes_output=""
 
     # Get anonymous token for GHCR
@@ -149,7 +151,7 @@ get_ghcr_sizes() {
     # Get manifest list
     manifest=$(curl -s -H "Authorization: Bearer $token" \
                -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
-               "https://ghcr.io/v2/${image#ghcr.io/}/manifests/latest" 2>/dev/null)
+               "https://ghcr.io/v2/${image#ghcr.io/}/manifests/${tag}" 2>/dev/null)
 
     [[ -z "$manifest" ]] && echo "" && return
 
@@ -285,11 +287,24 @@ EOF
 
                         [[ "$is_default" != "true" ]] && is_default="false"
 
+                        # Get sizes for this variant (only if container is published)
+                        local var_size_amd64="" var_size_arm64=""
+                        if [[ "$current_version" != "no-published-version" ]]; then
+                            local var_sizes_raw
+                            var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+                            if [[ -n "$var_sizes_raw" ]]; then
+                                var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                                var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+                            fi
+                        fi
+
                         cat >> "$DATA_FILE" << EOF
         - name: "$variant_name"
           tag: "$variant_tag"
           description: "$(yaml_escape "$variant_desc")"
           is_default: $is_default
+          size_amd64: "$var_size_amd64"
+          size_arm64: "$var_size_arm64"
 EOF
                     done < <(list_variants "$container_dir" "$ver_tag")
                 done < <(list_versions "$container_dir")
@@ -307,11 +322,24 @@ EOF
 
                     [[ "$is_default" != "true" ]] && is_default="false"
 
+                    # Get sizes for this variant (only if container is published)
+                    local var_size_amd64="" var_size_arm64=""
+                    if [[ "$current_version" != "no-published-version" ]]; then
+                        local var_sizes_raw
+                        var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+                        if [[ -n "$var_sizes_raw" ]]; then
+                            var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                            var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+                        fi
+                    fi
+
                     cat >> "$DATA_FILE" << EOF
     - name: "$variant_name"
       tag: "$variant_tag"
       description: "$(yaml_escape "$variant_desc")"
       is_default: $is_default
+      size_amd64: "$var_size_amd64"
+      size_arm64: "$var_size_arm64"
 EOF
                 done < <(list_variants "$container_dir")
             fi
