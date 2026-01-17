@@ -17,25 +17,32 @@
 # Build extension images first: ./scripts/build-extensions.sh postgres
 
 ARG VERSION=17-alpine
+ARG PG_MAJOR=17
 
 # ============================================================================
 # Extension Image References
 # These images contain pre-compiled extensions in /output/
 # Override these ARGs to use different versions or registries
+# PG_MAJOR is used to select the correct extension version
 # ============================================================================
 ARG REGISTRY=ghcr.io
 ARG OWNER=oorabona
 
-# Extension images (pulled automatically during build)
-# Versions are updated by version-extension.sh --update <ext>
-ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg17-0.8.1
-ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg17-5.4.0
-ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg17-1.4.2
-ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg17-2.1.3
-# ParadeDB disabled - requires Debian/glibc for pgrx compilation
-# ARG EXT_PARADEDB_IMAGE=${REGISTRY}/${OWNER}/ext-paradedb:pg17-0.20.7
-ARG EXT_CITUS_IMAGE=${REGISTRY}/${OWNER}/ext-citus:pg17-13.2.0
-ARG EXT_TIMESCALEDB_IMAGE=${REGISTRY}/${OWNER}/ext-timescaledb:pg17-2.24.0
+# Extension versions (independent of PostgreSQL version)
+ARG PGVECTOR_VERSION=0.8.1
+ARG PG_PARTMAN_VERSION=5.4.0
+ARG HYPOPG_VERSION=1.4.2
+ARG PG_QUALSTATS_VERSION=2.1.3
+ARG CITUS_VERSION=13.2.0
+ARG TIMESCALEDB_VERSION=2.24.0
+
+# Extension images (built dynamically from PG_MAJOR and extension version)
+ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg${PG_MAJOR}-${PGVECTOR_VERSION}
+ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg${PG_MAJOR}-${PG_PARTMAN_VERSION}
+ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg${PG_MAJOR}-${HYPOPG_VERSION}
+ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg${PG_MAJOR}-${PG_QUALSTATS_VERSION}
+ARG EXT_CITUS_IMAGE=${REGISTRY}/${OWNER}/ext-citus:pg${PG_MAJOR}-${CITUS_VERSION}
+ARG EXT_TIMESCALEDB_IMAGE=${REGISTRY}/${OWNER}/ext-timescaledb:pg${PG_MAJOR}-${TIMESCALEDB_VERSION}
 
 # ============================================================================
 # Extension Stages - Copy from extension images

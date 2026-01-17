@@ -102,6 +102,11 @@ build_container() {
     local build_args=""
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
 
+    # Extract major version for extension image selection (e.g., "16-alpine" -> "16")
+    local pg_major
+    pg_major=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
+    [[ -n "$pg_major" ]] && build_args="$build_args --build-arg PG_MAJOR=$pg_major"
+
     # Get upstream version if container has version.sh with --upstream support
     # This separates download URL version from Docker tag version
     if [[ -f "./version.sh" ]]; then
@@ -142,16 +147,14 @@ build_container() {
 
         log_success "✅ Build completed - image loaded locally (no push)"
     else
-        # Local development: single platform with --load and --pull=never
-        # --pull=never uses local images if available, avoiding registry pulls
-        # This allows building with locally-built extension images
+        # Local development: single platform with --load
+        # Images are pulled from registry if not available locally
         log_success "Building $container:$tag locally (layered image)..."
         log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
 
         docker buildx build \
             --platform "$platforms" \
             --load \
-            --pull=never \
             $cache_args \
             $build_args \
             $tag_args \
