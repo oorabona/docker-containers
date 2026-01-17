@@ -109,6 +109,9 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true  # Optional - build works without Docker Hub login
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Cache postgres base images
         run: |
           source ./helpers/variant-utils.sh
@@ -119,12 +122,12 @@ jobs:
           echo "📦 Caching postgres base images to $cache_repo"
 
           for version in $(list_versions "./postgres"); do
-            source_image="postgres:${version}"
+            source_image="docker.io/library/postgres:${version}"
             cache_image="$cache_repo:${version}"
 
             echo "🔍 Checking $cache_image..."
 
-            # Check if cache exists and is recent (skip if pushed within last 24h)
+            # Check if cache exists (skip if already present)
             cache_exists=false
             if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
               echo "  ✓ Cache exists for $version"
@@ -132,16 +135,14 @@ jobs:
             fi
 
             if [[ "$cache_exists" == "false" ]] || [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-              echo "  → Pulling $source_image from Docker Hub..."
-              docker pull "$source_image"
+              echo "  → Copying $source_image to $cache_image (multi-arch)..."
+              # Use buildx imagetools to copy with full multi-arch manifest
+              # This preserves linux/amd64, linux/arm64, etc.
+              docker buildx imagetools create \
+                --tag "$cache_image" \
+                "$source_image"
 
-              echo "  → Tagging as $cache_image..."
-              docker tag "$source_image" "$cache_image"
-
-              echo "  → Pushing to GHCR..."
-              docker push "$cache_image"
-
-              echo "  ✅ Cached $version"
+              echo "  ✅ Cached $version (all platforms)"
             else
               echo "  ⏭️ Using existing cache for $version"
             fi
