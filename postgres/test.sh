@@ -295,10 +295,11 @@ run_flavor_tests() {
         distributed)
             test_citus
             ;;
-        search)
-            test_paradedb
-            test_pgvector
-            ;;
+        # search flavor disabled - ParadeDB requires Debian/glibc
+        # search)
+        #     test_paradedb
+        #     test_pgvector
+        #     ;;
         full)
             test_pgvector
             test_pg_partman
@@ -306,7 +307,7 @@ run_flavor_tests() {
             test_pg_qualstats
             test_timescaledb
             test_citus
-            test_paradedb
+            # test_paradedb - disabled, requires Debian
             ;;
         *)
             info "Unknown flavor '$flavor', running all extension tests"
@@ -317,7 +318,7 @@ run_flavor_tests() {
             extension_installed "pg_qualstats" && test_pg_qualstats || true
             extension_installed "timescaledb" && test_timescaledb || true
             extension_installed "citus" && test_citus || true
-            extension_installed "pg_search" && test_paradedb || true
+            # extension_installed "pg_search" && test_paradedb || true  # Disabled
             ;;
     esac
 

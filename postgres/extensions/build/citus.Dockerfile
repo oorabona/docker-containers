@@ -29,6 +29,7 @@ RUN apk add --no-cache \
     icu-dev \
     libxml2-dev \
     openssl-dev \
+    krb5-dev \
     autoconf \
     automake \
     libtool \

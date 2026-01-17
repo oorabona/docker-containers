@@ -201,6 +201,25 @@ build_extension() {
     build_ext_image "$ext_name" "$version" "$repo" "$major_ver" "$dockerfile" "$context_dir"
 }
 
+# Tag extension with registry name (always needed for COPY --from= to work)
+tag_extension() {
+    local ext_name="$1"
+    local config_file="$2"
+    local major_ver="$3"
+
+    local version
+    version=$(ext_config "$ext_name" "version" "$config_file")
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local image
+        image=$(ext_image_name "$ext_name" "$version" "$major_ver")
+        log_info "[DRY-RUN] Would tag $image"
+        return 0
+    fi
+
+    tag_ext_image "$ext_name" "$version" "$major_ver"
+}
+
 # Push extension to registry
 push_extension() {
     local ext_name="$1"
@@ -299,23 +318,33 @@ main() {
 
     log_info "Extensions to build: ${extensions_to_build[*]}"
 
-    # Build and push each extension
+    # Build, tag, and optionally push each extension
     local failed=()
     for ext in "${extensions_to_build[@]}"; do
         echo ""
         log_info "Processing: $ext"
 
-        if build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
-            if [[ "$LOCAL_ONLY" == "true" ]]; then
-                log_ok "$ext built locally"
-            elif push_extension "$ext" "$config_file" "$major_ver"; then
-                log_ok "$ext completed successfully"
-            else
-                log_error "$ext push failed"
-                failed+=("$ext")
-            fi
-        else
+        # Build the extension
+        if ! build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
             log_error "$ext build failed"
+            failed+=("$ext")
+            continue
+        fi
+
+        # Always tag with registry name (needed for COPY --from= to find it locally)
+        if ! tag_extension "$ext" "$config_file" "$major_ver"; then
+            log_error "$ext tag failed"
+            failed+=("$ext")
+            continue
+        fi
+
+        # Push to registry (unless local-only)
+        if [[ "$LOCAL_ONLY" == "true" ]]; then
+            log_ok "$ext built and tagged locally"
+        elif push_extension "$ext" "$config_file" "$major_ver"; then
+            log_ok "$ext completed successfully"
+        else
+            log_error "$ext push failed"
             failed+=("$ext")
         fi
     done

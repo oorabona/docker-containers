@@ -42,6 +42,7 @@ help() {
   log_help help "This help"
   log_help list "List all available containers"
   log_help "build <target> [version]" "Build <target> container using [version] (latest|current|specific version)"
+  log_help "build-extensions <target> [version] [--local-only]" "Build (and push) extensions for <target>"
   log_help "push <target> [version]" "Push to all registries (GHCR primary, Docker Hub secondary)"
   log_help "push ghcr <target> [version]" "Push to GHCR only (GitHub Container Registry)"
   log_help "push dockerhub <target> [version]" "Push to Docker Hub only"
@@ -458,6 +459,43 @@ check_updates() {
   echo "$output_json"
 }
 
+# Build extensions for a container (wrapper for scripts/build-extensions.sh)
+# Usage: build_extensions <target> [version] [--local-only]
+build_extensions() {
+  local target="$1"
+  local version="${2:-}"
+  local local_only=""
+
+  # Check for --local-only flag in any position
+  for arg in "$@"; do
+    if [[ "$arg" == "--local-only" ]]; then
+      local_only="--local-only"
+    fi
+  done
+
+  # Validate target
+  if ! validate_target "$target"; then
+    log_error "$target is not a valid target (no Dockerfile found)!"
+    return 1
+  fi
+
+  # Check if container has extensions config
+  if [[ ! -f "$target/extensions/config.yaml" ]]; then
+    log_warning "$target has no extensions configuration (extensions/config.yaml)"
+    return 0
+  fi
+
+  # Build version args
+  local version_args=""
+  if [[ -n "$version" && "$version" != "--local-only" ]]; then
+    version_args="--major-version $version"
+  fi
+
+  # Call the extensions build script
+  log_info "Building extensions for $target ${version:+(version: $version)} ${local_only:+(local only)}"
+  ./scripts/build-extensions.sh "$target" $version_args $local_only
+}
+
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
   docker compose 2>/dev/null 1>&2
@@ -472,6 +510,7 @@ fi
 
 case "${1:-}" in
   build ) make "$1" "${2:-}" "${3:-}" ;;
+  build-extensions ) shift; build_extensions "$@" ;;
   push )
     # Handle: push <target>, push ghcr <target>, push dockerhub <target>
     if [[ "${2:-}" == "ghcr" || "${2:-}" == "dockerhub" ]]; then
