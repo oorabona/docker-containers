@@ -42,13 +42,15 @@ check_multiplatform_support() {
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor]
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile]
 # If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
+# If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
     local version="$2"
     local tag="$3"
     local flavor="${4:-}"
+    local dockerfile="${5:-Dockerfile}"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -132,9 +134,10 @@ build_container() {
         # GitHub Actions: build locally without pushing (use --load)
         # This ensures PR builds validate without polluting registries
         log_success "GitHub Actions detected - building locally for validation..."
-        log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
+        log_success "Runtime: $runtime_info | Platform: $platforms | Dockerfile: $dockerfile"
 
         docker buildx build \
+            -f "$dockerfile" \
             --platform "$platforms" \
             --load \
             $cache_args \
@@ -149,10 +152,11 @@ build_container() {
     else
         # Local development: single platform with --load and --pull=never
         # Uses locally-built images (run build-extensions --local-only first)
-        log_success "Building $container:$tag locally (layered image)..."
-        log_success "Runtime: $runtime_info | Platform: $platforms | Cache: ${cache_args:-none}"
+        log_success "Building $container:$tag locally (Dockerfile: $dockerfile)..."
+        log_success "Runtime: $runtime_info | Platform: $platforms"
 
         docker buildx build \
+            -f "$dockerfile" \
             --platform "$platforms" \
             --load \
             --pull=never \
@@ -195,11 +199,16 @@ build_container_variants() {
     local base_sfx
     base_sfx=$(base_suffix "$container_dir")
 
+    # Get custom dockerfile for this version (if any)
+    local dockerfile
+    dockerfile=$(version_dockerfile "$container_dir" "$major_version")
+    [[ -z "$dockerfile" ]] && dockerfile="Dockerfile"
+
     # Construct the base image version for FROM statement (e.g., "17-alpine")
     local base_image_version="${major_version}${base_sfx}"
 
     log_info "$container has variants, building multiple images..."
-    log_info "Major version: $major_version | Base image: postgres:$base_image_version"
+    log_info "Major version: $major_version | Base image: postgres:$base_image_version | Dockerfile: $dockerfile"
 
     local results="["
     local first=true
@@ -223,9 +232,9 @@ build_container_variants() {
 
         log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
 
-        # Build the variant - pass base_image_version (e.g., "17-alpine")
+        # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
