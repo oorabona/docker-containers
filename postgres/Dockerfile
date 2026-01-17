@@ -20,6 +20,14 @@ ARG VERSION=17-alpine
 ARG MAJOR_VERSION=17
 
 # ============================================================================
+# Base Image Registry
+# Use cached base images from GHCR to avoid Docker Hub rate limits
+# Default: ghcr.io/oorabona/postgres-base (cached from docker.io/library/postgres)
+# For local builds without cache: --build-arg BASE_IMAGE=postgres
+# ============================================================================
+ARG BASE_IMAGE=ghcr.io/oorabona/postgres-base
+
+# ============================================================================
 # Extension Image References
 # These images contain pre-compiled extensions in /output/
 # Override these ARGs to use different versions or registries
@@ -58,8 +66,11 @@ FROM ${EXT_TIMESCALEDB_IMAGE} AS ext-timescaledb
 
 # ============================================================================
 # Main Image
+# Uses cached base image from GHCR (or Docker Hub for local builds)
 # ============================================================================
-FROM postgres:${VERSION}
+ARG BASE_IMAGE
+ARG VERSION
+FROM ${BASE_IMAGE}:${VERSION}
 
 # Build arguments
 ARG FLAVOR=base
