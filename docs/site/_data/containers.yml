@@ -1,5 +1,5 @@
 # Auto-generated container data
-# Generated: 2026-01-17 03:12 UTC
+# Generated: 2026-01-17 09:16 UTC
 
 - name: "ansible"
   current_version: "no-published-version"
@@ -23,6 +23,19 @@
   description: "Debian Base Container"
   ghcr_image: "ghcr.io/oorabona/debian:trixie"
   dockerhub_image: "docker.io/oorabona/debian:trixie"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "jekyll"
+  current_version: "no-published-version"
+  latest_version: "4.4.1-alpine"
+  status_color: "warning"
+  status_text: "Not Published Yet"
+  build_status: "pending"
+  description: "Jekyll Static Site Generator"
+  ghcr_image: "ghcr.io/oorabona/jekyll:no-published-version"
+  dockerhub_image: "docker.io/oorabona/jekyll:no-published-version"
   github_username: "oorabona"
   dockerhub_username: "oorabona"
   has_variants: false
@@ -78,23 +91,49 @@
   github_username: "oorabona"
   dockerhub_username: "oorabona"
   has_variants: true
-  variants:
-    - name: "base"
-      tag: "18.1-alpine"
-      description: "PostgreSQL with built-in extensions only"
-      is_default: true
-    - name: "vector"
-      tag: "18.1-vector-alpine"
-      description: "PostgreSQL + pgvector for AI/RAG applications"
-      is_default: false
-    - name: "analytics"
-      tag: "18.1-analytics-alpine"
-      description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
-      is_default: false
-    - name: "full"
-      tag: "18.1-full-alpine"
-      description: "PostgreSQL with all compiled extensions"
-      is_default: false
+  versions:
+    - tag: "18"
+      variants:
+        - name: "base"
+          tag: "18-alpine"
+          description: "PostgreSQL with built-in extensions only"
+          is_default: true
+    - tag: "17"
+      variants:
+        - name: "base"
+          tag: "17-alpine"
+          description: "PostgreSQL with built-in extensions only"
+          is_default: true
+        - name: "vector"
+          tag: "17-vector-alpine"
+          description: "PostgreSQL + pgvector for AI/RAG applications"
+          is_default: false
+        - name: "analytics"
+          tag: "17-analytics-alpine"
+          description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+          is_default: false
+        - name: "full"
+          tag: "17-full-alpine"
+          description: "PostgreSQL with all compiled extensions"
+          is_default: false
+    - tag: "16"
+      variants:
+        - name: "base"
+          tag: "16-alpine"
+          description: "PostgreSQL with built-in extensions only"
+          is_default: true
+        - name: "vector"
+          tag: "16-vector-alpine"
+          description: "PostgreSQL + pgvector for AI/RAG applications"
+          is_default: false
+        - name: "analytics"
+          tag: "16-analytics-alpine"
+          description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+          is_default: false
+        - name: "full"
+          tag: "16-full-alpine"
+          description: "PostgreSQL with all compiled extensions"
+          is_default: false
 
 - name: "sslh"
   current_version: "no-published-version"

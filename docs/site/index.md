@@ -32,6 +32,7 @@ description: Real-time status monitoring for Docker containers with automated up
      dockerhub_username=container.dockerhub_username
      has_variants=container.has_variants
      variants=container.variants
+     versions=container.versions
   %}
 {% endfor %}
 </div>

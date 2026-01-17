@@ -167,26 +167,61 @@ EOF
         local container_dir="./$container"
         if has_variants "$container_dir"; then
             echo "  has_variants: true" >> "$DATA_FILE"
-            echo "  variants:" >> "$DATA_FILE"
 
-            while IFS= read -r variant_name; do
-                [[ -z "$variant_name" ]] && continue
+            # Check if multi-version structure
+            local ver_count
+            ver_count=$(version_count "$container_dir")
 
-                local variant_tag variant_desc is_default
-                variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
-                variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
-                is_default=$(variant_property "$container_dir" "$variant_name" "default")
+            if [[ "$ver_count" -gt 0 ]]; then
+                # Multi-version structure: show versions with their variants
+                echo "  versions:" >> "$DATA_FILE"
 
-                # Ensure is_default is either true or false
-                [[ "$is_default" != "true" ]] && is_default="false"
+                while IFS= read -r ver_tag; do
+                    [[ -z "$ver_tag" ]] && continue
 
-                cat >> "$DATA_FILE" << EOF
+                    echo "    - tag: \"$ver_tag\"" >> "$DATA_FILE"
+                    echo "      variants:" >> "$DATA_FILE"
+
+                    while IFS= read -r variant_name; do
+                        [[ -z "$variant_name" ]] && continue
+
+                        local variant_tag variant_desc is_default
+                        variant_tag=$(variant_image_tag "$ver_tag" "$variant_name" "$container_dir")
+                        variant_desc=$(variant_property "$container_dir" "$variant_name" "description" "$ver_tag")
+                        is_default=$(variant_property "$container_dir" "$variant_name" "default" "$ver_tag")
+
+                        [[ "$is_default" != "true" ]] && is_default="false"
+
+                        cat >> "$DATA_FILE" << EOF
+        - name: "$variant_name"
+          tag: "$variant_tag"
+          description: "$(yaml_escape "$variant_desc")"
+          is_default: $is_default
+EOF
+                    done < <(list_variants "$container_dir" "$ver_tag")
+                done < <(list_versions "$container_dir")
+            else
+                # Old single-version structure
+                echo "  variants:" >> "$DATA_FILE"
+
+                while IFS= read -r variant_name; do
+                    [[ -z "$variant_name" ]] && continue
+
+                    local variant_tag variant_desc is_default
+                    variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
+                    variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
+                    is_default=$(variant_property "$container_dir" "$variant_name" "default")
+
+                    [[ "$is_default" != "true" ]] && is_default="false"
+
+                    cat >> "$DATA_FILE" << EOF
     - name: "$variant_name"
       tag: "$variant_tag"
       description: "$(yaml_escape "$variant_desc")"
       is_default: $is_default
 EOF
-            done < <(list_variants "$container_dir")
+                done < <(list_variants "$container_dir")
+            fi
         else
             echo "  has_variants: false" >> "$DATA_FILE"
         fi
