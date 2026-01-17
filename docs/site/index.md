@@ -35,6 +35,7 @@ description: Real-time status monitoring for Docker containers with automated up
      versions=container.versions
      pull_count=container.pull_count
      pull_count_formatted=container.pull_count_formatted
+     star_count=container.star_count
      size_amd64=container.size_amd64
      size_arm64=container.size_arm64
   %}
