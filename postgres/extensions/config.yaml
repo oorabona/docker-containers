@@ -1,0 +1,116 @@
+# PostgreSQL Extensions Configuration
+# Used by scripts/build-extensions.sh to compile and manage extensions
+#
+# Workflow:
+# 1. CI checks if artifacts exist in GitHub Releases for current PG major version
+# 2. Missing extensions are compiled using their Dockerfile
+# 3. Artifacts uploaded to release "extensions-pg{major}"
+# 4. Flavor images assemble pre-compiled artifacts
+
+# PostgreSQL versions to support
+pg_versions:
+  - "17"
+  - "16"
+
+# Base image variant
+base_variant: "alpine"
+
+# GitHub release prefix for artifacts
+release_prefix: "extensions-pg"
+
+# Extensions requiring compilation
+# Each extension produces: {name}-{version}-pg{major}-alpine.tar.gz
+extensions:
+  pgvector:
+    version: "0.8.0"
+    description: "Vector similarity search for AI/RAG applications"
+    repo: "pgvector/pgvector"
+    build_deps:
+      - build-base
+      - clang
+      - llvm-dev
+    shared_preload: false
+    priority: 1  # Build order (lower = first)
+
+  pg_partman:
+    version: "5.2.4"
+    description: "Partition management for time-series and large tables"
+    repo: "pgpartman/pg_partman"
+    build_deps:
+      - build-base
+    shared_preload: false
+    priority: 2
+
+  hypopg:
+    version: "1.4.1"
+    description: "Hypothetical indexes for query planning analysis"
+    repo: "HypoPG/hypopg"
+    build_deps:
+      - build-base
+    shared_preload: false
+    priority: 2
+
+  pg_qualstats:
+    version: "2.1.1"
+    description: "Statistics about predicates for index suggestions"
+    repo: "powa-team/pg_qualstats"
+    build_deps:
+      - build-base
+    shared_preload: true
+    priority: 2
+
+  paradedb:
+    version: "0.17.3"
+    description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
+    repo: "paradedb/paradedb"
+    build_deps:
+      - build-base
+      - rust
+      - cargo
+      - clang
+      - llvm-dev
+    shared_preload: true
+    complex: true  # Requires special build process
+    priority: 3
+
+  # PostGIS commented out for now - very complex dependencies
+  # postgis:
+  #   version: "3.4.2"
+  #   description: "Geospatial database extension"
+  #   repo: "postgis/postgis"
+  #   build_deps:
+  #     - build-base
+  #     - geos-dev
+  #     - proj-dev
+  #     - gdal-dev
+  #     - json-c-dev
+  #     - libxml2-dev
+  #   shared_preload: false
+  #   complex: true
+  #   priority: 4
+
+# Built-in extensions (no compilation needed, just CREATE EXTENSION)
+builtin_extensions:
+  # Statistics and monitoring
+  - pg_stat_statements
+  - pg_buffercache
+  - pg_prewarm
+
+  # Cryptography
+  - pgcrypto
+
+  # Data types and indexing
+  - uuid-ossp
+  - btree_gin
+  - btree_gist
+  - pg_trgm
+
+  # Foreign data wrappers
+  - file_fdw
+  - postgres_fdw
+
+  # Administration
+  - adminpack
+
+# Flavors define which extensions are bundled together
+# See postgres/flavors/*.yaml for flavor definitions

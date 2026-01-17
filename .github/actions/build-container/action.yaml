@@ -8,6 +8,18 @@ inputs:
     description: Version to build (if empty, will be auto-detected)
     required: false
     default: ''
+  tag:
+    description: Image tag (may differ from version for variants)
+    required: false
+    default: ''
+  flavor:
+    description: Build flavor for variant containers (passed as FLAVOR build arg)
+    required: false
+    default: ''
+  variant:
+    description: Variant name (for logging/identification)
+    required: false
+    default: ''
   platform:
     description: Target platform (e.g., linux/amd64 or linux/arm64)
     required: false
@@ -40,6 +52,9 @@ outputs:
   version:
     description: Container version that was built
     value: ${{ steps.check-build.outputs.current_version }}
+  tag:
+    description: Image tag that was built (may differ from version for variants)
+    value: ${{ steps.check-build.outputs.current_tag }}
   image_name:
     description: Full image name
     value: ${{ steps.check-build.outputs.image_name }}
@@ -84,13 +99,17 @@ runs:
       run: |
         set -e
         container="${{ inputs.container }}"
+        variant="${{ inputs.variant }}"
+        flavor="${{ inputs.flavor }}"
 
         # Check if the container directory exists and has a Dockerfile
         if [[ ! -f "$container/Dockerfile" ]]; then
           echo "::error::No Dockerfile found for $container"
           echo "needs_build=false" >> $GITHUB_OUTPUT
           echo "current_version=latest" >> $GITHUB_OUTPUT
+          echo "current_tag=latest" >> $GITHUB_OUTPUT
           echo "image_name=${{ github.repository_owner }}/${container}" >> $GITHUB_OUTPUT
+          echo "flavor=" >> $GITHUB_OUTPUT
           exit 0
         fi
 
@@ -116,6 +135,17 @@ runs:
           echo "::notice::Using fallback version: $current_version"
         fi
 
+        # Use tag input if provided, otherwise use version
+        current_tag="${{ inputs.tag }}"
+        if [[ -z "$current_tag" ]]; then
+          current_tag="$current_version"
+        fi
+
+        # Variant/flavor info
+        if [[ -n "$variant" ]]; then
+          echo "::notice::Building variant: $variant (tag: $current_tag, flavor: $flavor)"
+        fi
+
         # Determine if build is needed
         if [ "${{ inputs.force_rebuild }}" = "true" ]; then
           echo "::notice::Force rebuild requested"
@@ -130,7 +160,32 @@ runs:
 
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
+        echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
+        echo "flavor=$flavor" >> $GITHUB_OUTPUT
+
+    - name: Run container prebuild (if exists)
+      if: ${{ steps.check-build.outputs.needs_build == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        container="${{ inputs.container }}"
+        current_version="${{ steps.check-build.outputs.current_version }}"
+
+        # Check if prebuild script exists
+        if [[ -x "$container/prebuild.sh" ]]; then
+          echo "::group::Running prebuild for $container"
+
+          # Extract major version for extensions
+          pg_major=$(echo "$current_version" | grep -oE '^[0-9]+' | head -1)
+
+          "$container/prebuild.sh" "$pg_major" || {
+            echo "::warning::Prebuild script failed (non-fatal)"
+          }
+
+          echo "::endgroup::"
+        fi
 
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -142,17 +197,33 @@ runs:
         export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        flavor="${{ steps.check-build.outputs.flavor }}"
+        variant="${{ inputs.variant }}"
 
-        echo "::group::Building $container:$current_version for $BUILD_PLATFORM"
+        # Set CUSTOM_BUILD_ARGS if flavor is provided (for variant builds)
+        if [[ -n "$flavor" ]]; then
+          export CUSTOM_BUILD_ARGS="--build-arg FLAVOR=$flavor"
+          echo "::notice::Building with FLAVOR=$flavor"
+        fi
+
+        # Log variant info
+        if [[ -n "$variant" ]]; then
+          echo "::group::Building $container:$current_tag (variant: $variant) for $BUILD_PLATFORM"
+        else
+          echo "::group::Building $container:$current_tag for $BUILD_PLATFORM"
+        fi
+
         chmod +x make
 
-        if ! ./make build "$container" "$current_version"; then
-          echo "::error::Build failed for $container"
+        # Use tag for building (may differ from version for variants)
+        if ! ./make build "$container" "$current_version" "$current_tag"; then
+          echo "::error::Build failed for $container:$current_tag"
           exit 1
         fi
 
         echo "::endgroup::"
-        echo "::notice::Build successful for $container:$current_version"
+        echo "::notice::Build successful for $container:$current_tag"
 
     # Security Scanning with Trivy
     # Note: Image is tagged as ghcr.io/owner/container:version by the build step
@@ -229,16 +300,23 @@ runs:
         export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        flavor="${{ steps.check-build.outputs.flavor }}"
+
+        # Set CUSTOM_BUILD_ARGS if flavor is provided (for variant builds)
+        if [[ -n "$flavor" ]]; then
+          export CUSTOM_BUILD_ARGS="--build-arg FLAVOR=$flavor"
+        fi
 
         echo "::notice::Pushing with BUILD_PLATFORM=$BUILD_PLATFORM"
         echo "::group::Pushing to GHCR (primary registry)"
 
-        if ./make push ghcr "$container" "$current_version"; then
+        if ./make push ghcr "$container" "$current_version" "$current_tag"; then
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "::notice::GHCR push successful"
+          echo "::notice::GHCR push successful for $container:$current_tag"
         else
           echo "success=false" >> $GITHUB_OUTPUT
-          echo "::error::GHCR push failed"
+          echo "::error::GHCR push failed for $container:$current_tag"
           exit 1
         fi
 
@@ -254,15 +332,22 @@ runs:
         export BUILD_PLATFORM="${{ inputs.platform }}"
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        flavor="${{ steps.check-build.outputs.flavor }}"
+
+        # Set CUSTOM_BUILD_ARGS if flavor is provided (for variant builds)
+        if [[ -n "$flavor" ]]; then
+          export CUSTOM_BUILD_ARGS="--build-arg FLAVOR=$flavor"
+        fi
 
         echo "::group::Pushing to Docker Hub (secondary registry)"
 
-        if ./make push dockerhub "$container" "$current_version"; then
+        if ./make push dockerhub "$container" "$current_version" "$current_tag"; then
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "::notice::Docker Hub push successful"
+          echo "::notice::Docker Hub push successful for $container:$current_tag"
         else
           echo "success=false" >> $GITHUB_OUTPUT
-          echo "::warning::Docker Hub push failed - images available on GHCR only"
+          echo "::warning::Docker Hub push failed for $container:$current_tag - images available on GHCR only"
         fi
 
         echo "::endgroup::"

@@ -37,16 +37,56 @@
   <div class="card-description">{{ include.description | truncate: 120 }}</div>
   {% endif %}
 
+  <!-- Variants Section (for multi-image containers) -->
+  {% if include.has_variants %}
+  <div class="variants-section">
+    <div class="variants-header">
+      <i class="ti ti-versions"></i>
+      <span>Available variants</span>
+    </div>
+    <div class="variant-tags">
+      {% for variant in include.variants %}
+        <span class="variant-tag"
+              title="{{ variant.description }} — Click to copy"
+              onclick="selectVariant('{{ include.name }}', 'ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}')"
+              style="cursor: pointer;">
+          :{{ variant.tag }}
+          {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+        </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Docker Pull Command Section -->
   {% if include.ghcr_image and include.dockerhub_image %}
   <div class="pull-section">
     <div class="pull-header">
       <i class="ti ti-brand-docker"></i>
       <span>Pull command</span>
+      {% if include.has_variants %}
+      <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
+        <optgroup label="GHCR">
+          {% for variant in include.variants %}
+          <option value="ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}"{% if variant.is_default %} selected{% endif %}>
+            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+          </option>
+          {% endfor %}
+        </optgroup>
+        <optgroup label="Docker Hub">
+          {% for variant in include.variants %}
+          <option value="docker.io/{{ include.dockerhub_username }}/{{ include.name }}:{{ variant.tag }}">
+            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+          </option>
+          {% endfor %}
+        </optgroup>
+      </select>
+      {% else %}
       <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
         <option value="{{ include.ghcr_image }}">GHCR</option>
         <option value="{{ include.dockerhub_image }}">Docker Hub</option>
       </select>
+      {% endif %}
     </div>
     <div class="pull-input-group">
       <input type="text"

@@ -1,0 +1,38 @@
+# PostgreSQL Container Variants
+# Defines multiple image variants built from the same Dockerfile
+#
+# Each variant produces a separate image tag:
+#   ghcr.io/oorabona/postgres:17-alpine         (base)
+#   ghcr.io/oorabona/postgres:17-vector-alpine  (vector)
+#   etc.
+
+# Variants to build and publish
+variants:
+  - name: base
+    suffix: ""              # No suffix = default image
+    flavor: base            # Dockerfile FLAVOR arg
+    description: "PostgreSQL with built-in extensions only"
+    default: true           # This is the primary variant
+
+  - name: vector
+    suffix: "-vector"       # postgres:17-vector-alpine
+    flavor: vector
+    description: "PostgreSQL + pgvector for AI/RAG applications"
+
+  - name: analytics
+    suffix: "-analytics"    # postgres:17-analytics-alpine
+    flavor: analytics
+    description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+
+  - name: full
+    suffix: "-full"         # postgres:17-full-alpine
+    flavor: full
+    description: "PostgreSQL with all compiled extensions"
+
+# Build configuration
+build:
+  # Build arg to pass for flavor selection
+  flavor_arg: FLAVOR
+
+  # Dependencies: extension images must exist before building variants
+  requires_extensions: true

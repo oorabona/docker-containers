@@ -403,6 +403,55 @@
       overflow: hidden;
     }
 
+    /* Variants section */
+    .variants-section {
+      margin-bottom: 1rem;
+    }
+
+    .variants-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .variant-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.375rem;
+    }
+
+    .variant-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.6875rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      background: rgba(139, 92, 246, 0.15);
+      color: #a78bfa;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      cursor: default;
+    }
+
+    .variant-tag .badge {
+      font-size: 0.5625rem;
+      padding: 0.125rem 0.25rem;
+      border-radius: 3px;
+      background: rgba(59, 130, 246, 0.3);
+      color: #60a5fa;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .variant-tag .badge-primary {
+      background: rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+
     /* Pull command */
     .pull-section {
       margin-bottom: 1rem;
@@ -639,6 +688,31 @@
       const input = document.getElementById('pull-' + containerName);
       if (input) {
         input.value = 'docker pull ' + imageUrl;
+      }
+    }
+
+    // Select variant and update pull command + copy to clipboard
+    function selectVariant(containerName, imageUrl) {
+      updatePullCommand(containerName, imageUrl);
+
+      // Also update the select dropdown if it exists
+      const card = document.getElementById('pull-' + containerName).closest('.container-card');
+      if (card) {
+        const select = card.querySelector('.pull-select');
+        if (select) {
+          for (let option of select.options) {
+            if (option.value === imageUrl) {
+              select.value = imageUrl;
+              break;
+            }
+          }
+        }
+
+        // Trigger copy
+        const copyBtn = card.querySelector('.copy-btn');
+        if (copyBtn) {
+          copyToClipboard('pull-' + containerName, copyBtn);
+        }
       }
     }
 
