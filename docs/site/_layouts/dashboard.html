@@ -1245,7 +1245,7 @@
       }
     }
 
-    // Select a variant tag and update pull command (no auto-copy)
+    // Select a variant tag and update pull command + metadata (no auto-copy)
     function selectVariantTag(element) {
       const card = element.closest('.container-card');
       const tag = element.dataset.tag;
@@ -1270,6 +1270,16 @@
       if (input) {
         input.value = 'docker pull ' + imageUrl;
       }
+
+      // Update size metadata from variant data-attributes
+      const sizeAmd64 = element.dataset.sizeAmd64 || '—';
+      const sizeArm64 = element.dataset.sizeArm64 || '—';
+
+      const sizeAmd64El = card.querySelector('[data-meta="size-amd64"]');
+      const sizeArm64El = card.querySelector('[data-meta="size-arm64"]');
+
+      if (sizeAmd64El) sizeAmd64El.textContent = sizeAmd64;
+      if (sizeArm64El) sizeArm64El.textContent = sizeArm64;
     }
 
     // Copy text to clipboard with visual feedback
