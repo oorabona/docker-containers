@@ -7,12 +7,15 @@ ARG OS_IMAGE_TAG="latest"
 FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG} AS builder
 
 ARG VERSION=latest
+ARG UPSTREAM_VERSION=""
 ARG NPROC=1
 
 WORKDIR /build
 
 # Install build dependencies - build dynamically then copy shared libs
+# Use UPSTREAM_VERSION for downloads if provided, otherwise fall back to VERSION
 RUN set -ex \
+    && DOWNLOAD_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
     && apk add --no-cache \
         build-base \
         coreutils \
@@ -32,8 +35,8 @@ RUN set -ex \
         # For healthcheck binary (static)
         busybox-static \
     # Download and extract sslh source
-    && wget -q https://github.com/yrutschle/sslh/archive/$VERSION.tar.gz \
-    && tar zxf $VERSION.tar.gz \
+    && wget -q https://github.com/yrutschle/sslh/archive/$DOWNLOAD_VERSION.tar.gz \
+    && tar zxf $DOWNLOAD_VERSION.tar.gz \
     && cd /build/sslh-* \
     # Configure for dynamic build (musl shared libs are small)
     && ./configure --enable-libconfig --enable-libev \
