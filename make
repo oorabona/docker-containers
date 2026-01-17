@@ -141,8 +141,11 @@ get_ghcr_sizes() {
 
   # For each platform, fetch manifest and sum layer sizes
   if echo "$manifest" | jq -e '.manifests' >/dev/null 2>&1; then
-    echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.digest)"' 2>/dev/null | \
+    local manifests_data
+    manifests_data=$(echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.digest)"' 2>/dev/null)
+
     while IFS=':' read -r arch digest_prefix digest_hash; do
+      [[ -z "$arch" ]] && continue
       local full_digest="${digest_prefix}:${digest_hash}"
       local platform_manifest
       platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
@@ -153,7 +156,7 @@ get_ghcr_sizes() {
       local total_size
       total_size=$(echo "$platform_manifest" | jq '[.config.size // 0] + [.layers[].size // 0] | add' 2>/dev/null)
       echo "${arch}:${total_size:-0}"
-    done
+    done <<< "$manifests_data"
   else
     # Single manifest
     local total_size
@@ -226,9 +229,9 @@ show_sizes() {
       # Get manifest sizes using appropriate method per registry
       local sizes=""
       if [[ "$registry" == "docker.io" ]]; then
-        sizes=$(get_dockerhub_sizes "$github_username" "$container" "$latest_tag" 2>/dev/null)
+        sizes=$(get_dockerhub_sizes "$github_username" "$container" "$latest_tag" 2>/dev/null) || true
       else
-        sizes=$(get_ghcr_sizes "$registry/$github_username/$container:$latest_tag" 2>/dev/null)
+        sizes=$(get_ghcr_sizes "$registry/$github_username/$container:$latest_tag" 2>/dev/null) || true
       fi
 
       if [[ -n "$sizes" && "$sizes" != *"null"* ]]; then
@@ -358,6 +361,7 @@ make() {
   fi
   local target=$1
   local wantedVersion=${2:-latest}
+  local wantedTag=${3:-""}  # Optional: explicit tag (for variants, differs from version)
   pushd ${target}
 
   # Use focused version utility
@@ -368,7 +372,9 @@ make() {
   fi
 
   for version in $versions; do
-    export WANTED=$wantedVersion VERSION=$version TAG=$version
+    # Use explicit tag if provided, otherwise derive from version
+    local effective_tag="${wantedTag:-$version}"
+    export WANTED=$wantedVersion VERSION=$version TAG=$effective_tag
     if [[ -n "$registry" ]]; then
       log_success "$op $registry ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
     else

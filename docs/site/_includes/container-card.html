@@ -1,5 +1,8 @@
 <!-- Enhanced Container Status Card - Glassmorphism Style -->
-<div class="container-card glass status-{{ include.status_color | default: 'secondary' }}">
+<div class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
+     data-container="{{ include.name }}"
+     data-github-username="{{ include.github_username }}"
+     data-dockerhub-username="{{ include.dockerhub_username }}">
   <div class="card-header-row">
     <div class="card-name">{{ include.name }}</div>
     <span class="card-badge{% if include.status_color == 'warning' %} warning{% endif %}">
@@ -45,15 +48,33 @@
       <span>Available variants</span>
     </div>
     <div class="variant-tags">
-      {% for variant in include.variants %}
-        <span class="variant-tag"
-              title="{{ variant.description }} — Click to copy"
-              onclick="selectVariant('{{ include.name }}', 'ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}')"
-              style="cursor: pointer;">
-          :{{ variant.tag }}
-          {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
-        </span>
-      {% endfor %}
+      {% if include.versions %}
+        <!-- Multi-version structure -->
+        {% for version in include.versions %}
+          {% for variant in version.variants %}
+            <span class="variant-tag"
+                  title="{{ variant.description }} — Click to copy"
+                  data-tag="{{ variant.tag }}"
+                  onclick="selectVariantTag(this)"
+                  style="cursor: pointer;">
+              :{{ variant.tag }}
+              {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+            </span>
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <!-- Single-version structure -->
+        {% for variant in include.variants %}
+          <span class="variant-tag"
+                title="{{ variant.description }} — Click to copy"
+                data-tag="{{ variant.tag }}"
+                onclick="selectVariantTag(this)"
+                style="cursor: pointer;">
+            :{{ variant.tag }}
+            {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+          </span>
+        {% endfor %}
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -64,29 +85,14 @@
     <div class="pull-header">
       <i class="ti ti-brand-docker"></i>
       <span>Pull command</span>
-      {% if include.has_variants %}
-      <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
-        <optgroup label="GHCR">
-          {% for variant in include.variants %}
-          <option value="ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}"{% if variant.is_default %} selected{% endif %}>
-            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
-          </option>
-          {% endfor %}
-        </optgroup>
-        <optgroup label="Docker Hub">
-          {% for variant in include.variants %}
-          <option value="docker.io/{{ include.dockerhub_username }}/{{ include.name }}:{{ variant.tag }}">
-            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
-          </option>
-          {% endfor %}
-        </optgroup>
+      <select class="pull-select"
+              data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
+              data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
+              data-default-tag="{% if include.has_variants %}{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% else %}{{ include.variants[0].tag }}{% endif %}{% else %}{{ include.current_version }}{% endif %}"
+              onchange="updateRegistrySelection(this)">
+        <option value="ghcr" selected>GHCR</option>
+        <option value="dockerhub">Docker Hub</option>
       </select>
-      {% else %}
-      <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
-        <option value="{{ include.ghcr_image }}">GHCR</option>
-        <option value="{{ include.dockerhub_image }}">Docker Hub</option>
-      </select>
-      {% endif %}
     </div>
     <div class="pull-input-group">
       <input type="text"
