@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
 source "$PROJECT_ROOT/helpers/variant-utils.sh"
+source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
@@ -55,6 +56,19 @@ build_container() {
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
+
+    # Smart rebuild detection: skip if image exists with matching digest
+    # Controlled by SKIP_EXISTING_BUILDS=true and FORCE_REBUILD=true
+    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
+        local variants_yaml=""
+        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
+
+        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$variants_yaml" "$flavor" "false"; then
+            log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
+            return 0
+        fi
+        log_info "Build digest: $BUILD_DIGEST"
+    fi
 
     # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
     local platforms
@@ -104,10 +118,10 @@ build_container() {
     local build_args=""
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
 
-    # Extract major version for extension image selection (e.g., "16-alpine" -> "16")
-    local pg_major
-    pg_major=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
-    [[ -n "$pg_major" ]] && build_args="$build_args --build-arg PG_MAJOR=$pg_major"
+    # Extract major version from version string (e.g., "16-alpine" -> "16")
+    local major_version
+    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
+    [[ -n "$major_version" ]] && build_args="$build_args --build-arg MAJOR_VERSION=$major_version"
 
     # Get upstream version if container has version.sh with --upstream support
     # This separates download URL version from Docker tag version
@@ -128,7 +142,16 @@ build_container() {
     if [[ "$tag" == "latest" ]]; then
         tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
     fi
-    
+
+    # Compute and add build digest label for smart rebuild detection
+    local label_args=""
+    if [[ -z "${BUILD_DIGEST:-}" ]]; then
+        local variants_yaml=""
+        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
+        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
+    fi
+    label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
+
     # Build behavior depends on context
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         # GitHub Actions: build locally without pushing (use --load)
@@ -142,6 +165,7 @@ build_container() {
             --load \
             $cache_args \
             $build_args \
+            $label_args \
             $tag_args \
             . || {
             log_error "Build failed for $container:$tag"
@@ -162,6 +186,7 @@ build_container() {
             --pull=never \
             $cache_args \
             $build_args \
+            $label_args \
             $tag_args \
             . || {
             log_error "Build failed for $container:$tag"
@@ -179,7 +204,7 @@ build_container() {
 #
 # Flow:
 #   1. major_version = "17" (passed directly, no extraction needed)
-#   2. base_image = "postgres:17-alpine" (major_version + base_suffix)
+#   2. base_image = "<container>:17-alpine" (major_version + base_suffix)
 #   3. output_tag = "17-full-alpine" (major_version + variant_suffix + base_suffix)
 build_container_variants() {
     local container="$1"
@@ -208,7 +233,7 @@ build_container_variants() {
     local base_image_version="${major_version}${base_sfx}"
 
     log_info "$container has variants, building multiple images..."
-    log_info "Major version: $major_version | Base image: postgres:$base_image_version | Dockerfile: $dockerfile"
+    log_info "Major version: $major_version | Base version: $base_image_version | Dockerfile: $dockerfile"
 
     local results="["
     local first=true

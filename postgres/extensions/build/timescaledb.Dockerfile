@@ -5,14 +5,14 @@
 #
 # Usage:
 #   docker build -f timescaledb.Dockerfile \
-#     --build-arg PG_MAJOR=17 \
+#     --build-arg MAJOR_VERSION=17 \
 #     --build-arg EXT_VERSION=2.24.0 \
 #     -t timescaledb-builder .
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG PG_MAJOR=17
-FROM postgres:${PG_MAJOR}-alpine
+ARG MAJOR_VERSION=17
+FROM postgres:${MAJOR_VERSION}-alpine
 
 ARG EXT_VERSION=2.24.0
 ARG EXT_REPO=timescale/timescaledb
@@ -58,7 +58,7 @@ RUN mkdir -p /output/extension /output/lib && \
 # Add metadata
 RUN echo "extension=timescaledb" > /output/metadata.txt && \
     echo "version=${EXT_VERSION}" >> /output/metadata.txt && \
-    echo "pg_major=${PG_MAJOR}" >> /output/metadata.txt && \
+    echo "major_version=${MAJOR_VERSION}" >> /output/metadata.txt && \
     echo "license=Apache-2.0+TSL" >> /output/metadata.txt && \
     echo "shared_preload=true" >> /output/metadata.txt && \
     echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /output/metadata.txt

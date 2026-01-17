@@ -92,7 +92,7 @@ Examples:
 1. **Create Dockerfile** in `<container>/extensions/dockerfiles/`:
    ```dockerfile
    # extensions/dockerfiles/Dockerfile.myext
-   FROM postgres:${PG_MAJOR}-alpine
+   FROM postgres:${MAJOR_VERSION}-alpine
    ARG EXT_VERSION
    ARG EXT_REPO=org/myext
 
