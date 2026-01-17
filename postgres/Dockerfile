@@ -21,11 +21,11 @@ ARG MAJOR_VERSION=17
 
 # ============================================================================
 # Base Image Registry
-# Use cached base images from GHCR to avoid Docker Hub rate limits
-# Default: ghcr.io/oorabona/postgres-base (cached from docker.io/library/postgres)
-# For local builds without cache: --build-arg BASE_IMAGE=postgres
+# CI uses cached base images from GHCR to avoid Docker Hub rate limits
+# Default: postgres (Docker Hub) for local builds and fallback
+# CI overrides with: --build-arg BASE_IMAGE=ghcr.io/oorabona/postgres-base
 # ============================================================================
-ARG BASE_IMAGE=ghcr.io/oorabona/postgres-base
+ARG BASE_IMAGE=postgres
 
 # ============================================================================
 # Extension Image References
