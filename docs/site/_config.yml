@@ -2,7 +2,7 @@ title: Docker Containers
 description: >-
   Automated container management system with intelligent upstream monitoring,
   version classification, and CI/CD pipelines.
-baseurl: ""
+baseurl: "/docker-containers"
 url: "https://oorabona.github.io"
 
 # Build settings
