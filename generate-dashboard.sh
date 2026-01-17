@@ -109,6 +109,79 @@ yaml_escape() {
     echo "$str"
 }
 
+# Get Docker Hub pull count for a container
+get_dockerhub_pulls() {
+    local user=$1
+    local repo=$2
+    local pulls
+
+    pulls=$(curl -s --max-time 10 "https://hub.docker.com/v2/repositories/${user}/${repo}" 2>/dev/null | \
+            jq -r '.pull_count // 0' 2>/dev/null)
+
+    # Return 0 if failed or empty
+    [[ -z "$pulls" || "$pulls" == "null" ]] && pulls="0"
+    echo "$pulls"
+}
+
+# Format number with K/M suffix
+format_number() {
+    local num=$1
+    if [[ $num -ge 1000000 ]]; then
+        printf "%.1fM" "$(echo "scale=1; $num/1000000" | bc)"
+    elif [[ $num -ge 1000 ]]; then
+        printf "%.1fK" "$(echo "scale=1; $num/1000" | bc)"
+    else
+        echo "$num"
+    fi
+}
+
+# Get GHCR image sizes (compressed) for all architectures
+get_ghcr_sizes() {
+    local image=$1
+    local token manifest sizes_output=""
+
+    # Get anonymous token for GHCR
+    token=$(curl -s "https://ghcr.io/token?scope=repository:${image#ghcr.io/}:pull" 2>/dev/null | \
+            jq -r '.token // empty' 2>/dev/null)
+
+    [[ -z "$token" ]] && echo "" && return
+
+    # Get manifest list
+    manifest=$(curl -s -H "Authorization: Bearer $token" \
+               -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+               "https://ghcr.io/v2/${image#ghcr.io/}/manifests/latest" 2>/dev/null)
+
+    [[ -z "$manifest" ]] && echo "" && return
+
+    # Parse manifests for each architecture
+    local manifests_data
+    manifests_data=$(echo "$manifest" | jq -r '.manifests[]? | "\(.platform.architecture):\(.digest)"' 2>/dev/null)
+
+    while IFS=':' read -r arch digest_prefix digest_hash; do
+        [[ -z "$arch" || -z "$digest_hash" ]] && continue
+        [[ "$arch" == "unknown" ]] && continue
+
+        # Get blob sizes for this architecture
+        local arch_manifest total_size=0
+        arch_manifest=$(curl -s -H "Authorization: Bearer $token" \
+                       -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                       "https://ghcr.io/v2/${image#ghcr.io/}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
+
+        if [[ -n "$arch_manifest" ]]; then
+            total_size=$(echo "$arch_manifest" | jq '[.layers[]?.size // 0] | add // 0' 2>/dev/null)
+        fi
+
+        # Format size
+        local size_mb
+        if [[ $total_size -gt 0 ]]; then
+            size_mb=$(echo "scale=1; $total_size/1048576" | bc)
+            sizes_output+="${arch}:${size_mb}MB "
+        fi
+    done <<< "$manifests_data"
+
+    echo "${sizes_output% }"
+}
+
 # Main function
 generate_data() {
     log_info "Generating Jekyll data files..."
@@ -148,6 +221,22 @@ generate_data() {
             "warning") updates_available=$((updates_available + 1)) ;;
         esac
 
+        # Get pull count from Docker Hub
+        local pull_count pull_count_formatted
+        pull_count=$(get_dockerhub_pulls "oorabona" "$container")
+        pull_count_formatted=$(format_number "$pull_count")
+
+        # Get image sizes (only if published)
+        local sizes_amd64="" sizes_arm64=""
+        if [[ "$current_version" != "no-published-version" ]]; then
+            local sizes_raw
+            sizes_raw=$(get_ghcr_sizes "oorabona/$container" 2>/dev/null) || true
+            if [[ -n "$sizes_raw" ]]; then
+                sizes_amd64=$(echo "$sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                sizes_arm64=$(echo "$sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+            fi
+        fi
+
         # Write container entry
         cat >> "$DATA_FILE" << EOF
 - name: "$container"
@@ -161,6 +250,10 @@ generate_data() {
   dockerhub_image: "docker.io/oorabona/$container:$current_version"
   github_username: "oorabona"
   dockerhub_username: "oorabona"
+  pull_count: $pull_count
+  pull_count_formatted: "$pull_count_formatted"
+  size_amd64: "$sizes_amd64"
+  size_arm64: "$sizes_arm64"
 EOF
 
         # Check for variants
@@ -233,6 +326,36 @@ EOF
     local success_rate=100
     [[ $total -gt 0 ]] && success_rate=$(( (up_to_date * 100) / total ))
 
+    # Fetch recent workflow runs from GitHub API (public, no auth needed)
+    log_info "Fetching recent workflow runs..."
+    local runs_json activity_yaml=""
+    runs_json=$(curl -s --max-time 15 \
+        "https://api.github.com/repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
+
+    if [[ -n "$runs_json" ]] && echo "$runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+        activity_yaml="recent_activity:"
+        while IFS= read -r run_line; do
+            [[ -z "$run_line" ]] && continue
+            local run_name run_status run_conclusion run_date run_url
+            run_name=$(echo "$run_line" | cut -d'|' -f1)
+            run_conclusion=$(echo "$run_line" | cut -d'|' -f2)
+            run_date=$(echo "$run_line" | cut -d'|' -f3)
+            run_url=$(echo "$run_line" | cut -d'|' -f4)
+
+            # Format date for display
+            local formatted_date
+            formatted_date=$(date -d "$run_date" +"%b %d, %H:%M" 2>/dev/null || echo "$run_date")
+
+            activity_yaml+="
+  - name: \"$(yaml_escape "$run_name")\"
+    conclusion: \"$run_conclusion\"
+    date: \"$formatted_date\"
+    url: \"$run_url\""
+        done < <(echo "$runs_json" | jq -r '.workflow_runs[] | "\(.display_title)|\(.conclusion)|\(.created_at)|\(.html_url)"' 2>/dev/null)
+    else
+        activity_yaml="recent_activity: []"
+    fi
+
     # Write stats file
     cat > "$STATS_FILE" << EOF
 # Auto-generated dashboard statistics
@@ -243,6 +366,8 @@ up_to_date: $up_to_date
 updates_available: $updates_available
 build_success_rate: $success_rate
 last_updated: "$(date -u +"%Y-%m-%d %H:%M UTC")"
+
+$activity_yaml
 EOF
 
     log_info "Generated $DATA_FILE with $total containers"
