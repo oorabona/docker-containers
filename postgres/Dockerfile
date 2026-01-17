@@ -233,9 +233,34 @@ RUN case "${FLAVOR}" in \
             ;; \
     esac
 
-# Configure shared_preload_libraries
-# This is set at container start via environment or postgresql.conf
-ENV POSTGRES_SHARED_PRELOAD_LIBRARIES="${SHARED_PRELOAD_LIBRARIES}"
+# Configure shared_preload_libraries based on actually installed extensions
+# Detects which extensions need preloading by checking for their .so files
+# Order matters: citus must be first, then timescaledb, then others
+RUN PRELOAD=""; \
+    # Citus must be loaded first if present
+    if [ -f /usr/local/lib/postgresql/citus.so ]; then \
+        PRELOAD="citus"; \
+    fi; \
+    # TimescaleDB should be loaded early
+    if ls /usr/local/lib/postgresql/timescaledb*.so 1>/dev/null 2>&1; then \
+        PRELOAD="${PRELOAD:+$PRELOAD,}timescaledb"; \
+    fi; \
+    # pg_stat_statements is always available (built-in)
+    PRELOAD="${PRELOAD:+$PRELOAD,}pg_stat_statements"; \
+    # pg_qualstats if present
+    if [ -f /usr/local/lib/postgresql/pg_qualstats.so ]; then \
+        PRELOAD="${PRELOAD:+$PRELOAD,}pg_qualstats"; \
+    fi; \
+    echo "$PRELOAD" > /etc/postgresql-preload.conf && \
+    echo "Configured shared_preload_libraries: $PRELOAD"
+
+# Create startup script that configures shared_preload_libraries
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'PRELOAD=$(cat /etc/postgresql-preload.conf)' \
+    'exec docker-entrypoint.sh postgres -c shared_preload_libraries="$PRELOAD" "$@"' \
+    > /usr/local/bin/docker-entrypoint-wrapper.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint-wrapper.sh
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
@@ -244,5 +269,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # Expose standard PostgreSQL port
 EXPOSE 5432
 
-# Default command (inherited from base image)
-CMD ["postgres"]
+# Use wrapper script that sets shared_preload_libraries
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-wrapper.sh"]
+CMD []
