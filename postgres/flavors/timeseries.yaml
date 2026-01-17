@@ -1,0 +1,30 @@
+# TimescaleDB PostgreSQL flavor
+# Optimized for time-series data and real-time analytics
+# Use case: IoT, metrics, logs, financial data
+#
+# License: Apache-2.0 (core) + TSL (advanced features)
+# Note: TSL features cannot be used in DBaaS offerings
+
+name: timeseries
+description: "PostgreSQL for time-series with TimescaleDB"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - timescaledb   # Time-series hypertables, compression, continuous aggregates
+  - pg_partman    # Complementary partition management
+
+# Additional built-in extensions
+builtin_extensions:
+  - pg_buffercache
+  - pg_prewarm
+
+# shared_preload_libraries
+# TimescaleDB requires shared_preload_libraries
+shared_preload_libraries:
+  - timescaledb
+
+# Image tags to publish
+tags:
+  - "{version}-timeseries-alpine"   # e.g., 17.5-timeseries-alpine
+  - "{major}-timeseries-alpine"     # e.g., 17-timeseries-alpine

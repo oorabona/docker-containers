@@ -1,10 +1,13 @@
 # PostgreSQL Container with Extension Flavors
 #
 # Flavors:
-#   - base:      Built-in extensions only (default)
-#   - vector:    + pgvector for AI/RAG
-#   - analytics: + pg_partman, hypopg, pg_qualstats
-#   - full:      All extensions
+#   - base:        Built-in extensions only (default)
+#   - vector:      + pgvector for AI/RAG
+#   - analytics:   + pg_partman, hypopg, pg_qualstats
+#   - timeseries:  + timescaledb for time-series data
+#   - distributed: + citus for horizontal scaling
+#   - search:      + paradedb for full-text search (BM25)
+#   - full:        All extensions
 #
 # Usage:
 #   docker build --build-arg VERSION=17-alpine --build-arg FLAVOR=vector .
@@ -23,10 +26,14 @@ ARG REGISTRY=ghcr.io
 ARG OWNER=oorabona
 
 # Extension images (pulled automatically during build)
-ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg17-0.8.0
-ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg17-5.2.4
-ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg17-1.4.1
-ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg17-2.1.1
+# Versions are updated by version-extension.sh --update <ext>
+ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg17-0.8.1
+ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg17-5.4.0
+ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg17-1.4.2
+ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg17-2.1.3
+ARG EXT_PARADEDB_IMAGE=${REGISTRY}/${OWNER}/ext-paradedb:pg17-0.20.7
+ARG EXT_CITUS_IMAGE=${REGISTRY}/${OWNER}/ext-citus:pg17-13.2.0
+ARG EXT_TIMESCALEDB_IMAGE=${REGISTRY}/${OWNER}/ext-timescaledb:pg17-2.24.0
 
 # ============================================================================
 # Extension Stages - Copy from extension images
@@ -36,6 +43,9 @@ FROM ${EXT_PGVECTOR_IMAGE} AS ext-pgvector
 FROM ${EXT_PG_PARTMAN_IMAGE} AS ext-pg_partman
 FROM ${EXT_HYPOPG_IMAGE} AS ext-hypopg
 FROM ${EXT_PG_QUALSTATS_IMAGE} AS ext-pg_qualstats
+FROM ${EXT_PARADEDB_IMAGE} AS ext-paradedb
+FROM ${EXT_CITUS_IMAGE} AS ext-citus
+FROM ${EXT_TIMESCALEDB_IMAGE} AS ext-timescaledb
 
 # ============================================================================
 # Main Image
@@ -81,6 +91,18 @@ COPY --from=ext-hypopg /output/lib/ /tmp/ext/hypopg/lib/
 COPY --from=ext-pg_qualstats /output/extension/ /tmp/ext/pg_qualstats/extension/
 COPY --from=ext-pg_qualstats /output/lib/ /tmp/ext/pg_qualstats/lib/
 
+# paradedb (pg_search) - for search/full flavors
+COPY --from=ext-paradedb /output/extension/ /tmp/ext/paradedb/extension/
+COPY --from=ext-paradedb /output/lib/ /tmp/ext/paradedb/lib/
+
+# citus - for distributed/full flavors
+COPY --from=ext-citus /output/extension/ /tmp/ext/citus/extension/
+COPY --from=ext-citus /output/lib/ /tmp/ext/citus/lib/
+
+# timescaledb - for timeseries/full flavors
+COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/
+COPY --from=ext-timescaledb /output/lib/ /tmp/ext/timescaledb/lib/
+
 # Install extensions based on flavor
 RUN set -eux; \
     # Function to install an extension from staging
@@ -106,11 +128,25 @@ RUN set -eux; \
             install_ext hypopg; \
             install_ext pg_qualstats \
             ;; \
+        timeseries) \
+            install_ext timescaledb; \
+            install_ext pg_partman \
+            ;; \
+        distributed) \
+            install_ext citus \
+            ;; \
+        search) \
+            install_ext paradedb; \
+            install_ext pgvector \
+            ;; \
         full) \
             install_ext pgvector; \
             install_ext pg_partman; \
             install_ext hypopg; \
-            install_ext pg_qualstats \
+            install_ext pg_qualstats; \
+            install_ext paradedb; \
+            install_ext citus; \
+            install_ext timescaledb \
             ;; \
         *) \
             echo "Unknown flavor: ${FLAVOR}"; \
@@ -159,6 +195,31 @@ RUN case "${FLAVOR}" in \
                 'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
+        timeseries) \
+            printf '%s\n' \
+                '-- TimescaleDB flavor extensions' \
+                'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
+                > /docker-entrypoint-initdb.d/01-init-flavor.sql \
+            ;; \
+        distributed) \
+            printf '%s\n' \
+                '-- Citus distributed flavor extensions' \
+                'CREATE EXTENSION IF NOT EXISTS citus;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
+                > /docker-entrypoint-initdb.d/01-init-flavor.sql \
+            ;; \
+        search) \
+            printf '%s\n' \
+                '-- ParadeDB search flavor extensions' \
+                'CREATE EXTENSION IF NOT EXISTS pg_search;' \
+                'CREATE EXTENSION IF NOT EXISTS vector;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_trgm;' \
+                > /docker-entrypoint-initdb.d/01-init-flavor.sql \
+            ;; \
         full) \
             printf '%s\n' \
                 '-- Full flavor extensions' \
@@ -166,6 +227,9 @@ RUN case "${FLAVOR}" in \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
                 'CREATE EXTENSION IF NOT EXISTS hypopg;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_qualstats;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_search;' \
+                'CREATE EXTENSION IF NOT EXISTS citus;' \
+                'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
                 'CREATE EXTENSION IF NOT EXISTS file_fdw;' \

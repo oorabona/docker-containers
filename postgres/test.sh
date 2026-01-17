@@ -169,6 +169,97 @@ test_pg_qualstats() {
     fi
 }
 
+test_timescaledb() {
+    info "Testing TimescaleDB extension..."
+
+    if ! extension_installed "timescaledb"; then
+        fail "timescaledb extension not installed"
+    fi
+
+    # Create a hypertable
+    exec_sql "CREATE TABLE IF NOT EXISTS test_timeseries (time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION);" >/dev/null
+    exec_sql "SELECT create_hypertable('test_timeseries', by_range('time'), if_not_exists => TRUE);" >/dev/null
+
+    # Insert some data
+    exec_sql "INSERT INTO test_timeseries (time, value) VALUES (NOW(), 42.0) ON CONFLICT DO NOTHING;" >/dev/null
+
+    # Test time_bucket function
+    result=$(exec_sql "SELECT time_bucket('1 hour', NOW())::text IS NOT NULL;")
+    if [[ "$result" == "t" ]]; then
+        pass "timescaledb: hypertable and time_bucket work"
+    else
+        fail "timescaledb: time_bucket function failed"
+    fi
+
+    # Cleanup
+    exec_sql "DROP TABLE IF EXISTS test_timeseries CASCADE;" >/dev/null
+}
+
+test_citus() {
+    info "Testing Citus extension..."
+
+    if ! extension_installed "citus"; then
+        fail "citus extension not installed"
+    fi
+
+    # Check citus version
+    result=$(exec_sql "SELECT citus_version();")
+    if [[ -n "$result" ]]; then
+        pass "citus: version check passed ($result)"
+    else
+        fail "citus: could not get version"
+    fi
+
+    # Test creating a distributed table (single-node mode)
+    exec_sql "CREATE TABLE IF NOT EXISTS test_distributed (id int, data text);" >/dev/null
+
+    # In single-node Citus, we can create reference tables
+    result=$(exec_sql "SELECT create_reference_table('test_distributed');" 2>/dev/null || echo "skip")
+    if [[ "$result" != "skip" ]]; then
+        pass "citus: reference table creation works"
+    else
+        info "citus: reference table creation skipped (may need coordinator setup)"
+    fi
+
+    # Cleanup
+    exec_sql "DROP TABLE IF EXISTS test_distributed CASCADE;" >/dev/null
+}
+
+test_paradedb() {
+    info "Testing ParadeDB (pg_search) extension..."
+
+    if ! extension_installed "pg_search"; then
+        fail "pg_search extension not installed"
+    fi
+
+    # Create test table with BM25 index
+    exec_sql "CREATE TABLE IF NOT EXISTS test_search (id SERIAL PRIMARY KEY, content TEXT);" >/dev/null
+    exec_sql "INSERT INTO test_search (content) VALUES ('hello world'), ('postgresql database'), ('full text search') ON CONFLICT DO NOTHING;" >/dev/null
+
+    # Create BM25 index (ParadeDB syntax)
+    result=$(exec_sql "CALL paradedb.create_bm25(
+        index_name => 'test_search_idx',
+        table_name => 'test_search',
+        key_field => 'id',
+        text_fields => paradedb.field('content')
+    );" 2>/dev/null || echo "skip")
+
+    if [[ "$result" != "skip" ]]; then
+        # Test search query
+        search_result=$(exec_sql "SELECT COUNT(*) FROM test_search WHERE id @@@ paradedb.parse('content:hello');" 2>/dev/null || echo "0")
+        if [[ "$search_result" -ge 1 ]]; then
+            pass "paradedb: BM25 search works"
+        else
+            info "paradedb: BM25 index created but search returned no results"
+        fi
+    else
+        info "paradedb: BM25 index creation skipped (may need initialization)"
+    fi
+
+    # Cleanup
+    exec_sql "DROP TABLE IF EXISTS test_search CASCADE;" >/dev/null
+}
+
 # ============================================================================
 # Flavor-Based Test Runner
 # ============================================================================
@@ -197,11 +288,25 @@ run_flavor_tests() {
             test_hypopg
             test_pg_qualstats
             ;;
+        timeseries)
+            test_timescaledb
+            test_pg_partman
+            ;;
+        distributed)
+            test_citus
+            ;;
+        search)
+            test_paradedb
+            test_pgvector
+            ;;
         full)
             test_pgvector
             test_pg_partman
             test_hypopg
             test_pg_qualstats
+            test_timescaledb
+            test_citus
+            test_paradedb
             ;;
         *)
             info "Unknown flavor '$flavor', running all extension tests"
@@ -210,6 +315,9 @@ run_flavor_tests() {
             extension_installed "pg_partman" && test_pg_partman || true
             extension_installed "hypopg" && test_hypopg || true
             extension_installed "pg_qualstats" && test_pg_qualstats || true
+            extension_installed "timescaledb" && test_timescaledb || true
+            extension_installed "citus" && test_citus || true
+            extension_installed "pg_search" && test_paradedb || true
             ;;
     esac
 

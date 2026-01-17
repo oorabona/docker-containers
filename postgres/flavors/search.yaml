@@ -1,0 +1,28 @@
+# ParadeDB PostgreSQL flavor
+# Full-text search with BM25 ranking (Elasticsearch alternative)
+# Use case: Search engines, document retrieval, hybrid search
+#
+# License: AGPL-3.0
+# Note: Modifications must be shared under AGPL
+
+name: search
+description: "PostgreSQL with ParadeDB for Elasticsearch-quality search"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - paradedb      # pg_search: BM25 full-text search with Tantivy
+  - pgvector      # Combine with vector search for hybrid RAG
+
+# Additional built-in extensions
+builtin_extensions:
+  - pg_trgm       # Fuzzy matching complement
+
+# shared_preload_libraries
+# ParadeDB does NOT require shared_preload on PG17+
+shared_preload_libraries: []
+
+# Image tags to publish
+tags:
+  - "{version}-search-alpine"   # e.g., 17.5-search-alpine
+  - "{major}-search-alpine"     # e.g., 17-search-alpine
