@@ -120,7 +120,7 @@ build_container() {
     fi
 
     [[ -n "$flavor" ]] && build_args="$build_args --build-arg FLAVOR=$flavor"
-    [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+    [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
     [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
     
     # Prepare tags
