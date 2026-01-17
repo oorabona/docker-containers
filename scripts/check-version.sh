@@ -43,10 +43,10 @@ check_container_version() {
     local current_version
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null)
+        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || true)
     else
         # Fallback: try common version pattern
-        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null)
+        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || true)
     fi
     
     if [ -n "$current_version" ]; then
