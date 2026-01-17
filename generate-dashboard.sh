@@ -17,7 +17,7 @@ is_skip_directory() {
     local container=$1
     [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || \
        "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || \
-       "$container" == "test-"* || "$container" == "scripts" || "$container" == "jekyll" ]]
+       "$container" == "test-"* || "$container" == "scripts" ]]
 }
 
 # Get container versions
