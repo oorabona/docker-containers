@@ -32,6 +32,27 @@
       --gradient-2: #764ba2;
       --gradient-3: #f093fb;
       --gradient-4: #f5576c;
+      --bg-gradient-1: #1a1a2e;
+      --bg-gradient-2: #16213e;
+      --bg-gradient-3: #0f3460;
+    }
+
+    /* Light theme */
+    [data-theme="light"] {
+      --glass-bg: rgba(255, 255, 255, 0.7);
+      --glass-border: rgba(0, 0, 0, 0.1);
+      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+      --text-primary: #1f2937;
+      --text-secondary: rgba(31, 41, 55, 0.8);
+      --text-muted: rgba(31, 41, 55, 0.5);
+      --accent-green: #059669;
+      --accent-yellow: #d97706;
+      --accent-blue: #2563eb;
+      --accent-purple: #7c3aed;
+      --accent-pink: #db2777;
+      --bg-gradient-1: #e0e7ff;
+      --bg-gradient-2: #ddd6fe;
+      --bg-gradient-3: #c7d2fe;
     }
 
     * {
@@ -43,9 +64,10 @@
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       min-height: 100vh;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 50%, var(--bg-gradient-3) 100%);
       color: var(--text-primary);
       overflow-x: hidden;
+      transition: background 0.3s ease, color 0.3s ease;
     }
 
     /* Animated gradient background */
@@ -164,6 +186,194 @@
     .header-actions {
       display: flex;
       gap: 0.75rem;
+    }
+
+    /* Theme toggle button */
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border: none;
+      border-radius: 10px;
+      background: var(--glass-bg);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--glass-border);
+    }
+
+    .theme-toggle:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: scale(1.05);
+    }
+
+    .theme-toggle i {
+      font-size: 1.25rem;
+    }
+
+    [data-theme="light"] .theme-toggle {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    [data-theme="light"] .theme-toggle:hover {
+      background: rgba(0, 0, 0, 0.1);
+    }
+
+    [data-theme="light"] .header-main {
+      background: linear-gradient(135deg, #1f2937 0%, rgba(31, 41, 55, 0.7) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* Controls bar */
+    .controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding: 1rem 1.25rem;
+    }
+
+    .controls-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .controls-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Registry toggle */
+    .registry-toggle {
+      display: flex;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      padding: 0.25rem;
+    }
+
+    .registry-btn {
+      padding: 0.5rem 1rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .registry-btn:hover {
+      color: var(--text-primary);
+    }
+
+    .registry-btn.active {
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      color: var(--text-primary);
+    }
+
+    /* Search input */
+    .search-container {
+      flex: 1;
+      min-width: 200px;
+      max-width: 300px;
+      position: relative;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 0.625rem 1rem 0.625rem 2.5rem;
+      font-size: 0.875rem;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--glass-border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      transition: all 0.2s ease;
+    }
+
+    .search-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 0.875rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
+    /* Status filters */
+    .status-filters {
+      display: flex;
+      gap: 0.375rem;
+    }
+
+    .filter-btn {
+      padding: 0.5rem 0.875rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border: 1px solid var(--glass-border);
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .filter-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .filter-btn.active {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: var(--accent-blue);
+      color: var(--text-primary);
+    }
+
+    .filter-btn .count {
+      display: inline-block;
+      min-width: 1.25rem;
+      padding: 0.125rem 0.375rem;
+      margin-left: 0.375rem;
+      font-size: 0.625rem;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+
+    .filter-btn.active .count {
+      background: rgba(59, 130, 246, 0.3);
+    }
+
+    /* No results message */
+    .no-results {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-muted);
+    }
+
+    .no-results i {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      display: block;
     }
 
     /* Glass card base */
@@ -463,6 +673,23 @@
       border-color: rgba(139, 92, 246, 0.5);
     }
 
+    /* Version groups for multi-version containers */
+    .version-group {
+      margin-bottom: 0.5rem;
+    }
+
+    .version-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .version-label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+      padding-left: 0.125rem;
+    }
+
     /* Pull command */
     .pull-section {
       margin-bottom: 1rem;
@@ -584,6 +811,52 @@
       justify-content: center;
       background: rgba(255, 255, 255, 0.1);
       font-size: 1rem;
+      flex-shrink: 0;
+    }
+
+    .activity-icon.success {
+      background: rgba(16, 185, 129, 0.2);
+      color: var(--accent-green);
+    }
+
+    .activity-icon.failure {
+      background: rgba(236, 72, 153, 0.2);
+      color: var(--accent-pink);
+    }
+
+    .activity-icon.pending {
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--accent-yellow);
+    }
+
+    .activity-link {
+      text-decoration: none;
+      transition: all 0.2s ease;
+      border-radius: 8px;
+      padding: 0.5rem;
+      margin: -0.5rem;
+    }
+
+    .activity-link:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .activity-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      min-width: 0;
+    }
+
+    .activity-text strong {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .activity-date {
+      font-size: 0.75rem;
+      color: var(--text-muted);
     }
 
     /* Health table */
@@ -677,12 +950,55 @@
         <h1 class="header-main">{{ page.title | default: site.title }}</h1>
       </div>
       <div class="header-actions">
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle light/dark theme">
+          <i class="ti ti-moon"></i>
+        </button>
         <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank">
           <i class="ti ti-brand-github"></i>
           Repository
         </a>
       </div>
     </header>
+
+    <!-- Controls Bar -->
+    <div class="controls-bar glass">
+      <div class="controls-group">
+        <span class="controls-label">Registry</span>
+        <div class="registry-toggle">
+          <button class="registry-btn active" data-registry="ghcr" onclick="setGlobalRegistry('ghcr')">
+            <i class="ti ti-package"></i> GHCR
+          </button>
+          <button class="registry-btn" data-registry="dockerhub" onclick="setGlobalRegistry('dockerhub')">
+            <i class="ti ti-brand-docker"></i> Docker Hub
+          </button>
+        </div>
+      </div>
+
+      <div class="search-container">
+        <i class="ti ti-search search-icon"></i>
+        <input type="text" class="search-input" id="search-input"
+               placeholder="Search containers..."
+               oninput="filterContainers(this.value)">
+      </div>
+
+      <div class="controls-group">
+        <span class="controls-label">Status</span>
+        <div class="status-filters">
+          <button class="filter-btn active" data-status="all" onclick="filterByStatus('all')">
+            All <span class="count" id="count-all">0</span>
+          </button>
+          <button class="filter-btn" data-status="up-to-date" onclick="filterByStatus('up-to-date')">
+            Up to date <span class="count" id="count-up-to-date">0</span>
+          </button>
+          <button class="filter-btn" data-status="update-available" onclick="filterByStatus('update-available')">
+            Updates <span class="count" id="count-update-available">0</span>
+          </button>
+          <button class="filter-btn" data-status="not-published" onclick="filterByStatus('not-published')">
+            Not published <span class="count" id="count-not-published">0</span>
+          </button>
+        </div>
+      </div>
+    </div>
 
     {{ content }}
 
@@ -694,6 +1010,184 @@
 
   <!-- JavaScript -->
   <script>
+    // State
+    let currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
+    let currentSearch = '';
+    let currentStatus = 'all';
+    let currentTheme = localStorage.getItem('preferredTheme') || 'dark';
+
+    // Theme management
+    function initTheme() {
+      const savedTheme = localStorage.getItem('preferredTheme');
+      // Check system preference if no saved preference
+      if (!savedTheme) {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        currentTheme = prefersDark ? 'dark' : 'light';
+      } else {
+        currentTheme = savedTheme;
+      }
+      applyTheme(currentTheme);
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      const icon = document.querySelector('.theme-toggle i');
+      if (icon) {
+        icon.className = theme === 'dark' ? 'ti ti-moon' : 'ti ti-sun';
+      }
+    }
+
+    function toggleTheme() {
+      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('preferredTheme', currentTheme);
+      applyTheme(currentTheme);
+    }
+
+    // Apply theme immediately to avoid flash
+    initTheme();
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      // Restore registry preference
+      setGlobalRegistry(currentRegistry, false);
+
+      // Auto-select text on click
+      document.querySelectorAll('input[id^="pull-"]').forEach(function(input) {
+        input.addEventListener('click', function() {
+          this.select();
+        });
+      });
+
+      // Update filter counts
+      updateFilterCounts();
+    });
+
+    // Set global registry for all containers
+    function setGlobalRegistry(registry, save = true) {
+      currentRegistry = registry;
+      if (save) {
+        localStorage.setItem('preferredRegistry', registry);
+      }
+
+      // Update toggle buttons
+      document.querySelectorAll('.registry-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.registry === registry);
+      });
+
+      // Update all container cards
+      document.querySelectorAll('.container-card').forEach(card => {
+        const pullSection = card.querySelector('.pull-section');
+        if (pullSection) {
+          const ghcrBase = pullSection.dataset.ghcrBase;
+          const dockerhubBase = pullSection.dataset.dockerhubBase;
+          const defaultTag = pullSection.dataset.defaultTag;
+
+          // Find selected variant or use default
+          const selectedVariant = card.querySelector('.variant-tag.selected');
+          const tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
+
+          // Build image URL
+          const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+          const imageUrl = baseUrl + ':' + tag;
+
+          // Update pull input
+          const containerName = card.dataset.container;
+          const input = document.getElementById('pull-' + containerName);
+          if (input) {
+            input.value = 'docker pull ' + imageUrl;
+          }
+        }
+      });
+    }
+
+    // Filter containers by search query
+    function filterContainers(query) {
+      currentSearch = query.toLowerCase().trim();
+      applyFilters();
+    }
+
+    // Filter containers by status
+    function filterByStatus(status) {
+      currentStatus = status;
+
+      // Update filter buttons
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.status === status);
+      });
+
+      applyFilters();
+    }
+
+    // Apply all filters
+    function applyFilters() {
+      const cards = document.querySelectorAll('.container-card');
+      let visibleCount = 0;
+
+      cards.forEach(card => {
+        const name = card.dataset.container.toLowerCase();
+        const statusColor = card.classList.contains('status-green') ? 'up-to-date' :
+                           card.classList.contains('status-warning') ? 'update-available' :
+                           'not-published';
+
+        // Check search match
+        const matchesSearch = currentSearch === '' || name.includes(currentSearch);
+
+        // Check status match
+        const matchesStatus = currentStatus === 'all' || statusColor === currentStatus;
+
+        // Show/hide card
+        const isVisible = matchesSearch && matchesStatus;
+        card.style.display = isVisible ? '' : 'none';
+
+        if (isVisible) visibleCount++;
+      });
+
+      // Show/hide no results message
+      const cardsGrid = document.querySelector('.cards-grid');
+      let noResults = cardsGrid.querySelector('.no-results');
+
+      if (visibleCount === 0) {
+        if (!noResults) {
+          noResults = document.createElement('div');
+          noResults.className = 'no-results';
+          noResults.innerHTML = '<i class="ti ti-search-off"></i><p>No containers match your filters</p>';
+          cardsGrid.appendChild(noResults);
+        }
+        noResults.style.display = '';
+      } else if (noResults) {
+        noResults.style.display = 'none';
+      }
+    }
+
+    // Update filter button counts
+    function updateFilterCounts() {
+      const cards = document.querySelectorAll('.container-card');
+      const counts = {
+        'all': cards.length,
+        'up-to-date': 0,
+        'update-available': 0,
+        'not-published': 0
+      };
+
+      cards.forEach(card => {
+        if (card.classList.contains('status-green')) {
+          counts['up-to-date']++;
+        } else if (card.classList.contains('status-warning')) {
+          counts['update-available']++;
+        } else {
+          counts['not-published']++;
+        }
+      });
+
+      // Update count badges
+      Object.keys(counts).forEach(status => {
+        const countEl = document.getElementById('count-' + status);
+        if (countEl) {
+          countEl.textContent = counts[status];
+        }
+      });
+    }
+
     // Update pull command when registry is changed
     function updatePullCommand(containerName, imageUrl) {
       const input = document.getElementById('pull-' + containerName);
@@ -760,11 +1254,11 @@
       card.querySelectorAll('.variant-tag').forEach(t => t.classList.remove('selected'));
       element.classList.add('selected');
 
-      // Get current registry selection
-      const select = card.querySelector('.pull-select');
-      const registry = select ? select.value : 'ghcr';
-      const ghcrBase = select ? select.dataset.ghcrBase : '';
-      const dockerhubBase = select ? select.dataset.dockerhubBase : '';
+      // Get current registry from global state
+      const registry = currentRegistry;
+      const pullSection = card.querySelector('.pull-section');
+      const ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
+      const dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
 
       // Build the image URL
       const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
@@ -815,15 +1309,6 @@
         }, 2000);
       });
     }
-
-    // Auto-select text on click
-    document.addEventListener('DOMContentLoaded', function() {
-      document.querySelectorAll('input[id^="pull-"]').forEach(function(input) {
-        input.addEventListener('click', function() {
-          this.select();
-        });
-      });
-    });
   </script>
 </body>
 </html>

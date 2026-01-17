@@ -28,11 +28,22 @@
       <span class="card-meta-value">{{ include.latest_version }}</span>
     </div>
     <div class="card-meta-item">
-      <span class="card-meta-label">Registry</span>
+      <span class="card-meta-label">Pulls</span>
       <span class="card-meta-value">
-        {% if include.build_status == 'success' %}Published{% elsif include.build_status == 'pending' %}Not Published{% elsif include.build_status == 'failed' %}Failed{% else %}Building{% endif %}
+        <i class="ti ti-download" style="font-size: 0.75rem;"></i>
+        {{ include.pull_count_formatted | default: "0" }}
       </span>
     </div>
+    {% if include.size_amd64 or include.size_arm64 %}
+    <div class="card-meta-item">
+      <span class="card-meta-label">Size (amd64)</span>
+      <span class="card-meta-value">{{ include.size_amd64 | default: "—" }}</span>
+    </div>
+    <div class="card-meta-item">
+      <span class="card-meta-label">Size (arm64)</span>
+      <span class="card-meta-value">{{ include.size_arm64 | default: "—" }}</span>
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -47,26 +58,31 @@
       <i class="ti ti-versions"></i>
       <span>Available variants</span>
     </div>
-    <div class="variant-tags">
-      {% if include.versions %}
-        <!-- Multi-version structure -->
-        {% for version in include.versions %}
+    {% if include.versions %}
+      <!-- Multi-version structure: group by version -->
+      {% for version in include.versions %}
+      <div class="version-group">
+        <div class="version-label">{{ version.tag }}</div>
+        <div class="variant-tags">
           {% for variant in version.variants %}
-            <span class="variant-tag"
-                  title="{{ variant.description }} — Click to copy"
+            <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                  title="{{ variant.description }} — Click to select"
                   data-tag="{{ variant.tag }}"
                   onclick="selectVariantTag(this)"
                   style="cursor: pointer;">
-              :{{ variant.tag }}
+              :{{ variant.name }}
               {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
             </span>
           {% endfor %}
-        {% endfor %}
-      {% else %}
-        <!-- Single-version structure -->
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <!-- Single-version structure -->
+      <div class="variant-tags">
         {% for variant in include.variants %}
-          <span class="variant-tag"
-                title="{{ variant.description }} — Click to copy"
+          <span class="variant-tag{% if forloop.first %} selected{% endif %}"
+                title="{{ variant.description }} — Click to select"
                 data-tag="{{ variant.tag }}"
                 onclick="selectVariantTag(this)"
                 style="cursor: pointer;">
@@ -74,25 +90,20 @@
             {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
           </span>
         {% endfor %}
-      {% endif %}
-    </div>
+      </div>
+    {% endif %}
   </div>
   {% endif %}
 
   <!-- Docker Pull Command Section -->
   {% if include.ghcr_image and include.dockerhub_image %}
-  <div class="pull-section">
+  <div class="pull-section"
+       data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
+       data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
+       data-default-tag="{% if include.has_variants %}{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% else %}{{ include.variants[0].tag }}{% endif %}{% else %}{{ include.current_version }}{% endif %}">
     <div class="pull-header">
       <i class="ti ti-brand-docker"></i>
       <span>Pull command</span>
-      <select class="pull-select"
-              data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
-              data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
-              data-default-tag="{% if include.has_variants %}{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% else %}{{ include.variants[0].tag }}{% endif %}{% else %}{{ include.current_version }}{% endif %}"
-              onchange="updateRegistrySelection(this)">
-        <option value="ghcr" selected>GHCR</option>
-        <option value="dockerhub">Docker Hub</option>
-      </select>
     </div>
     <div class="pull-input-group">
       <input type="text"
@@ -111,13 +122,13 @@
 
   <!-- Quick Links -->
   <div class="card-links">
+    <a href="{{ '/container?name=' | append: include.name | relative_url }}"
+       class="card-link" title="View Details">
+      <i class="ti ti-info-circle"></i> Details
+    </a>
     <a href="https://github.com/{{ include.github_username }}/docker-containers/tree/master/{{ include.name }}"
        class="card-link" target="_blank" title="View Source">
       <i class="ti ti-folder"></i> Source
-    </a>
-    <a href="https://github.com/{{ include.github_username }}/docker-containers/blob/master/{{ include.name }}/README.md"
-       class="card-link" target="_blank" title="Documentation">
-      <i class="ti ti-file-text"></i> Docs
     </a>
     <a href="https://ghcr.io/{{ include.github_username }}/{{ include.name }}"
        class="card-link" target="_blank" title="GHCR Package">

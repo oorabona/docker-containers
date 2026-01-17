@@ -33,6 +33,10 @@ description: Real-time status monitoring for Docker containers with automated up
      has_variants=container.has_variants
      variants=container.variants
      versions=container.versions
+     pull_count=container.pull_count
+     pull_count_formatted=container.pull_count_formatted
+     size_amd64=container.size_amd64
+     size_arm64=container.size_arm64
   %}
 {% endfor %}
 </div>
@@ -41,22 +45,34 @@ description: Real-time status monitoring for Docker containers with automated up
 
 <div class="activity-section glass">
   <div class="activity-list">
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-robot"></i></div>
-      <span><strong>Automated Monitoring</strong> — Upstream versions checked every 6 hours</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-rocket"></i></div>
-      <span><strong>Auto-Build</strong> — Triggered on version updates and code changes</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-chart-bar"></i></div>
-      <span><strong>Dashboard Updates</strong> — Real-time status after successful builds</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-shield-check"></i></div>
-      <span><strong>Branch Protection</strong> — All changes flow through pull requests</span>
-    </div>
+    {% if site.data.stats.recent_activity.size > 0 %}
+      {% for run in site.data.stats.recent_activity %}
+      <a href="{{ run.url }}" target="_blank" class="activity-item activity-link">
+        <div class="activity-icon {% if run.conclusion == 'success' %}success{% elsif run.conclusion == 'failure' %}failure{% else %}pending{% endif %}">
+          {% if run.conclusion == 'success' %}
+            <i class="ti ti-circle-check"></i>
+          {% elsif run.conclusion == 'failure' %}
+            <i class="ti ti-circle-x"></i>
+          {% else %}
+            <i class="ti ti-loader"></i>
+          {% endif %}
+        </div>
+        <span class="activity-text">
+          <strong>{{ run.name }}</strong>
+          <span class="activity-date">{{ run.date }}</span>
+        </span>
+      </a>
+      {% endfor %}
+    {% else %}
+      <div class="activity-item">
+        <div class="activity-icon"><i class="ti ti-robot"></i></div>
+        <span><strong>Automated Monitoring</strong> — Upstream versions checked every 6 hours</span>
+      </div>
+      <div class="activity-item">
+        <div class="activity-icon"><i class="ti ti-rocket"></i></div>
+        <span><strong>Auto-Build</strong> — Triggered on version updates and code changes</span>
+      </div>
+    {% endif %}
   </div>
 </div>
 
