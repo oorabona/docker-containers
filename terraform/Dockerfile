@@ -101,12 +101,21 @@ RUN apk --no-cache add \
     && apk del .build-deps \
     && rm -rf /var/cache/apk/* /tmp/* /root/.cache
 
+# Create terraform user for non-root execution
+RUN addgroup -g 1000 -S terraform \
+    && adduser -S -D -H -u 1000 -h /data -s /sbin/nologin -G terraform -g terraform terraform \
+    && mkdir -p /data /.terraform.d /.config \
+    && chown -R terraform:terraform /data /.terraform.d /.config
+
 # Volumes and workdir configuration
 VOLUME ["/data"]
 WORKDIR /data
 
 # Entrypoint to enable live customization
-COPY docker-entrypoint.sh /docker-entrypoint.sh
+COPY --chown=terraform:terraform docker-entrypoint.sh /docker-entrypoint.sh
+
+# Run as non-root user
+USER terraform
 
 # Add healthcheck to verify terraform and tools are working
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -1,139 +1,153 @@
 # SSLH Container
 
-A lightweight Alpine-based SSLH container for protocol multiplexing, allowing multiple services (SSH, HTTPS, OpenVPN) to share a single port. Built from source for optimal security and performance across multiple architectures.
+A minimal `FROM scratch` SSLH container for protocol multiplexing, allowing multiple services (SSH, HTTPS, OpenVPN) to share a single port. Built with static linking for maximum security and minimal attack surface.
 
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/sslh)
 ![Docker Image Size](https://img.shields.io/docker/image-size/oorabona/sslh)
 
 ## Platforms
 - **amd64** - x86_64 systems
-- **arm64** - ARM 64-bit systems  
+- **arm64** - ARM 64-bit systems
 - **arm/v7** - ARM 32-bit systems
 
 ## Features
 
-- **Alpine-based** - Lightweight and secure
-- **Built from source** - Latest features and security fixes
-- **Multiple flavors** - sslh-fork, sslh-select, sslh-ev
-- **Non-root execution** - Runs as nobody user
-- **Stripped binaries** - Minimal size and attack surface
+- **FROM scratch** - Absolute minimal attack surface (no OS, no shell)
+- **Static binaries** - Self-contained, no runtime dependencies
+- **Multiple flavors** - sslh-fork, sslh-select, sslh-ev included
+- **Non-root execution** - Runs as nobody user (uid 65534)
+- **Stripped binaries** - Minimal size (~2-3MB total image)
 
 Available SSLH flavors (v2.0+):
 - `sslh-fork` - Original SSLH project
 - `sslh-select` - Uses select instead of epoll
-- `sslh-ev` - Uses libev (default)
+- `sslh-ev` - Uses libev (default, best performance)
 
-- All binaries are stripped.
+## How to run it?
 
-> For its smaller size, less memory usage and security.
+> **IMPORTANT**: This is a `FROM scratch` image with no shell. Environment variables are NOT supported for configuration. You must provide full command line arguments.
 
-- It runs as `nobody` user.
-
-> For its security, it is not needed to have root privileges inside the container since publishing ports is done by the host.
-
-- By default, container **COMMAND** is set to `-V` (show version)
-
-> But if you want to specify your own command, you can do it too (see below).
-
-- There is a `docker-entrypoint.sh` to help handle command line arguments
-
-##  How to run it ?
-
-The **DEFAULT_CMD** variable (see [docker-entrypoint](docker-entrypoint.sh#L2)) is already set to what should be the basic command line for `sslh`.
+### Basic Usage
 
 ```bash
--p ${LISTEN_IP}:${LISTEN_PORT} --ssh ${SSH_HOST}:${SSH_PORT} --ssl ${HTTPS_HOST}:${HTTPS_PORT} --openvpn ${OPENVPN_HOST}:${OPENVPN_PORT}"`
-```
+# Check version
+docker run --rm oorabona/sslh
 
-It takes the following environment variables:
-
-- `LISTEN_IP`: the IP address to listen on (default: `0.0.0.0`)
-- `LISTEN_PORT`: the port to listen on (default: `443`)
-- `SSH_HOST`: the SSH host to forward to (default: `localhost`)
-- `SSH_PORT`: the SSH port to forward to (default: `22`)
-- `HTTPS_HOST`: the HTTPS host to forward to (default: `localhost`)
-- `HTTPS_PORT`: the HTTPS port to forward to (default: `8443`)
-- `OPENVPN_HOST`: the OpenVPN host to forward to (default: `localhost`)
-- `OPENVPN_PORT`: the OpenVPN port to forward to (default: `1194`)
-
-You can also set the `USE_SSLH_FLAVOR` environment variable to use a different flavor of `SSLH` (see [Features](#features)).
-
-> Note that by default **COMMAND** is set to `-V` (show version). It is done to prevent errors and misbehave (since this software usually runs on your network edges or close). You need to change **COMMAND** to `-f` as stated in `sslh` docs:
->
-> `-f` means **keep process in foreground** which is what Docker expects for the main process.
-The container will stop when the process exits.
->
-> Being foreground means that `sslh` will log to `stdout` and `stderr` which is what Docker expects. And if the process exits (for any reason) the container will stop.
-
-With these environment variables, you can run the container like this:
-
-```bash
+# Run with full command line
 docker run -d \
   --name sslh \
   -p 443:443 \
-  -e LISTEN_IP=1.2.3.4 \
-  -e LISTEN_PORT=443 \
-  -e SSH_HOST=ssh.example.com \
-  -e SSH_PORT=22 \
-  -e HTTPS_HOST=backend.example.com \
-  -e HTTPS_PORT=8443 \
-  -e OPENVPN_HOST=vpn.example.com \
-  -e OPENVPN_PORT=1194 \
-  oorabona/sslh -f
+  oorabona/sslh \
+  -f \
+  -p 0.0.0.0:443 \
+  --ssh ssh.example.com:22 \
+  --tls backend.example.com:8443 \
+  --openvpn vpn.example.com:1194
 ```
 
-This will run the `sslh-ev` version by default (version 2.0+ onwards) and will listen on `1.2.3.4:443` and forward `SSH`, `HTTPS` and `OpenVPN` traffic to their respective hosts and ports.
+**Key arguments:**
+- `-f` - **Required**: Keep process in foreground (Docker expects this)
+- `-p <ip>:<port>` - Listen address and port
+- `--ssh <host>:<port>` - SSH backend
+- `--tls <host>:<port>` - TLS/HTTPS backend
+- `--openvpn <host>:<port>` - OpenVPN backend
+
+### Using Different Flavors
+
+By default, `sslh-ev` is used. To use a different flavor, override the entrypoint:
+
+```bash
+# Use sslh-fork
+docker run -d --entrypoint /usr/local/bin/sslh-fork oorabona/sslh -f -p 0.0.0.0:443 ...
+
+# Use sslh-select
+docker run -d --entrypoint /usr/local/bin/sslh-select oorabona/sslh -f -p 0.0.0.0:443 ...
+```
 
 ### Using docker-compose
 
-In the following example, we keep the default values for
-
 ```yaml
-version: '3'
 services:
   sslh:
     image: oorabona/sslh
-    environment:
-      LISTEN_IP: 0.0.0.0
-      LISTEN_PORT: 8443
-      SSH_HOST: 192.168.1.2
-      SSH_PORT: 1234
-      OPENVPN_HOST: 192.168.2.1
-      HTTPS_HOST: 192.168.2.1
     ports:
-      - 0.0.0.0:443:443
+      - "443:443"
     command:
       - -f
+      - -p
+      - "0.0.0.0:443"
+      - --ssh
+      - "192.168.1.2:22"
+      - --tls
+      - "192.168.2.1:8443"
+      - --openvpn
+      - "192.168.2.1:1194"
     restart: unless-stopped
-```
-
-And to launch it:
-
-```sh
-docker-compose -f your-compose.yml up -d
 ```
 
 ### Using a configuration file
 
-You can also use a configuration file instead of environment variables.
-
-In this case, you need to mount the configuration file in the container and set the `SSLH_CONFIG_FILE` environment variable to the path of the configuration file.
+For complex configurations, use a config file:
 
 ```bash
 docker run -d \
   --name sslh \
   -p 443:443 \
-  -v /path/to/sslh.cfg:/etc/sslh.cfg \
+  -v /path/to/sslh.cfg:/etc/sslh.cfg:ro \
   oorabona/sslh -f -F /etc/sslh.cfg
 ```
 
-## SSLH examples
+## Security
 
-For more examples and general documentation about `SSLH`, please refer to the [SSLH project](https://www.rutschle.net/tech/sslh/README.html) and [configuration](https://www.rutschle.net/tech/sslh/doc/config).
+### Base Security
+- **FROM scratch**: No operating system, no shell, no package manager
+- **Static linking**: No shared library vulnerabilities
+- **Minimal attack surface**: Only sslh binary and CA certificates
+- **Non-root**: Runs as nobody user (uid 65534)
 
-### Configuration file
+### Runtime Hardening (Recommended)
 
-Here is an example of a configuration file:
+```bash
+# Maximum security runtime configuration
+docker run -d \
+  --name sslh \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add NET_BIND_SERVICE \
+  --security-opt no-new-privileges:true \
+  -p 443:443 \
+  oorabona/sslh -f -p 0.0.0.0:443 --ssh backend:22 --tls backend:8443
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  sslh:
+    image: ghcr.io/oorabona/sslh:latest
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "443:443"
+    command:
+      - -f
+      - -p
+      - "0.0.0.0:443"
+      - --ssh
+      - "backend:22"
+      - --tls
+      - "backend:8443"
+    restart: unless-stopped
+```
+
+## SSLH Configuration Examples
+
+### Configuration file format
 
 ```ini
 foreground: true;
@@ -153,18 +167,18 @@ protocols:
 );
 ```
 
-### A note about UDP
+### Notes
 
-The previous configuration example is for `TCP` traffic only. If you want to use `UDP` traffic, you need to proceed as follows:
+- **UDP**: Use config file (not command line). `sslh-fork` doesn't support UDP.
+- **Transparent proxy**: Requires host network configuration. See [SSLH documentation](https://github.com/yrutschle/sslh/blob/master/doc/tproxy.md).
 
-- Do not use the command line arguments, instead use the `sslh.cfg` file (see [SSLH examples](#sslh-examples) for more details)
-- You cannot use `sslh-fork` flavor since it does not support `UDP` (see [this note](https://www.rutschle.net/tech/sslh/doc/config#udp))
+For more examples, see the [SSLH project](https://www.rutschle.net/tech/sslh/README.html).
 
-### A note about transparent proxy
+## Building
 
-Transparent proxying is not supported by `SSLH` (see [this note](https://www.rutschle.net/tech/sslh/doc/config#transparent-proxy)) but requires some effort to implement it.
-
-However to achieve this, you must do some network black magic to make it work. A good reference is [this article](https://github.com/yrutschle/sslh/blob/master/doc/tproxy.md).
+```bash
+./make build sslh
+```
 
 ## Licence
 

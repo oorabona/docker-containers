@@ -138,11 +138,88 @@ Check available versions:
 
 ## Security
 
+### Base Security
 - Non-root database process
 - Proper file permissions
 - Configurable authentication methods
 - Network isolation support
 - Regular security updates
+
+### Credential Security (CRITICAL)
+**NEVER** hardcode passwords in docker-compose.yml:
+
+```yaml
+# BAD - Never do this:
+environment:
+  POSTGRES_PASSWORD: mysecretpassword
+
+# GOOD - Use environment variables:
+environment:
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+# BETTER - Use Docker secrets:
+secrets:
+  postgres_password:
+    file: ./postgres_password.txt
+```
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run -d \
+  --name postgres \
+  --read-only \
+  --tmpfs /tmp \
+  --tmpfs /run/postgresql \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --cap-add SETGID \
+  --cap-add SETUID \
+  --cap-add DAC_OVERRIDE \
+  --security-opt no-new-privileges:true \
+  -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password \
+  -v postgres_data:/var/lib/postgresql/data \
+  -p 127.0.0.1:5432:5432 \
+  postgres
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  postgres:
+    image: ghcr.io/oorabona/postgres:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"  # Bind to localhost only
+
+volumes:
+  postgres_data:
+```
+
+### Network Security
+- Bind to `127.0.0.1` instead of `0.0.0.0` for local-only access
+- Use Docker networks for service-to-service communication
+- Enable SSL for remote connections
 
 ## Monitoring
 

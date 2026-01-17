@@ -1,0 +1,23 @@
+services:
+  debian:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-bookworm-slim}
+        LOCALES: ${LOCALES:-en_US}
+        USER: ${USER:-debian}
+        GROUP: ${GROUP:-debian}
+    image: ${DOCKER_REGISTRY:-}debian:${TAG:-latest}
+    container_name: debian
+    user: "debian:debian"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stdin_open: true
+    tty: true

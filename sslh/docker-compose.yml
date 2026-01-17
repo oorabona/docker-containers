@@ -1,19 +1,30 @@
-version: '3'
 services:
   sslh:
     build:
       context: .
       args:
         VERSION: ${VERSION:-latest}
-        OS_VERSION: ${OS_VERSION:-latest}
-    image: oorabona/sslh:${TAG:-latest}
+        OS_IMAGE_TAG: ${OS_IMAGE_TAG:-latest}
+    image: ${DOCKER_REGISTRY:-}sslh:${TAG:-latest}
     ports:
-      - 443:443
-    environment:
-      SSH_HOST: 192.168.1.2
-      SSH_PORT: 1234
-      OPENVPN_HOST: 192.168.2.1
-      HTTPS_HOST: 192.168.2.1
+      - "443:443"
+    # Security hardening (FROM scratch already minimal)
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    # Full command line required (no env vars in FROM scratch)
     command:
       - -f
+      - -p
+      - "0.0.0.0:443"
+      - --ssh
+      - "${SSH_HOST:-localhost}:${SSH_PORT:-22}"
+      - --tls
+      - "${HTTPS_HOST:-localhost}:${HTTPS_PORT:-8443}"
+      - --openvpn
+      - "${OPENVPN_HOST:-localhost}:${OPENVPN_PORT:-1194}"
     restart: unless-stopped
