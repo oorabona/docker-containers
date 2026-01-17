@@ -45,15 +45,31 @@
       <span>Available variants</span>
     </div>
     <div class="variant-tags">
-      {% for variant in include.variants %}
-        <span class="variant-tag"
-              title="{{ variant.description }} — Click to copy"
-              onclick="selectVariant('{{ include.name }}', 'ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}')"
-              style="cursor: pointer;">
-          :{{ variant.tag }}
-          {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
-        </span>
-      {% endfor %}
+      {% if include.versions %}
+        <!-- Multi-version structure -->
+        {% for version in include.versions %}
+          {% for variant in version.variants %}
+            <span class="variant-tag"
+                  title="{{ variant.description }} — Click to copy"
+                  onclick="selectVariant('{{ include.name }}', 'ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}')"
+                  style="cursor: pointer;">
+              :{{ variant.tag }}
+              {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+            </span>
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <!-- Single-version structure -->
+        {% for variant in include.variants %}
+          <span class="variant-tag"
+                title="{{ variant.description }} — Click to copy"
+                onclick="selectVariant('{{ include.name }}', 'ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}')"
+                style="cursor: pointer;">
+            :{{ variant.tag }}
+            {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+          </span>
+        {% endfor %}
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -66,20 +82,43 @@
       <span>Pull command</span>
       {% if include.has_variants %}
       <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
-        <optgroup label="GHCR">
-          {% for variant in include.variants %}
-          <option value="ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}"{% if variant.is_default %} selected{% endif %}>
-            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
-          </option>
+        {% if include.versions %}
+          <!-- Multi-version structure -->
+          {% for version in include.versions %}
+          <optgroup label="v{{ version.tag }} (GHCR)">
+            {% for variant in version.variants %}
+            <option value="ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}"{% if variant.is_default and forloop.parentloop.first %} selected{% endif %}>
+              {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
-        </optgroup>
-        <optgroup label="Docker Hub">
-          {% for variant in include.variants %}
-          <option value="docker.io/{{ include.dockerhub_username }}/{{ include.name }}:{{ variant.tag }}">
-            {{ variant.name }}{% if variant.is_default %} (default){% endif %}
-          </option>
+          {% for version in include.versions %}
+          <optgroup label="v{{ version.tag }} (Docker Hub)">
+            {% for variant in version.variants %}
+            <option value="docker.io/{{ include.dockerhub_username }}/{{ include.name }}:{{ variant.tag }}">
+              {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
-        </optgroup>
+        {% else %}
+          <!-- Single-version structure -->
+          <optgroup label="GHCR">
+            {% for variant in include.variants %}
+            <option value="ghcr.io/{{ include.github_username }}/{{ include.name }}:{{ variant.tag }}"{% if variant.is_default %} selected{% endif %}>
+              {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </optgroup>
+          <optgroup label="Docker Hub">
+            {% for variant in include.variants %}
+            <option value="docker.io/{{ include.dockerhub_username }}/{{ include.name }}:{{ variant.tag }}">
+              {{ variant.name }}{% if variant.is_default %} (default){% endif %}
+            </option>
+            {% endfor %}
+          </optgroup>
+        {% endif %}
       </select>
       {% else %}
       <select class="pull-select" onchange="updatePullCommand('{{ include.name }}', this.value)">
