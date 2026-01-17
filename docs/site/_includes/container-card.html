@@ -34,14 +34,14 @@
         {{ include.pull_count_formatted | default: "0" }}
       </span>
     </div>
-    {% if include.size_amd64 or include.size_arm64 %}
+    {% if include.size_amd64 or include.size_arm64 or include.has_variants %}
     <div class="card-meta-item">
       <span class="card-meta-label">Size (amd64)</span>
-      <span class="card-meta-value">{{ include.size_amd64 | default: "—" }}</span>
+      <span class="card-meta-value" data-meta="size-amd64">{{ include.size_amd64 | default: "—" }}</span>
     </div>
     <div class="card-meta-item">
       <span class="card-meta-label">Size (arm64)</span>
-      <span class="card-meta-value">{{ include.size_arm64 | default: "—" }}</span>
+      <span class="card-meta-value" data-meta="size-arm64">{{ include.size_arm64 | default: "—" }}</span>
     </div>
     {% endif %}
   </div>
@@ -68,6 +68,8 @@
             <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
                   title="{{ variant.description }} — Click to select"
                   data-tag="{{ variant.tag }}"
+                  data-size-amd64="{{ variant.size_amd64 | default: '' }}"
+                  data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                   onclick="selectVariantTag(this)"
                   style="cursor: pointer;">
               :{{ variant.name }}
@@ -84,6 +86,8 @@
           <span class="variant-tag{% if forloop.first %} selected{% endif %}"
                 title="{{ variant.description }} — Click to select"
                 data-tag="{{ variant.tag }}"
+                data-size-amd64="{{ variant.size_amd64 | default: '' }}"
+                data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                 onclick="selectVariantTag(this)"
                 style="cursor: pointer;">
             :{{ variant.tag }}
