@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `ansible` |
-| **Version Change** | `12.1.0` → `13.2.0` |
+| **Version Change** | `no-published-version` → `13.2.0-ubuntu` |
 | **Change Type** | `major` |
-| **Rebuild Date** | 2025-12-30T18:12:09Z |
+| **Rebuild Date** | 2026-01-17T06:11:44Z |
 | **Triggered By** | Upstream Monitor (automated) |
-| **Reason** | 🔄 Major version update detected (12 → 13) |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/20602929004) |
+| **Reason** | 🔄 Major version update detected (no-published-version → 13) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/21089731526) |
 
 ## Build Status
 
