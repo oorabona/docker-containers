@@ -110,17 +110,33 @@ yaml_escape() {
 }
 
 # Get Docker Hub pull count for a container
-get_dockerhub_pulls() {
+# Get Docker Hub stats (pulls and stars)
+# Usage: get_dockerhub_stats <user> <repo>
+# Output: "pulls:N stars:M" or "pulls:0 stars:0" on failure
+get_dockerhub_stats() {
     local user=$1
     local repo=$2
-    local pulls
+    local response pulls stars
 
-    pulls=$(curl -s --max-time 10 "https://hub.docker.com/v2/repositories/${user}/${repo}" 2>/dev/null | \
-            jq -r '.pull_count // 0' 2>/dev/null)
+    response=$(curl -s --max-time 10 "https://hub.docker.com/v2/repositories/${user}/${repo}" 2>/dev/null)
 
-    # Return 0 if failed or empty
+    if [[ -n "$response" ]]; then
+        pulls=$(echo "$response" | jq -r '.pull_count // 0' 2>/dev/null)
+        stars=$(echo "$response" | jq -r '.star_count // 0' 2>/dev/null)
+    fi
+
+    # Default to 0 if failed or empty
     [[ -z "$pulls" || "$pulls" == "null" ]] && pulls="0"
-    echo "$pulls"
+    [[ -z "$stars" || "$stars" == "null" ]] && stars="0"
+
+    echo "pulls:$pulls stars:$stars"
+}
+
+# Legacy wrapper for backward compatibility
+get_dockerhub_pulls() {
+    local stats
+    stats=$(get_dockerhub_stats "$1" "$2")
+    echo "$stats" | grep -oP 'pulls:\K[0-9]+'
 }
 
 # Format number with K/M suffix
@@ -223,9 +239,11 @@ generate_data() {
             "warning") updates_available=$((updates_available + 1)) ;;
         esac
 
-        # Get pull count from Docker Hub
-        local pull_count pull_count_formatted
-        pull_count=$(get_dockerhub_pulls "oorabona" "$container")
+        # Get Docker Hub stats (pulls and stars)
+        local dockerhub_stats pull_count pull_count_formatted star_count
+        dockerhub_stats=$(get_dockerhub_stats "oorabona" "$container")
+        pull_count=$(echo "$dockerhub_stats" | grep -oP 'pulls:\K[0-9]+')
+        star_count=$(echo "$dockerhub_stats" | grep -oP 'stars:\K[0-9]+')
         pull_count_formatted=$(format_number "$pull_count")
 
         # Get image sizes (only if published)
@@ -254,6 +272,7 @@ generate_data() {
   dockerhub_username: "oorabona"
   pull_count: $pull_count
   pull_count_formatted: "$pull_count_formatted"
+  star_count: $star_count
   size_amd64: "$sizes_amd64"
   size_arm64: "$sizes_arm64"
 EOF
