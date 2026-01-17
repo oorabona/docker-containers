@@ -1,6 +1,9 @@
 # Full PostgreSQL flavor
 # All available compiled extensions
 # Use case: Development, testing, exploration
+#
+# WARNING: This image includes AGPL-licensed extensions (Citus, ParadeDB)
+# Modifications to these extensions must be shared under AGPL
 
 name: full
 description: "PostgreSQL with all compiled extensions (dev/test)"
@@ -8,12 +11,14 @@ extends: base
 
 # All compiled extensions
 extensions:
-  - pgvector
-  - pg_partman
-  - hypopg
-  - pg_qualstats
+  - pgvector      # Vector similarity search
+  - pg_partman    # Partition management
+  - hypopg        # Hypothetical indexes
+  - pg_qualstats  # Predicate statistics
+  - paradedb      # Full-text search (BM25)
+  - citus         # Distributed PostgreSQL
+  - timescaledb   # Time-series database
   # Future additions:
-  # - paradedb    # Once Rust build is ready
   # - postgis     # Once GEOS/PROJ deps are handled
 
 # Additional built-in extensions
@@ -27,7 +32,8 @@ builtin_extensions:
 # shared_preload_libraries
 shared_preload_libraries:
   - pg_qualstats
-  # - pg_search   # When paradedb is added
+  - citus
+  - timescaledb
 
 # Image tags to publish
 tags:

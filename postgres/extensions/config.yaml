@@ -11,18 +11,15 @@
 pg_versions:
   - "17"
   - "16"
-
 # Base image variant
 base_variant: "alpine"
-
 # GitHub release prefix for artifacts
 release_prefix: "extensions-pg"
-
 # Extensions requiring compilation
 # Each extension produces: {name}-{version}-pg{major}-alpine.tar.gz
 extensions:
   pgvector:
-    version: "0.8.0"
+    version: "0.8.1"
     description: "Vector similarity search for AI/RAG applications"
     repo: "pgvector/pgvector"
     build_deps:
@@ -30,47 +27,67 @@ extensions:
       - clang
       - llvm-dev
     shared_preload: false
-    priority: 1  # Build order (lower = first)
-
+    priority: 1 # Build order (lower = first)
   pg_partman:
-    version: "5.2.4"
+    version: "5.4.0"
     description: "Partition management for time-series and large tables"
     repo: "pgpartman/pg_partman"
     build_deps:
       - build-base
     shared_preload: false
     priority: 2
-
   hypopg:
-    version: "1.4.1"
+    version: "1.4.2"
     description: "Hypothetical indexes for query planning analysis"
     repo: "HypoPG/hypopg"
     build_deps:
       - build-base
     shared_preload: false
     priority: 2
-
   pg_qualstats:
-    version: "2.1.1"
+    version: "2.1.3"
     description: "Statistics about predicates for index suggestions"
     repo: "powa-team/pg_qualstats"
     build_deps:
       - build-base
     shared_preload: true
     priority: 2
-
   paradedb:
-    version: "0.17.3"
+    version: "0.20.7"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
+    license: "AGPL-3.0"
     build_deps:
       - build-base
       - rust
       - cargo
       - clang
       - llvm-dev
+    shared_preload: false # Not required for PG17+
+    priority: 3
+  citus:
+    version: "13.2.0"
+    description: "Distributed PostgreSQL for horizontal scaling"
+    repo: "citusdata/citus"
+    license: "AGPL-3.0"
+    build_deps:
+      - build-base
+      - curl-dev
+      - lz4-dev
+      - zstd-dev
+      - icu-dev
     shared_preload: true
-    complex: true  # Requires special build process
+    priority: 3
+  timescaledb:
+    version: "2.24.0"
+    description: "Time-series database for high-performance analytics"
+    repo: "timescale/timescaledb"
+    license: "Apache-2.0 + TSL"
+    build_deps:
+      - build-base
+      - cmake
+      - openssl-dev
+    shared_preload: true
     priority: 3
 
   # PostGIS commented out for now - very complex dependencies
@@ -95,22 +112,17 @@ builtin_extensions:
   - pg_stat_statements
   - pg_buffercache
   - pg_prewarm
-
   # Cryptography
   - pgcrypto
-
   # Data types and indexing
   - uuid-ossp
   - btree_gin
   - btree_gist
   - pg_trgm
-
   # Foreign data wrappers
   - file_fdw
   - postgres_fdw
-
   # Administration
   - adminpack
-
 # Flavors define which extensions are bundled together
 # See postgres/flavors/*.yaml for flavor definitions
