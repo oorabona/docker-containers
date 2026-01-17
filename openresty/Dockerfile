@@ -178,6 +178,15 @@ RUN cd /tmp/openresty-${RESTY_VERSION} \
 # Add additional binaries into PATH for convenience
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
 
+# Create nginx user for running worker processes
+# Master process runs as root (required for binding to ports 80/443)
+# Worker processes drop to nginx user (standard nginx security model)
+RUN addgroup -g 101 -S nginx \
+    && adduser -S -D -H -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx \
+    && mkdir -p /var/cache/nginx /var/log/nginx \
+    && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /var/run/openresty \
+    && chown -R nginx:nginx /usr/local/openresty/nginx/logs
+
 # Add healthcheck to verify OpenResty is responding
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost/nginx_status || exit 1

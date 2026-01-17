@@ -5,7 +5,6 @@ ARG USER=debian
 ARG GROUP=debian
 ARG HOME=/home/${USER}
 ARG SHELL=/bin/bash
-ARG PASSWORD=debian
 
 # Install locales and sudo
 RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y locales sudo aptitude ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -24,12 +23,14 @@ RUN if [ ! -x ${SHELL} ]; then \
     apt-get update && apt-get install -y $(basename ${SHELL}) && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Now create the user
-RUN groupadd -r ${GROUP} && useradd -r -g ${GROUP} -d ${HOME} -s ${SHELL} ${USER}
-RUN echo "${USER}:${PASSWORD}" | chpasswd
+# Create user without password (security: no hardcoded credentials)
+# Login should be done via SSH keys or container exec
+RUN groupadd -r ${GROUP} && useradd -r -g ${GROUP} -d ${HOME} -s ${SHELL} ${USER} \
+    && mkdir -p ${HOME} && chown ${USER}:${GROUP} ${HOME}
 
-# Add the user to the sudoers
-RUN echo "${USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/${USER}
+# Add the user to the sudoers (passwordless for container use)
+RUN echo "${USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/${USER} \
+    && chmod 440 /etc/sudoers.d/${USER}
 
 # Add healthcheck to verify system is ready
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

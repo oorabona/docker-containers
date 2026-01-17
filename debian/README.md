@@ -76,10 +76,45 @@ The version script automatically detects the latest stable Debian release and up
 
 ## Security
 
+### Base Security
 - Uses official Debian base images
 - Minimal attack surface with slim variants
 - Regular security updates through automated rebuilds
 - No additional packages installed by default
+
+### User Security
+- **No hardcoded passwords**: User created without password (login via `docker exec` or SSH keys)
+- **Non-root by default**: Container runs as `debian` user
+- **Sudo access**: Passwordless sudo for container operations
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run -it --rm \
+  --read-only \
+  --tmpfs /tmp \
+  --tmpfs /run \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  debian-base bash
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  debian:
+    image: ghcr.io/oorabona/debian:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+```
 
 ## Advanced Migration Tool - export.sh
 

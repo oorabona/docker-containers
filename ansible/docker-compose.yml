@@ -1,10 +1,22 @@
-version: "3"
 services:
   ansible:
-    image: oorabona/ansible:${TAG:-latest}
+    image: ${DOCKER_REGISTRY:-}ansible:${TAG:-latest}
     container_name: ansible
     build:
       context: .
       args:
         VERSION: ${VERSION:-latest}
         OS_VERSION: ${OS_VERSION:-latest}
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./playbooks:/playbooks:ro
+      - ./inventory:/inventory:ro
+      - ~/.ssh:/home/ansible/.ssh:ro

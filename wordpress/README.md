@@ -122,6 +122,92 @@ volumes:
 - Disabled admin file editing
 - Security headers configuration
 
+## Security
+
+### Base Security
+- Based on our optimized PHP image (Alpine-based)
+- Minimal attack surface with carefully selected packages
+- Regular security updates through automated rebuilds
+
+### User Security
+- **Non-root by default**: Container runs as `wordpress` user
+- **Limited sudo**: sudo access restricted to `/usr/local/bin/wp` only (not full root)
+- **Proper ownership**: WordPress files owned by wordpress user
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run -d \
+  --name wordpress \
+  --read-only \
+  --tmpfs /tmp \
+  --tmpfs /run \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --cap-add SETGID \
+  --cap-add SETUID \
+  --security-opt no-new-privileges:true \
+  -v wordpress_data:/var/www/html \
+  wordpress
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  wordpress:
+    image: ghcr.io/oorabona/wordpress:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - wordpress_data:/var/www/html
+    environment:
+      # Use secrets for production, never hardcode
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+
+  db:
+    image: mysql:8.0
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/mysqld
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - db_data:/var/lib/mysql
+    environment:
+      # Use secrets for production, never hardcode
+      MYSQL_DATABASE: ${WORDPRESS_DB_NAME}
+      MYSQL_USER: ${WORDPRESS_DB_USER}
+      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+volumes:
+  wordpress_data:
+  db_data:
+```
+
 ### Backup & Maintenance
 ```bash
 # Database backup

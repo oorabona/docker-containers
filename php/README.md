@@ -145,3 +145,53 @@ This container uses automated version detection:
 - Enable OPcache for better performance
 - Use volume mounts for faster development cycles
 - Consider using PHP-FPM + Nginx for production
+
+## Security
+
+### Base Security
+- **Multi-stage build**: Build dependencies removed from final image
+- **Alpine-based**: Minimal attack surface
+- **Non-root by default**: Runs as `nobody` user
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run --rm \
+  --read-only \
+  --tmpfs /tmp \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -v $(pwd):/app:ro \
+  oorabona/php php script.php
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  php:
+    image: ghcr.io/oorabona/php:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./src:/app:ro
+      - composer-cache:/home/nobody/.composer/cache
+    user: "nobody:nobody"
+
+volumes:
+  composer-cache:
+```
+
+### PHP-FPM Security
+When using PHP-FPM in production:
+- Use unix sockets instead of TCP when possible
+- Configure `pm.max_children` appropriately
+- Enable `open_basedir` restrictions
+- Disable dangerous functions in `php.ini`
