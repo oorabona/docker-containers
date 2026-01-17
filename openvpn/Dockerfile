@@ -35,8 +35,8 @@ RUN set -ex \
     && tar zxvf pkcs11-helper.tgz \
     && cd pkcs11-helper-$PKCS11_HELPER_VERSION \
     && autoreconf -ivf \
-    && ./configure --enable-strict --enable-pedantic \
-    # Note: distcheck skipped - it fails in containerized CI environments
+    # Note: --enable-pedantic removed - modern NSS headers use C++ comments incompatible with strict C90
+    && ./configure --enable-strict \
     && make -j$NPROC \
     && make install \
     && cd /tmp \
