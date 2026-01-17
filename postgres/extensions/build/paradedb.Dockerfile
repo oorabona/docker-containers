@@ -10,24 +10,35 @@
 #     -t paradedb-builder .
 #
 # Output: /output/ contains files to extract via docker cp
+#
+# Note: This uses a multi-stage build with Debian for compilation
+# because pgrx/bindgen requires glibc for dynamic loading of libclang.
+# The final output is compatible with Alpine PostgreSQL images.
 
 ARG PG_MAJOR=17
-FROM postgres:${PG_MAJOR}-alpine
 
+# ============================================================================
+# Build Stage (Debian-based for glibc/libclang compatibility)
+# ============================================================================
+FROM postgres:${PG_MAJOR}-bookworm AS builder
+
+ARG PG_MAJOR
 ARG EXT_VERSION=0.20.7
 ARG EXT_REPO=paradedb/paradedb
 
 # Install build dependencies
-# ParadeDB uses pgrx which requires Rust and clang
-RUN apk add --no-cache \
-    build-base \
-    clang19 \
-    llvm19-dev \
+# ParadeDB uses pgrx which requires Rust and clang with libclang
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    clang \
+    llvm-dev \
+    libclang-dev \
     git \
     curl \
-    openssl-dev \
-    && ln -sf /usr/bin/clang-19 /usr/bin/clang \
-    && ln -sf /usr/bin/clang++-19 /usr/bin/clang++
+    ca-certificates \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Rust via rustup (required for pgrx)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -38,7 +49,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install --locked cargo-pgrx --version 0.16.1
 
 # Initialize pgrx with our PostgreSQL installation
-RUN cargo pgrx init --pg${PG_MAJOR}=/usr/local/bin/pg_config
+RUN cargo pgrx init --pg${PG_MAJOR}=/usr/bin/pg_config
 
 # Download ParadeDB source
 WORKDIR /build
@@ -49,15 +60,14 @@ WORKDIR /build/paradedb/pg_search
 
 # Build pg_search extension
 # Note: This takes a while due to Rust compilation
-RUN cargo pgrx package --pg-config /usr/local/bin/pg_config
+RUN cargo pgrx package --pg-config /usr/bin/pg_config
 
 # Prepare output structure
 # pgrx packages to target/release/pg_search-pg{major}/
 RUN mkdir -p /output/extension /output/lib && \
-    cp -v target/release/pg_search-pg${PG_MAJOR}/usr/share/postgresql/*/extension/pg_search* /output/extension/ 2>/dev/null || \
-    cp -v target/release/pg_search-pg${PG_MAJOR}/usr/local/share/postgresql/extension/pg_search* /output/extension/ && \
-    cp -v target/release/pg_search-pg${PG_MAJOR}/usr/lib/postgresql/*/lib/pg_search.so /output/lib/ 2>/dev/null || \
-    cp -v target/release/pg_search-pg${PG_MAJOR}/usr/local/lib/postgresql/pg_search.so /output/lib/
+    find target/release -name "pg_search*.control" -exec cp -v {} /output/extension/ \; && \
+    find target/release -name "pg_search*.sql" -exec cp -v {} /output/extension/ \; && \
+    find target/release -name "pg_search.so" -exec cp -v {} /output/lib/ \;
 
 # Add metadata
 RUN echo "extension=paradedb" > /output/metadata.txt && \
@@ -68,3 +78,10 @@ RUN echo "extension=paradedb" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# ============================================================================
+# Output Stage (minimal image with just the extension files)
+# ============================================================================
+FROM scratch
+
+COPY --from=builder /output/ /output/

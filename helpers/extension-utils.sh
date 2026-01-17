@@ -127,10 +127,11 @@ ext_config() {
 }
 
 # List extensions from config, sorted by priority
+# Excludes disabled extensions (disabled: true)
 list_extensions_by_priority() {
     local config_file="$1"
 
-    yq -r '.extensions | to_entries | sort_by(.value.priority // 99) | .[].key' "$config_file"
+    yq -r '.extensions | to_entries | map(select(.value.disabled != true)) | sort_by(.value.priority // 99) | .[].key' "$config_file"
 }
 
 # Get PostgreSQL major version from full version string
@@ -164,8 +165,8 @@ build_ext_image() {
     log_ok "Built: $local_tag"
 }
 
-# Tag and push extension image to registry
-push_ext_image() {
+# Tag extension image with registry name (for COPY --from= to find it)
+tag_ext_image() {
     local ext_name="$1"
     local ext_version="$2"
     local pg_major="$3"
@@ -177,10 +178,28 @@ push_ext_image() {
     remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Tagging $local_tag -> $remote_tag"
-    docker tag "$local_tag" "$remote_tag"
+    if ! docker tag "$local_tag" "$remote_tag"; then
+        log_error "Failed to tag $local_tag -> $remote_tag"
+        return 1
+    fi
+
+    log_ok "Tagged: $remote_tag"
+}
+
+# Push extension image to registry (assumes already tagged)
+push_ext_image() {
+    local ext_name="$1"
+    local ext_version="$2"
+    local pg_major="$3"
+
+    local remote_tag
+    remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Pushing $remote_tag"
-    docker push "$remote_tag"
+    if ! docker push "$remote_tag"; then
+        log_error "Failed to push $remote_tag"
+        return 1
+    fi
 
     log_ok "Pushed: $remote_tag"
 }
