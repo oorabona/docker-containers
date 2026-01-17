@@ -16,16 +16,9 @@ build:
   base_suffix: "-alpine"
 
 # Versions to build (all maintained PostgreSQL releases)
+# NOTE: PG18 removed until extension images are built (Dockerfile requires all extension
+# stages even for base flavor due to multi-stage FROM statements)
 versions:
-  - tag: "18"
-    # PG18 - extensions not yet compatible
-    variants:
-      - name: base
-        suffix: ""
-        flavor: base
-        description: "PostgreSQL with built-in extensions only"
-        default: true
-
   - tag: "17"
     # PG17 - full extension support
     variants:
