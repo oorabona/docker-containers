@@ -45,8 +45,19 @@ get_build_args() {
     local build_args=""
 
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
-    [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
-    [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
+
+    # Get upstream version if container has version.sh with --upstream support
+    # This separates download URL version from Docker tag version
+    if [[ -f "./version.sh" ]]; then
+        local upstream_version
+        upstream_version=$(./version.sh --upstream 2>/dev/null || true)
+        if [[ -n "$upstream_version" && "$upstream_version" != "$version" ]]; then
+            build_args="$build_args --build-arg UPSTREAM_VERSION=$upstream_version"
+        fi
+    fi
+
+    [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
 
     echo "$build_args"
 }
