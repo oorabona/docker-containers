@@ -1,17 +1,17 @@
 #!/bin/bash
-# Build and push extension images for PostgreSQL containers
+# Build and push extension images for containers with compiled extensions
 # Images are pushed to registry (ghcr.io) for use with COPY --from=
 #
 # Usage:
 #   ./scripts/build-extensions.sh <container> [options]
 #
 # Examples:
-#   ./scripts/build-extensions.sh postgres                    # Build & push all missing
-#   ./scripts/build-extensions.sh postgres --pg-version 17    # Build for specific PG version
+#   ./scripts/build-extensions.sh postgres                       # Build & push all missing
+#   ./scripts/build-extensions.sh postgres --major-version 17    # Build for specific version
 #   ./scripts/build-extensions.sh postgres --extension pgvector  # Build specific extension
-#   ./scripts/build-extensions.sh postgres --force            # Rebuild even if exists
-#   ./scripts/build-extensions.sh postgres --list             # List status of all extensions
-#   ./scripts/build-extensions.sh postgres --local-only       # Build locally without pushing
+#   ./scripts/build-extensions.sh postgres --force               # Rebuild even if exists
+#   ./scripts/build-extensions.sh postgres --list                # List status of all extensions
+#   ./scripts/build-extensions.sh postgres --local-only          # Build locally without pushing
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ source "$ROOT_DIR/helpers/extension-utils.sh"
 
 # Defaults
 CONTAINER=""
-PG_VERSION=""
+MAJOR_VERSION=""
 EXTENSION=""
 FORCE=false
 LIST_ONLY=false
@@ -34,14 +34,14 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") <container> [options]
 
-Build and push extension images for PostgreSQL containers.
+Build and push extension images for containers with compiled extensions.
 Images are pushed to registry for use with COPY --from= in Dockerfiles.
 
 Arguments:
   container              Container name (e.g., postgres)
 
 Options:
-  --pg-version VERSION   PostgreSQL major version (e.g., 17, 16)
+  --major-version VERSION   Major version (e.g., 17, 16)
                          Default: auto-detect from version.sh
   --extension NAME       Build only specific extension
   --force                Rebuild even if image already exists in registry
@@ -55,7 +55,7 @@ Environment:
 
 Examples:
   $(basename "$0") postgres                        # Build & push all missing
-  $(basename "$0") postgres --pg-version 17        # Build for PG 17
+  $(basename "$0") postgres --major-version 17     # Build for version 17
   $(basename "$0") postgres --extension pgvector   # Build only pgvector
   $(basename "$0") postgres --list                 # Show status
   $(basename "$0") postgres --local-only           # Build without push
@@ -70,8 +70,8 @@ parse_args() {
             -h|--help)
                 usage
                 ;;
-            --pg-version)
-                PG_VERSION="$2"
+            --major-version)
+                MAJOR_VERSION="$2"
                 shift 2
                 ;;
             --extension)
@@ -116,22 +116,23 @@ parse_args() {
     fi
 }
 
-# Detect PostgreSQL major version
-detect_pg_version() {
+# Detect major version from version.sh
+detect_major_version() {
     local container_dir="$ROOT_DIR/$CONTAINER"
     local version_script="$container_dir/version.sh"
 
-    if [[ -n "$PG_VERSION" ]]; then
-        echo "$PG_VERSION"
+    if [[ -n "$MAJOR_VERSION" ]]; then
+        echo "$MAJOR_VERSION"
         return
     fi
 
     if [[ -x "$version_script" ]]; then
         local full_version
         full_version=$("$version_script" 2>/dev/null | head -1)
-        pg_major_version "$full_version"
+        # Extract major version (first number before dot or dash)
+        echo "$full_version" | grep -oE '^[0-9]+' | head -1
     else
-        log_error "Cannot detect PG version. Use --pg-version or ensure version.sh exists."
+        log_error "Cannot detect version. Use --major-version or ensure version.sh exists."
         exit 1
     fi
 }
@@ -139,10 +140,10 @@ detect_pg_version() {
 # List extension status
 list_extension_status() {
     local config_file="$1"
-    local pg_major="$2"
+    local major_ver="$2"
 
     echo ""
-    echo "Extension Status for PostgreSQL $pg_major"
+    echo "Extension Status for $CONTAINER v$major_ver"
     echo "=========================================="
     echo ""
 
@@ -153,7 +154,7 @@ list_extension_status() {
         local version
         version=$(ext_config "$ext" "version" "$config_file")
         local image
-        image=$(ext_image_name "$ext" "$version" "$pg_major")
+        image=$(ext_image_name "$ext" "$version" "$major_ver")
 
         local status
         if image_exists_in_registry "$image" 2>/dev/null; then
@@ -174,7 +175,7 @@ list_extension_status() {
 build_extension() {
     local ext_name="$1"
     local config_file="$2"
-    local pg_major="$3"
+    local major_ver="$3"
     local container_dir="$4"
 
     local version
@@ -192,31 +193,31 @@ build_extension() {
     fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY-RUN] Would build $ext_name $version for PG $pg_major"
+        log_info "[DRY-RUN] Would build $ext_name $version for $CONTAINER v$major_ver"
         return 0
     fi
 
     # Build the image
-    build_ext_image "$ext_name" "$version" "$repo" "$pg_major" "$dockerfile" "$context_dir"
+    build_ext_image "$ext_name" "$version" "$repo" "$major_ver" "$dockerfile" "$context_dir"
 }
 
 # Push extension to registry
 push_extension() {
     local ext_name="$1"
     local config_file="$2"
-    local pg_major="$3"
+    local major_ver="$3"
 
     local version
     version=$(ext_config "$ext_name" "version" "$config_file")
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local image
-        image=$(ext_image_name "$ext_name" "$version" "$pg_major")
+        image=$(ext_image_name "$ext_name" "$version" "$major_ver")
         log_info "[DRY-RUN] Would push $image"
         return 0
     fi
 
-    push_ext_image "$ext_name" "$version" "$pg_major"
+    push_ext_image "$ext_name" "$version" "$major_ver"
 }
 
 # Main
@@ -243,14 +244,14 @@ main() {
         exit 1
     fi
 
-    # Detect PG version
-    local pg_major
-    pg_major=$(detect_pg_version)
-    log_info "PostgreSQL major version: $pg_major"
+    # Detect major version
+    local major_ver
+    major_ver=$(detect_major_version)
+    log_info "$CONTAINER major version: $major_ver"
 
     # Handle list mode
     if [[ "$LIST_ONLY" == "true" ]]; then
-        list_extension_status "$config_file" "$pg_major"
+        list_extension_status "$config_file" "$major_ver"
         exit 0
     fi
 
@@ -279,7 +280,7 @@ main() {
             local version
             version=$(ext_config "$ext" "version" "$config_file")
             local image
-            image=$(ext_image_name "$ext" "$version" "$pg_major")
+            image=$(ext_image_name "$ext" "$version" "$major_ver")
 
             if [[ "$FORCE" == "true" ]]; then
                 extensions_to_build+=("$ext")
@@ -304,10 +305,10 @@ main() {
         echo ""
         log_info "Processing: $ext"
 
-        if build_extension "$ext" "$config_file" "$pg_major" "$container_dir"; then
+        if build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
             if [[ "$LOCAL_ONLY" == "true" ]]; then
                 log_ok "$ext built locally"
-            elif push_extension "$ext" "$config_file" "$pg_major"; then
+            elif push_extension "$ext" "$config_file" "$major_ver"; then
                 log_ok "$ext completed successfully"
             else
                 log_error "$ext push failed"

@@ -1,38 +1,69 @@
 # PostgreSQL Container Variants
-# Defines multiple image variants built from the same Dockerfile
+# Defines multiple image variants per PostgreSQL major version
 #
-# Each variant produces a separate image tag:
-#   ghcr.io/oorabona/postgres:17-alpine         (base)
-#   ghcr.io/oorabona/postgres:17-vector-alpine  (vector)
+# Each version+variant produces a separate image tag:
+#   ghcr.io/oorabona/postgres:18-alpine         (v18 base)
+#   ghcr.io/oorabona/postgres:17-vector-alpine  (v17 vector)
 #   etc.
-
-# Variants to build and publish
-variants:
-  - name: base
-    suffix: ""              # No suffix = default image
-    flavor: base            # Dockerfile FLAVOR arg
-    description: "PostgreSQL with built-in extensions only"
-    default: true           # This is the primary variant
-
-  - name: vector
-    suffix: "-vector"       # postgres:17-vector-alpine
-    flavor: vector
-    description: "PostgreSQL + pgvector for AI/RAG applications"
-
-  - name: analytics
-    suffix: "-analytics"    # postgres:17-analytics-alpine
-    flavor: analytics
-    description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
-
-  - name: full
-    suffix: "-full"         # postgres:17-full-alpine
-    flavor: full
-    description: "PostgreSQL with all compiled extensions"
 
 # Build configuration
 build:
   # Build arg to pass for flavor selection
   flavor_arg: FLAVOR
-
-  # Dependencies: extension images must exist before building variants
+  # Dependencies: extension images must exist before building variants with extensions
   requires_extensions: true
+  # Base image suffix (appended to version tag)
+  base_suffix: "-alpine"
+
+# Versions to build (all maintained PostgreSQL releases)
+versions:
+  - tag: "18"
+    # PG18 - extensions not yet compatible
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        description: "PostgreSQL with built-in extensions only"
+        default: true
+
+  - tag: "17"
+    # PG17 - full extension support
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        description: "PostgreSQL with built-in extensions only"
+        default: true
+      - name: vector
+        suffix: "-vector"
+        flavor: vector
+        description: "PostgreSQL + pgvector for AI/RAG applications"
+      - name: analytics
+        suffix: "-analytics"
+        flavor: analytics
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      - name: full
+        suffix: "-full"
+        flavor: full
+        description: "PostgreSQL with all compiled extensions"
+
+  - tag: "16"
+    # PG16 - full extension support
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        description: "PostgreSQL with built-in extensions only"
+        default: true
+      - name: vector
+        suffix: "-vector"
+        flavor: vector
+        description: "PostgreSQL + pgvector for AI/RAG applications"
+      - name: analytics
+        suffix: "-analytics"
+        flavor: analytics
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      - name: full
+        suffix: "-full"
+        flavor: full
+        description: "PostgreSQL with all compiled extensions"

@@ -108,22 +108,75 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get PostgreSQL version
-        id: pg-version
+      - name: Get versions requiring extensions
+        id: ext-versions
         run: |
-          version='${{ fromJson(needs.detect-containers.outputs.versions).postgres }}'
-          # Extract major version (e.g., "17.5-alpine" -> "17")
-          pg_major=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
-          echo "pg_major=$pg_major" >> $GITHUB_OUTPUT
-          echo "::notice::PostgreSQL major version: $pg_major"
+          source ./helpers/variant-utils.sh
+
+          # Find containers that require extensions (have requires_extensions: true in variants.yaml)
+          containers_with_extensions=""
+          versions_by_container=""
+
+          for container_dir in */; do
+            container="${container_dir%/}"
+            [[ ! -f "$container_dir/variants.yaml" ]] && continue
+
+            if requires_extensions "./$container"; then
+              echo "📦 Container $container requires extensions"
+              containers_with_extensions="$containers_with_extensions $container"
+
+              # Get versions that have non-base variants
+              versions_needing_extensions=""
+              while IFS= read -r major_version; do
+                [[ -z "$major_version" ]] && continue
+
+                has_extension_variants=false
+                while IFS= read -r variant; do
+                  [[ -z "$variant" ]] && continue
+                  flavor=$(variant_property "./$container" "$variant" "flavor" "$major_version")
+                  if [[ "$flavor" != "base" ]]; then
+                    has_extension_variants=true
+                    break
+                  fi
+                done < <(list_variants "./$container" "$major_version")
+
+                if [[ "$has_extension_variants" == "true" ]]; then
+                  versions_needing_extensions="$versions_needing_extensions $major_version"
+                  echo "  → v$major_version needs extensions"
+                fi
+              done < <(list_versions "./$container")
+
+              versions_by_container="$versions_by_container|$container:$(echo $versions_needing_extensions | xargs | tr ' ' ',')"
+            fi
+          done
+
+          # Output results
+          containers_with_extensions=$(echo "$containers_with_extensions" | xargs)
+          echo "containers=$containers_with_extensions" >> $GITHUB_OUTPUT
+          echo "versions_map=${versions_by_container#|}" >> $GITHUB_OUTPUT
+          echo "📋 Containers with extensions: $containers_with_extensions"
 
       - name: Build and push extension images
+        if: steps.ext-versions.outputs.containers != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
-          # Build and push extension images to ghcr.io
-          ./scripts/build-extensions.sh postgres --pg-version ${{ steps.pg-version.outputs.pg_major }}
+
+          # Parse versions map and build for each container/version
+          IFS='|' read -ra ENTRIES <<< "${{ steps.ext-versions.outputs.versions_map }}"
+          for entry in "${ENTRIES[@]}"; do
+            [[ -z "$entry" ]] && continue
+            container="${entry%%:*}"
+            versions="${entry#*:}"
+
+            IFS=',' read -ra VERSION_LIST <<< "$versions"
+            for major_version in "${VERSION_LIST[@]}"; do
+              [[ -z "$major_version" ]] && continue
+              echo "🔧 Building extensions for $container v$major_version..."
+              ./scripts/build-extensions.sh "$container" --major-version "$major_version"
+            done
+          done
 
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
