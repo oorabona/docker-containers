@@ -172,34 +172,68 @@ runs:
         builds_count=0
 
         for container in $(echo "$containers_json" | jq -r '.[]'); do
-          version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
           container_dir="./$container"
 
           if has_variants "$container_dir"; then
-            echo "📦 Container $container has variants, expanding..."
+            # Check if variants.yaml has multi-version structure
+            version_count=$(version_count "$container_dir")
 
-            while IFS= read -r variant_name; do
-              [[ -z "$variant_name" ]] && continue
+            if [[ "$version_count" -gt 0 ]]; then
+              # New multi-version structure - use list_build_matrix
+              echo "📦 Container $container has multi-version variants ($version_count versions)"
 
-              variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
-              flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
-              is_default=$(variant_property "$container_dir" "$variant_name" "default")
+              matrix_json=$(list_build_matrix "$container_dir")
 
-              # Add build entry
-              builds_json=$(echo "$builds_json" | jq -c \
-                --arg container "$container" \
-                --arg version "$version" \
-                --arg variant "$variant_name" \
-                --arg tag "$variant_tag" \
-                --arg flavor "$flavor" \
-                --arg is_default "${is_default:-false}" \
-                '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: ($is_default == "true")}]')
+              # Add container name and convert to our format
+              while IFS= read -r entry; do
+                [[ -z "$entry" || "$entry" == "null" ]] && continue
 
-              builds_count=$((builds_count + 1))
-              echo "  → Variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
-            done < <(list_variants "$container_dir")
+                pg_version=$(echo "$entry" | jq -r '.version')
+                variant_name=$(echo "$entry" | jq -r '.variant')
+                tag=$(echo "$entry" | jq -r '.tag')
+                flavor=$(echo "$entry" | jq -r '.flavor')
+                is_default=$(echo "$entry" | jq -r '.default')
+
+                builds_json=$(echo "$builds_json" | jq -c \
+                  --arg container "$container" \
+                  --arg version "$pg_version" \
+                  --arg variant "$variant_name" \
+                  --arg tag "$tag" \
+                  --arg flavor "$flavor" \
+                  --argjson is_default "$is_default" \
+                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: $is_default}]')
+
+                builds_count=$((builds_count + 1))
+                echo "  → PG$pg_version:$variant_name (tag: $tag, flavor: $flavor)"
+              done < <(echo "$matrix_json" | jq -c '.[]')
+            else
+              # Old single-version structure - use version.sh
+              echo "📦 Container $container has single-version variants"
+              version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
+
+              while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+
+                variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
+                flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+                is_default=$(variant_property "$container_dir" "$variant_name" "default")
+
+                builds_json=$(echo "$builds_json" | jq -c \
+                  --arg container "$container" \
+                  --arg version "$version" \
+                  --arg variant "$variant_name" \
+                  --arg tag "$variant_tag" \
+                  --arg flavor "$flavor" \
+                  --arg is_default "${is_default:-false}" \
+                  '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: ($is_default == "true")}]')
+
+                builds_count=$((builds_count + 1))
+                echo "  → Variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
+              done < <(list_variants "$container_dir")
+            fi
           else
             # No variants - single build entry
+            version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
             builds_json=$(echo "$builds_json" | jq -c \
               --arg container "$container" \
               --arg version "$version" \
