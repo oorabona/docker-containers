@@ -66,52 +66,153 @@ list_containers() {
   done
 }
 
+# Format bytes to human readable
+format_size() {
+  local bytes=$1
+  if [[ -z "$bytes" || "$bytes" == "null" || "$bytes" -eq 0 ]]; then
+    echo "-"
+    return
+  fi
+  if [[ $bytes -ge 1073741824 ]]; then
+    printf "%.1fGB" "$(echo "scale=1; $bytes/1073741824" | bc)"
+  elif [[ $bytes -ge 1048576 ]]; then
+    printf "%.1fMB" "$(echo "scale=1; $bytes/1048576" | bc)"
+  elif [[ $bytes -ge 1024 ]]; then
+    printf "%.1fKB" "$(echo "scale=1; $bytes/1024" | bc)"
+  else
+    printf "%dB" "$bytes"
+  fi
+}
+
+# Get manifest sizes from Docker Hub API (public, no auth needed)
+get_dockerhub_sizes() {
+  local username="$1"
+  local image="$2"
+  local tag="$3"
+
+  local api_url="https://hub.docker.com/v2/repositories/${username}/${image}/tags/${tag}"
+  local response
+  response=$(curl -s --connect-timeout 5 --max-time 10 "$api_url" 2>/dev/null) || return 1
+
+  # Check if we got an error response
+  if echo "$response" | jq -e '.errinfo' >/dev/null 2>&1; then
+    return 1
+  fi
+
+  # Extract architecture and size from images array
+  echo "$response" | jq -r '.images[]? | "\(.architecture):\(.size)"' 2>/dev/null
+}
+
+# Get manifest sizes for GHCR (requires docker login)
+get_ghcr_sizes() {
+  local image="$1"
+  local manifest
+
+  # Try to inspect manifest (requires authentication)
+  manifest=$(docker manifest inspect "$image" 2>/dev/null) || return 1
+
+  if echo "$manifest" | jq -e '.manifests' >/dev/null 2>&1; then
+    # Multi-arch manifest list
+    echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.size // 0)"' 2>/dev/null
+  else
+    # Single manifest - get size from config + layers
+    local total_size
+    total_size=$(echo "$manifest" | jq '[.config.size // 0] + [.layers[].size // 0] | add' 2>/dev/null)
+    echo "amd64:${total_size:-0}"
+  fi
+}
+
 # Show image sizes for containers
 show_sizes() {
   local target="$1"
   local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+  local registries=("ghcr.io" "docker.io")
 
   echo ""
-  echo "Container Image Sizes"
-  echo "====================="
+  echo "Container Image Sizes by Registry and Architecture"
+  echo "==================================================="
   echo ""
-  printf "%-15s  %-45s  %10s\n" "CONTAINER" "IMAGE" "SIZE"
-  printf "%-15s  %-45s  %10s\n" "───────────────" "─────────────────────────────────────────────" "──────────"
 
+  # Determine which containers to show
+  local containers_to_show
   if [[ -n "$target" ]]; then
-    # Show specific container
-    local found=false
-    docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
-      | grep -E "(ghcr.io|docker.io|localhost)/$github_username/$target:" \
-      | while IFS=$'\t' read -r image size; do
-          printf "%-15s  %-45s  %10s\n" "$target" "$image" "$size"
-          found=true
-        done
-    if [[ "$found" == "false" ]]; then
-      printf "%-15s  %-45s  %10s\n" "$target" "(not built)" "-"
+    if ! validate_target "$target"; then
+      log_error "$target is not a valid target!"
+      return 1
     fi
+    containers_to_show="$target"
   else
-    # Show all containers
-    for container in $targets; do
-      local image_info
-      image_info=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
-        | grep -E "(ghcr.io|docker.io|localhost)/$github_username/$container:" \
-        | head -1)
-
-      if [[ -n "$image_info" ]]; then
-        local image size
-        image=$(echo "$image_info" | cut -f1)
-        size=$(echo "$image_info" | cut -f2)
-        printf "%-15s  %-45s  %10s\n" "$container" "$image" "$size"
-      else
-        printf "%-15s  %-45s  %10s\n" "$container" "(not built)" "-"
-      fi
-    done
+    containers_to_show="$targets"
   fi
 
-  echo ""
-  echo "Tip: Run './make build <container>' to build missing images"
-  echo "     See docs/CONTAINER_SIZE_OPTIMIZATION.md for optimization guidelines"
+  for container in $containers_to_show; do
+    echo "📦 $container"
+    echo "   ├── Local:"
+
+    # Show local images (collect in variable to avoid subshell)
+    local local_images
+    local_images=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null \
+      | grep -E "(ghcr.io|docker.io|localhost)/$github_username/$container:" || true)
+
+    if [[ -n "$local_images" ]]; then
+      while IFS=$'\t' read -r image size; do
+        echo "   │   └── $image → $size"
+      done <<< "$local_images"
+    else
+      echo "   │   └── (not built locally)"
+    fi
+
+    # Show registry sizes
+    echo "   └── Registries:"
+
+    # Get latest tag from version.sh if available, fallback to "latest"
+    local latest_tag
+    if [[ -f "$container/version.sh" ]]; then
+      latest_tag=$("$container/version.sh" 2>/dev/null | head -1)
+    fi
+    [[ -z "$latest_tag" ]] && latest_tag="latest"
+
+    local reg_count=${#registries[@]}
+    local reg_idx=0
+    for registry in "${registries[@]}"; do
+      reg_idx=$((reg_idx + 1))
+      local display_registry
+      [[ "$registry" == "ghcr.io" ]] && display_registry="GHCR" || display_registry="Docker Hub"
+
+      local tree_prefix="├──"
+      local sub_prefix="│  "
+      [[ $reg_idx -eq $reg_count ]] && tree_prefix="└──" && sub_prefix="   "
+
+      # Get manifest sizes using appropriate method per registry
+      local sizes=""
+      if [[ "$registry" == "docker.io" ]]; then
+        sizes=$(get_dockerhub_sizes "$github_username" "$container" "$latest_tag" 2>/dev/null)
+      else
+        sizes=$(get_ghcr_sizes "$registry/$github_username/$container:$latest_tag" 2>/dev/null)
+      fi
+
+      if [[ -n "$sizes" && "$sizes" != *"null"* ]]; then
+        echo "       $tree_prefix $display_registry ($latest_tag):"
+        local line_count
+        line_count=$(echo "$sizes" | grep -c . || echo "0")
+        local line_idx=0
+        while IFS=':' read -r arch size_bytes; do
+          [[ -z "$arch" || "$arch" == "null" ]] && continue
+          line_idx=$((line_idx + 1))
+          local size_human
+          size_human=$(format_size "$size_bytes")
+          local item_prefix="├──"
+          [[ $line_idx -ge $line_count ]] && item_prefix="└──"
+          echo "       $sub_prefix  $item_prefix $arch: $size_human"
+        done <<< "$sizes"
+      else
+        echo "       $tree_prefix $display_registry ($latest_tag): ✗"
+      fi
+    done
+    echo ""
+  done
+
+  echo "Legend: Local = uncompressed | Registry = compressed | ✗ = not published"
 }
 
 version() {
