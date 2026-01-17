@@ -42,6 +42,18 @@ versions:
         suffix: "-analytics"
         flavor: analytics
         description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      - name: timeseries
+        suffix: "-timeseries"
+        flavor: timeseries
+        description: "PostgreSQL + TimescaleDB for time-series data"
+      - name: distributed
+        suffix: "-distributed"
+        flavor: distributed
+        description: "PostgreSQL + Citus for horizontal scaling"
+      - name: search
+        suffix: "-search"
+        flavor: search
+        description: "PostgreSQL + ParadeDB for full-text search (BM25)"
       - name: full
         suffix: "-full"
         flavor: full
@@ -63,6 +75,18 @@ versions:
         suffix: "-analytics"
         flavor: analytics
         description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      - name: timeseries
+        suffix: "-timeseries"
+        flavor: timeseries
+        description: "PostgreSQL + TimescaleDB for time-series data"
+      - name: distributed
+        suffix: "-distributed"
+        flavor: distributed
+        description: "PostgreSQL + Citus for horizontal scaling"
+      - name: search
+        suffix: "-search"
+        flavor: search
+        description: "PostgreSQL + ParadeDB for full-text search (BM25)"
       - name: full
         suffix: "-full"
         flavor: full
