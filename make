@@ -13,8 +13,9 @@ source "$(dirname "$0")/scripts/check-version.sh"
 source "$(dirname "$0")/scripts/build-container.sh"
 source "$(dirname "$0")/scripts/push-container.sh"
 
-[ -r "$CONFIG_MK" ] && source "$CONFIG_MK"
-[ -r "$DEPLOY_MK" ] && source "$DEPLOY_MK"
+# Source optional config files if they exist
+[ -r "${CONFIG_MK:-}" ] && source "$CONFIG_MK"
+[ -r "${DEPLOY_MK:-}" ] && source "$DEPLOY_MK"
 
 targets=$(find -maxdepth 2 -name "Dockerfile" | cut -d'/' -f2 | sort -u)
 
@@ -313,8 +314,14 @@ do_buildx() {
   local container=$(basename "$PWD")
 
   if [[ "$op" == "build" ]]; then
-    # Use focused build utility
-    build_container "$container" "$VERSION" "$TAG"
+    # Check if container has variants (multi-image support)
+    if container_has_variants "$container"; then
+      log_info "Container $container has variants - building all variants..."
+      build_container_variants "$container" "$VERSION"
+    else
+      # Use focused build utility for single-image containers
+      build_container "$container" "$VERSION" "$TAG"
+    fi
   elif [[ "$op" == "push" ]]; then
     # Use focused push utilities with registry selection
     case "$registry" in
@@ -457,20 +464,20 @@ else
   log_success "Found 'docker-compose', continuing."
 fi
 
-case "$1" in
-  build ) make $1 $2 $3 ;;
+case "${1:-}" in
+  build ) make "$1" "${2:-}" "${3:-}" ;;
   push )
     # Handle: push <target>, push ghcr <target>, push dockerhub <target>
-    if [[ "$2" == "ghcr" || "$2" == "dockerhub" ]]; then
-      make $1 $2 $3 $4
+    if [[ "${2:-}" == "ghcr" || "${2:-}" == "dockerhub" ]]; then
+      make "$1" "${2:-}" "${3:-}" "${4:-}"
     else
-      make $1 $2 $3
+      make "$1" "${2:-}" "${3:-}"
     fi
     ;;
-  run ) run $2 $3 ;;
+  run ) run "${2:-}" "${3:-}" ;;
   version ) shift; version "$@" ;;
-  check-updates ) check_updates $2 ;;
+  check-updates ) check_updates "${2:-}" ;;
   list ) list_containers ;;
-  sizes ) show_sizes $2 ;;
+  sizes ) show_sizes "${2:-}" ;;
   * ) help ;;
 esac

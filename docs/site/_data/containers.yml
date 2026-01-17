@@ -1,0 +1,137 @@
+# Auto-generated container data
+# Generated: 2026-01-17 03:12 UTC
+
+- name: "ansible"
+  current_version: "no-published-version"
+  latest_version: "13.2.0-ubuntu"
+  status_color: "warning"
+  status_text: "Not Published Yet"
+  build_status: "pending"
+  description: "Ansible built from sources with support for external plugins (Galaxy & Python) 💚"
+  ghcr_image: "ghcr.io/oorabona/ansible:no-published-version"
+  dockerhub_image: "docker.io/oorabona/ansible:no-published-version"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "debian"
+  current_version: "trixie"
+  latest_version: "trixie"
+  status_color: "green"
+  status_text: "Up to Date"
+  build_status: "success"
+  description: "Debian Base Container"
+  ghcr_image: "ghcr.io/oorabona/debian:trixie"
+  dockerhub_image: "docker.io/oorabona/debian:trixie"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "openresty"
+  current_version: "1.19.3.2-alpine"
+  latest_version: "1.29.2.1-alpine"
+  status_color: "warning"
+  status_text: "Update Available"
+  build_status: "success"
+  description: "OpenResty - High Performance Web Platform"
+  ghcr_image: "ghcr.io/oorabona/openresty:1.19.3.2-alpine"
+  dockerhub_image: "docker.io/oorabona/openresty:1.19.3.2-alpine"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "openvpn"
+  current_version: "no-published-version"
+  latest_version: "v2.6.17-alpine"
+  status_color: "warning"
+  status_text: "Not Published Yet"
+  build_status: "pending"
+  description: "🔐 OpenVPN built from sources with advanced security features"
+  ghcr_image: "ghcr.io/oorabona/openvpn:no-published-version"
+  dockerhub_image: "docker.io/oorabona/openvpn:no-published-version"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "php"
+  current_version: "8.5.2-fpm-alpine"
+  latest_version: "8.5.2-fpm-alpine"
+  status_color: "green"
+  status_text: "Up to Date"
+  build_status: "success"
+  description: "PHP Development Container"
+  ghcr_image: "ghcr.io/oorabona/php:8.5.2-fpm-alpine"
+  dockerhub_image: "docker.io/oorabona/php:8.5.2-fpm-alpine"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "postgres"
+  current_version: "18.1-alpine"
+  latest_version: "18.1-alpine"
+  status_color: "green"
+  status_text: "Up to Date"
+  build_status: "success"
+  description: "PostgreSQL Database Container"
+  ghcr_image: "ghcr.io/oorabona/postgres:18.1-alpine"
+  dockerhub_image: "docker.io/oorabona/postgres:18.1-alpine"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: true
+  variants:
+    - name: "base"
+      tag: "18.1-alpine"
+      description: "PostgreSQL with built-in extensions only"
+      is_default: true
+    - name: "vector"
+      tag: "18.1-vector-alpine"
+      description: "PostgreSQL + pgvector for AI/RAG applications"
+      is_default: false
+    - name: "analytics"
+      tag: "18.1-analytics-alpine"
+      description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      is_default: false
+    - name: "full"
+      tag: "18.1-full-alpine"
+      description: "PostgreSQL with all compiled extensions"
+      is_default: false
+
+- name: "sslh"
+  current_version: "no-published-version"
+  latest_version: "v2.3.0-alpine"
+  status_color: "warning"
+  status_text: "Not Published Yet"
+  build_status: "pending"
+  description: "A minimal `FROM scratch` SSLH container for protocol multiplexing, allowing multiple services (SSH, HTTPS, OpenVPN) to share a single port. Built with static linking for maximum security and minimal attack surface."
+  ghcr_image: "ghcr.io/oorabona/sslh:no-published-version"
+  dockerhub_image: "docker.io/oorabona/sslh:no-published-version"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "terraform"
+  current_version: "no-published-version"
+  latest_version: "1.14.3-alpine"
+  status_color: "warning"
+  status_text: "Not Published Yet"
+  build_status: "pending"
+  description: "Terraform DevOps Container"
+  ghcr_image: "ghcr.io/oorabona/terraform:no-published-version"
+  dockerhub_image: "docker.io/oorabona/terraform:no-published-version"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+
+- name: "wordpress"
+  current_version: "6.9.0-alpine"
+  latest_version: "6.9.0-alpine"
+  status_color: "green"
+  status_text: "Up to Date"
+  build_status: "success"
+  description: "WordPress Container"
+  ghcr_image: "ghcr.io/oorabona/wordpress:6.9.0-alpine"
+  dockerhub_image: "docker.io/oorabona/wordpress:6.9.0-alpine"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
+  has_variants: false
+

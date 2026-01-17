@@ -24,6 +24,12 @@ outputs:
   versions:
     description: 'JSON object mapping container names to their versions'
     value: ${{ steps.compute-versions.outputs.versions }}
+  builds:
+    description: 'JSON array of all builds needed (expanded variants)'
+    value: ${{ steps.expand-variants.outputs.builds }}
+  builds_count:
+    description: 'Total number of builds (including variants)'
+    value: ${{ steps.expand-variants.outputs.builds_count }}
 
 runs:
   using: 'composite'
@@ -148,3 +154,64 @@ runs:
         versions_json=$(echo "$versions_json" | jq -c .)
         echo "versions=$versions_json" >> $GITHUB_OUTPUT
         echo "📋 Versions computed: $versions_json"
+
+    - name: Expand variants for containers
+      id: expand-variants
+      if: steps.find-containers.outputs.count != '0'
+      shell: bash
+      run: |
+        set -e
+        containers_json='${{ steps.find-containers.outputs.containers }}'
+        versions_json='${{ steps.compute-versions.outputs.versions }}'
+
+        # Source variant utilities
+        source ./helpers/variant-utils.sh
+
+        # Build array of all builds needed
+        builds_json="[]"
+        builds_count=0
+
+        for container in $(echo "$containers_json" | jq -r '.[]'); do
+          version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
+          container_dir="./$container"
+
+          if has_variants "$container_dir"; then
+            echo "📦 Container $container has variants, expanding..."
+
+            while IFS= read -r variant_name; do
+              [[ -z "$variant_name" ]] && continue
+
+              variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
+              flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+              is_default=$(variant_property "$container_dir" "$variant_name" "default")
+
+              # Add build entry
+              builds_json=$(echo "$builds_json" | jq -c \
+                --arg container "$container" \
+                --arg version "$version" \
+                --arg variant "$variant_name" \
+                --arg tag "$variant_tag" \
+                --arg flavor "$flavor" \
+                --arg is_default "${is_default:-false}" \
+                '. + [{container: $container, version: $version, variant: $variant, tag: $tag, flavor: $flavor, is_default: ($is_default == "true")}]')
+
+              builds_count=$((builds_count + 1))
+              echo "  → Variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
+            done < <(list_variants "$container_dir")
+          else
+            # No variants - single build entry
+            builds_json=$(echo "$builds_json" | jq -c \
+              --arg container "$container" \
+              --arg version "$version" \
+              --arg tag "$version" \
+              '. + [{container: $container, version: $version, variant: "", tag: $tag, flavor: "", is_default: true}]')
+
+            builds_count=$((builds_count + 1))
+            echo "📦 Container $container: single build (tag: $version)"
+          fi
+        done
+
+        echo "builds=$builds_json" >> $GITHUB_OUTPUT
+        echo "builds_count=$builds_count" >> $GITHUB_OUTPUT
+        echo "📋 Total builds to perform: $builds_count"
+        echo "$builds_json" | jq .

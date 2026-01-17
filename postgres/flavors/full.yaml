@@ -1,0 +1,35 @@
+# Full PostgreSQL flavor
+# All available compiled extensions
+# Use case: Development, testing, exploration
+
+name: full
+description: "PostgreSQL with all compiled extensions (dev/test)"
+extends: base
+
+# All compiled extensions
+extensions:
+  - pgvector
+  - pg_partman
+  - hypopg
+  - pg_qualstats
+  # Future additions:
+  # - paradedb    # Once Rust build is ready
+  # - postgis     # Once GEOS/PROJ deps are handled
+
+# Additional built-in extensions
+builtin_extensions:
+  - pg_buffercache
+  - pg_prewarm
+  - file_fdw
+  - postgres_fdw
+  - adminpack
+
+# shared_preload_libraries
+shared_preload_libraries:
+  - pg_qualstats
+  # - pg_search   # When paradedb is added
+
+# Image tags to publish
+tags:
+  - "{version}-full-alpine"   # e.g., 17.5-full-alpine
+  - "{major}-full-alpine"     # e.g., 17-full-alpine

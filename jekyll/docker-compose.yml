@@ -1,0 +1,10 @@
+services:
+  jekyll:
+    build: .
+    image: oorabona/jekyll:latest
+    ports:
+      - "4000:4000"
+      - "35729:35729"
+    volumes:
+      - ../docs/site:/site:rw
+    command: ["serve", "--host", "0.0.0.0", "--livereload", "--force_polling"]
