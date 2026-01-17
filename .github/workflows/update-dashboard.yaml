@@ -47,7 +47,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate dashboard content
+      - name: Generate dashboard data
         run: |
           chmod +x generate-dashboard.sh
 
@@ -55,24 +55,30 @@ jobs:
           export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
 
-          echo "🚀 Generating dashboard with context:"
+          echo "🚀 Generating dashboard data with context:"
           echo "  - Trigger: $GITHUB_EVENT_NAME"
           echo "  - Reason: $UPDATE_REASON"
           echo ""
 
           ./generate-dashboard.sh
 
-          # Verify index.md was created
-          if [ ! -f "index.md" ]; then
-            echo "❌ Error: index.md was not generated!"
+          # Verify data files were created
+          if [ ! -f "docs/site/_data/containers.yml" ]; then
+            echo "❌ Error: containers.yml was not generated!"
             exit 1
           fi
 
-          echo "✅ Dashboard generated successfully"
-          echo "📄 Dashboard preview:"
-          head -n 15 index.md
+          if [ ! -f "docs/site/_data/stats.yml" ]; then
+            echo "❌ Error: stats.yml was not generated!"
+            exit 1
+          fi
 
-          echo "📊 Dashboard content prepared for Jekyll"
+          echo "✅ Dashboard data generated successfully"
+          echo "📊 Container data preview:"
+          head -n 20 docs/site/_data/containers.yml
+          echo ""
+          echo "📈 Stats data:"
+          cat docs/site/_data/stats.yml
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -81,9 +87,12 @@ jobs:
         run: |
           echo "📋 Setting up Jekyll from docs/site/"
           cp docs/site/_config.yml _config.yml
+          cp docs/site/index.md index.md
           cp -r docs/site/_includes _includes
           cp -r docs/site/_layouts _layouts
+          cp -r docs/site/_data _data
           echo "✅ Jekyll configuration ready"
+          echo "📂 Data: $(ls _data/)"
           echo "📂 Includes: $(ls _includes/)"
           echo "📂 Layouts: $(ls _layouts/)"
 
