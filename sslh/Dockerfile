@@ -12,7 +12,9 @@ ARG NPROC=1
 WORKDIR /build
 
 # Install build dependencies - build dynamically then copy shared libs
+# Note: VERSION may include suffix like "-alpine" - extract clean version for GitHub URL
 RUN set -ex \
+    && CLEAN_VERSION=$(echo "$VERSION" | sed 's/-alpine$//' | sed 's/-ubuntu$//') \
     && apk add --no-cache \
         build-base \
         coreutils \
@@ -32,8 +34,8 @@ RUN set -ex \
         # For healthcheck binary (static)
         busybox-static \
     # Download and extract sslh source
-    && wget -q https://github.com/yrutschle/sslh/archive/$VERSION.tar.gz \
-    && tar zxf $VERSION.tar.gz \
+    && wget -q https://github.com/yrutschle/sslh/archive/$CLEAN_VERSION.tar.gz \
+    && tar zxf $CLEAN_VERSION.tar.gz \
     && cd /build/sslh-* \
     # Configure for dynamic build (musl shared libs are small)
     && ./configure --enable-libconfig --enable-libev \
