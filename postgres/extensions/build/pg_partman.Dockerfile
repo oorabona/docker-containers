@@ -4,8 +4,8 @@
 # pg_partman provides automatic partition management for time-series
 # and serial-based table partitioning
 
-ARG PG_MAJOR=17
-FROM postgres:${PG_MAJOR}-alpine
+ARG MAJOR_VERSION=17
+FROM postgres:${MAJOR_VERSION}-alpine
 
 ARG EXT_VERSION=5.2.4
 ARG EXT_REPO=pgpartman/pg_partman
@@ -40,7 +40,7 @@ RUN mkdir -p /output/extension /output/lib && \
 # Add metadata
 RUN echo "extension=pg_partman" > /output/metadata.txt && \
     echo "version=${EXT_VERSION}" >> /output/metadata.txt && \
-    echo "pg_major=${PG_MAJOR}" >> /output/metadata.txt && \
+    echo "major_version=${MAJOR_VERSION}" >> /output/metadata.txt && \
     echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /output/metadata.txt
 
 # List output for verification

@@ -5,7 +5,7 @@
 #
 # Usage:
 #   docker build -f paradedb.Dockerfile \
-#     --build-arg PG_MAJOR=17 \
+#     --build-arg MAJOR_VERSION=17 \
 #     --build-arg EXT_VERSION=0.20.7 \
 #     -t paradedb-builder .
 #
@@ -15,14 +15,14 @@
 # because pgrx/bindgen requires glibc for dynamic loading of libclang.
 # The final output is compatible with Alpine PostgreSQL images.
 
-ARG PG_MAJOR=17
+ARG MAJOR_VERSION=17
 
 # ============================================================================
 # Build Stage (Debian-based for glibc/libclang compatibility)
 # ============================================================================
-FROM postgres:${PG_MAJOR}-bookworm AS builder
+FROM postgres:${MAJOR_VERSION}-bookworm AS builder
 
-ARG PG_MAJOR
+ARG MAJOR_VERSION
 ARG EXT_VERSION=0.20.7
 ARG EXT_REPO=paradedb/paradedb
 
@@ -49,7 +49,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install --locked cargo-pgrx --version 0.16.1
 
 # Initialize pgrx with our PostgreSQL installation
-RUN cargo pgrx init --pg${PG_MAJOR}=/usr/bin/pg_config
+RUN cargo pgrx init --pg${MAJOR_VERSION}=/usr/bin/pg_config
 
 # Download ParadeDB source
 WORKDIR /build
@@ -72,7 +72,7 @@ RUN mkdir -p /output/extension /output/lib && \
 # Add metadata
 RUN echo "extension=paradedb" > /output/metadata.txt && \
     echo "version=${EXT_VERSION}" >> /output/metadata.txt && \
-    echo "pg_major=${PG_MAJOR}" >> /output/metadata.txt && \
+    echo "major_version=${MAJOR_VERSION}" >> /output/metadata.txt && \
     echo "license=AGPL-3.0" >> /output/metadata.txt && \
     echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /output/metadata.txt
 

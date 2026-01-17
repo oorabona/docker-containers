@@ -46,6 +46,11 @@ get_build_args() {
 
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
 
+    # Extract major version from version string (e.g., "16-alpine" -> "16")
+    local major_version
+    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
+    [[ -n "$major_version" ]] && build_args="$build_args --build-arg MAJOR_VERSION=$major_version"
+
     # Get upstream version if container has version.sh with --upstream support
     # This separates download URL version from Docker tag version
     if [[ -f "./version.sh" ]]; then
@@ -60,6 +65,19 @@ get_build_args() {
     [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
 
     echo "$build_args"
+}
+
+# Get label args for build digest tracking
+get_label_args() {
+    local dockerfile="${1:-Dockerfile}"
+    local flavor="${2:-}"
+
+    local variants_yaml=""
+    [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
+
+    local digest
+    digest=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
+    echo "--label $BUILD_DIGEST_LABEL=$digest"
 }
 
 # Push to GHCR (GitHub Container Registry) - PRIMARY REGISTRY
@@ -82,9 +100,11 @@ push_ghcr() {
     local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
     local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
-    # Prepare build arguments
+    # Prepare build arguments and labels
     local build_args
     build_args=$(get_build_args "$version")
+    local label_args
+    label_args=$(get_label_args)
 
     # Prepare tags
     local tag_args="-t $ghcr_image:$effective_tag"
@@ -109,6 +129,7 @@ push_ghcr() {
         --provenance=false \
         $cache_args \
         $build_args \
+        $label_args \
         $tag_args \
         . || {
         log_error "GHCR push failed for $container:$effective_tag"
@@ -148,9 +169,11 @@ push_dockerhub() {
     local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
     local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
-    # Prepare build arguments
+    # Prepare build arguments and labels
     local build_args
     build_args=$(get_build_args "$version")
+    local label_args
+    label_args=$(get_label_args)
 
     # Prepare tags
     local tag_args="-t $dockerhub_image:$effective_tag"
@@ -175,6 +198,7 @@ push_dockerhub() {
         --provenance=false \
         $cache_args \
         $build_args \
+        $label_args \
         $tag_args \
         . || {
         log_error "Docker Hub push failed for $container:$effective_tag"
