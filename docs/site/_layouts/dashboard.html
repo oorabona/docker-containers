@@ -452,6 +452,17 @@
       color: #34d399;
     }
 
+    .variant-tag.selected {
+      background: rgba(59, 130, 246, 0.3);
+      border-color: var(--accent-blue);
+      color: #60a5fa;
+    }
+
+    .variant-tag:hover {
+      background: rgba(139, 92, 246, 0.25);
+      border-color: rgba(139, 92, 246, 0.5);
+    }
+
     /* Pull command */
     .pull-section {
       margin-bottom: 1rem;
@@ -713,6 +724,57 @@
         if (copyBtn) {
           copyToClipboard('pull-' + containerName, copyBtn);
         }
+      }
+    }
+
+    // Update pull command when registry selection changes
+    function updateRegistrySelection(select) {
+      const ghcrBase = select.dataset.ghcrBase;
+      const dockerhubBase = select.dataset.dockerhubBase;
+      const defaultTag = select.dataset.defaultTag;
+      const registry = select.value;
+
+      // Find the currently selected variant tag, or use default
+      const card = select.closest('.container-card');
+      const selectedVariant = card.querySelector('.variant-tag.selected');
+      const tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
+
+      // Build the image URL based on registry
+      const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+      const imageUrl = baseUrl + ':' + tag;
+
+      // Update pull input
+      const containerName = card.dataset.container;
+      const input = document.getElementById('pull-' + containerName);
+      if (input) {
+        input.value = 'docker pull ' + imageUrl;
+      }
+    }
+
+    // Select a variant tag and update pull command (no auto-copy)
+    function selectVariantTag(element) {
+      const card = element.closest('.container-card');
+      const tag = element.dataset.tag;
+
+      // Update visual selection
+      card.querySelectorAll('.variant-tag').forEach(t => t.classList.remove('selected'));
+      element.classList.add('selected');
+
+      // Get current registry selection
+      const select = card.querySelector('.pull-select');
+      const registry = select ? select.value : 'ghcr';
+      const ghcrBase = select ? select.dataset.ghcrBase : '';
+      const dockerhubBase = select ? select.dataset.dockerhubBase : '';
+
+      // Build the image URL
+      const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+      const imageUrl = baseUrl + ':' + tag;
+
+      // Update pull input
+      const containerName = card.dataset.container;
+      const input = document.getElementById('pull-' + containerName);
+      if (input) {
+        input.value = 'docker pull ' + imageUrl;
       }
     }
 

@@ -343,7 +343,9 @@ jobs:
     name: Create Manifest ${{ matrix.build.container }}:${{ matrix.build.tag }}
     needs: [detect-containers, build-and-push]
     if: |
+      always() &&
       needs.build-and-push.result == 'success' &&
+      needs.detect-containers.outputs.builds_count > 0 &&
       github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -524,7 +526,7 @@ jobs:
       always() &&
       needs.build-and-push.result == 'success' &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml
     with:
