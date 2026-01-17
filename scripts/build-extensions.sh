@@ -28,6 +28,7 @@ EXTENSION=""
 FORCE=false
 LIST_ONLY=false
 LOCAL_ONLY=false
+PULL_ONLY=false
 DRY_RUN=false
 
 usage() {
@@ -44,9 +45,10 @@ Options:
   --major-version VERSION   Major version (e.g., 17, 16)
                          Default: auto-detect from version.sh
   --extension NAME       Build only specific extension
-  --force                Rebuild even if image already exists in registry
+  --force                Rebuild even if image already exists
   --list                 List extension status without building
   --local-only           Build locally without pushing to registry
+  --pull-only            Pull images from registry (no build, no push)
   --dry-run              Show what would be done without executing
   -h, --help             Show this help
 
@@ -92,6 +94,10 @@ parse_args() {
                 ;;
             --dry-run)
                 DRY_RUN=true
+                shift
+                ;;
+            --pull-only)
+                PULL_ONLY=true
                 shift
                 ;;
             -*)
@@ -239,6 +245,25 @@ push_extension() {
     push_ext_image "$ext_name" "$version" "$major_ver"
 }
 
+# Pull extension from registry
+pull_extension() {
+    local ext_name="$1"
+    local config_file="$2"
+    local major_ver="$3"
+
+    local version
+    version=$(ext_config "$ext_name" "version" "$config_file")
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local image
+        image=$(ext_image_name "$ext_name" "$version" "$major_ver")
+        log_info "[DRY-RUN] Would pull $image"
+        return 0
+    fi
+
+    pull_ext_image "$ext_name" "$version" "$major_ver"
+}
+
 # Main
 main() {
     parse_args "$@"
@@ -279,6 +304,87 @@ main() {
         check_registry_auth || log_warn "Continuing without registry auth check"
     fi
 
+    # Handle pull-only mode: pull from registry first, then build what's missing
+    if [[ "$PULL_ONLY" == "true" ]]; then
+        log_info "Pull-only mode: pulling from registry, then building missing locally"
+
+        local extensions_to_pull=()
+        local extensions_to_build=()
+
+        # Determine which extensions to process
+        if [[ -n "$EXTENSION" ]]; then
+            extensions_to_pull=("$EXTENSION")
+        else
+            for ext in $(list_extensions_by_priority "$config_file"); do
+                local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
+                if [[ ! -f "$dockerfile" ]]; then
+                    log_warn "$ext: no Dockerfile (skipped)"
+                    continue
+                fi
+                extensions_to_pull+=("$ext")
+            done
+        fi
+
+        # Try to pull each extension from registry
+        for ext in "${extensions_to_pull[@]}"; do
+            local version
+            version=$(ext_config "$ext" "version" "$config_file")
+            local image
+            image=$(ext_image_name "$ext" "$version" "$major_ver")
+
+            # Skip if already exists locally (unless --force)
+            if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
+                log_ok "$ext $version already exists locally"
+                continue
+            fi
+
+            # Try to pull from registry
+            if pull_extension "$ext" "$config_file" "$major_ver" 2>/dev/null; then
+                log_ok "$ext $version pulled from registry"
+            else
+                log_warn "$ext $version not in registry, will build locally"
+                extensions_to_build+=("$ext")
+            fi
+        done
+
+        # Build locally those that couldn't be pulled
+        if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
+            log_ok "All extensions pulled successfully"
+            exit 0
+        fi
+
+        log_info "Extensions to build locally: ${extensions_to_build[*]}"
+
+        local failed=()
+        for ext in "${extensions_to_build[@]}"; do
+            echo ""
+            log_info "Building locally: $ext"
+
+            if ! build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
+                log_error "$ext build failed"
+                failed+=("$ext")
+                continue
+            fi
+
+            if ! tag_extension "$ext" "$config_file" "$major_ver"; then
+                log_error "$ext tag failed"
+                failed+=("$ext")
+                continue
+            fi
+
+            log_ok "$ext built and tagged locally"
+        done
+
+        echo ""
+        if [[ ${#failed[@]} -gt 0 ]]; then
+            log_error "Failed extensions: ${failed[*]}"
+            exit 1
+        else
+            log_ok "All extensions available locally (pulled + built)"
+        fi
+        exit 0
+    fi
+
     # Build mode - determine which extensions to build
     local extensions_to_build=()
 
@@ -301,7 +407,16 @@ main() {
             local image
             image=$(ext_image_name "$ext" "$version" "$major_ver")
 
-            if [[ "$FORCE" == "true" ]]; then
+            # In local-only mode, always build locally (ignore registry)
+            # Otherwise, only build if not in registry (unless --force)
+            if [[ "$LOCAL_ONLY" == "true" ]]; then
+                # Check if image exists locally
+                if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
+                    log_ok "$ext $version already exists locally"
+                else
+                    extensions_to_build+=("$ext")
+                fi
+            elif [[ "$FORCE" == "true" ]]; then
                 extensions_to_build+=("$ext")
             elif ! image_exists_in_registry "$image" 2>/dev/null; then
                 extensions_to_build+=("$ext")
