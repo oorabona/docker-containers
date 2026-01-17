@@ -9,7 +9,6 @@
 
 # PostgreSQL versions to support
 pg_versions:
-  - "18"
   - "17"
   - "16"
 # Base image variant
