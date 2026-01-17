@@ -1,53 +1,48 @@
 #!/bin/bash
-
-# Docker Containers Dashboard Generator - Templated Version
-# Generates dashboard using Jekyll includes for clean templating
+# Generate dashboard data as YAML for Jekyll consumption
+# This script outputs container data that Jekyll can iterate over
 
 set -euo pipefail
 
-# Source shared logging utilities
-source "$(dirname "$0")/helpers/logging.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-DASHBOARD_FILE="index.md"
-TEMP_FILE=$(mktemp)
+source "$SCRIPT_DIR/helpers/logging.sh"
+source "$SCRIPT_DIR/helpers/variant-utils.sh"
+
+DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
+STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 
 # Function to check if a directory should be skipped
 is_skip_directory() {
     local container=$1
-    
-    # Skip helper directories, archived containers, and non-container directories
-    if [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || "$container" == "test-"* ]]; then
-        return 0  # True - should skip
-    fi
-    
-    return 1  # False - should not skip
+    [[ "$container" == "helpers" || "$container" == "docs" || "$container" == "backup-"* || \
+       "$container" == ".github" || "$container" == "archive"* || "$container" == "_"* || \
+       "$container" == "test-"* || "$container" == "scripts" || "$container" == "jekyll" ]]
 }
 
-# Function to get container version comparison
+# Get container versions
 get_container_versions() {
     local container=$1
-    local current_version latest_version status_color status_text
-    
+
     pushd "$container" >/dev/null 2>&1 || {
         echo "unknown|unknown|secondary|Unknown Status"
         return 1
     }
-    
-    # Get published version from oorabona/* registry (same logic as make script)
-    local pattern
+
+    local pattern current_version latest_version status_color status_text
+
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n')
     else
-        # Fallback: comprehensive semver pattern matching major.minor.patch with optional pre-release and build metadata
-        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$" 2>/dev/null | head -1 | tr -d '\n')
     fi
-    
-    # Get latest upstream version
+    # Handle empty result
+    [[ -z "$current_version" ]] && current_version="no-published-version"
+
     latest_version=$(timeout 30 ./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "unknown")
-    
+
     popd >/dev/null 2>&1
-    
-    # Determine status based on version comparison
+
     if [[ "$current_version" == "no-published-version" ]]; then
         status_color="warning"
         status_text="Not Published Yet"
@@ -61,46 +56,32 @@ get_container_versions() {
         status_color="warning"
         status_text="Update Available"
     fi
-    
-    # Output structured data: current|latest|color|text
+
     echo "${current_version}|${latest_version}|${status_color}|${status_text}"
 }
 
-# Function to generate container card include
-generate_container_card() {
+# Get container description from README
+get_container_description() {
     local container=$1
     local description=""
-    local github_username="oorabona"  # TODO: Make this configurable
-    local dockerhub_username="oorabona"  # TODO: Make this configurable
-    
-    # Get container description from README if available
+
     if [[ -f "$container/README.md" ]]; then
-        # Extract description from title or first meaningful paragraph
         description=$(awk '
             BEGIN { found_desc = 0 }
-            # Skip YAML frontmatter
             /^---$/ && NR == 1 { in_frontmatter = 1; next }
             /^---$/ && in_frontmatter { in_frontmatter = 0; next }
             in_frontmatter { next }
-            
-            # Try to extract from H1 header (after cleaning up)
             /^# / && !found_desc {
                 title = $0
                 gsub(/^# /, "", title)
-                # Remove "Docker Container" phrase (case insensitive) but keep emojis!
                 gsub(/[Dd]ocker [Cc]ontainer[[:space:]]*/, "", title)
-                # Clean up extra whitespace
                 gsub(/^[[:space:]]*/, "", title)
                 gsub(/[[:space:]]*$/, "", title)
-                gsub(/[[:space:]]+/, " ", title)
                 if (length(title) > 15 && length(title) < 120) {
                     print title
                     found_desc = 1
-                    next
                 }
             }
-            
-            # Look for first substantial paragraph as fallback
             /^[^#]/ && length($0) > 20 && !found_desc {
                 gsub(/^[[:space:]]*/, "")
                 gsub(/[[:space:]]*$/, "")
@@ -111,213 +92,126 @@ generate_container_card() {
             }
         ' "$container/README.md")
     fi
-    
-    # Fallback description if none found
+
     if [[ -z "$description" ]]; then
         description="Docker container for ${container}"
     fi
-    
-    # Get version information (structured output: current|latest|color|text)
-    local version_info
-    version_info=$(get_container_versions "$container")
-    
-    # Parse structured output efficiently
-    IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
-    
-    # Generate Docker pull commands
-    local ghcr_image="ghcr.io/${github_username}/${container}:${current_version}"
-    local dockerhub_image="docker.io/${dockerhub_username}/${container}:${current_version}"
 
-    # Determine build_status based on publication state
-    local build_status="success"
-    if [[ "$current_version" == "no-published-version" ]]; then
-        build_status="pending"
-    fi
-
-    # Generate Jekyll include call with enhanced data
-    cat << EOF
-{% include container-card.html
-   name="$container"
-   current_version="$current_version"
-   latest_version="$latest_version"
-   status_color="$status_color"
-   status_text="$status_text"
-   build_status="$build_status"
-   description="$description"
-   ghcr_image="$ghcr_image"
-   dockerhub_image="$dockerhub_image"
-   github_username="$github_username"
-   dockerhub_username="$dockerhub_username"
-%}
-EOF
+    echo "$description"
 }
 
-# Function to calculate dashboard statistics
-calculate_stats() {
-    local total=0
-    local up_to_date=0
-    local updates_available=0
-    
-    for container in */; do
-        container=${container%/}
-        
-        # Skip helper directories, archived containers, and non-container directories
-        if is_skip_directory "$container"; then
-            continue
-        fi
-        
-        [[ -f "$container/version.sh" ]] || continue
-        
-        total=$((total + 1))
-        
-        # Get version information (structured output: current|latest|color|text)
-        local version_info
-        version_info=$(get_container_versions "$container")
-        
-        # Parse structured output efficiently
-        local current_version latest_version status_color status_text
-        IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
-        
-        case "$status_color" in
-            "green")
-                up_to_date=$((up_to_date + 1))
-                ;;
-            "warning")
-                updates_available=$((updates_available + 1))
-                ;;
-        esac
-    done
-    
-    local success_rate=100
-    if [[ $total -gt 0 ]]; then
-        success_rate=$(( (up_to_date * 100) / total ))
-    fi
-    
-    # Output structured stats: total|up_to_date|updates_available|success_rate
-    echo "$total|$up_to_date|$updates_available|$success_rate"
+# Escape YAML string (handle quotes and special chars)
+yaml_escape() {
+    local str="$1"
+    # Replace backslashes first, then quotes
+    str="${str//\\/\\\\}"
+    str="${str//\"/\\\"}"
+    echo "$str"
 }
 
-# Main dashboard generation function
-generate_dashboard() {
-    log_info "Generating templated dashboard..."
-    
-    # Calculate statistics
-    local stats
-    stats=$(calculate_stats)
-    
-    # Parse structured stats efficiently: total|up_to_date|updates_available|success_rate
-    local total up_to_date updates_available success_rate
-    IFS='|' read -r total up_to_date updates_available success_rate <<< "$stats"
-    
-    # Export stats for potential use by workflow
-    echo "DASHBOARD_STATS_TOTAL=$total" > .dashboard-stats
-    echo "DASHBOARD_STATS_UP_TO_DATE=$up_to_date" >> .dashboard-stats
-    echo "DASHBOARD_STATS_UPDATES_AVAILABLE=$updates_available" >> .dashboard-stats
-    echo "DASHBOARD_STATS_SUCCESS_RATE=$success_rate" >> .dashboard-stats
-    
-    log_info "Statistics: $total total, $up_to_date up-to-date, $updates_available updates available, $success_rate% success rate"
-    
-    # Generate dashboard header with Jekyll front matter
-    cat << EOF > "$TEMP_FILE"
----
-layout: dashboard
-title: Container Dashboard
-permalink: /
-updated: $(date -u +"%Y-%m-%d %H:%M UTC")
-description: Real-time status monitoring for Docker containers with automated upstream version tracking
----
+# Main function
+generate_data() {
+    log_info "Generating Jekyll data files..."
 
-{% include dashboard-stats.html
-   total_containers="$total"
-   up_to_date="$up_to_date"
-   updates_available="$updates_available"
-   build_success_rate="$success_rate"
-%}
+    cd "$SCRIPT_DIR"
 
-{% include quick-actions.html %}
+    local total=0 up_to_date=0 updates_available=0
 
-<h2 class="section-title"><i class="ti ti-package"></i> Container Status</h2>
+    # Start YAML file
+    echo "# Auto-generated container data" > "$DATA_FILE"
+    echo "# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")" >> "$DATA_FILE"
+    echo "" >> "$DATA_FILE"
 
-<div class="cards-grid">
-EOF
-
-    # Generate container cards
-    log_info "Processing containers..."
     for container in */; do
         container=${container%/}
-        
-        # Skip helper directories, archived containers, and non-container directories
-        if is_skip_directory "$container"; then
-            continue
-        fi
-        
-        # Skip if not a container directory
+
+        is_skip_directory "$container" && continue
         [[ -f "$container/version.sh" ]] || continue
         [[ -f "$container/Dockerfile" ]] || continue
-        
-        echo "  🔍 Processing $container..."
-        if generate_container_card "$container" >> "$TEMP_FILE"; then
-            echo "    ✅ Generated card for $container"
-        else
-            log_warning "Failed to generate card for $container"
-        fi
-    done
-    
-    # Close container grid and add footer with glassmorphism sections
-    cat << EOF >> "$TEMP_FILE"
-</div>
 
-<h2 class="section-title"><i class="ti ti-activity"></i> Recent Activity</h2>
+        log_info "Processing $container..."
 
-<div class="activity-section glass">
-  <div class="activity-list">
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-robot"></i></div>
-      <span><strong>Automated Monitoring</strong> — Upstream versions checked every 6 hours</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-rocket"></i></div>
-      <span><strong>Auto-Build</strong> — Triggered on version updates and code changes</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-chart-bar"></i></div>
-      <span><strong>Dashboard Updates</strong> — Real-time status after successful builds</span>
-    </div>
-    <div class="activity-item">
-      <div class="activity-icon"><i class="ti ti-shield-check"></i></div>
-      <span><strong>Branch Protection</strong> — All changes flow through pull requests</span>
-    </div>
-  </div>
-</div>
+        local version_info
+        version_info=$(get_container_versions "$container")
 
-<h2 class="section-title"><i class="ti ti-heart-rate-monitor"></i> System Health</h2>
+        IFS='|' read -r current_version latest_version status_color status_text <<< "$version_info"
 
-<div class="health-section glass">
-  <div class="health-grid">
-    <div class="health-item">
-      <span class="health-label">Build Success Rate</span>
-      <span class="health-value">${success_rate}%</span>
-    </div>
-    <div class="health-item">
-      <span class="health-label">Containers Up-to-Date</span>
-      <span class="health-value">${up_to_date}/${total}</span>
-    </div>
-    <div class="health-item">
-      <span class="health-label">Updates Available</span>
-      <span class="health-value">${updates_available}</span>
-    </div>
-    <div class="health-item">
-      <span class="health-label">Last Check</span>
-      <span class="health-value">$(date -u +"%Y-%m-%d %H:%M UTC")</span>
-    </div>
-  </div>
-</div>
+        local description
+        description=$(get_container_description "$container")
+
+        local build_status="success"
+        [[ "$current_version" == "no-published-version" ]] && build_status="pending"
+
+        total=$((total + 1))
+        case "$status_color" in
+            "green") up_to_date=$((up_to_date + 1)) ;;
+            "warning") updates_available=$((updates_available + 1)) ;;
+        esac
+
+        # Write container entry
+        cat >> "$DATA_FILE" << EOF
+- name: "$container"
+  current_version: "$current_version"
+  latest_version: "$latest_version"
+  status_color: "$status_color"
+  status_text: "$status_text"
+  build_status: "$build_status"
+  description: "$(yaml_escape "$description")"
+  ghcr_image: "ghcr.io/oorabona/$container:$current_version"
+  dockerhub_image: "docker.io/oorabona/$container:$current_version"
+  github_username: "oorabona"
+  dockerhub_username: "oorabona"
 EOF
 
-    # Replace the dashboard file
-    mv "$TEMP_FILE" "$DASHBOARD_FILE"
-    log_info "Templated dashboard generated successfully: $DASHBOARD_FILE"
+        # Check for variants
+        local container_dir="./$container"
+        if has_variants "$container_dir"; then
+            echo "  has_variants: true" >> "$DATA_FILE"
+            echo "  variants:" >> "$DATA_FILE"
+
+            while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+
+                local variant_tag variant_desc is_default
+                variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
+                variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
+                is_default=$(variant_property "$container_dir" "$variant_name" "default")
+
+                # Ensure is_default is either true or false
+                [[ "$is_default" != "true" ]] && is_default="false"
+
+                cat >> "$DATA_FILE" << EOF
+    - name: "$variant_name"
+      tag: "$variant_tag"
+      description: "$(yaml_escape "$variant_desc")"
+      is_default: $is_default
+EOF
+            done < <(list_variants "$container_dir")
+        else
+            echo "  has_variants: false" >> "$DATA_FILE"
+        fi
+
+        echo "" >> "$DATA_FILE"
+    done
+
+    # Calculate success rate
+    local success_rate=100
+    [[ $total -gt 0 ]] && success_rate=$(( (up_to_date * 100) / total ))
+
+    # Write stats file
+    cat > "$STATS_FILE" << EOF
+# Auto-generated dashboard statistics
+# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")
+
+total_containers: $total
+up_to_date: $up_to_date
+updates_available: $updates_available
+build_success_rate: $success_rate
+last_updated: "$(date -u +"%Y-%m-%d %H:%M UTC")"
+EOF
+
+    log_info "Generated $DATA_FILE with $total containers"
+    log_info "Stats: $up_to_date up-to-date, $updates_available updates, ${success_rate}% success"
 }
 
-# Main execution
-generate_dashboard
+generate_data

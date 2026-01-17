@@ -1,0 +1,22 @@
+# Vector PostgreSQL flavor
+# Optimized for AI/ML workloads with vector similarity search
+# Use case: RAG applications, semantic search, embeddings storage
+
+name: vector
+description: "PostgreSQL with pgvector for AI/RAG applications"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - pgvector
+
+# Additional built-in extensions (inherited from base + these)
+builtin_extensions: []
+
+# shared_preload_libraries (inherited from base)
+shared_preload_libraries: []
+
+# Image tags to publish
+tags:
+  - "{version}-vector-alpine"   # e.g., 17.5-vector-alpine
+  - "{major}-vector-alpine"     # e.g., 17-vector-alpine

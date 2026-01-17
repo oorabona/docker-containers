@@ -1,0 +1,28 @@
+# Analytics PostgreSQL flavor
+# Optimized for data warehouse and analytics workloads
+# Use case: Large tables, partitioning, query optimization
+
+name: analytics
+description: "PostgreSQL for analytics with partitioning and query tuning"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - pg_partman    # Automatic partition management
+  - hypopg        # Hypothetical indexes for query planning
+  - pg_qualstats  # Predicate statistics for index suggestions
+
+# Additional built-in extensions
+builtin_extensions:
+  - pg_buffercache  # Inspect shared buffer cache
+  - pg_prewarm      # Preload data into buffer cache
+
+# shared_preload_libraries
+# pg_qualstats requires shared_preload_libraries
+shared_preload_libraries:
+  - pg_qualstats
+
+# Image tags to publish
+tags:
+  - "{version}-analytics-alpine"   # e.g., 17.5-analytics-alpine
+  - "{major}-analytics-alpine"     # e.g., 17-analytics-alpine

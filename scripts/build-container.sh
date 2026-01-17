@@ -2,12 +2,14 @@
 
 # Container build utility - focused on building containers only
 # Part of make script decomposition for better Single Responsibility
+# Supports multi-variant containers via variants.yaml
 
 # Source shared logging utilities
 # Use BASH_SOURCE[0] instead of $0 to work correctly when sourced
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
+source "$PROJECT_ROOT/helpers/variant-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
@@ -40,10 +42,13 @@ check_multiplatform_support() {
 }
 
 # Build container function
+# Usage: build_container <container> <version> <tag> [flavor]
+# If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
 build_container() {
     local container="$1"
     local version="$2"
     local tag="$3"
+    local flavor="${4:-}"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -96,8 +101,9 @@ build_container() {
     # Prepare build arguments
     local build_args=""
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
+    [[ -n "$flavor" ]] && build_args="$build_args --build-arg FLAVOR=$flavor"
     [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
-    [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
+    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
     
     # Prepare tags
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
@@ -144,6 +150,92 @@ build_container() {
     fi
 }
 
+# Build all variants for a container
+# Usage: build_container_variants <container> <base_version> [specific_variant]
+# If specific_variant is provided, only that variant is built
+# Returns JSON array of built variants for CI consumption
+build_container_variants() {
+    local container="$1"
+    local base_version="$2"
+    local specific_variant="${3:-}"
+    local container_dir="$PROJECT_ROOT/$container"
+
+    # Check if container has variants
+    if ! has_variants "$container_dir"; then
+        log_info "$container has no variants, building single image..."
+        build_container "$container" "$base_version" "$base_version"
+        echo "[{\"name\":\"default\",\"tag\":\"$base_version\",\"flavor\":\"\",\"status\":\"built\"}]"
+        return $?
+    fi
+
+    log_info "$container has variants, building multiple images..."
+
+    local results="["
+    local first=true
+    local failed=false
+
+    # Iterate through variants
+    while IFS= read -r variant_name; do
+        [[ -z "$variant_name" ]] && continue
+
+        # Skip if specific variant requested and this isn't it
+        if [[ -n "$specific_variant" && "$variant_name" != "$specific_variant" ]]; then
+            continue
+        fi
+
+        local variant_tag
+        variant_tag=$(variant_image_tag "$base_version" "$variant_name" "$container_dir")
+        local flavor
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+        local description
+        description=$(variant_property "$container_dir" "$variant_name" "description")
+
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
+
+        # Build the variant
+        local status="built"
+        if ! build_container "$container" "$base_version" "$variant_tag" "$flavor"; then
+            log_error "Failed to build variant: $variant_name"
+            status="failed"
+            failed=true
+        else
+            log_success "Built variant: $variant_name -> $container:$variant_tag"
+        fi
+
+        # Add to results
+        if [[ "$first" != "true" ]]; then
+            results+=","
+        fi
+        first=false
+
+        results+="{\"name\":\"$variant_name\",\"tag\":\"$variant_tag\",\"flavor\":\"$flavor\",\"description\":\"$description\",\"status\":\"$status\"}"
+    done < <(list_variants "$container_dir")
+
+    results+="]"
+    echo "$results"
+
+    if [[ "$failed" == "true" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Check if a container has variants (wrapper for external use)
+container_has_variants() {
+    local container="$1"
+    has_variants "$PROJECT_ROOT/$container"
+}
+
+# Get variant tags for a container (wrapper for external use)
+get_container_variant_tags() {
+    local container="$1"
+    local base_version="$2"
+    list_variant_tags "$PROJECT_ROOT/$container" "$base_version"
+}
+
 # Export functions for use by make script
 export -f check_multiplatform_support
 export -f build_container
+export -f build_container_variants
+export -f container_has_variants
+export -f get_container_variant_tags

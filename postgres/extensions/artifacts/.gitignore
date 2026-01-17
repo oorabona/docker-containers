@@ -1,0 +1,4 @@
+# Compiled extension artifacts are downloaded from GitHub Releases
+# Do not commit them to the repository
+*.tar.gz
+*.zip
