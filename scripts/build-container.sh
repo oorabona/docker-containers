@@ -68,7 +68,8 @@ build_container() {
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         # GitHub Actions: use registry cache (persists across workflows)
         # Registry cache is more reliable than GHA cache for multi-platform builds
-        cache_args="--cache-from type=registry,ref=$cache_image"
+        # mode=max stores all layers, not just final image layers
+        cache_args="--cache-from type=registry,ref=$cache_image --cache-to type=registry,ref=$cache_image,mode=max"
         runtime_info="GitHub Actions (registry cache)"
         log_success "Using registry cache: $cache_image"
     elif docker version 2>/dev/null | grep -q "Docker Engine"; then
