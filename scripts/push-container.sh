@@ -45,8 +45,8 @@ get_build_args() {
     local build_args=""
 
     [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
-    [[ -n "$NPROC" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
-    [[ -n "$CUSTOM_BUILD_ARGS" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
+    [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
 
     echo "$build_args"
 }
