@@ -141,8 +141,11 @@ get_ghcr_sizes() {
 
   # For each platform, fetch manifest and sum layer sizes
   if echo "$manifest" | jq -e '.manifests' >/dev/null 2>&1; then
-    echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.digest)"' 2>/dev/null | \
+    local manifests_data
+    manifests_data=$(echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.digest)"' 2>/dev/null)
+
     while IFS=':' read -r arch digest_prefix digest_hash; do
+      [[ -z "$arch" ]] && continue
       local full_digest="${digest_prefix}:${digest_hash}"
       local platform_manifest
       platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
@@ -153,7 +156,7 @@ get_ghcr_sizes() {
       local total_size
       total_size=$(echo "$platform_manifest" | jq '[.config.size // 0] + [.layers[].size // 0] | add' 2>/dev/null)
       echo "${arch}:${total_size:-0}"
-    done
+    done <<< "$manifests_data"
   else
     # Single manifest
     local total_size
