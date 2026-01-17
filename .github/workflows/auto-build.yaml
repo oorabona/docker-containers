@@ -343,7 +343,9 @@ jobs:
     name: Create Manifest ${{ matrix.build.container }}:${{ matrix.build.tag }}
     needs: [detect-containers, build-and-push]
     if: |
+      always() &&
       needs.build-and-push.result == 'success' &&
+      needs.detect-containers.outputs.builds_count > 0 &&
       github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
