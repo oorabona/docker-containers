@@ -54,8 +54,9 @@ check_container_version() {
     else
         log_warning "No published version found (container not yet released)"
     fi
-    
+
     popd > /dev/null 2>&1
+    return 0  # Explicit success return
 }
 
 # Get version for build process
@@ -117,6 +118,7 @@ get_build_version() {
     
     echo "$versions"
     popd > /dev/null 2>&1
+    return 0  # Explicit success return
 }
 
 # Export functions for use by make script
