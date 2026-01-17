@@ -157,7 +157,7 @@ build_ext_image() {
     docker build \
         -f "$dockerfile" \
         -t "$local_tag" \
-        --build-arg PG_MAJOR="$pg_major" \
+        --build-arg MAJOR_VERSION="$pg_major" \
         --build-arg EXT_VERSION="$ext_version" \
         --build-arg EXT_REPO="$ext_repo" \
         "$context_dir"

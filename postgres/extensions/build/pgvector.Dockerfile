@@ -3,14 +3,14 @@
 #
 # Usage:
 #   docker build -f pgvector.Dockerfile \
-#     --build-arg PG_MAJOR=17 \
+#     --build-arg MAJOR_VERSION=17 \
 #     --build-arg EXT_VERSION=0.8.0 \
 #     -t pgvector-builder .
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG PG_MAJOR=17
-FROM postgres:${PG_MAJOR}-alpine
+ARG MAJOR_VERSION=17
+FROM postgres:${MAJOR_VERSION}-alpine
 
 ARG EXT_VERSION=0.8.0
 ARG EXT_REPO=pgvector/pgvector
@@ -50,7 +50,7 @@ RUN mkdir -p /output/extension /output/lib && \
 # Add metadata
 RUN echo "extension=pgvector" > /output/metadata.txt && \
     echo "version=${EXT_VERSION}" >> /output/metadata.txt && \
-    echo "pg_major=${PG_MAJOR}" >> /output/metadata.txt && \
+    echo "major_version=${MAJOR_VERSION}" >> /output/metadata.txt && \
     echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /output/metadata.txt
 
 # List output for verification

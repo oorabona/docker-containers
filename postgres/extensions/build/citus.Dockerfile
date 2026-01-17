@@ -5,14 +5,14 @@
 #
 # Usage:
 #   docker build -f citus.Dockerfile \
-#     --build-arg PG_MAJOR=17 \
+#     --build-arg MAJOR_VERSION=17 \
 #     --build-arg EXT_VERSION=13.2.0 \
 #     -t citus-builder .
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG PG_MAJOR=17
-FROM postgres:${PG_MAJOR}-alpine
+ARG MAJOR_VERSION=17
+FROM postgres:${MAJOR_VERSION}-alpine
 
 ARG EXT_VERSION=13.2.0
 ARG EXT_REPO=citusdata/citus
@@ -68,7 +68,7 @@ RUN find /install -name "*.so" -exec cp -v {} /output/lib/ \; 2>/dev/null || tru
 # Add metadata
 RUN echo "extension=citus" > /output/metadata.txt && \
     echo "version=${EXT_VERSION}" >> /output/metadata.txt && \
-    echo "pg_major=${PG_MAJOR}" >> /output/metadata.txt && \
+    echo "major_version=${MAJOR_VERSION}" >> /output/metadata.txt && \
     echo "license=AGPL-3.0" >> /output/metadata.txt && \
     echo "shared_preload=true" >> /output/metadata.txt && \
     echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /output/metadata.txt

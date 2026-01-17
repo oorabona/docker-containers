@@ -247,7 +247,20 @@ runs:
           fi
         done
 
+        # Add build priority for layer cache optimization
+        # Priority: 0=base (builds first), 1=standard variants, 2=full (builds last, reuses most layers)
+        builds_json=$(echo "$builds_json" | jq -c '
+          map(. + {
+            priority: (
+              if .flavor == "base" or .flavor == "" then 0
+              elif .flavor == "full" then 2
+              else 1
+              end
+            )
+          }) | sort_by(.priority, .container, .version)
+        ')
+
         echo "builds=$builds_json" >> $GITHUB_OUTPUT
         echo "builds_count=$builds_count" >> $GITHUB_OUTPUT
-        echo "📋 Total builds to perform: $builds_count"
+        echo "📋 Total builds to perform: $builds_count (ordered by priority for layer cache)"
         echo "$builds_json" | jq .

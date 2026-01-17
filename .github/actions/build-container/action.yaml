@@ -203,8 +203,11 @@ runs:
       shell: bash
       run: |
         set -e
-        # Export BUILD_PLATFORM explicitly (composite action env interpolation workaround)
+        # Export environment for smart rebuild detection
         export BUILD_PLATFORM="${{ inputs.platform }}"
+        export SKIP_EXISTING_BUILDS="${{ github.event_name != 'pull_request' && inputs.force_rebuild != 'true' }}"
+        export FORCE_REBUILD="${{ inputs.force_rebuild }}"
+
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
@@ -228,6 +231,7 @@ runs:
         cd "$container"
 
         # Call build_container with all parameters: container version tag flavor dockerfile
+        # Smart skip: will skip if image exists with matching digest (unless FORCE_REBUILD=true)
         if ! build_container "$container" "$current_version" "$current_tag" "$flavor" "$dockerfile"; then
           echo "::error::Build failed for $container:$current_tag"
           exit 1

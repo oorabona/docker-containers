@@ -17,13 +17,13 @@
 # Build extension images first: ./scripts/build-extensions.sh postgres
 
 ARG VERSION=17-alpine
-ARG PG_MAJOR=17
+ARG MAJOR_VERSION=17
 
 # ============================================================================
 # Extension Image References
 # These images contain pre-compiled extensions in /output/
 # Override these ARGs to use different versions or registries
-# PG_MAJOR is used to select the correct extension version
+# MAJOR_VERSION is used to select the correct extension version
 # ============================================================================
 ARG REGISTRY=ghcr.io
 ARG OWNER=oorabona
@@ -36,13 +36,13 @@ ARG PG_QUALSTATS_VERSION=2.1.3
 ARG CITUS_VERSION=13.2.0
 ARG TIMESCALEDB_VERSION=2.24.0
 
-# Extension images (built dynamically from PG_MAJOR and extension version)
-ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg${PG_MAJOR}-${PGVECTOR_VERSION}
-ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg${PG_MAJOR}-${PG_PARTMAN_VERSION}
-ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg${PG_MAJOR}-${HYPOPG_VERSION}
-ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg${PG_MAJOR}-${PG_QUALSTATS_VERSION}
-ARG EXT_CITUS_IMAGE=${REGISTRY}/${OWNER}/ext-citus:pg${PG_MAJOR}-${CITUS_VERSION}
-ARG EXT_TIMESCALEDB_IMAGE=${REGISTRY}/${OWNER}/ext-timescaledb:pg${PG_MAJOR}-${TIMESCALEDB_VERSION}
+# Extension images (built dynamically from MAJOR_VERSION and extension version)
+ARG EXT_PGVECTOR_IMAGE=${REGISTRY}/${OWNER}/ext-pgvector:pg${MAJOR_VERSION}-${PGVECTOR_VERSION}
+ARG EXT_PG_PARTMAN_IMAGE=${REGISTRY}/${OWNER}/ext-pg_partman:pg${MAJOR_VERSION}-${PG_PARTMAN_VERSION}
+ARG EXT_HYPOPG_IMAGE=${REGISTRY}/${OWNER}/ext-hypopg:pg${MAJOR_VERSION}-${HYPOPG_VERSION}
+ARG EXT_PG_QUALSTATS_IMAGE=${REGISTRY}/${OWNER}/ext-pg_qualstats:pg${MAJOR_VERSION}-${PG_QUALSTATS_VERSION}
+ARG EXT_CITUS_IMAGE=${REGISTRY}/${OWNER}/ext-citus:pg${MAJOR_VERSION}-${CITUS_VERSION}
+ARG EXT_TIMESCALEDB_IMAGE=${REGISTRY}/${OWNER}/ext-timescaledb:pg${MAJOR_VERSION}-${TIMESCALEDB_VERSION}
 
 # ============================================================================
 # Extension Stages - Copy from extension images
