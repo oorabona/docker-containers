@@ -103,19 +103,58 @@ get_dockerhub_sizes() {
   echo "$response" | jq -r '.images[]? | "\(.architecture):\(.size)"' 2>/dev/null
 }
 
-# Get manifest sizes for GHCR (requires docker login)
+# Get manifest sizes for GHCR using gh auth token
 get_ghcr_sizes() {
   local image="$1"
+
+  # Extract owner, repo and tag from image string (ghcr.io/owner/repo:tag)
+  local owner repo tag
+  owner=$(echo "$image" | cut -d'/' -f2)
+  repo=$(echo "$image" | cut -d'/' -f3 | cut -d':' -f1)
+  tag=$(echo "$image" | cut -d':' -f2)
+
+  # Get gh token and exchange for GHCR registry token
+  local gh_token
+  gh_token=$(gh auth token 2>/dev/null) || return 1
+
+  local registry_token
+  registry_token=$(curl -s --connect-timeout 5 --max-time 10 \
+    "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/${repo}:pull" \
+    -u "${owner}:${gh_token}" 2>/dev/null | jq -r '.token' 2>/dev/null)
+
+  [[ -z "$registry_token" || "$registry_token" == "null" ]] && return 1
+
+  # Get manifest list
   local manifest
+  manifest=$(curl -s --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer $registry_token" \
+    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+    "https://ghcr.io/v2/${owner}/${repo}/manifests/${tag}" 2>/dev/null)
 
-  # Try to inspect manifest (requires authentication)
-  manifest=$(docker manifest inspect "$image" 2>/dev/null) || return 1
+  [[ -z "$manifest" ]] && return 1
 
+  # Check for errors
+  if echo "$manifest" | jq -e '.errors' >/dev/null 2>&1; then
+    return 1
+  fi
+
+  # For each platform, fetch manifest and sum layer sizes
   if echo "$manifest" | jq -e '.manifests' >/dev/null 2>&1; then
-    # Multi-arch manifest list
-    echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.size // 0)"' 2>/dev/null
+    echo "$manifest" | jq -r '.manifests[] | "\(.platform.architecture):\(.digest)"' 2>/dev/null | \
+    while IFS=':' read -r arch digest_prefix digest_hash; do
+      local full_digest="${digest_prefix}:${digest_hash}"
+      local platform_manifest
+      platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
+        -H "Authorization: Bearer $registry_token" \
+        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+        "https://ghcr.io/v2/${owner}/${repo}/manifests/${full_digest}" 2>/dev/null)
+
+      local total_size
+      total_size=$(echo "$platform_manifest" | jq '[.config.size // 0] + [.layers[].size // 0] | add' 2>/dev/null)
+      echo "${arch}:${total_size:-0}"
+    done
   else
-    # Single manifest - get size from config + layers
+    # Single manifest
     local total_size
     total_size=$(echo "$manifest" | jq '[.config.size // 0] + [.layers[].size // 0] | add' 2>/dev/null)
     echo "amd64:${total_size:-0}"
