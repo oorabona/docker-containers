@@ -30,7 +30,11 @@ OPENSSL_PATCH_VERSION=$(get_openssl_patch_version)
 PCRE_VERSION=$(get_pcre_version)
 LUAROCKS_VERSION=$(get_luarocks_version)
 
+# Strip -alpine suffix from VERSION if present (for openresty source download)
+RESTY_VERSION="${VERSION%-alpine}"
+
 echo "Building OpenResty ${VERSION} with dependencies:"
+echo "  OpenResty Source: ${RESTY_VERSION}"
 echo "  OpenSSL: ${OPENSSL_VERSION}"
 echo "  OpenSSL Patch: ${OPENSSL_PATCH_VERSION}"
 echo "  PCRE: ${PCRE_VERSION}"
@@ -38,7 +42,7 @@ echo "  LuaRocks: ${LUAROCKS_VERSION}"
 
 # Set custom build arguments for make script to use
 CUSTOM_BUILD_ARGS="--build-arg VERSION=${VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_VERSION=${VERSION}"
+CUSTOM_BUILD_ARGS+=" --build-arg RESTY_VERSION=${RESTY_VERSION}"
 CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_BASE=alpine"
 CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_TAG=latest"
 CUSTOM_BUILD_ARGS+=" --build-arg RESTY_OPENSSL_VERSION=${OPENSSL_VERSION}"
