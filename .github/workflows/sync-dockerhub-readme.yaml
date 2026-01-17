@@ -1,0 +1,110 @@
+name: Sync Docker Hub README
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '**/README.md'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Container name to sync (leave empty for all)'
+        required: false
+        type: string
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      containers: ${{ steps.detect.outputs.containers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed READMEs
+        id: detect
+        env:
+          INPUT_CONTAINER: ${{ inputs.container }}
+        run: |
+          if [[ -n "$INPUT_CONTAINER" ]]; then
+            # Manual trigger with specific container - validate it's alphanumeric
+            if [[ "$INPUT_CONTAINER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "containers=[\"$INPUT_CONTAINER\"]" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Invalid container name"
+              exit 1
+            fi
+          else
+            # Auto-detect from changed files
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- '**/README.md' 2>/dev/null || echo "")
+
+            if [[ -z "$CHANGED" ]]; then
+              echo "No README changes detected"
+              echo "containers=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Extract container names from paths like "php/README.md"
+            CONTAINERS=$(echo "$CHANGED" | grep -E '^[^/]+/README\.md$' | cut -d'/' -f1 | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "containers=$CONTAINERS" >> "$GITHUB_OUTPUT"
+            echo "Containers to sync: $CONTAINERS"
+          fi
+
+  sync-readme:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.containers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(needs.detect-changes.outputs.containers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check README exists
+        id: check
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          if [[ -f "$CONTAINER/README.md" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No README.md found for $CONTAINER"
+          fi
+
+      - name: Extract description
+        if: steps.check.outputs.exists == 'true'
+        id: desc
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          # Get first paragraph after title as short description
+          DESC=$(sed -n '/^#/,/^$/p' "$CONTAINER/README.md" | tail -n +2 | head -1 | tr -d '\n')
+          if [[ -z "$DESC" ]]; then
+            DESC="$CONTAINER container"
+          fi
+          # Truncate to 100 chars (Docker Hub limit)
+          DESC="${DESC:0:100}"
+          echo "description=$DESC" >> "$GITHUB_OUTPUT"
+
+      - name: Sync to Docker Hub
+        if: steps.check.outputs.exists == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.container }}
+          short-description: ${{ steps.desc.outputs.description }}
+          readme-filepath: ./${{ matrix.container }}/README.md
+
+      - name: Summary
+        if: steps.check.outputs.exists == 'true'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DESCRIPTION: ${{ steps.desc.outputs.description }}
+        run: |
+          echo "## Docker Hub README Synced" >> $GITHUB_STEP_SUMMARY
+          echo "- Container: **$CONTAINER**" >> $GITHUB_STEP_SUMMARY
+          echo "- Description: $DESCRIPTION" >> $GITHUB_STEP_SUMMARY
