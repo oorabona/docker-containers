@@ -81,13 +81,84 @@ jobs:
           container: ${{ github.event.inputs.container || inputs.container }}
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
 
-  # Build and push PostgreSQL extension images if postgres is in the build list
-  build-extensions:
-    name: Build PostgreSQL Extensions
+  # Cache base images to GHCR to avoid Docker Hub rate limits
+  # These images are pulled once from Docker Hub and cached in GHCR
+  cache-base-images:
+    name: Cache Base Images
     needs: detect-containers
     if: |
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Cache postgres base images
+        run: |
+          source ./helpers/variant-utils.sh
+
+          owner="${{ github.repository_owner }}"
+          cache_repo="ghcr.io/$owner/postgres-base"
+
+          echo "📦 Caching postgres base images to $cache_repo"
+
+          for version in $(list_versions "./postgres"); do
+            source_image="postgres:${version}"
+            cache_image="$cache_repo:${version}"
+
+            echo "🔍 Checking $cache_image..."
+
+            # Check if cache exists and is recent (skip if pushed within last 24h)
+            cache_exists=false
+            if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
+              echo "  ✓ Cache exists for $version"
+              cache_exists=true
+            fi
+
+            if [[ "$cache_exists" == "false" ]] || [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+              echo "  → Pulling $source_image from Docker Hub..."
+              docker pull "$source_image"
+
+              echo "  → Tagging as $cache_image..."
+              docker tag "$source_image" "$cache_image"
+
+              echo "  → Pushing to GHCR..."
+              docker push "$cache_image"
+
+              echo "  ✅ Cached $version"
+            else
+              echo "  ⏭️ Using existing cache for $version"
+            fi
+          done
+
+          echo "✅ Base image caching complete"
+
+  # Build and push PostgreSQL extension images if postgres is in the build list
+  build-extensions:
+    name: Build PostgreSQL Extensions
+    needs: [detect-containers, cache-base-images]
+    if: |
+      always() &&
+      needs.detect-containers.outputs.count > 0 &&
+      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -180,10 +251,11 @@ jobs:
 
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
-    needs: [detect-containers, build-extensions]
+    needs: [detect-containers, cache-base-images, build-extensions]
     if: |
       always() &&
       needs.detect-containers.outputs.builds_count > 0 &&
+      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped') &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped')
     runs-on: ${{ matrix.runner }}
     strategy:

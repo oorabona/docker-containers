@@ -2,7 +2,7 @@ name: Upstream Version Monitor
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'  # 6 AM and 6 PM UTC
+    - cron: '0 6 * * *'  # 6 AM UTC daily
   workflow_dispatch:
     inputs:
       container:
