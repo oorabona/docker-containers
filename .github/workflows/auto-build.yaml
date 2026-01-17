@@ -526,7 +526,7 @@ jobs:
       always() &&
       needs.build-and-push.result == 'success' &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml
     with:
