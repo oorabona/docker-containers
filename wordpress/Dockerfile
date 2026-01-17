@@ -13,9 +13,10 @@ RUN set -ex; \
         mariadb-client \
         bash \
     ; \
-    # Create wordpress user with sudo access
+    # Create wordpress user with limited sudo access (wp-cli only)
     adduser -D -s /bin/bash wordpress; \
-    echo "wordpress ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+    echo "wordpress ALL=(ALL) NOPASSWD: /usr/local/bin/wp" > /etc/sudoers.d/wordpress; \
+    chmod 440 /etc/sudoers.d/wordpress
 
 # WordPress-specific opcache settings (override defaults if needed)
 RUN { \

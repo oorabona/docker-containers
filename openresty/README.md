@@ -115,7 +115,78 @@ This container tracks OpenResty releases:
 
 ## Security
 
+### Base Security
 - Regular security updates through automated rebuilds
 - Minimal attack surface with Alpine base
 - Lua sandbox for safe code execution
 - Built-in request filtering capabilities
+
+### Process Security
+- **nginx user**: Worker processes run as non-root `nginx` user (uid 101)
+- **Master/Worker model**: Only master process runs as root (required for ports 80/443)
+- **No shell access**: nginx user has `/sbin/nologin` shell
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run -d \
+  --name openresty \
+  --read-only \
+  --tmpfs /var/run/openresty \
+  --tmpfs /var/cache/nginx \
+  --tmpfs /tmp \
+  --cap-drop ALL \
+  --cap-add NET_BIND_SERVICE \
+  --security-opt no-new-privileges:true \
+  -p 80:80 \
+  -p 443:443 \
+  openresty
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    read_only: true
+    tmpfs:
+      - /var/run/openresty
+      - /var/cache/nginx
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+```
+
+### Non-Privileged Port Alternative
+
+For maximum security (no root at all), use high ports:
+
+```yaml
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    user: "101:101"  # nginx:nginx
+    read_only: true
+    tmpfs:
+      - /var/run/openresty
+      - /var/cache/nginx
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+```
+
+Note: Requires nginx configuration to listen on 8080/8443 instead of 80/443.

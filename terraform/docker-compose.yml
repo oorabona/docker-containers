@@ -1,15 +1,32 @@
-version: "3"
 services:
   terraform:
     container_name: terraform
-    image: oorabona/terraform:${TAG:-latest}
+    image: ${DOCKER_REGISTRY:-}terraform:${TAG:-latest}
     build:
       context: .
       args:
         VERSION: ${VERSION:-latest}
+    # Run as terraform user
+    user: "1000:1000"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /.terraform.d
+      - /.config
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
-      AWS_ACCESS_KEY_ID: aws_access_key
-      AWS_SECRET_ACCESS_KEY: aws_secret_key
-      AWS_DEFAULT_REGION: aws_region
+      # Pass credentials from environment, never hardcode
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_DEFAULT_REGION
+      - AZURE_SUBSCRIPTION_ID
+      - AZURE_TENANT_ID
+      - AZURE_CLIENT_ID
+      - AZURE_CLIENT_SECRET
+      - GOOGLE_APPLICATION_CREDENTIALS
     volumes:
       - .:/data

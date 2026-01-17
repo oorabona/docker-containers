@@ -118,6 +118,53 @@ Although subject to various opinions, decision has been made from the very begin
 Last but not least, this container builds `Ansible` for use with `Python 3.x`.
 No backward compatibility work will be done. Deal with that, _Python 2.x is dead_ :wink:
 
+## Security
+
+### Base Security
+- **Non-root by default**: Runs as `ansible` user
+- **Multi-stage build**: Build dependencies removed from final image
+- **Ubuntu-based**: Regular security updates
+
+### Runtime Hardening (Recommended)
+
+```bash
+# Secure runtime configuration
+docker run --rm \
+  --read-only \
+  --tmpfs /tmp \
+  --tmpfs /run \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -v ./playbooks:/playbooks:ro \
+  -v ~/.ssh:/home/ansible/.ssh:ro \
+  oorabona/ansible ansible-playbook /playbooks/site.yml
+```
+
+### Docker Compose Security Template
+
+```yaml
+services:
+  ansible:
+    image: ghcr.io/oorabona/ansible:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./playbooks:/playbooks:ro
+      - ./inventory:/inventory:ro
+      - ~/.ssh:/home/ansible/.ssh:ro
+```
+
+### SSH Key Security
+- Mount SSH keys as read-only (`:ro`)
+- Use SSH agent forwarding when possible
+- Never store SSH private keys in images
+
 ## Last words
 
 Feel free to contribute, open issues or submit PR, they are all welcome ! :beer:

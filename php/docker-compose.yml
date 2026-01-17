@@ -1,11 +1,25 @@
-version: "3"
 services:
   php:
     container_name: php
-    image: oorabona/php:${TAG}
+    image: ${DOCKER_REGISTRY:-}php:${TAG:-latest}
     build:
       context: .
       network: host
       args:
-        VERSION: ${VERSION}
-        NPROC: ${NPROC}
+        VERSION: ${VERSION:-latest}
+        NPROC: ${NPROC:-1}
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./src:/app:ro
+      - composer-cache:/home/nobody/.composer/cache
+
+volumes:
+  composer-cache:
