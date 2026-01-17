@@ -120,21 +120,27 @@ jobs:
           owner="${{ github.repository_owner }}"
           cache_repo="ghcr.io/$owner/postgres-base"
 
-          echo "📦 Caching postgres base images to $cache_repo"
+          # Get base suffix from variants.yaml (e.g., "-alpine")
+          base_suffix=$(base_suffix "./postgres")
+          [[ -z "$base_suffix" ]] && base_suffix="-alpine"
+
+          echo "📦 Caching postgres base images to $cache_repo (suffix: $base_suffix)"
 
           failed=0
           succeeded=0
 
-          for version in $(list_versions "./postgres"); do
-            source_image="docker.io/library/postgres:${version}"
-            cache_image="$cache_repo:${version}"
+          for major_version in $(list_versions "./postgres"); do
+            # Full tag: 17-alpine (major version + base suffix)
+            full_tag="${major_version}${base_suffix}"
+            source_image="docker.io/library/postgres:${full_tag}"
+            cache_image="$cache_repo:${full_tag}"
 
             echo "🔍 Checking $cache_image..."
 
             # Check if cache exists (skip if already present)
             cache_exists=false
             if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
-              echo "  ✓ Cache exists for $version"
+              echo "  ✓ Cache exists for $full_tag"
               cache_exists=true
               ((succeeded++)) || true
               continue
@@ -147,10 +153,10 @@ jobs:
               if docker buildx imagetools create \
                 --tag "$cache_image" \
                 "$source_image" 2>&1; then
-                echo "  ✅ Cached $version (all platforms)"
+                echo "  ✅ Cached $full_tag (all platforms)"
                 ((succeeded++)) || true
               else
-                echo "  ⚠️ Failed to cache $version (rate limit?)"
+                echo "  ⚠️ Failed to cache $full_tag (rate limit?)"
                 ((failed++)) || true
               fi
             fi
