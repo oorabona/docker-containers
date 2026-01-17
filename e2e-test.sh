@@ -4,19 +4,24 @@
 # Builds and validates all containers using existing build system + custom tests
 #
 # Usage:
-#   ./e2e-test.sh              # Test all containers
-#   ./e2e-test.sh postgres     # Test specific container
-#   ./e2e-test.sh --no-build   # Skip build, use existing images
+#   ./e2e-test.sh                          # Test all containers (non-variant only)
+#   ./e2e-test.sh postgres:16              # Test all variants for postgres v16
+#   ./e2e-test.sh postgres:16-full-alpine  # Test specific variant
+#   ./e2e-test.sh --no-build               # Skip build, use existing images
+#
+# For containers with variants, version is required (e.g., postgres:16)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers/logging.sh"
+source "$SCRIPT_DIR/helpers/variant-utils.sh"
 
 BUILD=true
 CONTAINERS=""
 FAILED=()
 PASSED=()
+GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-oorabona}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -55,33 +60,44 @@ echo "🧪 E2E Container Tests"
 echo "======================"
 echo ""
 
-# Test a single container
+# Test a single container (or variant)
+# Usage: test_container <container> [image_tag]
 test_container() {
     local container="$1"
+    local image_tag="${2:-}"
     local container_name="e2e-$container"
     local test_script="$SCRIPT_DIR/$container/test.sh"
-    local image_name="${GITHUB_REPOSITORY_OWNER:-local}/$container:latest"
 
-    log_step "Testing $container..."
+    # Build test name for display
+    local test_name="$container"
+    [[ -n "$image_tag" ]] && test_name="$container:$image_tag"
 
-    # Build if requested
-    if [ "$BUILD" = true ]; then
+    log_step "Testing $test_name..."
+
+    # Build if requested (only for non-variant tests or when no tag specified)
+    if [ "$BUILD" = true ] && [ -z "$image_tag" ]; then
         log_info "Building $container..."
-        if ! ./make build "$container" latest 2>&1 | tail -5; then
+        if ! ./make build "$container" 2>&1 | tail -5; then
             log_error "Build failed for $container"
             return 1
         fi
     fi
 
-    # Determine image name (find the most recently built image for this container)
+    # Determine image name
     local image
-    image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=*/$container:*" | head -1) || true
-    if [ -z "$image" ]; then
-        # Fallback: try local name
-        image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$container:*" | head -1) || true
+    if [ -n "$image_tag" ]; then
+        # Use specific tag provided
+        image="docker.io/$GITHUB_REPOSITORY_OWNER/$container:$image_tag"
+    else
+        # Find the most recently built image for this container
+        image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=*/$container:*" | head -1) || true
+        if [ -z "$image" ]; then
+            # Fallback: try local name
+            image=$(docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=$container:*" | head -1) || true
+        fi
     fi
     if [ -z "$image" ]; then
-        log_error "No image found for $container"
+        log_error "No image found for $test_name"
         return 1
     fi
     log_info "Using image: $image"
@@ -187,12 +203,82 @@ test_container() {
 }
 
 # Run tests
-for container in $CONTAINERS; do
-    echo ""
-    if test_container "$container"; then
-        PASSED+=("$container")
+for arg in $CONTAINERS; do
+    # Check if argument contains a tag (container:tag format)
+    if [[ "$arg" == *":"* ]]; then
+        container="${arg%%:*}"
+        tag_part="${arg#*:}"
+        container_dir="$SCRIPT_DIR/$container"
+
+        # Determine if tag_part is a version (e.g., "16") or a full tag (e.g., "16-full-alpine")
+        if [[ "$tag_part" =~ ^[0-9]+$ ]]; then
+            # It's a version number - test all variants for this version
+            local_version="$tag_part"
+
+            if has_variants "$container_dir"; then
+                log_info "$container:$local_version - testing all variants..."
+
+                # Build all variants if requested
+                if [ "$BUILD" = true ]; then
+                    log_info "Building all variants for $container v$local_version..."
+                    if ! ./make build "$container" "$local_version" 2>&1 | tail -10; then
+                        log_error "Build failed for $container v$local_version"
+                        FAILED+=("$container:$local_version")
+                        continue
+                    fi
+                fi
+
+                # Test each variant
+                while IFS= read -r variant_name; do
+                    [[ -z "$variant_name" ]] && continue
+
+                    variant_tag=$(variant_image_tag "$local_version" "$variant_name" "$container_dir")
+                    echo ""
+
+                    if test_container "$container" "$variant_tag"; then
+                        PASSED+=("$container:$variant_tag")
+                    else
+                        FAILED+=("$container:$variant_tag")
+                    fi
+                done < <(list_variants "$container_dir" "$local_version")
+            else
+                # No variants - test single image with this version
+                echo ""
+                if test_container "$container" "$local_version"; then
+                    PASSED+=("$container:$local_version")
+                else
+                    FAILED+=("$container:$local_version")
+                fi
+            fi
+        else
+            # It's a full tag - test specific variant
+            echo ""
+            log_info "Testing specific variant: $container:$tag_part"
+
+            if test_container "$container" "$tag_part"; then
+                PASSED+=("$container:$tag_part")
+            else
+                FAILED+=("$container:$tag_part")
+            fi
+        fi
     else
-        FAILED+=("$container")
+        container="$arg"
+        container_dir="$SCRIPT_DIR/$container"
+
+        # Check if container has variants
+        if has_variants "$container_dir"; then
+            log_error "$container has variants - please specify version (e.g., $container:16)"
+            FAILED+=("$container")
+            continue
+        else
+            # No variants - test single image
+            echo ""
+            if test_container "$container"; then
+                PASSED+=("$container")
+            else
+                FAILED+=("$container")
+            fi
+        fi
     fi
 done
 
