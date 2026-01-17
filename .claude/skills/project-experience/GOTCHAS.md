@@ -79,4 +79,74 @@ curl -H "Authorization: token $GITHUB_TOKEN" ...
 
 ---
 
+### Secrets cannot be used in GitHub Actions if conditions (2026-01)
+
+**Symptom:** Workflow fails with "workflow file issue" and 0s runtime
+
+**Cause:** GitHub Actions doesn't allow `secrets` context in `if` conditions
+```yaml
+# WRONG - will cause parsing error
+if: ${{ secrets.SOME_SECRET != '' }}
+```
+
+**Fix:**
+```yaml
+# CORRECT - use continue-on-error instead
+- name: Optional step
+  uses: some-action@v1
+  with:
+    secret: ${{ secrets.SOME_SECRET }}
+  continue-on-error: true  # Will fail gracefully if secret missing
+```
+
+**Prevention:** Never use `secrets.*` in `if:` conditions. Use `continue-on-error` or environment variables for conditional logic.
+
+---
+
+### Docker Hub rate limits (2026-01)
+
+**Symptom:** Build fails with "429 Too Many Requests" or "toomanyrequests"
+
+**Cause:** Docker Hub limits pulls: 100/6h anonymous, 200/6h authenticated
+
+**Fix:**
+```yaml
+# Cache base images to GHCR with multi-arch support
+# Use buildx imagetools to preserve all platform manifests
+docker buildx imagetools create \
+  --tag ghcr.io/owner/postgres-base:17-alpine \
+  docker.io/library/postgres:17-alpine
+
+# Use cached images in Dockerfile
+ARG BASE_IMAGE=ghcr.io/owner/postgres-base
+FROM ${BASE_IMAGE}:${VERSION}
+```
+
+**Prevention:** Always cache frequently-pulled images to GHCR. Use `--build-arg BASE_IMAGE=postgres` for local builds.
+
+---
+
+### Multi-arch image copy requires buildx imagetools (2026-01)
+
+**Symptom:** `exec format error` when running arm64 builds after caching images
+
+**Cause:** `docker pull` + `docker tag` + `docker push` only copies single-platform image
+
+**Fix:**
+```bash
+# WRONG - only copies current platform (usually amd64)
+docker pull postgres:17-alpine
+docker tag postgres:17-alpine ghcr.io/owner/postgres-base:17-alpine
+docker push ghcr.io/owner/postgres-base:17-alpine
+
+# CORRECT - copies full multi-arch manifest
+docker buildx imagetools create \
+  --tag ghcr.io/owner/postgres-base:17-alpine \
+  docker.io/library/postgres:17-alpine
+```
+
+**Prevention:** Always use `docker buildx imagetools create` to copy images between registries when multi-arch support is needed.
+
+---
+
 _Add new gotchas below as they are discovered._
