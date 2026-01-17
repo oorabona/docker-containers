@@ -3,8 +3,10 @@ ARG OS_VERSION=latest
 FROM ubuntu:${OS_VERSION} as builder
 
 ARG VERSION=latest
+ARG UPSTREAM_VERSION=""
 ENV VIRTUAL_ENV=/opt/ansible-venv
 
+# Use UPSTREAM_VERSION for pip install if provided (raw version without suffix), fallback to VERSION
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv build-essential \
@@ -13,7 +15,8 @@ RUN apt-get update -y \
     && . $VIRTUAL_ENV/bin/activate \
     && pip install --upgrade pip setuptools wheel \
     && SODIUM_INSTALL=system pip install pynacl \
-    && pip install pyasn1 paramiko cffi cryptography pycrypto ansible==${VERSION}
+    && INSTALL_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
+    && pip install pyasn1 paramiko cffi cryptography pycrypto ansible==${INSTALL_VERSION}
 
 # Runtime stage
 ARG OS_VERSION=latest

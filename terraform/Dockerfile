@@ -1,5 +1,6 @@
 # Multi-stage Dockerfile for modern Terraform with security and DevOps tools
 ARG VERSION=latest
+ARG UPSTREAM_VERSION=""
 
 # Build arguments for tool versions
 ARG TFLINT_VERSION
@@ -12,7 +13,8 @@ ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
 # Stage 1: Get Terraform binary
-FROM hashicorp/terraform:${VERSION} AS terraform
+# Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION
+FROM hashicorp/terraform:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
 # Stage 2: Security tools
 FROM alpine:latest AS security-tools
