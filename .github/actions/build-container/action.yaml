@@ -255,10 +255,24 @@ runs:
           build_version="$base_tag"
 
           cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
-          # Use buildx imagetools inspect - more reliable than manifest inspect for multi-platform images
-          # Also logs the result for debugging
+          # Check if cached base image exists using crane (more reliable with auth)
+          # Fallback to docker pull if crane not available
           echo "Checking for cached base image: $cache_image"
-          if docker buildx imagetools inspect "$cache_image" >/dev/null 2>&1; then
+          cache_exists=false
+
+          # Try crane first (pre-installed on GitHub runners, handles auth well)
+          if command -v crane &>/dev/null; then
+            if crane manifest "$cache_image" &>/dev/null; then
+              cache_exists=true
+            fi
+          else
+            # Fallback: try docker pull (respects login credentials)
+            if docker pull --quiet "$cache_image" &>/dev/null; then
+              cache_exists=true
+            fi
+          fi
+
+          if [[ "$cache_exists" == "true" ]]; then
             echo "✅ Using cached base image: $cache_image (for all variants)"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
