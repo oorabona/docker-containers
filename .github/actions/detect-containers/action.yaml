@@ -79,8 +79,18 @@ runs:
             # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
             changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null) || { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
           else
-            # For manual triggers or other events, no auto-detection
-            changed_files=""
+            # For manual triggers (workflow_dispatch)
+            # If force_rebuild is true, build ALL containers
+            if [[ "${{ inputs.force_rebuild }}" == "true" ]]; then
+              echo "🔄 Force rebuild requested - building all containers"
+              while IFS= read -r container; do
+                [[ -n "$container" ]] && containers_to_build+=("$container")
+              done <<< "$valid_containers"
+              changed_files=""  # Skip file-based detection
+            else
+              changed_files=""
+              echo "ℹ️  Manual trigger without force_rebuild - specify a container or use force_rebuild=true"
+            fi
           fi
 
           if [[ -n "$changed_files" ]]; then
