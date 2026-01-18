@@ -247,6 +247,11 @@ RUN case "${FLAVOR}" in \
 # Configure shared_preload_libraries based on actually installed extensions
 # Detects which extensions need preloading by checking for their .so files
 # Order matters: citus must be first, then timescaledb, then others
+#
+# IMPORTANT: We modify postgresql.conf.sample so that initdb creates a config
+# with shared_preload_libraries already set. This is required because the
+# temporary postgres server during initdb must have these libraries loaded
+# BEFORE the init scripts try to CREATE EXTENSION.
 RUN PRELOAD=""; \
     # Citus must be loaded first if present
     if [ -f /usr/local/lib/postgresql/citus.so ]; then \
@@ -262,16 +267,16 @@ RUN PRELOAD=""; \
     if [ -f /usr/local/lib/postgresql/pg_qualstats.so ]; then \
         PRELOAD="${PRELOAD:+$PRELOAD,}pg_qualstats"; \
     fi; \
-    echo "$PRELOAD" > /etc/postgresql-preload.conf && \
+    # Save for reference
+    echo "$PRELOAD" > /etc/postgresql-preload.conf; \
+    # Modify postgresql.conf.sample so initdb creates config with preload libraries
+    # This ensures the temporary server during initdb has the libraries loaded
+    if [ -n "$PRELOAD" ]; then \
+        echo "" >> /usr/local/share/postgresql/postgresql.conf.sample; \
+        echo "# Preloaded extensions (configured at build time)" >> /usr/local/share/postgresql/postgresql.conf.sample; \
+        echo "shared_preload_libraries = '$PRELOAD'" >> /usr/local/share/postgresql/postgresql.conf.sample; \
+    fi; \
     echo "Configured shared_preload_libraries: $PRELOAD"
-
-# Create startup script that configures shared_preload_libraries
-RUN printf '%s\n' \
-    '#!/bin/sh' \
-    'PRELOAD=$(cat /etc/postgresql-preload.conf)' \
-    'exec docker-entrypoint.sh postgres -c shared_preload_libraries="$PRELOAD" "$@"' \
-    > /usr/local/bin/docker-entrypoint-wrapper.sh && \
-    chmod +x /usr/local/bin/docker-entrypoint-wrapper.sh
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
@@ -280,6 +285,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # Expose standard PostgreSQL port
 EXPOSE 5432
 
-# Use wrapper script that sets shared_preload_libraries
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint-wrapper.sh"]
-CMD []
+# Use the default postgres entrypoint - shared_preload_libraries is already
+# configured in postgresql.conf.sample so it's applied during initdb
