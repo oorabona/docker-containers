@@ -235,12 +235,28 @@ runs:
 
         # For postgres builds: use GHCR cached base images if available
         # This avoids Docker Hub rate limits (200 pulls/6h)
-        # Note: cache_image uses current_tag (e.g., 17-alpine) not current_version (e.g., 17)
+        # Cache is keyed by base tag (e.g., 17-alpine), not variant tag (e.g., 17-vector-alpine)
+        # All variants share the same base image, so we derive base_tag from version + base_suffix
+        #
+        # IMPORTANT: build_version is used for --build-arg VERSION in Dockerfile
+        # - For postgres: must be base_tag (e.g., "17-alpine") for FROM postgres:VERSION
+        # - For other containers: use current_version as-is
+        build_version="$current_version"
+
         if [[ "$container" == "postgres" ]]; then
           owner="${{ github.repository_owner }}"
-          cache_image="ghcr.io/$owner/postgres-base:${current_tag}"
+
+          # Derive base tag: version (e.g., "17") + base_suffix (e.g., "-alpine") = "17-alpine"
+          base_sfx=$(base_suffix "./$container")
+          [[ -z "$base_sfx" ]] && base_sfx="-alpine"
+          base_tag="${current_version}${base_sfx}"
+
+          # Use base_tag as VERSION arg for Dockerfile (FROM ${BASE_IMAGE}:${VERSION})
+          build_version="$base_tag"
+
+          cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
           if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
-            echo "Using cached base image: $cache_image"
+            echo "Using cached base image: $cache_image (for all variants)"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
             echo "Cache not available for $cache_image, using Docker Hub directly"
@@ -251,7 +267,8 @@ runs:
 
         # Call build_container with all parameters: container version tag flavor dockerfile
         # Smart skip: will skip if image exists with matching digest (unless FORCE_REBUILD=true)
-        if ! build_container "$container" "$current_version" "$current_tag" "$flavor" "$dockerfile"; then
+        # Note: build_version is base_tag for postgres (e.g., "17-alpine"), current_version otherwise
+        if ! build_container "$container" "$build_version" "$current_tag" "$flavor" "$dockerfile"; then
           echo "::error::Build failed for $container:$current_tag"
           exit 1
         fi
