@@ -239,3 +239,106 @@ jobs:
           echo "   Labels: automation, ${{ matrix.container }}, ${{ steps.classify.outputs.change_type }}-update"
           echo "   Assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '(none - minor update)' }}"
           echo "   Auto-merge: ${{ steps.classify.outputs.change_type == 'minor' && 'Yes (minor update)' || 'No (major update - requires manual review)' }}"
+
+  # Keep postgres base images cached on GHCR to avoid Docker Hub rate limits
+  # This runs in parallel with version checks and updates cache if images changed
+  update-base-image-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Update postgres base image cache
+        shell: bash
+        run: |
+          set -e
+          source ./helpers/variant-utils.sh
+
+          owner="${{ github.repository_owner }}"
+          cache_repo="ghcr.io/$owner/postgres-base"
+
+          # Get base suffix from variants.yaml (e.g., "-alpine")
+          base_suffix=$(base_suffix "./postgres")
+          [[ -z "$base_suffix" ]] && base_suffix="-alpine"
+
+          echo "📦 Checking postgres base image cache (suffix: $base_suffix)"
+
+          updated=0
+          skipped=0
+          failed=0
+
+          for major_version in $(list_versions "./postgres"); do
+            full_tag="${major_version}${base_suffix}"
+            source_image="docker.io/library/postgres:${full_tag}"
+            cache_image="$cache_repo:${full_tag}"
+
+            echo ""
+            echo "🔍 Checking $full_tag..."
+
+            # Get source digest from Docker Hub
+            source_digest=$(docker buildx imagetools inspect "$source_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
+
+            if [[ -z "$source_digest" ]]; then
+              echo "  ⚠️ Could not get digest from Docker Hub (rate limit?)"
+              ((failed++))
+              continue
+            fi
+
+            # Get cache digest from GHCR (if exists)
+            cache_digest=$(docker buildx imagetools inspect "$cache_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
+
+            if [[ "$source_digest" == "$cache_digest" ]]; then
+              echo "  ✓ Cache up-to-date (digest: ${source_digest:0:20}...)"
+              ((skipped++))
+              continue
+            fi
+
+            # Cache is missing or outdated - update it
+            if [[ -z "$cache_digest" ]]; then
+              echo "  → Cache missing, creating..."
+            else
+              echo "  → Cache outdated, updating..."
+              echo "    Source: ${source_digest:0:20}..."
+              echo "    Cache:  ${cache_digest:0:20}..."
+            fi
+
+            # Copy multi-arch image to GHCR
+            if docker buildx imagetools create \
+              --tag "$cache_image" \
+              "$source_image" 2>&1; then
+              echo "  ✅ Cached $full_tag (all platforms)"
+              ((updated++))
+            else
+              echo "  ⚠️ Failed to cache $full_tag"
+              ((failed++))
+            fi
+          done
+
+          echo ""
+          echo "📊 Cache update summary: $updated updated, $skipped up-to-date, $failed failed"
+
+          if [[ $failed -gt 0 ]]; then
+            echo "::warning::Some images couldn't be cached (Docker Hub rate limit?)"
+          fi
+
+          if [[ $updated -gt 0 ]]; then
+            echo "::notice::Updated $updated base image(s) in GHCR cache"
+          fi
