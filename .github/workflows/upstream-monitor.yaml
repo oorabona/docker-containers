@@ -268,8 +268,8 @@ jobs:
 
       - name: Update postgres base image cache
         shell: bash
+        continue-on-error: true  # Don't fail workflow if cache update fails
         run: |
-          set -e
           source ./helpers/variant-utils.sh
 
           owner="${{ github.repository_owner }}"
