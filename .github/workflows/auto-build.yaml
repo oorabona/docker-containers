@@ -113,7 +113,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Cache postgres base images
-        continue-on-error: true  # Don't block builds if caching fails (e.g., rate limits)
+        # Cache is required to avoid Docker Hub rate limits
+        # If this fails, builds will fail with 429 errors
         run: |
           source ./helpers/variant-utils.sh
 
