@@ -255,24 +255,11 @@ runs:
           build_version="$base_tag"
 
           cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
-          # Check if cached base image exists using crane (more reliable with auth)
-          # Fallback to docker pull if crane not available
+          # Check if cached base image exists by pulling it
+          # This respects the GHCR login credentials set up earlier
           echo "Checking for cached base image: $cache_image"
-          cache_exists=false
 
-          # Try crane first (pre-installed on GitHub runners, handles auth well)
-          if command -v crane &>/dev/null; then
-            if crane manifest "$cache_image" &>/dev/null; then
-              cache_exists=true
-            fi
-          else
-            # Fallback: try docker pull (respects login credentials)
-            if docker pull --quiet "$cache_image" &>/dev/null; then
-              cache_exists=true
-            fi
-          fi
-
-          if [[ "$cache_exists" == "true" ]]; then
+          if docker pull --quiet "$cache_image" &>/dev/null; then
             echo "✅ Using cached base image: $cache_image (for all variants)"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
