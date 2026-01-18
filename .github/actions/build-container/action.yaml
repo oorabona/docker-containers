@@ -167,12 +167,17 @@ runs:
           needs_build=true
         fi
 
+        # Extract platform suffix from platform input (e.g., linux/amd64 -> amd64)
+        platform="${{ inputs.platform }}"
+        platform_suffix="${platform##*/}"
+
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
         echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
         echo "flavor=$flavor" >> $GITHUB_OUTPUT
         echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
+        echo "platform_suffix=$platform_suffix" >> $GITHUB_OUTPUT
 
     - name: Run container prebuild (if exists)
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
@@ -319,7 +324,7 @@ runs:
         fi
 
     # GHCR Push - PRIMARY REGISTRY (required)
-    # Push the already-built image (no rebuild needed)
+    # Push the already-built image with platform suffix for multi-arch manifest creation
     - name: Push to GHCR (primary)
       if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' }}
       id: push-ghcr
@@ -328,24 +333,32 @@ runs:
         set -e
         image_name="${{ steps.check-build.outputs.image_name }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
-        ghcr_image="ghcr.io/$image_name:$current_tag"
+        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
 
-        echo "::notice::Pushing pre-built image: $ghcr_image"
+        # Source image (built without platform suffix)
+        ghcr_image="ghcr.io/$image_name:$current_tag"
+        # Target image with platform suffix for multi-arch manifest
+        ghcr_image_platform="ghcr.io/$image_name:$current_tag-$platform_suffix"
+
+        echo "::notice::Pushing pre-built image: $ghcr_image_platform"
         echo "::group::Pushing to GHCR (primary registry)"
 
-        if docker push "$ghcr_image"; then
+        # Tag with platform suffix
+        docker tag "$ghcr_image" "$ghcr_image_platform"
+
+        if docker push "$ghcr_image_platform"; then
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "::notice::GHCR push successful for $ghcr_image"
+          echo "::notice::GHCR push successful for $ghcr_image_platform"
         else
           echo "success=false" >> $GITHUB_OUTPUT
-          echo "::error::GHCR push failed for $ghcr_image"
+          echo "::error::GHCR push failed for $ghcr_image_platform"
           exit 1
         fi
 
         echo "::endgroup::"
 
     # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
-    # Tag and push the already-built image (no rebuild needed)
+    # Tag and push the already-built image with platform suffix
     - name: Push to Docker Hub (secondary)
       if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
       id: push-dockerhub
@@ -353,12 +366,14 @@ runs:
       run: |
         image_name="${{ steps.check-build.outputs.image_name }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
+        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+
         ghcr_image="ghcr.io/$image_name:$current_tag"
-        dockerhub_image="docker.io/$image_name:$current_tag"
+        dockerhub_image="docker.io/$image_name:$current_tag-$platform_suffix"
 
         echo "::group::Pushing to Docker Hub (secondary registry)"
 
-        # Tag the GHCR image for Docker Hub
+        # Tag the GHCR image for Docker Hub with platform suffix
         docker tag "$ghcr_image" "$dockerhub_image"
 
         if docker push "$dockerhub_image"; then
