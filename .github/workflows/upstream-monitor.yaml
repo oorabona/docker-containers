@@ -268,7 +268,7 @@ jobs:
 
       - name: Update postgres base image cache
         shell: bash
-        continue-on-error: true  # Don't fail workflow if cache update fails
+        # Cache is required to avoid Docker Hub rate limits on build workflows
         run: |
           source ./helpers/variant-utils.sh
 
