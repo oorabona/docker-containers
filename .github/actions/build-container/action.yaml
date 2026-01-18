@@ -255,11 +255,15 @@ runs:
           build_version="$base_tag"
 
           cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
-          if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
-            echo "Using cached base image: $cache_image (for all variants)"
+          # Use buildx imagetools inspect - more reliable than manifest inspect for multi-platform images
+          # Also logs the result for debugging
+          echo "Checking for cached base image: $cache_image"
+          if docker buildx imagetools inspect "$cache_image" >/dev/null 2>&1; then
+            echo "✅ Using cached base image: $cache_image (for all variants)"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
-            echo "Cache not available for $cache_image, using Docker Hub directly"
+            echo "⚠️ Cache not available for $cache_image, using Docker Hub directly"
+            echo "   (Run 'Cache Base Images' job to populate cache)"
           fi
         fi
 
