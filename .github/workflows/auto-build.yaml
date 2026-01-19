@@ -70,7 +70,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install yq for variant detection
-        uses: mikefarah/yq@v4.45.1
+        uses: mikefarah/yq@v4.50.1
         with:
           cmd: yq --version
 
