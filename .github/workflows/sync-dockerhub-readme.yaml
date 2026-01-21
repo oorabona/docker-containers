@@ -18,7 +18,7 @@ jobs:
     outputs:
       containers: ${{ steps.detect.outputs.containers }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
@@ -60,7 +60,7 @@ jobs:
       matrix:
         container: ${{ fromJson(needs.detect-changes.outputs.containers) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check README exists
         id: check
