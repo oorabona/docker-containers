@@ -298,7 +298,7 @@ jobs:
 
             if [[ -z "$source_digest" ]]; then
               echo "  ⚠️ Could not get digest from Docker Hub (rate limit?)"
-              ((failed++))
+              failed=$((failed + 1))
               continue
             fi
 
@@ -307,7 +307,7 @@ jobs:
 
             if [[ "$source_digest" == "$cache_digest" ]]; then
               echo "  ✓ Cache up-to-date (digest: ${source_digest:0:20}...)"
-              ((skipped++))
+              skipped=$((skipped + 1))
               continue
             fi
 
@@ -325,10 +325,10 @@ jobs:
               --tag "$cache_image" \
               "$source_image" 2>&1; then
               echo "  ✅ Cached $full_tag (all platforms)"
-              ((updated++))
+              updated=$((updated + 1))
             else
               echo "  ⚠️ Failed to cache $full_tag"
-              ((failed++))
+              failed=$((failed + 1))
             fi
           done
 
