@@ -994,7 +994,69 @@
       text-decoration: underline;
     }
 
-    /* Responsive */
+    /* Skip link for accessibility */
+    .skip-link {
+      position: absolute;
+      top: -100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--accent-blue);
+      color: white;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0 0 8px 8px;
+      text-decoration: none;
+      font-weight: 600;
+      z-index: 9999;
+      transition: top 0.2s ease;
+    }
+
+    .skip-link:focus {
+      top: 0;
+      outline: 2px solid white;
+      outline-offset: 2px;
+    }
+
+    /* Focus visible styles for accessibility */
+    .btn:focus-visible,
+    .filter-btn:focus-visible,
+    .registry-btn:focus-visible,
+    .theme-toggle:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    .search-input:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    /* Ensure interactive elements are focusable */
+    .card:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    /* Responsive - Large tablets */
+    @media (max-width: 1024px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .cards-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .quick-actions-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .controls-row {
+        flex-wrap: wrap;
+        gap: 1rem;
+      }
+    }
+
+    /* Responsive - Tablets and small laptops */
     @media (max-width: 768px) {
       .container {
         padding: 1rem;
@@ -1003,10 +1065,16 @@
       .header {
         flex-direction: column;
         align-items: flex-start;
+        gap: 1rem;
       }
 
       .header-main {
         font-size: 1.5rem;
+      }
+
+      .header-actions {
+        width: 100%;
+        justify-content: flex-start;
       }
 
       .stats-grid {
@@ -1017,32 +1085,131 @@
         grid-template-columns: 1fr;
       }
 
+      .quick-actions-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .controls-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .controls-group {
+        width: 100%;
+      }
+
+      .search-wrapper {
+        max-width: 100%;
+      }
+
+      .status-filters {
+        flex-wrap: wrap;
+      }
+
+      .registry-toggle {
+        flex-wrap: wrap;
+      }
+
       .shape {
         display: none;
+      }
+
+      .health-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* Responsive - Mobile phones */
+    @media (max-width: 480px) {
+      .container {
+        padding: 0.75rem;
+      }
+
+      .header-main {
+        font-size: 1.25rem;
+      }
+
+      .header-pretitle {
+        font-size: 0.7rem;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stat-card {
+        padding: 1rem;
+      }
+
+      .stat-value {
+        font-size: 1.5rem;
+      }
+
+      .filter-btn {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.75rem;
+      }
+
+      .registry-btn {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.75rem;
+      }
+
+      .btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.8rem;
+      }
+
+      .health-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-title {
+        font-size: 1rem;
+      }
+    }
+
+    /* Respect reduced motion preference (WCAG 2.1 2.3.3) */
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+
+      .bg-animated,
+      .shape {
+        animation: none !important;
       }
     }
   </style>
 </head>
 <body>
+  <!-- Skip link for keyboard navigation -->
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Animated background -->
-  <div class="bg-animated"></div>
-  <div class="shape shape-1"></div>
-  <div class="shape shape-2"></div>
-  <div class="shape shape-3"></div>
+  <div class="bg-animated" aria-hidden="true"></div>
+  <div class="shape shape-1" aria-hidden="true"></div>
+  <div class="shape shape-2" aria-hidden="true"></div>
+  <div class="shape shape-3" aria-hidden="true"></div>
 
   <div class="container">
     <!-- Header -->
-    <header class="header">
+    <header class="header" role="banner">
       <div class="header-title">
         <span class="header-pretitle">Container Management System</span>
         <h1 class="header-main">{{ page.title | default: site.title }}</h1>
       </div>
       <div class="header-actions">
-        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle light/dark theme">
-          <i class="ti ti-moon"></i>
+        <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle light/dark theme">
+          <i class="ti ti-moon" aria-hidden="true"></i>
         </button>
-        <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank">
-          <i class="ti ti-brand-github"></i>
+        <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer" aria-label="View repository on GitHub (opens in new tab)">
+          <i class="ti ti-brand-github" aria-hidden="true"></i>
           Repository
         </a>
       </div>
@@ -1050,48 +1217,57 @@
 
     <!-- Controls Bar -->
     <div class="controls-bar glass">
-      <div class="controls-group">
-        <span class="controls-label">Registry</span>
-        <div class="registry-toggle">
-          <button class="registry-btn active" data-registry="ghcr" onclick="setGlobalRegistry('ghcr')">
-            <i class="ti ti-package"></i> GHCR
+      <div class="controls-group" role="group" aria-labelledby="registry-label">
+        <span class="controls-label" id="registry-label">Registry</span>
+        <div class="registry-toggle" role="radiogroup" aria-label="Select container registry">
+          <button class="registry-btn active" data-registry="ghcr" onclick="setGlobalRegistry('ghcr')"
+                  role="radio" aria-checked="true" aria-label="GitHub Container Registry">
+            <i class="ti ti-package" aria-hidden="true"></i> GHCR
           </button>
-          <button class="registry-btn" data-registry="dockerhub" onclick="setGlobalRegistry('dockerhub')">
-            <i class="ti ti-brand-docker"></i> Docker Hub
+          <button class="registry-btn" data-registry="dockerhub" onclick="setGlobalRegistry('dockerhub')"
+                  role="radio" aria-checked="false" aria-label="Docker Hub">
+            <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
           </button>
         </div>
       </div>
 
       <div class="search-container">
-        <i class="ti ti-search search-icon"></i>
-        <input type="text" class="search-input" id="search-input"
+        <i class="ti ti-search search-icon" aria-hidden="true"></i>
+        <input type="search" class="search-input" id="search-input"
                placeholder="Search containers..."
+               aria-label="Search containers"
                oninput="filterContainers(this.value)">
       </div>
 
-      <div class="controls-group">
-        <span class="controls-label">Status</span>
-        <div class="status-filters">
-          <button class="filter-btn active" data-status="all" onclick="filterByStatus('all')">
-            All <span class="count" id="count-all">0</span>
+      <div class="controls-group" role="group" aria-labelledby="status-label">
+        <span class="controls-label" id="status-label">Status</span>
+        <div class="status-filters" role="radiogroup" aria-label="Filter by status">
+          <button class="filter-btn active" data-status="all" onclick="filterByStatus('all')"
+                  role="radio" aria-checked="true">
+            All <span class="count" id="count-all" aria-label="total count">0</span>
           </button>
-          <button class="filter-btn" data-status="up-to-date" onclick="filterByStatus('up-to-date')">
+          <button class="filter-btn" data-status="up-to-date" onclick="filterByStatus('up-to-date')"
+                  role="radio" aria-checked="false">
             Up to date <span class="count" id="count-up-to-date">0</span>
           </button>
-          <button class="filter-btn" data-status="update-available" onclick="filterByStatus('update-available')">
+          <button class="filter-btn" data-status="update-available" onclick="filterByStatus('update-available')"
+                  role="radio" aria-checked="false">
             Updates <span class="count" id="count-update-available">0</span>
           </button>
-          <button class="filter-btn" data-status="not-published" onclick="filterByStatus('not-published')">
+          <button class="filter-btn" data-status="not-published" onclick="filterByStatus('not-published')"
+                  role="radio" aria-checked="false">
             Not published <span class="count" id="count-not-published">0</span>
           </button>
         </div>
       </div>
     </div>
 
-    {{ content }}
+    <main id="main-content" role="main">
+      {{ content }}
+    </main>
 
     <!-- Footer -->
-    <footer class="footer">
+    <footer class="footer" role="contentinfo">
       <p>Generated by <a href="generate-dashboard.sh">generate-dashboard.sh</a> using Jekyll templating</p>
     </footer>
   </div>
@@ -1157,9 +1333,11 @@
         localStorage.setItem('preferredRegistry', registry);
       }
 
-      // Update toggle buttons
+      // Update toggle buttons and ARIA state
       document.querySelectorAll('.registry-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.registry === registry);
+        const isActive = btn.dataset.registry === registry;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
       });
 
       // Update all container cards
@@ -1198,9 +1376,11 @@
     function filterByStatus(status) {
       currentStatus = status;
 
-      // Update filter buttons
+      // Update filter buttons with ARIA state
       document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.status === status);
+        const isActive = btn.dataset.status === status;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
       });
 
       applyFilters();
@@ -1338,9 +1518,13 @@
       const card = element.closest('.container-card');
       const tag = element.dataset.tag;
 
-      // Update visual selection
-      card.querySelectorAll('.variant-tag').forEach(t => t.classList.remove('selected'));
+      // Update visual selection and ARIA state
+      card.querySelectorAll('.variant-tag').forEach(t => {
+        t.classList.remove('selected');
+        t.setAttribute('aria-pressed', 'false');
+      });
       element.classList.add('selected');
+      element.setAttribute('aria-pressed', 'true');
 
       // Get current registry from global state
       const registry = currentRegistry;

@@ -16,7 +16,10 @@ _No medium priority tasks remaining_
 
 ### Low Priority
 
-_No low priority tasks remaining_
+- [ ] gh-pages: Add aria-live regions for dynamic feedback (F-005)
+- [ ] gh-pages: Refactor inline onclick to addEventListener (F-006)
+- [ ] gh-pages: Wrap JS in IIFE/module pattern (F-007)
+- [ ] gh-pages: Increase mobile touch targets to 44px (F-011)
 
 ## Completed
 
@@ -36,6 +39,7 @@ _No low priority tasks remaining_
 - [x] ✅ Security scanning with Trivy - CVE scanning, blocks on CRITICAL, SARIF reports (2026-01-16)
 - [x] ✅ Project initialized with /project-init (2026-01-16)
 - [x] ✅ Remove deprecated buildx install option (2026-01-16)
+- [x] ✅ gh-pages: Responsive design + WCAG 2.2 compliance (2026-01-29)
 
 ## Blocked / Deferred
 
