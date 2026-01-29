@@ -1,6 +1,8 @@
 # Multi-stage Dockerfile for modern Terraform with security and DevOps tools
+# Supports multiple flavors: base, aws, azure, gcp, full
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
+ARG FLAVOR=full
 
 # Build arguments for tool versions
 ARG TFLINT_VERSION
@@ -16,7 +18,7 @@ ARG GCP_CLI_VERSION
 # Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION
 FROM hashicorp/terraform:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
-# Stage 2: Security tools
+# Stage 2: Security tools (included in all flavors)
 FROM alpine:latest AS security-tools
 ARG TARGETARCH
 ARG TFLINT_VERSION
@@ -35,7 +37,7 @@ RUN apk add --no-cache curl unzip ca-certificates && \
     tar -xzf trivy.tar.gz trivy && \
     chmod +x trivy
 
-# Stage 3: DevOps tools
+# Stage 3: DevOps tools (included in all flavors)
 FROM alpine:latest AS devops-tools
 ARG TARGETARCH
 ARG TERRAGRUNT_VERSION
@@ -54,34 +56,41 @@ RUN apk add --no-cache curl tar ca-certificates && \
     mv gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}/bin/gh . && \
     chmod +x gh
 
-# Stage 4: Cloud tools - GCP CLI only (AWS/Azure in final stage)  
-FROM python:3.12-alpine AS cloud-tools
-ARG GCP_CLI_VERSION
-RUN apk add --no-cache curl bash && \
-    # Install Google Cloud CLI via official installer
-    curl -fsSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/opt
+# Stage 4: GCP CLI (only built when needed for gcp/full flavors)
+# NOTE: GCP SDK installer always fetches latest version - version pinning not supported
+# The GCP_CLI_VERSION in config.json is for reference/tracking only
+FROM python:3.12-alpine AS cloud-tools-gcp
+ARG FLAVOR
+# Only install GCP SDK if flavor needs it
+RUN if [ "${FLAVOR}" = "gcp" ] || [ "${FLAVOR}" = "full" ]; then \
+        apk add --no-cache curl bash && \
+        curl -fsSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/opt && \
+        # Create marker file
+        touch /opt/.gcp-installed; \
+    else \
+        mkdir -p /opt && \
+        touch /opt/.gcp-not-installed; \
+    fi
 
-# Final stage: Assemble everything
+# Final stage: Assemble everything based on FLAVOR
 FROM alpine:latest
+
+ARG FLAVOR
 
 # Environment variables
 ENV CONFIGFILE=config.json
+ENV TERRAFORM_FLAVOR=${FLAVOR}
 
-# Copy terraform binary
+# Copy terraform binary (always included)
 COPY --from=terraform /bin/terraform /bin/
 
-# Copy security tools
+# Copy security tools (always included)
 COPY --from=security-tools /tflint /trivy /usr/local/bin/
 
-# Copy DevOps tools  
+# Copy DevOps tools (always included)
 COPY --from=devops-tools /terragrunt /terraform-docs /gh /usr/local/bin/
 
-# Copy Google Cloud SDK
-COPY --from=cloud-tools /opt/google-cloud-sdk /opt/google-cloud-sdk
-
-# Install runtime dependencies and cloud CLIs
-ARG AWS_CLI_VERSION
-ARG AZURE_CLI_VERSION
+# Install base runtime dependencies (always needed)
 RUN apk --no-cache add \
     ca-certificates \
     curl \
@@ -91,22 +100,61 @@ RUN apk --no-cache add \
     jq \
     yq \
     python3 \
-    py3-pip \
-    && apk --no-cache add --virtual .build-deps \
-        gcc \
-        musl-dev \
-        libffi-dev \
-        python3-dev \
-        linux-headers \
-    && pip3 install --break-system-packages --no-cache-dir \
-        awscli==${AWS_CLI_VERSION} \
-        azure-cli==${AZURE_CLI_VERSION} \
-        j2cli \
-    && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
-    && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil \
-    && ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq \
-    && apk del .build-deps \
-    && rm -rf /var/cache/apk/* /tmp/* /root/.cache
+    py3-pip
+
+# Cloud CLI installation based on FLAVOR
+ARG AWS_CLI_VERSION
+ARG AZURE_CLI_VERSION
+ARG GCP_CLI_VERSION
+
+# Install cloud CLIs based on flavor
+RUN set -ex && \
+    case "${FLAVOR}" in \
+        base) \
+            echo "Base flavor: no cloud CLIs" \
+            ;; \
+        aws) \
+            echo "AWS flavor: installing AWS CLI" && \
+            apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
+            pip3 install --break-system-packages --no-cache-dir awscli==${AWS_CLI_VERSION} && \
+            apk del .build-deps \
+            ;; \
+        azure) \
+            echo "Azure flavor: installing Azure CLI" && \
+            apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
+            pip3 install --break-system-packages --no-cache-dir azure-cli==${AZURE_CLI_VERSION} && \
+            apk del .build-deps \
+            ;; \
+        gcp) \
+            echo "GCP flavor: will copy Google Cloud SDK" \
+            ;; \
+        full) \
+            echo "Full flavor: installing AWS + Azure CLIs" && \
+            apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
+            pip3 install --break-system-packages --no-cache-dir \
+                awscli==${AWS_CLI_VERSION} \
+                azure-cli==${AZURE_CLI_VERSION} \
+                j2cli && \
+            apk del .build-deps \
+            ;; \
+        *) \
+            echo "Unknown flavor: ${FLAVOR}" && exit 1 \
+            ;; \
+    esac && \
+    rm -rf /var/cache/apk/* /tmp/* /root/.cache
+
+# Copy Google Cloud SDK only for gcp and full flavors
+# The conditional is handled in the cloud-tools-gcp stage
+COPY --from=cloud-tools-gcp /opt /tmp/gcp-check
+
+# Setup GCP SDK symlinks if present
+RUN if [ -f /tmp/gcp-check/.gcp-installed ]; then \
+        mv /tmp/gcp-check/google-cloud-sdk /opt/google-cloud-sdk && \
+        ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud && \
+        ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil && \
+        ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq; \
+    fi && \
+    rm -rf /tmp/gcp-check
 
 # Create terraform user for non-root execution
 RUN addgroup -g 1000 -S terraform \
@@ -124,7 +172,7 @@ COPY --chown=terraform:terraform docker-entrypoint.sh /docker-entrypoint.sh
 # Run as non-root user
 USER terraform
 
-# Add healthcheck to verify terraform and tools are working
+# Add healthcheck - verify core tools are working
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD terraform version && tflint --version && trivy --version || exit 1
 
