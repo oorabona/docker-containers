@@ -35,15 +35,13 @@
         {{ include.pull_count_formatted | default: "0" }}
       </span>
     </div>
-    {% if include.star_count and include.star_count > 0 %}
     <div class="card-meta-item">
       <span class="card-meta-label">Stars</span>
       <span class="card-meta-value">
         <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);" aria-hidden="true"></i>
-        {{ include.star_count }}
+        {{ include.star_count | default: 0 }}
       </span>
     </div>
-    {% endif %}
     {% if include.size_amd64 or include.size_arm64 or include.has_variants %}
     <div class="card-meta-item">
       <span class="card-meta-label">Size (amd64)</span>
