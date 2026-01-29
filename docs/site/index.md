@@ -14,7 +14,7 @@ description: Real-time status monitoring for Docker containers with automated up
 
 {% include quick-actions.html %}
 
-<h2 class="section-title"><i class="ti ti-package"></i> Container Status</h2>
+<h2 class="section-title"><i class="ti ti-package" aria-hidden="true"></i> Container Status</h2>
 
 <div class="cards-grid">
 {% for container in site.data.containers %}
@@ -42,20 +42,21 @@ description: Real-time status monitoring for Docker containers with automated up
 {% endfor %}
 </div>
 
-<h2 class="section-title"><i class="ti ti-activity"></i> Recent Activity</h2>
+<h2 class="section-title"><i class="ti ti-activity" aria-hidden="true"></i> Recent Activity</h2>
 
-<div class="activity-section glass">
+<section class="activity-section glass" aria-label="Recent build activity">
   <div class="activity-list">
     {% if site.data.stats.recent_activity.size > 0 %}
       {% for run in site.data.stats.recent_activity %}
-      <a href="{{ run.url }}" target="_blank" class="activity-item activity-link">
+      <a href="{{ run.url }}" target="_blank" rel="noopener noreferrer" class="activity-item activity-link"
+         aria-label="{{ run.name }} - {{ run.conclusion | default: 'in progress' }} - {{ run.date }} (opens in new tab)">
         <div class="activity-icon {% if run.conclusion == 'success' %}success{% elsif run.conclusion == 'failure' %}failure{% else %}pending{% endif %}">
           {% if run.conclusion == 'success' %}
-            <i class="ti ti-circle-check"></i>
+            <i class="ti ti-circle-check" aria-hidden="true"></i>
           {% elsif run.conclusion == 'failure' %}
-            <i class="ti ti-circle-x"></i>
+            <i class="ti ti-circle-x" aria-hidden="true"></i>
           {% else %}
-            <i class="ti ti-loader"></i>
+            <i class="ti ti-loader" aria-hidden="true"></i>
           {% endif %}
         </div>
         <span class="activity-text">
@@ -66,20 +67,20 @@ description: Real-time status monitoring for Docker containers with automated up
       {% endfor %}
     {% else %}
       <div class="activity-item">
-        <div class="activity-icon"><i class="ti ti-robot"></i></div>
+        <div class="activity-icon"><i class="ti ti-robot" aria-hidden="true"></i></div>
         <span><strong>Automated Monitoring</strong> — Upstream versions checked every 6 hours</span>
       </div>
       <div class="activity-item">
-        <div class="activity-icon"><i class="ti ti-rocket"></i></div>
+        <div class="activity-icon"><i class="ti ti-rocket" aria-hidden="true"></i></div>
         <span><strong>Auto-Build</strong> — Triggered on version updates and code changes</span>
       </div>
     {% endif %}
   </div>
-</div>
+</section>
 
-<h2 class="section-title"><i class="ti ti-heart-rate-monitor"></i> System Health</h2>
+<h2 class="section-title"><i class="ti ti-heart-rate-monitor" aria-hidden="true"></i> System Health</h2>
 
-<div class="health-section glass">
+<section class="health-section glass" aria-label="System health metrics">
   <div class="health-grid">
     <div class="health-item">
       <span class="health-label">Build Success Rate</span>
@@ -98,4 +99,4 @@ description: Real-time status monitoring for Docker containers with automated up
       <span class="health-value">{{ site.data.stats.last_updated }}</span>
     </div>
   </div>
-</div>
+</section>
