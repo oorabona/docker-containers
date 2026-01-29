@@ -369,22 +369,41 @@ EOF
         echo "" >> "$DATA_FILE"
     done
 
-    # Calculate build success rate from auto-build workflow (last 30 days)
-    log_info "Calculating build success rate from GitHub Actions..."
+    # Calculate build success rate from auto-build workflow jobs (last 30 days)
+    # Only count jobs that start with "Build" to exclude detection, manifest, and other jobs
+    log_info "Calculating build success rate from GitHub Actions build jobs..."
     local build_runs_json build_success=0 build_total=0 build_success_rate=0
     local thirty_days_ago
     thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
 
-    # Fetch auto-build workflow runs from last 30 days
+    # Fetch auto-build workflow runs from last 30 days (limit to 20 for API efficiency)
     build_runs_json=$(curl -s --max-time 30 \
-        "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=100&created=>$thirty_days_ago" 2>/dev/null)
+        "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
 
     if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
-        build_total=$(echo "$build_runs_json" | jq '[.workflow_runs[] | select(.status == "completed")] | length' 2>/dev/null || echo "0")
-        build_success=$(echo "$build_runs_json" | jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
+        # For each completed run, fetch jobs and count only "Build" jobs
+        local run_ids
+        run_ids=$(echo "$build_runs_json" | jq -r '.workflow_runs[] | select(.status == "completed") | .id' 2>/dev/null)
+
+        for run_id in $run_ids; do
+            local jobs_json
+            jobs_json=$(curl -s --max-time 10 \
+                "https://api.github.com/repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
+
+            if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
+                # Count only jobs starting with "Build" (e.g., "Build terraform (amd64)")
+                local run_build_total run_build_success
+                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed")] | length' 2>/dev/null || echo "0")
+                run_build_success=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
+
+                build_total=$((build_total + run_build_total))
+                build_success=$((build_success + run_build_success))
+            fi
+        done
+
         [[ $build_total -gt 0 ]] && build_success_rate=$(( (build_success * 100) / build_total ))
     fi
-    log_info "Build stats (30 days): $build_success/$build_total successful (${build_success_rate}%)"
+    log_info "Build jobs stats (30 days): $build_success/$build_total successful (${build_success_rate}%)"
 
     # Fetch recent workflow runs from GitHub API (public, no auth needed)
     log_info "Fetching recent workflow runs..."
@@ -433,7 +452,7 @@ $activity_yaml
 EOF
 
     log_info "Generated $DATA_FILE with $total containers"
-    log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build success ${build_success_rate}% ($build_success/$build_total)"
+    log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build jobs success ${build_success_rate}% ($build_success/$build_total)"
 }
 
 generate_data
