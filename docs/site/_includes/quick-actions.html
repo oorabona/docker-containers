@@ -1,32 +1,32 @@
 <!-- Quick Actions Panel - Glassmorphism Style -->
-<div class="quick-actions glass">
+<nav class="quick-actions glass" aria-label="Quick actions">
   <div class="quick-actions-title">
-    <i class="ti ti-rocket"></i>
+    <i class="ti ti-rocket" aria-hidden="true"></i>
     Quick Actions
   </div>
   <div class="quick-actions-grid">
     <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions"
-       class="btn" target="_blank">
-      <i class="ti ti-layout-grid"></i>
+       class="btn" target="_blank" rel="noopener noreferrer" aria-label="View all workflows (opens in new tab)">
+      <i class="ti ti-layout-grid" aria-hidden="true"></i>
       Workflows
     </a>
 
     <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions/workflows/auto-build.yaml"
-       class="btn" target="_blank">
-      <i class="ti ti-player-play"></i>
+       class="btn" target="_blank" rel="noopener noreferrer" aria-label="Trigger build workflow (opens in new tab)">
+      <i class="ti ti-player-play" aria-hidden="true"></i>
       Trigger Build
     </a>
 
     <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/actions/workflows/validate-version-scripts.yaml"
-       class="btn" target="_blank">
-      <i class="ti ti-test-pipe"></i>
+       class="btn" target="_blank" rel="noopener noreferrer" aria-label="Run validation tests (opens in new tab)">
+      <i class="ti ti-test-pipe" aria-hidden="true"></i>
       Run Tests
     </a>
 
     <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}#readme"
-       class="btn" target="_blank">
-      <i class="ti ti-book"></i>
+       class="btn" target="_blank" rel="noopener noreferrer" aria-label="View documentation (opens in new tab)">
+      <i class="ti ti-book" aria-hidden="true"></i>
       Documentation
     </a>
   </div>
-</div>
+</nav>

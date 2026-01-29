@@ -1,8 +1,9 @@
 <!-- Enhanced Container Status Card - Glassmorphism Style -->
-<div class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
+<article class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
      data-container="{{ include.name }}"
      data-github-username="{{ include.github_username }}"
-     data-dockerhub-username="{{ include.dockerhub_username }}">
+     data-dockerhub-username="{{ include.dockerhub_username }}"
+     aria-label="{{ include.name }} container - {{ include.status_text | default: 'Unknown status' }}">
   <div class="card-header-row">
     <div class="card-name">{{ include.name }}</div>
     <span class="card-badge{% if include.status_color == 'warning' %} warning{% endif %}">
@@ -12,11 +13,11 @@
 
   <div class="card-status">
     {% if include.build_status == 'success' %}
-      <i class="ti ti-circle-check" style="color: var(--accent-green);"></i>
+      <i class="ti ti-circle-check" style="color: var(--accent-green);" aria-hidden="true"></i>
     {% elsif include.build_status == 'failed' %}
-      <i class="ti ti-circle-x" style="color: var(--accent-pink);"></i>
+      <i class="ti ti-circle-x" style="color: var(--accent-pink);" aria-hidden="true"></i>
     {% else %}
-      <i class="ti ti-loader" style="color: var(--accent-yellow);"></i>
+      <i class="ti ti-loader" style="color: var(--accent-yellow);" aria-hidden="true"></i>
     {% endif %}
     {{ include.status_text | default: 'Unknown' }}
   </div>
@@ -30,7 +31,7 @@
     <div class="card-meta-item">
       <span class="card-meta-label">Pulls</span>
       <span class="card-meta-value">
-        <i class="ti ti-download" style="font-size: 0.75rem;"></i>
+        <i class="ti ti-download" style="font-size: 0.75rem;" aria-hidden="true"></i>
         {{ include.pull_count_formatted | default: "0" }}
       </span>
     </div>
@@ -38,7 +39,7 @@
     <div class="card-meta-item">
       <span class="card-meta-label">Stars</span>
       <span class="card-meta-value">
-        <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);"></i>
+        <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);" aria-hidden="true"></i>
         {{ include.star_count }}
       </span>
     </div>
@@ -64,7 +65,7 @@
   {% if include.has_variants %}
   <div class="variants-section">
     <div class="variants-header">
-      <i class="ti ti-versions"></i>
+      <i class="ti ti-versions" aria-hidden="true"></i>
       <span>Available variants</span>
     </div>
     {% if include.versions %}
@@ -80,9 +81,13 @@
                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                   onclick="selectVariantTag(this)"
-                  style="cursor: pointer;">
+                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectVariantTag(this);}"
+                  role="button"
+                  tabindex="0"
+                  aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                  aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
               :{{ variant.name }}
-              {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+              {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
             </span>
           {% endfor %}
         </div>
@@ -98,9 +103,13 @@
                 data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                 data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                 onclick="selectVariantTag(this)"
-                style="cursor: pointer;">
+                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectVariantTag(this);}"
+                role="button"
+                tabindex="0"
+                aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
+                aria-label="Select variant {{ variant.tag }}{% if variant.is_default %} (default){% endif %}">
             :{{ variant.tag }}
-            {% if variant.is_default %}<span class="badge badge-primary">default</span>{% endif %}
+            {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
           </span>
         {% endfor %}
       </div>
@@ -115,7 +124,7 @@
        data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
        data-default-tag="{% if include.has_variants %}{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% else %}{{ include.variants[0].tag }}{% endif %}{% else %}{{ include.current_version }}{% endif %}">
     <div class="pull-header">
-      <i class="ti ti-brand-docker"></i>
+      <i class="ti ti-brand-docker" aria-hidden="true"></i>
       <span>Pull command</span>
     </div>
     <div class="pull-input-group">
@@ -123,33 +132,34 @@
              class="pull-input"
              id="pull-{{ include.name }}"
              value="docker pull {{ include.ghcr_image }}"
-             readonly>
+             readonly
+             aria-label="Docker pull command for {{ include.name }}">
       <button class="copy-btn" type="button"
               onclick="copyToClipboard('pull-{{ include.name }}', this)"
-              title="Copy to clipboard">
-        <i class="ti ti-copy"></i>
+              aria-label="Copy pull command to clipboard">
+        <i class="ti ti-copy" aria-hidden="true"></i>
       </button>
     </div>
   </div>
   {% endif %}
 
   <!-- Quick Links -->
-  <div class="card-links">
+  <nav class="card-links" aria-label="Container links">
     <a href="{{ '/container?name=' | append: include.name | relative_url }}"
        class="card-link" title="View Details">
-      <i class="ti ti-info-circle"></i> Details
+      <i class="ti ti-info-circle" aria-hidden="true"></i> Details
     </a>
     <a href="https://github.com/{{ include.github_username }}/docker-containers/tree/master/{{ include.name }}"
-       class="card-link" target="_blank" title="View Source">
-      <i class="ti ti-folder"></i> Source
+       class="card-link" target="_blank" rel="noopener noreferrer" title="View Source (opens in new tab)">
+      <i class="ti ti-folder" aria-hidden="true"></i> Source
     </a>
     <a href="https://ghcr.io/{{ include.github_username }}/{{ include.name }}"
-       class="card-link" target="_blank" title="GHCR Package">
-      <i class="ti ti-package"></i> GHCR
+       class="card-link" target="_blank" rel="noopener noreferrer" title="GHCR Package (opens in new tab)">
+      <i class="ti ti-package" aria-hidden="true"></i> GHCR
     </a>
     <a href="https://hub.docker.com/r/{{ include.dockerhub_username }}/{{ include.name }}"
-       class="card-link" target="_blank" title="Docker Hub">
-      <i class="ti ti-brand-docker"></i> Hub
+       class="card-link" target="_blank" rel="noopener noreferrer" title="Docker Hub (opens in new tab)">
+      <i class="ti ti-brand-docker" aria-hidden="true"></i> Hub
     </a>
-  </div>
-</div>
+  </nav>
+</article>

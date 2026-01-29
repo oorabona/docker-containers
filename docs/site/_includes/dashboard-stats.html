@@ -1,8 +1,8 @@
 <!-- Dashboard Statistics Summary - Glassmorphism Style -->
-<div class="stats-grid">
+<section class="stats-grid" aria-label="Dashboard statistics">
   <div class="stat-card glass">
     <div class="stat-icon blue">
-      <i class="ti ti-packages"></i>
+      <i class="ti ti-packages" aria-hidden="true"></i>
     </div>
     <div class="stat-value">{{ include.total_containers | default: 0 }}</div>
     <div class="stat-label">Total Containers</div>
@@ -10,7 +10,7 @@
 
   <div class="stat-card glass">
     <div class="stat-icon green">
-      <i class="ti ti-circle-check"></i>
+      <i class="ti ti-circle-check" aria-hidden="true"></i>
     </div>
     <div class="stat-value">{{ include.up_to_date | default: 0 }}</div>
     <div class="stat-label">Up to Date</div>
@@ -18,7 +18,7 @@
 
   <div class="stat-card glass">
     <div class="stat-icon yellow">
-      <i class="ti ti-alert-triangle"></i>
+      <i class="ti ti-alert-triangle" aria-hidden="true"></i>
     </div>
     <div class="stat-value">{{ include.updates_available | default: 0 }}</div>
     <div class="stat-label">Updates Available</div>
@@ -26,9 +26,9 @@
 
   <div class="stat-card glass">
     <div class="stat-icon purple">
-      <i class="ti ti-chart-bar"></i>
+      <i class="ti ti-chart-bar" aria-hidden="true"></i>
     </div>
     <div class="stat-value">{{ include.build_success_rate | default: 0 }}%</div>
     <div class="stat-label">Build Success Rate</div>
   </div>
-</div>
+</section>
