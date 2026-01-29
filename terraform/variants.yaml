@@ -1,0 +1,43 @@
+# Terraform Container Variants
+# Defines multiple image variants to reduce attack surface and image sizes
+#
+# Each variant produces a separate image tag:
+#   ghcr.io/oorabona/terraform:latest          (full - default for backwards compatibility)
+#   ghcr.io/oorabona/terraform:1.10.5-base     (base variant)
+#   ghcr.io/oorabona/terraform:1.10.5-aws      (AWS variant)
+#   etc.
+
+# Build configuration
+build:
+  # Build arg to pass for flavor selection
+  flavor_arg: FLAVOR
+  # No extension dependencies (unlike postgres)
+  requires_extensions: false
+
+# Single version entry with multiple variants
+# NOTE: Terraform uses dynamic versioning - actual version comes from version.sh
+# The "latest" tag is a fallback key for variant lookups when version is dynamic
+versions:
+  - tag: "latest"
+    variants:
+      - name: base
+        suffix: "-base"
+        flavor: base
+        description: "Terraform + TFLint + Trivy + Terragrunt + terraform-docs + gh CLI"
+      - name: aws
+        suffix: "-aws"
+        flavor: aws
+        description: "Base + AWS CLI"
+      - name: azure
+        suffix: "-azure"
+        flavor: azure
+        description: "Base + Azure CLI"
+      - name: gcp
+        suffix: "-gcp"
+        flavor: gcp
+        description: "Base + Google Cloud SDK"
+      - name: full
+        suffix: ""
+        flavor: full
+        description: "All cloud CLIs included (AWS + Azure + GCP)"
+        default: true

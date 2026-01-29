@@ -40,6 +40,7 @@ _No medium priority tasks remaining_
 - [x] ✅ Project initialized with /project-init (2026-01-16)
 - [x] ✅ Remove deprecated buildx install option (2026-01-16)
 - [x] ✅ gh-pages: Responsive design + WCAG 2.2 compliance (2026-01-29)
+- [x] ✅ terraform: Implement flavors (base, aws, azure, gcp, full) - 84% size reduction for base (2026-01-29)
 
 ## Blocked / Deferred
 

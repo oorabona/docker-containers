@@ -41,11 +41,12 @@ version_count() {
 }
 
 # List all variant names for a specific version
-# Usage: list_variants <container_dir> [pg_version]
+# Usage: list_variants <container_dir> [version]
 # Output: one variant name per line
+# If version is provided but not found, falls back to "latest" (for dynamic version containers like terraform)
 list_variants() {
     local container_dir="$1"
-    local pg_version="${2:-}"
+    local version="${2:-}"
     local variants_file="$container_dir/variants.yaml"
 
     if [[ ! -f "$variants_file" ]]; then
@@ -53,9 +54,18 @@ list_variants() {
         return
     fi
 
-    if [[ -n "$pg_version" ]]; then
+    if [[ -n "$version" ]]; then
         # New structure: get variants for specific version
-        yq -r ".versions[] | select(.tag == \"$pg_version\") | .variants[].name" "$variants_file" 2>/dev/null || echo ""
+        local result
+        result=$(yq -r ".versions[] | select(.tag == \"$version\") | .variants[].name" "$variants_file" 2>/dev/null)
+
+        # If no variants found for this version, try "latest" as fallback
+        # This supports containers with dynamic versions (like terraform)
+        if [[ -z "$result" ]]; then
+            result=$(yq -r '.versions[] | select(.tag == "latest") | .variants[].name' "$variants_file" 2>/dev/null)
+        fi
+
+        echo "$result"
     else
         # Fallback: try old structure or return first version's variants
         local result
@@ -95,13 +105,14 @@ variant_count() {
 }
 
 # Get variant property
-# Usage: variant_property <container_dir> <variant_name> <property> [pg_version]
+# Usage: variant_property <container_dir> <variant_name> <property> [version]
 # Properties: suffix, flavor, description, default
+# If version is provided but not found, falls back to "latest"
 variant_property() {
     local container_dir="$1"
     local variant_name="$2"
     local property="$3"
-    local pg_version="${4:-}"
+    local version="${4:-}"
     local variants_file="$container_dir/variants.yaml"
 
     if [[ ! -f "$variants_file" ]]; then
@@ -109,8 +120,16 @@ variant_property() {
         return
     fi
 
-    if [[ -n "$pg_version" ]]; then
-        yq -r ".versions[] | select(.tag == \"$pg_version\") | .variants[] | select(.name == \"$variant_name\") | .$property // \"\"" "$variants_file" 2>/dev/null || echo ""
+    if [[ -n "$version" ]]; then
+        local result
+        result=$(yq -r ".versions[] | select(.tag == \"$version\") | .variants[] | select(.name == \"$variant_name\") | .$property // \"\"" "$variants_file" 2>/dev/null)
+
+        # If not found for this version, try "latest" as fallback
+        if [[ -z "$result" ]]; then
+            result=$(yq -r '.versions[] | select(.tag == "latest") | .variants[] | select(.name == "'"$variant_name"'") | .'"$property"' // ""' "$variants_file" 2>/dev/null)
+        fi
+
+        echo "$result"
     else
         # Fallback: try old structure
         local result
