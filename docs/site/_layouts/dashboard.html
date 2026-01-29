@@ -598,6 +598,9 @@
       transition: all 0.3s ease;
       position: relative;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
     }
 
     .container-card::before {
@@ -780,7 +783,9 @@
 
     /* Pull command */
     .pull-section {
+      margin-top: auto;
       margin-bottom: 1rem;
+      padding-top: 1rem;
     }
 
     .pull-header {
