@@ -135,6 +135,17 @@ build_container() {
 
     [[ -n "$flavor" ]] && build_args="$build_args --build-arg FLAVOR=$flavor"
     [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+
+    # Load build_args from config.json if present
+    if [[ -f "./config.json" ]]; then
+        local config_build_args
+        config_build_args=$(jq -r '.build_args // {} | to_entries | map("--build-arg \(.key)=\(.value)") | join(" ")' ./config.json 2>/dev/null || true)
+        if [[ -n "$config_build_args" ]]; then
+            build_args="$build_args $config_build_args"
+            log_info "Loaded build args from config.json"
+        fi
+    fi
+
     [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
     
     # Prepare tags
