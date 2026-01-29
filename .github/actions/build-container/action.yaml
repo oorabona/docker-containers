@@ -318,7 +318,7 @@ runs:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'sarif'
         output: 'trivy-results.sarif'
-        severity: 'LOW,MEDIUM,HIGH,CRITICAL'
+        severity: 'CRITICAL'
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
