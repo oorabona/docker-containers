@@ -18,35 +18,40 @@ FROM hashicorp/terraform:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
 # Stage 2: Security tools
 FROM alpine:latest AS security-tools
+ARG TARGETARCH
 ARG TFLINT_VERSION
 ARG TRIVY_VERSION
+# Map TARGETARCH to tool-specific naming conventions
 RUN apk add --no-cache curl unzip ca-certificates && \
-    # TFLint - Terraform linter
-    echo "Downloading TFLint v${TFLINT_VERSION}" && \
-    curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" -o tflint.zip && \
+    # Determine Trivy arch name (64bit for amd64, ARM64 for arm64)
+    TRIVY_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "ARM64" || echo "64bit") && \
+    # TFLint - Terraform linter (supports amd64/arm64)
+    echo "Downloading TFLint v${TFLINT_VERSION} for ${TARGETARCH}" && \
+    curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_${TARGETARCH}.zip" -o tflint.zip && \
     unzip tflint.zip && chmod +x tflint && \
-    # Trivy - Security scanner (replaces deprecated TFSec)
-    echo "Downloading Trivy v${TRIVY_VERSION}" && \
-    curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz && \
+    # Trivy - Security scanner (supports 64bit/ARM64)
+    echo "Downloading Trivy v${TRIVY_VERSION} for ${TRIVY_ARCH}" && \
+    curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" -o trivy.tar.gz && \
     tar -xzf trivy.tar.gz trivy && \
     chmod +x trivy
 
 # Stage 3: DevOps tools
 FROM alpine:latest AS devops-tools
+ARG TARGETARCH
 ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
 ARG GITHUB_CLI_VERSION
 RUN apk add --no-cache curl tar ca-certificates && \
-    # Terragrunt - Terraform wrapper
-    curl -fsSL https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64 -o terragrunt && \
+    # Terragrunt - Terraform wrapper (supports amd64/arm64)
+    curl -fsSL https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_${TARGETARCH} -o terragrunt && \
     chmod +x terragrunt && \
-    # Terraform-docs - Generate docs from modules
-    curl -fsSL https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-amd64.tar.gz -o terraform-docs.tar.gz && \
+    # Terraform-docs - Generate docs from modules (supports amd64/arm64)
+    curl -fsSL https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-${TARGETARCH}.tar.gz -o terraform-docs.tar.gz && \
     tar -xzf terraform-docs.tar.gz terraform-docs && chmod +x terraform-docs && \
-    # GitHub CLI
-    curl -fsSL https://github.com/cli/cli/releases/download/v${GITHUB_CLI_VERSION}/gh_${GITHUB_CLI_VERSION}_linux_amd64.tar.gz -o gh.tar.gz && \
+    # GitHub CLI (supports amd64/arm64)
+    curl -fsSL https://github.com/cli/cli/releases/download/v${GITHUB_CLI_VERSION}/gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}.tar.gz -o gh.tar.gz && \
     tar -xzf gh.tar.gz && \
-    mv gh_${GITHUB_CLI_VERSION}_linux_amd64/bin/gh . && \
+    mv gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}/bin/gh . && \
     chmod +x gh
 
 # Stage 4: Cloud tools - GCP CLI only (AWS/Azure in final stage)  
