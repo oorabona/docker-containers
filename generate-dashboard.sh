@@ -369,9 +369,22 @@ EOF
         echo "" >> "$DATA_FILE"
     done
 
-    # Calculate success rate
-    local success_rate=100
-    [[ $total -gt 0 ]] && success_rate=$(( (up_to_date * 100) / total ))
+    # Calculate build success rate from auto-build workflow (last 30 days)
+    log_info "Calculating build success rate from GitHub Actions..."
+    local build_runs_json build_success=0 build_total=0 build_success_rate=0
+    local thirty_days_ago
+    thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+
+    # Fetch auto-build workflow runs from last 30 days
+    build_runs_json=$(curl -s --max-time 30 \
+        "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=100&created=>$thirty_days_ago" 2>/dev/null)
+
+    if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+        build_total=$(echo "$build_runs_json" | jq '[.workflow_runs[] | select(.status == "completed")] | length' 2>/dev/null || echo "0")
+        build_success=$(echo "$build_runs_json" | jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
+        [[ $build_total -gt 0 ]] && build_success_rate=$(( (build_success * 100) / build_total ))
+    fi
+    log_info "Build stats (30 days): $build_success/$build_total successful (${build_success_rate}%)"
 
     # Fetch recent workflow runs from GitHub API (public, no auth needed)
     log_info "Fetching recent workflow runs..."
@@ -411,14 +424,16 @@ EOF
 total_containers: $total
 up_to_date: $up_to_date
 updates_available: $updates_available
-build_success_rate: $success_rate
+build_success_rate: $build_success_rate
+build_success_count: $build_success
+build_total_count: $build_total
 last_updated: "$(date -u +"%Y-%m-%d %H:%M UTC")"
 
 $activity_yaml
 EOF
 
     log_info "Generated $DATA_FILE with $total containers"
-    log_info "Stats: $up_to_date up-to-date, $updates_available updates, ${success_rate}% success"
+    log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build success ${build_success_rate}% ($build_success/$build_total)"
 }
 
 generate_data
