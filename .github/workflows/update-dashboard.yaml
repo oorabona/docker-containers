@@ -91,6 +91,13 @@ jobs:
           cp -r docs/site/_includes _includes
           cp -r docs/site/_layouts _layouts
           cp -r docs/site/_data _data
+          # Copy generated container collection pages for Jekyll
+          if [ -d "docs/site/_containers" ]; then
+            cp -r docs/site/_containers _containers
+            echo "📂 Containers: $(ls _containers/ | wc -l) pages"
+          else
+            echo "⚠️  No _containers directory found (generate-dashboard.sh may not have created it)"
+          fi
           echo "✅ Jekyll configuration ready"
           echo "📂 Data: $(ls _data/)"
           echo "📂 Includes: $(ls _includes/)"

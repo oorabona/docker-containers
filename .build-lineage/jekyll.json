@@ -1,0 +1,19 @@
+{
+  "container": "jekyll",
+  "version": "4.4.1-alpine",
+  "tag": "4.4.1-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:bdd0e6f8e480fa70e8b9c3d1b5e6f4840d6c7f133af4ee13d5a5b37e2351dfa5",
+  "build_digest": "b01d38b55676",
+  "base_image_ref": "ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-01-30T01:55:31+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/jekyll:4.4.1-alpine",
+    "ghcr": "ghcr.io/oorabona/jekyll:4.4.1-alpine"
+  }
+}

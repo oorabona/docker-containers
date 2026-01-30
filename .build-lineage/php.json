@@ -1,0 +1,19 @@
+{
+  "container": "php",
+  "version": "8.5.2-fpm-alpine",
+  "tag": "8.5.2-fpm-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:53de5fd90f991b52e78bf16374130e0d96ed9be4c9c8ab5dd587bd09317dc545",
+  "build_digest": "7da2a9820c5d",
+  "base_image_ref": "composer:latest",
+  "base_image_digest": "sha256:c1efdf09fb46624569ba669f23a57cd992a210a7fb8e999d0705363500e845be",
+  "built_at": "2026-01-30T01:56:04+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/php:8.5.2-fpm-alpine",
+    "ghcr": "ghcr.io/oorabona/php:8.5.2-fpm-alpine"
+  }
+}

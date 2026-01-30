@@ -1,0 +1,19 @@
+{
+  "container": "openvpn",
+  "version": "v2.6.17-alpine",
+  "tag": "v2.6.17-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:2cfeb38beaadc91d909feaca0bd4606cd8d327de3698f83416aadc70493cdd89",
+  "build_digest": "1be17c7602f7",
+  "base_image_ref": "alpine:${OS_VERSION}",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-01-30T01:55:41+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/openvpn:v2.6.17-alpine",
+    "ghcr": "ghcr.io/oorabona/openvpn:v2.6.17-alpine"
+  }
+}
