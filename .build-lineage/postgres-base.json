@@ -1,0 +1,19 @@
+{
+  "container": "postgres",
+  "version": "18-alpine",
+  "tag": "18-alpine",
+  "flavor": "base",
+  "dockerfile": "Dockerfile.base",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:daeff664e2f4bc24dd5a1d49fe9dabbb8843a6b0758374a390b4f05f92908d89",
+  "build_digest": "ec032caf8bc6",
+  "base_image_ref": "${BASE_IMAGE}:18-alpine",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-01-30T13:31:20+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/postgres:18-alpine",
+    "ghcr": "ghcr.io/oorabona/postgres:18-alpine"
+  }
+}
