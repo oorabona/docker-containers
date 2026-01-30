@@ -120,7 +120,7 @@ build_container() {
 
     # Extract major version from version string (e.g., "16-alpine" -> "16")
     local major_version
-    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
+    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1 || true)
     [[ -n "$major_version" ]] && build_args="$build_args --build-arg MAJOR_VERSION=$major_version"
 
     # Get upstream version if container has version.sh with --upstream support
