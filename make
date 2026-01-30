@@ -400,14 +400,15 @@ make() {
   local target=$1
   local wantedVersion=${2:-latest}
   local wantedTag=${3:-""}  # Optional: explicit tag (for variants, differs from version)
-  pushd ${target}
 
-  # Use focused version utility
+  # Use focused version utility (before pushd, since get_build_version does its own pushd)
+  local versions
   versions=$(get_build_version "$target" "$wantedVersion")
   if [ $? -ne 0 ]; then
-    popd
     return 1
   fi
+
+  pushd ${target}
 
   for version in $versions; do
     # Use explicit tag if provided, otherwise derive from version
