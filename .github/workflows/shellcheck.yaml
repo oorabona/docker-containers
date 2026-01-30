@@ -11,6 +11,7 @@ on:
     paths:
       - '**/*.sh'
       - 'make'
+      - '.github/workflows/shellcheck.yaml'
   workflow_dispatch:
 
 permissions:
