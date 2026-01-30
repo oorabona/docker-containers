@@ -166,7 +166,10 @@ build_container() {
     # Resolve and record base image digest for reproducibility
     # Parse the raw FROM line, then substitute known ARG values
     local base_image_raw
-    base_image_raw=$(grep -E '^FROM ' "$dockerfile" | head -1 | awk '{print $2}' || true)
+    # Use last FROM (final build stage = actual base image, not intermediate stages)
+    base_image_raw=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
+    # Fallback to last FROM if all have AS aliases
+    [[ -z "$base_image_raw" ]] && base_image_raw=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
     local base_image_ref="$base_image_raw"
 
     # Substitute known build ARGs into the FROM reference
@@ -175,6 +178,22 @@ build_container() {
         base_image_ref="${base_image_ref//\$VERSION/$version}"
         [[ -n "${major_version:-}" ]] && base_image_ref="${base_image_ref//\$\{MAJOR_VERSION\}/$major_version}"
         [[ -n "${upstream_version:-}" ]] && base_image_ref="${base_image_ref//\$\{UPSTREAM_VERSION\}/$upstream_version}"
+        # Resolve Dockerfile ARG defaults (e.g. ARG BASE_IMAGE=postgres)
+        while IFS= read -r arg_line; do
+            local arg_name="${arg_line%%=*}"
+            local arg_default="${arg_line#*=}"
+            # Strip surrounding quotes from ARG defaults (e.g. "alpine" → alpine)
+            arg_default="${arg_default%\"}"
+            arg_default="${arg_default#\"}"
+            arg_default="${arg_default%\'}"
+            arg_default="${arg_default#\'}"
+            [[ -z "$arg_name" || "$arg_name" == "$arg_line" ]] && continue
+            # Only substitute if still unresolved
+            if [[ "$base_image_ref" == *"\${$arg_name}"* || "$base_image_ref" == *"\$$arg_name"* ]]; then
+                base_image_ref="${base_image_ref//\$\{$arg_name\}/$arg_default}"
+                base_image_ref="${base_image_ref//\$$arg_name/$arg_default}"
+            fi
+        done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
         # Load additional ARGs from config.json if available
         if [[ -f "./config.json" ]]; then
             while IFS='=' read -r key val; do
@@ -261,7 +280,7 @@ build_container() {
     local build_args_json="{}"
     if [[ -n "${build_args:-}" ]]; then
         build_args_json=$(echo "$build_args" | grep -oP '(?<=--build-arg )\S+' | \
-            grep -vE '^(VERSION|MAJOR_VERSION|UPSTREAM_VERSION|NPROC|ENABLE_[A-Z_]+=)' | \
+            grep -vE '^(VERSION|MAJOR_VERSION|UPSTREAM_VERSION|NPROC|FLAVOR|BASE_IMAGE|ENABLE_[A-Z_]+=)' | \
             grep -vE '^RESTY_IMAGE_(BASE|TAG)=' | \
             awk -F= '{printf "\"%s\": \"%s\"\n", $1, $2}' | \
             paste -sd, | sed 's/^/{/;s/$/}/')
