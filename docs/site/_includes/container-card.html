@@ -78,8 +78,6 @@
                   data-tag="{{ variant.tag }}"
                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
-                  onclick="selectVariantTag(this)"
-                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectVariantTag(this);}"
                   role="button"
                   tabindex="0"
                   aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -133,7 +131,6 @@
              readonly
              aria-label="Docker pull command for {{ include.name }}">
       <button class="copy-btn" type="button"
-              onclick="copyToClipboard('pull-{{ include.name }}', this)"
               aria-label="Copy pull command to clipboard">
         <i class="ti ti-copy" aria-hidden="true"></i>
       </button>

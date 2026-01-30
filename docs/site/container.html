@@ -426,8 +426,11 @@ permalink: /container
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 
 <script>
+(function() {
+  'use strict';
+
   // Store baseurl from Jekyll for JavaScript use
-  const siteBaseurl = '{{ site.baseurl }}';
+  var siteBaseurl = '{{ site.baseurl }}';
 
   // Safe HTML rendering function using DOMPurify
   function safeSetHTML(element, html) {
@@ -474,8 +477,6 @@ permalink: /container
                 data-tag="${DOMPurify.sanitize(variant.tag)}"
                 data-size-amd64="${DOMPurify.sanitize(variant.size_amd64 || '')}"
                 data-size-arm64="${DOMPurify.sanitize(variant.size_arm64 || '')}"
-                onclick="selectDetailVariant(this)"
-                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectDetailVariant(this);}"
                 role="button"
                 tabindex="0"
                 aria-pressed="${isSelected}"
@@ -638,6 +639,23 @@ permalink: /container
     if (sizeArm64El) sizeArm64El.textContent = sizeArm64 || '—';
   }
 
+  // Event delegation for detail variant tags (click + keyboard)
+  document.addEventListener('click', function(e) {
+    var tag = e.target.closest('.variant-tag');
+    if (tag && tag.closest('.variants-section')) {
+      selectDetailVariant(tag);
+    }
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      var tag = e.target.closest('.variant-tag');
+      if (tag && tag.closest('.variants-section')) {
+        e.preventDefault();
+        selectDetailVariant(tag);
+      }
+    }
+  });
+
   document.addEventListener('DOMContentLoaded', async function() {
     const container = document.getElementById('container-detail');
     const params = new URLSearchParams(window.location.search);
@@ -735,4 +753,5 @@ permalink: /container
       `);
     }
   });
+})();
 </script>
