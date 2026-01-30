@@ -257,6 +257,17 @@ build_container() {
     local image_id
     image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
 
+    # Extract build args into JSON object (excluding VERSION/MAJOR_VERSION already tracked)
+    local build_args_json="{}"
+    if [[ -n "${build_args:-}" ]]; then
+        build_args_json=$(echo "$build_args" | grep -oP '(?<=--build-arg )\S+' | \
+            grep -vE '^(VERSION|MAJOR_VERSION|UPSTREAM_VERSION|NPROC|ENABLE_[A-Z_]+=)' | \
+            grep -vE '^RESTY_IMAGE_(BASE|TAG)=' | \
+            awk -F= '{printf "\"%s\": \"%s\"\n", $1, $2}' | \
+            paste -sd, | sed 's/^/{/;s/$/}/')
+        [[ -z "$build_args_json" || "$build_args_json" == "{}" ]] && build_args_json="{}"
+    fi
+
     cat > "$lineage_file" <<LINEAGE_EOF
 {
   "container": "$container",
@@ -275,7 +286,8 @@ build_container() {
   "images": {
     "dockerhub": "$dockerhub_image:$tag",
     "ghcr": "$ghcr_image:$tag"
-  }
+  },
+  "build_args": $build_args_json
 }
 LINEAGE_EOF
     log_info "Build lineage: $lineage_file"

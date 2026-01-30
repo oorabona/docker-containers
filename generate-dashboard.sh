@@ -26,6 +26,17 @@ get_build_lineage_field() {
     fi
 }
 
+# Get build_args from lineage as YAML key-value pairs (indented)
+# Usage: get_build_lineage_args <container> <indent>
+get_build_lineage_args() {
+    local container="$1"
+    local indent="${2:-    }"
+    local lineage_file="$SCRIPT_DIR/.build-lineage/${container}.json"
+    if [[ -f "$lineage_file" ]]; then
+        jq -r ".build_args // {} | to_entries[] | \"${indent}- name: \\\"\\(.key)\\\"\\n${indent}  value: \\\"\\(.value)\\\"\"" "$lineage_file" 2>/dev/null || true
+    fi
+}
+
 # Function to check if a directory should be skipped
 is_skip_directory() {
     local container=$1
@@ -168,6 +179,14 @@ dockerhub_username: "oorabona"
 ghcr_image: "ghcr.io/oorabona/${container}:${current_version}"
 dockerhub_image: "docker.io/oorabona/${container}:${current_version}"
 FRONTMATTER
+
+    # Add build args from lineage (3rd party library versions)
+    local lineage_args
+    lineage_args=$(get_build_lineage_args "$container" "  ")
+    if [[ -n "$lineage_args" ]]; then
+        echo "build_args:" >> "$page_file"
+        echo "$lineage_args" >> "$page_file"
+    fi
 
     # Add variant data to front matter if applicable
     local container_dir="./$container"
@@ -440,6 +459,14 @@ generate_data() {
   size_arm64: "$sizes_arm64"
 EOF
 
+        # Add build args from lineage (3rd party library versions)
+        local lineage_args
+        lineage_args=$(get_build_lineage_args "$container" "    ")
+        if [[ -n "$lineage_args" ]]; then
+            echo "  build_args:" >> "$DATA_FILE"
+            echo "$lineage_args" >> "$DATA_FILE"
+        fi
+
         # Check for variants
         local container_dir="./$container"
         if has_variants "$container_dir"; then
@@ -565,7 +592,7 @@ EOF
             if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
                 # Count only jobs starting with "Build" (e.g., "Build terraform (amd64)")
                 local run_build_total run_build_success
-                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed")] | length' 2>/dev/null || echo "0")
+                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion != "skipped")] | length' 2>/dev/null || echo "0")
                 run_build_success=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
 
                 build_total=$((build_total + run_build_total))
