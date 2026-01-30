@@ -428,6 +428,14 @@
               <span class="lineage-value">{{ page.base_image }}</span>
             </div>
             {% endif %}
+            {% if page.build_args %}
+            {% for arg in page.build_args %}
+            <div class="lineage-item">
+              <span class="lineage-label">{{ arg.name }}</span>
+              <span class="lineage-value">{{ arg.value }}</span>
+            </div>
+            {% endfor %}
+            {% endif %}
           </div>
         </section>
         {% endif %}

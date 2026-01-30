@@ -10,10 +10,11 @@
   "build_digest": "8165e5bdfc5d",
   "base_image_ref": "alpine:latest",
   "base_image_digest": "sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95",
-  "built_at": "2026-01-30T01:55:37+01:00",
+  "built_at": "2026-01-30T14:15:26+01:00",
   "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/openresty:1.29.2.1-alpine",
     "ghcr": "ghcr.io/oorabona/openresty:1.29.2.1-alpine"
-  }
+  },
+  "build_args": {"RESTY_VERSION": "1.29.2.1","RESTY_OPENSSL_VERSION": "1.1.1w","RESTY_OPENSSL_PATCH_VERSION": "1.1.1f","RESTY_PCRE_VERSION": "8.45","LUAROCKS_VERSION": "3.11.1"}
 }
