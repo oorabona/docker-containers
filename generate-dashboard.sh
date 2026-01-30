@@ -12,6 +12,19 @@ source "$SCRIPT_DIR/helpers/variant-utils.sh"
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 
+# Get a field from the build lineage JSON for a container
+# Falls back to "unknown" if lineage data doesn't exist
+get_build_lineage_field() {
+    local container="$1"
+    local field="$2"
+    local lineage_file="$SCRIPT_DIR/.build-lineage/${container}.json"
+    if [[ -f "$lineage_file" ]]; then
+        jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
 # Function to check if a directory should be skipped
 is_skip_directory() {
     local container=$1
@@ -268,6 +281,8 @@ generate_data() {
   description: "$(yaml_escape "$description")"
   ghcr_image: "ghcr.io/oorabona/$container:$current_version"
   dockerhub_image: "docker.io/oorabona/$container:$current_version"
+  build_digest: "$(get_build_lineage_field "$container" "build_digest")"
+  base_image: "$(get_build_lineage_field "$container" "base_image_ref")"
   github_username: "oorabona"
   dockerhub_username: "oorabona"
   pull_count: $pull_count
