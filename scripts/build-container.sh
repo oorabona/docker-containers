@@ -163,6 +163,47 @@ build_container() {
     fi
     label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 
+    # Resolve and record base image digest for reproducibility
+    # Parse the raw FROM line, then substitute known ARG values
+    local base_image_raw
+    base_image_raw=$(grep -E '^FROM ' "$dockerfile" | head -1 | awk '{print $2}' || true)
+    local base_image_ref="$base_image_raw"
+
+    # Substitute known build ARGs into the FROM reference
+    if [[ "$base_image_ref" =~ \$ ]]; then
+        base_image_ref="${base_image_ref//\$\{VERSION\}/$version}"
+        base_image_ref="${base_image_ref//\$VERSION/$version}"
+        [[ -n "${major_version:-}" ]] && base_image_ref="${base_image_ref//\$\{MAJOR_VERSION\}/$major_version}"
+        [[ -n "${upstream_version:-}" ]] && base_image_ref="${base_image_ref//\$\{UPSTREAM_VERSION\}/$upstream_version}"
+        # Load additional ARGs from config.json if available
+        if [[ -f "./config.json" ]]; then
+            while IFS='=' read -r key val; do
+                [[ -z "$key" ]] && continue
+                base_image_ref="${base_image_ref//\$\{$key\}/$val}"
+                base_image_ref="${base_image_ref//\$$key/$val}"
+            done < <(jq -r '.build_args // {} | to_entries[] | "\(.key)=\(.value)"' ./config.json 2>/dev/null || true)
+        fi
+        # Substitute CUSTOM_BUILD_ARGS if they contain relevant ARGs
+        if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
+            while read -r arg_val; do
+                local arg_name="${arg_val%%=*}"
+                local arg_value="${arg_val#*=}"
+                base_image_ref="${base_image_ref//\$\{$arg_name\}/$arg_value}"
+                base_image_ref="${base_image_ref//\$$arg_name/$arg_value}"
+            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oP '(?<=--build-arg )\S+' || true)
+        fi
+    fi
+
+    # Resolve digest if we have a concrete image reference (no remaining variables)
+    local base_digest=""
+    if [[ -n "$base_image_ref" && ! "$base_image_ref" =~ \$ ]]; then
+        base_digest=$(docker manifest inspect "$base_image_ref" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+        if [[ -n "$base_digest" ]]; then
+            label_args="$label_args --label org.opencontainers.image.base.digest=$base_digest"
+            log_info "Base image $base_image_ref pinned: ${base_digest:0:19}..."
+        fi
+    fi
+
     # Build behavior depends on context
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         # GitHub Actions: build locally without pushing (use --load)
@@ -206,6 +247,38 @@ build_container() {
 
         log_success "✅ Local build completed - layered image available in Docker daemon"
     fi
+
+    # Emit build lineage JSON for traceability
+    local lineage_dir="${PROJECT_ROOT:-.}/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local lineage_file="$lineage_dir/${container}${flavor:+-$flavor}.json"
+    local build_ts
+    build_ts=$(date -Iseconds)
+    local image_id
+    image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
+
+    cat > "$lineage_file" <<LINEAGE_EOF
+{
+  "container": "$container",
+  "version": "$version",
+  "tag": "$tag",
+  "flavor": "${flavor:-}",
+  "dockerfile": "$dockerfile",
+  "platform": "$platforms",
+  "runtime": "$runtime_info",
+  "image_id": "${image_id:-unknown}",
+  "build_digest": "${BUILD_DIGEST:-unknown}",
+  "base_image_ref": "${base_image_ref:-unknown}",
+  "base_image_digest": "${base_digest:-unresolved}",
+  "built_at": "$build_ts",
+  "github_actions": ${GITHUB_ACTIONS:+true}${GITHUB_ACTIONS:-false},
+  "images": {
+    "dockerhub": "$dockerhub_image:$tag",
+    "ghcr": "$ghcr_image:$tag"
+  }
+}
+LINEAGE_EOF
+    log_info "Build lineage: $lineage_file"
 }
 
 # Build all variants for a container
