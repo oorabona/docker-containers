@@ -7,6 +7,40 @@
 
 set -euo pipefail
 
+# Resolve a full version string to a variants.yaml tag
+# Usage: resolve_major_version <container_dir> <full_version>
+# Example: resolve_major_version ./postgres "18.1-alpine" → "18"
+# Returns: matching tag on stdout, exit 0 if matched, exit 1 if no match (returns original)
+resolve_major_version() {
+    local container_dir="$1"
+    local full_version="$2"
+
+    local tags
+    tags=$(list_versions "$container_dir")
+
+    # Direct match first (e.g., "18" == "18")
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if [[ "$full_version" == "$tag" ]]; then
+            echo "$tag"
+            return 0
+        fi
+    done <<< "$tags"
+
+    # Prefix match: "18.1-alpine" starts with "18." or "18-"
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if [[ "$full_version" == "${tag}."* || "$full_version" == "${tag}-"* ]]; then
+            echo "$tag"
+            return 0
+        fi
+    done <<< "$tags"
+
+    # No match — return original
+    echo "$full_version"
+    return 1
+}
+
 # Check if a container has variants
 has_variants() {
     local container_dir="$1"
@@ -330,6 +364,6 @@ list_variant_tags() {
 }
 
 # Export functions for use in other scripts
-export -f has_variants list_versions version_count list_variants variant_count
+export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant flavor_arg_name base_suffix
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_variant_tags
