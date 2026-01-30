@@ -323,7 +323,7 @@ runs:
       uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: 'trivy-results.sarif'
-        category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}'
+        category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
         wait-for-processing: false
       continue-on-error: true  # Don't fail if SARIF upload fails (file may not exist)
 

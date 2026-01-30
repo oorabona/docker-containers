@@ -430,7 +430,7 @@ EOF
         activity_yaml="recent_activity:"
         while IFS= read -r run_line; do
             [[ -z "$run_line" ]] && continue
-            local run_name run_status run_conclusion run_date run_url
+            local run_name run_conclusion run_date run_url
             run_name=$(echo "$run_line" | cut -d'|' -f1)
             run_conclusion=$(echo "$run_line" | cut -d'|' -f2)
             run_date=$(echo "$run_line" | cut -d'|' -f3)

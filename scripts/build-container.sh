@@ -16,7 +16,7 @@ source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 check_multiplatform_support() {
     # Cache the result to avoid repeated checks
     if [[ -n "${MULTIPLATFORM_SUPPORTED:-}" ]]; then
-        return $([ "$MULTIPLATFORM_SUPPORTED" = "true" ] && echo 0 || echo 1)
+        [[ "$MULTIPLATFORM_SUPPORTED" = "true" ]] && return 0 || return 1
     fi
     
     # Method 1: Check for QEMU ARM64 emulation via binfmt_misc
@@ -299,9 +299,10 @@ build_container_variants() {
     # Check if container has variants
     if ! has_variants "$container_dir"; then
         log_info "$container has no variants, building single image..."
-        build_container "$container" "$major_version" "$major_version"
+        local rc=0
+        build_container "$container" "$major_version" "$major_version" || rc=$?
         echo "[{\"name\":\"default\",\"tag\":\"$major_version\",\"flavor\":\"\",\"status\":\"built\"}]"
-        return $?
+        return $rc
     fi
 
     # Get base suffix from variants.yaml (e.g., "-alpine")

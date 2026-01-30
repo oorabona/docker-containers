@@ -44,7 +44,7 @@ extension_installed() {
 test_connectivity() {
     info "Testing PostgreSQL connectivity..."
 
-    for i in {1..30}; do
+    for _ in {1..30}; do
         if docker exec "$CONTAINER_NAME" pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" &>/dev/null; then
             pass "PostgreSQL is ready"
             return 0

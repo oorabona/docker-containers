@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 export DOCKER_CLI_EXPERIMENTAL=enabled
-export NPROC=$(nproc)
+NPROC=$(nproc)
+export NPROC
 export DOCKERCOMPOSE="docker compose"
 export DOCKEROPTS="${DOCKEROPTS:-}"
 
@@ -14,7 +15,9 @@ source "$(dirname "$0")/scripts/build-container.sh"
 source "$(dirname "$0")/scripts/push-container.sh"
 
 # Source optional config files if they exist
+# shellcheck disable=SC1090
 [ -r "${CONFIG_MK:-}" ] && source "$CONFIG_MK"
+# shellcheck disable=SC1090
 [ -r "${DEPLOY_MK:-}" ] && source "$DEPLOY_MK"
 
 targets=$(find -maxdepth 2 -name "Dockerfile" | cut -d'/' -f2 | sort -u)
@@ -293,15 +296,17 @@ do_it() {
   if [[ "$op" == "build" || "$op" == "push" ]]; then
     # First, check if there's a custom executable script to set build args
     if [ -x "$op" ]; then
+      # shellcheck disable=SC1090
       . "$op"
     fi
     # Then proceed with buildx (whether or not custom script existed)
     do_buildx "$op" "$registry"
     return $?
   fi
-  
+
   # For other operations, check for custom scripts or use docker-compose
   if [ -x "$op" ]; then
+    # shellcheck disable=SC1090
     . "$op"
     return $?
   elif [ -r "docker-compose.yml" ]; then
@@ -316,7 +321,8 @@ do_it() {
 do_buildx() {
   local op=$1
   local registry=${2:-""}
-  local container=$(basename "$PWD")
+  local container
+  container=$(basename "$PWD")
 
   if [[ "$op" == "build" ]]; then
     if [[ -n "${FLAVOR:-}" ]]; then
