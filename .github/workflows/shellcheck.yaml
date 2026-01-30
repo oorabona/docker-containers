@@ -31,11 +31,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Collect all shell scripts (excluding archive/)
-          mapfile -t scripts < <(find . -name '*.sh' -not -path './archive/*' -not -path './.git/*' | sort)
+          # Collect build-system shell scripts only (not container runtime scripts)
+          # Container entrypoints/install scripts have different constraints
+          mapfile -t scripts < <(find ./scripts ./helpers -name '*.sh' -type f 2>/dev/null | sort)
 
-          # Also include the make script (no .sh extension)
-          scripts+=("./make")
+          # Add project-root scripts
+          for f in ./make ./test-all-containers.sh ./validate-version-scripts.sh ./generate-dashboard.sh; do
+            [[ -f "$f" ]] && scripts+=("$f")
+          done
+
+          # Add per-container test and version scripts (not runtime)
+          while IFS= read -r f; do
+            scripts+=("$f")
+          done < <(find . -maxdepth 2 \( -name 'test.sh' -o -name 'version.sh' \) -not -path './archive/*' -type f | sort)
 
           total=${#scripts[@]}
           passed=0

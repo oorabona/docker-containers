@@ -148,7 +148,7 @@ done
 echo ""
 
 # Failed containers summary
-unique_failed=($(printf "%s\n" "${failed_containers[@]}" | sort -u))
+mapfile -t unique_failed < <(printf "%s\n" "${failed_containers[@]}" | sort -u)
 if [[ ${#unique_failed[@]} -gt 0 ]]; then
     echo -e "${RED}❌ Failed containers (${#unique_failed[@]}):"
     printf '  - %s\n' "${unique_failed[@]}"
