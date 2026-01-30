@@ -546,119 +546,81 @@ permalink: /container
 
   // Build static HTML content safely
   function buildContainerHTML(containerData, containerName) {
-    const container = document.createElement('div');
-
-    // Back link - use baseurl
-    const backLink = document.createElement('a');
-    backLink.href = siteBaseurl + '/';
-    backLink.className = 'back-link';
-    backLink.innerHTML = '<i class="ti ti-arrow-left"></i> Back to Dashboard';
-    container.appendChild(backLink);
-
-    // Header
-    const header = document.createElement('div');
-    header.className = 'detail-header';
-    header.innerHTML = `
-      <div class="detail-title">
-        <h1>${DOMPurify.sanitize(containerData.name)}</h1>
-        <span class="detail-badge">${DOMPurify.sanitize(containerData.current_version)}</span>
-      </div>
-      <div class="detail-actions">
-        <a href="https://github.com/oorabona/docker-containers/tree/master/${encodeURIComponent(containerName)}"
-           class="btn" target="_blank" rel="noopener"
-           aria-label="View source code on GitHub">
-          <i class="ti ti-brand-github" aria-hidden="true"></i> Source
-        </a>
-        <a href="https://ghcr.io/oorabona/${encodeURIComponent(containerName)}"
-           class="btn" target="_blank" rel="noopener"
-           aria-label="View package on GitHub Container Registry">
-          <i class="ti ti-package" aria-hidden="true"></i> GHCR
-        </a>
-      </div>
-    `;
-    container.appendChild(header);
-
-    // Meta cards with data attributes for dynamic updates
-    const meta = document.createElement('div');
-    meta.className = 'detail-meta';
-    meta.id = 'detail-meta';
-    meta.innerHTML = `
-      <div class="meta-card glass">
-        <div class="meta-card-label">Status</div>
-        <div class="meta-card-value">${DOMPurify.sanitize(containerData.status_text)}</div>
-      </div>
-      <div class="meta-card glass">
-        <div class="meta-card-label">Current Tag</div>
-        <div class="meta-card-value" data-meta="current-tag">${DOMPurify.sanitize(containerData.current_version)}</div>
-      </div>
-      <div class="meta-card glass">
-        <div class="meta-card-label">Docker Hub Pulls</div>
-        <div class="meta-card-value">${DOMPurify.sanitize(containerData.pull_count_formatted || '0')}</div>
-      </div>
-      <div class="meta-card glass">
-        <div class="meta-card-label">Stars</div>
-        <div class="meta-card-value">
-          <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);"></i>
-          ${DOMPurify.sanitize(String(containerData.star_count || 0))}
-        </div>
-      </div>
-      <div class="meta-card glass">
-        <div class="meta-card-label">Size (amd64)</div>
-        <div class="meta-card-value" data-meta="size-amd64">${DOMPurify.sanitize(containerData.size_amd64 || '—')}</div>
-      </div>
-      <div class="meta-card glass">
-        <div class="meta-card-label">Size (arm64)</div>
-        <div class="meta-card-value" data-meta="size-arm64">${DOMPurify.sanitize(containerData.size_arm64 || '—')}</div>
-      </div>
-    `;
-    container.appendChild(meta);
-
-    // Build Lineage section
+    var s = DOMPurify.sanitize;
+    var baseurl = siteBaseurl || '';
     var buildDigest = containerData.build_digest || '';
     var baseImage = containerData.base_image || '';
+
+    var html = '';
+
+    // Back link
+    html += '<a href="' + baseurl + '/" class="back-link"><i class="ti ti-arrow-left"></i> Back to Dashboard</a>';
+
+    // Header
+    html += '<div class="detail-header">';
+    html += '  <div class="detail-title">';
+    html += '    <h1>' + s(containerData.name) + '</h1>';
+    html += '    <span class="detail-badge">' + s(containerData.current_version) + '</span>';
+    html += '  </div>';
+    html += '  <div class="detail-actions">';
+    html += '    <a href="https://github.com/oorabona/docker-containers/tree/master/' + encodeURIComponent(containerName) + '"';
+    html += '       class="btn" target="_blank" rel="noopener" aria-label="View source code on GitHub">';
+    html += '      <i class="ti ti-brand-github" aria-hidden="true"></i> Source</a>';
+    html += '    <a href="https://ghcr.io/oorabona/' + encodeURIComponent(containerName) + '"';
+    html += '       class="btn" target="_blank" rel="noopener" aria-label="View package on GitHub Container Registry">';
+    html += '      <i class="ti ti-package" aria-hidden="true"></i> GHCR</a>';
+    html += '  </div>';
+    html += '</div>';
+
+    // Meta cards
+    html += '<div class="detail-meta" id="detail-meta">';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Status</div>';
+    html += '    <div class="meta-card-value">' + s(containerData.status_text) + '</div></div>';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Current Tag</div>';
+    html += '    <div class="meta-card-value" data-meta="current-tag">' + s(containerData.current_version) + '</div></div>';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Docker Hub Pulls</div>';
+    html += '    <div class="meta-card-value">' + s(containerData.pull_count_formatted || '0') + '</div></div>';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Stars</div>';
+    html += '    <div class="meta-card-value"><i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);" aria-hidden="true"></i> ';
+    html += s(String(containerData.star_count || 0)) + '</div></div>';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Size (amd64)</div>';
+    html += '    <div class="meta-card-value" data-meta="size-amd64">' + s(containerData.size_amd64 || '—') + '</div></div>';
+    html += '  <div class="meta-card glass"><div class="meta-card-label">Size (arm64)</div>';
+    html += '    <div class="meta-card-value" data-meta="size-arm64">' + s(containerData.size_arm64 || '—') + '</div></div>';
+    html += '</div>';
+
+    // Build Lineage
     if (buildDigest && buildDigest !== 'unknown') {
-      var lineage = document.createElement('section');
-      lineage.className = 'lineage-section glass';
-      lineage.setAttribute('aria-label', 'Build lineage information');
-      var lineageHTML = '<div class="lineage-header"><i class="ti ti-git-branch" aria-hidden="true"></i> Build Lineage</div>';
-      lineageHTML += '<div class="lineage-grid">';
-      lineageHTML += '<div class="lineage-item"><span class="lineage-label">Build Digest</span>';
-      lineageHTML += '<span class="lineage-value">' + DOMPurify.sanitize(buildDigest) + '</span></div>';
+      html += '<section class="lineage-section glass" aria-label="Build lineage information">';
+      html += '  <div class="lineage-header"><i class="ti ti-git-branch" aria-hidden="true"></i> Build Lineage</div>';
+      html += '  <div class="lineage-grid">';
+      html += '    <div class="lineage-item"><span class="lineage-label">Build Digest</span>';
+      html += '      <span class="lineage-value">' + s(buildDigest) + '</span></div>';
       if (baseImage && baseImage !== 'unknown') {
-        lineageHTML += '<div class="lineage-item"><span class="lineage-label">Base Image</span>';
-        lineageHTML += '<span class="lineage-value">' + DOMPurify.sanitize(baseImage) + '</span></div>';
+        html += '    <div class="lineage-item"><span class="lineage-label">Base Image</span>';
+        html += '      <span class="lineage-value">' + s(baseImage) + '</span></div>';
       }
-      lineageHTML += '</div>';
-      lineage.innerHTML = lineageHTML;
-      container.appendChild(lineage);
+      html += '  </div>';
+      html += '</section>';
     }
 
-    // Variants section (if container has variants)
-    const variantsHTML = buildVariantsHTML(containerData);
+    // Variants
+    var variantsHTML = buildVariantsHTML(containerData);
     if (variantsHTML) {
-      const variantsDiv = document.createElement('div');
-      variantsDiv.innerHTML = variantsHTML;
-      container.appendChild(variantsDiv.firstElementChild);
+      html += variantsHTML;
     }
 
-    // README section
-    const readmeSection = document.createElement('div');
-    readmeSection.className = 'readme-section glass';
-    readmeSection.innerHTML = `
-      <div class="readme-header">
-        <i class="ti ti-file-text"></i>
-        <h2>Documentation</h2>
-      </div>
-      <div class="readme-content" id="readme-content">
-        <div class="detail-loading" style="padding: 2rem;">
-          <i class="ti ti-loader-2 spin"></i>
-          <p>Loading README...</p>
-        </div>
-      </div>
-    `;
-    container.appendChild(readmeSection);
+    // README
+    html += '<div class="readme-section glass">';
+    html += '  <div class="readme-header"><i class="ti ti-file-text"></i><h2>Documentation</h2></div>';
+    html += '  <div class="readme-content" id="readme-content">';
+    html += '    <div class="detail-loading" style="padding: 2rem;">';
+    html += '      <i class="ti ti-loader-2 spin"></i><p>Loading README...</p>';
+    html += '    </div>';
+    html += '  </div>';
+    html += '</div>';
 
-    return container.innerHTML;
+    return html;
   }
 
   // Build error HTML
