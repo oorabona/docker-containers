@@ -275,8 +275,8 @@ variant_image_tag() {
         # No suffix = base variant
         echo "${pg_version}${base_sfx}"
     else
-        # Insert variant suffix before base suffix
-        echo "${pg_version}${suffix}${base_sfx}"
+        # Append variant suffix after base suffix (upstream convention)
+        echo "${pg_version}${base_sfx}${suffix}"
     fi
 }
 

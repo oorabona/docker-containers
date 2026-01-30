@@ -79,7 +79,7 @@
       <!-- Multi-version structure: group by version -->
       {% for version in include.versions %}
       <div class="version-group">
-        <div class="version-label">{{ version.tag }}</div>
+        <div class="version-label">{{ version.base_tag | default: version.tag }}</div>
         <div class="variant-tags">
           {% for variant in version.variants %}
             <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
