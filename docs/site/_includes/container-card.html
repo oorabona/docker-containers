@@ -52,6 +52,15 @@
       <span class="card-meta-value" data-meta="size-arm64">{{ include.size_arm64 | default: "—" }}</span>
     </div>
     {% endif %}
+    {% if include.build_digest and include.build_digest != "unknown" %}
+    <div class="card-meta-item">
+      <span class="card-meta-label">Build</span>
+      <span class="card-meta-value card-lineage-digest" title="Build digest: {{ include.build_digest }}">
+        <i class="ti ti-fingerprint" style="font-size: 0.75rem;" aria-hidden="true"></i>
+        {{ include.build_digest | truncate: 12, "" }}
+      </span>
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
