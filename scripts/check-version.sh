@@ -24,7 +24,7 @@ check_container_version() {
     fi
     
     # Get the latest upstream version (version.sh now single-purpose)
-    pushd "${target}" > /dev/null 2>&1
+    pushd "${target}" > /dev/null 2>&1 || return 1
     local latest_version
     latest_version=$(./version.sh 2>/dev/null)
     local exit_code=$?
@@ -34,7 +34,7 @@ check_container_version() {
         echo "$latest_version"
     else
         log_error "Failed to get latest upstream version for $target"
-        popd > /dev/null 2>&1
+        popd > /dev/null 2>&1 || true
         echo "unknown"
         return 1
     fi
@@ -55,7 +55,7 @@ check_container_version() {
         log_warning "No published version found (container not yet released)"
     fi
 
-    popd > /dev/null 2>&1
+    popd > /dev/null 2>&1 || true
     return 0  # Explicit success return
 }
 
@@ -67,11 +67,11 @@ get_build_version() {
     # Note: We assume validation has already been done by the calling function
     # since we're about to pushd into the directory
     
-    pushd "${target}" > /dev/null 2>&1
+    pushd "${target}" > /dev/null 2>&1 || return 1
     
     if [[ ! -f "version.sh" ]]; then
         log_error "No version.sh script found in $target directory!"
-        popd > /dev/null 2>&1
+        popd > /dev/null 2>&1 || true
         return 1
     fi
     
@@ -107,17 +107,17 @@ get_build_version() {
         versions=$(./version.sh 2>/dev/null)
         if [ $? -ne 0 ] || [ -z "$versions" ]; then
             log_error "Could not determine version to build for $target"
-            popd > /dev/null 2>&1
+            popd > /dev/null 2>&1 || true
             return 1
         fi
     elif [ $exit_code -ne 0 ] || [ -z "$versions" ]; then
         log_error "Version checking returned false, please ensure version is correct: $wanted_version"
-        popd > /dev/null 2>&1
+        popd > /dev/null 2>&1 || true
         return 1
     fi
     
     echo "$versions"
-    popd > /dev/null 2>&1
+    popd > /dev/null 2>&1 || true
     return 0  # Explicit success return
 }
 

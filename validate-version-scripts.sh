@@ -178,7 +178,7 @@ test_version_script() {
         chmod +x "$container/version.sh"
     fi
     
-    cd "$container"
+    cd "$container" || return 1
     
     # Test syntax first
     echo "  📋 Checking syntax..."
