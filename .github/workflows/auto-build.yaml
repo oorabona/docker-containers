@@ -433,6 +433,15 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload build lineage
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-lineage-${{ matrix.build.container }}${{ matrix.build.flavor && format('-{0}', matrix.build.flavor) || '' }}
+          path: .build-lineage/
+          if-no-files-found: ignore
+          retention-days: 1
+
   create-manifest:
     name: Create Manifest ${{ matrix.build.container }}:${{ matrix.build.tag }}
     needs: [detect-containers, build-and-push]
@@ -612,14 +621,63 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY
 
+  commit-lineage:
+    name: Commit build lineage
+    needs: [build-and-push, create-manifest]
+    if: |
+      always() &&
+      needs.build-and-push.result == 'success' &&
+      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all lineage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-lineage-*
+          path: .build-lineage-artifacts/
+          merge-multiple: false
+
+      - name: Merge and commit lineage files
+        run: |
+          # Merge all downloaded lineage artifacts into .build-lineage/
+          mkdir -p .build-lineage
+          if [ -d ".build-lineage-artifacts" ]; then
+            find .build-lineage-artifacts -name '*.json' -exec cp {} .build-lineage/ \;
+            echo "Merged lineage files:"
+            ls -la .build-lineage/
+          else
+            echo "No lineage artifacts found"
+            exit 0
+          fi
+
+          # Commit if there are changes
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .build-lineage/
+          if git diff --cached --quiet; then
+            echo "No lineage changes to commit"
+          else
+            git commit -m "ci: update build lineage metadata"
+            git push
+            echo "Build lineage committed"
+          fi
+
   update-dashboard:
-    needs: [detect-containers, build-and-push, create-manifest]
+    needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
     # Only update dashboard after successful builds and manifests merged to master
     # This prevents dashboard updates during PR testing
     if: |
       always() &&
       needs.build-and-push.result == 'success' &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
+      (needs.commit-lineage.result == 'success' || needs.commit-lineage.result == 'skipped') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml

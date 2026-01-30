@@ -1,0 +1,19 @@
+{
+  "container": "terraform",
+  "version": "1.14.4-alpine",
+  "tag": "1.14.4-alpine",
+  "flavor": "full",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:336ae1c48b2b590fb933242644e1e48cb07127b2ebb04e100b533ca9436b0a73",
+  "build_digest": "88b7bfea6189",
+  "base_image_ref": "hashicorp/terraform:${UPSTREAM_VERSION:-1.14.4-alpine}",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-01-30T01:57:05+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/terraform:1.14.4-alpine",
+    "ghcr": "ghcr.io/oorabona/terraform:1.14.4-alpine"
+  }
+}

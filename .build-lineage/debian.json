@@ -1,0 +1,19 @@
+{
+  "container": "debian",
+  "version": "trixie",
+  "tag": "trixie",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:79318fa9e7246c61f50e935f961945f8199b2f55c94dd0401d21fc9d60a272bf",
+  "build_digest": "b7889484329e",
+  "base_image_ref": "debian:trixie",
+  "base_image_digest": "sha256:a3b5f4f0286249a124bfe9845b3aec0f88de32ff31dd8d7e1b945f9f98d116b0",
+  "built_at": "2026-01-30T01:55:28+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/debian:trixie",
+    "ghcr": "ghcr.io/oorabona/debian:trixie"
+  }
+}

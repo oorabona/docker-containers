@@ -13,7 +13,6 @@
 
 # Build artifacts
 *.log
-.build-lineage/
 
 # Dashboard statistics (dynamically generated)
 .dashboard-stats
@@ -22,6 +21,7 @@
 index.md
 docs/site/_data/containers.yml
 docs/site/_data/stats.yml
+docs/site/_containers/
 
 # OS generated files
 .DS_Store

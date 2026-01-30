@@ -1,0 +1,19 @@
+{
+  "container": "sslh",
+  "version": "v2.3.0-alpine",
+  "tag": "v2.3.0-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:7d443ea118e8f66b349e368ae0b315c0eec31b193cdf6694368f5daa696f1348",
+  "build_digest": "3fc7c887b492",
+  "base_image_ref": "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-01-30T01:56:14+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/sslh:v2.3.0-alpine",
+    "ghcr": "ghcr.io/oorabona/sslh:v2.3.0-alpine"
+  }
+}

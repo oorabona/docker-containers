@@ -11,6 +11,7 @@ source "$SCRIPT_DIR/helpers/variant-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
+CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 
 # Get a field from the build lineage JSON for a container
 # Falls back to "unknown" if lineage data doesn't exist
@@ -122,6 +123,146 @@ yaml_escape() {
     echo "$str"
 }
 
+# Generate a Jekyll collection page for a container
+# Creates _containers/<name>.md with front matter and README content
+generate_container_page() {
+    local container="$1"
+    local current_version="$2"
+    local latest_version="$3"
+    local status_color="$4"
+    local status_text="$5"
+    local build_status="$6"
+    local description="$7"
+    local pull_count="$8"
+    local pull_count_formatted="$9"
+    local star_count="${10}"
+    local sizes_amd64="${11}"
+    local sizes_arm64="${12}"
+
+    local page_file="$CONTAINERS_DIR/${container}.md"
+    local build_digest base_image
+
+    build_digest=$(get_build_lineage_field "$container" "build_digest")
+    base_image=$(get_build_lineage_field "$container" "base_image_ref")
+
+    # Write front matter
+    cat > "$page_file" << FRONTMATTER
+---
+layout: container-detail
+name: "${container}"
+current_version: "${current_version}"
+latest_version: "${latest_version}"
+status_color: "${status_color}"
+status_text: "${status_text}"
+build_status: "${build_status}"
+description: "$(yaml_escape "$description")"
+build_digest: "${build_digest}"
+base_image: "${base_image}"
+pull_count: ${pull_count}
+pull_count_formatted: "${pull_count_formatted}"
+star_count: ${star_count}
+size_amd64: "${sizes_amd64}"
+size_arm64: "${sizes_arm64}"
+github_username: "oorabona"
+dockerhub_username: "oorabona"
+ghcr_image: "ghcr.io/oorabona/${container}:${current_version}"
+dockerhub_image: "docker.io/oorabona/${container}:${current_version}"
+FRONTMATTER
+
+    # Add variant data to front matter if applicable
+    local container_dir="./$container"
+    if has_variants "$container_dir"; then
+        echo "has_variants: true" >> "$page_file"
+
+        local ver_count
+        ver_count=$(version_count "$container_dir")
+
+        if [[ "$ver_count" -gt 0 ]]; then
+            echo "versions:" >> "$page_file"
+            while IFS= read -r ver_tag; do
+                [[ -z "$ver_tag" ]] && continue
+                echo "  - tag: \"$ver_tag\"" >> "$page_file"
+                echo "    variants:" >> "$page_file"
+                while IFS= read -r variant_name; do
+                    [[ -z "$variant_name" ]] && continue
+                    local variant_tag variant_desc is_default
+                    variant_tag=$(variant_image_tag "$ver_tag" "$variant_name" "$container_dir")
+                    variant_desc=$(variant_property "$container_dir" "$variant_name" "description" "$ver_tag")
+                    is_default=$(variant_property "$container_dir" "$variant_name" "default" "$ver_tag")
+                    [[ "$is_default" != "true" ]] && is_default="false"
+                    cat >> "$page_file" << VARIANT
+      - name: "${variant_name}"
+        tag: "${variant_tag}"
+        description: "$(yaml_escape "$variant_desc")"
+        is_default: ${is_default}
+VARIANT
+                    # Get sizes for this variant
+                    if [[ "$current_version" != "no-published-version" ]]; then
+                        local var_sizes_raw var_size_amd64="" var_size_arm64=""
+                        var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+                        if [[ -n "$var_sizes_raw" ]]; then
+                            var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                            var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+                        fi
+                        echo "        size_amd64: \"$var_size_amd64\"" >> "$page_file"
+                        echo "        size_arm64: \"$var_size_arm64\"" >> "$page_file"
+                    else
+                        echo "        size_amd64: \"\"" >> "$page_file"
+                        echo "        size_arm64: \"\"" >> "$page_file"
+                    fi
+                done < <(list_variants "$container_dir" "$ver_tag")
+            done < <(list_versions "$container_dir")
+        else
+            echo "variants:" >> "$page_file"
+            while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+                local variant_tag variant_desc is_default
+                variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
+                variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
+                is_default=$(variant_property "$container_dir" "$variant_name" "default")
+                [[ "$is_default" != "true" ]] && is_default="false"
+                cat >> "$page_file" << VARIANT
+  - name: "${variant_name}"
+    tag: "${variant_tag}"
+    description: "$(yaml_escape "$variant_desc")"
+    is_default: ${is_default}
+VARIANT
+                if [[ "$current_version" != "no-published-version" ]]; then
+                    local var_sizes_raw var_size_amd64="" var_size_arm64=""
+                    var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+                    if [[ -n "$var_sizes_raw" ]]; then
+                        var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                        var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+                    fi
+                    echo "    size_amd64: \"$var_size_amd64\"" >> "$page_file"
+                    echo "    size_arm64: \"$var_size_arm64\"" >> "$page_file"
+                else
+                    echo "    size_amd64: \"\"" >> "$page_file"
+                    echo "    size_arm64: \"\"" >> "$page_file"
+                fi
+            done < <(list_variants "$container_dir")
+        fi
+    else
+        echo "has_variants: false" >> "$page_file"
+    fi
+
+    echo "---" >> "$page_file"
+
+    # Append README content (strip front matter if present)
+    if [[ -f "$container/README.md" ]]; then
+        awk '
+            BEGIN { in_fm = 0; fm_done = 0 }
+            NR == 1 && /^---$/ { in_fm = 1; next }
+            in_fm && /^---$/ { in_fm = 0; fm_done = 1; next }
+            in_fm { next }
+            { print }
+        ' "$container/README.md" >> "$page_file"
+    else
+        echo "" >> "$page_file"
+        echo "No README available for this container." >> "$page_file"
+    fi
+}
+
 # Get Docker Hub pull count for a container
 # Get Docker Hub stats (pulls and stars)
 # Usage: get_dockerhub_stats <user> <repo>
@@ -220,6 +361,10 @@ generate_data() {
     cd "$SCRIPT_DIR"
 
     local total=0 up_to_date=0 updates_available=0
+
+    # Prepare containers collection directory
+    mkdir -p "$CONTAINERS_DIR"
+    rm -f "$CONTAINERS_DIR"/*.md
 
     # Start YAML file
     echo "# Auto-generated container data" > "$DATA_FILE"
@@ -382,6 +527,12 @@ EOF
         fi
 
         echo "" >> "$DATA_FILE"
+
+        # Generate Jekyll collection page for this container
+        generate_container_page "$container" "$current_version" "$latest_version" \
+            "$status_color" "$status_text" "$build_status" "$description" \
+            "$pull_count" "$pull_count_formatted" "$star_count" \
+            "$sizes_amd64" "$sizes_arm64"
     done
 
     # Calculate build success rate from auto-build workflow jobs (last 30 days)
