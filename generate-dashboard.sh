@@ -13,13 +13,32 @@ DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 
+# Resolve the lineage JSON file for a container
+# Tries {container}.json first, then falls back to {container}-*.json (first match)
+resolve_lineage_file() {
+    local container="$1"
+    local lineage_dir="$SCRIPT_DIR/.build-lineage"
+    local lineage_file="$lineage_dir/${container}.json"
+    if [[ -f "$lineage_file" ]]; then
+        echo "$lineage_file"
+        return
+    fi
+    # Fallback: flavored lineage files (e.g. postgres-base.json)
+    local fallback
+    fallback=$(ls "$lineage_dir/${container}"-*.json 2>/dev/null | head -1)
+    if [[ -n "$fallback" ]]; then
+        echo "$fallback"
+    fi
+}
+
 # Get a field from the build lineage JSON for a container
 # Falls back to "unknown" if lineage data doesn't exist
 get_build_lineage_field() {
     local container="$1"
     local field="$2"
-    local lineage_file="$SCRIPT_DIR/.build-lineage/${container}.json"
-    if [[ -f "$lineage_file" ]]; then
+    local lineage_file
+    lineage_file=$(resolve_lineage_file "$container")
+    if [[ -n "$lineage_file" ]]; then
         jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null || echo "unknown"
     else
         echo "unknown"
@@ -31,8 +50,9 @@ get_build_lineage_field() {
 get_build_lineage_args() {
     local container="$1"
     local indent="${2:-    }"
-    local lineage_file="$SCRIPT_DIR/.build-lineage/${container}.json"
-    if [[ -f "$lineage_file" ]]; then
+    local lineage_file
+    lineage_file=$(resolve_lineage_file "$container")
+    if [[ -n "$lineage_file" ]]; then
         jq -r ".build_args // {} | to_entries[] | \"${indent}- name: \\\"\\(.key)\\\"\\n${indent}  value: \\\"\\(.value)\\\"\"" "$lineage_file" 2>/dev/null || true
     fi
 }
