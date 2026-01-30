@@ -1,0 +1,19 @@
+{
+  "container": "openresty",
+  "version": "1.29.2.1-alpine",
+  "tag": "1.29.2.1-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "Podman",
+  "image_id": "sha256:92b0e044120f7c38800164814370cfc94d7e03a787173316aba0ca7f2cd534ce",
+  "build_digest": "8165e5bdfc5d",
+  "base_image_ref": "alpine:latest",
+  "base_image_digest": "sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95",
+  "built_at": "2026-01-30T01:55:37+01:00",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "docker.io/oorabona/openresty:1.29.2.1-alpine",
+    "ghcr": "ghcr.io/oorabona/openresty:1.29.2.1-alpine"
+  }
+}

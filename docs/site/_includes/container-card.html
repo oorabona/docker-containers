@@ -149,7 +149,7 @@
 
   <!-- Quick Links -->
   <nav class="card-links" aria-label="Container links">
-    <a href="{{ '/container?name=' | append: include.name | relative_url }}"
+    <a href="{{ '/container/' | append: include.name | append: '/' | relative_url }}"
        class="card-link" title="View Details">
       <i class="ti ti-info-circle" aria-hidden="true"></i> Details
     </a>

@@ -5,6 +5,12 @@ description: >-
 baseurl: "/docker-containers"
 url: "https://oorabona.github.io"
 
+# Collections
+collections:
+  containers:
+    output: true
+    permalink: /container/:name/
+
 # Build settings
 markdown: kramdown
 # theme: minima  # Disabled - using custom glassmorphism layouts
