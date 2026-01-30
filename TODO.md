@@ -12,12 +12,7 @@ _No high priority tasks remaining_
 
 ### Medium Priority
 
-- [ ] CI: Add shellcheck validation to CI pipeline (F-003 from CI-MAKE-BUILD review)
-- [ ] CI: Standardize all containers with `build` scripts (Phase 2)
-- [ ] CI: Pin base image SHA digests for reproducible builds (Phase 2)
-- [ ] CI: Evaluate `skopeo copy` for Docker Hub push (Phase 2)
-- [ ] CI: Lineage JSON output from ./make build (Phase 3)
-- [ ] CI: Dashboard integration for build lineage (Phase 3)
+_No medium priority tasks remaining_
 
 ### Low Priority
 
@@ -47,6 +42,12 @@ _No high priority tasks remaining_
 - [x] ✅ gh-pages: Responsive design + WCAG 2.2 compliance (2026-01-29)
 - [x] ✅ terraform: Implement flavors (base, aws, azure, gcp, full) - 84% size reduction for base (2026-01-29)
 - [x] ✅ CI: Refactor composite action to use ./make build — fixes openresty CI failure, eliminates build logic divergence (2026-01-30)
+- [x] ✅ CI: Add shellcheck validation to CI pipeline — .github/workflows/shellcheck.yaml (2026-01-30)
+- [x] ✅ CI: Standardize all containers with build scripts — audit confirmed already done (openresty+terraform have custom scripts, rest use standard make flow) (2026-01-30)
+- [x] ✅ CI: Pin base image SHA digests — resolve FROM variables via config.json/build args, label with org.opencontainers.image.base.digest (2026-01-30)
+- [x] ✅ CI: Evaluate skopeo copy — implemented in push-container.sh, GHCR→DockerHub copy without rebuild, fallback to buildx (2026-01-30)
+- [x] ✅ CI: Lineage JSON output — .build-lineage/<container>.json emitted per build, ./make lineage command added (2026-01-30)
+- [x] ✅ CI: Dashboard integration for build lineage — build_digest + base_image fields in containers.yml (2026-01-30)
 
 ## Blocked / Deferred
 

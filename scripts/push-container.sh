@@ -150,6 +150,7 @@ push_ghcr() {
 }
 
 # Push to Docker Hub - SECONDARY REGISTRY
+# Uses skopeo copy from GHCR (preferred) or buildx rebuild (fallback)
 # This CAN fail without failing the overall build
 push_dockerhub() {
     local container="$1"
@@ -158,40 +159,61 @@ push_dockerhub() {
     local wanted="$4"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+    local ghcr_image="ghcr.io/$github_username/$container"
     local dockerhub_image="docker.io/$github_username/$container"
-    local cache_image="ghcr.io/$github_username/$container:buildcache"
 
     log_success "=== Pushing to Docker Hub (secondary registry) ==="
 
     # Get platform configuration (sets PLATFORM_CONFIG_* globals)
     get_platform_config "$tag"
-    local platforms="$PLATFORM_CONFIG_PLATFORMS"
-    local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
     local effective_tag="$PLATFORM_CONFIG_EFFECTIVE_TAG"
 
-    # Prepare build arguments and labels
+    # Preferred: skopeo copy from GHCR (no rebuild, exact same image)
+    if command -v skopeo >/dev/null 2>&1; then
+        log_info "Using skopeo copy: GHCR → Docker Hub (no rebuild)"
+
+        # Copy the tagged image
+        if retry_with_backoff 5 10 skopeo copy \
+            --all \
+            "docker://$ghcr_image:$effective_tag" \
+            "docker://$dockerhub_image:$effective_tag"; then
+
+            log_success "Docker Hub push via skopeo: $dockerhub_image:$effective_tag"
+
+            # Also copy as :latest if requested
+            if [[ "$wanted" == "latest" ]]; then
+                skopeo copy --all \
+                    "docker://$ghcr_image:$effective_tag" \
+                    "docker://$dockerhub_image:latest" 2>/dev/null || \
+                    log_warning "Failed to tag latest on Docker Hub"
+            fi
+
+            return 0
+        fi
+
+        log_warning "skopeo copy failed, falling back to buildx push"
+    fi
+
+    # Fallback: rebuild and push via buildx
+    local cache_image="$ghcr_image:buildcache"
+    local platforms="$PLATFORM_CONFIG_PLATFORMS"
+    local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
+
     local build_args
     build_args=$(get_build_args "$version")
     local label_args
     label_args=$(get_label_args)
 
-    # Prepare tags
     local tag_args="-t $dockerhub_image:$effective_tag"
-
-    # For multi-platform local builds (no suffix), also tag as latest if requested
     if [[ -z "$platform_suffix" && "$wanted" == "latest" ]]; then
         tag_args="$tag_args -t $dockerhub_image:latest"
     fi
 
-    # Registry cache configuration (read-only from GHCR - cache is written by push_ghcr)
     local cache_args="--cache-from type=registry,ref=$cache_image"
 
     log_success "Image: $dockerhub_image:$effective_tag"
     log_success "Platform: $platforms"
-    log_success "Build args: $build_args"
-    log_success "Cache: $cache_image (read-only)"
 
-    # Build and push with retry (more attempts for Docker Hub as it's less reliable)
     retry_with_backoff 5 10 docker buildx build \
         --platform "$platforms" \
         --push \

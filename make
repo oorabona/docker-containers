@@ -50,6 +50,7 @@ help() {
   log_help "version [target]" "Show latest upstream version for a container"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
   log_help "sizes [target]" "Show image sizes (all or specific container)"
+  log_help "lineage [target]" "Show build lineage JSON (all or specific container)"
   echo
   echo Where:
   log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
@@ -526,6 +527,37 @@ build_extensions() {
   ./scripts/build-extensions.sh "$target" $version_args $local_only
 }
 
+show_lineage() {
+  local target="${1:-}"
+  local lineage_dir=".build-lineage"
+
+  if [[ ! -d "$lineage_dir" ]]; then
+    log_warning "No build lineage data found. Run './make build' first."
+    return 0
+  fi
+
+  if [[ -n "$target" ]]; then
+    # Show lineage for specific container
+    local files
+    files=$(find "$lineage_dir" -name "${target}*.json" 2>/dev/null)
+    if [[ -z "$files" ]]; then
+      log_warning "No lineage data for '$target'"
+      return 0
+    fi
+    for f in $files; do
+      jq '.' "$f"
+    done
+  else
+    # Show summary of all containers
+    echo "Build Lineage Summary"
+    echo "====================="
+    for f in "$lineage_dir"/*.json; do
+      [[ -f "$f" ]] || continue
+      jq -r '"  \(.container):\(.tag) | \(.platform) | \(.built_at) | digest:\(.build_digest)"' "$f"
+    done
+  fi
+}
+
 # If docker(-)compose is not found, just exit immediately
 if [ ! -x "$(command -v docker-compose)" ]; then
   docker compose 2>/dev/null 1>&2
@@ -547,5 +579,6 @@ case "${1:-}" in
   check-updates ) check_updates "${2:-}" ;;
   list ) list_containers ;;
   sizes ) show_sizes "${2:-}" ;;
+  lineage ) show_lineage "${2:-}" ;;
   * ) help ;;
 esac

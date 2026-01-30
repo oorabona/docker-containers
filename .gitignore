@@ -13,6 +13,7 @@
 
 # Build artifacts
 *.log
+.build-lineage/
 
 # Dashboard statistics (dynamically generated)
 .dashboard-stats
