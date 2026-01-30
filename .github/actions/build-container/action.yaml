@@ -206,12 +206,14 @@ runs:
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       id: build
       shell: bash
+      env:
+        BUILD_PLATFORM: ${{ inputs.platform }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        FORCE_REBUILD: ${{ inputs.force_rebuild }}
       run: |
-        set -e
-        # Export environment for smart rebuild detection
-        export BUILD_PLATFORM="${{ inputs.platform }}"
-        export SKIP_EXISTING_BUILDS="${{ github.event_name != 'pull_request' && inputs.force_rebuild != 'true' }}"
-        export FORCE_REBUILD="${{ inputs.force_rebuild }}"
+        set -euo pipefail
+        source ./helpers/logging.sh
+        source ./helpers/variant-utils.sh
 
         container="${{ inputs.container }}"
         current_version="${{ steps.check-build.outputs.current_version }}"
@@ -227,17 +229,15 @@ runs:
           echo "::group::Building $container:$current_tag (dockerfile: $dockerfile) for $BUILD_PLATFORM"
         fi
 
-        # Source build utilities and call build_container directly
-        # This bypasses make's variant expansion since CI already expands variants
-        source ./helpers/logging.sh
-        source ./helpers/variant-utils.sh
-        source ./scripts/build-container.sh
+        # Compute SKIP_EXISTING_BUILDS in-step
+        if [[ "${{ github.event_name }}" != "pull_request" && "${FORCE_REBUILD}" != "true" ]]; then
+          export SKIP_EXISTING_BUILDS="true"
+        else
+          export SKIP_EXISTING_BUILDS="false"
+        fi
 
-        # For postgres builds: use GHCR cached base images if available
+        # For postgres: use GHCR cached base images if available
         # This avoids Docker Hub rate limits (200 pulls/6h)
-        # Cache is keyed by base tag (e.g., 17-alpine), not variant tag (e.g., 17-vector-alpine)
-        # All variants share the same base image, so we derive base_tag from version + base_suffix
-        #
         # IMPORTANT: build_version is used for --build-arg VERSION in Dockerfile
         # - For postgres: must be base_tag (e.g., "17-alpine") for FROM postgres:VERSION
         # - For other containers: use current_version as-is
@@ -245,35 +245,29 @@ runs:
 
         if [[ "$container" == "postgres" ]]; then
           owner="${{ github.repository_owner }}"
-
-          # Derive base tag: version (e.g., "17") + base_suffix (e.g., "-alpine") = "17-alpine"
           base_sfx=$(base_suffix "./$container")
           [[ -z "$base_sfx" ]] && base_sfx="-alpine"
           base_tag="${current_version}${base_sfx}"
-
-          # Use base_tag as VERSION arg for Dockerfile (FROM ${BASE_IMAGE}:${VERSION})
           build_version="$base_tag"
 
           cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
-          # Check if cached base image exists by pulling it
-          # This respects the GHCR login credentials set up earlier
           echo "Checking for cached base image: $cache_image"
-
           if docker pull --quiet "$cache_image" &>/dev/null; then
             echo "✅ Using cached base image: $cache_image (for all variants)"
             export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
           else
             echo "⚠️ Cache not available for $cache_image, using Docker Hub directly"
-            echo "   (Run 'Cache Base Images' job to populate cache)"
           fi
         fi
 
-        cd "$container"
+        # Build via ./make — sources container build files, handles CUSTOM_BUILD_ARGS
+        make_args=("build" "$container" "$build_version")
+        [[ -n "$current_tag" ]] && make_args+=("$current_tag")
+        [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
+        [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
 
-        # Call build_container with all parameters: container version tag flavor dockerfile
-        # Smart skip: will skip if image exists with matching digest (unless FORCE_REBUILD=true)
-        # Note: build_version is base_tag for postgres (e.g., "17-alpine"), current_version otherwise
-        if ! build_container "$container" "$build_version" "$current_tag" "$flavor" "$dockerfile"; then
+        log_info "Calling: ./make ${make_args[*]}"
+        if ! ./make "${make_args[@]}"; then
           echo "::error::Build failed for $container:$current_tag"
           exit 1
         fi

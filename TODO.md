@@ -12,7 +12,12 @@ _No high priority tasks remaining_
 
 ### Medium Priority
 
-_No medium priority tasks remaining_
+- [ ] CI: Add shellcheck validation to CI pipeline (F-003 from CI-MAKE-BUILD review)
+- [ ] CI: Standardize all containers with `build` scripts (Phase 2)
+- [ ] CI: Pin base image SHA digests for reproducible builds (Phase 2)
+- [ ] CI: Evaluate `skopeo copy` for Docker Hub push (Phase 2)
+- [ ] CI: Lineage JSON output from ./make build (Phase 3)
+- [ ] CI: Dashboard integration for build lineage (Phase 3)
 
 ### Low Priority
 
@@ -41,6 +46,7 @@ _No medium priority tasks remaining_
 - [x] ✅ Remove deprecated buildx install option (2026-01-16)
 - [x] ✅ gh-pages: Responsive design + WCAG 2.2 compliance (2026-01-29)
 - [x] ✅ terraform: Implement flavors (base, aws, azure, gcp, full) - 84% size reduction for base (2026-01-29)
+- [x] ✅ CI: Refactor composite action to use ./make build — fixes openresty CI failure, eliminates build logic divergence (2026-01-30)
 
 ## Blocked / Deferred
 

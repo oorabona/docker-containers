@@ -318,12 +318,16 @@ do_buildx() {
   local container=$(basename "$PWD")
 
   if [[ "$op" == "build" ]]; then
-    # Check if container has variants (multi-image support)
-    if container_has_variants "$container"; then
+    if [[ -n "${FLAVOR:-}" ]]; then
+      # Single-flavor build (CI mode or explicit --flavor)
+      log_info "Building $container with flavor: $FLAVOR"
+      build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}"
+    elif container_has_variants "$container"; then
+      # Full variant expansion (local build)
       log_info "Container $container has variants - building all variants..."
       build_container_variants "$container" "$VERSION"
     else
-      # Use focused build utility for single-image containers
+      # Simple container (no variants)
       build_container "$container" "$VERSION" "$TAG"
     fi
   elif [[ "$op" == "push" ]]; then
@@ -354,6 +358,32 @@ make() {
   if [[ "$1" == "ghcr" || "$1" == "dockerhub" ]]; then
     registry=$1
     shift
+  fi
+
+  # Parse named args (--flavor, --dockerfile) from remaining args
+  local positional_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --flavor)
+        [[ -z "${2:-}" || "${2:-}" == --* ]] && { log_error "--flavor requires a value"; return 1; }
+        export FLAVOR="$2"
+        shift 2
+        ;;
+      --dockerfile)
+        [[ -z "${2:-}" || "${2:-}" == --* ]] && { log_error "--dockerfile requires a value"; return 1; }
+        export DOCKERFILE="$2"
+        shift 2
+        ;;
+      *)
+        positional_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [[ ${#positional_args[@]} -gt 0 ]]; then
+    set -- "${positional_args[@]}"
+  else
+    set --
   fi
 
   if ! validate_target "$1"; then
@@ -509,16 +539,9 @@ else
 fi
 
 case "${1:-}" in
-  build ) make "$1" "${2:-}" "${3:-}" ;;
+  build ) make "$@" ;;
   build-extensions ) shift; build_extensions "$@" ;;
-  push )
-    # Handle: push <target>, push ghcr <target>, push dockerhub <target>
-    if [[ "${2:-}" == "ghcr" || "${2:-}" == "dockerhub" ]]; then
-      make "$1" "${2:-}" "${3:-}" "${4:-}"
-    else
-      make "$1" "${2:-}" "${3:-}"
-    fi
-    ;;
+  push ) make "$@" ;;
   run ) run "${2:-}" "${3:-}" ;;
   version ) shift; version "$@" ;;
   check-updates ) check_updates "${2:-}" ;;
