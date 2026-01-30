@@ -16,10 +16,7 @@ _No medium priority tasks remaining_
 
 ### Low Priority
 
-- [ ] gh-pages: Add aria-live regions for dynamic feedback (F-005)
-- [ ] gh-pages: Refactor inline onclick to addEventListener (F-006)
-- [ ] gh-pages: Wrap JS in IIFE/module pattern (F-007)
-- [ ] gh-pages: Increase mobile touch targets to 44px (F-011)
+_No low priority tasks remaining_
 
 ## Completed
 
@@ -48,6 +45,10 @@ _No medium priority tasks remaining_
 - [x] ✅ CI: Evaluate skopeo copy — implemented in push-container.sh, GHCR→DockerHub copy without rebuild, fallback to buildx (2026-01-30)
 - [x] ✅ CI: Lineage JSON output — .build-lineage/<container>.json emitted per build, ./make lineage command added (2026-01-30)
 - [x] ✅ CI: Dashboard integration for build lineage — build_digest + base_image fields in containers.yml (2026-01-30)
+- [x] ✅ gh-pages: Add aria-live regions for dynamic feedback — status announcements for filters, copy, theme, registry (2026-01-30)
+- [x] ✅ gh-pages: Refactor inline onclick to addEventListener — event delegation in dashboard.html + container-card.html (2026-01-30)
+- [x] ✅ gh-pages: Wrap JS in IIFE/module pattern — dashboard.html + container.html scripts wrapped (2026-01-30)
+- [x] ✅ gh-pages: Increase mobile touch targets to 44px — theme toggle, filter/registry buttons, variant tags, copy button (2026-01-30)
 
 ## Blocked / Deferred
 

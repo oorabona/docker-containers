@@ -188,13 +188,13 @@
       gap: 0.75rem;
     }
 
-    /* Theme toggle button */
+    /* Theme toggle button — min 44px for WCAG 2.5.8 touch target */
     .theme-toggle {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 40px;
-      height: 40px;
+      width: 44px;
+      height: 44px;
       border: none;
       border-radius: 10px;
       background: var(--glass-bg);
@@ -347,6 +347,7 @@
 
     .registry-btn {
       padding: 0.5rem 1rem;
+      min-height: 44px;
       font-size: 0.8125rem;
       font-weight: 500;
       border: none;
@@ -412,6 +413,7 @@
 
     .filter-btn {
       padding: 0.5rem 0.875rem;
+      min-height: 44px;
       font-size: 0.75rem;
       font-weight: 500;
       border: 1px solid var(--glass-border);
@@ -721,14 +723,15 @@
       gap: 0.375rem;
     }
 
-    /* Variant tags - WCAG 2.1 AA compliant (4.5:1 contrast ratio) */
+    /* Variant tags - WCAG 2.1 AA compliant (4.5:1 contrast) + 44px touch target */
     .variant-tag {
       display: inline-flex;
       align-items: center;
       gap: 0.25rem;
       font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 0.6875rem;
-      padding: 0.25rem 0.5rem;
+      padding: 0.5rem 0.625rem;
+      min-height: 44px;
       border-radius: 4px;
       background: rgba(139, 92, 246, 0.25);
       color: #e9d5ff;
@@ -833,6 +836,8 @@
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
+      min-width: 44px;
+      min-height: 44px;
       color: var(--text-secondary);
       cursor: pointer;
       transition: all 0.2s ease;
@@ -997,6 +1002,19 @@
 
     .footer a:hover {
       text-decoration: underline;
+    }
+
+    /* Screen reader only (visually hidden, accessible to AT) */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     /* Skip link for accessibility */
@@ -1210,7 +1228,7 @@
         <h1 class="header-main">{{ page.title | default: site.title }}</h1>
       </div>
       <div class="header-actions">
-        <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle light/dark theme">
+        <button class="theme-toggle" aria-label="Toggle light/dark theme">
           <i class="ti ti-moon" aria-hidden="true"></i>
         </button>
         <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer" aria-label="View repository on GitHub (opens in new tab)">
@@ -1225,11 +1243,11 @@
       <div class="controls-group" role="group" aria-labelledby="registry-label">
         <span class="controls-label" id="registry-label">Registry</span>
         <div class="registry-toggle" role="radiogroup" aria-label="Select container registry">
-          <button class="registry-btn active" data-registry="ghcr" onclick="setGlobalRegistry('ghcr')"
+          <button class="registry-btn active" data-registry="ghcr"
                   role="radio" aria-checked="true" aria-label="GitHub Container Registry">
             <i class="ti ti-package" aria-hidden="true"></i> GHCR
           </button>
-          <button class="registry-btn" data-registry="dockerhub" onclick="setGlobalRegistry('dockerhub')"
+          <button class="registry-btn" data-registry="dockerhub"
                   role="radio" aria-checked="false" aria-label="Docker Hub">
             <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
           </button>
@@ -1240,26 +1258,25 @@
         <i class="ti ti-search search-icon" aria-hidden="true"></i>
         <input type="search" class="search-input" id="search-input"
                placeholder="Search containers..."
-               aria-label="Search containers"
-               oninput="filterContainers(this.value)">
+               aria-label="Search containers">
       </div>
 
       <div class="controls-group" role="group" aria-labelledby="status-label">
         <span class="controls-label" id="status-label">Status</span>
         <div class="status-filters" role="radiogroup" aria-label="Filter by status">
-          <button class="filter-btn active" data-status="all" onclick="filterByStatus('all')"
+          <button class="filter-btn active" data-status="all"
                   role="radio" aria-checked="true">
             All <span class="count" id="count-all" aria-label="total count">0</span>
           </button>
-          <button class="filter-btn" data-status="up-to-date" onclick="filterByStatus('up-to-date')"
+          <button class="filter-btn" data-status="up-to-date"
                   role="radio" aria-checked="false">
             Up to date <span class="count" id="count-up-to-date">0</span>
           </button>
-          <button class="filter-btn" data-status="update-available" onclick="filterByStatus('update-available')"
+          <button class="filter-btn" data-status="update-available"
                   role="radio" aria-checked="false">
             Updates <span class="count" id="count-update-available">0</span>
           </button>
-          <button class="filter-btn" data-status="not-published" onclick="filterByStatus('not-published')"
+          <button class="filter-btn" data-status="not-published"
                   role="radio" aria-checked="false">
             Not published <span class="count" id="count-not-published">0</span>
           </button>
@@ -1271,26 +1288,39 @@
       {{ content }}
     </main>
 
+    <!-- Live status region for screen readers (F-005) -->
+    <div id="status-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
     <!-- Footer -->
     <footer class="footer" role="contentinfo">
       <p>Generated by <a href="generate-dashboard.sh">generate-dashboard.sh</a> using Jekyll templating</p>
     </footer>
   </div>
 
-  <!-- JavaScript -->
+  <!-- JavaScript (F-006: addEventListener, F-007: IIFE) -->
   <script>
+  (function() {
+    'use strict';
+
     // State
-    let currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
-    let currentSearch = '';
-    let currentStatus = 'all';
-    let currentTheme = localStorage.getItem('preferredTheme') || 'dark';
+    var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
+    var currentSearch = '';
+    var currentStatus = 'all';
+    var currentTheme = localStorage.getItem('preferredTheme') || 'dark';
+
+    // Announce status changes to screen readers (F-005: aria-live)
+    function announceStatus(message) {
+      var liveRegion = document.getElementById('status-live');
+      if (liveRegion) {
+        liveRegion.textContent = message;
+      }
+    }
 
     // Theme management
     function initTheme() {
-      const savedTheme = localStorage.getItem('preferredTheme');
-      // Check system preference if no saved preference
+      var savedTheme = localStorage.getItem('preferredTheme');
       if (!savedTheme) {
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         currentTheme = prefersDark ? 'dark' : 'light';
       } else {
         currentTheme = savedTheme;
@@ -1300,7 +1330,7 @@
 
     function applyTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme);
-      const icon = document.querySelector('.theme-toggle i');
+      var icon = document.querySelector('.theme-toggle i');
       if (icon) {
         icon.className = theme === 'dark' ? 'ti ti-moon' : 'ti ti-sun';
       }
@@ -1310,65 +1340,49 @@
       currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
       localStorage.setItem('preferredTheme', currentTheme);
       applyTheme(currentTheme);
+      announceStatus('Theme switched to ' + currentTheme + ' mode');
     }
 
     // Apply theme immediately to avoid flash
     initTheme();
 
-    // Initialize on page load
-    document.addEventListener('DOMContentLoaded', function() {
-      // Restore registry preference
-      setGlobalRegistry(currentRegistry, false);
-
-      // Auto-select text on click
-      document.querySelectorAll('input[id^="pull-"]').forEach(function(input) {
-        input.addEventListener('click', function() {
-          this.select();
-        });
-      });
-
-      // Update filter counts
-      updateFilterCounts();
-    });
-
     // Set global registry for all containers
-    function setGlobalRegistry(registry, save = true) {
+    function setGlobalRegistry(registry, save) {
+      if (save === undefined) save = true;
       currentRegistry = registry;
       if (save) {
         localStorage.setItem('preferredRegistry', registry);
       }
 
       // Update toggle buttons and ARIA state
-      document.querySelectorAll('.registry-btn').forEach(btn => {
-        const isActive = btn.dataset.registry === registry;
+      document.querySelectorAll('.registry-btn').forEach(function(btn) {
+        var isActive = btn.dataset.registry === registry;
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
       });
 
       // Update all container cards
-      document.querySelectorAll('.container-card').forEach(card => {
-        const pullSection = card.querySelector('.pull-section');
+      document.querySelectorAll('.container-card').forEach(function(card) {
+        var pullSection = card.querySelector('.pull-section');
         if (pullSection) {
-          const ghcrBase = pullSection.dataset.ghcrBase;
-          const dockerhubBase = pullSection.dataset.dockerhubBase;
-          const defaultTag = pullSection.dataset.defaultTag;
-
-          // Find selected variant or use default
-          const selectedVariant = card.querySelector('.variant-tag.selected');
-          const tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
-
-          // Build image URL
-          const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
-          const imageUrl = baseUrl + ':' + tag;
-
-          // Update pull input
-          const containerName = card.dataset.container;
-          const input = document.getElementById('pull-' + containerName);
+          var ghcrBase = pullSection.dataset.ghcrBase;
+          var dockerhubBase = pullSection.dataset.dockerhubBase;
+          var defaultTag = pullSection.dataset.defaultTag;
+          var selectedVariant = card.querySelector('.variant-tag.selected');
+          var tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
+          var baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
+          var imageUrl = baseUrl + ':' + tag;
+          var containerName = card.dataset.container;
+          var input = document.getElementById('pull-' + containerName);
           if (input) {
             input.value = 'docker pull ' + imageUrl;
           }
         }
       });
+
+      if (save) {
+        announceStatus('Registry switched to ' + (registry === 'ghcr' ? 'GitHub Container Registry' : 'Docker Hub'));
+      }
     }
 
     // Filter containers by search query
@@ -1381,9 +1395,8 @@
     function filterByStatus(status) {
       currentStatus = status;
 
-      // Update filter buttons with ARIA state
-      document.querySelectorAll('.filter-btn').forEach(btn => {
-        const isActive = btn.dataset.status === status;
+      document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        var isActive = btn.dataset.status === status;
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
       });
@@ -1393,31 +1406,25 @@
 
     // Apply all filters
     function applyFilters() {
-      const cards = document.querySelectorAll('.container-card');
-      let visibleCount = 0;
+      var cards = document.querySelectorAll('.container-card');
+      var visibleCount = 0;
 
-      cards.forEach(card => {
-        const name = card.dataset.container.toLowerCase();
-        const statusColor = card.classList.contains('status-green') ? 'up-to-date' :
-                           card.classList.contains('status-warning') ? 'update-available' :
-                           'not-published';
-
-        // Check search match
-        const matchesSearch = currentSearch === '' || name.includes(currentSearch);
-
-        // Check status match
-        const matchesStatus = currentStatus === 'all' || statusColor === currentStatus;
-
-        // Show/hide card
-        const isVisible = matchesSearch && matchesStatus;
+      cards.forEach(function(card) {
+        var name = card.dataset.container.toLowerCase();
+        var statusColor = card.classList.contains('status-green') ? 'up-to-date' :
+                         card.classList.contains('status-warning') ? 'update-available' :
+                         'not-published';
+        var matchesSearch = currentSearch === '' || name.includes(currentSearch);
+        var matchesStatus = currentStatus === 'all' || statusColor === currentStatus;
+        var isVisible = matchesSearch && matchesStatus;
         card.style.display = isVisible ? '' : 'none';
-
         if (isVisible) visibleCount++;
       });
 
       // Show/hide no results message
-      const cardsGrid = document.querySelector('.cards-grid');
-      let noResults = cardsGrid.querySelector('.no-results');
+      var cardsGrid = document.querySelector('.cards-grid');
+      if (!cardsGrid) return;
+      var noResults = cardsGrid.querySelector('.no-results');
 
       if (visibleCount === 0) {
         if (!noResults) {
@@ -1427,22 +1434,19 @@
           cardsGrid.appendChild(noResults);
         }
         noResults.style.display = '';
-      } else if (noResults) {
-        noResults.style.display = 'none';
+        announceStatus('No containers match your filters');
+      } else {
+        if (noResults) noResults.style.display = 'none';
+        announceStatus(visibleCount + ' container' + (visibleCount !== 1 ? 's' : '') + ' shown');
       }
     }
 
     // Update filter button counts
     function updateFilterCounts() {
-      const cards = document.querySelectorAll('.container-card');
-      const counts = {
-        'all': cards.length,
-        'up-to-date': 0,
-        'update-available': 0,
-        'not-published': 0
-      };
+      var cards = document.querySelectorAll('.container-card');
+      var counts = { 'all': cards.length, 'up-to-date': 0, 'update-available': 0, 'not-published': 0 };
 
-      cards.forEach(card => {
+      cards.forEach(function(card) {
         if (card.classList.contains('status-green')) {
           counts['up-to-date']++;
         } else if (card.classList.contains('status-warning')) {
@@ -1452,150 +1456,135 @@
         }
       });
 
-      // Update count badges
-      Object.keys(counts).forEach(status => {
-        const countEl = document.getElementById('count-' + status);
-        if (countEl) {
-          countEl.textContent = counts[status];
-        }
+      Object.keys(counts).forEach(function(status) {
+        var countEl = document.getElementById('count-' + status);
+        if (countEl) countEl.textContent = counts[status];
       });
     }
 
-    // Update pull command when registry is changed
-    function updatePullCommand(containerName, imageUrl) {
-      const input = document.getElementById('pull-' + containerName);
-      if (input) {
-        input.value = 'docker pull ' + imageUrl;
-      }
-    }
-
-    // Select variant and update pull command + copy to clipboard
-    function selectVariant(containerName, imageUrl) {
-      updatePullCommand(containerName, imageUrl);
-
-      // Also update the select dropdown if it exists
-      const card = document.getElementById('pull-' + containerName).closest('.container-card');
-      if (card) {
-        const select = card.querySelector('.pull-select');
-        if (select) {
-          for (let option of select.options) {
-            if (option.value === imageUrl) {
-              select.value = imageUrl;
-              break;
-            }
-          }
-        }
-
-        // Trigger copy
-        const copyBtn = card.querySelector('.copy-btn');
-        if (copyBtn) {
-          copyToClipboard('pull-' + containerName, copyBtn);
-        }
-      }
-    }
-
-    // Update pull command when registry selection changes
-    function updateRegistrySelection(select) {
-      const ghcrBase = select.dataset.ghcrBase;
-      const dockerhubBase = select.dataset.dockerhubBase;
-      const defaultTag = select.dataset.defaultTag;
-      const registry = select.value;
-
-      // Find the currently selected variant tag, or use default
-      const card = select.closest('.container-card');
-      const selectedVariant = card.querySelector('.variant-tag.selected');
-      const tag = selectedVariant ? selectedVariant.dataset.tag : defaultTag;
-
-      // Build the image URL based on registry
-      const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
-      const imageUrl = baseUrl + ':' + tag;
-
-      // Update pull input
-      const containerName = card.dataset.container;
-      const input = document.getElementById('pull-' + containerName);
-      if (input) {
-        input.value = 'docker pull ' + imageUrl;
-      }
-    }
-
-    // Select a variant tag and update pull command + metadata (no auto-copy)
+    // Select a variant tag and update pull command + metadata
     function selectVariantTag(element) {
-      const card = element.closest('.container-card');
-      const tag = element.dataset.tag;
+      var card = element.closest('.container-card');
+      var tag = element.dataset.tag;
 
-      // Update visual selection and ARIA state
-      card.querySelectorAll('.variant-tag').forEach(t => {
+      card.querySelectorAll('.variant-tag').forEach(function(t) {
         t.classList.remove('selected');
         t.setAttribute('aria-pressed', 'false');
       });
       element.classList.add('selected');
       element.setAttribute('aria-pressed', 'true');
 
-      // Get current registry from global state
-      const registry = currentRegistry;
-      const pullSection = card.querySelector('.pull-section');
-      const ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
-      const dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
+      var pullSection = card.querySelector('.pull-section');
+      var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
+      var dockerhubBase = pullSection ? pullSection.dataset.dockerhubBase : '';
+      var baseUrl = currentRegistry === 'ghcr' ? ghcrBase : dockerhubBase;
+      var imageUrl = baseUrl + ':' + tag;
 
-      // Build the image URL
-      const baseUrl = registry === 'ghcr' ? ghcrBase : dockerhubBase;
-      const imageUrl = baseUrl + ':' + tag;
+      var containerName = card.dataset.container;
+      var input = document.getElementById('pull-' + containerName);
+      if (input) input.value = 'docker pull ' + imageUrl;
 
-      // Update pull input
-      const containerName = card.dataset.container;
-      const input = document.getElementById('pull-' + containerName);
-      if (input) {
-        input.value = 'docker pull ' + imageUrl;
-      }
+      var sizeAmd64El = card.querySelector('[data-meta="size-amd64"]');
+      var sizeArm64El = card.querySelector('[data-meta="size-arm64"]');
+      if (sizeAmd64El) sizeAmd64El.textContent = element.dataset.sizeAmd64 || '—';
+      if (sizeArm64El) sizeArm64El.textContent = element.dataset.sizeArm64 || '—';
 
-      // Update size metadata from variant data-attributes
-      const sizeAmd64 = element.dataset.sizeAmd64 || '—';
-      const sizeArm64 = element.dataset.sizeArm64 || '—';
-
-      const sizeAmd64El = card.querySelector('[data-meta="size-amd64"]');
-      const sizeArm64El = card.querySelector('[data-meta="size-arm64"]');
-
-      if (sizeAmd64El) sizeAmd64El.textContent = sizeAmd64;
-      if (sizeArm64El) sizeArm64El.textContent = sizeArm64;
+      announceStatus('Selected variant ' + tag);
     }
 
     // Copy text to clipboard with visual feedback
     function copyToClipboard(inputId, button) {
-      const input = document.getElementById(inputId);
+      var input = document.getElementById(inputId);
       if (!input) return;
 
-      const iconElement = button.querySelector('i');
+      var iconElement = button.querySelector('i');
 
-      navigator.clipboard.writeText(input.value).then(function() {
-        // Update icon class safely
-        if (iconElement) {
-          iconElement.className = 'ti ti-check';
-        }
+      function showCopied() {
+        if (iconElement) iconElement.className = 'ti ti-check';
         button.classList.add('copied');
-
+        announceStatus('Pull command copied to clipboard');
         setTimeout(function() {
-          if (iconElement) {
-            iconElement.className = 'ti ti-copy';
-          }
+          if (iconElement) iconElement.className = 'ti ti-copy';
           button.classList.remove('copied');
         }, 2000);
-      }).catch(function() {
-        // Fallback for older browsers
+      }
+
+      navigator.clipboard.writeText(input.value).then(showCopied).catch(function() {
         input.select();
         document.execCommand('copy');
-        if (iconElement) {
-          iconElement.className = 'ti ti-check';
-        }
-        button.classList.add('copied');
-
-        setTimeout(function() {
-          if (iconElement) {
-            iconElement.className = 'ti ti-copy';
-          }
-          button.classList.remove('copied');
-        }, 2000);
+        showCopied();
       });
     }
+
+    // Event delegation (F-006: no inline onclick handlers)
+    document.addEventListener('DOMContentLoaded', function() {
+      // Restore registry preference
+      setGlobalRegistry(currentRegistry, false);
+
+      // Auto-select text on click
+      document.querySelectorAll('input[id^="pull-"]').forEach(function(input) {
+        input.addEventListener('click', function() { this.select(); });
+      });
+
+      // Update filter counts
+      updateFilterCounts();
+
+      // Theme toggle
+      var themeBtn = document.querySelector('.theme-toggle');
+      if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+
+      // Registry buttons
+      document.querySelectorAll('.registry-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          setGlobalRegistry(this.dataset.registry);
+        });
+      });
+
+      // Search input
+      var searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        searchInput.addEventListener('input', function() {
+          filterContainers(this.value);
+        });
+      }
+
+      // Filter buttons
+      document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          filterByStatus(this.dataset.status);
+        });
+      });
+
+      // Event delegation for variant tags and copy buttons (works for dynamic content)
+      document.addEventListener('click', function(e) {
+        var variantTag = e.target.closest('.variant-tag');
+        if (variantTag && variantTag.closest('.container-card')) {
+          selectVariantTag(variantTag);
+          return;
+        }
+
+        var copyBtn = e.target.closest('.copy-btn');
+        if (copyBtn) {
+          var card = copyBtn.closest('.container-card');
+          if (card) {
+            copyToClipboard('pull-' + card.dataset.container, copyBtn);
+          }
+          return;
+        }
+      });
+
+      // Keyboard support for variant tags (Enter/Space)
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          var variantTag = e.target.closest('.variant-tag');
+          if (variantTag && variantTag.closest('.container-card')) {
+            e.preventDefault();
+            selectVariantTag(variantTag);
+          }
+        }
+      });
+    });
+  })();
   </script>
 </body>
 </html>
