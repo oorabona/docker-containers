@@ -68,6 +68,7 @@ get_build_args() {
 }
 
 # Get label args for build digest tracking
+# shellcheck disable=SC2120  # Args have defaults, callers use defaults
 get_label_args() {
     local dockerfile="${1:-Dockerfile}"
     local flavor="${2:-}"
