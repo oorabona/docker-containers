@@ -182,6 +182,9 @@ FRONTMATTER
             while IFS= read -r ver_tag; do
                 [[ -z "$ver_tag" ]] && continue
                 echo "  - tag: \"$ver_tag\"" >> "$page_file"
+                local base_tag
+                base_tag=$(variant_image_tag "$ver_tag" "base" "$container_dir")
+                echo "    base_tag: \"$base_tag\"" >> "$page_file"
                 echo "    variants:" >> "$page_file"
                 while IFS= read -r variant_name; do
                     [[ -z "$variant_name" ]] && continue
@@ -454,6 +457,9 @@ EOF
                     [[ -z "$ver_tag" ]] && continue
 
                     echo "    - tag: \"$ver_tag\"" >> "$DATA_FILE"
+                    local base_tag
+                    base_tag=$(variant_image_tag "$ver_tag" "base" "$container_dir")
+                    echo "      base_tag: \"$base_tag\"" >> "$DATA_FILE"
                     echo "      variants:" >> "$DATA_FILE"
 
                     while IFS= read -r variant_name; do
