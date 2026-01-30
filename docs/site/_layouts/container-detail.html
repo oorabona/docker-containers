@@ -443,7 +443,7 @@
             {% if page.versions %}
               {% for version in page.versions %}
               <div class="version-group">
-                <h3 class="version-title">{{ version.tag }}</h3>
+                <h3 class="version-title">{{ version.base_tag | default: version.tag }}</h3>
                 <div class="variant-tags-row">
                   {% for variant in version.variants %}
                     <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
