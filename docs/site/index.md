@@ -38,6 +38,8 @@ description: Real-time status monitoring for Docker containers with automated up
      star_count=container.star_count
      size_amd64=container.size_amd64
      size_arm64=container.size_arm64
+     build_digest=container.build_digest
+     base_image=container.base_image
   %}
 {% endfor %}
 </div>

@@ -100,6 +100,50 @@ permalink: /container
     font-weight: 600;
   }
 
+  .lineage-section {
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .lineage-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+  }
+
+  .lineage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 0.75rem;
+  }
+
+  .lineage-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.75rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .lineage-label {
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .lineage-value {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    word-break: break-all;
+  }
+
   .readme-section {
     padding: 2rem;
   }
@@ -568,6 +612,26 @@ permalink: /container
       </div>
     `;
     container.appendChild(meta);
+
+    // Build Lineage section
+    var buildDigest = containerData.build_digest || '';
+    var baseImage = containerData.base_image || '';
+    if (buildDigest && buildDigest !== 'unknown') {
+      var lineage = document.createElement('section');
+      lineage.className = 'lineage-section glass';
+      lineage.setAttribute('aria-label', 'Build lineage information');
+      var lineageHTML = '<div class="lineage-header"><i class="ti ti-git-branch" aria-hidden="true"></i> Build Lineage</div>';
+      lineageHTML += '<div class="lineage-grid">';
+      lineageHTML += '<div class="lineage-item"><span class="lineage-label">Build Digest</span>';
+      lineageHTML += '<span class="lineage-value">' + DOMPurify.sanitize(buildDigest) + '</span></div>';
+      if (baseImage && baseImage !== 'unknown') {
+        lineageHTML += '<div class="lineage-item"><span class="lineage-label">Base Image</span>';
+        lineageHTML += '<span class="lineage-value">' + DOMPurify.sanitize(baseImage) + '</span></div>';
+      }
+      lineageHTML += '</div>';
+      lineage.innerHTML = lineageHTML;
+      container.appendChild(lineage);
+    }
 
     // Variants section (if container has variants)
     const variantsHTML = buildVariantsHTML(containerData);
