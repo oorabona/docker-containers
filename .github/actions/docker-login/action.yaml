@@ -1,0 +1,35 @@
+name: Docker Registry Login
+description: Log in to GHCR (required) and optionally Docker Hub
+inputs:
+  ghcr_username:
+    description: GHCR username (typically github.actor)
+    required: true
+  ghcr_password:
+    description: GHCR password (typically secrets.GITHUB_TOKEN)
+    required: true
+  dockerhub_username:
+    description: Docker Hub username (optional)
+    required: false
+    default: ""
+  dockerhub_token:
+    description: Docker Hub token (optional)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.ghcr_username }}
+        password: ${{ inputs.ghcr_password }}
+
+    - name: Log in to Docker Hub
+      if: inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      with:
+        registry: docker.io
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+      continue-on-error: true

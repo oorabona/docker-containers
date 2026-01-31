@@ -43,143 +43,102 @@ check_multiplatform_support() {
     return 1
 }
 
-# Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile]
-# If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
-# If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
-build_container() {
-    local container="$1"
-    local version="$2"
-    local tag="$3"
-    local flavor="${4:-}"
-    local dockerfile="${5:-Dockerfile}"
-
-    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
-    local dockerhub_image="docker.io/$github_username/$container"
-    local ghcr_image="ghcr.io/$github_username/$container"
-
-    # Smart rebuild detection: skip if image exists with matching digest
-    # Controlled by SKIP_EXISTING_BUILDS=true and FORCE_REBUILD=true
-    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
-        local variants_yaml=""
-        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
-
-        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$variants_yaml" "$flavor" "false"; then
-            log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
-            return 0
-        fi
-        log_info "Build digest: $BUILD_DIGEST"
-    fi
-
-    # Use BUILD_PLATFORM if set (native CI runners), otherwise detect
-    local platforms
+# Resolve build platforms based on environment and capabilities
+# Sets: _PLATFORMS
+_resolve_platforms() {
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
-        platforms="$BUILD_PLATFORM"
-        log_success "Using native platform: $platforms"
+        _PLATFORMS="$BUILD_PLATFORM"
+        log_success "Using native platform: $_PLATFORMS"
     elif check_multiplatform_support; then
-        platforms="linux/amd64,linux/arm64"
+        _PLATFORMS="linux/amd64,linux/arm64"
     else
-        platforms="linux/amd64"
+        _PLATFORMS="linux/amd64"
     fi
-    
-    # Detect container runtime for cache compatibility
-    local cache_args=""
-    local runtime_info=""
-    local cache_image="ghcr.io/$github_username/$container:buildcache"
+}
+
+# Configure build cache based on runtime environment
+# Sets: _CACHE_ARGS, _RUNTIME_INFO
+_configure_cache() {
+    local cache_image="$1"
+
+    _CACHE_ARGS=""
+    _RUNTIME_INFO=""
 
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: use registry cache (persists across workflows)
-        # Registry cache is more reliable than GHA cache for multi-platform builds
-        # mode=max stores all layers, not just final image layers
-        cache_args="--cache-from type=registry,ref=$cache_image --cache-to type=registry,ref=$cache_image,mode=max"
-        runtime_info="GitHub Actions (registry cache)"
+        _CACHE_ARGS="--cache-from type=registry,ref=$cache_image --cache-to type=registry,ref=$cache_image,mode=max"
+        _RUNTIME_INFO="GitHub Actions (registry cache)"
         log_success "Using registry cache: $cache_image"
     elif docker version 2>/dev/null | grep -q "Docker Engine"; then
-        # Local Docker: try registry cache if logged in, otherwise inline cache
         if docker pull "$cache_image" 2>/dev/null; then
-            cache_args="--cache-from type=registry,ref=$cache_image"
-            runtime_info="Docker Engine (registry cache)"
+            _CACHE_ARGS="--cache-from type=registry,ref=$cache_image"
+            _RUNTIME_INFO="Docker Engine (registry cache)"
         else
-            cache_args=""
-            runtime_info="Docker Engine (no cache - login to GHCR for cache)"
+            _RUNTIME_INFO="Docker Engine (no cache - login to GHCR for cache)"
         fi
     elif command -v podman >/dev/null 2>&1; then
-        # Podman: has built-in layer caching
-        cache_args=""
-        runtime_info="Podman"
+        _RUNTIME_INFO="Podman"
         log_success "Using Podman with built-in layer caching"
     else
-        # Fallback: no cache
-        cache_args=""
-        runtime_info="Unknown (no cache)"
+        _RUNTIME_INFO="Unknown (no cache)"
         log_warning "No cache support detected"
     fi
-    
-    # Prepare build arguments
-    local build_args=""
-    [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
+}
 
-    # Extract major version from version string (e.g., "16-alpine" -> "16")
-    local major_version
-    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1 || true)
-    [[ -n "$major_version" ]] && build_args="$build_args --build-arg MAJOR_VERSION=$major_version"
+# Prepare all build arguments from version, flavor, config, and environment
+# Sets: _BUILD_ARGS, _MAJOR_VERSION, _UPSTREAM_VERSION
+_prepare_build_args() {
+    local version="$1"
+    local flavor="$2"
 
-    # Get upstream version if container has version.sh with --upstream support
-    # This separates download URL version from Docker tag version
+    _BUILD_ARGS=""
+    [[ -n "$version" ]] && _BUILD_ARGS="--build-arg VERSION=$version"
+
+    _MAJOR_VERSION=$(echo "$version" | grep -oE '^[0-9]+' | head -1 || true)
+    [[ -n "$_MAJOR_VERSION" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg MAJOR_VERSION=$_MAJOR_VERSION"
+
+    _UPSTREAM_VERSION=""
     if [[ -f "./version.sh" ]]; then
-        local upstream_version
-        upstream_version=$(./version.sh --upstream 2>/dev/null || true)
-        if [[ -n "$upstream_version" && "$upstream_version" != "$version" ]]; then
-            build_args="$build_args --build-arg UPSTREAM_VERSION=$upstream_version"
+        _UPSTREAM_VERSION=$(./version.sh --upstream 2>/dev/null || true)
+        if [[ -n "$_UPSTREAM_VERSION" && "$_UPSTREAM_VERSION" != "$version" ]]; then
+            _BUILD_ARGS="$_BUILD_ARGS --build-arg UPSTREAM_VERSION=$_UPSTREAM_VERSION"
         fi
     fi
 
-    [[ -n "$flavor" ]] && build_args="$build_args --build-arg FLAVOR=$flavor"
-    [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
+    [[ -n "$flavor" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg FLAVOR=$flavor"
+    [[ -n "${NPROC:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg NPROC=$NPROC"
 
-    # Load build_args from config.yaml if present
     local config_build_args
     config_build_args=$(build_args_flags ".")
     if [[ -n "$config_build_args" ]]; then
-        build_args="$build_args $config_build_args"
+        _BUILD_ARGS="$_BUILD_ARGS $config_build_args"
         log_info "Loaded build args from config.yaml"
     fi
 
-    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
-    
-    # Prepare tags
-    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$tag" == "latest" ]]; then
-        tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-    fi
+    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS $CUSTOM_BUILD_ARGS"
+}
 
-    # Compute and add build digest label for smart rebuild detection
-    local label_args=""
-    if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        local variants_yaml=""
-        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
-        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
-    fi
-    label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
+# Resolve base image reference from config.yaml or Dockerfile, substitute variables
+# Sets: _BASE_IMAGE_REF, _BASE_DIGEST, adds to label_args
+_resolve_base_image() {
+    local dockerfile="$1"
+    local version="$2"
+    local label_args_var="$3"  # name of the label_args variable to append to
 
-    # Resolve and record base image digest for reproducibility
-    # Read base_image template from config.yaml, then substitute known variables
-    local base_image_ref=""
+    _BASE_IMAGE_REF=""
     if [[ -f "./config.yaml" ]]; then
-        base_image_ref=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
+        _BASE_IMAGE_REF=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
     fi
-    # Fallback: parse FROM line if no config.yaml or no base_image field
-    if [[ -z "$base_image_ref" ]]; then
-        base_image_ref=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
-        [[ -z "$base_image_ref" ]] && base_image_ref=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
+    if [[ -z "$_BASE_IMAGE_REF" ]]; then
+        _BASE_IMAGE_REF=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
+        [[ -z "$_BASE_IMAGE_REF" ]] && _BASE_IMAGE_REF=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
     fi
 
     # Substitute known variables into the base image template
-    if [[ "$base_image_ref" =~ \$ ]]; then
-        base_image_ref="${base_image_ref//\$\{VERSION\}/$version}"
-        base_image_ref="${base_image_ref//\$VERSION/$version}"
-        [[ -n "${major_version:-}" ]] && base_image_ref="${base_image_ref//\$\{MAJOR_VERSION\}/$major_version}"
-        [[ -n "${upstream_version:-}" ]] && base_image_ref="${base_image_ref//\$\{UPSTREAM_VERSION\}/$upstream_version}"
+    if [[ "$_BASE_IMAGE_REF" =~ \$ ]]; then
+        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{VERSION\}/$version}"
+        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$VERSION/$version}"
+        [[ -n "${_MAJOR_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{MAJOR_VERSION\}/$_MAJOR_VERSION}"
+        [[ -n "${_UPSTREAM_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{UPSTREAM_VERSION\}/$_UPSTREAM_VERSION}"
         # Resolve Dockerfile ARG defaults (e.g. ARG BASE_IMAGE=postgres)
         while IFS= read -r arg_line; do
             local arg_name="${arg_line%%=*}"
@@ -189,77 +148,37 @@ build_container() {
             arg_default="${arg_default%\'}"
             arg_default="${arg_default#\'}"
             [[ -z "$arg_name" || "$arg_name" == "$arg_line" ]] && continue
-            if [[ "$base_image_ref" == *"\${$arg_name}"* || "$base_image_ref" == *"\$$arg_name"* ]]; then
-                base_image_ref="${base_image_ref//\$\{$arg_name\}/$arg_default}"
-                base_image_ref="${base_image_ref//\$$arg_name/$arg_default}"
+            if [[ "$_BASE_IMAGE_REF" == *"\${$arg_name}"* || "$_BASE_IMAGE_REF" == *"\$$arg_name"* ]]; then
+                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_default}"
+                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_default}"
             fi
         done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
-        # Substitute CUSTOM_BUILD_ARGS if they contain relevant ARGs
         if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
             while read -r arg_val; do
                 local arg_name="${arg_val%%=*}"
                 local arg_value="${arg_val#*=}"
-                base_image_ref="${base_image_ref//\$\{$arg_name\}/$arg_value}"
-                base_image_ref="${base_image_ref//\$$arg_name/$arg_value}"
+                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_value}"
+                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_value}"
             done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oP '(?<=--build-arg )\S+' || true)
         fi
     fi
 
-    # Resolve digest if we have a concrete image reference (no remaining variables)
-    local base_digest=""
-    if [[ -n "$base_image_ref" && ! "$base_image_ref" =~ \$ ]]; then
-        base_digest=$(docker manifest inspect "$base_image_ref" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
-        if [[ -n "$base_digest" ]]; then
-            label_args="$label_args --label org.opencontainers.image.base.digest=$base_digest"
-            log_info "Base image $base_image_ref pinned: ${base_digest:0:19}..."
+    # Resolve digest if we have a concrete image reference
+    _BASE_DIGEST=""
+    if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
+        _BASE_DIGEST=$(docker manifest inspect "$_BASE_IMAGE_REF" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+        if [[ -n "$_BASE_DIGEST" ]]; then
+            eval "$label_args_var=\"\$$label_args_var --label org.opencontainers.image.base.digest=\$_BASE_DIGEST\""
+            log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
         fi
     fi
+}
 
-    # Build behavior depends on context
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # GitHub Actions: build locally without pushing (use --load)
-        # This ensures PR builds validate without polluting registries
-        log_success "GitHub Actions detected - building locally for validation..."
-        log_success "Runtime: $runtime_info | Platform: $platforms | Dockerfile: $dockerfile"
+# Emit build lineage JSON for traceability
+_emit_build_lineage() {
+    local container="$1" version="$2" tag="$3" flavor="$4" dockerfile="$5"
+    local platforms="$6" runtime_info="$7" dockerhub_image="$8" ghcr_image="$9"
 
-        docker buildx build \
-            -f "$dockerfile" \
-            --platform "$platforms" \
-            --load \
-            $cache_args \
-            $build_args \
-            $label_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
-            return 1
-        }
-
-        log_success "✅ Build completed - image loaded locally (no push)"
-    else
-        # Local development: single platform with --load and --pull=never
-        # Uses locally-built images (run build-extensions --local-only first)
-        log_success "Building $container:$tag locally (Dockerfile: $dockerfile)..."
-        log_success "Runtime: $runtime_info | Platform: $platforms"
-
-        docker buildx build \
-            -f "$dockerfile" \
-            --platform "$platforms" \
-            --load \
-            --pull=never \
-            $cache_args \
-            $build_args \
-            $label_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
-            return 1
-        }
-
-        log_success "✅ Local build completed - layered image available in Docker daemon"
-    fi
-
-    # Emit build lineage JSON for traceability
     local lineage_dir="${PROJECT_ROOT:-.}/.build-lineage"
     mkdir -p "$lineage_dir"
     local lineage_file="$lineage_dir/${container}${flavor:+-$flavor}.json"
@@ -268,7 +187,6 @@ build_container() {
     local image_id
     image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
 
-    # Extract build args into JSON object from config.yaml (single source of truth)
     local build_args_json="{}"
     if [[ -f "./config.yaml" ]]; then
         build_args_json=$(yq -r '(.build_args // {}) | to_entries | map("\"" + .key + "\": \"" + .value + "\"") | join(",") | "{" + . + "}"' ./config.yaml 2>/dev/null || true)
@@ -286,8 +204,8 @@ build_container() {
   "runtime": "$runtime_info",
   "image_id": "${image_id:-unknown}",
   "build_digest": "${BUILD_DIGEST:-unknown}",
-  "base_image_ref": "${base_image_ref:-unknown}",
-  "base_image_digest": "${base_digest:-unresolved}",
+  "base_image_ref": "${_BASE_IMAGE_REF:-unknown}",
+  "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",
   "github_actions": ${GITHUB_ACTIONS:+true}${GITHUB_ACTIONS:-false},
   "images": {
@@ -298,6 +216,98 @@ build_container() {
 }
 LINEAGE_EOF
     log_info "Build lineage: $lineage_file"
+}
+
+# Build container function
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile]
+# If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
+# If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
+build_container() {
+    local container="$1"
+    local version="$2"
+    local tag="$3"
+    local flavor="${4:-}"
+    local dockerfile="${5:-Dockerfile}"
+
+    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+    local dockerhub_image="docker.io/$github_username/$container"
+    local ghcr_image="ghcr.io/$github_username/$container"
+
+    # Smart rebuild detection: skip if image exists with matching digest
+    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
+        local variants_yaml=""
+        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
+
+        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$variants_yaml" "$flavor" "false"; then
+            log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
+            return 0
+        fi
+        log_info "Build digest: $BUILD_DIGEST"
+    fi
+
+    _resolve_platforms
+    _configure_cache "ghcr.io/$github_username/$container:buildcache"
+    _prepare_build_args "$version" "$flavor"
+
+    # Prepare tags
+    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
+    if [[ "$tag" == "latest" ]]; then
+        tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
+    fi
+
+    # Compute build digest label for smart rebuild detection
+    local label_args=""
+    if [[ -z "${BUILD_DIGEST:-}" ]]; then
+        local variants_yaml=""
+        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
+        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
+    fi
+    label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
+
+    _resolve_base_image "$dockerfile" "$version" "label_args"
+
+    # Execute docker build
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        log_success "GitHub Actions detected - building locally for validation..."
+        log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS | Dockerfile: $dockerfile"
+
+        docker buildx build \
+            -f "$dockerfile" \
+            --platform "$_PLATFORMS" \
+            --load \
+            $_CACHE_ARGS \
+            $_BUILD_ARGS \
+            $label_args \
+            $tag_args \
+            . || {
+            log_error "Build failed for $container:$tag"
+            return 1
+        }
+
+        log_success "✅ Build completed - image loaded locally (no push)"
+    else
+        log_success "Building $container:$tag locally (Dockerfile: $dockerfile)..."
+        log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS"
+
+        docker buildx build \
+            -f "$dockerfile" \
+            --platform "$_PLATFORMS" \
+            --load \
+            --pull=never \
+            $_CACHE_ARGS \
+            $_BUILD_ARGS \
+            $label_args \
+            $tag_args \
+            . || {
+            log_error "Build failed for $container:$tag"
+            return 1
+        }
+
+        log_success "✅ Local build completed - layered image available in Docker daemon"
+    fi
+
+    _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
+        "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
 }
 
 # Build all variants for a container

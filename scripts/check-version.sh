@@ -8,6 +8,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
+source "$PROJECT_ROOT/helpers/version-utils.sh"
 
 # Check container version function
 check_container_version() {
@@ -41,13 +42,7 @@ check_container_version() {
     
     # Check current published version using container-specific pattern
     local current_version
-    local pattern
-    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || true)
-    else
-        # Fallback: try common version pattern
-        current_version=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || true)
-    fi
+    current_version=$(get_current_published_version "oorabona/$target" || true)
     
     if [ -n "$current_version" ]; then
         log_success "Current published version: $current_version"
@@ -85,13 +80,8 @@ get_build_version() {
         exit_code=$?
     elif [ "$wanted_version" = "current" ]; then
         # Get current published version using container-specific pattern
-        local pattern
-        if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-            versions=$(../helpers/latest-docker-tag "oorabona/$target" "$pattern" 2>/dev/null || echo "unknown")
-        else
-            # Fallback: try common version pattern
-            versions=$(../helpers/latest-docker-tag "oorabona/$target" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null || echo "unknown")
-        fi
+        versions=$(get_current_published_version "oorabona/$target")
+        [[ -z "$versions" ]] && versions="unknown"
         exit_code=$?
     else
         # Use the specific version provided directly

@@ -56,6 +56,12 @@ _No low priority tasks remaining_
 - [x] ✅ AUD-009: Split generate_data() — extracted github_api_get, calculate_build_success_rate, fetch_recent_activity, write_stats_file (2026-01-31)
 - [x] ✅ AUD-011: Add test.sh for 6 containers — ansible, debian, jekyll, openvpn, terraform, wordpress (2026-01-31)
 - [x] ✅ AUD-014: Fix schedule documentation — corrected cron from twice-daily to daily in GITHUB_ACTIONS.md (2026-01-31)
+- [x] ✅ AUD-013: DRY docker/login-action — composite action replaces 5 duplicated login steps in auto-build.yaml (2026-01-31)
+- [x] ✅ AUD-017: Extract shared CSS theme — theme.css with ~230 shared lines, dashboard.css and container-detail.css deduplicated (2026-01-31)
+- [x] ✅ AUD-018: Extract version detection helper — helpers/version-utils.sh replaces 3× duplicated registry pattern logic (2026-01-31)
+- [x] ✅ AUD-010: Split build_container() — 252→87 lines, extracted 5 focused helpers (_resolve_platforms, _configure_cache, etc.) (2026-01-31)
+- [x] ✅ AUD-015: Rewrite WORKFLOW_ARCHITECTURE.md — 456→235 lines, reflects actual CI/CD architecture (2026-01-31)
+- [x] ✅ AUD-022: Create ADRs — 4 Architecture Decision Records (native runners, smart rebuild, variant system, lineage) (2026-01-31)
 
 ## Blocked / Deferred
 
