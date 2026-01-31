@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers/logging.sh"
 source "$SCRIPT_DIR/helpers/variant-utils.sh"
 source "$SCRIPT_DIR/helpers/build-args-utils.sh"
+source "$SCRIPT_DIR/helpers/registry-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
@@ -455,27 +456,14 @@ VARIANT
     fi
 }
 
-# Get Docker Hub pull count for a container
+# Thin wrappers over helpers/registry-utils.sh
+# Preserves dashboard-specific calling conventions and output formats
+
 # Get Docker Hub stats (pulls and stars)
 # Usage: get_dockerhub_stats <user> <repo>
-# Output: "pulls:N stars:M" or "pulls:0 stars:0" on failure
+# Output: "pulls:N stars:M"
 get_dockerhub_stats() {
-    local user=$1
-    local repo=$2
-    local response pulls stars
-
-    response=$(curl -s --max-time 10 "https://hub.docker.com/v2/repositories/${user}/${repo}" 2>/dev/null)
-
-    if [[ -n "$response" ]]; then
-        pulls=$(echo "$response" | jq -r '.pull_count // 0' 2>/dev/null)
-        stars=$(echo "$response" | jq -r '.star_count // 0' 2>/dev/null)
-    fi
-
-    # Default to 0 if failed or empty
-    [[ -z "$pulls" || "$pulls" == "null" ]] && pulls="0"
-    [[ -z "$stars" || "$stars" == "null" ]] && stars="0"
-
-    echo "pulls:$pulls stars:$stars"
+    dockerhub_get_repo_stats "$@"
 }
 
 # Legacy wrapper for backward compatibility
@@ -497,51 +485,25 @@ format_number() {
     fi
 }
 
-# Get GHCR image sizes (compressed) for all architectures
+# Get GHCR image sizes formatted for dashboard (MB suffix)
 # Usage: get_ghcr_sizes <image> [tag]
+# Output: "amd64:84.0MB arm64:81.5MB"
 get_ghcr_sizes() {
-    local image=$1
+    local image=${1#ghcr.io/}
     local tag=${2:-latest}
-    local token manifest sizes_output=""
+    local sizes_output=""
 
-    # Get anonymous token for GHCR
-    token=$(curl -s "https://ghcr.io/token?scope=repository:${image#ghcr.io/}:pull" 2>/dev/null | \
-            jq -r '.token // empty' 2>/dev/null)
+    local raw_sizes
+    raw_sizes=$(ghcr_get_manifest_sizes "$image" "$tag") || return
 
-    [[ -z "$token" ]] && echo "" && return
-
-    # Get manifest list
-    manifest=$(curl -s -H "Authorization: Bearer $token" \
-               -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
-               "https://ghcr.io/v2/${image#ghcr.io/}/manifests/${tag}" 2>/dev/null)
-
-    [[ -z "$manifest" ]] && echo "" && return
-
-    # Parse manifests for each architecture
-    local manifests_data
-    manifests_data=$(echo "$manifest" | jq -r '.manifests[]? | "\(.platform.architecture):\(.digest)"' 2>/dev/null)
-
-    while IFS=':' read -r arch digest_prefix digest_hash; do
-        [[ -z "$arch" || -z "$digest_hash" ]] && continue
-        [[ "$arch" == "unknown" ]] && continue
-
-        # Get blob sizes for this architecture
-        local arch_manifest total_size=0
-        arch_manifest=$(curl -s -H "Authorization: Bearer $token" \
-                       -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                       "https://ghcr.io/v2/${image#ghcr.io/}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
-
-        if [[ -n "$arch_manifest" ]]; then
-            total_size=$(echo "$arch_manifest" | jq '[.layers[]?.size // 0] | add // 0' 2>/dev/null)
-        fi
-
-        # Format size
-        local size_mb
-        if [[ $total_size -gt 0 ]]; then
-            size_mb=$(echo "scale=1; $total_size/1048576" | bc)
+    while IFS=':' read -r arch bytes; do
+        [[ -z "$arch" || -z "$bytes" ]] && continue
+        if [[ "$bytes" -gt 0 ]] 2>/dev/null; then
+            local size_mb
+            size_mb=$(echo "scale=1; $bytes/1048576" | bc)
             sizes_output+="${arch}:${size_mb}MB "
         fi
-    done <<< "$manifests_data"
+    done <<< "$raw_sizes"
 
     echo "${sizes_output% }"
 }
