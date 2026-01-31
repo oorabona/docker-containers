@@ -9,7 +9,7 @@ This document describes the complete architecture of the Docker container automa
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    UPSTREAM VERSION MONITOR                          │
-│                    (Cron: 2x/day)                                   │
+│                    (Cron: 1x/day, 6 AM UTC)                                   │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
@@ -119,7 +119,7 @@ This document describes the complete architecture of the Docker container automa
 ### 1. upstream-monitor.yaml
 
 **Triggers**:
-- Cron: `0 6,18 * * *` (6am and 6pm UTC, 2x/day)
+- Cron: `0 6 * * *` (6 AM UTC, 1x/day)
 - Manual: `workflow_dispatch`
 
 **Process**:

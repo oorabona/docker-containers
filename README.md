@@ -4,7 +4,7 @@ Automated Docker container management with intelligent upstream monitoring and C
 
 ## 🌟 Overview
 
-This repository maintains 9 production-ready Docker containers with automated version monitoring, smart builds, and deployment pipelines. Each container includes version detection, health checks, and standardized build processes using shared utilities and focused scripts following DRY, SOLID, and KISS principles.
+This repository maintains 10 production-ready Docker containers with automated version monitoring, smart builds, and deployment pipelines. Each container includes version detection, health checks, and standardized build processes using shared utilities and focused scripts following DRY, SOLID, and KISS principles.
 
 ## 🏗️ Architecture
 
@@ -91,15 +91,13 @@ This repository follows industry-standard programming principles for maintainabl
 - **[sslh/](sslh/)** - SSL/SSH multiplexer for port sharing
 
 ### Database & Storage
-- **[postgres/](postgres/)** - PostgreSQL database with optimization
-- **[elasticsearch-conf/](elasticsearch-conf/)** - Elasticsearch configuration management
+- **[postgres/](postgres/)** - PostgreSQL database with extensions (variants: base, vector, analytics, timeseries, distributed, full)
 
 ### Development & Utilities
 - **[debian/](debian/)** - Minimal Debian base images with version flexibility
 - **[php/](php/)** - PHP development environment with Composer
-- **[logstash/](logstash/)** - Log processing and forwarding
+- **[jekyll/](jekyll/)** - Jekyll static site generator
 - **[openresty/](openresty/)** - High-performance web platform (Nginx + Lua)
-- **[es-kopf/](es-kopf/)** - Elasticsearch management web interface
 
 ## 🚀 Quick Start
 

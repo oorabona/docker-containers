@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 source "$SCRIPT_DIR/helpers/logging.sh"
 source "$SCRIPT_DIR/helpers/variant-utils.sh"
+source "$SCRIPT_DIR/helpers/build-args-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
@@ -80,9 +81,13 @@ get_build_lineage_args() {
 
     # Fallback to config.yaml if lineage didn't provide build_args
     if [[ -z "$result" ]]; then
-        local config_file="$SCRIPT_DIR/$container/config.yaml"
-        if [[ -f "$config_file" ]] && yq -e '.build_args' "$config_file" &>/dev/null; then
-            result=$(yq -r '.build_args | to_entries[] | "'"${indent}"'- name: \"" + .key + "\"\n'"${indent}"'  value: \"" + (.value | tostring) + "\""' "$config_file" 2>/dev/null || true)
+        local lines
+        lines=$(build_args_lines "$SCRIPT_DIR/$container")
+        if [[ -n "$lines" ]]; then
+            result=$(echo "$lines" | while IFS='=' read -r key value; do
+                printf '%s- name: "%s"\n%s  value: "%s"' "$indent" "$key" "$indent" "$value"
+                echo
+            done)
         fi
     fi
 
@@ -103,7 +108,9 @@ get_variant_build_args_json() {
     local ext_config="$container_dir/extensions/config.yaml"
 
     # Strategy 1: containers with build_args in config.yaml (terraform, etc.)
-    if [[ -f "$config_file" ]] && yq -e '.build_args // {} | length > 0' "$config_file" &>/dev/null; then
+    local args_json
+    args_json=$(build_args_json "$container_dir")
+    if [[ "$args_json" != "{}" ]] && [[ -n "$args_json" ]]; then
         # Check if this variant has build_args_include filter
         local filter_list=""
         if [[ -f "$variants_file" ]]; then
@@ -117,9 +124,9 @@ get_variant_build_args_json() {
         if [[ -n "$filter_list" ]]; then
             local jq_filter
             jq_filter=$(echo "$filter_list" | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
-            yq -o=json '.build_args | to_entries | [.[] | select(.key == ('"$jq_filter"'))] | [.[] | {"name": .key, "value": (.value | tostring)}]' "$config_file" 2>/dev/null || echo "[]"
+            echo "$args_json" | jq '[to_entries[] | select(.key == ('"$jq_filter"')) | {"name": .key, "value": (.value | tostring)}]' 2>/dev/null || echo "[]"
         else
-            yq -o=json '.build_args | to_entries | [.[] | {"name": .key, "value": (.value | tostring)}]' "$config_file" 2>/dev/null || echo "[]"
+            echo "$args_json" | jq '[to_entries[] | {"name": .key, "value": (.value | tostring)}]' 2>/dev/null || echo "[]"
         fi
         return
     fi
