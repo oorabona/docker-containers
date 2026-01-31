@@ -6,14 +6,15 @@
   "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
   "runtime": "Podman",
-  "image_id": "sha256:7d443ea118e8f66b349e368ae0b315c0eec31b193cdf6694368f5daa696f1348",
+  "image_id": "sha256:6fc0dcd2c1f8451586df4b4cb42f67656f6e31d6f00494aa91bef238cb88729f",
   "build_digest": "3fc7c887b492",
-  "base_image_ref": "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}",
-  "base_image_digest": "unresolved",
-  "built_at": "2026-01-30T01:56:14+01:00",
+  "base_image_ref": "alpine:latest",
+  "base_image_digest": "sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95",
+  "built_at": "2026-01-31T12:23:42+01:00",
   "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/sslh:v2.3.0-alpine",
     "ghcr": "ghcr.io/oorabona/sslh:v2.3.0-alpine"
-  }
+  },
+  "build_args": {}
 }

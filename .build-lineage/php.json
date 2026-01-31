@@ -6,14 +6,15 @@
   "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
   "runtime": "Podman",
-  "image_id": "sha256:53de5fd90f991b52e78bf16374130e0d96ed9be4c9c8ab5dd587bd09317dc545",
+  "image_id": "sha256:3887979de7b8cb5128de06f4c6284061a574661f2e0e28ca8557b1f5737a6754",
   "build_digest": "7da2a9820c5d",
-  "base_image_ref": "composer:latest",
-  "base_image_digest": "sha256:c1efdf09fb46624569ba669f23a57cd992a210a7fb8e999d0705363500e845be",
-  "built_at": "2026-01-30T01:56:04+01:00",
+  "base_image_ref": "php:8.5.2-fpm-alpine",
+  "base_image_digest": "sha256:cdba3efb175e2c79b9d348bf324c07a8bc31324e332ccf768cea864a6a5ce383",
+  "built_at": "2026-01-31T12:23:26+01:00",
   "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/php:8.5.2-fpm-alpine",
     "ghcr": "ghcr.io/oorabona/php:8.5.2-fpm-alpine"
-  }
+  },
+  "build_args": {}
 }
