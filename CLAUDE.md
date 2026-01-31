@@ -135,14 +135,3 @@ docker-containers/
 |----------|--------|
 | `DOCKEROPTS` | Additional Docker build options |
 | `NPROC` | Parallelism for builds |
-
-## Workflow Integration
-
-This project uses the standard Claude Code workflow:
-1. `/clarify` - Scope clarification
-2. `/spec` - Specification production
-3. `/implement` - Implementation
-4. `/review` - Code review
-5. `/finalize` - Story completion
-
-Run `/workflow <task>` to execute the full cycle.
