@@ -105,7 +105,6 @@ get_variant_build_args_json() {
     local version_tag="${3:-latest}"
     local container_dir="$SCRIPT_DIR/$container"
     local variants_file="$container_dir/variants.yaml"
-    local config_file="$container_dir/config.yaml"
     local ext_config="$container_dir/extensions/config.yaml"
 
     # Strategy 1: containers with build_args in config.yaml (terraform, etc.)
@@ -508,6 +507,114 @@ get_ghcr_sizes() {
     echo "${sizes_output% }"
 }
 
+# --- GitHub API helper ---
+
+# Fetch from GitHub API with gh CLI (authenticated) or curl fallback
+# Usage: github_api_get "endpoint" [max_time]
+github_api_get() {
+    local endpoint="$1"
+    local max_time="${2:-15}"
+
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        gh api "$endpoint" 2>/dev/null
+    else
+        curl -s --max-time "$max_time" \
+            "https://api.github.com/$endpoint" 2>/dev/null
+    fi
+}
+
+# --- Stats calculation functions ---
+
+# Calculate build success rate from auto-build workflow jobs (last 30 days)
+# Only counts jobs that start with "Build" to exclude detection, manifest, etc.
+# Output: "success_count:total_count:rate_percent"
+calculate_build_success_rate() {
+    local build_success=0 build_total=0 build_success_rate=0
+    local thirty_days_ago
+    thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+
+    local build_runs_json
+    build_runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 30)
+
+    if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+        local run_ids
+        run_ids=$(echo "$build_runs_json" | jq -r '.workflow_runs[] | select(.status == "completed") | .id' 2>/dev/null)
+
+        for run_id in $run_ids; do
+            local jobs_json
+            jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 10)
+
+            if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
+                local run_build_total run_build_success
+                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion != "skipped")] | length' 2>/dev/null || echo "0")
+                run_build_success=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
+
+                build_total=$((build_total + run_build_total))
+                build_success=$((build_success + run_build_success))
+            fi
+        done
+
+        [[ $build_total -gt 0 ]] && build_success_rate=$(( (build_success * 100) / build_total ))
+    fi
+
+    echo "${build_success}:${build_total}:${build_success_rate}"
+}
+
+# Fetch recent workflow runs for activity display
+# Output: YAML fragment for recent_activity
+fetch_recent_activity() {
+    local runs_json activity_yaml=""
+    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed")
+
+    if [[ -n "$runs_json" ]] && echo "$runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+        activity_yaml="recent_activity:"
+        while IFS= read -r run_line; do
+            [[ -z "$run_line" ]] && continue
+            local run_name run_conclusion run_date run_url
+            run_name=$(echo "$run_line" | cut -d'|' -f1)
+            run_conclusion=$(echo "$run_line" | cut -d'|' -f2)
+            run_date=$(echo "$run_line" | cut -d'|' -f3)
+            run_url=$(echo "$run_line" | cut -d'|' -f4)
+
+            local formatted_date
+            formatted_date=$(date -d "$run_date" +"%b %d, %H:%M" 2>/dev/null || echo "$run_date")
+
+            activity_yaml+="
+  - name: \"$(yaml_escape "$run_name")\"
+    conclusion: \"$run_conclusion\"
+    date: \"$formatted_date\"
+    url: \"$run_url\""
+        done < <(echo "$runs_json" | jq -r '.workflow_runs[] | "\(.display_title)|\(.conclusion)|\(.created_at)|\(.html_url)"' 2>/dev/null)
+    else
+        activity_yaml="recent_activity: []"
+    fi
+
+    echo "$activity_yaml"
+}
+
+# Write dashboard stats YAML file
+# Args: total up_to_date updates_available build_success build_total build_success_rate activity_yaml
+write_stats_file() {
+    local total="$1" up_to_date="$2" updates_available="$3"
+    local build_success="$4" build_total="$5" build_success_rate="$6"
+    local activity_yaml="$7"
+
+    cat > "$STATS_FILE" << EOF
+# Auto-generated dashboard statistics
+# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")
+
+total_containers: $total
+up_to_date: $up_to_date
+updates_available: $updates_available
+build_success_rate: $build_success_rate
+build_success_count: $build_success
+build_total_count: $build_total
+last_updated: "$(date -u +"%Y-%m-%d %H:%M UTC")"
+
+$activity_yaml
+EOF
+}
+
 # Main function
 generate_data() {
     log_info "Generating Jekyll data files..."
@@ -752,99 +859,20 @@ EOF
     done
 
     # Calculate build success rate from auto-build workflow jobs (last 30 days)
-    # Only count jobs that start with "Build" to exclude detection, manifest, and other jobs
     log_info "Calculating build success rate from GitHub Actions build jobs..."
-    local build_runs_json build_success=0 build_total=0 build_success_rate=0
-    local thirty_days_ago
-    thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
-
-    # Fetch auto-build workflow runs from last 30 days (limit to 20 for API efficiency)
-    # Prefer gh CLI (authenticated, higher rate limit) with curl fallback
-    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-        build_runs_json=$(gh api "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
-    else
-        build_runs_json=$(curl -s --max-time 30 \
-            "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
-    fi
-
-    if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
-        # For each completed run, fetch jobs and count only "Build" jobs
-        local run_ids
-        run_ids=$(echo "$build_runs_json" | jq -r '.workflow_runs[] | select(.status == "completed") | .id' 2>/dev/null)
-
-        for run_id in $run_ids; do
-            local jobs_json
-            if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-                jobs_json=$(gh api "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
-            else
-                jobs_json=$(curl -s --max-time 10 \
-                    "https://api.github.com/repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
-            fi
-
-            if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
-                # Count only jobs starting with "Build" (e.g., "Build terraform (amd64)")
-                local run_build_total run_build_success
-                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion != "skipped")] | length' 2>/dev/null || echo "0")
-                run_build_success=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
-
-                build_total=$((build_total + run_build_total))
-                build_success=$((build_success + run_build_success))
-            fi
-        done
-
-        [[ $build_total -gt 0 ]] && build_success_rate=$(( (build_success * 100) / build_total ))
-    fi
+    local build_stats build_success build_total build_success_rate
+    build_stats=$(calculate_build_success_rate)
+    IFS=':' read -r build_success build_total build_success_rate <<< "$build_stats"
     log_info "Build jobs stats (30 days): $build_success/$build_total successful (${build_success_rate}%)"
 
     # Fetch recent workflow runs from GitHub API
     log_info "Fetching recent workflow runs..."
-    local runs_json activity_yaml=""
-    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-        runs_json=$(gh api "repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
-    else
-        runs_json=$(curl -s --max-time 15 \
-            "https://api.github.com/repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
-    fi
-
-    if [[ -n "$runs_json" ]] && echo "$runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
-        activity_yaml="recent_activity:"
-        while IFS= read -r run_line; do
-            [[ -z "$run_line" ]] && continue
-            local run_name run_conclusion run_date run_url
-            run_name=$(echo "$run_line" | cut -d'|' -f1)
-            run_conclusion=$(echo "$run_line" | cut -d'|' -f2)
-            run_date=$(echo "$run_line" | cut -d'|' -f3)
-            run_url=$(echo "$run_line" | cut -d'|' -f4)
-
-            # Format date for display
-            local formatted_date
-            formatted_date=$(date -d "$run_date" +"%b %d, %H:%M" 2>/dev/null || echo "$run_date")
-
-            activity_yaml+="
-  - name: \"$(yaml_escape "$run_name")\"
-    conclusion: \"$run_conclusion\"
-    date: \"$formatted_date\"
-    url: \"$run_url\""
-        done < <(echo "$runs_json" | jq -r '.workflow_runs[] | "\(.display_title)|\(.conclusion)|\(.created_at)|\(.html_url)"' 2>/dev/null)
-    else
-        activity_yaml="recent_activity: []"
-    fi
+    local activity_yaml
+    activity_yaml=$(fetch_recent_activity)
 
     # Write stats file
-    cat > "$STATS_FILE" << EOF
-# Auto-generated dashboard statistics
-# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")
-
-total_containers: $total
-up_to_date: $up_to_date
-updates_available: $updates_available
-build_success_rate: $build_success_rate
-build_success_count: $build_success
-build_total_count: $build_total
-last_updated: "$(date -u +"%Y-%m-%d %H:%M UTC")"
-
-$activity_yaml
-EOF
+    write_stats_file "$total" "$up_to_date" "$updates_available" \
+        "$build_success" "$build_total" "$build_success_rate" "$activity_yaml"
 
     log_info "Generated $DATA_FILE with $total containers"
     log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build jobs success ${build_success_rate}% ($build_success/$build_total)"
