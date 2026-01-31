@@ -1,0 +1,7 @@
+# PostgreSQL container configuration
+# Base image and third-party dependency versions
+# Extension versions are managed in extensions/config.yaml
+
+base_image: "${BASE_IMAGE}:${VERSION}"
+
+build_args: {}

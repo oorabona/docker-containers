@@ -1,0 +1,6 @@
+# Ansible container configuration
+# Base image and third-party dependency versions
+
+base_image: "ubuntu:${OS_VERSION}"
+
+build_args: {}

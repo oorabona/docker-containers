@@ -36,9 +36,9 @@ resolve_major_version() {
         fi
     done <<< "$tags"
 
-    # No match — return original
+    # No match — return original (e.g., dynamic version containers like terraform)
     echo "$full_version"
-    return 1
+    return 0
 }
 
 # Check if a container has variants

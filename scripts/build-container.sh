@@ -136,13 +136,17 @@ build_container() {
     [[ -n "$flavor" ]] && build_args="$build_args --build-arg FLAVOR=$flavor"
     [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
 
-    # Load build_args from config.json if present
-    if [[ -f "./config.json" ]]; then
+    # Load build_args from config.yaml if present
+    if [[ -f "./config.yaml" ]]; then
+        if ! command -v yq >/dev/null 2>&1; then
+            log_error "yq is required to read config.yaml but is not installed"
+            return 1
+        fi
         local config_build_args
-        config_build_args=$(jq -r '.build_args // {} | to_entries | map("--build-arg \(.key)=\(.value)") | join(" ")' ./config.json 2>/dev/null || true)
+        config_build_args=$(yq -r '.build_args // {} | to_entries | map("--build-arg " + .key + "=" + .value) | join(" ")' ./config.yaml 2>/dev/null || true)
         if [[ -n "$config_build_args" ]]; then
             build_args="$build_args $config_build_args"
-            log_info "Loaded build args from config.json"
+            log_info "Loaded build args from config.yaml"
         fi
     fi
 
@@ -164,15 +168,18 @@ build_container() {
     label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 
     # Resolve and record base image digest for reproducibility
-    # Parse the raw FROM line, then substitute known ARG values
-    local base_image_raw
-    # Use last FROM (final build stage = actual base image, not intermediate stages)
-    base_image_raw=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
-    # Fallback to last FROM if all have AS aliases
-    [[ -z "$base_image_raw" ]] && base_image_raw=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
-    local base_image_ref="$base_image_raw"
+    # Read base_image template from config.yaml, then substitute known variables
+    local base_image_ref=""
+    if [[ -f "./config.yaml" ]]; then
+        base_image_ref=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
+    fi
+    # Fallback: parse FROM line if no config.yaml or no base_image field
+    if [[ -z "$base_image_ref" ]]; then
+        base_image_ref=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
+        [[ -z "$base_image_ref" ]] && base_image_ref=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
+    fi
 
-    # Substitute known build ARGs into the FROM reference
+    # Substitute known variables into the base image template
     if [[ "$base_image_ref" =~ \$ ]]; then
         base_image_ref="${base_image_ref//\$\{VERSION\}/$version}"
         base_image_ref="${base_image_ref//\$VERSION/$version}"
@@ -182,26 +189,16 @@ build_container() {
         while IFS= read -r arg_line; do
             local arg_name="${arg_line%%=*}"
             local arg_default="${arg_line#*=}"
-            # Strip surrounding quotes from ARG defaults (e.g. "alpine" → alpine)
             arg_default="${arg_default%\"}"
             arg_default="${arg_default#\"}"
             arg_default="${arg_default%\'}"
             arg_default="${arg_default#\'}"
             [[ -z "$arg_name" || "$arg_name" == "$arg_line" ]] && continue
-            # Only substitute if still unresolved
             if [[ "$base_image_ref" == *"\${$arg_name}"* || "$base_image_ref" == *"\$$arg_name"* ]]; then
                 base_image_ref="${base_image_ref//\$\{$arg_name\}/$arg_default}"
                 base_image_ref="${base_image_ref//\$$arg_name/$arg_default}"
             fi
         done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
-        # Load additional ARGs from config.json if available
-        if [[ -f "./config.json" ]]; then
-            while IFS='=' read -r key val; do
-                [[ -z "$key" ]] && continue
-                base_image_ref="${base_image_ref//\$\{$key\}/$val}"
-                base_image_ref="${base_image_ref//\$$key/$val}"
-            done < <(jq -r '.build_args // {} | to_entries[] | "\(.key)=\(.value)"' ./config.json 2>/dev/null || true)
-        fi
         # Substitute CUSTOM_BUILD_ARGS if they contain relevant ARGs
         if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
             while read -r arg_val; do
@@ -276,14 +273,10 @@ build_container() {
     local image_id
     image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
 
-    # Extract build args into JSON object (excluding VERSION/MAJOR_VERSION already tracked)
+    # Extract build args into JSON object from config.yaml (single source of truth)
     local build_args_json="{}"
-    if [[ -n "${build_args:-}" ]]; then
-        build_args_json=$(echo "$build_args" | grep -oP '(?<=--build-arg )\S+' | \
-            grep -vE '^(VERSION|MAJOR_VERSION|UPSTREAM_VERSION|NPROC|FLAVOR|BASE_IMAGE|ENABLE_[A-Z_]+=)' | \
-            grep -vE '^RESTY_IMAGE_(BASE|TAG)=' | \
-            awk -F= '{printf "\"%s\": \"%s\"\n", $1, $2}' | \
-            paste -sd, | sed 's/^/{/;s/$/}/' || true)
+    if [[ -f "./config.yaml" ]]; then
+        build_args_json=$(yq -r '(.build_args // {}) | to_entries | map("\"" + .key + "\": \"" + .value + "\"") | join(",") | "{" + . + "}"' ./config.yaml 2>/dev/null || true)
         [[ -z "$build_args_json" || "$build_args_json" == "{}" ]] && build_args_json="{}"
     fi
 
