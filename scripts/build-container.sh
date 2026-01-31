@@ -114,7 +114,9 @@ _prepare_build_args() {
         log_info "Loaded build args from config.yaml"
     fi
 
-    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS $CUSTOM_BUILD_ARGS"
+    if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
+        _BUILD_ARGS="$_BUILD_ARGS $CUSTOM_BUILD_ARGS"
+    fi
 }
 
 # Resolve base image reference from config.yaml or Dockerfile, substitute variables
