@@ -1,37 +1,20 @@
 #!/bin/bash
 
-# Function to get latest compatible OpenSSL version
-get_openssl_version() {
-    # Latest stable OpenSSL 1.1.1 series (compatible with OpenResty)
-    echo "1.1.1w"
-}
+# Read dependency versions from config.yaml (single source of truth)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Function to get OpenSSL patch version (for OpenResty patches)
-get_openssl_patch_version() {
-    # OpenResty patch version (usually older than the actual OpenSSL version)
-    echo "1.1.1f"
-}
+if ! command -v yq >/dev/null 2>&1; then
+    echo "ERROR: yq is required to read config.yaml" >&2
+    exit 1
+fi
 
-# Function to get latest compatible PCRE version  
-get_pcre_version() {
-    # Latest PCRE 8.x series (PCRE2 has compatibility issues with some OpenResty modules)
-    echo "8.45"
-}
-
-# Function to get latest LuaRocks version
-get_luarocks_version() {
-    # Latest stable LuaRocks
-    echo "3.11.1"
-}
-
-# Gather dependency versions dynamically
-OPENSSL_VERSION=$(get_openssl_version)
-OPENSSL_PATCH_VERSION=$(get_openssl_patch_version)
-PCRE_VERSION=$(get_pcre_version)
-LUAROCKS_VERSION=$(get_luarocks_version)
+OPENSSL_VERSION=$(yq -r '.build_args.RESTY_OPENSSL_VERSION // ""' "$SCRIPT_DIR/config.yaml")
+OPENSSL_PATCH_VERSION=$(yq -r '.build_args.RESTY_OPENSSL_PATCH_VERSION // ""' "$SCRIPT_DIR/config.yaml")
+PCRE_VERSION=$(yq -r '.build_args.RESTY_PCRE_VERSION // ""' "$SCRIPT_DIR/config.yaml")
+LUAROCKS_VERSION=$(yq -r '.build_args.LUAROCKS_VERSION // ""' "$SCRIPT_DIR/config.yaml")
 
 # Get raw upstream version (without -alpine suffix) for source download
-RESTY_VERSION=$("$(dirname "$0")/version.sh" --upstream)
+RESTY_VERSION=$("$SCRIPT_DIR/version.sh" --upstream)
 
 echo "Building OpenResty ${VERSION} with dependencies:"
 echo "  OpenResty Source: ${RESTY_VERSION}"

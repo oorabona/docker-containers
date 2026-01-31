@@ -1,0 +1,6 @@
+# SSLH container configuration
+# Base image and third-party dependency versions
+
+base_image: "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}"
+
+build_args: {}

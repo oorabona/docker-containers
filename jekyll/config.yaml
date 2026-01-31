@@ -1,0 +1,6 @@
+# Jekyll container configuration
+# Base image and third-party dependency versions
+
+base_image: "ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}"
+
+build_args: {}
