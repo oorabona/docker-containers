@@ -325,8 +325,9 @@ collect_variant_json() {
     fi
 
     # Lineage (build_digest + base_image with version mismatch check)
+    # Use current_version for mismatch check — lineage stores actual version, not tag prefix
     local lineage_json
-    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_name" "$version" "$fallback_base_image")
+    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_name" "$current_version" "$fallback_base_image")
 
     # Build args
     local build_args_json
