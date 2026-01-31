@@ -405,7 +405,7 @@ Our optimized architecture follows this pattern for reliable automation:
 name: Upstream Monitor
 on:
   schedule:
-    - cron: '0 6,18 * * *'  # Only workflow with schedule
+    - cron: '0 6 * * *'  # Only workflow with schedule (6 AM UTC daily)
   workflow_dispatch:
     inputs:
       container: { type: string }

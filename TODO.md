@@ -52,6 +52,10 @@ _No low priority tasks remaining_
 - [x] ✅ gh-pages: Increase mobile touch targets to 44px — theme toggle, filter/registry buttons, variant tags, copy button (2026-01-30)
 - [x] ✅ AUD-P0: Fix 3 P0 audit items — DRY build-args-utils.sh, CI-aware auto-merge with timeout, remove AUTO_MERGE_TOKEN (2026-01-31)
 - [x] ✅ AUD-006: Extract shared registry API utility — helpers/registry-utils.sh eliminates duplication between ./make and generate-dashboard.sh (2026-01-31)
+- [x] ✅ AUD-007: Extract inline JS/CSS from layouts — 4 external files, 86% layout reduction, removed unsafe-inline from script-src CSP (2026-01-31)
+- [x] ✅ AUD-009: Split generate_data() — extracted github_api_get, calculate_build_success_rate, fetch_recent_activity, write_stats_file (2026-01-31)
+- [x] ✅ AUD-011: Add test.sh for 6 containers — ansible, debian, jekyll, openvpn, terraform, wordpress (2026-01-31)
+- [x] ✅ AUD-014: Fix schedule documentation — corrected cron from twice-daily to daily in GITHUB_ACTIONS.md (2026-01-31)
 
 ## Blocked / Deferred
 
