@@ -49,6 +49,10 @@ Thumbs.db
 .ripgreprc
 .gitconfig
 
+# Workflow artifacts (local tooling, not project docs)
+docs/plans/
+docs/audit/
+
 # Jekyll build output
 docs/site/_site
 docs/site/.claude
