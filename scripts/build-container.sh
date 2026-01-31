@@ -235,6 +235,9 @@ build_container() {
     local dockerhub_image="docker.io/$github_username/$container"
     local ghcr_image="ghcr.io/$github_username/$container"
 
+    # Reset BUILD_DIGEST so each variant computes its own
+    unset BUILD_DIGEST
+
     # Smart rebuild detection: skip if image exists with matching digest
     if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
         local variants_yaml=""
