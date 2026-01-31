@@ -354,9 +354,8 @@ VARIANT
                     if [[ -n "$var_lineage_file" ]]; then
                         var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
                         var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                        # Version mismatch check: only for fallback files (not exact variant match)
-                        local exact_variant_file="$SCRIPT_DIR/.build-lineage/${container}-${variant_name}.json"
-                        if [[ "$var_lineage_file" != "$exact_variant_file" && "$var_base_image" != "unknown" ]]; then
+                        # Version mismatch check: lineage file may be from a different version
+                        if [[ "$var_base_image" != "unknown" ]]; then
                             local lineage_version
                             lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
                             if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
@@ -682,9 +681,8 @@ EOF
                         if [[ -n "$var_lineage_file" ]]; then
                             var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
                             var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                            # Version mismatch check: only for fallback files (not exact variant match)
-                            local exact_variant_file="$SCRIPT_DIR/.build-lineage/${container}-${variant_name}.json"
-                            if [[ "$var_lineage_file" != "$exact_variant_file" && "$var_base_image" != "unknown" ]]; then
+                            # Version mismatch check: lineage file may be from a different version
+                            if [[ "$var_base_image" != "unknown" ]]; then
                                 local lineage_version
                                 lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
                                 if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
