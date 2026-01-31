@@ -10,6 +10,7 @@ source "$SCRIPT_DIR/helpers/logging.sh"
 source "$SCRIPT_DIR/helpers/variant-utils.sh"
 source "$SCRIPT_DIR/helpers/build-args-utils.sh"
 source "$SCRIPT_DIR/helpers/registry-utils.sh"
+source "$SCRIPT_DIR/helpers/version-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
@@ -179,11 +180,7 @@ get_container_versions() {
 
     local pattern current_version latest_version status_color status_text
 
-    if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n')
-    else
-        current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$" 2>/dev/null | head -1 | tr -d '\n')
-    fi
+    current_version=$(get_current_published_version "oorabona/$container")
     # Handle empty result
     [[ -z "$current_version" ]] && current_version="no-published-version"
 
