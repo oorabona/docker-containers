@@ -91,17 +91,16 @@ jobs:
           cp -r docs/site/_includes _includes
           cp -r docs/site/_layouts _layouts
           cp -r docs/site/_data _data
-          # Copy generated container collection pages for Jekyll
+          cp -r docs/site/assets assets
           if [ -d "docs/site/_containers" ]; then
             cp -r docs/site/_containers _containers
             echo "📂 Containers: $(ls _containers/ | wc -l) pages"
-          else
-            echo "⚠️  No _containers directory found (generate-dashboard.sh may not have created it)"
+          fi
+          if [ -f "docs/site/container.html" ]; then
+            cp docs/site/container.html container.html
           fi
           echo "✅ Jekyll configuration ready"
-          echo "📂 Data: $(ls _data/)"
-          echo "📂 Includes: $(ls _includes/)"
-          echo "📂 Layouts: $(ls _layouts/)"
+          echo "📂 Assets: $(find assets -type f | wc -l) files"
 
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
