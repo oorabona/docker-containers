@@ -31,6 +31,24 @@ resolve_lineage_file() {
     fi
 }
 
+# Resolve lineage file for a specific variant of a container
+# Tries {container}-{variant}.json, then falls back to {container}.json
+resolve_variant_lineage_file() {
+    local container="$1"
+    local variant_name="$2"
+    local lineage_dir="$SCRIPT_DIR/.build-lineage"
+    local lineage_file="$lineage_dir/${container}-${variant_name}.json"
+    if [[ -f "$lineage_file" ]]; then
+        echo "$lineage_file"
+        return
+    fi
+    # Fallback: main container lineage
+    lineage_file="$lineage_dir/${container}.json"
+    if [[ -f "$lineage_file" ]]; then
+        echo "$lineage_file"
+    fi
+}
+
 # Get a field from the build lineage JSON for a container
 # Falls back to "unknown" if lineage data doesn't exist
 get_build_lineage_field() {
@@ -46,15 +64,93 @@ get_build_lineage_field() {
 }
 
 # Get build_args from lineage as YAML key-value pairs (indented)
+# Falls back to config.yaml when lineage files are unavailable
 # Usage: get_build_lineage_args <container> <indent>
 get_build_lineage_args() {
     local container="$1"
     local indent="${2:-    }"
+    local result=""
+
+    # Try lineage file first
     local lineage_file
     lineage_file=$(resolve_lineage_file "$container")
     if [[ -n "$lineage_file" ]]; then
-        jq -r ".build_args // {} | to_entries[] | \"${indent}- name: \\\"\\(.key)\\\"\\n${indent}  value: \\\"\\(.value)\\\"\"" "$lineage_file" 2>/dev/null || true
+        result=$(jq -r ".build_args // {} | to_entries[] | \"${indent}- name: \\\"\\(.key)\\\"\\n${indent}  value: \\\"\\(.value)\\\"\"" "$lineage_file" 2>/dev/null || true)
     fi
+
+    # Fallback to config.yaml if lineage didn't provide build_args
+    if [[ -z "$result" ]]; then
+        local config_file="$SCRIPT_DIR/$container/config.yaml"
+        if [[ -f "$config_file" ]] && yq -e '.build_args' "$config_file" &>/dev/null; then
+            result=$(yq -r '.build_args | to_entries[] | "'"${indent}"'- name: \"" + .key + "\"\n'"${indent}"'  value: \"" + (.value | tostring) + "\""' "$config_file" 2>/dev/null || true)
+        fi
+    fi
+
+    echo "$result"
+}
+
+# Get build_args filtered for a specific variant as JSON array
+# Reads build_args_include from variants.yaml; if absent, includes all build_args
+# For containers with extensions (e.g. postgres), resolves extension versions from flavors
+# Usage: get_variant_build_args_json <container> <variant_name> [version_tag]
+get_variant_build_args_json() {
+    local container="$1"
+    local variant_name="$2"
+    local version_tag="${3:-latest}"
+    local container_dir="$SCRIPT_DIR/$container"
+    local variants_file="$container_dir/variants.yaml"
+    local config_file="$container_dir/config.yaml"
+    local ext_config="$container_dir/extensions/config.yaml"
+
+    # Strategy 1: containers with build_args in config.yaml (terraform, etc.)
+    if [[ -f "$config_file" ]] && yq -e '.build_args // {} | length > 0' "$config_file" &>/dev/null; then
+        # Check if this variant has build_args_include filter
+        local filter_list=""
+        if [[ -f "$variants_file" ]]; then
+            filter_list=$(yq -r ".versions[] | select(.tag == \"$version_tag\") | .variants[] | select(.name == \"$variant_name\") | .build_args_include // [] | .[]" "$variants_file" 2>/dev/null)
+            # Fallback to "latest" tag
+            if [[ -z "$filter_list" ]]; then
+                filter_list=$(yq -r '.versions[] | select(.tag == "latest") | .variants[] | select(.name == "'"$variant_name"'") | .build_args_include // [] | .[]' "$variants_file" 2>/dev/null)
+            fi
+        fi
+
+        if [[ -n "$filter_list" ]]; then
+            local jq_filter
+            jq_filter=$(echo "$filter_list" | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
+            yq -o=json '.build_args | to_entries | [.[] | select(.key == ('"$jq_filter"'))] | [.[] | {"name": .key, "value": (.value | tostring)}]' "$config_file" 2>/dev/null || echo "[]"
+        else
+            yq -o=json '.build_args | to_entries | [.[] | {"name": .key, "value": (.value | tostring)}]' "$config_file" 2>/dev/null || echo "[]"
+        fi
+        return
+    fi
+
+    # Strategy 2: containers with extensions (postgres) — resolve from flavor files
+    local flavor_file="$container_dir/flavors/${variant_name}.yaml"
+    if [[ -f "$ext_config" ]] && [[ -f "$flavor_file" ]]; then
+        local ext_names
+        ext_names=$(yq -r '.extensions // [] | .[]' "$flavor_file" 2>/dev/null)
+        if [[ -z "$ext_names" ]]; then
+            echo "[]"
+            return
+        fi
+        # Build JSON array of {name: ext_name, value: version} from extensions/config.yaml
+        local result="["
+        local first=true
+        while IFS= read -r ext; do
+            [[ -z "$ext" ]] && continue
+            local ver
+            ver=$(yq -r ".extensions.${ext}.version // \"\"" "$ext_config" 2>/dev/null)
+            [[ -z "$ver" ]] && continue
+            $first || result+=","
+            first=false
+            result+="{\"name\":\"${ext}\",\"value\":\"${ver}\"}"
+        done <<< "$ext_names"
+        result+="]"
+        echo "$result"
+        return
+    fi
+
+    echo "[]"
 }
 
 # Function to check if a directory should be skipped
@@ -252,6 +348,42 @@ VARIANT
                         echo "        size_amd64: \"\"" >> "$page_file"
                         echo "        size_arm64: \"\"" >> "$page_file"
                     fi
+                    # Per-variant lineage (build_digest + base_image)
+                    local var_lineage_file var_build_digest var_base_image
+                    var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
+                    if [[ -n "$var_lineage_file" ]]; then
+                        var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                        var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                        # Version mismatch check: only for fallback files (not exact variant match)
+                        local exact_variant_file="$SCRIPT_DIR/.build-lineage/${container}-${variant_name}.json"
+                        if [[ "$var_lineage_file" != "$exact_variant_file" && "$var_base_image" != "unknown" ]]; then
+                            local lineage_version
+                            lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
+                            if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
+                                local base_image_prefix="${var_base_image%%:*}"
+                                var_base_image="${base_image_prefix}:${base_tag}"
+                                var_build_digest="unknown"
+                            fi
+                        fi
+                    else
+                        var_build_digest="unknown"
+                        # Derive base_image from page-level base_image prefix + version base_tag
+                        local base_image_prefix="${base_image%%:*}"
+                        if [[ -n "$base_image_prefix" && "$base_image_prefix" != "unknown" ]]; then
+                            var_base_image="${base_image_prefix}:${base_tag}"
+                        else
+                            var_base_image="unknown"
+                        fi
+                    fi
+                    echo "        build_digest: \"$var_build_digest\"" >> "$page_file"
+                    echo "        base_image: \"$var_base_image\"" >> "$page_file"
+                    # Per-variant build_args (filtered by build_args_include if present)
+                    local var_build_args_json
+                    var_build_args_json=$(get_variant_build_args_json "$container" "$variant_name" "$ver_tag")
+                    if [[ "$var_build_args_json" != "[]" ]]; then
+                        echo "        build_args:" >> "$page_file"
+                        echo "$var_build_args_json" | jq -r '.[] | "          - name: \"" + .name + "\"\n            value: \"" + .value + "\""' >> "$page_file"
+                    fi
                 done < <(list_variants "$container_dir" "$ver_tag")
             done < <(list_versions "$container_dir")
         else
@@ -282,6 +414,18 @@ VARIANT
                     echo "    size_amd64: \"\"" >> "$page_file"
                     echo "    size_arm64: \"\"" >> "$page_file"
                 fi
+                # Per-variant lineage
+                local var_lineage_file var_build_digest var_base_image
+                var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
+                if [[ -n "$var_lineage_file" ]]; then
+                    var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                    var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                else
+                    var_build_digest="unknown"
+                    var_base_image="unknown"
+                fi
+                echo "    build_digest: \"$var_build_digest\"" >> "$page_file"
+                echo "    base_image: \"$var_base_image\"" >> "$page_file"
             done < <(list_variants "$container_dir")
         fi
     else
@@ -489,6 +633,8 @@ EOF
 
         # Check for variants
         local container_dir="./$container"
+        local base_image
+        base_image=$(get_build_lineage_field "$container" "base_image_ref")
         if has_variants "$container_dir"; then
             echo "  has_variants: true" >> "$DATA_FILE"
 
@@ -530,6 +676,34 @@ EOF
                             fi
                         fi
 
+                        # Per-variant lineage (build_digest + base_image)
+                        local var_lineage_file var_build_digest var_base_image
+                        var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
+                        if [[ -n "$var_lineage_file" ]]; then
+                            var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                            var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                            # Version mismatch check: only for fallback files (not exact variant match)
+                            local exact_variant_file="$SCRIPT_DIR/.build-lineage/${container}-${variant_name}.json"
+                            if [[ "$var_lineage_file" != "$exact_variant_file" && "$var_base_image" != "unknown" ]]; then
+                                local lineage_version
+                                lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
+                                if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
+                                    local base_image_prefix="${var_base_image%%:*}"
+                                    var_base_image="${base_image_prefix}:${base_tag}"
+                                    var_build_digest="unknown"
+                                fi
+                            fi
+                        else
+                            var_build_digest="unknown"
+                            # Derive base_image from page-level base_image prefix + version base_tag
+                            local base_image_prefix="${base_image%%:*}"
+                            if [[ -n "$base_image_prefix" && "$base_image_prefix" != "unknown" ]]; then
+                                var_base_image="${base_image_prefix}:${base_tag}"
+                            else
+                                var_base_image="unknown"
+                            fi
+                        fi
+
                         cat >> "$DATA_FILE" << EOF
         - name: "$variant_name"
           tag: "$variant_tag"
@@ -537,7 +711,16 @@ EOF
           is_default: $is_default
           size_amd64: "$var_size_amd64"
           size_arm64: "$var_size_arm64"
+          build_digest: "$var_build_digest"
+          base_image: "$var_base_image"
 EOF
+                        # Per-variant build_args
+                        local var_build_args_json
+                        var_build_args_json=$(get_variant_build_args_json "$container" "$variant_name" "$ver_tag")
+                        if [[ "$var_build_args_json" != "[]" ]]; then
+                            echo "          build_args:" >> "$DATA_FILE"
+                            echo "$var_build_args_json" | jq -r '.[] | "            - name: \"" + .name + "\"\n              value: \"" + .value + "\""' >> "$DATA_FILE"
+                        fi
                     done < <(list_variants "$container_dir" "$ver_tag")
                 done < <(list_versions "$container_dir")
             else
@@ -565,6 +748,17 @@ EOF
                         fi
                     fi
 
+                    # Per-variant lineage
+                    local var_lineage_file var_build_digest var_base_image
+                    var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
+                    if [[ -n "$var_lineage_file" ]]; then
+                        var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                        var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
+                    else
+                        var_build_digest="unknown"
+                        var_base_image="unknown"
+                    fi
+
                     cat >> "$DATA_FILE" << EOF
     - name: "$variant_name"
       tag: "$variant_tag"
@@ -572,6 +766,8 @@ EOF
       is_default: $is_default
       size_amd64: "$var_size_amd64"
       size_arm64: "$var_size_arm64"
+      build_digest: "$var_build_digest"
+      base_image: "$var_base_image"
 EOF
                 done < <(list_variants "$container_dir")
             fi
@@ -596,8 +792,13 @@ EOF
     thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
 
     # Fetch auto-build workflow runs from last 30 days (limit to 20 for API efficiency)
-    build_runs_json=$(curl -s --max-time 30 \
-        "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
+    # Prefer gh CLI (authenticated, higher rate limit) with curl fallback
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        build_runs_json=$(gh api "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
+    else
+        build_runs_json=$(curl -s --max-time 30 \
+            "https://api.github.com/repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 2>/dev/null)
+    fi
 
     if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
         # For each completed run, fetch jobs and count only "Build" jobs
@@ -606,8 +807,12 @@ EOF
 
         for run_id in $run_ids; do
             local jobs_json
-            jobs_json=$(curl -s --max-time 10 \
-                "https://api.github.com/repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
+            if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+                jobs_json=$(gh api "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
+            else
+                jobs_json=$(curl -s --max-time 10 \
+                    "https://api.github.com/repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 2>/dev/null)
+            fi
 
             if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
                 # Count only jobs starting with "Build" (e.g., "Build terraform (amd64)")
@@ -624,11 +829,15 @@ EOF
     fi
     log_info "Build jobs stats (30 days): $build_success/$build_total successful (${build_success_rate}%)"
 
-    # Fetch recent workflow runs from GitHub API (public, no auth needed)
+    # Fetch recent workflow runs from GitHub API
     log_info "Fetching recent workflow runs..."
     local runs_json activity_yaml=""
-    runs_json=$(curl -s --max-time 15 \
-        "https://api.github.com/repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        runs_json=$(gh api "repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
+    else
+        runs_json=$(curl -s --max-time 15 \
+            "https://api.github.com/repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" 2>/dev/null)
+    fi
 
     if [[ -n "$runs_json" ]] && echo "$runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
         activity_yaml="recent_activity:"

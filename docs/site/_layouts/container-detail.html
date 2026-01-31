@@ -21,8 +21,8 @@
       --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
       --glass-blur: blur(12px);
       --text-primary: #ffffff;
-      --text-secondary: rgba(255, 255, 255, 0.7);
-      --text-muted: rgba(255, 255, 255, 0.5);
+      --text-secondary: rgba(255, 255, 255, 0.85);
+      --text-muted: rgba(255, 255, 255, 0.65);
       --accent-green: #10b981;
       --accent-yellow: #f59e0b;
       --accent-blue: #3b82f6;
@@ -73,21 +73,44 @@
         radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
         radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.2) 0%, transparent 50%),
         radial-gradient(circle at 40% 40%, rgba(59, 130, 246, 0.2) 0%, transparent 40%);
-      animation: float 20s ease-in-out infinite;
+      animation: drift 25s ease-in-out infinite;
     }
-    @keyframes float {
-      0%, 100% { transform: translate(0, 0) rotate(0deg); }
-      33% { transform: translate(2%, 2%) rotate(1deg); }
-      66% { transform: translate(-1%, 1%) rotate(-1deg); }
+    @keyframes drift {
+      0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+      25% { transform: translate(3%, -2%) rotate(2deg) scale(1.05); }
+      50% { transform: translate(-2%, 3%) rotate(-1deg) scale(0.95); }
+      75% { transform: translate(1%, -1%) rotate(1.5deg) scale(1.02); }
     }
 
-    .shape { position: fixed; border-radius: 50%; filter: blur(60px); opacity: 0.5; z-index: -1; }
-    .shape-1 { width: 400px; height: 400px; background: var(--gradient-1); top: 10%; right: 10%; animation: pulse 8s ease-in-out infinite; }
-    .shape-2 { width: 300px; height: 300px; background: var(--gradient-3); bottom: 20%; left: 5%; animation: pulse 10s ease-in-out infinite reverse; }
-    .shape-3 { width: 250px; height: 250px; background: var(--gradient-2); top: 50%; left: 50%; animation: pulse 12s ease-in-out infinite; }
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); opacity: 0.5; }
-      50% { transform: scale(1.1); opacity: 0.3; }
+    .shape { position: fixed; border-radius: 50%; filter: blur(60px); z-index: -1; will-change: transform, opacity; }
+    .shape-1 {
+      width: 400px; height: 400px; background: var(--gradient-1); top: 10%; right: 10%;
+      animation: orbit1 14s ease-in-out infinite;
+    }
+    .shape-2 {
+      width: 300px; height: 300px; background: var(--gradient-3); bottom: 20%; left: 5%;
+      animation: orbit2 18s ease-in-out infinite;
+    }
+    .shape-3 {
+      width: 250px; height: 250px; background: var(--gradient-2); top: 50%; left: 50%;
+      animation: orbit3 22s ease-in-out infinite;
+    }
+    @keyframes orbit1 {
+      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
+      25% { transform: translate(-40px, 30px) scale(1.15); opacity: 0.55; }
+      50% { transform: translate(20px, -20px) scale(0.9); opacity: 0.35; }
+      75% { transform: translate(-15px, -25px) scale(1.08); opacity: 0.5; }
+    }
+    @keyframes orbit2 {
+      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.4; }
+      30% { transform: translate(35px, -25px) scale(1.2); opacity: 0.55; }
+      60% { transform: translate(-30px, 15px) scale(0.85); opacity: 0.3; }
+    }
+    @keyframes orbit3 {
+      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
+      20% { transform: translate(25px, 20px) scale(1.1); opacity: 0.5; }
+      50% { transform: translate(-20px, -30px) scale(0.92); opacity: 0.35; }
+      80% { transform: translate(10px, -15px) scale(1.18); opacity: 0.55; }
     }
 
     .container { max-width: 1400px; margin: 0 auto; padding: 2rem; position: relative; z-index: 1; }
@@ -202,6 +225,18 @@
     .lineage-item {
       display: flex; flex-direction: column; gap: 0.25rem;
       padding: 0.75rem; border-radius: 6px; background: rgba(255, 255, 255, 0.05);
+      animation: lineageItemIn 0.4s ease both;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    .lineage-item.lineage-exit {
+      opacity: 0; transform: scale(0.96);
+    }
+    .lineage-item.lineage-enter {
+      animation: lineageItemIn 0.4s ease both;
+    }
+    @keyframes lineageItemIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
     }
     .lineage-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
     .lineage-value {
@@ -411,36 +446,7 @@
           </div>
         </div>
 
-        <!-- Build Lineage -->
-        {% if page.build_digest and page.build_digest != "unknown" %}
-        <section class="lineage-section glass" aria-label="Build lineage information">
-          <div class="lineage-header">
-            <i class="ti ti-git-branch" aria-hidden="true"></i> Build Lineage
-          </div>
-          <div class="lineage-grid">
-            <div class="lineage-item">
-              <span class="lineage-label">Build Digest</span>
-              <span class="lineage-value">{{ page.build_digest }}</span>
-            </div>
-            {% if page.base_image and page.base_image != "unknown" %}
-            <div class="lineage-item">
-              <span class="lineage-label">Base Image</span>
-              <span class="lineage-value">{{ page.base_image }}</span>
-            </div>
-            {% endif %}
-            {% if page.build_args %}
-            {% for arg in page.build_args %}
-            <div class="lineage-item">
-              <span class="lineage-label">{{ arg.name }}</span>
-              <span class="lineage-value">{{ arg.value }}</span>
-            </div>
-            {% endfor %}
-            {% endif %}
-          </div>
-        </section>
-        {% endif %}
-
-        <!-- Variants -->
+        <!-- Variants (before lineage, since variant selection affects displayed build args) -->
         {% if page.has_variants %}
         <div class="variants-section glass">
           <div class="variants-header">
@@ -458,6 +464,9 @@
                           data-tag="{{ variant.tag }}"
                           data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                           data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                          data-build-digest="{{ variant.build_digest | default: '' }}"
+                          data-base-image="{{ variant.base_image | default: '' }}"
+                          {% if variant.build_args %}data-build-args='[{% for arg in variant.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif %}
                           role="button"
                           tabindex="0"
                           aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -486,6 +495,35 @@
             {% endif %}
           </div>
         </div>
+        {% endif %}
+
+        <!-- Build Lineage -->
+        {% if page.build_digest and page.build_digest != "unknown" %}
+        <section class="lineage-section glass" aria-label="Build lineage information">
+          <div class="lineage-header">
+            <i class="ti ti-git-branch" aria-hidden="true"></i> Build Lineage
+          </div>
+          <div class="lineage-grid">
+            <div class="lineage-item" data-lineage="build-digest">
+              <span class="lineage-label">Build Digest</span>
+              <span class="lineage-value">{{ page.build_digest }}</span>
+            </div>
+            {% if page.base_image and page.base_image != "unknown" %}
+            <div class="lineage-item" data-lineage="base-image">
+              <span class="lineage-label">Base Image</span>
+              <span class="lineage-value">{{ page.base_image }}</span>
+            </div>
+            {% endif %}
+            {% if page.build_args %}
+            {% for arg in page.build_args %}
+            <div class="lineage-item" data-build-arg="{{ arg.name }}" style="animation-delay: {{ forloop.index0 | times: 0.06 }}s">
+              <span class="lineage-label">{{ arg.name }}</span>
+              <span class="lineage-value">{{ arg.value }}</span>
+            </div>
+            {% endfor %}
+            {% endif %}
+          </div>
+        </section>
         {% endif %}
 
         <!-- README (rendered at build time by kramdown) -->
@@ -556,6 +594,58 @@
       if (tagEl) tagEl.textContent = tag;
       if (amdEl) amdEl.textContent = sizeAmd64;
       if (armEl) armEl.textContent = sizeArm64;
+
+      // Update lineage build_digest and base_image
+      var buildDigest = el.dataset.buildDigest || '';
+      var baseImage = el.dataset.baseImage || '';
+      var digestEl = document.querySelector('[data-lineage="build-digest"] .lineage-value');
+      var baseImgEl = document.querySelector('[data-lineage="base-image"] .lineage-value');
+      if (digestEl) digestEl.textContent = (buildDigest && buildDigest !== 'unknown') ? buildDigest : '---';
+      if (baseImgEl) baseImgEl.textContent = (baseImage && baseImage !== 'unknown') ? baseImage : '---';
+
+      // Update lineage build_args for selected variant (empty array clears them)
+      var buildArgsAttr = el.dataset.buildArgs;
+      updateLineageBuildArgs(buildArgsAttr ? JSON.parse(buildArgsAttr) : []);
+    }
+
+    // Create a lineage item DOM element safely (no innerHTML)
+    function createLineageItem(name, value, index) {
+      var item = document.createElement('div');
+      item.className = 'lineage-item';
+      item.setAttribute('data-build-arg', name);
+      item.style.animationDelay = (index * 0.06) + 's';
+
+      var label = document.createElement('span');
+      label.className = 'lineage-label';
+      label.textContent = name;
+
+      var val = document.createElement('span');
+      val.className = 'lineage-value';
+      val.textContent = value;
+
+      item.appendChild(label);
+      item.appendChild(val);
+      return item;
+    }
+
+    // Animate lineage build_args swap
+    function updateLineageBuildArgs(args) {
+      var grid = document.querySelector('.lineage-grid');
+      if (!grid) return;
+
+      // Find existing build_arg items (not digest/base_image)
+      var existingArgs = grid.querySelectorAll('.lineage-item[data-build-arg]');
+
+      // Exit animation on old items
+      existingArgs.forEach(function(item) { item.classList.add('lineage-exit'); });
+
+      // After exit animation, replace with new items
+      setTimeout(function() {
+        existingArgs.forEach(function(item) { item.remove(); });
+        args.forEach(function(arg, i) {
+          grid.appendChild(createLineageItem(arg.name, arg.value, i));
+        });
+      }, 250);
     }
 
     // Event delegation
