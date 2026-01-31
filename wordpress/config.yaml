@@ -1,0 +1,6 @@
+# WordPress container configuration
+# Base image and third-party dependency versions
+
+base_image: "${PHP_IMAGE}"
+
+build_args: {}

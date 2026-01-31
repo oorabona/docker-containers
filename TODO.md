@@ -48,6 +48,7 @@ _No low priority tasks remaining_
 - [x] ✅ gh-pages: Add aria-live regions for dynamic feedback — status announcements for filters, copy, theme, registry (2026-01-30)
 - [x] ✅ gh-pages: Refactor inline onclick to addEventListener — event delegation in dashboard.html + container-card.html (2026-01-30)
 - [x] ✅ gh-pages: Wrap JS in IIFE/module pattern — dashboard.html + container.html scripts wrapped (2026-01-30)
+- [x] ✅ Config harmonization — unified config.yaml for all 10 containers, replaces config.json/jq with config.yaml/yq, base_image templates, lineage from config.yaml (2026-01-31)
 - [x] ✅ gh-pages: Increase mobile touch targets to 44px — theme toggle, filter/registry buttons, variant tags, copy button (2026-01-30)
 
 ## Blocked / Deferred

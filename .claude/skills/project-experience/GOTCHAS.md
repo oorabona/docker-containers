@@ -149,4 +149,15 @@ docker buildx imagetools create \
 
 ---
 
+## Gotcha: `set -euo pipefail` propagates from sourced files
+
+**Discovered:** 2026-01-31
+**Symptom:** Build silently exits after sourcing a helper. No error message, no stack trace.
+**Root cause:** `helpers/variant-utils.sh` has `set -euo pipefail` at line 8. When sourced by `scripts/build-container.sh` (which is sourced by `make`), the `set -e` propagates to the entire shell. Any function returning non-zero (even as a "no match" signal) kills the script immediately.
+**Example:** `resolve_major_version()` returned 1 when no version tag matched (e.g., terraform's `1.14.4-alpine` vs `latest` in variants.yaml). The function still echoed a valid fallback, but `set -e` terminated before `do_buildx` could use it.
+**Fix:** Functions that return a valid result should `return 0`, not `return 1`. Reserve non-zero for actual failures.
+**Prevention:** When writing shell functions in sourced files with `set -e`, use `return 0` for "success with fallback" and `return 1` only for hard failures. Test with `bash -x` to trace silent exits.
+
+---
+
 _Add new gotchas below as they are discovered._

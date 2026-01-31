@@ -1,0 +1,6 @@
+# Debian container configuration
+# Base image and third-party dependency versions
+
+base_image: "debian:${VERSION}"
+
+build_args: {}

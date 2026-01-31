@@ -1,9 +1,20 @@
 #!/bin/bash
 
+# Terraform build script - fetches latest tool versions and updates config.yaml
+# config.yaml is the single source of truth for build args
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+
 # Source the git-tags helper
-source "$(dirname "$0")/../helpers/git-tags"
-# Source the python-tags helper  
-source "$(dirname "$0")/../helpers/python-tags"
+source "$SCRIPT_DIR/../helpers/git-tags"
+# Source the python-tags helper
+source "$SCRIPT_DIR/../helpers/python-tags"
+
+if ! command -v yq >/dev/null 2>&1; then
+    echo "ERROR: yq is required to read/update config.yaml" >&2
+    exit 1
+fi
 
 # Function to get latest TFLint version
 get_tflint_version() {
@@ -55,7 +66,6 @@ get_gcp_cli_version() {
     # Google Cloud SDK releases from GitHub
     local version=$(latest-git-tag GoogleCloudPlatform cloud-sdk-docker | sed 's/^v//')
     if [[ -z "$version" || "$version" == "unknown" ]]; then
-        # Fallback - GCP CLI version isn't critical for the installer script
         echo "latest"
     else
         echo "$version"
@@ -82,17 +92,16 @@ echo "  AWS CLI: ${AWS_CLI_VERSION}"
 echo "  Azure CLI: ${AZURE_CLI_VERSION}"
 echo "  GCP CLI: ${GCP_CLI_VERSION}"
 
-# Set custom build arguments for make script to use
-CUSTOM_BUILD_ARGS="--build-arg TFLINT_VERSION=${TFLINT_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg TRIVY_VERSION=${TRIVY_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg TERRAGRUNT_VERSION=${TERRAGRUNT_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg TERRAFORM_DOCS_VERSION=${TERRAFORM_DOCS_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg GITHUB_CLI_VERSION=${GITHUB_CLI_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg AWS_CLI_VERSION=${AWS_CLI_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg GCP_CLI_VERSION=${GCP_CLI_VERSION}"
+# Update config.yaml with fetched versions (single source of truth)
+yq -i ".build_args.TFLINT_VERSION = \"${TFLINT_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.TRIVY_VERSION = \"${TRIVY_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.TERRAGRUNT_VERSION = \"${TERRAGRUNT_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.TERRAFORM_DOCS_VERSION = \"${TERRAFORM_DOCS_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.GITHUB_CLI_VERSION = \"${GITHUB_CLI_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.AWS_CLI_VERSION = \"${AWS_CLI_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.AZURE_CLI_VERSION = \"${AZURE_CLI_VERSION}\"" "$CONFIG_FILE"
+yq -i ".build_args.GCP_CLI_VERSION = \"${GCP_CLI_VERSION}\"" "$CONFIG_FILE"
 
-# Export for make script to pick up
-export CUSTOM_BUILD_ARGS
+echo "Updated config.yaml with latest tool versions"
 
-echo "Custom build args: ${CUSTOM_BUILD_ARGS}"
+# No CUSTOM_BUILD_ARGS needed — build-container.sh reads config.yaml directly
