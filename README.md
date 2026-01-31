@@ -1,231 +1,137 @@
-# Docker Containers Repository 🐳
+# Docker Containers
 
-Automated Docker container management with intelligent upstream monitoring and CI/CD workflows. Built following programming best practices with shared utilities, focused components, and comprehensive testing.
+Production-ready Docker images with **zero-touch upstream monitoring** — when a new version drops, builds happen automatically.
 
-## 🌟 Overview
+[![Auto Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
+[![Upstream Monitor](https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml)
+[![ShellCheck](https://github.com/oorabona/docker-containers/actions/workflows/shellcheck.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/shellcheck.yaml)
 
-This repository maintains 10 production-ready Docker containers with automated version monitoring, smart builds, and deployment pipelines. Each container includes version detection, health checks, and standardized build processes using shared utilities and focused scripts following DRY, SOLID, and KISS principles.
+## What's in the box
 
-## 🏗️ Architecture
+| Container | What it does | Variants |
+|-----------|-------------|----------|
+| [postgres](postgres/) | PostgreSQL with extension ecosystem | base, vector, analytics, timeseries, distributed, full |
+| [terraform](terraform/) | Terraform CLI, cloud-provider scoped | base, aws, azure, gcp, full |
+| [wordpress](wordpress/) | WordPress with PHP optimizations | — |
+| [openresty](openresty/) | Nginx + Lua web platform | — |
+| [php](php/) | PHP-FPM runtime | — |
+| [ansible](ansible/) | Automation platform | — |
+| [debian](debian/) | Minimal base image | — |
+| [jekyll](jekyll/) | Static site generator | — |
+| [openvpn](openvpn/) | VPN server | — |
+| [sslh](sslh/) | SSL/SSH port multiplexer | — |
+
+All images are published to [GHCR](https://github.com/oorabona?tab=packages) and [Docker Hub](https://hub.docker.com/u/oorabona).
+
+## How it works
 
 ```
-docker-containers/
-├── .github/
-│   ├── workflows/              # GitHub Actions workflows
-│   │   ├── upstream-monitor.yaml    # Upstream version monitoring
-│   │   ├── auto-build.yaml         # Automated container builds
-│   │   └── validate-version-scripts.yaml
-│   └── actions/               # Reusable GitHub Actions
-├── make                       # Universal build coordinator (simplified)
-├── scripts/                   # Focused utility scripts (Single Responsibility)
-│   ├── build-container.sh     # Container building logic
-│   ├── push-container.sh      # Registry push operations  
-│   └── check-version.sh       # Version detection utilities
-├── helpers/                   # Shared utilities (DRY principle)
-│   ├── logging.sh             # Centralized logging functions
-│   └── docker-registry        # Registry interaction utilities
-├── CHANGELOG.md              # Build history timeline
-├── audit-containers.sh       # Container audit tool
-├── test-all-containers.sh    # Comprehensive testing
-├── validate-version-scripts.sh # Version script validation
-└── [containers]/             # Production containers
-    ├── ansible/              # Configuration management
-    ├── debian/               # Base Debian images
-    ├── openresty/            # Web server with Lua
-    ├── openvpn/             # VPN server
-    ├── php/                 # PHP runtime environment
-    ├── postgres/            # Database server
-    ├── sslh/                # SSL/SSH multiplexer
-    ├── terraform/           # Infrastructure as code
-    └── wordpress/           # CMS platform
-    └── [container-name]/    # Standard structure
-        ├── Dockerfile       # Container definition
-        ├── version.sh       # Version management script
-        ├── docker-compose.yml # Optional compose config
-        └── README.md        # Container documentation
+Upstream releases new version
+        │
+        ▼
+  upstream-monitor.yaml     ← daily at 06:00 UTC
+  detects version change
+        │
+        ▼
+  Creates PR + triggers
+  auto-build.yaml
+        │
+        ▼
+  Smart rebuild: compares    ← skips if nothing changed
+  build digest vs registry
+        │
+        ▼
+  Multi-arch build           ← linux/amd64 + linux/arm64
+  (native runners, no QEMU)
+        │
+        ▼
+  Push to GHCR + Docker Hub
+  Emit build lineage JSON
+        │
+        ▼
+  Auto-merge PR
 ```
 
-## 🎯 Programming Best Practices
+**Key differentiators:**
 
-This repository follows industry-standard programming principles for maintainable, scalable code:
+- **Smart rebuild detection** — content-based digest skips unchanged builds ([ADR-002](docs/adr/ADR-002-smart-rebuild-detection.md))
+- **Declarative variants** — one Dockerfile, N flavors via `variants.yaml` ([ADR-003](docs/adr/ADR-003-variant-system.md))
+- **Build lineage tracking** — full provenance chain from source to published image ([ADR-004](docs/adr/ADR-004-build-lineage-tracking.md))
+- **Native multi-arch** — parallel amd64/arm64 on dedicated runners, no emulation ([ADR-001](docs/adr/ADR-001-multi-platform-native-runners.md))
 
-### **DRY (Don't Repeat Yourself)**
-- **Shared Utilities**: `helpers/logging.sh` eliminates ~200 lines of duplicate logging code
-- **Centralized Functions**: Single source of truth for common operations
-- **Consistent APIs**: Standardized interfaces across all scripts
-
-### **SOLID Principles**
-- **Single Responsibility**: Each script in `scripts/` has one focused purpose
-- **Decomposed Architecture**: Monolithic make script broken into focused utilities
-- **Clear Interfaces**: Well-defined inputs and outputs for all functions
-
-### **KISS (Keep It Simple, Stupid)**
-- **Simplified Workflows**: Complex operations broken into understandable steps
-- **Minimal Dependencies**: Leveraging shell built-ins and existing tools
-- **Clear Documentation**: Straightforward explanations and examples
-
-### **Defensive Programming**
-- **Robust Error Handling**: Graceful failure handling with clear error messages
-- **Input Validation**: All user inputs validated before processing
-- **Comprehensive Testing**: 100% success rate across all validation scripts
-
-## 🚀 Key Features
-
-- **Automated Monitoring**: Twice-daily upstream version checks with intelligent PR creation
-- **Smart Build System**: Simplified universal make script with focused utility components
-- **Version Management**: Standardized version.sh scripts with multiple source strategies
-- **CI/CD Integration**: GitHub Actions workflows for building, testing, and deployment
-- **Security**: Health checks, non-root users, and automated security updates
-- **Shared Utilities**: DRY principle implementation with centralized logging and helper functions
-- **Quality Assurance**: Comprehensive testing with 100% success rate (9/9 containers)
-
-## 📦 Available Containers
-
-### Infrastructure & DevOps
-- **[ansible/](ansible/)** - Configuration management and automation platform
-- **[terraform/](terraform/)** - Infrastructure as code with Terraform CLI
-- **[openvpn/](openvpn/)** - OpenVPN server for secure networking
-
-### Web Applications & Services  
-- **[wordpress/](wordpress/)** - WordPress CMS with PHP optimization
-- **[sslh/](sslh/)** - SSL/SSH multiplexer for port sharing
-
-### Database & Storage
-- **[postgres/](postgres/)** - PostgreSQL database with extensions (variants: base, vector, analytics, timeseries, distributed, full)
-
-### Development & Utilities
-- **[debian/](debian/)** - Minimal Debian base images with version flexibility
-- **[php/](php/)** - PHP development environment with Composer
-- **[jekyll/](jekyll/)** - Jekyll static site generator
-- **[openresty/](openresty/)** - High-performance web platform (Nginx + Lua)
-
-## 🚀 Quick Start
-
-### Building Containers
+## Quick start
 
 ```bash
-# Build specific container
-./make build wordpress
+# List containers
+./make list
 
-# Build all containers
-./make build
+# Build a container (auto-discovers latest upstream version)
+./make build postgres
 
-# List available containers
-./make targets
+# Build with specific version
+./make build postgres 17
+
+# Push to registries
+./make push postgres
+
+# Check what's upstream
+./make version postgres
+
+# Check all containers for updates
+./make check-updates
+
+# Show build lineage
+./make lineage postgres
+
+# Show image sizes
+./make sizes
 ```
 
-### Running Containers
+## Adding a container
+
+1. Create a directory with a `Dockerfile` and a `version.sh`:
 
 ```bash
-# Run container directly
-./make run wordpress
-
-# Using docker-compose
-cd wordpress && docker-compose up -d
+mkdir my-app
 ```
 
-### Version Management
+2. `version.sh` discovers the latest upstream version:
 
 ```bash
-# Check current version
-./make version wordpress
+#!/bin/bash
+source "$(dirname "$0")/../helpers/docker-registry"
 
-# Get latest upstream version
-cd wordpress && ./version.sh latest
+get_latest_upstream() {
+    latest-docker-tag library/nginx "^[0-9]+\.[0-9]+\.[0-9]+$"
+}
+
+handle_version_request "$1" "oorabona/my-app" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
 ```
 
-## 🔧 Automation Workflows
+3. Build and test:
 
-### Upstream Monitor (`upstream-monitor.yaml`)
-- **Schedule**: 6 AM/6 PM UTC daily
-- **Purpose**: Detects upstream version updates and creates PRs
-- **Manual**: `gh workflow run upstream-monitor.yaml --field container=wordpress`
+```bash
+./make build my-app
+./make run my-app
+```
 
-### Auto Build (`auto-build.yaml`)  
-- **Triggers**: Push to main, PRs, schedule, manual dispatch
-- **Purpose**: Builds and pushes containers when changes detected
-- **Features**: Multi-arch builds, registry push, smart detection
+That's it. The CI picks it up automatically on next push.
 
-### Version Validation (`validate-version-scripts.yaml`)
-- **Triggers**: Changes to version.sh files
-- **Purpose**: Ensures all version scripts are functional
-- **Testing**: `./validate-version-scripts.sh`
+## Requirements
 
-## 🛠️ Development
-
-### Prerequisites
-- Docker Engine 20.10+
-- Docker Compose v2+
+- Docker Engine 20.10+ (or Podman)
 - Bash 4.0+
+- [yq](https://github.com/mikefarah/yq) (for variant containers)
 
-> NB: Also works with Podman.
+## Documentation
 
-### Creating New Containers
+- [Development Guide](docs/DEVELOPMENT.md) — internals, variants, build system
+- [CI/CD Workflows](docs/GITHUB_ACTIONS.md) — GitHub Actions reference
+- [Architecture](docs/WORKFLOW_ARCHITECTURE.md) — pipeline design
+- [Local Development](docs/LOCAL_DEVELOPMENT.md) — dev setup
+- [Testing Guide](docs/TESTING_GUIDE.md) — running tests locally
+- [Container Dashboard](https://oorabona.github.io/docker-containers/) — live build status
 
-1. **Create directory structure**:
-   ```bash
-   mkdir my-app && cd my-app
-   ```
+## License
 
-2. **Create Dockerfile**: Follow existing patterns with health checks and non-root users
-
-3. **Create version.sh script** (using centralized pattern):
-   ```bash
-   #!/bin/bash
-   source "$(dirname "$0")/../helpers/docker-registry"
-   
-   # Function to get latest upstream version
-   get_latest_upstream() {
-       # Container-specific upstream detection logic
-       # Examples:
-       # latest-docker-tag library/nginx "^[0-9]+\.[0-9]+\.[0-9]+$"
-       # latest-git-tag owner/repo "^v[0-9]+\.[0-9]+\.[0-9]+$"
-       # get_pypi_latest_version package-name
-   }
-   
-   # Use standardized version handling
-   handle_version_request "$1" "oorabona/my-app" "^[0-9]+\.[0-9]+\.[0-9]+$" "get_latest_upstream"
-   ```
-
-4. **Test locally**:
-   ```bash
-   chmod +x version.sh
-   cd .. && ./make build my-app
-   ```
-
-### Testing
-
-```bash
-# Test all version scripts
-./validate-version-scripts.sh
-
-# Test GitHub Actions locally
-./test-github-actions.sh
-
-# Build and test specific container
-./make build wordpress && ./make run wordpress
-```
-
-## � Documentation
-
-- [GitHub Actions Guide](docs/GITHUB_ACTIONS.md) - Workflow and action references
-- [Local Development](docs/LOCAL_DEVELOPMENT.md) - Development setup and workflows  
-- [Testing Guide](docs/TESTING_GUIDE.md) - Local testing with GitHub Actions
-- [Security Policy](SECURITY.md) - Security guidelines and reporting
-- [Dashboard](DASHBOARD.md) - Auto-generated container status (updated automatically)
-
-## 🤝 Contributing
-
-1. Fork and create feature branch
-2. Follow existing patterns for new containers
-3. Test locally with `./test-github-actions.sh`
-4. Submit PR with clear description
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/oorabona/docker-containers/issues)
-- **Security**: See [SECURITY.md](SECURITY.md)
-
-## 📜 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
+[MIT](LICENSE)
