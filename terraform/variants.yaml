@@ -24,18 +24,45 @@ versions:
         suffix: "-base"
         flavor: base
         description: "Terraform + TFLint + Trivy + Terragrunt + terraform-docs + gh CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - GITHUB_CLI_VERSION
       - name: aws
         suffix: "-aws"
         flavor: aws
         description: "Base + AWS CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - GITHUB_CLI_VERSION
+          - AWS_CLI_VERSION
       - name: azure
         suffix: "-azure"
         flavor: azure
         description: "Base + Azure CLI"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - GITHUB_CLI_VERSION
+          - AZURE_CLI_VERSION
       - name: gcp
         suffix: "-gcp"
         flavor: gcp
         description: "Base + Google Cloud SDK"
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - GITHUB_CLI_VERSION
+          - GCP_CLI_VERSION
       - name: full
         suffix: ""
         flavor: full

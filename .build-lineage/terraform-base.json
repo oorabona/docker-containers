@@ -6,14 +6,15 @@
   "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
   "runtime": "Podman",
-  "image_id": "sha256:87f1b3e949b588bb4e03aa533938c984be1d58d51b6886ead75465c7c7eadb79",
+  "image_id": "sha256:87c75fbbcd15e63a5908b4b9c9bbdff119b60100f1bd8cdec084f1fc8333f29d",
   "build_digest": "88b7bfea6189",
-  "base_image_ref": "hashicorp/terraform:${UPSTREAM_VERSION:-1.14.4-alpine}",
-  "base_image_digest": "unresolved",
-  "built_at": "2026-01-30T01:56:27+01:00",
+  "base_image_ref": "hashicorp/terraform:1.14.4",
+  "base_image_digest": "sha256:f96f4a14d53eff20bdaef7b03f6cd9f61212e3d9fde3d441d1c7a8fcfa965318",
+  "built_at": "2026-01-31T12:23:57+01:00",
   "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/terraform:1.14.4-alpine-base",
     "ghcr": "ghcr.io/oorabona/terraform:1.14.4-alpine-base"
-  }
+  },
+  "build_args": {"TFLINT_VERSION": "0.60.0","TRIVY_VERSION": "0.69.0","TERRAGRUNT_VERSION": "0.99.1","TERRAFORM_DOCS_VERSION": "0.21.0","GITHUB_CLI_VERSION": "2.86.0","AWS_CLI_VERSION": "1.44.29","AZURE_CLI_VERSION": "2.82.0","GCP_CLI_VERSION": "latest"}
 }
