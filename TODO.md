@@ -8,15 +8,7 @@ _No tasks currently in progress_
 
 ### High Priority
 
-_No high priority tasks remaining_
-
-### Medium Priority
-
-_No medium priority tasks remaining_
-
-### Low Priority
-
-_No low priority tasks remaining_
+_All DASH tasks resolved — see Completed section_
 
 ## Completed
 
@@ -62,6 +54,11 @@ _No low priority tasks remaining_
 - [x] ✅ AUD-010: Split build_container() — 252→87 lines, extracted 5 focused helpers (_resolve_platforms, _configure_cache, etc.) (2026-01-31)
 - [x] ✅ AUD-015: Rewrite WORKFLOW_ARCHITECTURE.md — 456→235 lines, reflects actual CI/CD architecture (2026-01-31)
 - [x] ✅ AUD-022: Create ADRs — 4 Architecture Decision Records (native runners, smart rebuild, variant system, lineage) (2026-01-31)
+- [x] ✅ DASH-001: Per-variant build_args for non-versioned variants — fixed in DASH-003 refactor, unified collect_variant_json() handles both paths (2026-01-31)
+- [x] ✅ DASH-002: Per-variant build_digest "unknown" — root cause: missing lineage data (not code bug), same as DASH-004 (2026-01-31)
+- [x] ✅ DASH-003: Refactor generate-dashboard.sh YAML generation — 924→743 lines, echo/heredoc replaced with jq+yq pipeline, variant data collected once (2026-01-31)
+- [x] ✅ DASH-004: Postgres PG17/PG16 lineage files — investigated, not a code bug, lineage emission is per-variant correct, PG17/PG16 simply never built locally (2026-01-31)
+- [x] ✅ DASH-005: Version mismatch check for non-versioned variants — fixed in DASH-003 refactor, resolve_variant_lineage_json() handles all paths (2026-01-31)
 
 ## Blocked / Deferred
 
