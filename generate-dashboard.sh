@@ -1,6 +1,10 @@
 #!/bin/bash
 # Generate dashboard data as YAML for Jekyll consumption
 # This script outputs container data that Jekyll can iterate over
+#
+# Architecture: data is collected as JSON objects, then converted to YAML via yq.
+# This eliminates fragile echo/heredoc YAML generation and ensures consistency
+# between containers.yml and per-container page files.
 
 set -euo pipefail
 
@@ -16,6 +20,8 @@ DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 
+# --- Lineage resolution helpers ---
+
 # Resolve the lineage JSON file for a container
 # Tries {container}.json first, then falls back to {container}-*.json (first match)
 resolve_lineage_file() {
@@ -28,7 +34,7 @@ resolve_lineage_file() {
     fi
     # Fallback: flavored lineage files (e.g. postgres-base.json)
     local fallback
-    fallback=$(ls "$lineage_dir/${container}"-*.json 2>/dev/null | head -1)
+    fallback=$(find "$lineage_dir" -maxdepth 1 -name "${container}-*.json" -print -quit 2>/dev/null)
     if [[ -n "$fallback" ]]; then
         echo "$fallback"
     fi
@@ -66,34 +72,32 @@ get_build_lineage_field() {
     fi
 }
 
-# Get build_args from lineage as YAML key-value pairs (indented)
+# Get container-level build_args from lineage as JSON array [{name, value}, ...]
 # Falls back to config.yaml when lineage files are unavailable
-# Usage: get_build_lineage_args <container> <indent>
-get_build_lineage_args() {
+get_build_lineage_args_json() {
     local container="$1"
-    local indent="${2:-    }"
-    local result=""
 
     # Try lineage file first
     local lineage_file
     lineage_file=$(resolve_lineage_file "$container")
     if [[ -n "$lineage_file" ]]; then
-        result=$(jq -r ".build_args // {} | to_entries[] | \"${indent}- name: \\\"\\(.key)\\\"\\n${indent}  value: \\\"\\(.value)\\\"\"" "$lineage_file" 2>/dev/null || true)
-    fi
-
-    # Fallback to config.yaml if lineage didn't provide build_args
-    if [[ -z "$result" ]]; then
-        local lines
-        lines=$(build_args_lines "$SCRIPT_DIR/$container")
-        if [[ -n "$lines" ]]; then
-            result=$(echo "$lines" | while IFS='=' read -r key value; do
-                printf '%s- name: "%s"\n%s  value: "%s"' "$indent" "$key" "$indent" "$value"
-                echo
-            done)
+        local args
+        args=$(jq '.build_args // {}' "$lineage_file" 2>/dev/null)
+        if [[ "$args" != "{}" && -n "$args" ]]; then
+            echo "$args" | jq '[to_entries[] | {name: .key, value: (.value | tostring)}]'
+            return
         fi
     fi
 
-    echo "$result"
+    # Fallback to config.yaml
+    local lines
+    lines=$(build_args_lines "$SCRIPT_DIR/$container")
+    if [[ -n "$lines" ]]; then
+        echo "$lines" | jq -R 'split("=") | {name: .[0], value: (.[1:] | join("="))}' | jq -s '.'
+        return
+    fi
+
+    echo "[]"
 }
 
 # Get build_args filtered for a specific variant as JSON array
@@ -161,6 +165,8 @@ get_variant_build_args_json() {
     echo "[]"
 }
 
+# --- Container metadata helpers ---
+
 # Function to check if a directory should be skipped
 is_skip_directory() {
     local container=$1
@@ -178,7 +184,7 @@ get_container_versions() {
         return 1
     }
 
-    local pattern current_version latest_version status_color status_text
+    local current_version latest_version status_color status_text
 
     current_version=$(get_current_published_version "oorabona/$container")
     # Handle empty result
@@ -248,193 +254,171 @@ get_container_description() {
 # Escape YAML string (handle quotes and special chars)
 yaml_escape() {
     local str="$1"
-    # Replace backslashes first, then quotes
     str="${str//\\/\\\\}"
     str="${str//\"/\\\"}"
     echo "$str"
 }
 
-# Generate a Jekyll collection page for a container
-# Creates _containers/<name>.md with front matter and README content
-generate_container_page() {
-    local container="$1"
-    local current_version="$2"
-    local latest_version="$3"
-    local status_color="$4"
-    local status_text="$5"
-    local build_status="$6"
-    local description="$7"
-    local pull_count="$8"
-    local pull_count_formatted="$9"
-    local star_count="${10}"
-    local sizes_amd64="${11}"
-    local sizes_arm64="${12}"
+# --- JSON data collection ---
+# These functions build container data as JSON objects, eliminating the need
+# for manual YAML string construction. The JSON is converted to YAML via yq.
 
-    local page_file="$CONTAINERS_DIR/${container}.md"
-    local build_digest base_image
+# Resolve variant lineage data as JSON: {build_digest, base_image}
+# Includes version mismatch check and fallback base_image derivation
+resolve_variant_lineage_json() {
+    local container="$1" variant_name="$2" version="$3" fallback_base_image="${4:-unknown}"
 
-    build_digest=$(get_build_lineage_field "$container" "build_digest")
-    base_image=$(get_build_lineage_field "$container" "base_image_ref")
+    local lineage_file build_digest="unknown" base_image="unknown"
+    lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
 
-    # Write front matter
-    cat > "$page_file" << FRONTMATTER
----
-layout: container-detail
-name: "${container}"
-current_version: "${current_version}"
-latest_version: "${latest_version}"
-status_color: "${status_color}"
-status_text: "${status_text}"
-build_status: "${build_status}"
-description: "$(yaml_escape "$description")"
-build_digest: "${build_digest}"
-base_image: "${base_image}"
-pull_count: ${pull_count}
-pull_count_formatted: "${pull_count_formatted}"
-star_count: ${star_count}
-size_amd64: "${sizes_amd64}"
-size_arm64: "${sizes_arm64}"
-github_username: "oorabona"
-dockerhub_username: "oorabona"
-ghcr_image: "ghcr.io/oorabona/${container}:${current_version}"
-dockerhub_image: "docker.io/oorabona/${container}:${current_version}"
-FRONTMATTER
-
-    # Add build args from lineage (3rd party library versions)
-    local lineage_args
-    lineage_args=$(get_build_lineage_args "$container" "  ")
-    if [[ -n "$lineage_args" ]]; then
-        echo "build_args:" >> "$page_file"
-        echo "$lineage_args" >> "$page_file"
-    fi
-
-    # Add variant data to front matter if applicable
-    local container_dir="./$container"
-    if has_variants "$container_dir"; then
-        echo "has_variants: true" >> "$page_file"
-
-        local ver_count
-        ver_count=$(version_count "$container_dir")
-
-        if [[ "$ver_count" -gt 0 ]]; then
-            echo "versions:" >> "$page_file"
-            while IFS= read -r ver_tag; do
-                [[ -z "$ver_tag" ]] && continue
-                echo "  - tag: \"$ver_tag\"" >> "$page_file"
-                local base_tag
-                base_tag=$(variant_image_tag "$ver_tag" "base" "$container_dir")
-                echo "    base_tag: \"$base_tag\"" >> "$page_file"
-                echo "    variants:" >> "$page_file"
-                while IFS= read -r variant_name; do
-                    [[ -z "$variant_name" ]] && continue
-                    local variant_tag variant_desc is_default
-                    variant_tag=$(variant_image_tag "$ver_tag" "$variant_name" "$container_dir")
-                    variant_desc=$(variant_property "$container_dir" "$variant_name" "description" "$ver_tag")
-                    is_default=$(variant_property "$container_dir" "$variant_name" "default" "$ver_tag")
-                    [[ "$is_default" != "true" ]] && is_default="false"
-                    cat >> "$page_file" << VARIANT
-      - name: "${variant_name}"
-        tag: "${variant_tag}"
-        description: "$(yaml_escape "$variant_desc")"
-        is_default: ${is_default}
-VARIANT
-                    # Get sizes for this variant
-                    if [[ "$current_version" != "no-published-version" ]]; then
-                        local var_sizes_raw var_size_amd64="" var_size_arm64=""
-                        var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-                        if [[ -n "$var_sizes_raw" ]]; then
-                            var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
-                            var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
-                        fi
-                        echo "        size_amd64: \"$var_size_amd64\"" >> "$page_file"
-                        echo "        size_arm64: \"$var_size_arm64\"" >> "$page_file"
-                    else
-                        echo "        size_amd64: \"\"" >> "$page_file"
-                        echo "        size_arm64: \"\"" >> "$page_file"
-                    fi
-                    # Per-variant lineage (build_digest + base_image)
-                    local var_lineage_file var_build_digest var_base_image
-                    var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
-                    if [[ -n "$var_lineage_file" ]]; then
-                        var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                        var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                        # Version mismatch check: lineage file may be from a different version
-                        if [[ "$var_base_image" != "unknown" ]]; then
-                            local lineage_version
-                            lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
-                            if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
-                                local base_image_prefix="${var_base_image%%:*}"
-                                var_base_image="${base_image_prefix}:${base_tag}"
-                                var_build_digest="unknown"
-                            fi
-                        fi
-                    else
-                        var_build_digest="unknown"
-                        # Derive base_image from page-level base_image prefix + version base_tag
-                        local base_image_prefix="${base_image%%:*}"
-                        if [[ -n "$base_image_prefix" && "$base_image_prefix" != "unknown" ]]; then
-                            var_base_image="${base_image_prefix}:${base_tag}"
-                        else
-                            var_base_image="unknown"
-                        fi
-                    fi
-                    echo "        build_digest: \"$var_build_digest\"" >> "$page_file"
-                    echo "        base_image: \"$var_base_image\"" >> "$page_file"
-                    # Per-variant build_args (filtered by build_args_include if present)
-                    local var_build_args_json
-                    var_build_args_json=$(get_variant_build_args_json "$container" "$variant_name" "$ver_tag")
-                    if [[ "$var_build_args_json" != "[]" ]]; then
-                        echo "        build_args:" >> "$page_file"
-                        echo "$var_build_args_json" | jq -r '.[] | "          - name: \"" + .name + "\"\n            value: \"" + .value + "\""' >> "$page_file"
-                    fi
-                done < <(list_variants "$container_dir" "$ver_tag")
-            done < <(list_versions "$container_dir")
-        else
-            echo "variants:" >> "$page_file"
-            while IFS= read -r variant_name; do
-                [[ -z "$variant_name" ]] && continue
-                local variant_tag variant_desc is_default
-                variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
-                variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
-                is_default=$(variant_property "$container_dir" "$variant_name" "default")
-                [[ "$is_default" != "true" ]] && is_default="false"
-                cat >> "$page_file" << VARIANT
-  - name: "${variant_name}"
-    tag: "${variant_tag}"
-    description: "$(yaml_escape "$variant_desc")"
-    is_default: ${is_default}
-VARIANT
-                if [[ "$current_version" != "no-published-version" ]]; then
-                    local var_sizes_raw var_size_amd64="" var_size_arm64=""
-                    var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-                    if [[ -n "$var_sizes_raw" ]]; then
-                        var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
-                        var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
-                    fi
-                    echo "    size_amd64: \"$var_size_amd64\"" >> "$page_file"
-                    echo "    size_arm64: \"$var_size_arm64\"" >> "$page_file"
-                else
-                    echo "    size_amd64: \"\"" >> "$page_file"
-                    echo "    size_arm64: \"\"" >> "$page_file"
-                fi
-                # Per-variant lineage
-                local var_lineage_file var_build_digest var_base_image
-                var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
-                if [[ -n "$var_lineage_file" ]]; then
-                    var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                    var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                else
-                    var_build_digest="unknown"
-                    var_base_image="unknown"
-                fi
-                echo "    build_digest: \"$var_build_digest\"" >> "$page_file"
-                echo "    base_image: \"$var_base_image\"" >> "$page_file"
-            done < <(list_variants "$container_dir")
+    if [[ -n "$lineage_file" ]]; then
+        build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        # Version mismatch check: lineage file may be from a different version
+        if [[ "$base_image" != "unknown" ]]; then
+            local lineage_ver
+            lineage_ver=$(jq -r '.version // ""' "$lineage_file" 2>/dev/null || echo "")
+            if [[ -n "$lineage_ver" && "$lineage_ver" != "$version"* ]]; then
+                base_image="${base_image%%:*}:${version}"
+                build_digest="unknown"
+            fi
         fi
     else
-        echo "has_variants: false" >> "$page_file"
+        # Derive base_image from fallback prefix + version
+        local prefix="${fallback_base_image%%:*}"
+        if [[ -n "$prefix" && "$prefix" != "unknown" ]]; then
+            base_image="${prefix}:${version}"
+        fi
     fi
 
+    BD="$build_digest" BI="$base_image" \
+        yq -n -o json '.build_digest = env(BD) | .base_image = env(BI)'
+}
+
+# Build a single variant entry as JSON
+# Handles sizes, lineage, and build_args in one place (no duplication)
+collect_variant_json() {
+    local container="$1" container_dir="$2" variant_name="$3"
+    local version="$4" current_version="$5" fallback_base_image="$6"
+    local is_versioned="${7:-false}"
+
+    local variant_tag variant_desc is_default
+    variant_tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
+    if [[ "$is_versioned" == "true" ]]; then
+        variant_desc=$(variant_property "$container_dir" "$variant_name" "description" "$version")
+        is_default=$(variant_property "$container_dir" "$variant_name" "default" "$version")
+    else
+        variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
+        is_default=$(variant_property "$container_dir" "$variant_name" "default")
+    fi
+    [[ "$is_default" != "true" ]] && is_default="false"
+
+    # Sizes
+    local size_amd64="" size_arm64=""
+    if [[ "$current_version" != "no-published-version" ]]; then
+        local sizes_raw
+        sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+        if [[ -n "$sizes_raw" ]]; then
+            size_amd64=$(echo "$sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+            size_arm64=$(echo "$sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+        fi
+    fi
+
+    # Lineage (build_digest + base_image with version mismatch check)
+    local lineage_json
+    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_name" "$version" "$fallback_base_image")
+
+    # Build args
+    local build_args_json
+    if [[ "$is_versioned" == "true" ]]; then
+        build_args_json=$(get_variant_build_args_json "$container" "$variant_name" "$version")
+    else
+        build_args_json=$(get_variant_build_args_json "$container" "$variant_name")
+    fi
+    [[ -z "$build_args_json" ]] && build_args_json="[]"
+
+    # Assemble JSON
+    jq -n \
+        --arg name "$variant_name" \
+        --arg tag "$variant_tag" \
+        --arg desc "$variant_desc" \
+        --argjson is_default "$is_default" \
+        --arg size_amd64 "$size_amd64" \
+        --arg size_arm64 "$size_arm64" \
+        --argjson lineage "$lineage_json" \
+        --argjson build_args "$build_args_json" \
+        '{
+            name: $name, tag: $tag, description: $desc,
+            is_default: $is_default,
+            size_amd64: $size_amd64, size_arm64: $size_arm64,
+            build_digest: $lineage.build_digest,
+            base_image: $lineage.base_image
+        } + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)'
+}
+
+# Build the variants structure for a container as JSON
+# Handles both multi-version (postgres) and single-version (terraform) layouts
+collect_variants_json() {
+    local container="$1" container_dir="$2" current_version="$3" base_image="$4"
+
+    local ver_count
+    ver_count=$(version_count "$container_dir")
+
+    if [[ "$ver_count" -gt 0 ]]; then
+        # Multi-version: {has_variants: true, versions: [{tag, base_tag, variants: [...]}]}
+        local versions_json="[]"
+        while IFS= read -r ver_tag; do
+            [[ -z "$ver_tag" ]] && continue
+            local base_tag
+            base_tag=$(variant_image_tag "$ver_tag" "base" "$container_dir")
+
+            local variants_arr="[]"
+            while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+                local var_json
+                var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
+                    "$ver_tag" "$current_version" "$base_image" "true")
+                variants_arr=$(echo "$variants_arr" | jq --argjson v "$var_json" '. + [$v]')
+            done < <(list_variants "$container_dir" "$ver_tag")
+
+            local ver_json
+            ver_json=$(jq -n \
+                --arg tag "$ver_tag" --arg base_tag "$base_tag" \
+                --argjson variants "$variants_arr" \
+                '{tag: $tag, base_tag: $base_tag, variants: $variants}')
+            versions_json=$(echo "$versions_json" | jq --argjson v "$ver_json" '. + [$v]')
+        done < <(list_versions "$container_dir")
+
+        jq -n --argjson versions "$versions_json" \
+            '{has_variants: true, versions: $versions}'
+    else
+        # Single-version: {has_variants: true, variants: [...]}
+        local variants_arr="[]"
+        while IFS= read -r variant_name; do
+            [[ -z "$variant_name" ]] && continue
+            local var_json
+            var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
+                "$current_version" "$current_version" "$base_image" "false")
+            variants_arr=$(echo "$variants_arr" | jq --argjson v "$var_json" '. + [$v]')
+        done < <(list_variants "$container_dir")
+
+        jq -n --argjson variants "$variants_arr" \
+            '{has_variants: true, variants: $variants}'
+    fi
+}
+
+# --- Output functions ---
+
+# Generate a Jekyll collection page for a container
+# Takes a JSON object and writes YAML front matter via yq
+generate_container_page() {
+    local container="$1"
+    local container_json="$2"
+    local page_file="$CONTAINERS_DIR/${container}.md"
+
+    # Add layout field and convert JSON to YAML front matter
+    echo "---" > "$page_file"
+    echo "$container_json" | jq '{layout: "container-detail"} + .' | yq -P >> "$page_file"
     echo "---" >> "$page_file"
 
     # Append README content (strip front matter if present)
@@ -452,6 +436,7 @@ VARIANT
     fi
 }
 
+# --- Registry wrappers ---
 # Thin wrappers over helpers/registry-utils.sh
 # Preserves dashboard-specific calling conventions and output formats
 
@@ -612,22 +597,19 @@ $activity_yaml
 EOF
 }
 
-# Main function
+# --- Main function ---
+
 generate_data() {
     log_info "Generating Jekyll data files..."
 
     cd "$SCRIPT_DIR"
 
     local total=0 up_to_date=0 updates_available=0
+    local all_containers_json="[]"
 
     # Prepare containers collection directory
     mkdir -p "$CONTAINERS_DIR"
     rm -f "$CONTAINERS_DIR"/*.md
-
-    # Start YAML file
-    echo "# Auto-generated container data" > "$DATA_FILE"
-    echo "# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")" >> "$DATA_FILE"
-    echo "" >> "$DATA_FILE"
 
     for container in */; do
         container=${container%/}
@@ -673,187 +655,65 @@ generate_data() {
             fi
         fi
 
-        # Write container entry
-        cat >> "$DATA_FILE" << EOF
-- name: "$container"
-  current_version: "$current_version"
-  latest_version: "$latest_version"
-  status_color: "$status_color"
-  status_text: "$status_text"
-  build_status: "$build_status"
-  description: "$(yaml_escape "$description")"
-  ghcr_image: "ghcr.io/oorabona/$container:$current_version"
-  dockerhub_image: "docker.io/oorabona/$container:$current_version"
-  build_digest: "$(get_build_lineage_field "$container" "build_digest")"
-  base_image: "$(get_build_lineage_field "$container" "base_image_ref")"
-  github_username: "oorabona"
-  dockerhub_username: "oorabona"
-  pull_count: $pull_count
-  pull_count_formatted: "$pull_count_formatted"
-  star_count: $star_count
-  size_amd64: "$sizes_amd64"
-  size_arm64: "$sizes_arm64"
-EOF
-
-        # Add build args from lineage (3rd party library versions)
-        local lineage_args
-        lineage_args=$(get_build_lineage_args "$container" "    ")
-        if [[ -n "$lineage_args" ]]; then
-            echo "  build_args:" >> "$DATA_FILE"
-            echo "$lineage_args" >> "$DATA_FILE"
-        fi
-
-        # Check for variants
-        local container_dir="./$container"
-        local base_image
+        # Build container JSON with all metadata
+        local build_digest base_image
+        build_digest=$(get_build_lineage_field "$container" "build_digest")
         base_image=$(get_build_lineage_field "$container" "base_image_ref")
-        if has_variants "$container_dir"; then
-            echo "  has_variants: true" >> "$DATA_FILE"
 
-            # Check if multi-version structure
-            local ver_count
-            ver_count=$(version_count "$container_dir")
+        local container_json
+        container_json=$(
+            NAME="$container" \
+            CV="$current_version" LV="$latest_version" \
+            SC="$status_color" ST="$status_text" BS="$build_status" \
+            DESC="$description" \
+            GHCR="ghcr.io/oorabona/$container:$current_version" \
+            DH="docker.io/oorabona/$container:$current_version" \
+            BD="$build_digest" BI="$base_image" \
+            PC="$pull_count" PCF="$pull_count_formatted" SC2="$star_count" \
+            SA="$sizes_amd64" SR="$sizes_arm64" \
+            yq -n -o json '
+                .name = env(NAME) |
+                .current_version = env(CV) | .latest_version = env(LV) |
+                .status_color = env(SC) | .status_text = env(ST) | .build_status = env(BS) |
+                .description = env(DESC) |
+                .ghcr_image = env(GHCR) | .dockerhub_image = env(DH) |
+                .build_digest = env(BD) | .base_image = env(BI) |
+                .github_username = "oorabona" | .dockerhub_username = "oorabona" |
+                .pull_count = env(PC) | .pull_count_formatted = env(PCF) | .star_count = env(SC2) |
+                .size_amd64 = env(SA) | .size_arm64 = env(SR)
+            ')
 
-            if [[ "$ver_count" -gt 0 ]]; then
-                # Multi-version structure: show versions with their variants
-                echo "  versions:" >> "$DATA_FILE"
-
-                while IFS= read -r ver_tag; do
-                    [[ -z "$ver_tag" ]] && continue
-
-                    echo "    - tag: \"$ver_tag\"" >> "$DATA_FILE"
-                    local base_tag
-                    base_tag=$(variant_image_tag "$ver_tag" "base" "$container_dir")
-                    echo "      base_tag: \"$base_tag\"" >> "$DATA_FILE"
-                    echo "      variants:" >> "$DATA_FILE"
-
-                    while IFS= read -r variant_name; do
-                        [[ -z "$variant_name" ]] && continue
-
-                        local variant_tag variant_desc is_default
-                        variant_tag=$(variant_image_tag "$ver_tag" "$variant_name" "$container_dir")
-                        variant_desc=$(variant_property "$container_dir" "$variant_name" "description" "$ver_tag")
-                        is_default=$(variant_property "$container_dir" "$variant_name" "default" "$ver_tag")
-
-                        [[ "$is_default" != "true" ]] && is_default="false"
-
-                        # Get sizes for this variant (only if container is published)
-                        local var_size_amd64="" var_size_arm64=""
-                        if [[ "$current_version" != "no-published-version" ]]; then
-                            local var_sizes_raw
-                            var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-                            if [[ -n "$var_sizes_raw" ]]; then
-                                var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
-                                var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
-                            fi
-                        fi
-
-                        # Per-variant lineage (build_digest + base_image)
-                        local var_lineage_file var_build_digest var_base_image
-                        var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
-                        if [[ -n "$var_lineage_file" ]]; then
-                            var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                            var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                            # Version mismatch check: lineage file may be from a different version
-                            if [[ "$var_base_image" != "unknown" ]]; then
-                                local lineage_version
-                                lineage_version=$(jq -r '.version // ""' "$var_lineage_file" 2>/dev/null || echo "")
-                                if [[ -n "$lineage_version" && "$lineage_version" != "$ver_tag"* ]]; then
-                                    local base_image_prefix="${var_base_image%%:*}"
-                                    var_base_image="${base_image_prefix}:${base_tag}"
-                                    var_build_digest="unknown"
-                                fi
-                            fi
-                        else
-                            var_build_digest="unknown"
-                            # Derive base_image from page-level base_image prefix + version base_tag
-                            local base_image_prefix="${base_image%%:*}"
-                            if [[ -n "$base_image_prefix" && "$base_image_prefix" != "unknown" ]]; then
-                                var_base_image="${base_image_prefix}:${base_tag}"
-                            else
-                                var_base_image="unknown"
-                            fi
-                        fi
-
-                        cat >> "$DATA_FILE" << EOF
-        - name: "$variant_name"
-          tag: "$variant_tag"
-          description: "$(yaml_escape "$variant_desc")"
-          is_default: $is_default
-          size_amd64: "$var_size_amd64"
-          size_arm64: "$var_size_arm64"
-          build_digest: "$var_build_digest"
-          base_image: "$var_base_image"
-EOF
-                        # Per-variant build_args
-                        local var_build_args_json
-                        var_build_args_json=$(get_variant_build_args_json "$container" "$variant_name" "$ver_tag")
-                        if [[ "$var_build_args_json" != "[]" ]]; then
-                            echo "          build_args:" >> "$DATA_FILE"
-                            echo "$var_build_args_json" | jq -r '.[] | "            - name: \"" + .name + "\"\n              value: \"" + .value + "\""' >> "$DATA_FILE"
-                        fi
-                    done < <(list_variants "$container_dir" "$ver_tag")
-                done < <(list_versions "$container_dir")
-            else
-                # Old single-version structure
-                echo "  variants:" >> "$DATA_FILE"
-
-                while IFS= read -r variant_name; do
-                    [[ -z "$variant_name" ]] && continue
-
-                    local variant_tag variant_desc is_default
-                    variant_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
-                    variant_desc=$(variant_property "$container_dir" "$variant_name" "description")
-                    is_default=$(variant_property "$container_dir" "$variant_name" "default")
-
-                    [[ "$is_default" != "true" ]] && is_default="false"
-
-                    # Get sizes for this variant (only if container is published)
-                    local var_size_amd64="" var_size_arm64=""
-                    if [[ "$current_version" != "no-published-version" ]]; then
-                        local var_sizes_raw
-                        var_sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-                        if [[ -n "$var_sizes_raw" ]]; then
-                            var_size_amd64=$(echo "$var_sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
-                            var_size_arm64=$(echo "$var_sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
-                        fi
-                    fi
-
-                    # Per-variant lineage
-                    local var_lineage_file var_build_digest var_base_image
-                    var_lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
-                    if [[ -n "$var_lineage_file" ]]; then
-                        var_build_digest=$(jq -r '.build_digest // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                        var_base_image=$(jq -r '.base_image_ref // "unknown"' "$var_lineage_file" 2>/dev/null || echo "unknown")
-                    else
-                        var_build_digest="unknown"
-                        var_base_image="unknown"
-                    fi
-
-                    cat >> "$DATA_FILE" << EOF
-    - name: "$variant_name"
-      tag: "$variant_tag"
-      description: "$(yaml_escape "$variant_desc")"
-      is_default: $is_default
-      size_amd64: "$var_size_amd64"
-      size_arm64: "$var_size_arm64"
-      build_digest: "$var_build_digest"
-      base_image: "$var_base_image"
-EOF
-                done < <(list_variants "$container_dir")
-            fi
-        else
-            echo "  has_variants: false" >> "$DATA_FILE"
+        # Add container-level build args from lineage
+        local lineage_args_json
+        lineage_args_json=$(get_build_lineage_args_json "$container")
+        if [[ "$lineage_args_json" != "[]" && -n "$lineage_args_json" ]]; then
+            container_json=$(echo "$container_json" | jq --argjson ba "$lineage_args_json" '. + {build_args: $ba}')
         fi
 
-        echo "" >> "$DATA_FILE"
+        # Add variants (collected once, used for both page and containers.yml)
+        local container_dir="./$container"
+        if has_variants "$container_dir"; then
+            local variants_data
+            variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image")
+            container_json=$(echo "$container_json" | jq --argjson v "$variants_data" '. + $v')
+        else
+            container_json=$(echo "$container_json" | jq '. + {has_variants: false}')
+        fi
 
-        # Generate Jekyll collection page for this container
-        generate_container_page "$container" "$current_version" "$latest_version" \
-            "$status_color" "$status_text" "$build_status" "$description" \
-            "$pull_count" "$pull_count_formatted" "$star_count" \
-            "$sizes_amd64" "$sizes_arm64"
+        # Generate per-container Jekyll page (uses same JSON — no duplication)
+        generate_container_page "$container" "$container_json"
+
+        # Accumulate for containers.yml
+        all_containers_json=$(echo "$all_containers_json" | jq --argjson c "$container_json" '. + [$c]')
     done
+
+    # Write containers.yml from accumulated JSON
+    {
+        echo "# Auto-generated container data"
+        echo "# Generated: $(date -u +"%Y-%m-%d %H:%M UTC")"
+        echo ""
+        echo "$all_containers_json" | yq -P
+    } > "$DATA_FILE"
 
     # Calculate build success rate from auto-build workflow jobs (last 30 days)
     log_info "Calculating build success rate from GitHub Actions build jobs..."
