@@ -4,6 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <meta http-equiv="X-UA-Compatible" content="ie=edge"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://img.shields.io https://github.com; connect-src 'self'"/>
   <title>{{ page.title }} | {{ site.title }}</title>
 
   <!-- Google Fonts -->
@@ -1437,7 +1438,12 @@
         if (!noResults) {
           noResults = document.createElement('div');
           noResults.className = 'no-results';
-          noResults.innerHTML = '<i class="ti ti-search-off"></i><p>No containers match your filters</p>';
+          var icon = document.createElement('i');
+          icon.className = 'ti ti-search-off';
+          var msg = document.createElement('p');
+          msg.textContent = 'No containers match your filters';
+          noResults.appendChild(icon);
+          noResults.appendChild(msg);
           cardsGrid.appendChild(noResults);
         }
         noResults.style.display = '';
