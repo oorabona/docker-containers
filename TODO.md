@@ -59,6 +59,7 @@ _All DASH tasks resolved — see Completed section_
 - [x] ✅ DASH-003: Refactor generate-dashboard.sh YAML generation — 924→743 lines, echo/heredoc replaced with jq+yq pipeline, variant data collected once (2026-01-31)
 - [x] ✅ DASH-004: Postgres PG17/PG16 lineage files — investigated, not a code bug, lineage emission is per-variant correct, PG17/PG16 simply never built locally (2026-01-31)
 - [x] ✅ DASH-005: Version mismatch check for non-versioned variants — fixed in DASH-003 refactor, resolve_variant_lineage_json() handles all paths (2026-01-31)
+- [x] ✅ CI: Fix terraform build abort — [[ -n "" ]] && pattern as last statement in _prepare_build_args() returned exit 1 under set -e, replaced with if/fi (2026-02-01)
 
 ## Blocked / Deferred
 
