@@ -50,6 +50,7 @@ _No low priority tasks remaining_
 - [x] ✅ gh-pages: Wrap JS in IIFE/module pattern — dashboard.html + container.html scripts wrapped (2026-01-30)
 - [x] ✅ Config harmonization — unified config.yaml for all 10 containers, replaces config.json/jq with config.yaml/yq, base_image templates, lineage from config.yaml (2026-01-31)
 - [x] ✅ gh-pages: Increase mobile touch targets to 44px — theme toggle, filter/registry buttons, variant tags, copy button (2026-01-30)
+- [x] ✅ AUD-P0: Fix 3 P0 audit items — DRY build-args-utils.sh, CI-aware auto-merge with timeout, remove AUTO_MERGE_TOKEN (2026-01-31)
 
 ## Blocked / Deferred
 
