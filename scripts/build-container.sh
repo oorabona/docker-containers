@@ -283,7 +283,7 @@ build_container() {
             grep -vE '^(VERSION|MAJOR_VERSION|UPSTREAM_VERSION|NPROC|FLAVOR|BASE_IMAGE|ENABLE_[A-Z_]+=)' | \
             grep -vE '^RESTY_IMAGE_(BASE|TAG)=' | \
             awk -F= '{printf "\"%s\": \"%s\"\n", $1, $2}' | \
-            paste -sd, | sed 's/^/{/;s/$/}/')
+            paste -sd, | sed 's/^/{/;s/$/}/' || true)
         [[ -z "$build_args_json" || "$build_args_json" == "{}" ]] && build_args_json="{}"
     fi
 
