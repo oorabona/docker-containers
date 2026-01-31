@@ -65,12 +65,15 @@ docker-containers/
 
 | Container | Description |
 |-----------|-------------|
+| ansible | Ansible automation platform |
 | debian | Base Debian image |
+| jekyll | Jekyll static site generator |
 | openresty | OpenResty (Nginx + Lua) |
 | openvpn | OpenVPN server |
 | php | PHP-FPM variants |
-| postgres | PostgreSQL with extensions |
+| postgres | PostgreSQL with extensions (variants: base, vector, analytics, timeseries, distributed, full) |
 | sslh | SSL/SSH multiplexer |
+| terraform | Terraform CLI (variants: base, aws, azure, gcp, full) |
 | wordpress | WordPress with optimizations |
 
 ## Conventions
@@ -118,10 +121,13 @@ docker-containers/
 
 | Workflow | Trigger | Purpose |
 |----------|---------|--------|
-| `auto-build.yaml` | Push, schedule | Build and push containers |
-| `upstream-monitor.yaml` | Schedule | Check for upstream updates |
-| `update-dashboard.yaml` | Schedule, manual | Regenerate status dashboard |
+| `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers |
+| `upstream-monitor.yaml` | Schedule (6 AM UTC daily), manual | Check for upstream updates |
+| `update-dashboard.yaml` | workflow_call, manual | Regenerate status dashboard |
 | `validate-version-scripts.yaml` | PR | Validate version.sh scripts |
+| `cleanup-registry.yaml` | Schedule, manual | Clean old GHCR images |
+| `shellcheck.yaml` | Push, PR | Lint shell scripts |
+| `sync-dockerhub-readme.yaml` | Push, manual | Sync README to Docker Hub |
 
 ## Environment Variables
 

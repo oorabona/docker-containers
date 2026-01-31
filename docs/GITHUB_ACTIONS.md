@@ -18,7 +18,7 @@ Our GitHub Actions system uses a **hybrid approach** combining direct workflow c
 
 ```mermaid
 graph TD
-    A[upstream-monitor.yaml<br/>📅 Schedule: 6AM/6PM UTC] -->|version changes| B[Matrix Strategy<br/>🔄 One call per container]
+    A[upstream-monitor.yaml<br/>📅 Schedule: 6AM UTC daily] -->|version changes| B[Matrix Strategy<br/>🔄 One call per container]
     B -->|workflow_call| C[auto-build.yaml<br/>🏗️ Build & Push]
     C -->|workflow_call| D[update-dashboard.yaml<br/>📊 GitHub Pages]
     
@@ -59,7 +59,7 @@ The **core scheduler** that monitors upstream sources and initiates the entire a
 **Status**: ✅ **Recently Fixed** - JSON parsing errors resolved, matrix strategy optimized
 
 **Triggers:**
-- **🕕 Schedule**: 6 AM/6 PM UTC daily (**ONLY** workflow with schedule triggers)
+- **🕕 Schedule**: 6 AM UTC daily (**ONLY** workflow with schedule triggers)
 - **⚙️ Manual**: `gh workflow run upstream-monitor.yaml`
 
 **Responsibilities:**
@@ -163,7 +163,7 @@ Builds and pushes containers when changes are detected.
 **Triggers:**
 - Push to main/master (affecting container files)
 - Pull requests
-- Schedule (twice daily)
+- workflow_call (from upstream-monitor)
 - Manual dispatch
 
 **Features:**
@@ -202,7 +202,7 @@ Validates all version.sh scripts for functionality and standards compliance.
 
 | Workflow | Actions Used | Usage Count | Trigger Type |
 |----------|-------------|-------------|--------------|
-| `upstream-monitor.yaml` | `check-upstream-versions`<br>`update-version`<br>`close-duplicate-prs` | 3 actions | **Schedule** (6 AM/6 PM UTC)<br>Manual dispatch |
+| `upstream-monitor.yaml` | `check-upstream-versions`<br>`update-version`<br>`close-duplicate-prs` | 3 actions | **Schedule** (6 AM UTC daily)<br>Manual dispatch |
 | `auto-build.yaml` | `detect-containers`<br>`build-container`<br>`setup-github-cli` | 3 actions | **workflow_call** (from upstream-monitor)<br>Push/PR events<br>Manual dispatch |
 | `update-dashboard.yaml` | None (uses scripts directly) | 0 actions | **workflow_call** (from auto-build)<br>Manual dispatch |
 | `validate-version-scripts.yaml` | `check-upstream-versions` | 1 action | Push/PR events<br>Manual dispatch |
