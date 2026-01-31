@@ -67,6 +67,7 @@ The **core scheduler** that monitors upstream sources and initiates the entire a
 - 📝 Create PRs for version updates using `update-version` action
 - 🔄 Manage duplicate PR cleanup using `close-duplicate-prs` action  
 - **🚀 Trigger auto-build directly** using optimized matrix strategy (one call per container)
+- **🔀 Auto-merge minor updates** using `gh pr checks --watch` to poll CI status before merging with standard `GITHUB_TOKEN` (no elevated permissions needed — `enforce_admins: false` on master)
 
 **Key Inputs:**
 ```bash

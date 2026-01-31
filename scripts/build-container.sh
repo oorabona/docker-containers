@@ -11,6 +11,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
 source "$PROJECT_ROOT/helpers/variant-utils.sh"
 source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
+source "$PROJECT_ROOT/helpers/build-args-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
@@ -137,17 +138,11 @@ build_container() {
     [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
 
     # Load build_args from config.yaml if present
-    if [[ -f "./config.yaml" ]]; then
-        if ! command -v yq >/dev/null 2>&1; then
-            log_error "yq is required to read config.yaml but is not installed"
-            return 1
-        fi
-        local config_build_args
-        config_build_args=$(yq -r '.build_args // {} | to_entries | map("--build-arg " + .key + "=" + .value) | join(" ")' ./config.yaml 2>/dev/null || true)
-        if [[ -n "$config_build_args" ]]; then
-            build_args="$build_args $config_build_args"
-            log_info "Loaded build args from config.yaml"
-        fi
+    local config_build_args
+    config_build_args=$(build_args_flags ".")
+    if [[ -n "$config_build_args" ]]; then
+        build_args="$build_args $config_build_args"
+        log_info "Loaded build args from config.yaml"
     fi
 
     [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"

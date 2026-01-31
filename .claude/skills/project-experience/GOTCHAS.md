@@ -160,4 +160,30 @@ docker buildx imagetools create \
 
 ---
 
+## `gh pr checks --fail-cycle` doesn't exist (2026-01)
+
+**Symptom:** `unknown flag: --fail-cycle` in GitHub Actions workflow
+
+**Cause:** `gh pr checks` only supports `--watch`, `--fail-fast`, and `--interval`. There is no built-in timeout flag.
+
+**Fix:**
+```bash
+# Use timeout command wrapper instead
+MERGE_TIMEOUT=300
+if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
+  gh pr merge "$PR_NUMBER" --squash
+else
+  exit_code=$?
+  if [ "$exit_code" -eq 124 ]; then
+    echo "::warning::CI checks timed out"
+  else
+    echo "::warning::CI checks failed"
+  fi
+fi
+```
+
+**Prevention:** Always verify CLI flags with `gh <command> --help` before using them in workflows. Don't trust LLM-generated flag names.
+
+---
+
 _Add new gotchas below as they are discovered._
