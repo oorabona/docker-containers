@@ -640,40 +640,40 @@ jobs:
             ls -la .build-lineage/
           else
             echo "No lineage artifacts found"
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
 
-          git add .build-lineage/
-          if git diff --cached --quiet; then
-            echo "No lineage changes"
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: github-actions[bot]
+          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
 
       - name: Create lineage PR
-        if: steps.merge.outputs.has_changes == 'true'
+        id: create_pr
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "ci: update build lineage metadata"
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          title: "ci: update build lineage metadata"
+          body: |
+            Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          branch: ci/update-lineage-${{ github.run_id }}
+          delete-branch: true
+          labels: automation
+
+      - name: Auto-merge lineage PR
+        if: steps.create_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
-          branch="ci/update-lineage-${{ github.run_id }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git commit -m "ci: update build lineage metadata"
-          git push -u origin "$branch"
-
-          pr_url=$(gh pr create \
-            --title "ci: update build lineage metadata" \
-            --body "Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." \
-            --base master \
-            --head "$branch")
-          echo "Created PR: $pr_url"
-
-          # Auto-merge once checks pass
-          gh pr merge "$pr_url" --auto --squash --delete-branch
-          echo "Auto-merge enabled on $pr_url"
+          echo "Created PR #$PR_NUMBER"
+          gh pr merge "$PR_NUMBER" --auto --squash --delete-branch
 
   update-dashboard:
     needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
