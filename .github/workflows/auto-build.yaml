@@ -630,9 +630,9 @@ jobs:
           path: .build-lineage-artifacts/
           merge-multiple: false
 
-      - name: Merge and commit lineage files
+      - name: Merge lineage files
+        id: merge
         run: |
-          # Merge all downloaded lineage artifacts into .build-lineage/
           mkdir -p .build-lineage
           if [ -d ".build-lineage-artifacts" ]; then
             find .build-lineage-artifacts -name '*.json' -exec cp {} .build-lineage/ \;
@@ -640,20 +640,40 @@ jobs:
             ls -la .build-lineage/
           else
             echo "No lineage artifacts found"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Commit if there are changes
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .build-lineage/
           if git diff --cached --quiet; then
-            echo "No lineage changes to commit"
+            echo "No lineage changes"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "ci: update build lineage metadata"
-            git push
-            echo "Build lineage committed"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Create lineage PR
+        if: steps.merge.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="ci/update-lineage-${{ github.run_id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -m "ci: update build lineage metadata"
+          git push -u origin "$branch"
+
+          pr_url=$(gh pr create \
+            --title "ci: update build lineage metadata" \
+            --body "Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." \
+            --base master \
+            --head "$branch")
+          echo "Created PR: $pr_url"
+
+          # Auto-merge once checks pass
+          gh pr merge "$pr_url" --auto --squash --delete-branch
+          echo "Auto-merge enabled on $pr_url"
 
   update-dashboard:
     needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
