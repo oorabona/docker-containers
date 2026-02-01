@@ -240,10 +240,7 @@ build_container() {
 
     # Smart rebuild detection: skip if image exists with matching digest
     if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
-        local variants_yaml=""
-        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
-
-        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$variants_yaml" "$flavor" "false"; then
+        if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false"; then
             log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
             return 0
         fi
@@ -263,9 +260,7 @@ build_container() {
     # Compute build digest label for smart rebuild detection
     local label_args=""
     if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        local variants_yaml=""
-        [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
-        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
+        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
     fi
     label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 

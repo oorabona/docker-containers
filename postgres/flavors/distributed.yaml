@@ -25,5 +25,5 @@ shared_preload_libraries:
 
 # Image tags to publish
 tags:
-  - "{version}-distributed-alpine"   # e.g., 17.5-distributed-alpine
-  - "{major}-distributed-alpine"     # e.g., 17-distributed-alpine
+  - "{version}-alpine-distributed"   # e.g., 17.5-alpine-distributed
+  - "{major}-alpine-distributed"     # e.g., 17-alpine-distributed

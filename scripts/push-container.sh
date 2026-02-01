@@ -73,11 +73,8 @@ get_label_args() {
     local dockerfile="${1:-Dockerfile}"
     local flavor="${2:-}"
 
-    local variants_yaml=""
-    [[ -f "variants.yaml" ]] && variants_yaml="variants.yaml"
-
     local digest
-    digest=$(compute_build_digest "$dockerfile" "$variants_yaml" "$flavor")
+    digest=$(compute_build_digest "$dockerfile" "$flavor")
     echo "--label $BUILD_DIGEST_LABEL=$digest"
 }
 

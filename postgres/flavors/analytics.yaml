@@ -24,5 +24,5 @@ shared_preload_libraries:
 
 # Image tags to publish
 tags:
-  - "{version}-analytics-alpine"   # e.g., 17.5-analytics-alpine
-  - "{major}-analytics-alpine"     # e.g., 17-analytics-alpine
+  - "{version}-alpine-analytics"   # e.g., 17.5-alpine-analytics
+  - "{major}-alpine-analytics"     # e.g., 17-alpine-analytics
