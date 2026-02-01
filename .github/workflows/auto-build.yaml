@@ -430,8 +430,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-lineage-${{ matrix.build.container }}${{ matrix.build.flavor && format('-{0}', matrix.build.flavor) || '' }}
-          path: .build-lineage/
-          if-no-files-found: ignore
+          path: .build-lineage/${{ matrix.build.container }}${{ matrix.build.flavor && format('-{0}', matrix.build.flavor) || '' }}.json
+          if-no-files-found: warn
+          include-hidden-files: true
           retention-days: 1
 
   create-manifest:
