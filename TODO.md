@@ -8,8 +8,7 @@ _None_
 
 ### Medium Priority
 
-- [ ] Add bats test for yq fallback behavior in compute_build_digest (from REBUILD-001 review F-004)
-- [ ] Add integration smoke tests for build_container (terraform + postgres) (from REBUILD-001 review F-005)
+_None_
 
 ## Completed
 
