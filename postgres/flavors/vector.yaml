@@ -18,5 +18,5 @@ shared_preload_libraries: []
 
 # Image tags to publish
 tags:
-  - "{version}-vector-alpine"   # e.g., 17.5-vector-alpine
-  - "{major}-vector-alpine"     # e.g., 17-vector-alpine
+  - "{version}-alpine-vector"   # e.g., 17.5-alpine-vector
+  - "{major}-alpine-vector"     # e.g., 17-alpine-vector
