@@ -184,7 +184,7 @@ _emit_build_lineage() {
 
     local lineage_dir="${PROJECT_ROOT:-.}/.build-lineage"
     mkdir -p "$lineage_dir"
-    local lineage_file="$lineage_dir/${container}-${version}${flavor:+-$flavor}.json"
+    local lineage_file="$lineage_dir/${container}-${tag}.json"
     local build_ts
     build_ts=$(date -Iseconds)
     local image_id
