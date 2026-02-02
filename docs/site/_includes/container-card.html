@@ -14,6 +14,8 @@
   <div class="card-status">
     {% if include.build_status == 'success' %}
       <i class="ti ti-circle-check" style="color: var(--accent-green);" aria-hidden="true"></i>
+    {% elsif include.build_status == 'warning' %}
+      <i class="ti ti-alert-triangle" style="color: var(--accent-yellow);" aria-hidden="true"></i>
     {% elsif include.build_status == 'failed' %}
       <i class="ti ti-circle-x" style="color: var(--accent-pink);" aria-hidden="true"></i>
     {% else %}

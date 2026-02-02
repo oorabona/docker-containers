@@ -125,7 +125,7 @@
                           tabindex="0"
                           aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
                           title="{{ variant.description }}">
-                      {{ variant.name }}{% if variant.is_default %} <span class="badge-default">default</span>{% endif %}
+                      {{ variant.name }}{% if variant.is_default %} <span class="badge-default">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                     </span>
                   {% endfor %}
                 </div>
@@ -142,7 +142,7 @@
                         tabindex="0"
                         aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
                         title="{{ variant.description }}">
-                    {{ variant.tag }}{% if variant.is_default %} <span class="badge-default">default</span>{% endif %}
+                    {{ variant.tag }}{% if variant.is_default %} <span class="badge-default">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                   </span>
                 {% endfor %}
               </div>
