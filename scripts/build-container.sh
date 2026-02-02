@@ -12,6 +12,7 @@ source "$PROJECT_ROOT/helpers/logging.sh"
 source "$PROJECT_ROOT/helpers/variant-utils.sh"
 source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 source "$PROJECT_ROOT/helpers/build-args-utils.sh"
+source "$PROJECT_ROOT/helpers/extension-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
@@ -266,6 +267,28 @@ build_container() {
 
     _resolve_base_image "$dockerfile" "$version" "label_args"
 
+    # Generate Dockerfile from template if it contains extension markers
+    local _generated_dockerfile=""
+    if grep -q '@@EXTENSION_STAGES@@' "$dockerfile" 2>/dev/null; then
+        local ext_config="$PROJECT_ROOT/$container/extensions/config.yaml"
+        if [[ -f "$ext_config" ]]; then
+            _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
+                log_error "Failed to create temp file for generated Dockerfile"
+                return 1
+            }
+            if ! generate_dockerfile "$ext_config" "$dockerfile" "${flavor:-base}" "$_MAJOR_VERSION" > "$_generated_dockerfile"; then
+                log_error "Failed to generate Dockerfile for flavor=${flavor:-base} pg=$_MAJOR_VERSION"
+                rm -f "$_generated_dockerfile"
+                return 1
+            fi
+            log_info "Generated Dockerfile for flavor=${flavor:-base} pg=$_MAJOR_VERSION"
+            dockerfile="$_generated_dockerfile"
+        else
+            log_error "Dockerfile has extension markers but no $ext_config found"
+            return 1
+        fi
+    fi
+
     # Execute docker build
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log_success "GitHub Actions detected - building locally for validation..."
@@ -281,6 +304,7 @@ build_container() {
             $tag_args \
             . || {
             log_error "Build failed for $container:$tag"
+            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
             return 1
         }
 
@@ -300,6 +324,7 @@ build_container() {
             $tag_args \
             . || {
             log_error "Build failed for $container:$tag"
+            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
             return 1
         }
 
@@ -308,6 +333,9 @@ build_container() {
 
     _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
         "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
+
+    # Cleanup generated Dockerfile
+    [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
 }
 
 # Build all variants for a container

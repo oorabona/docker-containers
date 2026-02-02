@@ -133,5 +133,31 @@ builtin_extensions:
   - postgres_fdw
   # Administration
   - adminpack
-# Flavors define which extensions are bundled together
-# See postgres/flavors/*.yaml for flavor definitions
+# Flavors define which compiled extensions are included per flavor
+# Each flavor maps to a list of extension names from the 'extensions' section above
+# The build system uses this to generate per-flavor Dockerfile FROM/COPY blocks
+# Extensions are filtered at build time by max_pg_version and disabled status
+#
+# WARNING: This mapping must stay in sync with the install_ext case statement
+# in postgres/Dockerfile. If you add/remove an extension from a flavor here,
+# update the corresponding case branch in the Dockerfile as well.
+flavors:
+  base: []
+  vector:
+    - pgvector
+  analytics:
+    - pg_partman
+    - hypopg
+    - pg_qualstats
+  timeseries:
+    - timescaledb
+    - pg_partman
+  distributed:
+    - citus
+  full:
+    - pgvector
+    - pg_partman
+    - hypopg
+    - pg_qualstats
+    - citus
+    - timescaledb

@@ -8,21 +8,22 @@
 
 set -euo pipefail
 
-# Colors for output (disabled in CI)
-if [[ -t 1 ]] && [[ -z "${CI:-}" ]]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    NC='\033[0m'
-else
-    RED='' GREEN='' YELLOW='' BLUE='' NC=''
+# Colors and log functions (skip if already defined by logging.sh)
+if ! declare -p RED &>/dev/null; then
+    if [[ -t 1 ]] && [[ -z "${CI:-}" ]]; then
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        BLUE='\033[0;34m'
+        NC='\033[0m'
+    else
+        RED='' GREEN='' YELLOW='' BLUE='' NC=''
+    fi
 fi
-
-log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+declare -F log_info &>/dev/null || log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
+declare -F log_ok &>/dev/null   || log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+declare -F log_warn &>/dev/null || log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+declare -F log_error &>/dev/null || log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # Get repository owner from git remote or environment
 get_repo_owner() {
@@ -214,6 +215,81 @@ push_ext_image() {
     fi
 
     log_ok "Pushed: $remote_tag"
+}
+
+# ============================================================================
+# Flavor-aware Dockerfile generation
+# Instead of building N bundle images, we template the main Dockerfile
+# to only include FROM/COPY for extensions relevant to each flavor+PG version
+# ============================================================================
+
+# Get list of extensions for a flavor, filtered by PG version compatibility
+# Excludes disabled extensions and those exceeding max_pg_version
+get_flavor_extensions() {
+    local config_file="$1"
+    local flavor="$2"
+    local pg_major="$3"
+
+    pgver="$pg_major" flav="$flavor" yq -r '
+        . as $root |
+        .flavors[env(flav)] // [] | .[] | . as $ext |
+        select(
+            ($root.extensions[$ext].disabled == true | not) and
+            (($root.extensions[$ext].max_pg_version // 999) >= env(pgver))
+        )
+    ' "$config_file"
+}
+
+# Generate a Dockerfile from a template by injecting extension FROM/COPY blocks
+# Template must contain markers:
+#   # @@EXTENSION_STAGES@@   → replaced by FROM ext-* AS ext-* lines
+#   # @@EXTENSION_COPIES@@   → replaced by COPY --from=ext-* lines
+#
+# Usage: generate_dockerfile <config_file> <template> <flavor> <pg_major> [registry] [owner]
+generate_dockerfile() {
+    local config_file="$1"
+    local template="$2"
+    local flavor="$3"
+    local pg_major="$4"
+    local registry="${5:-$(get_registry)}"
+    local owner="${6:-$(get_repo_owner)}"
+
+    # Get filtered extension list for this flavor + PG version
+    local extensions
+    extensions=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major")
+
+    # Build the FROM stages block
+    local stages_block=""
+    local copies_block=""
+
+    if [[ -n "$extensions" ]]; then
+        while IFS= read -r ext_name; do
+            [[ -z "$ext_name" ]] && continue
+
+            local ext_version
+            ext_version=$(ext_config "$ext_name" "version" "$config_file")
+            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
+
+            stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
+            copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
+            copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'
+        done <<< "$extensions"
+    fi
+
+    # Replace markers in template line by line
+    while IFS= read -r line; do
+        case "$line" in
+            *'@@EXTENSION_STAGES@@'*)
+                [[ -n "$stages_block" ]] && printf '%s' "$stages_block"
+                ;;
+            *'@@EXTENSION_COPIES@@'*)
+                [[ -n "$copies_block" ]] && printf '%s' "$copies_block"
+                ;;
+            *)
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done < "$template"
 }
 
 # Pull extension image from registry
