@@ -52,6 +52,7 @@ permissions:
   packages: write
   pages: write
   id-token: write
+  pull-requests: write  # Required for peter-evans/create-pull-request (lineage PRs)
   security-events: write  # Required for uploading SARIF to GitHub Security
 
 jobs:
