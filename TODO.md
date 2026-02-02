@@ -12,11 +12,13 @@ _None_
 
 ## Completed
 
+- [x] ✅ [Build] REBUILD-001: Per-flavor precise build digest — edge case warnings, test validation, dashboard per-variant display (2026-02-02)
+
 (Archived to docs/historic/done-2026-02.md)
 
 ## Blocked / Deferred
 
-_None_
+- [-] ⏭️ [Build] _has_build_args_include() only checks first variant (head -1) — low risk, all current containers have consistent structure
 
 ---
 

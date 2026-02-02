@@ -68,3 +68,12 @@ versions:
         flavor: full
         description: "All cloud CLIs included (AWS + Azure + GCP)"
         default: true
+        build_args_include:
+          - TFLINT_VERSION
+          - TRIVY_VERSION
+          - TERRAGRUNT_VERSION
+          - TERRAFORM_DOCS_VERSION
+          - GITHUB_CLI_VERSION
+          - AWS_CLI_VERSION
+          - AZURE_CLI_VERSION
+          - GCP_CLI_VERSION

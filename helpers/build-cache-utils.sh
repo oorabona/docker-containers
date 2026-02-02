@@ -80,6 +80,9 @@ compute_build_digest() {
                 else
                     version="unknown"
                 fi
+                if [[ "$version" == "unknown" ]]; then
+                    log_warning "  extension '$ext' listed in flavors/${flavor}.yaml but not found in extensions/config.yaml"
+                fi
                 ext_pairs+="${ext}=${version}"$'\n'
                 _digest_log "  digest input: ${ext}=${version}"
             done
@@ -100,6 +103,10 @@ compute_build_digest() {
             args=""
         fi
 
+        if [[ -z "$args" ]]; then
+            log_warning "  no build_args found for flavor '$flavor'"
+        fi
+
         if [[ -n "$args" && -f "config.yaml" ]]; then
             local arg_pairs=""
             local arg
@@ -109,6 +116,9 @@ compute_build_digest() {
                     value=$(yq -r ".build_args.${arg} // \"unknown\"" "config.yaml" 2>/dev/null)
                 else
                     value="unknown"
+                fi
+                if [[ "$value" == "unknown" ]]; then
+                    log_warning "  build arg '$arg' not found in config.yaml for flavor '$flavor'"
                 fi
                 arg_pairs+="${arg}=${value}"$'\n'
                 _digest_log "  digest input: ${arg}=${value}"

@@ -115,4 +115,9 @@
         if (tag) { e.preventDefault(); selectVariant(tag); }
       }
     });
+
+    // Auto-select default variant on page load so lineage shows
+    // the default variant's digest instead of "per-variant"
+    var defaultVariant = document.querySelector('.variant-tag.selected');
+    if (defaultVariant) selectVariant(defaultVariant);
   })();
