@@ -209,7 +209,7 @@ _emit_build_lineage() {
   "base_image_ref": "${_BASE_IMAGE_REF:-unknown}",
   "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",
-  "github_actions": ${GITHUB_ACTIONS:+true}${GITHUB_ACTIONS:-false},
+  "github_actions": ${GITHUB_ACTIONS:-false},
   "images": {
     "dockerhub": "$dockerhub_image:$tag",
     "ghcr": "$ghcr_image:$tag"
