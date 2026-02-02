@@ -440,7 +440,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
         with:
           name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
-          path: .build-lineage/${{ matrix.build.container }}-${{ matrix.build.version }}${{ matrix.build.flavor && format('-{0}', matrix.build.flavor) || '' }}.json
+          path: .build-lineage/${{ matrix.build.container }}-${{ matrix.build.tag }}.json
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 1

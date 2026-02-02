@@ -41,17 +41,29 @@ resolve_lineage_file() {
 }
 
 # Resolve lineage file for a specific variant of a container
-# Tries {container}-{variant}.json, then falls back to {container}.json
+# Primary: {container}-{tag}.json (e.g. postgres-18-alpine.json)
+# Fallback 1: {container}-{flavor}.json (legacy format, e.g. postgres-base.json)
+# Fallback 2: {container}.json (non-variant containers)
 resolve_variant_lineage_file() {
     local container="$1"
-    local variant_name="$2"
+    local tag="$2"
+    local flavor="${3:-}"
     local lineage_dir="$SCRIPT_DIR/.build-lineage"
-    local lineage_file="$lineage_dir/${container}-${variant_name}.json"
+    # Primary: per-tag lineage file (new format)
+    local lineage_file="$lineage_dir/${container}-${tag}.json"
     if [[ -f "$lineage_file" ]]; then
         echo "$lineage_file"
         return
     fi
-    # Fallback: main container lineage
+    # Fallback 1: per-flavor lineage file (legacy format)
+    if [[ -n "$flavor" ]]; then
+        lineage_file="$lineage_dir/${container}-${flavor}.json"
+        if [[ -f "$lineage_file" ]]; then
+            echo "$lineage_file"
+            return
+        fi
+    fi
+    # Fallback 2: main container lineage
     lineage_file="$lineage_dir/${container}.json"
     if [[ -f "$lineage_file" ]]; then
         echo "$lineage_file"
@@ -266,10 +278,10 @@ yaml_escape() {
 # Resolve variant lineage data as JSON: {build_digest, base_image}
 # Includes version mismatch check and fallback base_image derivation
 resolve_variant_lineage_json() {
-    local container="$1" variant_name="$2" version="$3" fallback_base_image="${4:-unknown}"
+    local container="$1" tag="$2" version="$3" fallback_base_image="${4:-unknown}" flavor="${5:-}"
 
     local lineage_file build_digest="unknown" base_image="unknown"
-    lineage_file=$(resolve_variant_lineage_file "$container" "$variant_name")
+    lineage_file=$(resolve_variant_lineage_file "$container" "$tag" "$flavor")
 
     if [[ -n "$lineage_file" ]]; then
         build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
@@ -325,9 +337,15 @@ collect_variant_json() {
     fi
 
     # Lineage (build_digest + base_image with version mismatch check)
-    # Use current_version for mismatch check — lineage stores actual version, not tag prefix
+    # Use variant_tag for lineage file lookup, current_version for mismatch check
+    local flavor
+    if [[ "$is_versioned" == "true" ]]; then
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$version")
+    else
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+    fi
     local lineage_json
-    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_name" "$current_version" "$fallback_base_image")
+    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_tag" "$current_version" "$fallback_base_image" "$flavor")
 
     # Build args
     local build_args_json
