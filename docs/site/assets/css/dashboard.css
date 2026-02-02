@@ -132,6 +132,66 @@
       background: rgba(0, 0, 0, 0.08);
     }
 
+    /* Light theme: glass surfaces, hover states, inputs */
+    [data-theme="light"] .container-card:hover {
+      background: rgba(255, 255, 255, 0.9);
+    }
+    [data-theme="light"] .stat-card:hover {
+      background: rgba(255, 255, 255, 0.9);
+    }
+    [data-theme="light"] .health-item {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .activity-icon {
+      background: rgba(0, 0, 0, 0.06);
+    }
+    [data-theme="light"] .activity-icon.success {
+      background: rgba(4, 120, 87, 0.12);
+      color: #047857;
+    }
+    [data-theme="light"] .activity-icon.failure {
+      background: rgba(190, 24, 93, 0.12);
+      color: #be185d;
+    }
+    [data-theme="light"] .activity-icon.pending {
+      background: rgba(180, 83, 9, 0.12);
+      color: #b45309;
+    }
+    [data-theme="light"] .activity-link:hover {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .filter-btn:hover {
+      background: rgba(0, 0, 0, 0.06);
+    }
+    [data-theme="light"] .filter-btn.active {
+      background: rgba(59, 130, 246, 0.1);
+    }
+    [data-theme="light"] .filter-btn .count {
+      background: rgba(0, 0, 0, 0.08);
+    }
+    [data-theme="light"] .filter-btn.active .count {
+      background: rgba(59, 130, 246, 0.15);
+    }
+    [data-theme="light"] .registry-toggle {
+      background: rgba(0, 0, 0, 0.06);
+    }
+    [data-theme="light"] .pull-input {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .pull-select {
+      background: rgba(255, 255, 255, 0.8);
+    }
+    [data-theme="light"] .pull-select option {
+      background: #ffffff;
+      color: #111827;
+    }
+    [data-theme="light"] .copy-btn {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .copy-btn:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+
     /* Controls bar */
     .controls-bar {
       display: flex;

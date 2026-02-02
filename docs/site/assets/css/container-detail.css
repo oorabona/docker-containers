@@ -1,9 +1,21 @@
     /* Container detail page styles — shared theme in theme.css */
 
-    /* Override text-secondary/text-muted for detail page (slightly brighter) */
+    /* Detail page: brighter text in dark mode for readability on glass surfaces.
+       Light mode inherits --text-secondary/#374151 and --text-muted/#4b5563 from theme.css.
+       Dark mode override uses slightly brighter white for detail page only. */
     :root {
-      --text-secondary: rgba(255, 255, 255, 0.85);
-      --text-muted: rgba(255, 255, 255, 0.65);
+      --detail-text-secondary: rgba(255, 255, 255, 0.85);
+      --detail-text-muted: rgba(255, 255, 255, 0.65);
+    }
+    [data-theme="light"] {
+      --detail-text-secondary: #374151;
+      --detail-text-muted: #4b5563;
+    }
+
+    /* Ensure theme.css light variables are not overridden by this file's :root.
+       The readme-content and other shared elements use --text-secondary/--text-muted directly. */
+    [data-theme="light"] .readme-content {
+      color: #374151;
     }
 
     .bg-animated::before {
@@ -83,7 +95,7 @@
     .meta-card { padding: 1.25rem; }
     .meta-card-label {
       font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
-      color: var(--text-muted); margin-bottom: 0.5rem;
+      color: var(--detail-text-muted); margin-bottom: 0.5rem;
     }
     .meta-card-value { font-size: 1.125rem; font-weight: 600; }
 
@@ -109,10 +121,10 @@
       from { opacity: 0; transform: translateY(8px) scale(0.97); }
       to { opacity: 1; transform: translateY(0) scale(1); }
     }
-    .lineage-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+    .lineage-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--detail-text-muted); }
     .lineage-value {
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem;
-      color: var(--text-secondary); word-break: break-all;
+      color: var(--detail-text-secondary); word-break: break-all;
     }
 
     /* Variants */
@@ -124,7 +136,7 @@
     .variants-header h2 { margin: 0; font-size: 1.25rem; }
     .variants-content { display: flex; flex-direction: column; gap: 1.5rem; }
     .version-group { display: flex; flex-direction: column; gap: 0.75rem; }
-    .version-title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--text-secondary); }
+    .version-title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--detail-text-secondary); }
     .variant-tags-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
     .variant-tag {
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
@@ -188,6 +200,33 @@
     .readme-content img { max-width: 100%; border-radius: 8px; }
     .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
     .table-wrapper table { margin: 0; }
+
+    /* Light theme: lineage & readme overrides for WCAG 2.2 AA contrast */
+    [data-theme="light"] .lineage-item {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .readme-content code {
+      background: rgba(0, 0, 0, 0.06);
+      color: #9333ea;
+    }
+    [data-theme="light"] .readme-content pre {
+      background: #1e293b;
+    }
+    [data-theme="light"] .readme-content pre code {
+      color: #e2e8f0;
+    }
+    [data-theme="light"] .readme-content th {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    [data-theme="light"] .readme-content blockquote {
+      color: var(--detail-text-muted);
+    }
+    [data-theme="light"] .back-link {
+      color: var(--detail-text-secondary);
+    }
+    [data-theme="light"] .back-link:hover {
+      color: var(--text-primary);
+    }
 
     /* Focus visible */
     .variant-tag:focus-visible, .back-link:focus-visible, .btn:focus-visible, .theme-toggle:focus-visible {
