@@ -10,8 +10,8 @@
   "build_digest": "9292a25d7e7c",
   "base_image_ref": "hashicorp/terraform:1.14.4",
   "base_image_digest": "sha256:f96f4a14d53eff20bdaef7b03f6cd9f61212e3d9fde3d441d1c7a8fcfa965318",
-  "built_at": "2026-02-02T00:05:20+00:00",
-  "github_actions": truetrue,
+  "built_at": "2026-02-02T00:41:12+00:00",
+  "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/terraform:latest-azure",
     "ghcr": "ghcr.io/oorabona/terraform:latest-azure"
