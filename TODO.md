@@ -10,6 +10,7 @@
 
 - [ ] [CI] Per-container failure tracking via GitHub API (currently using lineage presence as proxy)
 - [ ] [Build] PG 18 distributed/full flavors — blocked on Citus PG 18 compatibility
+- [ ] [Build] Generate install_ext case statement from config.yaml flavors (eliminate Dockerfile ↔ config.yaml dual-maintenance)
 
 ## Completed
 

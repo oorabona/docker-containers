@@ -64,17 +64,21 @@ gh workflow run auto-build.yaml
 
 ### How Extensions Work
 
-Extensions are pre-compiled PostgreSQL modules stored as container images in the registry. The main Dockerfile uses `COPY --from=` to pull extension files.
+Extensions are pre-compiled PostgreSQL modules stored as individual container images in the registry. The main Dockerfile is a **template** with markers (`@@EXTENSION_STAGES@@` and `@@EXTENSION_COPIES@@`) that are replaced at build time with only the extensions compatible with the target flavor and PostgreSQL version.
 
 ```dockerfile
-# Extension images are referenced in the Dockerfile
-FROM ghcr.io/oorabona/ext-pgvector:pg17-0.8.1 AS ext-pgvector
-FROM ghcr.io/oorabona/ext-citus:pg17-13.2.0 AS ext-citus
+# Template markers in postgres/Dockerfile (replaced at build time):
+# @@EXTENSION_STAGES@@   → FROM ext-image AS ext-name (one per extension)
+# @@EXTENSION_COPIES@@   → COPY --from=ext-name lines (two per extension)
 
-# Later, files are copied based on flavor
+# Example: generated output for flavor=vector, pg=17
+FROM ghcr.io/oorabona/ext-pgvector:pg17-0.8.1 AS ext-pgvector
+# ...
 COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/
 COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/
 ```
+
+The generation is handled by `generate_dockerfile()` in `helpers/extension-utils.sh`, called automatically by `build_container()` when it detects template markers. The flavor→extension mapping is defined in `postgres/extensions/config.yaml` under the `flavors:` key.
 
 ### Extension Image Naming
 
@@ -117,7 +121,12 @@ Examples:
        shared_preload: false  # true if needs shared_preload_libraries
    ```
 
-3. **Update Dockerfile** to include the extension in relevant flavors.
+3. **Add to flavors** in `config.yaml` — extensions are only included in flavors that list them:
+   ```yaml
+   flavors:
+     full:
+       - myext  # Add to relevant flavors
+   ```
 
 4. **Build and test**:
    ```bash
@@ -263,7 +272,7 @@ gh auth refresh -h github.com -s write:packages
 
 ### Build uses wrong extension version
 
-Extension versions are defined in `extensions/config.yaml`. The Dockerfile references these via build args:
+Extension versions are defined in `extensions/config.yaml`. The Dockerfile template is generated with the correct versions at build time:
 
 ```bash
 # Check what version will be used

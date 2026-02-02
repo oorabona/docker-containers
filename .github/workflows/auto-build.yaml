@@ -21,6 +21,8 @@ on:
       - '*/version.sh'
       - '*/docker-compose.yml'
       - '*/compose.yml'
+      - '*/extensions/config.yaml'
+      - 'helpers/extension-utils.sh'
       - 'make'
       - '!archive/**'  # Exclude archived containers
   # Triggered on merge to master (actual deployment)
@@ -32,6 +34,8 @@ on:
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/LAST_REBUILD.md'
+      - '*/extensions/config.yaml'
+      - 'helpers/extension-utils.sh'
       - 'make'
       - '!archive/**'  # Exclude archived containers
   # Manual trigger
@@ -288,6 +292,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq (needed for extension Dockerfile generation)
+        uses: mikefarah/yq@2be0094729a1006f61e8339ce9934bfb3cbb549f # v4.52.2
+        with:
+          cmd: yq --version
 
       - name: Build container with retry logic
         id: build
