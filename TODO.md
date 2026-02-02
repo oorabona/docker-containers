@@ -2,17 +2,16 @@
 
 ## In Progress
 
-_None_
+(none)
 
 ## Pending
 
 ### Medium Priority
 
-_None_
+- [ ] [CI] Per-container failure tracking via GitHub API (currently using lineage presence as proxy)
+- [ ] [Build] PG 18 distributed/full flavors — blocked on Citus PG 18 compatibility
 
 ## Completed
-
-- [x] ✅ [Build] REBUILD-001: Per-flavor precise build digest — edge case warnings, test validation, dashboard per-variant display (2026-02-02)
 
 (Archived to docs/historic/done-2026-02.md)
 

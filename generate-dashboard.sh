@@ -698,6 +698,17 @@ generate_data() {
             variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image")
             # Multi-variant: per-variant digests are in variants_data, clear container-level digest
             container_json=$(echo "$container_json" | jq --argjson v "$variants_data" '. + $v | .build_digest = "per-variant"')
+
+            # Check for variants with missing lineage (build_digest == "unknown")
+            # If any variant is missing, downgrade container build_status to "warning"
+            local unknown_count
+            unknown_count=$(echo "$variants_data" | jq '[
+                .. | objects | select(.build_digest? == "unknown")
+            ] | length')
+            if [[ "$unknown_count" -gt 0 && "$build_status" == "success" ]]; then
+                build_status="warning"
+                container_json=$(echo "$container_json" | jq --arg bs "$build_status" '.build_status = $bs')
+            fi
         else
             container_json=$(echo "$container_json" | jq '. + {has_variants: false}')
         fi

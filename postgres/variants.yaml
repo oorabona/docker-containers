@@ -18,14 +18,28 @@ build:
 # Versions to build (all maintained PostgreSQL releases)
 versions:
   - tag: "18"
-    # PG18 - use Dockerfile.base (no extension images available yet)
-    dockerfile: Dockerfile.base
+    # PG18 - extension support (pgvector, timescaledb, pg_partman, hypopg, pg_qualstats)
+    # NOTE: distributed and full flavors excluded — Citus does not build against PG 18 yet
+    # See: https://wiki.postgresql.org/wiki/PostgreSQL_18_Open_Items (Extension Bugs)
+    # Re-evaluate when Citus releases PG 18 support
     variants:
       - name: base
         suffix: ""
         flavor: base
         description: "PostgreSQL with built-in extensions only"
         default: true
+      - name: vector
+        suffix: "-vector"
+        flavor: vector
+        description: "PostgreSQL + pgvector for AI/RAG applications"
+      - name: analytics
+        suffix: "-analytics"
+        flavor: analytics
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+      - name: timeseries
+        suffix: "-timeseries"
+        flavor: timeseries
+        description: "PostgreSQL + TimescaleDB for time-series data"
 
   - tag: "17"
     # PG17 - full extension support

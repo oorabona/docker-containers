@@ -611,10 +611,11 @@ jobs:
   commit-lineage:
     name: Commit build lineage
     needs: [build-and-push, create-manifest]
+    # Run on partial failure: successful builds still have lineage to commit
     if: |
       always() &&
-      needs.build-and-push.result == 'success' &&
-      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
+      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -637,13 +638,17 @@ jobs:
           mkdir -p .build-lineage
           if [ -d ".build-lineage-artifacts" ]; then
             find .build-lineage-artifacts -name '*.json' -exec cp {} .build-lineage/ \;
-            echo "Merged lineage files:"
+            count=$(find .build-lineage -name '*.json' | wc -l)
+            echo "Merged $count lineage files:"
             ls -la .build-lineage/
+            echo "has_files=true" >> $GITHUB_OUTPUT
           else
-            echo "No lineage artifacts found"
+            echo "No lineage artifacts found — skipping commit"
+            echo "has_files=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Import GPG key
+        if: steps.merge.outputs.has_files == 'true'
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -654,6 +659,7 @@ jobs:
           git_committer_email: oorabona@users.noreply.github.com
 
       - name: Create lineage PR
+        if: steps.merge.outputs.has_files == 'true'
         id: create_pr
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
         with:
@@ -669,7 +675,7 @@ jobs:
           labels: automation
 
       - name: Enable auto-merge on lineage PR
-        if: steps.create_pr.outputs.pull-request-number
+        if: steps.merge.outputs.has_files == 'true' && steps.create_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
@@ -679,17 +685,17 @@ jobs:
 
   update-dashboard:
     needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
-    # Only update dashboard after successful builds and manifests merged to master
-    # This prevents dashboard updates during PR testing
+    # Update dashboard after builds (even partial failures) on master
+    # Dashboard will show warnings for failed/missing builds
     if: |
       always() &&
-      needs.build-and-push.result == 'success' &&
-      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped') &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
+      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
       (needs.commit-lineage.result == 'success' || needs.commit-lineage.result == 'skipped') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml
     with:
-      trigger_reason: "Post-build update after successful container builds"
+      trigger_reason: "Post-build dashboard update"
     secrets: inherit
 # Permissions are required for updating version files, committing changes, and publishing packages during the auto-build process.
