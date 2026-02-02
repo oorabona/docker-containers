@@ -696,7 +696,8 @@ generate_data() {
         if has_variants "$container_dir"; then
             local variants_data
             variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image")
-            container_json=$(echo "$container_json" | jq --argjson v "$variants_data" '. + $v')
+            # Multi-variant: per-variant digests are in variants_data, clear container-level digest
+            container_json=$(echo "$container_json" | jq --argjson v "$variants_data" '. + $v | .build_digest = "per-variant"')
         else
             container_json=$(echo "$container_json" | jq '. + {has_variants: false}')
         fi
