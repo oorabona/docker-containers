@@ -771,4 +771,7 @@ generate_data() {
     log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build jobs success ${build_success_rate}% ($build_success/$build_total)"
 }
 
-generate_data
+# Only run when executed directly (not when sourced for testing)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    generate_data
+fi
