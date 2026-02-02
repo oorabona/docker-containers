@@ -57,6 +57,9 @@ docs/audit/
 docs/site/_site
 docs/site/.claude
 
+# CI artifact staging (download-artifact temporary files)
+.build-lineage-artifacts/
+
 # Docker volumes and runtime
 volumes/
 .docker/

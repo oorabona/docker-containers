@@ -664,6 +664,7 @@ jobs:
           body: |
             Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
           branch: ci/update-lineage-${{ github.run_id }}
+          add-paths: .build-lineage/
           delete-branch: true
           labels: automation
 
