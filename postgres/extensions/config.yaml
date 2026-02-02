@@ -84,6 +84,9 @@ extensions:
       - icu-dev
     shared_preload: true
     priority: 3
+    # Citus does not build against PG 18 yet
+    # See: https://wiki.postgresql.org/wiki/PostgreSQL_18_Open_Items
+    max_pg_version: 17
   timescaledb:
     version: "2.24.0"
     description: "Time-series database for high-performance analytics"

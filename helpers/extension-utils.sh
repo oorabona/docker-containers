@@ -128,10 +128,22 @@ ext_config() {
 
 # List extensions from config, sorted by priority
 # Excludes disabled extensions (disabled: true)
+# If pg_version is provided, also excludes extensions with max_pg_version < pg_version
 list_extensions_by_priority() {
     local config_file="$1"
+    local pg_version="${2:-}"
 
-    yq -r '.extensions | to_entries | map(select(.value.disabled != true)) | sort_by(.value.priority // 99) | .[].key' "$config_file"
+    if [[ -n "$pg_version" ]]; then
+        pgver="$pg_version" yq -r '
+            [.extensions | to_entries[]
+             | select(.value.disabled == true | not)
+             | select((.value.max_pg_version // 999) >= env(pgver))]
+            | sort_by(.value.priority // 99)
+            | .[].key
+        ' "$config_file"
+    else
+        yq -r '.extensions | to_entries | map(select(.value.disabled == true | not)) | sort_by(.value.priority // 99) | .[].key' "$config_file"
+    fi
 }
 
 # Get PostgreSQL major version from full version string

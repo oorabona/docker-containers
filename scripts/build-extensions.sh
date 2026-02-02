@@ -156,7 +156,7 @@ list_extension_status() {
     printf "%-15s %-10s %-12s %s\n" "Extension" "Version" "Status" "Image"
     printf "%-15s %-10s %-12s %s\n" "---------" "-------" "------" "-----"
 
-    for ext in $(list_extensions_by_priority "$config_file"); do
+    for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
         local version
         version=$(ext_config "$ext" "version" "$config_file")
         local image
@@ -315,7 +315,7 @@ main() {
         if [[ -n "$EXTENSION" ]]; then
             extensions_to_pull=("$EXTENSION")
         else
-            for ext in $(list_extensions_by_priority "$config_file"); do
+            for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
                 local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
                 if [[ ! -f "$dockerfile" ]]; then
                     log_warn "$ext: no Dockerfile (skipped)"
@@ -393,7 +393,7 @@ main() {
         extensions_to_build=("$EXTENSION")
     else
         # Build all missing extensions
-        for ext in $(list_extensions_by_priority "$config_file"); do
+        for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
             local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
 
             # Skip extensions without Dockerfile (marked as complex or not yet implemented)
