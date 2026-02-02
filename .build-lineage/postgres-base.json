@@ -1,20 +1,20 @@
 {
   "container": "postgres",
-  "version": "18-alpine",
-  "tag": "18-alpine",
+  "version": "16-alpine",
+  "tag": "16-alpine",
   "flavor": "base",
-  "dockerfile": "Dockerfile.base",
+  "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
-  "runtime": "Podman",
-  "image_id": "sha256:46ebd652ada6fe94c7483370c74d28248d29d5d3768ab9ab0faa46c93ea7f520",
-  "build_digest": "ec032caf8bc6",
-  "base_image_ref": "postgres:18-alpine",
-  "base_image_digest": "sha256:d326bec58d3de8d239df60475941522342723934a2598ae59a0281f077681462",
-  "built_at": "2026-01-31T12:23:36+01:00",
-  "github_actions": false,
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "a17518100b97",
+  "base_image_ref": "postgres:16-alpine",
+  "base_image_digest": "sha256:63cf43b1a12b5b9d1f7a576f8f5852d7ce0792618661969135ac6c276237eec9",
+  "built_at": "2026-02-02T14:46:23+00:00",
+  "github_actions": true,
   "images": {
-    "dockerhub": "docker.io/oorabona/postgres:18-alpine",
-    "ghcr": "ghcr.io/oorabona/postgres:18-alpine"
+    "dockerhub": "docker.io/oorabona/postgres:16-alpine",
+    "ghcr": "ghcr.io/oorabona/postgres:16-alpine"
   },
   "build_args": {}
 }
