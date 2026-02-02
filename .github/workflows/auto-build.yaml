@@ -643,16 +643,6 @@ jobs:
             echo "No lineage artifacts found"
           fi
 
-      - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          git_user_signingkey: true
-          git_commit_gpgsign: true
-          git_config_global: true
-          git_committer_name: github-actions[bot]
-          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
-
       - name: Create lineage PR
         id: create_pr
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
@@ -668,24 +658,17 @@ jobs:
           delete-branch: true
           labels: automation
 
-      - name: Auto-merge lineage PR
+      - name: Enable auto-merge on lineage PR
         if: steps.create_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           echo "Created PR #$PR_NUMBER"
-          MERGE_TIMEOUT=300
-          if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
-            gh pr merge "$PR_NUMBER" --squash --delete-branch
-          else
-            exit_code=$?
-            if [ "$exit_code" -eq 124 ]; then
-              echo "::warning::CI checks timed out after ${MERGE_TIMEOUT}s for PR #$PR_NUMBER — skipping merge"
-            else
-              echo "::warning::CI checks failed for PR #$PR_NUMBER — skipping merge"
-            fi
-          fi
+          # Auto-merge will trigger once checks pass (CodeQL ~2min).
+          # GitHub signs the squash commit with web-flow key,
+          # satisfying required_signatures without GPG.
+          gh pr merge "$PR_NUMBER" --auto --squash --delete-branch
 
   update-dashboard:
     needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
