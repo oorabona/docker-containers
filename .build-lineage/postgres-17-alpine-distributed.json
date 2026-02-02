@@ -1,0 +1,20 @@
+{
+  "container": "postgres",
+  "version": "17-alpine",
+  "tag": "17-alpine-distributed",
+  "flavor": "distributed",
+  "dockerfile": "/tmp/Dockerfile.postgres.zWYT1J",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "90af18a6b45b",
+  "base_image_ref": "postgres:17-alpine",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-02-02T18:48:47+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/postgres:17-alpine-distributed",
+    "ghcr": "ghcr.io/oorabona/postgres:17-alpine-distributed"
+  },
+  "build_args": {}
+}

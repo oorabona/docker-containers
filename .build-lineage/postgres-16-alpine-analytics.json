@@ -1,0 +1,20 @@
+{
+  "container": "postgres",
+  "version": "16-alpine",
+  "tag": "16-alpine-analytics",
+  "flavor": "analytics",
+  "dockerfile": "/tmp/Dockerfile.postgres.mYN3Hm",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "3fa924034783",
+  "base_image_ref": "postgres:16-alpine",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-02-02T18:44:06+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/postgres:16-alpine-analytics",
+    "ghcr": "ghcr.io/oorabona/postgres:16-alpine-analytics"
+  },
+  "build_args": {}
+}
