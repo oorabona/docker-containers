@@ -1,0 +1,20 @@
+{
+  "container": "postgres",
+  "version": "16-alpine",
+  "tag": "16-alpine-timeseries",
+  "flavor": "timeseries",
+  "dockerfile": "/tmp/Dockerfile.postgres.zcef4T",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "0de1d439e24c",
+  "base_image_ref": "postgres:16-alpine",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-02-02T18:44:35+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/postgres:16-alpine-timeseries",
+    "ghcr": "ghcr.io/oorabona/postgres:16-alpine-timeseries"
+  },
+  "build_args": {}
+}
