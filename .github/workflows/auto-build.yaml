@@ -643,13 +643,23 @@ jobs:
             echo "No lineage artifacts found"
           fi
 
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: github-actions[bot]
+          git_committer_email: oorabona@users.noreply.github.com
+
       - name: Create lineage PR
         id: create_pr
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "ci: update build lineage metadata"
-          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          committer: github-actions[bot] <oorabona@users.noreply.github.com>
           title: "ci: update build lineage metadata"
           body: |
             Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
@@ -665,9 +675,6 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           echo "Created PR #$PR_NUMBER"
-          # Auto-merge will trigger once checks pass (CodeQL ~2min).
-          # GitHub signs the squash commit with web-flow key,
-          # satisfying required_signatures without GPG.
           gh pr merge "$PR_NUMBER" --auto --squash --delete-branch
 
   update-dashboard:
