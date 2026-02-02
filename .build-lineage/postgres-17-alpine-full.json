@@ -1,0 +1,20 @@
+{
+  "container": "postgres",
+  "version": "17-alpine",
+  "tag": "17-alpine-full",
+  "flavor": "full",
+  "dockerfile": "/tmp/Dockerfile.postgres.cCZy7X",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "7bddb539d6e4",
+  "base_image_ref": "postgres:17-alpine",
+  "base_image_digest": "unresolved",
+  "built_at": "2026-02-02T18:53:50+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/postgres:17-alpine-full",
+    "ghcr": "ghcr.io/oorabona/postgres:17-alpine-full"
+  },
+  "build_args": {}
+}
