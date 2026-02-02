@@ -124,7 +124,8 @@ push_ghcr() {
     retry_with_backoff 3 5 docker buildx build \
         --platform "$platforms" \
         --push \
-        --provenance=false \
+        --provenance=mode=min \
+        --sbom=true \
         $cache_args \
         $build_args \
         $label_args \
@@ -215,7 +216,8 @@ push_dockerhub() {
     retry_with_backoff 5 10 docker buildx build \
         --platform "$platforms" \
         --push \
-        --provenance=false \
+        --provenance=mode=min \
+        --sbom=true \
         $cache_args \
         $build_args \
         $label_args \

@@ -14,9 +14,9 @@
 
 ### Low Priority
 
-- [ ] [Dashboard] Build history — show last N builds per variant with dates and digests
+- [ ] [Dashboard] Build history — show last N builds per variant with dates and digests (deferred: wait for SBOM data accumulation + format stabilization)
 - [ ] [CI] Build failure alerts — auto-create GitHub issue or webhook notification on failure
-- [ ] [Dashboard] Changelog inter-versions — diff extensions/tools between builds
+- [ ] [Dashboard] Changelog inter-versions — diff extensions/tools between builds (leverage SBOM attestations via sbomdiff/docker scout compare)
 
 ## Blocked / Deferred
 
