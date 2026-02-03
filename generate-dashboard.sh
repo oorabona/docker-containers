@@ -295,7 +295,7 @@ resolve_variant_lineage_json() {
             # "18.1-alpine"). Extract leading digits to compare.
             local lineage_major="${lineage_ver%%[^0-9]*}"
             local version_major="${version%%[^0-9]*}"
-            if [[ -n "$lineage_major" && "$lineage_major" != "$version_major" ]]; then
+            if [[ -n "$lineage_major" && -n "$version_major" && "$lineage_major" != "$version_major" ]]; then
                 base_image="${base_image%%:*}:${version}"
                 build_digest="unknown"
             fi
