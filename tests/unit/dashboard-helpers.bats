@@ -161,6 +161,14 @@ EOF
     [[ "$output" == *"tf_digest_123"* ]]
 }
 
+@test "lineage_json: latest tag — skips mismatch check (no numeric prefix)" {
+    create_lineage_file "terraform-base.json" "1.14.4-alpine" "tf_latest_digest" "hashicorp/terraform:1.14.4"
+
+    run resolve_variant_lineage_json "terraform" "latest-base" "latest" "hashicorp/terraform" "base"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tf_latest_digest"* ]]
+}
+
 # ===================================================================
 # resolve_variant_lineage_file — multiple PG versions coexisting
 # ===================================================================
