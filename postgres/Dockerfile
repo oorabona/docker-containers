@@ -122,74 +122,74 @@ RUN set -eux; \
     # Cleanup staging directory
     rm -rf /tmp/ext
 
-# Create initialization script for built-in extensions
+# Create initialization script for all built-in extensions
+# These are bundled with standard PostgreSQL — no compilation needed
+# All flavors get them; zero overhead until explicitly used
 RUN printf '%s\n' \
-    '-- Initialize built-in extensions' \
-    '-- These are available in standard PostgreSQL' \
+    '-- Built-in PostgreSQL extensions (available in all flavors)' \
     '' \
     '-- Statistics and monitoring' \
     'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;' \
+    'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
+    'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
     '' \
     '-- Cryptography' \
     'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
     '' \
-    '-- Data types' \
+    '-- Data types and indexing' \
     'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' \
-    '' \
-    '-- Indexing improvements' \
     'CREATE EXTENSION IF NOT EXISTS btree_gin;' \
     'CREATE EXTENSION IF NOT EXISTS btree_gist;' \
     'CREATE EXTENSION IF NOT EXISTS pg_trgm;' \
+    '' \
+    '-- Foreign data wrappers' \
+    'CREATE EXTENSION IF NOT EXISTS file_fdw;' \
+    'CREATE EXTENSION IF NOT EXISTS postgres_fdw;' \
+    '' \
+    '-- Administration' \
+    'CREATE EXTENSION IF NOT EXISTS adminpack;' \
     > /docker-entrypoint-initdb.d/00-init-extensions.sql
 
-# Create flavor-specific initialization script
+# Create flavor-specific initialization script for compiled extensions only
+# Built-in extensions are already in 00-init-extensions.sql (all flavors)
+# This case block mirrors config.yaml flavors — only compiled extensions here
 RUN case "${FLAVOR}" in \
         vector) \
             printf '%s\n' \
-                '-- Vector flavor extensions' \
+                '-- Vector flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS vector;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         analytics) \
             printf '%s\n' \
-                '-- Analytics flavor extensions' \
+                '-- Analytics flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
                 'CREATE EXTENSION IF NOT EXISTS hypopg;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_qualstats;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         timeseries) \
             printf '%s\n' \
-                '-- TimescaleDB flavor extensions' \
+                '-- TimescaleDB flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         distributed) \
             printf '%s\n' \
-                '-- Citus distributed flavor extensions' \
+                '-- Citus distributed flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS citus;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         full) \
             printf '%s\n' \
-                '-- Full flavor extensions (Alpine-compatible)' \
+                '-- Full flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS vector;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
                 'CREATE EXTENSION IF NOT EXISTS hypopg;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_qualstats;' \
                 'CREATE EXTENSION IF NOT EXISTS citus;' \
                 'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
-                'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
-                'CREATE EXTENSION IF NOT EXISTS file_fdw;' \
-                'CREATE EXTENSION IF NOT EXISTS postgres_fdw;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
     esac
