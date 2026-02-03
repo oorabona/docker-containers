@@ -126,6 +126,12 @@
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem;
       color: var(--detail-text-secondary); word-break: break-all;
     }
+    .lineage-builtin { opacity: 0.55; }
+    .lineage-builtin .lineage-label { font-size: 0.625rem; }
+    .builtin-badge {
+      font-size: 0.6875rem; font-style: italic;
+      color: var(--detail-text-muted);
+    }
 
     /* Variants */
     .variants-section { padding: 1.5rem; margin-bottom: 2rem; }

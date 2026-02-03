@@ -714,6 +714,16 @@ generate_data() {
             container_json=$(echo "$container_json" | jq --argjson ba "$lineage_args_json" '. + {build_args: $ba}')
         fi
 
+        # Add builtin_extensions from config.yaml (if present)
+        local ext_config="./$container/extensions/config.yaml"
+        if [[ -f "$ext_config" ]]; then
+            local builtin_json
+            builtin_json=$(yq -o json '.builtin_extensions // []' "$ext_config" 2>/dev/null)
+            if [[ "$builtin_json" != "[]" && -n "$builtin_json" ]]; then
+                container_json=$(echo "$container_json" | jq --argjson be "$builtin_json" '. + {builtin_extensions: $be}')
+            fi
+        fi
+
         # Add variants (collected once, used for both page and containers.yml)
         local container_dir="./$container"
         if has_variants "$container_dir"; then

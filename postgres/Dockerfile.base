@@ -41,24 +41,32 @@ RUN if [ -n "${LOCALES}" ]; then \
         done; \
     fi
 
-# Create initialization script for built-in extensions
+# Create initialization script for all built-in extensions
+# These are bundled with standard PostgreSQL — no compilation needed
+# All flavors get them; zero overhead until explicitly used
 RUN printf '%s\n' \
-    '-- Initialize built-in extensions' \
-    '-- These are available in standard PostgreSQL' \
+    '-- Built-in PostgreSQL extensions (available in all flavors)' \
     '' \
     '-- Statistics and monitoring' \
     'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;' \
+    'CREATE EXTENSION IF NOT EXISTS pg_buffercache;' \
+    'CREATE EXTENSION IF NOT EXISTS pg_prewarm;' \
     '' \
     '-- Cryptography' \
     'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
     '' \
-    '-- Data types' \
+    '-- Data types and indexing' \
     'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' \
-    '' \
-    '-- Indexing improvements' \
     'CREATE EXTENSION IF NOT EXISTS btree_gin;' \
     'CREATE EXTENSION IF NOT EXISTS btree_gist;' \
     'CREATE EXTENSION IF NOT EXISTS pg_trgm;' \
+    '' \
+    '-- Foreign data wrappers' \
+    'CREATE EXTENSION IF NOT EXISTS file_fdw;' \
+    'CREATE EXTENSION IF NOT EXISTS postgres_fdw;' \
+    '' \
+    '-- Administration' \
+    'CREATE EXTENSION IF NOT EXISTS adminpack;' \
     > /docker-entrypoint-initdb.d/00-init-extensions.sql
 
 # Configure shared_preload_libraries (only pg_stat_statements for base)

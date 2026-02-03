@@ -176,6 +176,14 @@
             </div>
             {% endfor %}
             {% endif %}
+            {% if page.builtin_extensions %}
+            {% for ext in page.builtin_extensions %}
+            <div class="lineage-item lineage-builtin" data-builtin-ext="{{ ext }}" style="animation-delay: {{ forloop.index0 | times: 0.06 }}s">
+              <span class="lineage-label">{{ ext }}</span>
+              <span class="lineage-value builtin-badge">built-in</span>
+            </div>
+            {% endfor %}
+            {% endif %}
           </div>
         </section>
         {% endif %}
