@@ -342,7 +342,9 @@ collect_variant_json() {
     fi
 
     # Lineage (build_digest + base_image with version mismatch check)
-    # Use variant_tag for lineage file lookup, current_version for mismatch check
+    # Use variant_tag for lineage file lookup, version for mismatch check
+    # (NOT current_version — that's the container's latest published version,
+    # which may differ from this variant's PG major version)
     local flavor
     if [[ "$is_versioned" == "true" ]]; then
         flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$version")
@@ -350,7 +352,7 @@ collect_variant_json() {
         flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
     fi
     local lineage_json
-    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_tag" "$current_version" "$fallback_base_image" "$flavor")
+    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_tag" "$version" "$fallback_base_image" "$flavor")
 
     # Build args
     local build_args_json
