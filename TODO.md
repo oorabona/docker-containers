@@ -6,15 +6,7 @@
 
 ## Pending
 
-### Medium Priority
-
-- [x] ✅ [Build] Align built-in extensions in 00-init-extensions.sql + eliminate 01-init-flavor.sql ↔ config.yaml mismatch (2026-02-03)
-- [x] ✅ [Test] Add bats tests for dashboard helpers and variant-utils (33 tests) (2026-02-02)
-- [ ] [CI] Per-container failure tracking via GitHub API (currently using lineage presence as proxy)
-
-### Low Priority
-
-- [ ] [CI] Build failure alerts — auto-create GitHub issue or webhook notification on failure
+(none)
 
 ## Blocked / Deferred
 
@@ -25,7 +17,14 @@
 
 ## Completed
 
+- [x] ✅ [CI] Per-container failure tracking via GitHub API in dashboard (2026-02-05)
+- [x] ✅ [CI] Build failure alerts — auto-create GitHub issue on failure (2026-02-05)
+- [x] ✅ [Build] EXT-BUNDLE — template-based Dockerfile generation for per-flavor extension filtering (2026-02-02)
+- [x] ✅ [Build] Align built-in extensions in 00-init-extensions.sql + eliminate config.yaml mismatch (2026-02-03)
+- [x] ✅ [Test] Add bats tests for dashboard helpers and variant-utils (33 tests) (2026-02-02)
 - [x] ✅ [Dashboard] Fix version mismatch check for rolling tags — major version comparison instead of prefix match (2026-02-02)
+- [x] ✅ [CI] Fix `[[ ]] &&` false failure pattern in build scripts (2026-02-05)
+- [x] ✅ [CI] Add dashboard + auto-build triggers to upstream-monitor (2026-02-05)
 
 ---
 
