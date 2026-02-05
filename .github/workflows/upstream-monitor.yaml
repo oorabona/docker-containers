@@ -215,6 +215,7 @@ jobs:
           assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '' }}
 
       - name: Auto-merge minor updates
+        id: merge_pr
         if: steps.classify.outputs.change_type == 'minor' && steps.create_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -232,6 +233,7 @@ jobs:
           # Wait for CI checks to complete (with timeout)
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
             gh pr merge "$PR_NUMBER" --squash
+            echo "merged=true" >> "$GITHUB_OUTPUT"
           else
             exit_code=$?
             if [ "$exit_code" -eq 124 ]; then
@@ -239,7 +241,18 @@ jobs:
             else
               echo "::warning::CI checks failed for PR #$PR_NUMBER — skipping merge"
             fi
+            echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Trigger container build
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          echo "🔨 Triggering build for $CONTAINER after successful merge"
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true
+          echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Show PR details (test mode)
         if: steps.env_check.outputs.is_local_test == 'true'
