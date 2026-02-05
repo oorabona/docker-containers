@@ -5,10 +5,10 @@
 | **Container** | `wordpress` |
 | **Version Change** | `6.9.0-alpine` → `6.9.1-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-02-04T06:16:12Z |
+| **Rebuild Date** | 2026-02-05T06:19:41Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/21660824245) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/21701132561) |
 
 ## Build Status
 
