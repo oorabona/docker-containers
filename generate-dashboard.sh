@@ -605,21 +605,25 @@ populate_container_build_status_cache() {
         return
     fi
 
-    # Build the cache: extract container name from "Build container:tag" job names
+    # Build the cache: extract container name from job names
+    # Format: "Build <container>:<variant> (<arch>)" or "Build <container> (<arch>)"
     # Group by container, take the worst status if multiple variants
     CONTAINER_BUILD_STATUS_CACHE=$(echo "$jobs_json" | jq '
-        [.jobs[] | select(.name | startswith("Build ")) | {
-            container: (.name | capture("Build (?<c>[^:]+):") | .c),
-            conclusion: .conclusion
-        }] |
+        [.jobs[] |
+            select(.name | test("^Build [a-z]")) |
+            {
+                container: (.name | sub("^Build "; "") | split(":")[0] | split(" ")[0]),
+                conclusion: .conclusion
+            }
+        ] |
         group_by(.container) |
         map({
             key: .[0].container,
             value: (
-                if any(.conclusion == "failure") then "failure"
-                elif any(.conclusion == "cancelled") then "cancelled"
-                elif all(.conclusion == "success") then "success"
-                elif any(.conclusion == "skipped") then "skipped"
+                if any(.[]; .conclusion == "failure") then "failure"
+                elif any(.[]; .conclusion == "cancelled") then "cancelled"
+                elif all(.[]; .conclusion == "success") then "success"
+                elif any(.[]; .conclusion == "skipped") then "skipped"
                 else "pending"
                 end
             )
