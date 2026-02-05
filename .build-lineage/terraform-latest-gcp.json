@@ -1,0 +1,20 @@
+{
+  "container": "terraform",
+  "version": "1.14.4-alpine",
+  "tag": "latest-gcp",
+  "flavor": "gcp",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "09245fbb2242",
+  "base_image_ref": "hashicorp/terraform:1.14.4",
+  "base_image_digest": "sha256:f96f4a14d53eff20bdaef7b03f6cd9f61212e3d9fde3d441d1c7a8fcfa965318",
+  "built_at": "2026-02-05T19:07:56+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/terraform:latest-gcp",
+    "ghcr": "ghcr.io/oorabona/terraform:latest-gcp"
+  },
+  "build_args": {"TFLINT_VERSION": "0.60.0","TRIVY_VERSION": "0.69.1","TERRAGRUNT_VERSION": "0.99.1","TERRAFORM_DOCS_VERSION": "0.21.0","INFRACOST_VERSION": "0.10.43","GITHUB_CLI_VERSION": "2.86.0","AWS_CLI_VERSION": "1.44.32","AZURE_CLI_VERSION": "2.83.0","GCP_CLI_VERSION": "latest"}
+}
