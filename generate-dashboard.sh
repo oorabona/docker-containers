@@ -714,6 +714,9 @@ generate_data() {
 
     cd "$SCRIPT_DIR"
 
+    # Pre-populate build status cache (once, before the loop)
+    populate_container_build_status_cache
+
     local total=0 up_to_date=0 updates_available=0
     local all_containers_json="[]"
 
