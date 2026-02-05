@@ -335,7 +335,11 @@ build_container() {
         "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
 
     # Cleanup generated Dockerfile
-    [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+    # NOTE: Using if/fi instead of [[ ]] && to avoid non-zero exit code when variable is empty
+    # (same fix as CUSTOM_BUILD_ARGS - last statement in function affects return value under set -e)
+    if [[ -n "$_generated_dockerfile" ]]; then
+        rm -f "$_generated_dockerfile"
+    fi
 }
 
 # Build all variants for a container
