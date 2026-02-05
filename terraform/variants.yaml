@@ -23,12 +23,13 @@ versions:
       - name: base
         suffix: "-base"
         flavor: base
-        description: "Terraform + TFLint + Trivy + Terragrunt + terraform-docs + gh CLI"
+        description: "Terraform + TFLint + Trivy + Terragrunt + terraform-docs + Infracost + gh CLI"
         build_args_include:
           - TFLINT_VERSION
           - TRIVY_VERSION
           - TERRAGRUNT_VERSION
           - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
       - name: aws
         suffix: "-aws"
@@ -39,6 +40,7 @@ versions:
           - TRIVY_VERSION
           - TERRAGRUNT_VERSION
           - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
           - AWS_CLI_VERSION
       - name: azure
@@ -50,6 +52,7 @@ versions:
           - TRIVY_VERSION
           - TERRAGRUNT_VERSION
           - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
           - AZURE_CLI_VERSION
       - name: gcp
@@ -61,6 +64,7 @@ versions:
           - TRIVY_VERSION
           - TERRAGRUNT_VERSION
           - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
           - GCP_CLI_VERSION
       - name: full
@@ -73,6 +77,7 @@ versions:
           - TRIVY_VERSION
           - TERRAGRUNT_VERSION
           - TERRAFORM_DOCS_VERSION
+          - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
           - AWS_CLI_VERSION
           - AZURE_CLI_VERSION
