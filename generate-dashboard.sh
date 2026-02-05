@@ -568,6 +568,86 @@ calculate_build_success_rate() {
     echo "${build_success}:${build_total}:${build_success_rate}"
 }
 
+# Global cache for per-container build status (populated once, used by get_container_build_status)
+# Format: JSON object {"container_name": "status", ...} where status is success/failure/cancelled/pending
+declare -g CONTAINER_BUILD_STATUS_CACHE=""
+
+# Populate per-container build status cache from GitHub API
+# Queries the most recent auto-build workflow run to get actual CI status per container
+populate_container_build_status_cache() {
+    log_info "Fetching per-container build status from GitHub Actions..."
+
+    # Get the most recent completed auto-build run
+    local runs_json
+    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=5&status=completed" 15)
+
+    if [[ -z "$runs_json" ]] || ! echo "$runs_json" | jq -e '.workflow_runs[0]' >/dev/null 2>&1; then
+        log_warn "Could not fetch workflow runs, using lineage-based status"
+        CONTAINER_BUILD_STATUS_CACHE="{}"
+        return
+    fi
+
+    # Get the most recent run ID
+    local run_id
+    run_id=$(echo "$runs_json" | jq -r '.workflow_runs[0].id' 2>/dev/null)
+
+    if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+        CONTAINER_BUILD_STATUS_CACHE="{}"
+        return
+    fi
+
+    # Get all jobs from this run
+    local jobs_json
+    jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=100" 20)
+
+    if [[ -z "$jobs_json" ]] || ! echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
+        CONTAINER_BUILD_STATUS_CACHE="{}"
+        return
+    fi
+
+    # Build the cache: extract container name from "Build container:tag" job names
+    # Group by container, take the worst status if multiple variants
+    CONTAINER_BUILD_STATUS_CACHE=$(echo "$jobs_json" | jq '
+        [.jobs[] | select(.name | startswith("Build ")) | {
+            container: (.name | capture("Build (?<c>[^:]+):") | .c),
+            conclusion: .conclusion
+        }] |
+        group_by(.container) |
+        map({
+            key: .[0].container,
+            value: (
+                if any(.conclusion == "failure") then "failure"
+                elif any(.conclusion == "cancelled") then "cancelled"
+                elif all(.conclusion == "success") then "success"
+                elif any(.conclusion == "skipped") then "skipped"
+                else "pending"
+                end
+            )
+        }) |
+        from_entries
+    ' 2>/dev/null || echo "{}")
+
+    local count
+    count=$(echo "$CONTAINER_BUILD_STATUS_CACHE" | jq 'length' 2>/dev/null || echo "0")
+    log_info "Cached build status for $count containers from run #$run_id"
+}
+
+# Get the CI build status for a specific container
+# Returns: success/failure/cancelled/pending/unknown
+get_container_build_status() {
+    local container="$1"
+
+    # Populate cache on first call
+    if [[ -z "$CONTAINER_BUILD_STATUS_CACHE" ]]; then
+        populate_container_build_status_cache
+    fi
+
+    local status
+    status=$(echo "$CONTAINER_BUILD_STATUS_CACHE" | jq -r --arg c "$container" '.[$c] // "unknown"' 2>/dev/null)
+
+    echo "${status:-unknown}"
+}
+
 # Fetch recent workflow runs for activity display
 # Output: YAML fragment for recent_activity
 fetch_recent_activity() {
@@ -654,8 +734,18 @@ generate_data() {
         local description
         description=$(get_container_description "$container")
 
-        local build_status="success"
-        [[ "$current_version" == "no-published-version" ]] && build_status="pending"
+        # Get CI build status from GitHub API (cached)
+        local build_status
+        build_status=$(get_container_build_status "$container")
+
+        # Fallback logic if CI status is unknown
+        if [[ "$build_status" == "unknown" ]]; then
+            if [[ "$current_version" == "no-published-version" ]]; then
+                build_status="pending"
+            else
+                build_status="success"  # Assume success if published but no recent CI data
+            fi
+        fi
 
         total=$((total + 1))
         case "$status_color" in
