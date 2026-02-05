@@ -9,6 +9,7 @@ ARG TFLINT_VERSION
 ARG TRIVY_VERSION
 ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
+ARG INFRACOST_VERSION
 ARG GITHUB_CLI_VERSION
 ARG AWS_CLI_VERSION
 ARG AZURE_CLI_VERSION
@@ -42,6 +43,7 @@ FROM alpine:latest AS devops-tools
 ARG TARGETARCH
 ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
+ARG INFRACOST_VERSION
 ARG GITHUB_CLI_VERSION
 RUN apk add --no-cache curl tar ca-certificates && \
     # Terragrunt - Terraform wrapper (supports amd64/arm64)
@@ -50,6 +52,10 @@ RUN apk add --no-cache curl tar ca-certificates && \
     # Terraform-docs - Generate docs from modules (supports amd64/arm64)
     curl -fsSL https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-${TARGETARCH}.tar.gz -o terraform-docs.tar.gz && \
     tar -xzf terraform-docs.tar.gz terraform-docs && chmod +x terraform-docs && \
+    # Infracost - Cloud cost estimation (supports amd64/arm64)
+    curl -fsSL https://github.com/infracost/infracost/releases/download/v${INFRACOST_VERSION}/infracost-linux-${TARGETARCH}.tar.gz -o infracost.tar.gz && \
+    tar -xzf infracost.tar.gz && chmod +x infracost-linux-${TARGETARCH} && \
+    mv infracost-linux-${TARGETARCH} infracost && \
     # GitHub CLI (supports amd64/arm64)
     curl -fsSL https://github.com/cli/cli/releases/download/v${GITHUB_CLI_VERSION}/gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}.tar.gz -o gh.tar.gz && \
     tar -xzf gh.tar.gz && \
@@ -88,7 +94,7 @@ COPY --from=terraform /bin/terraform /bin/
 COPY --from=security-tools /tflint /trivy /usr/local/bin/
 
 # Copy DevOps tools (always included)
-COPY --from=devops-tools /terragrunt /terraform-docs /gh /usr/local/bin/
+COPY --from=devops-tools /terragrunt /terraform-docs /infracost /gh /usr/local/bin/
 
 # Install base runtime dependencies (always needed)
 RUN apk --no-cache add \
