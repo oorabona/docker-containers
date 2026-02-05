@@ -252,6 +252,14 @@ jobs:
           echo "   Assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '(none - minor update)' }}"
           echo "   Auto-merge: ${{ steps.classify.outputs.change_type == 'minor' && 'Yes (minor update)' || 'No (major update - requires manual review)' }}"
 
+  # Update dashboard after PRs are merged to reflect new versions
+  update-dashboard:
+    needs: create-update-prs
+    if: always() && needs.create-update-prs.result != 'skipped'
+    uses: ./.github/workflows/update-dashboard.yaml
+    with:
+      trigger_reason: "Post upstream-monitor PR merge"
+
   # Keep postgres base images cached on GHCR to avoid Docker Hub rate limits
   # This runs in parallel with version checks and updates cache if images changed
   update-base-image-cache:
