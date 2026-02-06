@@ -473,6 +473,14 @@ build_dependency_monitoring_json() {
             local dep_type current_version source_ref
             dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
             current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
+            # Fallback: check extensions/config.yaml for postgres-style extensions
+            if [[ -z "$current_version" ]]; then
+                local ext_config
+                ext_config="$(dirname "$dep_config")/extensions/config.yaml"
+                if [[ -f "$ext_config" ]]; then
+                    current_version=$(yq -r ".extensions.${dep_name}.version // \"\"" "$ext_config")
+                fi
+            fi
 
             # Build source reference for display
             case "$dep_type" in
