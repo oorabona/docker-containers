@@ -1,0 +1,12 @@
+# Web Shell container configuration
+# Base image and third-party dependency versions
+
+base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
+
+build_args:
+  TTYD_VERSION: "1.7.7"
+
+dependency_sources:
+  TTYD_VERSION:
+    type: github-release
+    repo: tsl0922/ttyd

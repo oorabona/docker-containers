@@ -1,0 +1,27 @@
+# Web Shell - bash configuration
+
+# Prompt: user@hostname:path$
+PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+
+# History
+HISTSIZE=1000
+HISTFILESIZE=2000
+HISTCONTROL=ignoreboth:erasedups
+shopt -s histappend
+
+# Aliases
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias df='df -h'
+alias du='du -h'
+alias free='free -h'
+
+# Auto-completion
+if [[ -f /etc/bash/bash_completion.sh ]]; then
+    . /etc/bash/bash_completion.sh
+fi
+
+# Welcome message
+echo "Web Shell — type 'help' for common commands"

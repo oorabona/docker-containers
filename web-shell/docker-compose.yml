@@ -1,0 +1,15 @@
+services:
+  web-shell:
+    build:
+      context: .
+      args:
+        TTYD_VERSION: "${TTYD_VERSION:-1.7.7}"
+    image: "${DOCKER_REGISTRY:-}web-shell:${TAG:-latest}"
+    container_name: e2e-web-shell
+    environment:
+      SHELL_USER: debian
+      SHELL_PASSWORD: changeme
+      ENABLE_SSH: "false"
+    ports:
+      - "7681:7681"
+      - "2222:2222"
