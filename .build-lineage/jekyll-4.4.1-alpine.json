@@ -1,0 +1,20 @@
+{
+  "container": "jekyll",
+  "version": "4.4.1-alpine",
+  "tag": "4.4.1-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "cac23e6def84",
+  "base_image_ref": "ruby:3.3-alpine3.21",
+  "base_image_digest": "sha256:1a2f7b565c7b481dff3a0e14784bdda2abdf7758d6ba8208aa7e0f47d3c3315d",
+  "built_at": "2026-02-06T16:37:54+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/jekyll:4.4.1-alpine",
+    "ghcr": "ghcr.io/oorabona/jekyll:4.4.1-alpine"
+  },
+  "build_args": {"BUNDLER_VERSION": "4.0.6","WEBRICK_VERSION": "1.9.2","JEKYLL_FEED_VERSION": "0.17.0","JEKYLL_SEO_TAG_VERSION": "2.8.0","JEKYLL_SITEMAP_VERSION": "1.4.0"}
+}
