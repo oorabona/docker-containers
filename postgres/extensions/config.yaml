@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.20.7"
+    version: "0.21.6"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
@@ -70,7 +70,7 @@ extensions:
     # NOTE: ParadeDB requires glibc (Debian) for compilation due to pgrx/bindgen
     # Alpine/musl not supported - use postgres:XX-bookworm as base
     requires_glibc: true
-    disabled: true  # Temporarily disabled until Debian-based build pipeline is ready
+    disabled: true # Temporarily disabled until Debian-based build pipeline is ready
   citus:
     version: "13.2.0"
     description: "Distributed PostgreSQL for horizontal scaling"
@@ -88,7 +88,7 @@ extensions:
     # See: https://wiki.postgresql.org/wiki/PostgreSQL_18_Open_Items
     max_pg_version: 17
   timescaledb:
-    version: "2.24.0"
+    version: "2.25.0"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
@@ -98,23 +98,21 @@ extensions:
       - openssl-dev
     shared_preload: true
     priority: 3
-
-  # PostGIS commented out for now - very complex dependencies
-  # postgis:
-  #   version: "3.4.2"
-  #   description: "Geospatial database extension"
-  #   repo: "postgis/postgis"
-  #   build_deps:
-  #     - build-base
-  #     - geos-dev
-  #     - proj-dev
-  #     - gdal-dev
-  #     - json-c-dev
-  #     - libxml2-dev
-  #   shared_preload: false
-  #   complex: true
-  #   priority: 4
-
+    # PostGIS commented out for now - very complex dependencies
+    # postgis:
+    #   version: "3.4.2"
+    #   description: "Geospatial database extension"
+    #   repo: "postgis/postgis"
+    #   build_deps:
+    #     - build-base
+    #     - geos-dev
+    #     - proj-dev
+    #     - gdal-dev
+    #     - json-c-dev
+    #     - libxml2-dev
+    #   shared_preload: false
+    #   complex: true
+    #   priority: 4
 # Built-in extensions (no compilation needed, just CREATE EXTENSION)
 builtin_extensions:
   # Statistics and monitoring
