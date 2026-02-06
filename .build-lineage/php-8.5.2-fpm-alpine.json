@@ -1,0 +1,20 @@
+{
+  "container": "php",
+  "version": "8.5.2-fpm-alpine",
+  "tag": "8.5.2-fpm-alpine",
+  "flavor": "",
+  "dockerfile": "Dockerfile",
+  "platform": "linux/amd64",
+  "runtime": "GitHub Actions (registry cache)",
+  "image_id": "unknown",
+  "build_digest": "c94115eba199",
+  "base_image_ref": "php:8.5.2-fpm-alpine",
+  "base_image_digest": "sha256:cdba3efb175e2c79b9d348bf324c07a8bc31324e332ccf768cea864a6a5ce383",
+  "built_at": "2026-02-06T13:16:20+00:00",
+  "github_actions": true,
+  "images": {
+    "dockerhub": "docker.io/oorabona/php:8.5.2-fpm-alpine",
+    "ghcr": "ghcr.io/oorabona/php:8.5.2-fpm-alpine"
+  },
+  "build_args": {"COMPOSER_VERSION": "2.9.5","APCU_VERSION": "5.1.28"}
+}
