@@ -433,6 +433,76 @@ collect_variants_json() {
     fi
 }
 
+# --- Dependency monitoring helpers ---
+
+# Build dependency monitoring JSON for a container's front matter
+# Reads dependency_sources from config.yaml and produces a static summary
+# (no network calls — just config introspection)
+build_dependency_monitoring_json() {
+    local container="$1"
+    local dep_config="$2"
+
+    local deps_json="[]"
+    local total=0
+    local monitored=0
+    local disabled=0
+
+    # Read all dependency_sources keys
+    local dep_names
+    dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$dep_config" 2>/dev/null) || return
+
+    while IFS= read -r dep_name; do
+        [[ -z "$dep_name" ]] && continue
+        total=$((total + 1))
+
+        # Check if monitoring is disabled
+        local is_disabled
+        is_disabled=$(yq -r "(.dependency_sources.${dep_name}.monitor) == false" "$dep_config")
+
+        if [[ "$is_disabled" == "true" ]]; then
+            disabled=$((disabled + 1))
+            local reason
+            reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
+            deps_json=$(echo "$deps_json" | jq \
+                --arg name "$dep_name" \
+                --arg status "disabled" \
+                --arg reason "$reason" \
+                '. + [{"name": $name, "status": "disabled", "reason": $reason}]')
+        else
+            monitored=$((monitored + 1))
+            local dep_type current_version source_ref
+            dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
+            current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
+
+            # Build source reference for display
+            case "$dep_type" in
+                github-release|github-tag)
+                    source_ref=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$dep_config")
+                    ;;
+                pypi)
+                    source_ref=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$dep_config")
+                    ;;
+                *) source_ref="" ;;
+            esac
+
+            deps_json=$(echo "$deps_json" | jq \
+                --arg name "$dep_name" \
+                --arg status "monitored" \
+                --arg type "$dep_type" \
+                --arg current "$current_version" \
+                --arg source "$source_ref" \
+                '. + [{"name": $name, "status": "monitored", "type": $type, "current": $current, "source": $source}]')
+        fi
+    done <<< "$dep_names"
+
+    jq -n \
+        --argjson total "$total" \
+        --argjson monitored "$monitored" \
+        --argjson disabled "$disabled" \
+        --argjson deps "$deps_json" \
+        '{enabled: true, total: $total, monitored: $monitored, disabled: $disabled, deps: $deps}'
+}
+
 # --- Output functions ---
 
 # Generate a Jekyll collection page for a container
@@ -820,6 +890,16 @@ generate_data() {
             builtin_json=$(yq -o json '.builtin_extensions // []' "$ext_config" 2>/dev/null)
             if [[ "$builtin_json" != "[]" && -n "$builtin_json" ]]; then
                 container_json=$(echo "$container_json" | jq --argjson be "$builtin_json" '. + {builtin_extensions: $be}')
+            fi
+        fi
+
+        # Add dependency monitoring info from config.yaml (if present)
+        local dep_config="./$container/config.yaml"
+        if [[ -f "$dep_config" ]] && yq -e '.dependency_sources' "$dep_config" &>/dev/null; then
+            local dep_monitoring_json
+            dep_monitoring_json=$(build_dependency_monitoring_json "$container" "$dep_config")
+            if [[ -n "$dep_monitoring_json" && "$dep_monitoring_json" != "null" ]]; then
+                container_json=$(echo "$container_json" | jq --argjson dm "$dep_monitoring_json" '. + {dependency_monitoring: $dm}')
             fi
         fi
 

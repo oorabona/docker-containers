@@ -80,6 +80,21 @@ jobs:
           echo "📈 Stats data:"
           cat docs/site/_data/stats.yml
 
+      - name: Check dependency versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          echo "🔍 Checking dependency versions for live update data..."
+          chmod +x scripts/check-dependency-versions.sh
+          if scripts/check-dependency-versions.sh --all --json > docs/site/_data/dep_updates.json 2>/dev/null; then
+            echo "✅ Dependency check completed"
+            echo "📦 Results:"
+            jq -r '.[] | "  \(.container): \(.update_count) update(s)"' docs/site/_data/dep_updates.json
+          else
+            echo "⚠️ Dependency check failed — dashboard will show static data only"
+            echo "[]" > docs/site/_data/dep_updates.json
+          fi
+
       - name: Setup Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 

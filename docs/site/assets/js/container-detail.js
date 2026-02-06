@@ -54,7 +54,12 @@
 
       // Update lineage build_args for selected variant (empty array clears them)
       var buildArgsAttr = el.dataset.buildArgs;
-      updateLineageBuildArgs(buildArgsAttr ? JSON.parse(buildArgsAttr) : []);
+      var buildArgs = buildArgsAttr ? JSON.parse(buildArgsAttr) : [];
+      updateLineageBuildArgs(buildArgs);
+
+      // Update dep health section for selected variant
+      var argNames = buildArgs.map(function(a) { return a.name; });
+      updateDepHealth(argNames);
     }
 
     // Create a lineage item DOM element safely (no innerHTML)
@@ -97,6 +102,155 @@
       }, 250);
     }
 
+    // --- Dependency Health: variant-aware filtering ---
+
+    // Get the dep health section's embedded data (parsed once, cached)
+    var _depCache = null;
+    function getDepData() {
+      if (_depCache) return _depCache;
+      var section = document.querySelector('.dep-health-section');
+      if (!section) return null;
+      try {
+        _depCache = {
+          section: section,
+          updates: JSON.parse(section.dataset.depUpdates || '[]'),
+          allDeps: JSON.parse(section.dataset.depAll || '[]')
+        };
+      } catch (e) {
+        _depCache = null;
+      }
+      return _depCache;
+    }
+
+    // Filter dep health section to show only deps relevant to the selected variant
+    function updateDepHealth(variantArgNames) {
+      var data = getDepData();
+      if (!data) return;
+
+      // Build a Set of arg names for this variant
+      var argSet = {};
+      variantArgNames.forEach(function(n) { argSet[n] = true; });
+
+      // Filter deps: monitored deps whose name is in variant's build_args,
+      // plus disabled deps whose name is in variant's build_args
+      var relevantDeps = data.allDeps.filter(function(d) { return argSet[d.name]; });
+      var relevantMonitored = relevantDeps.filter(function(d) { return d.status === 'monitored'; });
+      var relevantUpdates = data.updates.filter(function(u) { return argSet[u.name]; });
+
+      // Update summary badge
+      var badge = data.section.querySelector('.dep-summary-badge');
+      if (badge) {
+        if (relevantUpdates.length > 0) {
+          badge.className = 'dep-summary-badge dep-badge-warning';
+          badge.textContent = relevantUpdates.length + ' update' + (relevantUpdates.length !== 1 ? 's' : '') + ' available';
+        } else if (data.updates.length > 0 || relevantMonitored.length > 0) {
+          // We have update data and this variant has no updates
+          badge.className = 'dep-summary-badge dep-badge-ok';
+          badge.textContent = 'all up to date';
+        } else {
+          badge.className = 'dep-summary-badge dep-badge-neutral';
+          badge.textContent = relevantMonitored.length + ' monitored';
+        }
+      }
+
+      // Update progress bar (green = monitored, amber = unmonitored)
+      var barLabel = data.section.querySelector('.dep-bar-label');
+      var barFill = data.section.querySelector('.dep-bar-fill');
+      var barUnmon = data.section.querySelector('.dep-bar-unmonitored');
+      var total = relevantDeps.length;
+      var monitored = relevantMonitored.length;
+      var unmonitored = total - monitored;
+      if (barLabel) barLabel.textContent = monitored + '/' + total + ' dependencies monitored';
+      if (barFill) barFill.style.flex = (total > 0 ? monitored : 0);
+      if (barUnmon) {
+        barUnmon.style.flex = unmonitored;
+        barUnmon.style.display = unmonitored > 0 ? '' : 'none';
+      } else if (unmonitored > 0 && barFill && barFill.parentNode) {
+        // Create amber segment if it doesn't exist yet
+        var seg = document.createElement('div');
+        seg.className = 'dep-bar-unmonitored';
+        seg.style.flex = unmonitored;
+        barFill.parentNode.appendChild(seg);
+      }
+
+      // Filter update table rows
+      var tableWrap = data.section.querySelector('.dep-update-table-wrap');
+      if (tableWrap) {
+        var rows = tableWrap.querySelectorAll('.dep-update-row');
+        var visibleCount = 0;
+        rows.forEach(function(row) {
+          var visible = !!argSet[row.dataset.depName];
+          row.style.display = visible ? '' : 'none';
+          if (visible) visibleCount++;
+        });
+        tableWrap.style.display = visibleCount > 0 ? '' : 'none';
+      }
+
+      // Filter up-to-date items
+      var uptodateDetails = data.section.querySelector('.dep-uptodate-details');
+      if (uptodateDetails) {
+        var items = uptodateDetails.querySelectorAll('.dep-uptodate-item');
+        var uptodateVisible = 0;
+        items.forEach(function(item) {
+          var name = item.dataset.depName;
+          // Visible if in this variant's args AND not in the updates list AND monitored
+          var inVariant = !!argSet[name];
+          var hasUpdate = relevantUpdates.some(function(u) { return u.name === name; });
+          var visible = inVariant && !hasUpdate;
+          item.style.display = visible ? '' : 'none';
+          if (visible) uptodateVisible++;
+        });
+        uptodateDetails.style.display = uptodateVisible > 0 ? '' : 'none';
+      }
+
+      // Filter disabled/unmonitored items
+      var disabledList = data.section.querySelector('.dep-disabled-list');
+      if (disabledList) {
+        var disabledItems = disabledList.querySelectorAll('.dep-disabled-item');
+        var disabledVisible = 0;
+        disabledItems.forEach(function(item) {
+          var visible = !!argSet[item.dataset.depName];
+          item.style.display = visible ? '' : 'none';
+          if (visible) disabledVisible++;
+        });
+        disabledList.style.display = disabledVisible > 0 ? '' : 'none';
+      }
+    }
+
+    // Count outdated deps for a variant button element
+    function countVariantUpdates(variantEl) {
+      var data = getDepData();
+      if (!data || data.updates.length === 0) return 0;
+
+      var buildArgsAttr = variantEl.dataset.buildArgs;
+      if (!buildArgsAttr) return 0;
+
+      var argNames = {};
+      try {
+        JSON.parse(buildArgsAttr).forEach(function(a) { argNames[a.name] = true; });
+      } catch (e) { return 0; }
+
+      return data.updates.filter(function(u) { return argNames[u.name]; }).length;
+    }
+
+    // Add notification badges to variant buttons showing outdated dep count
+    function initDepBadges() {
+      var data = getDepData();
+      if (!data || data.updates.length === 0) return;
+
+      document.querySelectorAll('.variant-tag').forEach(function(tag) {
+        var count = countVariantUpdates(tag);
+        if (count > 0) {
+          var badge = document.createElement('span');
+          badge.className = 'variant-dep-badge';
+          badge.textContent = count;
+          badge.setAttribute('aria-label', count + ' dependency update' + (count !== 1 ? 's' : '') + ' available');
+          tag.appendChild(badge);
+          tag.classList.add('has-dep-updates');
+        }
+      });
+    }
+
     // Event delegation
     document.addEventListener('click', function(e) {
       var tag = e.target.closest('.variant-tag');
@@ -116,8 +270,8 @@
       }
     });
 
-    // Auto-select default variant on page load so lineage shows
-    // the default variant's digest instead of "per-variant"
+    // Initialize: dep badges on variant buttons, then auto-select default variant
+    initDepBadges();
     var defaultVariant = document.querySelector('.variant-tag.selected');
     if (defaultVariant) selectVariant(defaultVariant);
   })();

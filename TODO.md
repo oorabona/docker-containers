@@ -2,12 +2,7 @@
 
 ## In Progress
 
-- [x] 🟡 [CI] 3rd party dependency version monitoring (DEP-MONITOR)
-  - [x] ✅ Block 1: Config schema + helpers (latest-github-release, latest-pypi-version) (2026-02-06)
-  - [x] ✅ Block 2: Orchestrator script (check-dependency-versions.sh) (2026-02-06)
-  - [x] ✅ Block 3: make integration (check-dep-updates command) (2026-02-06)
-  - [x] ✅ Block 4: GitHub Actions integration (upstream-monitor.yaml) (2026-02-06)
-  - [x] ✅ Block 5: Testing + documentation (2026-02-06)
+(none)
 
 ## Pending
 
@@ -22,6 +17,8 @@
 
 ## Completed
 
+- [x] ✅ [Dashboard] Dependency Health section on container detail pages (2026-02-06)
+- [x] ✅ [CI] 3rd party dependency version monitoring — DEP-MONITOR (2026-02-06)
 - [x] ✅ [CI] Per-container failure tracking via GitHub API in dashboard (2026-02-05)
 - [x] ✅ [CI] Build failure alerts — auto-create GitHub issue on failure (2026-02-05)
 - [x] ✅ [Build] EXT-BUNDLE — template-based Dockerfile generation for per-flavor extension filtering (2026-02-02)
