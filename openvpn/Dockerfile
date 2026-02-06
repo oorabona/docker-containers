@@ -4,6 +4,8 @@ FROM alpine:${OS_VERSION}
 
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
+ARG PKCS11_HELPER_VERSION
+ARG EASYRSA_VERSION=3.0.8
 ARG NPROC=1
 
 # Testing: pamtester is only available in edge, not for now.
@@ -30,13 +32,11 @@ RUN set -ex \
         make \
         libcap-ng-dev \
         libcap-dev \
-        git \
     && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$DOWNLOAD_VERSION.tar.gz --output openvpn.tgz \
-    # Download latest version of OpenSC pkcs11-helper from github
-    && PKCS11_HELPER_VERSION=$(git ls-remote --tags --sort="v:refname" https://github.com/opensc/pkcs11-helper.git | tail -n1 | awk '{print $2}' | sed 's/refs\/tags\///') \
-    && curl -sSL https://github.com/opensc/pkcs11-helper/archive/$PKCS11_HELPER_VERSION.tar.gz --output pkcs11-helper.tgz \
+    # Download pinned version of OpenSC pkcs11-helper
+    && curl -sSL https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \
     && tar zxvf pkcs11-helper.tgz \
-    && cd pkcs11-helper-$PKCS11_HELPER_VERSION \
+    && cd pkcs11-helper-pkcs11-helper-${PKCS11_HELPER_VERSION} \
     && autoreconf -ivf \
     # Note: --enable-pedantic removed - modern NSS headers use C++ comments incompatible with strict C90
     && ./configure --enable-strict \
@@ -75,7 +75,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # Environment variables
 # Later versions of EASYRSA seem to break the script
 ENV OS=other \
-    EASYRSA_VERSION=3.0.8
+    EASYRSA_VERSION=${EASYRSA_VERSION}
 
 # Copy the PAM configuration for OTP
 COPY openvpn-pam.conf /etc/pam.d/openvpn

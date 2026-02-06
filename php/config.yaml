@@ -3,4 +3,16 @@
 
 base_image: "php:${VERSION}"
 
-build_args: {}
+build_args:
+  COMPOSER_VERSION: "2.9.5"
+  APCU_VERSION: "5.1.28"
+
+dependency_sources:
+  COMPOSER_VERSION:
+    type: github-release
+    repo: composer/composer
+    strip_v: false
+  APCU_VERSION:
+    type: github-release
+    repo: krakjoe/apcu
+    strip_v: true
