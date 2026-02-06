@@ -3,4 +3,26 @@
 
 base_image: "ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}"
 
-build_args: {}
+build_args:
+  BUNDLER_VERSION: "4.0.6"
+  WEBRICK_VERSION: "1.9.2"
+  JEKYLL_FEED_VERSION: "0.17.0"
+  JEKYLL_SEO_TAG_VERSION: "2.8.0"
+  JEKYLL_SITEMAP_VERSION: "1.4.0"
+
+dependency_sources:
+  BUNDLER_VERSION:
+    type: rubygems
+    gem: bundler
+  WEBRICK_VERSION:
+    type: rubygems
+    gem: webrick
+  JEKYLL_FEED_VERSION:
+    type: rubygems
+    gem: jekyll-feed
+  JEKYLL_SEO_TAG_VERSION:
+    type: rubygems
+    gem: jekyll-seo-tag
+  JEKYLL_SITEMAP_VERSION:
+    type: rubygems
+    gem: jekyll-sitemap

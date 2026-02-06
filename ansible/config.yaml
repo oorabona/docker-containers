@@ -3,4 +3,30 @@
 
 base_image: "ubuntu:${OS_VERSION}"
 
-build_args: {}
+build_args:
+  PYASN1_VERSION: "0.6.2"
+  PARAMIKO_VERSION: "4.0.0"
+  CFFI_VERSION: "2.0.0"
+  CRYPTOGRAPHY_VERSION: "46.0.4"
+  PYCRYPTODOME_VERSION: "3.23.0"
+  PYNACL_VERSION: "1.6.2"
+
+dependency_sources:
+  PYASN1_VERSION:
+    type: pypi
+    package: pyasn1
+  PARAMIKO_VERSION:
+    type: pypi
+    package: paramiko
+  CFFI_VERSION:
+    type: pypi
+    package: cffi
+  CRYPTOGRAPHY_VERSION:
+    type: pypi
+    package: cryptography
+  PYCRYPTODOME_VERSION:
+    type: pypi
+    package: pycryptodome
+  PYNACL_VERSION:
+    type: pypi
+    package: PyNaCl

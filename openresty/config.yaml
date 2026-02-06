@@ -7,6 +7,7 @@ build_args:
   RESTY_OPENSSL_PATCH_VERSION: "1.1.1f"
   RESTY_PCRE_VERSION: "8.45"
   LUAROCKS_VERSION: "3.13.0"
+  NGX_PROXY_CONNECT_VERSION: "0.0.7"
 # Maps build_arg names to their upstream source for monitoring
 # All build_args with pinned versions MUST have an entry here:
 # - monitored deps: type + source info
@@ -24,4 +25,8 @@ dependency_sources:
   LUAROCKS_VERSION:
     type: github-release
     repo: luarocks/luarocks
+    strip_v: true
+  NGX_PROXY_CONNECT_VERSION:
+    type: github-release
+    repo: chobits/ngx_http_proxy_connect_module
     strip_v: true
