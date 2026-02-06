@@ -270,8 +270,8 @@ jobs:
 
   # Update dashboard after PRs are merged to reflect new versions
   update-dashboard:
-    needs: create-update-prs
-    if: always() && needs.create-update-prs.result != 'skipped'
+    needs: [create-update-prs, create-dependency-update-prs]
+    if: always() && (needs.create-update-prs.result == 'success' || needs.create-dependency-update-prs.result == 'success')
     uses: ./.github/workflows/update-dashboard.yaml
     with:
       trigger_reason: "Post upstream-monitor PR merge"
@@ -554,6 +554,7 @@ jobs:
           assignees: ${{ steps.prepare.outputs.max_severity == 'major' && github.repository_owner || '' }}
 
       - name: Auto-merge minor/patch updates
+        id: merge_dep_pr
         if: steps.prepare.outputs.max_severity != 'major' && steps.create_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -569,6 +570,7 @@ jobs:
 
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
             gh pr merge "$PR_NUMBER" --squash
+            echo "merged=true" >> "$GITHUB_OUTPUT"
             echo "✅ Auto-merged PR #$PR_NUMBER"
           else
             exit_code=$?
@@ -577,7 +579,18 @@ jobs:
             else
               echo "::warning::CI checks failed for PR #$PR_NUMBER"
             fi
+            echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Trigger container build
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_dep_pr.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          echo "🔨 Triggering build for $CONTAINER after dependency update merge"
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true
+          echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Show PR details (test mode)
         if: steps.env_check.outputs.is_local_test == 'true'
