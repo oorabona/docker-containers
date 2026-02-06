@@ -245,7 +245,7 @@ get_container_description() {
                     found_desc = 1
                 }
             }
-            /^[^#]/ && length($0) > 20 && !found_desc {
+            /^[^#\[]/ && !/^\[!?\[/ && length($0) > 20 && !found_desc {
                 gsub(/^[[:space:]]*/, "")
                 gsub(/[[:space:]]*$/, "")
                 if (length($0) > 0) {
