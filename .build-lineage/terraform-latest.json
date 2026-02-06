@@ -10,7 +10,7 @@
   "build_digest": "abecfa6545d9",
   "base_image_ref": "hashicorp/terraform:1.14.4",
   "base_image_digest": "sha256:f96f4a14d53eff20bdaef7b03f6cd9f61212e3d9fde3d441d1c7a8fcfa965318",
-  "built_at": "2026-02-06T01:11:54+00:00",
+  "built_at": "2026-02-06T09:48:54+00:00",
   "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/terraform:latest",
