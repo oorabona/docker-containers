@@ -5,3 +5,35 @@
 base_image: "${BASE_IMAGE}:${VERSION}"
 
 build_args: {}
+
+# Maps extension names to their upstream source for monitoring
+# Names must match the build_args names used in variant lineage data
+dependency_sources:
+  pgvector:
+    type: github-release
+    repo: pgvector/pgvector
+    strip_v: true
+  pg_partman:
+    type: github-release
+    repo: pgpartman/pg_partman
+    strip_v: true
+  hypopg:
+    type: github-release
+    repo: HypoPG/hypopg
+    strip_v: false
+  pg_qualstats:
+    type: github-release
+    repo: powa-team/pg_qualstats
+    strip_v: false
+  paradedb:
+    type: github-release
+    repo: paradedb/paradedb
+    strip_v: true
+  citus:
+    type: github-release
+    repo: citusdata/citus
+    strip_v: true
+  timescaledb:
+    type: github-release
+    repo: timescale/timescaledb
+    strip_v: false
