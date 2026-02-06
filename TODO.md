@@ -2,7 +2,12 @@
 
 ## In Progress
 
-(none)
+- [x] 🟡 [CI] 3rd party dependency version monitoring (DEP-MONITOR)
+  - [x] ✅ Block 1: Config schema + helpers (latest-github-release, latest-pypi-version) (2026-02-06)
+  - [x] ✅ Block 2: Orchestrator script (check-dependency-versions.sh) (2026-02-06)
+  - [x] ✅ Block 3: make integration (check-dep-updates command) (2026-02-06)
+  - [x] ✅ Block 4: GitHub Actions integration (upstream-monitor.yaml) (2026-02-06)
+  - [x] ✅ Block 5: Testing + documentation (2026-02-06)
 
 ## Pending
 

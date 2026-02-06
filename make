@@ -53,6 +53,7 @@ help() {
   log_help "run <target> [version]" "Run built <target> container [version]"
   log_help "version [target]" "Show latest upstream version for a container"
   log_help "check-updates [target]" "Check for upstream updates (JSON output for automation)"
+  log_help "check-dep-updates [target]" "Check 3rd party dependency versions for updates"
   log_help "sizes [target]" "Show image sizes (all or specific container)"
   log_help "lineage [target]" "Show build lineage JSON (all or specific container)"
   echo
@@ -109,6 +110,20 @@ get_ghcr_sizes() {
   image_path=$(echo "$image" | sed 's|ghcr.io/||' | cut -d':' -f1)
   tag=$(echo "$image" | cut -d':' -f2)
   ghcr_get_manifest_sizes "$image_path" "$tag"
+}
+
+# Check 3rd party dependency versions
+check_dep_updates() {
+  local target=${1:-""}
+  local args=("--summary")
+
+  if [ -n "$target" ]; then
+    args+=("$target")
+  else
+    args+=("--all")
+  fi
+
+  "$(dirname "$0")/scripts/check-dependency-versions.sh" "${args[@]}"
 }
 
 # Show image sizes for containers
@@ -529,6 +544,7 @@ case "${1:-}" in
   run ) run "${2:-}" "${3:-}" ;;
   version ) shift; version "$@" ;;
   check-updates ) check_updates "${2:-}" ;;
+  check-dep-updates ) check_dep_updates "${2:-}" ;;
   list ) list_containers ;;
   sizes ) show_sizes "${2:-}" ;;
   lineage ) show_lineage "${2:-}" ;;

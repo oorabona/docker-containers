@@ -107,6 +107,7 @@ docker-containers/
 | Run | `./make run <target> [version]` |
 | Check version | `./make version <target>` |
 | Check updates | `./make check-updates [target]` |
+| Check dep updates | `./make check-dep-updates [target]` |
 | Test all | `./test-all-containers.sh` |
 | Validate scripts | `./validate-version-scripts.sh` |
 
@@ -122,7 +123,7 @@ docker-containers/
 | Workflow | Trigger | Purpose |
 |----------|---------|--------|
 | `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers |
-| `upstream-monitor.yaml` | Schedule (6 AM UTC daily), manual | Check for upstream updates |
+| `upstream-monitor.yaml` | Schedule (6 AM UTC daily), manual | Check upstream + dependency updates |
 | `update-dashboard.yaml` | workflow_call, manual | Regenerate status dashboard |
 | `validate-version-scripts.yaml` | PR | Validate version.sh scripts |
 | `cleanup-registry.yaml` | Schedule, manual | Clean old GHCR images |

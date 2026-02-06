@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+# Query PyPI JSON API to find the latest stable version of a package
+# Follows the same pattern as latest-docker-tag and latest-git-tag
+#
+# Usage: latest-pypi-version <package-name>
+# Output: version string to stdout (e.g., "1.44.32")
+# Exit 0: success
+# Exit 1: failure (API error, no stable version found)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/logging.sh"
+
+# PyPI base URL
+PYPI_URL="${PYPI_URL:-https://pypi.org}"
+
+_pypi_api_get() {
+    local url="$1"
+    curl -fsSL --connect-timeout 10 --max-time 10 \
+        -H "Accept: application/json" \
+        "$url"
+}
+
+latest-pypi-version() {
+    local package="${1:-}"
+
+    if [[ -z "$package" ]]; then
+        log_error "Usage: latest-pypi-version <package-name>"
+        return 1
+    fi
+
+    # Normalize package name: PEP 503 — dashes and underscores are equivalent
+    # PyPI API accepts both, but we normalize for consistency
+    local normalized
+    normalized=$(echo "$package" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
+
+    local response
+    if ! response=$(_pypi_api_get "${PYPI_URL}/pypi/${normalized}/json" 2>/dev/null); then
+        log_error "Failed to query PyPI for package '${normalized}'"
+        return 1
+    fi
+
+    # Extract the latest stable version from .info.version
+    local version
+    version=$(echo "$response" | jq -r '.info.version // empty')
+
+    if [[ -z "$version" ]]; then
+        log_error "No version found for PyPI package '${normalized}'"
+        return 1
+    fi
+
+    # Check if the latest version is a pre-release
+    # Pre-release markers: dev, rc, alpha, beta, a, b (PEP 440)
+    if [[ "$version" =~ (dev|rc|alpha|beta|\.a[0-9]|\.b[0-9]) ]]; then
+        log_info "Latest version ${version} is pre-release, scanning for stable..."
+
+        # Scan releases to find latest stable
+        version=$(echo "$response" | jq -r '
+            .releases | keys[]
+            | select(test("dev|rc|alpha|beta|\\.(a|b)[0-9]") | not)
+            | select(test("^[0-9]+\\."))
+        ' | sort -V | tail -n1)
+
+        if [[ -z "$version" ]]; then
+            log_error "No stable version found for PyPI package '${normalized}'"
+            return 1
+        fi
+    fi
+
+    # Validate: version must start with a digit
+    if [[ ! "$version" =~ ^[0-9] ]]; then
+        log_error "Extracted version '${version}' does not start with a digit — aborting"
+        return 1
+    fi
+
+    echo "$version"
+    return 0
+}
+
+# Entrypoint when script is run directly
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-pypi-version "$@"
+fi
