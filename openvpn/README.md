@@ -3,6 +3,7 @@
 ![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/openvpn?sort=semver)
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/openvpn)
 ![Docker Stars](https://img.shields.io/docker/stars/oorabona/openvpn)
+[![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fopenvpn-blue)](https://ghcr.io/oorabona/openvpn)
 
 This is a simple `Alpine` based container with `OpenVPN` built from sources.
 
@@ -115,6 +116,19 @@ docker exec -it openvpn cat /etc/openvpn/otp/username.png
 
 More information can be found on the [wiki](https://github.com/oorabona/scripts/wiki/OpenVPN-OTP).
 
+## Build Arguments
+
+The following build arguments can be passed to customize the container build:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `VERSION` | `latest` | OpenVPN version to build |
+| `UPSTREAM_VERSION` | (empty) | Fallback upstream version if `VERSION` is not specified |
+| `OS_VERSION` | `latest` | Alpine Linux version tag |
+| `PKCS11_HELPER_VERSION` | `1.31.0` | pkcs11-helper library version |
+| `EASYRSA_VERSION` | `3.2.2` | EasyRSA version for certificate management |
+| `NPROC` | `1` | Number of parallel processes for compilation |
+
 ## Build options
 
 OpenVPN is built from sources using the following options:
@@ -167,6 +181,15 @@ The container is configured to run with the following security labels:
 
 - `label=disable`
 - `label=type:spc_t`
+
+## Dependencies
+
+The following third-party dependencies are pinned and monitored for updates:
+
+| Dependency | Version | Source | Monitoring |
+|-----------|---------|--------|-----------|
+| pkcs11-helper | 1.31.0 | GitHub Release (opensc/pkcs11-helper) | Enabled |
+| EasyRSA | 3.2.2 | GitHub Release (OpenVPN/easy-rsa) | Enabled |
 
 ## References
 

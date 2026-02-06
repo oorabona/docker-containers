@@ -1,5 +1,9 @@
 # PostgreSQL Database Container
 
+[![Docker Hub](https://img.shields.io/docker/v/oorabona/postgres?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/oorabona/postgres)
+[![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fpostgres-blue)](https://ghcr.io/oorabona/postgres)
+[![Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
+
 Production-ready PostgreSQL containers with multiple **flavors** optimized for different workloads: AI/RAG, analytics, or general purpose. Built on Alpine Linux with pre-compiled extensions.
 
 ## Quick Start

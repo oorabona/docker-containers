@@ -1,9 +1,14 @@
 # Debian Base Container
 
+[![Docker Hub](https://img.shields.io/docker/v/oorabona/debian?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/oorabona/debian)
+[![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fdebian-blue)](https://ghcr.io/oorabona/debian)
+[![Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
+
 A minimal Debian container with customizable version support. This container provides a clean Debian base image with version flexibility for various use cases.
 
 ## Features
 
+- **Multi-Architecture Support**: Available for amd64 and arm64 architectures
 - **Version Flexibility**: Supports multiple Debian versions via build args
 - **Minimal Footprint**: Uses Debian's slim variants for reduced image size
 - **Automated Builds**: Integrated with upstream monitoring for version updates

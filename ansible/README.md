@@ -1,146 +1,204 @@
-# Ansible built from sources with support for external plugins (Galaxy & Python) 💚
+# Ansible
 
-A multi-platform Ansible container built from source with comprehensive plugin support and optimized builds for AMD64, ARM64, and ARM/v7 architectures.
+Production-ready Ansible automation container built from source with Python virtual environment isolation and automatic dependency monitoring. Runs as non-root user with multi-mode entrypoint support.
 
-![Docker Image Version (latest semver)](https://img.shields.io/docker/v/oorabona/ansible?sort=semver)
-![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/ansible)
-![Docker Stars](https://img.shields.io/docker/stars/oorabona/ansible)
+[![Docker Hub](https://img.shields.io/docker/v/oorabona/ansible?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/oorabona/ansible)
+[![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fansible-blue)](https://ghcr.io/oorabona/ansible)
+[![Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
 
-## Platforms
+## Quick Start
 
-- `amd64`
+```bash
+# Pull from GitHub Container Registry
+docker pull ghcr.io/oorabona/ansible:latest
 
-![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/ansible?arch=amd64&sort=semver)
+# Or from Docker Hub
+docker pull oorabona/ansible:latest
 
-- `arm64`
+# Run a playbook
+docker run --rm \
+  -v ./playbooks:/playbooks:ro \
+  -v ./inventory:/inventory:ro \
+  -v ~/.ssh:/home/ansible/.ssh:ro \
+  ghcr.io/oorabona/ansible playbook /playbooks/site.yml -i /inventory/hosts
 
-![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/ansible?arch=arm64&sort=semver)
-
-- `arm/v7`
-
-![Docker Image Size ARM/v7 (latest semver)](https://img.shields.io/docker/image-size/oorabona/ansible?arch=arm&sort=semver)
+# Check version
+docker run --rm ghcr.io/oorabona/ansible ansible --version
+```
 
 ## Features
 
-This container contains latest version (to date) of [Ansible](https://www.ansible.com).
+### Core Capabilities
+- **Python venv isolation**: All Python packages installed in `/opt/ansible-venv` for clean separation
+- **Multi-stage build**: Build dependencies removed from final image for minimal size
+- **Non-root execution**: Runs as `ansible` user for security (with sudo access if needed)
+- **Auto-reload**: `inotifywait` monitors `requirements.txt` and `requirements.yml` for changes
+- **Multi-mode entrypoint**: Supports playbook execution, vault operations, script running, or direct command execution
 
-It is based on the latest version of Ubuntu.
-Due to issues with `pip` and `setuptools` on `arm64` and `arm/v7` platforms, the container is built from sources.
+### Security Features
+- Non-root by default (user `ansible` with UID 1000)
+- Build dependencies stripped from runtime image
+- Ubuntu-based with regular security updates
+- Support for read-only filesystem and capability dropping
 
-All the dependencies required to build are removed from the final image.
+### Development Features
+- Automatic Galaxy collection/role installation from `requirements.yml`
+- Automatic pip package installation from `requirements.txt`
+- File watching for hot-reload during development
+- Addon script support for custom initialization
+- Optional wait-before-exit for interactive debugging
 
-Some additional packages are installed to allow the use of external plugins (Galaxy & Python).
-Since this is based on Ubuntu you can install any package you need.
+## Entrypoint Modes
 
-One last note, by default this container is rootless and runs as `ansible` user.
-This is done to avoid issues with permissions when mounting volumes.
+The container supports multiple execution modes via the entrypoint:
 
-## Usage
-
-### Docker
-
-#### Version
-
+### 1. Playbook Mode
+Run an Ansible playbook:
 ```bash
-docker run --rm -it oorabona/ansible \
-    ansible --version
+docker run --rm \
+  -v ./playbooks:/playbooks:ro \
+  ghcr.io/oorabona/ansible playbook /playbooks/site.yml -i /inventory/hosts
 ```
 
-Outputs:
-
-```shell
- __^__                                                                              __^__
-( ___ )----------------------------------------------------------------------------( ___ )
- | / | Launching oorabona/ansible Docker container environment, welcome !           | \ |
- | / | Ansible version is : ansible [core 2.13.6]                                   | \ |
- | / | Running   python version = 3.10.6 (main, Nov  2 2022, 18:53:38) [GCC 11.3.0] | \ |
- | / |   jinja version = 3.1.2                                                      | \ |
- |___|                                                                              |___|
-(_____)----------------------------------------------------------------------------(_____)
-Setting up watches.
-Couldn't watch requirements.txt: No such file or directory
-Setting up watches.
-Couldn't watch requirements.yml: No such file or directory
-Hello there, this is the default addon script, you can find it useful to keep
-the docker-entrypoint structure and add your extra configuration setup in here.
-
-Possible use cases would include :
-- init cloud credentials (AWS, etc.)
-- init SSH keys with ssh-agent
-- open a connection to a remote vault
-etc.
-
-In case you do not need any, you can easily remove either by setting an empty
-ADDONSCRIPT environment variable or by simply removing the file.
-
-Sleeping for 5 seconds so that you have a chance to read this intro :)
-ansible [core 2.13.6]
-  config file = None
-  configured module search path = ['/home/ansible/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
-  ansible python module location = /usr/local/lib/python3.10/dist-packages/ansible
-  ansible collection location = /home/ansible/.ansible/collections:/usr/share/ansible/collections
-  executable location = /usr/local/bin/ansible
-  python version = 3.10.6 (main, Nov  2 2022, 18:53:38) [GCC 11.3.0]
-  jinja version = 3.1.2
-  libyaml = True
+### 2. Vault Mode
+Interact with Ansible Vault:
+```bash
+docker run --rm \
+  -v ./secrets:/secrets \
+  ghcr.io/oorabona/ansible vault encrypt /secrets/password.yml
 ```
 
-### Docker Compose
+### 3. Run-Script Mode
+Execute a shell script:
+```bash
+docker run --rm \
+  -v ./scripts:/scripts:ro \
+  ghcr.io/oorabona/ansible run-script /scripts/setup.sh
+```
+
+### 4. Default Mode
+Execute any command directly:
+```bash
+docker run --rm ghcr.io/oorabona/ansible ansible-galaxy collection list
+docker run --rm ghcr.io/oorabona/ansible ansible-inventory --list
+```
+
+## Build Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `VERSION` | Ansible version to install | `latest` |
+| `UPSTREAM_VERSION` | Raw version for pip (without suffix) | Uses `VERSION` if not set |
+| `OS_VERSION` | Ubuntu base image version | `latest` |
+| `PYASN1_VERSION` | pyasn1 package version | `0.6.2` |
+| `PARAMIKO_VERSION` | Paramiko SSH library version | `4.0.0` |
+| `CFFI_VERSION` | CFFI package version | `2.0.0` |
+| `CRYPTOGRAPHY_VERSION` | Cryptography library version | `46.0.4` |
+| `PYCRYPTODOME_VERSION` | PyCryptodome package version | `3.23.0` |
+| `PYNACL_VERSION` | PyNaCl package version | `1.6.2` |
+
+Example build with specific versions:
+```bash
+docker build \
+  --build-arg VERSION=2.16.1 \
+  --build-arg OS_VERSION=24.04 \
+  --build-arg CRYPTOGRAPHY_VERSION=46.0.4 \
+  -t ansible:2.16.1 .
+```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ADDONSCRIPT` | Path to custom initialization script | `/default-addon.sh` |
+| `WAIT_BEFORE_EXIT` | Wait for keypress before container exits | (unset) |
+| `VIRTUAL_ENV` | Python virtual environment path | `/opt/ansible-venv` |
+| `PATH` | Updated to include venv binaries | `/opt/ansible-venv/bin:$PATH` |
+
+### ADDONSCRIPT
+The `ADDONSCRIPT` environment variable points to a script that runs before the main command. Use it for custom initialization:
 
 ```yaml
-version: '3.7'
+services:
+  ansible:
+    image: ghcr.io/oorabona/ansible:latest
+    environment:
+      ADDONSCRIPT: /scripts/init-aws-credentials.sh
+    volumes:
+      - ./scripts:/scripts:ro
 ```
 
-## What it has inside
+Set to empty string to skip addon script execution:
+```bash
+docker run --rm -e ADDONSCRIPT="" ghcr.io/oorabona/ansible ansible --version
+```
 
-Everything needed to run playbooks, with a `docker-entrypoint` shell script which has the following capabilities:
+### WAIT_BEFORE_EXIT
+Useful for debugging or interactive sessions. Container will wait for Enter key before exiting:
 
-- run playbooks
-- add extra `Ansible` packages, through the use of the  `requirements.yml` file
-- add extra `Python` packages, using the `requirements.txt` file
-- wait for keypress when `WAIT_BEFORE_EXIT` environment variable is set
+```bash
+docker run --rm -it \
+  -e WAIT_BEFORE_EXIT=1 \
+  ghcr.io/oorabona/ansible ansible-playbook /playbooks/debug.yml
+```
 
-> `WAIT_BEFORE_EXIT` is useful mostly when doing debug or at least when you are
-in tty-enabled shell. Unacceptable behaviors can otherwise happen.
+## Volumes
 
-By using bind mounting, this Docker container can be reused in all your `Ansible` configurations.
+| Path | Purpose | Recommended Mount |
+|------|---------|-------------------|
+| `/home/ansible/playbook` | Working directory | Read-only for playbooks |
+| `/home/ansible/.ansible` | Ansible collections and plugins | Persistent volume |
+| `/home/ansible/.ssh` | SSH keys for remote connections | Read-only, mode 600 |
+| `/etc/ansible` | Ansible configuration | Read-only override |
 
-It may be useful to rebuild it when doing some customization, like adding packages (e.g `awscli`) or loading ssh keys ...
+### Docker Compose Example
 
-## Build notes
+```yaml
+services:
+  ansible:
+    image: ghcr.io/oorabona/ansible:latest
+    volumes:
+      - ./playbooks:/playbooks:ro
+      - ./inventory:/inventory:ro
+      - ~/.ssh:/home/ansible/.ssh:ro
+      - ansible_collections:/home/ansible/.ansible
+    working_dir: /playbooks
+    command: playbook site.yml -i /inventory/hosts
 
-You can use this Dockerfile to install whichever `Ansible` version you want, but by default it is the latest.
+volumes:
+  ansible_collections:
+```
 
-Among others `rust`, `gcc` and the `gcc` suite are installed _temporarily_. Once installation is complete, these packages will be removed automatically.
+### Hot-Reload with Requirements
 
-Although subject to various opinions, decision has been made from the very beginning to install `Ansible` under its own user and not as `root`. Not only for security reasons but also because of _bind mounting hell_ where temporary files from inside the containers created with `root` user could lead to some issues outside the container, on the host.
+The container automatically watches for changes to dependency files:
 
-Last but not least, this container builds `Ansible` for use with `Python 3.x`.
-No backward compatibility work will be done. Deal with that, _Python 2.x is dead_ :wink:
+```yaml
+services:
+  ansible:
+    image: ghcr.io/oorabona/ansible:latest
+    volumes:
+      - ./playbooks:/playbooks:ro
+      - ./requirements.yml:/home/ansible/playbook/requirements.yml:ro
+      - ./requirements.txt:/home/ansible/playbook/requirements.txt:ro
+      - ansible_collections:/home/ansible/.ansible
+    command: playbook /playbooks/site.yml
+
+volumes:
+  ansible_collections:
+```
+
+When `requirements.yml` or `requirements.txt` changes, the container automatically installs updates.
 
 ## Security
 
 ### Base Security
-- **Non-root by default**: Runs as `ansible` user
+- **Non-root by default**: Runs as `ansible` user (UID 1000, GID 1000)
 - **Multi-stage build**: Build dependencies removed from final image
-- **Ubuntu-based**: Regular security updates
+- **Ubuntu-based**: Regular security updates from Canonical
+- **Virtual environment**: Python packages isolated from system packages
 
-### Runtime Hardening (Recommended)
-
-```bash
-# Secure runtime configuration
-docker run --rm \
-  --read-only \
-  --tmpfs /tmp \
-  --tmpfs /run \
-  --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  -v ./playbooks:/playbooks:ro \
-  -v ~/.ssh:/home/ansible/.ssh:ro \
-  oorabona/ansible ansible-playbook /playbooks/site.yml
-```
-
-### Docker Compose Security Template
+### Runtime Hardening
 
 ```yaml
 services:
@@ -162,9 +220,103 @@ services:
 
 ### SSH Key Security
 - Mount SSH keys as read-only (`:ro`)
+- Ensure proper permissions on host (mode 600 for private keys)
 - Use SSH agent forwarding when possible
-- Never store SSH private keys in images
+- Never store SSH private keys in container images
 
-## Last words
+```bash
+# Set proper permissions before mounting
+chmod 600 ~/.ssh/id_rsa
+chmod 644 ~/.ssh/id_rsa.pub
 
-Feel free to contribute, open issues or submit PR, they are all welcome ! :beer:
+# Run with SSH agent forwarding (if supported by Docker setup)
+docker run --rm \
+  -v $SSH_AUTH_SOCK:/ssh-agent \
+  -e SSH_AUTH_SOCK=/ssh-agent \
+  -v ./playbooks:/playbooks:ro \
+  ghcr.io/oorabona/ansible playbook /playbooks/site.yml
+```
+
+### Secrets Management
+
+Never hardcode secrets in playbooks. Use Ansible Vault or external secret management:
+
+```bash
+# Encrypt sensitive variables
+docker run --rm -it \
+  -v ./vars:/vars \
+  ghcr.io/oorabona/ansible vault encrypt /vars/secrets.yml
+
+# Run playbook with vault password
+docker run --rm \
+  -v ./playbooks:/playbooks:ro \
+  -v ./vars:/vars:ro \
+  -e ANSIBLE_VAULT_PASSWORD_FILE=/vars/.vault_pass \
+  ghcr.io/oorabona/ansible playbook /playbooks/site.yml
+```
+
+## Dependencies
+
+All Python cryptography and SSH dependencies are pinned and monitored for updates via PyPI:
+
+| Dependency | Version | Type | Purpose |
+|------------|---------|------|---------|
+| pyasn1 | 0.6.2 | PyPI | ASN.1 types and codecs |
+| Paramiko | 4.0.0 | PyPI | SSH protocol implementation |
+| cffi | 2.0.0 | PyPI | C Foreign Function Interface |
+| cryptography | 46.0.4 | PyPI | Cryptographic recipes and primitives |
+| pycryptodome | 3.23.0 | PyPI | Cryptographic library (replaces deprecated pycrypto) |
+| PyNaCl | 1.6.2 | PyPI | Python bindings to libsodium |
+
+### Dependency Monitoring
+
+All dependencies are automatically monitored via the upstream monitoring workflow. When new versions are released on PyPI:
+1. Automated check detects new version
+2. Pull request created with version bump
+3. CI validates the build
+4. Merge triggers automatic container rebuild
+
+### Cryptography Stack
+
+The container uses modern cryptographic libraries:
+- **pycryptodome** replaces the deprecated `pycrypto` package
+- **PyNaCl** provides libsodium bindings for modern cryptography
+- **cryptography** provides comprehensive cryptographic recipes
+- All packages compiled during build stage, only runtime files included in final image
+
+## Architecture
+
+Supported platforms:
+- **amd64** (x86_64)
+- **arm64** (aarch64)
+
+Built from source due to installation issues with pip on ARM platforms. Multi-stage build ensures minimal final image size.
+
+### Build Process
+
+1. **Builder stage**: Installs build dependencies (gcc, rustc, cargo), compiles Python packages in virtual environment
+2. **Runtime stage**: Copies only the virtual environment, installs runtime dependencies (Python, OpenSSH client, inotify-tools)
+3. **Cleanup**: Build dependencies and temporary files removed
+
+### Image Layers
+
+```
+ubuntu:{OS_VERSION}
+├── Runtime packages (python3, openssh-client, inotify-tools, etc.)
+├── Python venv (/opt/ansible-venv)
+│   ├── ansible=={VERSION}
+│   ├── cryptography=={VERSION}
+│   ├── paramiko=={VERSION}
+│   └── ... (all dependencies)
+├── User setup (ansible user + sudo access)
+└── Entrypoint scripts
+```
+
+## Links
+
+- [Docker Hub](https://hub.docker.com/r/oorabona/ansible)
+- [GitHub Container Registry](https://ghcr.io/oorabona/ansible)
+- [Source Repository](https://github.com/oorabona/docker-containers/tree/master/ansible)
+- [Ansible Documentation](https://docs.ansible.com/)
+- [Ansible Galaxy](https://galaxy.ansible.com/)
+- [GitHub Actions Workflows](https://github.com/oorabona/docker-containers/actions)

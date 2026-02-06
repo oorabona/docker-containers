@@ -4,6 +4,7 @@ A minimal `FROM scratch` SSLH container for protocol multiplexing, allowing mult
 
 ![Docker Pulls](https://img.shields.io/docker/pulls/oorabona/sslh)
 ![Docker Image Size](https://img.shields.io/docker/image-size/oorabona/sslh)
+[![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fsslh-blue)](https://ghcr.io/oorabona/sslh)
 
 ## Platforms
 - **amd64** - x86_64 systems
@@ -178,6 +179,19 @@ For more examples, see the [SSLH project](https://www.rutschle.net/tech/sslh/REA
 
 ```bash
 ./make build sslh
+```
+
+### Build Arguments
+
+- **VERSION** - Version tag for sslh release (e.g., `v2.0.0`). Defaults to `latest`
+- **UPSTREAM_VERSION** - Upstream version override for downloads. If provided, takes precedence over VERSION
+- **OS_IMAGE_BASE** - Base image name (default: `alpine`)
+- **OS_IMAGE_TAG** - Base image tag (default: `latest`)
+- **NPROC** - Number of parallel jobs for make compilation (default: `1`)
+
+Example with custom arguments:
+```bash
+./make build sslh v2.0.0
 ```
 
 ## Licence
