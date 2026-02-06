@@ -29,8 +29,9 @@ RUN { \
     } > /usr/local/etc/php/conf.d/opcache-wordpress.ini
 
 # Install WP-CLI
+ARG WPCLI_VERSION
 RUN set -ex; \
-    curl -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar; \
+    curl -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
     chmod +x /usr/local/bin/wp; \
     # Verify WP-CLI works
     wp --info --allow-root

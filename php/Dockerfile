@@ -1,8 +1,11 @@
 ARG VERSION
-FROM composer:latest AS composer
+ARG COMPOSER_VERSION
+FROM composer:${COMPOSER_VERSION} AS composer
 FROM php:${VERSION} AS php
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
+
+ARG APCU_VERSION
 
 RUN set -ex \
     && apk add --update libzip freetype libpng libjpeg-turbo git shadow \
@@ -15,7 +18,7 @@ RUN set -ex \
 		libpng-dev \
 	&& docker-php-ext-configure gd --with-freetype --with-jpeg \
 	&& docker-php-ext-install -j$(nproc) gd mysqli opcache zip \
-	&& pecl install apcu && docker-php-ext-enable apcu \
+	&& pecl install apcu-${APCU_VERSION} && docker-php-ext-enable apcu \
 # - Detect Runtime Dependencies of the installed extensions. \
 # - src: https://github.com/docker-library/wordpress/blob/master/latest/php8.0/fpm-alpine/Dockerfile \
     && out="$(php -r 'exit(0);')"; \

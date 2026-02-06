@@ -3,4 +3,16 @@
 
 base_image: "alpine:${OS_VERSION}"
 
-build_args: {}
+build_args:
+  PKCS11_HELPER_VERSION: "1.31.0"
+  EASYRSA_VERSION: "3.0.8"
+
+dependency_sources:
+  PKCS11_HELPER_VERSION:
+    type: github-release
+    repo: opensc/pkcs11-helper
+    strip_v: false
+    tag_pattern: "(?<=pkcs11-helper-)\\d+\\.\\d+\\.\\d+"
+  EASYRSA_VERSION:
+    monitor: false
+    reason: "Pinned to 3.0.8 — later versions break the ovpn setup script"

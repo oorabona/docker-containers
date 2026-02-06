@@ -3,4 +3,11 @@
 
 base_image: "${PHP_IMAGE}"
 
-build_args: {}
+build_args:
+  WPCLI_VERSION: "2.12.0"
+
+dependency_sources:
+  WPCLI_VERSION:
+    type: github-release
+    repo: wp-cli/wp-cli
+    strip_v: true
