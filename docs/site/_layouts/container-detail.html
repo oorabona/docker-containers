@@ -192,6 +192,144 @@
         </section>
         {% endif %}
 
+        <!-- Dependency Health -->
+        {% if page.dependency_monitoring %}
+        {% assign dm = page.dependency_monitoring %}
+        {% assign container_updates = null %}
+        {% for entry in site.data.dep_updates %}
+          {% if entry.container == page.name %}
+            {% assign container_updates = entry %}
+          {% endif %}
+        {% endfor %}
+        <section class="dep-health-section glass" aria-label="Dependency health monitoring"
+                 data-dep-updates='{% if container_updates %}{{ container_updates.updates | jsonify }}{% else %}[]{% endif %}'
+                 data-dep-all='{{ dm.deps | jsonify }}'>
+          <div class="dep-health-header">
+            <i class="ti ti-heartbeat" aria-hidden="true"></i>
+            <h2>Dependency Health</h2>
+            {% if container_updates and container_updates.update_count > 0 %}
+              <span class="dep-summary-badge dep-badge-warning">{{ container_updates.update_count }} update{% if container_updates.update_count != 1 %}s{% endif %} available</span>
+            {% elsif container_updates %}
+              <span class="dep-summary-badge dep-badge-ok">all up to date</span>
+            {% else %}
+              <span class="dep-summary-badge dep-badge-neutral">{{ dm.monitored }} monitored</span>
+            {% endif %}
+          </div>
+
+          <div class="dep-health-summary">
+            <div class="dep-health-bar">
+              <div class="dep-bar-label">{{ dm.monitored }}/{{ dm.total }} dependencies monitored</div>
+              {% assign pct = dm.monitored | times: 100 | divided_by: dm.total %}
+              {% assign pct_unmon = 100 | minus: pct %}
+              <div class="dep-bar-track">
+                <div class="dep-bar-fill" style="flex: {{ pct }}"></div>
+                {% if pct_unmon > 0 %}<div class="dep-bar-unmonitored" style="flex: {{ pct_unmon }}"></div>{% endif %}
+              </div>
+            </div>
+          </div>
+
+          {% if container_updates and container_updates.update_count > 0 %}
+          <div class="dep-update-table-wrap">
+            <table class="dep-update-table">
+              <thead>
+                <tr>
+                  <th>Dependency</th>
+                  <th>Current</th>
+                  <th>Latest</th>
+                  <th>Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for upd in container_updates.updates %}
+                <tr class="dep-update-row" data-dep-name="{{ upd.name }}" style="animation-delay: {{ forloop.index0 | times: 0.06 }}s">
+                  <td class="dep-name">
+                    {% if upd.source_url and upd.source_url != "" %}
+                      <a href="{{ upd.source_url }}" target="_blank" rel="noopener">{{ upd.name }}</a>
+                    {% else %}
+                      {{ upd.name }}
+                    {% endif %}
+                  </td>
+                  <td class="dep-version dep-version-current">{{ upd.current }}</td>
+                  <td class="dep-version dep-version-latest">{{ upd.latest }}</td>
+                  <td>
+                    <span class="dep-change-badge dep-change-{{ upd.change_type }}">{{ upd.change_type }}</span>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endif %}
+
+          {% assign up_to_date_deps = "" %}
+          {% assign disabled_deps = "" %}
+          {% for dep in dm.deps %}
+            {% if dep.status == "monitored" %}
+              {% assign has_update = false %}
+              {% if container_updates %}
+                {% for upd in container_updates.updates %}
+                  {% if upd.name == dep.name %}
+                    {% assign has_update = true %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {% unless has_update %}
+                {% if up_to_date_deps == "" %}
+                  {% assign up_to_date_deps = dep.name %}
+                {% else %}
+                  {% assign up_to_date_deps = up_to_date_deps | append: "||" | append: dep.name %}
+                {% endif %}
+              {% endunless %}
+            {% elsif dep.status == "disabled" %}
+              {% if disabled_deps == "" %}
+                {% assign disabled_deps = dep.name | append: "::" | append: dep.reason %}
+              {% else %}
+                {% assign disabled_deps = disabled_deps | append: "||" | append: dep.name | append: "::" | append: dep.reason %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+
+          {% if up_to_date_deps != "" %}
+          <details class="dep-uptodate-details">
+            <summary class="dep-uptodate-summary">
+              <i class="ti ti-check" aria-hidden="true"></i>
+              Up-to-date dependencies
+            </summary>
+            <div class="dep-uptodate-list">
+              {% assign deps_arr = up_to_date_deps | split: "||" %}
+              {% for dep_name in deps_arr %}
+                {% for dep in dm.deps %}
+                  {% if dep.name == dep_name %}
+                    <span class="dep-uptodate-item" data-dep-name="{{ dep.name }}">
+                      {{ dep.name }} <span class="dep-uptodate-version">{{ dep.current }}</span>
+                    </span>
+                  {% endif %}
+                {% endfor %}
+              {% endfor %}
+            </div>
+          </details>
+          {% endif %}
+
+          {% if disabled_deps != "" %}
+          <div class="dep-disabled-list">
+            <span class="dep-disabled-label">Unmonitored:</span>
+            {% assign disabled_arr = disabled_deps | split: "||" %}
+            {% for item in disabled_arr %}
+              {% assign parts = item | split: "::" %}
+              <span class="dep-disabled-item" data-dep-name="{{ parts[0] }}" title="{{ parts[1] }}">{{ parts[0] }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          <div class="dep-health-footer">
+            <a href="https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml"
+               class="dep-workflow-link" target="_blank" rel="noopener">
+              <i class="ti ti-refresh" aria-hidden="true"></i> Upstream Monitor Workflow
+            </a>
+          </div>
+        </section>
+        {% endif %}
+
         <!-- README (rendered at build time by kramdown) -->
         <div class="readme-section glass">
           <div class="readme-header">
