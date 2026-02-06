@@ -18,6 +18,9 @@ on:
 permissions:
   contents: write     # Push version bumps and merge PRs
   pull-requests: write  # Create and merge PRs
+  actions: write       # Trigger auto-build and update-dashboard workflows
+  pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
+  id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
 
 jobs:
   check-upstream-versions:
