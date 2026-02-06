@@ -57,6 +57,9 @@ build_source_url() {
         pypi)
             echo "https://pypi.org/project/${source}/${version}/"
             ;;
+        rubygems)
+            echo "https://rubygems.org/gems/${source}/versions/${version}"
+            ;;
         *)
             echo ""
             ;;
@@ -199,6 +202,16 @@ check_container_deps() {
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-pypi-version" "$package" 2>/dev/null) || {
                     errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: PyPI API error for ${package}" '. + [$msg]')
+                    continue
+                }
+                ;;
+            rubygems)
+                local gem
+                gem=$(yq -r ".dependency_sources.${dep_name}.gem // \"\"" "$config")
+                source_ref="$gem"
+
+                latest_version=$("$PROJECT_ROOT/helpers/latest-rubygems-version" "$gem" 2>/dev/null) || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: RubyGems API error for ${gem}" '. + [$msg]')
                     continue
                 }
                 ;;

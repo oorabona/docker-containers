@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+# Query RubyGems API to find the latest stable version of a gem
+# Follows the same pattern as latest-pypi-version
+#
+# Usage: latest-rubygems-version <gem-name>
+# Output: version string to stdout (e.g., "4.0.6")
+# Exit 0: success
+# Exit 1: failure (API error, no stable version found)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/logging.sh"
+
+# RubyGems base URL
+RUBYGEMS_URL="${RUBYGEMS_URL:-https://rubygems.org}"
+
+_rubygems_api_get() {
+    local url="$1"
+    curl -fsSL --connect-timeout 10 --max-time 10 \
+        -H "Accept: application/json" \
+        "$url"
+}
+
+latest-rubygems-version() {
+    local gem="${1:-}"
+
+    if [[ -z "$gem" ]]; then
+        log_error "Usage: latest-rubygems-version <gem-name>"
+        return 1
+    fi
+
+    local response
+    if ! response=$(_rubygems_api_get "${RUBYGEMS_URL}/api/v1/gems/${gem}.json" 2>/dev/null); then
+        log_error "Failed to query RubyGems for gem '${gem}'"
+        return 1
+    fi
+
+    # Extract the latest version from .version
+    local version
+    version=$(echo "$response" | jq -r '.version // empty')
+
+    if [[ -z "$version" ]]; then
+        log_error "No version found for RubyGems gem '${gem}'"
+        return 1
+    fi
+
+    # Check if the latest version is a pre-release
+    # Pre-release markers: alpha, beta, rc, pre (RubyGems convention)
+    if [[ "$version" =~ (alpha|beta|rc|pre) ]]; then
+        log_info "Latest version ${version} is pre-release, querying stable versions..."
+
+        # Use the versions endpoint to find latest stable
+        local versions_response
+        if ! versions_response=$(_rubygems_api_get "${RUBYGEMS_URL}/api/v1/versions/${gem}.json" 2>/dev/null); then
+            log_error "Failed to query RubyGems versions for gem '${gem}'"
+            return 1
+        fi
+
+        version=$(echo "$versions_response" | jq -r '
+            [.[] | select(.prerelease == false)] | .[0].number // empty
+        ')
+
+        if [[ -z "$version" ]]; then
+            log_error "No stable version found for RubyGems gem '${gem}'"
+            return 1
+        fi
+    fi
+
+    # Validate: version must start with a digit
+    if [[ ! "$version" =~ ^[0-9] ]]; then
+        log_error "Extracted version '${version}' does not start with a digit — aborting"
+        return 1
+    fi
+
+    echo "$version"
+    return 0
+}
+
+# Entrypoint when script is run directly
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-rubygems-version "$@"
+fi

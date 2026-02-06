@@ -4,6 +4,12 @@ FROM ubuntu:${OS_VERSION} as builder
 
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
+ARG PYASN1_VERSION=0.6.2
+ARG PARAMIKO_VERSION=4.0.0
+ARG CFFI_VERSION=2.0.0
+ARG CRYPTOGRAPHY_VERSION=46.0.4
+ARG PYCRYPTODOME_VERSION=3.23.0
+ARG PYNACL_VERSION=1.6.2
 ENV VIRTUAL_ENV=/opt/ansible-venv
 
 # Use UPSTREAM_VERSION for pip install if provided (raw version without suffix), fallback to VERSION
@@ -14,9 +20,9 @@ RUN apt-get update -y \
     && python3 -m venv $VIRTUAL_ENV \
     && . $VIRTUAL_ENV/bin/activate \
     && pip install --upgrade pip setuptools wheel \
-    && SODIUM_INSTALL=system pip install pynacl \
+    && SODIUM_INSTALL=system pip install pynacl==${PYNACL_VERSION} \
     && INSTALL_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
-    && pip install pyasn1 paramiko cffi cryptography pycrypto ansible==${INSTALL_VERSION}
+    && pip install pyasn1==${PYASN1_VERSION} paramiko==${PARAMIKO_VERSION} cffi==${CFFI_VERSION} cryptography==${CRYPTOGRAPHY_VERSION} pycryptodome==${PYCRYPTODOME_VERSION} ansible==${INSTALL_VERSION}
 
 # Runtime stage
 ARG OS_VERSION=latest

@@ -12,6 +12,7 @@ FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
 
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
+ARG NGX_PROXY_CONNECT_VERSION="0.0.7"
 ARG RESTY_VERSION=${VERSION}
 ARG RESTY_OPENSSL_VERSION
 ARG RESTY_OPENSSL_PATCH_VERSION
@@ -144,14 +145,14 @@ RUN set -ex \
 # STEP 2 - Configure OpenResty
 RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     cd /tmp \
-    && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/master.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
-    && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-master ${RESTY_CONFIG_OPTIONS}" \
+    && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/v${NGX_PROXY_CONNECT_VERSION}.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
+    && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-${NGX_PROXY_CONNECT_VERSION} ${RESTY_CONFIG_OPTIONS}" \
     && tar zxf ngx_http_proxy_connect_module.tar.gz; fi \
     && cd /tmp/openresty-${RESTY_VERSION} \
     && eval ./configure ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
     && if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     cd build/nginx-* \
-    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-master/patch/proxy_connect_rewrite_1018.patch ; \
+    && patch -p 1 < /tmp/ngx_http_proxy_connect_module-${NGX_PROXY_CONNECT_VERSION}/patch/proxy_connect_rewrite_1018.patch ; \
     fi
 
 # STEP 3 - Build OpenResty and luarocks, then unwind all dev files/packages
