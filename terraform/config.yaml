@@ -13,3 +13,42 @@ build_args:
   AWS_CLI_VERSION: "1.44.32"
   AZURE_CLI_VERSION: "2.83.0"
   GCP_CLI_VERSION: "latest"
+
+# Maps build_arg names to their upstream source for monitoring
+# All build_args with pinned versions MUST have an entry here:
+# - monitored deps: type + source info
+# - frozen/excluded deps: monitor: false with reason
+dependency_sources:
+  TFLINT_VERSION:
+    type: github-release
+    repo: terraform-linters/tflint
+    strip_v: true
+  TRIVY_VERSION:
+    type: github-release
+    repo: aquasecurity/trivy
+    strip_v: true
+  TERRAGRUNT_VERSION:
+    type: github-release
+    repo: gruntwork-io/terragrunt
+    strip_v: true
+  TERRAFORM_DOCS_VERSION:
+    type: github-release
+    repo: terraform-docs/terraform-docs
+    strip_v: true
+  INFRACOST_VERSION:
+    type: github-release
+    repo: infracost/infracost
+    strip_v: true
+  GITHUB_CLI_VERSION:
+    type: github-release
+    repo: cli/cli
+    strip_v: true
+  AWS_CLI_VERSION:
+    type: pypi
+    package: awscli
+  AZURE_CLI_VERSION:
+    type: pypi
+    package: azure-cli
+  GCP_CLI_VERSION:
+    monitor: false
+    reason: "Always latest — no version to track"

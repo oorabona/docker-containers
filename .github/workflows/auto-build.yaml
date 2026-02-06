@@ -19,6 +19,7 @@ on:
     paths:
       - '*/Dockerfile'
       - '*/version.sh'
+      - '*/config.yaml'
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/extensions/config.yaml'
@@ -31,6 +32,7 @@ on:
     paths:
       - '*/Dockerfile'
       - '*/version.sh'
+      - '*/config.yaml'
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/LAST_REBUILD.md'

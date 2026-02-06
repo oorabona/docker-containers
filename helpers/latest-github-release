@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+
+# Query GitHub Releases API to find the latest stable release version
+# Follows the same pattern as latest-docker-tag and latest-git-tag
+#
+# Usage: latest-github-release <owner/repo> [--strip-v] [--tag-pattern REGEX]
+# Output: version string to stdout (e.g., "0.60.0")
+# Exit 0: success
+# Exit 1: failure (API error, no releases found)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/logging.sh"
+
+# GitHub API base URL (supports GitHub Enterprise via GITHUB_API_URL)
+GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
+
+_github_api_get() {
+    local url="$1"
+    local -a curl_args=(
+        -fsSL
+        --connect-timeout 10
+        --max-time 10
+        -H "Accept: application/vnd.github+json"
+    )
+
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+
+    curl "${curl_args[@]}" "$url"
+}
+
+_get_latest_release() {
+    local repo="$1"
+    _github_api_get "${GITHUB_API_URL}/repos/${repo}/releases/latest"
+}
+
+_get_releases() {
+    local repo="$1"
+    _github_api_get "${GITHUB_API_URL}/repos/${repo}/releases?per_page=50"
+}
+
+_get_tags() {
+    local repo="$1"
+    _github_api_get "${GITHUB_API_URL}/repos/${repo}/tags?per_page=100"
+}
+
+latest-github-release() {
+    local repo=""
+    local strip_v=false
+    local tag_pattern=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --strip-v)
+                strip_v=true
+                shift
+                ;;
+            --tag-pattern)
+                tag_pattern="$2"
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                if [[ -z "$repo" ]]; then
+                    repo="$1"
+                else
+                    log_error "Unexpected argument: $1"
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$repo" ]]; then
+        log_error "Usage: latest-github-release <owner/repo> [--strip-v] [--tag-pattern REGEX]"
+        return 1
+    fi
+
+    local version=""
+
+    # Strategy 1: Try /releases/latest endpoint (fast, single call)
+    local response
+    if response=$(_get_latest_release "$repo" 2>/dev/null); then
+        local tag_name
+        tag_name=$(echo "$response" | jq -r '.tag_name // empty')
+        local is_prerelease
+        is_prerelease=$(echo "$response" | jq -r '.prerelease // false')
+        local is_draft
+        is_draft=$(echo "$response" | jq -r '.draft // false')
+
+        if [[ -n "$tag_name" && "$is_prerelease" != "true" && "$is_draft" != "true" ]]; then
+            version="$tag_name"
+        fi
+    fi
+
+    # Strategy 2: If /latest failed or returned pre-release, scan releases list
+    if [[ -z "$version" ]]; then
+        log_info "No latest release for ${repo}, scanning releases list..."
+        if response=$(_get_releases "$repo" 2>/dev/null); then
+            version=$(echo "$response" | jq -r '
+                [.[] | select(.prerelease == false and .draft == false)]
+                | sort_by(.published_at)
+                | last
+                | .tag_name // empty
+            ')
+        fi
+    fi
+
+    # Strategy 3: Fall back to tags endpoint if no releases exist
+    if [[ -z "$version" ]]; then
+        log_info "No releases for ${repo}, falling back to tags..."
+        if response=$(_get_tags "$repo" 2>/dev/null); then
+            # Filter for semver-like tags, sort, take latest
+            version=$(echo "$response" | jq -r '
+                [.[] | .name | select(test("^v?[0-9]+\\.[0-9]+"))]
+                | sort_by(split(".") | map(ltrimstr("v") | tonumber? // 0))
+                | last // empty
+            ')
+        fi
+    fi
+
+    if [[ -z "$version" ]]; then
+        log_error "No version found for ${repo}"
+        return 1
+    fi
+
+    # Apply tag_pattern extraction if specified
+    if [[ -n "$tag_pattern" ]]; then
+        local extracted
+        extracted=$(echo "$version" | grep -oP "$tag_pattern" || true)
+        if [[ -n "$extracted" ]]; then
+            version="$extracted"
+        else
+            log_error "Tag pattern '${tag_pattern}' did not match version '${version}'"
+            return 1
+        fi
+    fi
+
+    # Strip 'v' prefix if requested
+    if [[ "$strip_v" == "true" ]]; then
+        version="${version#v}"
+    fi
+
+    # Validate: version must start with a digit (prevent accidental garbage)
+    if [[ ! "$version" =~ ^[0-9] ]]; then
+        log_error "Extracted version '${version}' does not start with a digit — aborting"
+        return 1
+    fi
+
+    echo "$version"
+    return 0
+}
+
+# Entrypoint when script is run directly
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-github-release "$@"
+fi

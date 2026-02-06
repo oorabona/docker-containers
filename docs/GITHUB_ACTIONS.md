@@ -203,7 +203,7 @@ Validates all version.sh scripts for functionality and standards compliance.
 
 | Workflow | Actions Used | Usage Count | Trigger Type |
 |----------|-------------|-------------|--------------|
-| `upstream-monitor.yaml` | `check-upstream-versions`<br>`update-version`<br>`close-duplicate-prs` | 3 actions | **Schedule** (6 AM UTC daily)<br>Manual dispatch |
+| `upstream-monitor.yaml` | `check-upstream-versions`<br>`check-dependency-versions`<br>`update-version`<br>`close-duplicate-prs` | 4 actions | **Schedule** (6 AM UTC daily)<br>Manual dispatch |
 | `auto-build.yaml` | `detect-containers`<br>`build-container`<br>`setup-github-cli` | 3 actions | **workflow_call** (from upstream-monitor)<br>Push/PR events<br>Manual dispatch |
 | `update-dashboard.yaml` | None (uses scripts directly) | 0 actions | **workflow_call** (from auto-build)<br>Manual dispatch |
 | `validate-version-scripts.yaml` | `check-upstream-versions` | 1 action | Push/PR events<br>Manual dispatch |
@@ -222,11 +222,12 @@ Validates all version.sh scripts for functionality and standards compliance.
 | `check-upstream-versions` | `upstream-monitor.yaml`<br>`validate-version-scripts.yaml` | **2x** | Version detection and validation |
 | `build-container` | `auto-build.yaml` | **1x** | Container building and pushing |
 | `detect-containers` | `auto-build.yaml` | **1x** | Smart container change detection |
+| `check-dependency-versions` | `upstream-monitor.yaml` | **1x** | 3rd party dependency version monitoring |
 | `close-duplicate-prs` | `upstream-monitor.yaml` | **1x** | PR management and cleanup |
 | `update-version` | `upstream-monitor.yaml` | **1x** | Version file updates |
 | `setup-github-cli` | `auto-build.yaml` | **1x** | GitHub CLI configuration |
 
-**Status: ✅ All 6 actions are actively used across workflows**
+**Status: ✅ All 7 actions are actively used across workflows**
 
 ## Reusable Actions
 
@@ -248,6 +249,27 @@ Checks for upstream version updates across containers using individual `version.
 - Supports both single container and bulk checking
 - Integrates with shared helper functions
 - Handles version script failures gracefully
+
+### Check Dependency Versions (`.github/actions/check-dependency-versions`)
+
+**Used by:** `upstream-monitor.yaml`
+
+Checks 3rd party dependency versions against upstream releases (GitHub Releases API, PyPI).
+
+**Inputs:**
+- `container` (optional): Specific container to check
+
+**Outputs:**
+- `containers_with_dep_updates`: JSON array of container names with updates
+- `dep_update_count`: Total number of dependency updates found
+- `dep_version_info`: Full JSON output from orchestrator
+
+**Key Features:**
+- Config-driven: reads `dependency_sources` section from each container's config.yaml
+- Supports GitHub releases, GitHub tags, and PyPI as sources
+- Postgres special case: delegates to `version-extension.sh`
+- Pre-flight validation warns about unregistered build_args (INV-05)
+- Writes GITHUB_STEP_SUMMARY with update table
 
 ### Build Container (`.github/actions/build-container`)
 
@@ -342,6 +364,18 @@ Checks for upstream version updates across containers.
 - `containers_with_updates`: JSON array of containers needing updates
 - `update_count`: Number of containers with updates
 - `version_info`: Detailed version information
+
+### Check Dependency Versions (`.github/actions/check-dependency-versions`)
+
+Checks 3rd party dependency versions against upstream releases.
+
+**Inputs:**
+- `container` (optional): Specific container to check
+
+**Outputs:**
+- `containers_with_dep_updates`: JSON array of container names with updates
+- `dep_update_count`: Total dependency updates found
+- `dep_version_info`: Full JSON output
 
 ### Build Container (`.github/actions/build-container`)
 

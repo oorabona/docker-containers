@@ -1,0 +1,106 @@
+name: 'Check Dependency Versions'
+description: 'Checks 3rd party dependency versions against upstream releases'
+
+inputs:
+  container:
+    description: 'Container name to check (optional, checks all if empty)'
+    required: false
+    default: ''
+
+outputs:
+  containers_with_dep_updates:
+    description: 'JSON array of container names with dependency updates available'
+    value: ${{ steps.check-deps.outputs.containers_with_dep_updates }}
+  dep_update_count:
+    description: 'Total number of dependency updates found'
+    value: ${{ steps.check-deps.outputs.dep_update_count }}
+  dep_version_info:
+    description: 'Full JSON output from the orchestrator'
+    value: ${{ steps.check-deps.outputs.dep_version_info }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        # Install yq if not available
+        if ! command -v yq &> /dev/null; then
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+        fi
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+
+    - name: Check dependency versions
+      id: check-deps
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -e
+
+        chmod +x scripts/check-dependency-versions.sh
+        chmod +x helpers/latest-github-release
+        chmod +x helpers/latest-pypi-version
+
+        echo "🔍 Checking 3rd party dependency versions..."
+
+        # Run orchestrator
+        if [ -n "${{ inputs.container }}" ]; then
+          echo "🎯 Checking specific container: ${{ inputs.container }}"
+          dep_info=$(./scripts/check-dependency-versions.sh "${{ inputs.container }}" --json)
+        else
+          echo "🔍 Checking all containers..."
+          dep_info=$(./scripts/check-dependency-versions.sh --all --json)
+        fi
+
+        # Extract containers with updates
+        containers_with_updates=$(echo "$dep_info" | jq -c '[.[] | select(.update_count > 0) | .container]')
+        total_updates=$(echo "$dep_info" | jq '[.[].update_count] | add // 0')
+        total_errors=$(echo "$dep_info" | jq '[.[].errors | length] | add // 0')
+
+        echo "📋 Found $total_updates dependency update(s) across $(echo "$containers_with_updates" | jq 'length') container(s)"
+
+        if [ "$total_errors" -gt 0 ]; then
+          echo "::warning::$total_errors dependency check error(s) occurred"
+        fi
+
+        # Set outputs
+        echo "containers_with_dep_updates=$containers_with_updates" >> "$GITHUB_OUTPUT"
+        echo "dep_update_count=$total_updates" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "dep_version_info<<EOF"
+          echo "$dep_info"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Write summary
+        {
+          echo "## 📦 Dependency Version Check"
+          echo ""
+          echo "| Container | Updates | Errors |"
+          echo "|-----------|---------|--------|"
+          echo "$dep_info" | jq -r '.[] | "| \(.container) | \(.update_count) | \(.errors | length) |"'
+          echo ""
+
+          if [ "$total_updates" -gt 0 ]; then
+            echo "### Updates Available"
+            echo ""
+            echo "| Container | Dependency | Current | Latest | Change |"
+            echo "|-----------|------------|---------|--------|--------|"
+            echo "$dep_info" | jq -r '.[] | .container as $c | .updates[] | "| \($c) | \(.name) | \(.current) | \(.latest) | \(.change_type) |"'
+          fi
+
+          # Report errors if any
+          if [ "$total_errors" -gt 0 ]; then
+            echo ""
+            echo "### ⚠️ Errors"
+            echo ""
+            echo "$dep_info" | jq -r '.[] | .container as $c | .errors[] | "- **\($c):** \(.)"'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

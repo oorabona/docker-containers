@@ -375,3 +375,216 @@ jobs:
           if [[ $updated -gt 0 ]]; then
             echo "::notice::Updated $updated base image(s) in GHCR cache"
           fi
+
+  # Check 3rd party dependency versions (runs in parallel with base image checks)
+  check-dependency-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      containers_with_dep_updates: ${{ steps.check.outputs.containers_with_dep_updates }}
+      dep_update_count: ${{ steps.check.outputs.dep_update_count }}
+      dep_version_info: ${{ steps.check.outputs.dep_version_info }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check dependency versions
+        id: check
+        uses: ./.github/actions/check-dependency-versions
+        with:
+          container: ${{ github.event.inputs.container }}
+
+      - name: Summary
+        env:
+          DEP_COUNT: ${{ steps.check.outputs.dep_update_count }}
+          CONTAINERS: ${{ steps.check.outputs.containers_with_dep_updates }}
+        run: |
+          echo "Found $DEP_COUNT dependency update(s)"
+          if [ "$DEP_COUNT" -gt 0 ]; then
+            echo "Containers with dep updates: $CONTAINERS"
+          fi
+
+  create-dependency-update-prs:
+    needs: check-dependency-updates
+    if: needs.check-dependency-updates.outputs.dep_update_count > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(needs.check-dependency-updates.outputs.containers_with_dep_updates) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Configure Git
+        run: |
+          git remote set-url origin "https://github.com/${{ github.repository }}.git"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "oorabona@users.noreply.github.com"
+
+      - name: Detect test environment
+        id: env_check
+        run: |
+          if [ "$ACT" = "true" ]; then
+            echo "is_local_test=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_local_test=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare dependency updates
+        id: prepare
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
+        run: |
+          # Extract updates for this container (using env vars to avoid injection)
+          container_data=$(echo "$DEP_INFO" | jq --arg c "$CONTAINER" '.[] | select(.container == $c)')
+          updates=$(echo "$container_data" | jq -c '.updates')
+          update_count=$(echo "$container_data" | jq '.update_count')
+
+          echo "📦 Processing $update_count update(s) for $CONTAINER"
+
+          # Determine max severity (major > minor > patch)
+          max_severity="patch"
+          if echo "$updates" | jq -e '.[] | select(.change_type == "major")' &>/dev/null; then
+            max_severity="major"
+          elif echo "$updates" | jq -e '.[] | select(.change_type == "minor")' &>/dev/null; then
+            max_severity="minor"
+          fi
+
+          echo "max_severity=$max_severity" >> "$GITHUB_OUTPUT"
+          echo "update_count=$update_count" >> "$GITHUB_OUTPUT"
+
+          # Build PR body table
+          pr_table="| Dependency | Current | New | Change | Release |"
+          pr_table="$pr_table
+          |------------|---------|-----|--------|---------|"
+
+          while IFS= read -r update; do
+            name=$(echo "$update" | jq -r '.name')
+            current=$(echo "$update" | jq -r '.current')
+            latest=$(echo "$update" | jq -r '.latest')
+            change_type=$(echo "$update" | jq -r '.change_type')
+            source_url=$(echo "$update" | jq -r '.source_url')
+            pr_table="$pr_table
+          | $name | $current | $latest | $change_type | [Release notes]($source_url) |"
+          done < <(echo "$updates" | jq -c '.[]')
+
+          {
+            echo "pr_table<<EOF"
+            echo "$pr_table"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "updates<<EOF"
+            echo "$updates"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply dependency updates
+        env:
+          CONTAINER: ${{ matrix.container }}
+          UPDATES: ${{ steps.prepare.outputs.updates }}
+        run: |
+          if [ "$CONTAINER" = "postgres" ]; then
+            # Postgres: update extensions/config.yaml
+            while IFS= read -r update; do
+              name=$(echo "$update" | jq -r '.name')
+              latest=$(echo "$update" | jq -r '.latest')
+              echo "  Updating postgres extension $name to $latest"
+              yq -i ".extensions.${name}.version = \"$latest\"" "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension ${name} config"; exit 1; }
+            done < <(echo "$UPDATES" | jq -c '.[]')
+          else
+            # Other containers: update config.yaml build_args
+            while IFS= read -r update; do
+              name=$(echo "$update" | jq -r '.name')
+              latest=$(echo "$update" | jq -r '.latest')
+              echo "  Updating ${CONTAINER} build_arg $name to $latest"
+              yq -i ".build_args.${name} = \"$latest\"" "${CONTAINER}/config.yaml"
+            done < <(echo "$UPDATES" | jq -c '.[]')
+          fi
+
+      - name: Import GPG key
+        if: steps.env_check.outputs.is_local_test != 'true'
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: github-actions[bot]
+          git_committer_email: oorabona@users.noreply.github.com
+
+      - name: Create Pull Request
+        if: steps.env_check.outputs.is_local_test != 'true'
+        id: create_pr
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
+          committer: github-actions[bot] <oorabona@users.noreply.github.com>
+          title: "${{ steps.prepare.outputs.max_severity == 'major' && '⚠️' || '📦' }} deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
+          body: |
+            ## Dependency updates for ${{ matrix.container }}
+
+            ${{ steps.prepare.outputs.pr_table }}
+
+            **Change classification:** ${{ steps.prepare.outputs.max_severity }} ${{ steps.prepare.outputs.max_severity == 'major' && '(manual review required)' || '(auto-merge eligible)' }}
+
+            Updated by: upstream-monitor / dependency-check
+          branch: update/${{ matrix.container }}-deps
+          delete-branch: true
+          labels: |
+            automation
+            dependencies
+            ${{ matrix.container }}
+            ${{ steps.prepare.outputs.max_severity }}-update
+          assignees: ${{ steps.prepare.outputs.max_severity == 'major' && github.repository_owner || '' }}
+
+      - name: Auto-merge minor/patch updates
+        if: steps.prepare.outputs.max_severity != 'major' && steps.create_pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
+        run: |
+          MERGE_TIMEOUT=300  # 5 minutes max
+
+          pr_state=$(gh pr view "$PR_NUMBER" --json state -q '.state')
+          if [ "$pr_state" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is $pr_state, skipping merge"
+            exit 0
+          fi
+
+          if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
+            gh pr merge "$PR_NUMBER" --squash
+            echo "✅ Auto-merged PR #$PR_NUMBER"
+          else
+            exit_code=$?
+            if [ "$exit_code" -eq 124 ]; then
+              echo "::warning::CI checks timed out after ${MERGE_TIMEOUT}s for PR #$PR_NUMBER"
+            else
+              echo "::warning::CI checks failed for PR #$PR_NUMBER"
+            fi
+          fi
+
+      - name: Show PR details (test mode)
+        if: steps.env_check.outputs.is_local_test == 'true'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          UPDATE_COUNT: ${{ steps.prepare.outputs.update_count }}
+          MAX_SEVERITY: ${{ steps.prepare.outputs.max_severity }}
+        run: |
+          echo "🧪 LOCAL TEST MODE - Would create dep update PR with:"
+          echo "   Container: $CONTAINER"
+          echo "   Updates: $UPDATE_COUNT"
+          echo "   Max severity: $MAX_SEVERITY"
+          echo "   Branch: update/${CONTAINER}-deps"
