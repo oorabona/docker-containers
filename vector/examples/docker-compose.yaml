@@ -1,0 +1,47 @@
+# Vector + PostgreSQL: Vendor-free observability stack
+#
+# Starts:
+#   - PostgreSQL (full flavor: TimescaleDB + pgvector + ParadeDB + Citus)
+#   - Vector collecting its own internal metrics + demo logs → PostgreSQL
+#
+# Usage:
+#   docker compose -f examples/docker-compose.yaml up -d
+#   docker compose -f examples/docker-compose.yaml exec vector vector top
+#   docker compose -f examples/docker-compose.yaml exec postgres psql -U vector -d observability
+#
+# Query logs:
+#   SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10;
+#
+# Query metrics:
+#   SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 10;
+
+services:
+  postgres:
+    image: ghcr.io/oorabona/postgres:17-full-alpine
+    environment:
+      POSTGRES_USER: vector
+      POSTGRES_PASSWORD: vector
+      POSTGRES_DB: observability
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vector -d observability"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vector:
+    image: ghcr.io/oorabona/vector:latest
+    volumes:
+      - ./vector-postgres.yaml:/etc/vector/vector.yaml:ro
+    ports:
+      - "8686:8686"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

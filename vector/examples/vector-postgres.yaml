@@ -1,0 +1,49 @@
+# Vector → PostgreSQL pipeline
+# Collects demo logs + internal metrics, sends both to PostgreSQL
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+# --- Sources ---
+sources:
+  # Demo logs (replace with docker_logs, syslog, file, etc. in production)
+  demo_logs:
+    type: demo_logs
+    format: json
+    interval: 5
+
+  # Vector's own internal metrics
+  internal_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+
+# --- Transforms ---
+transforms:
+  enrich_logs:
+    type: remap
+    inputs:
+      - demo_logs
+    source: |
+      .host = get_hostname!()
+      .processed_at = now()
+
+# --- Sinks ---
+sinks:
+  pg_logs:
+    type: postgres
+    inputs:
+      - enrich_logs
+    endpoint: "postgres://vector:vector@postgres:5432/observability"
+    table: logs
+    healthcheck:
+      enabled: true
+
+  pg_metrics:
+    type: postgres
+    inputs:
+      - internal_metrics
+    endpoint: "postgres://vector:vector@postgres:5432/observability"
+    table: metrics
+    healthcheck:
+      enabled: true
