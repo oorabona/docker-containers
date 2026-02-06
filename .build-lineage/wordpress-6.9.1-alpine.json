@@ -7,14 +7,14 @@
   "platform": "linux/amd64",
   "runtime": "GitHub Actions (registry cache)",
   "image_id": "unknown",
-  "build_digest": "3fe117f202f5",
+  "build_digest": "8a47d315f3fb",
   "base_image_ref": "ghcr.io/oorabona/php:latest",
   "base_image_digest": "sha256:18874ed43f5782d394aab1a51f5676d687f40da9046fcc56050e4b020de4a6f7",
-  "built_at": "2026-02-05T16:53:05+00:00",
+  "built_at": "2026-02-06T13:17:19+00:00",
   "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/wordpress:6.9.1-alpine",
     "ghcr": "ghcr.io/oorabona/wordpress:6.9.1-alpine"
   },
-  "build_args": {}
+  "build_args": {"WPCLI_VERSION": "2.12.0"}
 }
