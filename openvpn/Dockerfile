@@ -5,7 +5,7 @@ FROM alpine:${OS_VERSION}
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
 ARG PKCS11_HELPER_VERSION
-ARG EASYRSA_VERSION=3.0.8
+ARG EASYRSA_VERSION=3.2.2
 ARG NPROC=1
 
 # Testing: pamtester is only available in edge, not for now.
@@ -58,7 +58,7 @@ RUN set -ex \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
-    && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/master/openvpn/setup.sh --output ovpn \
+    && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/main/openvpn/setup.sh --output ovpn \
     && chmod +x ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
@@ -73,7 +73,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD openvpn --version || exit 1
 
 # Environment variables
-# Later versions of EASYRSA seem to break the script
 ENV OS=other \
     EASYRSA_VERSION=${EASYRSA_VERSION}
 
