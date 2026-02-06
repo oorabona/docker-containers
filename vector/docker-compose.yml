@@ -1,0 +1,12 @@
+services:
+  vector:
+    build:
+      context: .
+      args:
+        VERSION: "${VERSION:-0.53.0}"
+    image: "${DOCKER_REGISTRY:-}vector:${TAG:-latest}"
+    container_name: e2e-vector
+    ports:
+      - "8686:8686"
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro

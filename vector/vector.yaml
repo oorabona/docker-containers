@@ -1,0 +1,51 @@
+# Vector configuration
+# https://vector.dev/docs/reference/configuration/
+#
+# This default config runs a demo pipeline (generate → console).
+# Mount your own config for production use:
+#   docker run -v /path/to/vector.yaml:/etc/vector/vector.yaml vector
+
+# Enable the API for health checks and `vector top`
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+# --- Sources ---
+sources:
+  demo_logs:
+    type: demo_logs
+    format: json
+    interval: 5
+
+# --- Transforms ---
+transforms:
+  parse_logs:
+    type: remap
+    inputs:
+      - demo_logs
+    source: |
+      # Add hostname and timestamp
+      .host = get_hostname!()
+      .processed_at = now()
+
+# --- Sinks ---
+sinks:
+  console:
+    type: console
+    inputs:
+      - parse_logs
+    encoding:
+      codec: json
+
+# --- PostgreSQL sink example (uncomment for production) ---
+# Use with our postgres:full image for vendor-free observability
+#
+# sinks:
+#   postgresql:
+#     type: postgres
+#     inputs:
+#       - parse_logs
+#     endpoint: "postgresql://vector:password@postgres:5432/observability"
+#     table: "logs"
+#     encoding:
+#       codec: json
