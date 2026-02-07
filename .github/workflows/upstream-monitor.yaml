@@ -55,6 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge
       matrix:
         container: ${{ fromJson(needs.check-upstream-versions.outputs.containers_with_updates) }}
     steps:
@@ -225,6 +226,8 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           MERGE_TIMEOUT=300  # 5 minutes max
+          MAX_RETRIES=3
+          RETRY_DELAY=30
 
           # Check PR is still open
           pr_state=$(gh pr view "$PR_NUMBER" --json state -q '.state')
@@ -235,8 +238,22 @@ jobs:
 
           # Wait for CI checks to complete (with timeout)
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
-            gh pr merge "$PR_NUMBER" --squash
-            echo "merged=true" >> "$GITHUB_OUTPUT"
+            # Try to merge with retries (handles "base branch was modified" race)
+            for attempt in $(seq 1 $MAX_RETRIES); do
+              if gh pr merge "$PR_NUMBER" --squash 2>&1; then
+                echo "merged=true" >> "$GITHUB_OUTPUT"
+                echo "✅ Auto-merged PR #$PR_NUMBER"
+                exit 0
+              fi
+              if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+                echo "⚠️ Merge attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+                sleep "$RETRY_DELAY"
+                # Re-verify checks are still green after base branch update
+                timeout 120 gh pr checks "$PR_NUMBER" --watch 2>/dev/null || true
+              fi
+            done
+            echo "::warning::Failed to merge PR #$PR_NUMBER after $MAX_RETRIES attempts"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
           else
             exit_code=$?
             if [ "$exit_code" -eq 124 ]; then
@@ -407,11 +424,12 @@ jobs:
           fi
 
   create-dependency-update-prs:
-    needs: check-dependency-updates
-    if: needs.check-dependency-updates.outputs.dep_update_count > 0
+    needs: [check-dependency-updates, create-update-prs]
+    if: always() && needs.check-dependency-updates.outputs.dep_update_count > 0
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge
       matrix:
         container: ${{ fromJson(needs.check-dependency-updates.outputs.containers_with_dep_updates) }}
     steps:
@@ -561,6 +579,8 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           MERGE_TIMEOUT=300  # 5 minutes max
+          MAX_RETRIES=3
+          RETRY_DELAY=30
 
           pr_state=$(gh pr view "$PR_NUMBER" --json state -q '.state')
           if [ "$pr_state" != "OPEN" ]; then
@@ -569,15 +589,28 @@ jobs:
           fi
 
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
-            gh pr merge "$PR_NUMBER" --squash
-            echo "merged=true" >> "$GITHUB_OUTPUT"
-            echo "✅ Auto-merged PR #$PR_NUMBER"
+            # Try to merge with retries (handles "base branch was modified" race)
+            for attempt in $(seq 1 $MAX_RETRIES); do
+              if gh pr merge "$PR_NUMBER" --squash 2>&1; then
+                echo "merged=true" >> "$GITHUB_OUTPUT"
+                echo "✅ Auto-merged PR #$PR_NUMBER"
+                exit 0
+              fi
+              if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+                echo "⚠️ Merge attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+                sleep "$RETRY_DELAY"
+                # Re-verify checks are still green after base branch update
+                timeout 120 gh pr checks "$PR_NUMBER" --watch 2>/dev/null || true
+              fi
+            done
+            echo "::warning::Failed to merge PR #$PR_NUMBER after $MAX_RETRIES attempts"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
           else
             exit_code=$?
             if [ "$exit_code" -eq 124 ]; then
-              echo "::warning::CI checks timed out after ${MERGE_TIMEOUT}s for PR #$PR_NUMBER"
+              echo "::warning::CI checks timed out after ${MERGE_TIMEOUT}s for PR #$PR_NUMBER — skipping merge"
             else
-              echo "::warning::CI checks failed for PR #$PR_NUMBER"
+              echo "::warning::CI checks failed for PR #$PR_NUMBER — skipping merge"
             fi
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
