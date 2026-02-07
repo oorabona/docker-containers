@@ -2,11 +2,9 @@
 # Base image and third-party dependency versions
 
 base_image: "alpine:${OS_VERSION}"
-
 build_args:
   PKCS11_HELPER_VERSION: "1.31.0"
-  EASYRSA_VERSION: "3.2.2"
-
+  EASYRSA_VERSION: "3.2.5"
 dependency_sources:
   PKCS11_HELPER_VERSION:
     type: github-release
