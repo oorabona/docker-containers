@@ -4,7 +4,7 @@
 
 base_image: "hashicorp/terraform:${UPSTREAM_VERSION}"
 build_args:
-  TFLINT_VERSION: "0.60.0"
+  TFLINT_VERSION: "0.61.0"
   TRIVY_VERSION: "0.69.1"
   TERRAGRUNT_VERSION: "0.99.1"
   TERRAFORM_DOCS_VERSION: "0.21.0"
