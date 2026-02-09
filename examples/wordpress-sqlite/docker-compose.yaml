@@ -1,0 +1,57 @@
+# WordPress + SQLite + OpenResty (no external database)
+#
+# A lightweight WordPress deployment with:
+#   - OpenResty as reverse proxy (security headers, PHP-in-uploads block)
+#   - WordPress with SQLite backend (no MariaDB/MySQL needed)
+#   - Single-container WordPress — ideal for blogs, portfolios, dev environments
+#
+# Usage:
+#   cd examples/wordpress-sqlite
+#   docker compose up -d
+#   # Site is auto-installed and ready at http://localhost:8080
+#
+# Security model:
+#   - DISALLOW_FILE_MODS=true — no plugin/theme changes via wp-admin
+#   - OpenResty blocks PHP execution in uploads and access to SQLite DB file
+#   - SQLite DB file stored on a named volume
+
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+    environment:
+      WP_ADMIN_PATH: ${WP_ADMIN_PATH:-}
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  wordpress:
+    image: ghcr.io/oorabona/wordpress:latest
+    volumes:
+      - wp_data:/var/www/html/wp-content/database
+      - wp_uploads:/var/www/html/wp-content/uploads
+    environment:
+      WP_DB_TYPE: sqlite
+      WP_AUTO_INSTALL: "true"
+      WP_SITE_URL: "http://localhost:8080"
+      WP_SITE_TITLE: "My WordPress Site"
+      WP_ADMIN_USER: admin
+      WP_ADMIN_EMAIL: admin@example.com
+      WP_ADMIN_PASSWORD: change_me_now
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  wp_data:
+  wp_uploads:

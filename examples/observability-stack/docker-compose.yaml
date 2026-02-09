@@ -1,0 +1,74 @@
+# PostgreSQL + Vector + Grafana: Vendor-free observability stack
+#
+# Complete monitoring pipeline with:
+#   - PostgreSQL (TimescaleDB) for log and metric storage
+#   - Vector collecting logs and metrics → PostgreSQL
+#   - Grafana for visualization and alerting
+#
+# Usage:
+#   cd examples/observability-stack
+#   docker compose up -d
+#   # Grafana:    http://localhost:3000 (admin / admin)
+#   # Vector API: http://localhost:8686/health
+#   # PostgreSQL: localhost:5432 (vector / vector)
+#
+# Query examples (via Grafana or psql):
+#   SELECT * FROM logs ORDER BY timestamp DESC LIMIT 20;
+#   SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 20;
+
+services:
+  postgres:
+    image: ghcr.io/oorabona/postgres:17-full-alpine
+    environment:
+      POSTGRES_USER: vector
+      POSTGRES_PASSWORD: vector
+      POSTGRES_DB: observability
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vector -d observability"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  vector:
+    image: ghcr.io/oorabona/vector:latest
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+    ports:
+      - "8686:8686"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  pgdata:
+  grafana_data:
+
+networks:
+  backend:

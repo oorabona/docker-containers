@@ -1,0 +1,54 @@
+# Vector configuration: collect logs and metrics → PostgreSQL
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+sources:
+  # Generate demo logs for testing
+  demo_logs:
+    type: demo_logs
+    format: json
+    interval: 5
+
+  # Vector's own internal metrics
+  internal_metrics:
+    type: internal_metrics
+
+transforms:
+  # Enrich logs with host and processing metadata
+  enrich_logs:
+    type: remap
+    inputs: ["demo_logs"]
+    source: |
+      .host = get_hostname!()
+      .source_type = "demo"
+      .processed_at = now()
+
+  # Convert internal metrics to a simpler format
+  format_metrics:
+    type: remap
+    inputs: ["internal_metrics"]
+    source: |
+      .host = get_hostname!()
+
+sinks:
+  # Logs → PostgreSQL
+  pg_logs:
+    type: postgres
+    inputs: ["enrich_logs"]
+    endpoint: "postgresql://vector:vector@postgres:5432/observability?sslmode=disable"
+    table: "logs"
+
+  # Metrics → PostgreSQL
+  pg_metrics:
+    type: postgres
+    inputs: ["format_metrics"]
+    endpoint: "postgresql://vector:vector@postgres:5432/observability?sslmode=disable"
+    table: "metrics"
+
+  # Also print to console for debugging
+  console:
+    type: console
+    inputs: ["enrich_logs"]
+    encoding:
+      codec: json

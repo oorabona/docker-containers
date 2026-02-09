@@ -1,0 +1,49 @@
+# Web Shell + OpenResty reverse proxy
+#
+# Secure browser-based terminal access with:
+#   - OpenResty as reverse proxy with basic auth and WebSocket support
+#   - Web Shell (ttyd) for browser-based terminal
+#
+# Usage:
+#   cd examples/web-terminal
+#   docker compose up -d
+#   # Open http://localhost:8080 (credentials: admin / admin_change_me)
+#
+# Production notes:
+#   - Replace basic auth with OAuth2 Proxy or Authelia
+#   - Add TLS termination at OpenResty layer
+#   - Restrict network access to trusted IPs
+
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./htpasswd:/etc/nginx/htpasswd:ro
+    depends_on:
+      web-shell:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+
+  web-shell:
+    image: ghcr.io/oorabona/web-shell:latest
+    environment:
+      SHELL_USER: debian
+      SHELL_PASSWORD: shell_secret_change_me
+    # No port exposure — only accessible through OpenResty
+    # Note: not read_only — entrypoint needs write access to /etc/shadow (chpasswd)
+    tmpfs:
+      - /tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+
+networks:
+  frontend:

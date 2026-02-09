@@ -1,0 +1,36 @@
+{
+    "name": "example/wordpress-composer",
+    "description": "WordPress deployed via Composer with managed dependencies",
+    "type": "project",
+    "license": "MIT",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "require": {
+        "php": "^8.1",
+        "composer/installers": "^2",
+        "roots/wordpress": "^6.9",
+        "wpackagist-theme/twentytwentyfive": "*"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "allow-plugins": {
+            "composer/installers": true,
+            "roots/wordpress-core-installer": true
+        }
+    },
+    "extra": {
+        "wordpress-install-dir": "public/wp",
+        "installer-paths": {
+            "public/wp-content/mu-plugins/{$name}": ["type:wordpress-muplugin"],
+            "public/wp-content/themes/{$name}": ["type:wordpress-theme"],
+            "public/wp-content/plugins/{$name}": ["type:wordpress-plugin"]
+        }
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://wpackagist.org",
+            "only": ["wpackagist-plugin/*", "wpackagist-theme/*"]
+        }
+    ]
+}
