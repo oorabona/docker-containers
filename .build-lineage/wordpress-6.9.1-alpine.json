@@ -5,16 +5,16 @@
   "flavor": "",
   "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
-  "runtime": "GitHub Actions (registry cache)",
-  "image_id": "unknown",
-  "build_digest": "8a47d315f3fb",
+  "runtime": "Podman",
+  "image_id": "sha256:223a13335cb3cb5563d50e4d6eaf7dac02adb73c3eeaeff68f89fdf57d0a2683",
+  "build_digest": "c29845daceb0",
   "base_image_ref": "ghcr.io/oorabona/php:latest",
-  "base_image_digest": "sha256:18874ed43f5782d394aab1a51f5676d687f40da9046fcc56050e4b020de4a6f7",
-  "built_at": "2026-02-06T13:17:19+00:00",
-  "github_actions": true,
+  "base_image_digest": "sha256:0709072d2317a43d7ba76e7fd6734e5f0f281d999cc012a56c55302c4608086c",
+  "built_at": "2026-02-08T16:50:31+01:00",
+  "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/wordpress:6.9.1-alpine",
     "ghcr": "ghcr.io/oorabona/wordpress:6.9.1-alpine"
   },
-  "build_args": {"WPCLI_VERSION": "2.12.0"}
+  "build_args": {"WPCLI_VERSION": "2.12.0","SQLITE_PLUGIN_VERSION": "2.2.17"}
 }

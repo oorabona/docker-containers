@@ -5,9 +5,14 @@ base_image: "${PHP_IMAGE}"
 
 build_args:
   WPCLI_VERSION: "2.12.0"
+  SQLITE_PLUGIN_VERSION: "2.2.17"
 
 dependency_sources:
   WPCLI_VERSION:
     type: github-release
     repo: wp-cli/wp-cli
+    strip_v: true
+  SQLITE_PLUGIN_VERSION:
+    type: github-release
+    repo: WordPress/sqlite-database-integration
     strip_v: true

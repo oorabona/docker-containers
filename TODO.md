@@ -17,6 +17,11 @@
 
 ## Completed
 
+- [x] ✅ [CI] Fix merge race condition in upstream monitor — max-parallel + retry logic (2026-02-07)
+- [x] ✅ [Container] web-shell — browser-based terminal on Debian base with ttyd (2026-02-06)
+- [x] ✅ [Container] vector — observability pipeline with musl binary on Alpine (2026-02-06)
+- [x] ✅ [Dashboard] Fix badge lines causing YAML array parse in description extraction (2026-02-06)
+- [x] ✅ [Docs] Standardize README.md across all 10 containers (2026-02-06)
 - [x] ✅ [Dashboard] Dependency Health section on container detail pages (2026-02-06)
 - [x] ✅ [CI] 3rd party dependency version monitoring — DEP-MONITOR (2026-02-06)
 - [x] ✅ [CI] Per-container failure tracking via GitHub API in dashboard (2026-02-05)

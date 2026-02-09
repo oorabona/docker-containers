@@ -1,8 +1,0 @@
-.composer/
-vendor/
-app/wordpress/
-app/wp-content/plugins/
-app/wp-content/themes/
-app/wp-content/uploads/
-.env*.local
-*.log

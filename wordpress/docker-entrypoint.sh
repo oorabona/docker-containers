@@ -1,16 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-# We are assuming that we are in WORKDIR
-HOST_UID=$(stat -c %u .)
-HOST_GID=$(stat -c %g .)
-
-# And we change wordpress UID/GID according to the host UID/GID (discard stderr)
-sudo usermod -u $HOST_UID wordpress 2>/dev/null
-sudo groupmod -g $HOST_GID wordpress 2>/dev/null
-
-# Chown working directory (/var/www) to `wordpress` user
-sudo chown -R wordpress. .
+# Match wordpress UID/GID to host volume ownership (only when running as root)
+if [ "$(id -u)" = '0' ]; then
+	HOST_UID=$(stat -c %u .)
+	HOST_GID=$(stat -c %g .)
+	if [ "$HOST_UID" != "$(id -u wordpress)" ]; then
+		usermod -u "$HOST_UID" wordpress 2>/dev/null || true
+	fi
+	if [ "$HOST_GID" != "$(getent group wordpress | cut -d: -f3)" ]; then
+		groupmod -g "$HOST_GID" wordpress 2>/dev/null || true
+	fi
+	chown -R wordpress:wordpress .
+fi
 
 # usage: file_env VAR [DEFAULT]
 #    ie: file_env 'XYZ_DB_PASSWORD' 'example'
@@ -34,27 +36,119 @@ file_env() {
 	unset "$fileVar"
 }
 
-if [[ "$1" == apache2* ]] || [ "$1" == php-fpm ]; then
-	if [ "$(id -u)" = '0' ]; then
-		case "$1" in
-			apache2*)
-				user="${APACHE_RUN_USER:-www-data}"
-				group="${APACHE_RUN_GROUP:-www-data}"
+# Run wp-cli with stderr suppressed (PHP 8.5 deprecation warnings in wp-cli)
+wp_cmd() {
+	wp "$@" 2>/dev/null
+}
 
-				# strip off any '#' symbol ('#1000' is valid syntax for Apache)
-				pound='#'
-				user="${user#$pound}"
-				group="${group#$pound}"
-				;;
-			*) # php-fpm
-				user='www-data'
-				group='www-data'
-				;;
-		esac
-	else
-		user="$(id -u)"
-		group="$(id -g)"
+if [ "$1" = "php-fpm" ]; then
+
+	# --- Phase 1: Generate wp-config.php ---
+	if [ ! -f wp-config.php ]; then
+		if [ "${WP_DB_TYPE:-mysql}" = "sqlite" ]; then
+			# SQLite mode — no external database needed
+			echo "Configuring WordPress with SQLite backend..."
+			mkdir -p wp-content/database
+
+			# Activate the SQLite drop-in (pre-installed at build time)
+			if [ -f wp-content/plugins/sqlite-database-integration/db.copy ]; then
+				cp wp-content/plugins/sqlite-database-integration/db.copy wp-content/db.php
+			fi
+
+			# wp config create requires db params even for SQLite; they're ignored
+			wp_cmd config create \
+				--dbname=wordpress --dbuser='' --dbpass='' --dbhost='' \
+				--skip-check \
+				--extra-php <<-'PHP'
+				/* SQLite database path */
+				define('DB_DIR', ABSPATH . 'wp-content/database/');
+				define('DB_FILE', '.ht.sqlite');
+
+				/* Security hardening — container is intended to be read-only */
+				define('DISALLOW_FILE_MODS', true);
+				define('DISALLOW_FILE_EDIT', true);
+				define('WP_AUTO_UPDATE_CORE', false);
+				define('AUTOMATIC_UPDATER_DISABLED', true);
+				PHP
+		elif [ -n "${WORDPRESS_DB_HOST:-}" ]; then
+			# MySQL/MariaDB mode
+			file_env 'WORDPRESS_DB_HOST'
+			file_env 'WORDPRESS_DB_NAME' 'wordpress'
+			file_env 'WORDPRESS_DB_USER' 'root'
+			file_env 'WORDPRESS_DB_PASSWORD' ''
+
+			wp_cmd config create \
+				--dbhost="$WORDPRESS_DB_HOST" \
+				--dbname="$WORDPRESS_DB_NAME" \
+				--dbuser="$WORDPRESS_DB_USER" \
+				--dbpass="$WORDPRESS_DB_PASSWORD" \
+				--skip-check \
+				--extra-php <<-'PHP'
+				/* Security hardening — container is intended to be read-only */
+				define('DISALLOW_FILE_MODS', true);
+				define('DISALLOW_FILE_EDIT', true);
+				define('WP_AUTO_UPDATE_CORE', false);
+				define('AUTOMATIC_UPDATER_DISABLED', true);
+				PHP
+		fi
 	fi
+
+	# --- Phase 2: Auto-install WordPress ---
+	if [ "${WP_AUTO_INSTALL:-}" = "true" ] && ! wp_cmd core is-installed; then
+		file_env 'WP_SITE_URL' 'http://localhost'
+		file_env 'WP_SITE_TITLE' 'WordPress Site'
+		file_env 'WP_ADMIN_USER' 'admin'
+		file_env 'WP_ADMIN_PASSWORD'
+		file_env 'WP_ADMIN_EMAIL'
+
+		if [ -z "${WP_ADMIN_PASSWORD:-}" ] || [ -z "${WP_ADMIN_EMAIL:-}" ]; then
+			echo >&2 "error: WP_AUTO_INSTALL requires WP_ADMIN_PASSWORD and WP_ADMIN_EMAIL"
+			exit 1
+		fi
+
+		echo "Installing WordPress at ${WP_SITE_URL}..."
+		wp_cmd core install \
+			--url="${WP_SITE_URL}" \
+			--title="${WP_SITE_TITLE}" \
+			--admin_user="${WP_ADMIN_USER}" \
+			--admin_password="${WP_ADMIN_PASSWORD}" \
+			--admin_email="${WP_ADMIN_EMAIL}" \
+			--skip-email
+
+		# Locale
+		if [ -n "${WP_LOCALE:-}" ]; then
+			echo "Setting locale: ${WP_LOCALE}"
+			wp_cmd language core install "$WP_LOCALE" --activate
+		fi
+
+		# Timezone
+		if [ -n "${WP_TIMEZONE:-}" ]; then
+			wp_cmd option update timezone_string "$WP_TIMEZONE"
+		fi
+
+		# SEO-friendly permalinks
+		wp_cmd rewrite structure '/%postname%/'
+
+		# Plugins (comma-separated)
+		if [ -n "${WP_PLUGINS:-}" ]; then
+			IFS=',' read -ra plugins <<< "$WP_PLUGINS"
+			for plugin in "${plugins[@]}"; do
+				plugin="${plugin## }"  # trim leading space
+				plugin="${plugin%% }"  # trim trailing space
+				echo "Installing plugin: ${plugin}"
+				wp_cmd plugin install "$plugin" --activate || echo >&2 "warning: failed to install plugin '$plugin'"
+			done
+		fi
+
+		# Disable search engine indexing until hoster is ready
+		wp_cmd option update blog_public 0
+
+		echo "WordPress installation complete."
+	fi
+
+	# Clear sensitive env vars from the runtime environment
+	unset WORDPRESS_DB_PASSWORD WP_ADMIN_PASSWORD 2>/dev/null || true
+
 elif [[ "$1" == deploy ]]; then
 	echo $@
 	site=$2
