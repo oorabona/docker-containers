@@ -1,0 +1,100 @@
+# WordPress + PHP-FPM + OpenResty reverse proxy (hardened)
+#
+# A security-hardened WordPress deployment with:
+#   - OpenResty as reverse proxy (security headers, rate limiting, PHP-in-uploads block)
+#   - WordPress on custom PHP-FPM image with auto-install via wp-cli
+#   - MariaDB as database backend
+#
+# Usage:
+#   cd examples/wordpress-stack
+#   docker compose up -d
+#   # Site is auto-installed and ready at http://localhost:8080
+#
+# Security model:
+#   - DISALLOW_FILE_MODS=true — no plugin/theme changes via wp-admin
+#   - DISALLOW_FILE_EDIT=true — no code editor in wp-admin
+#   - OpenResty blocks PHP execution in uploads directory
+#   - Updates are done by rebuilding the image, not through wp-admin
+#   - All sensitive env vars support Docker secrets (_FILE suffix)
+#
+# Production hardening (after first successful boot):
+#   Add read_only: true + tmpfs for /tmp and /run to the wordpress service.
+#   This makes the filesystem fully immutable — only uploads volume is writable.
+
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+    environment:
+      WP_ADMIN_PATH: ${WP_ADMIN_PATH:-}
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+
+  wordpress:
+    image: ghcr.io/oorabona/wordpress:latest
+    volumes:
+      - wp_uploads:/var/www/html/wp-content/uploads
+    environment:
+      # Database
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wp_secret_change_me
+      # Auto-install
+      WP_AUTO_INSTALL: "true"
+      WP_SITE_URL: "http://localhost:8080"
+      WP_SITE_TITLE: "My WordPress Site"
+      WP_ADMIN_USER: admin
+      WP_ADMIN_EMAIL: admin@example.com
+      WP_ADMIN_PASSWORD: change_me_now
+      WP_LOCALE: en_US
+      WP_TIMEZONE: "UTC"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+      - backend
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: root_secret_change_me
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wp_secret_change_me
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+volumes:
+  mariadb_data:
+  wp_uploads:
+
+networks:
+  frontend:
+  backend:

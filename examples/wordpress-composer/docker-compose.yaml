@@ -1,0 +1,77 @@
+# WordPress via Composer + OpenResty + MariaDB
+#
+# Demonstrates the Composer-managed WordPress deployment model:
+#   - WordPress core installed via roots/wordpress (packagist.org)
+#   - Plugins/themes managed as Composer dependencies
+#   - Clean separation: public/wp/ (core) vs public/wp-content/ (custom)
+#   - Reproducible builds via composer.lock
+#
+# Based on cloudrly/wordpress project structure.
+#
+# Usage:
+#   cd examples/wordpress-composer
+#   docker compose up -d --build
+#   # Site is ready at http://localhost:8080 (requires manual install or wp-cli)
+#
+# Adding plugins (edit composer.json, then rebuild):
+#   "wpackagist-plugin/akismet": "^5.0"
+#   docker compose up -d --build
+
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+    environment:
+      WP_ADMIN_PATH: ${WP_ADMIN_PATH:-}
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  wordpress:
+    build: .
+    volumes:
+      - wp_uploads:/var/www/public/wp-content/uploads
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress_pass
+      WP_HOME: "http://localhost:8080"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  mariadb:
+    image: mariadb:11
+    volumes:
+      - db_data:/var/lib/mysql
+    environment:
+      MARIADB_ROOT_PASSWORD: root_pass
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress_pass
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  db_data:
+  wp_uploads:

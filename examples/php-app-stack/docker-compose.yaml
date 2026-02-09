@@ -1,0 +1,91 @@
+# PHP Application + PostgreSQL + OpenResty reverse proxy
+#
+# A generic PHP application stack with:
+#   - OpenResty as reverse proxy (load balancing, security headers, caching)
+#   - PHP-FPM for application serving
+#   - PostgreSQL as database backend
+#
+# Usage:
+#   cd examples/php-app-stack
+#   docker compose up -d
+#   # Open http://localhost:8080 — shows PHP info page with DB connection status
+#
+# Customize:
+#   - Replace ./src/ contents with your PHP application
+#   - Adjust nginx.conf for your URL routing
+#   - Add extensions to PHP image via build args if needed
+
+services:
+  openresty:
+    image: ghcr.io/oorabona/openresty:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./src:/app:ro
+    depends_on:
+      php:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+
+  php:
+    build: .
+    image: php-app-stack:local
+    volumes:
+      - ./src:/app:ro
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: myapp
+      DB_USER: appuser
+      DB_PASSWORD: app_secret_change_me
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+      - backend
+
+  postgres:
+    image: ghcr.io/oorabona/postgres:17-alpine
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: app_secret_change_me
+      POSTGRES_DB: myapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d myapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+volumes:
+  pgdata:
+
+networks:
+  frontend:
+  backend:
