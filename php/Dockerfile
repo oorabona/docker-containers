@@ -75,7 +75,6 @@ HEALTHCHECK CMD ["healthcheck-fpm"]
 
 ENTRYPOINT ["entrypoint-fpm"]
 
-VOLUME /var/www/
 WORKDIR /var/www/
 
 EXPOSE 9000

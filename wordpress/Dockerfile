@@ -31,7 +31,7 @@ RUN { \
 # Install WP-CLI
 ARG WPCLI_VERSION
 RUN set -ex; \
-    curl -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
+    curl -fsSL -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
     chmod +x /usr/local/bin/wp; \
     # Verify WP-CLI works
     wp --info --allow-root
@@ -40,11 +40,21 @@ RUN set -ex; \
 COPY *.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
 
-# Setup directories
-RUN mkdir -p /var/www/html && chown -R wordpress:wordpress /var/www/
+# Setup directories and download WordPress core + SQLite drop-in
+ARG VERSION
+ARG SQLITE_PLUGIN_VERSION
+RUN set -ex; \
+    mkdir -p /var/www/html; \
+    WP_VERSION="${VERSION%%-*}"; \
+    wp core download --path=/var/www/html --version="$WP_VERSION" --allow-root; \
+    # Pre-install SQLite Database Integration plugin (used when WP_DB_TYPE=sqlite)
+    curl -fsSL -o /tmp/sqlite-plugin.zip \
+        "https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip"; \
+    unzip -qo /tmp/sqlite-plugin.zip -d /var/www/html/wp-content/plugins/; \
+    rm /tmp/sqlite-plugin.zip; \
+    chown -R wordpress:wordpress /var/www/
 
-VOLUME /var/www/
-WORKDIR /var/www/
+WORKDIR /var/www/html
 
 EXPOSE 9000
 

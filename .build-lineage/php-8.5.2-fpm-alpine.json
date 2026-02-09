@@ -5,13 +5,13 @@
   "flavor": "",
   "dockerfile": "Dockerfile",
   "platform": "linux/amd64",
-  "runtime": "GitHub Actions (registry cache)",
-  "image_id": "unknown",
-  "build_digest": "c94115eba199",
+  "runtime": "Podman",
+  "image_id": "sha256:a03b472cf3a46fcc7054d870777de23662e9f25ccd695a8e63df54f75fd2161c",
+  "build_digest": "af0f9719d371",
   "base_image_ref": "php:8.5.2-fpm-alpine",
   "base_image_digest": "sha256:cdba3efb175e2c79b9d348bf324c07a8bc31324e332ccf768cea864a6a5ce383",
-  "built_at": "2026-02-06T13:16:20+00:00",
-  "github_actions": true,
+  "built_at": "2026-02-08T14:13:10+01:00",
+  "github_actions": false,
   "images": {
     "dockerhub": "docker.io/oorabona/php:8.5.2-fpm-alpine",
     "ghcr": "ghcr.io/oorabona/php:8.5.2-fpm-alpine"
