@@ -30,7 +30,7 @@ extensions:
     shared_preload: false
     priority: 1 # Build order (lower = first)
   pg_partman:
-    version: "5.4.0"
+    version: "5.4.1"
     description: "Partition management for time-series and large tables"
     repo: "pgpartman/pg_partman"
     build_deps:
