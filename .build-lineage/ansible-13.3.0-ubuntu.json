@@ -7,14 +7,14 @@
   "platform": "linux/amd64",
   "runtime": "GitHub Actions (registry cache)",
   "image_id": "unknown",
-  "build_digest": "234a3060c540",
+  "build_digest": "276bd9de8f9c",
   "base_image_ref": "ubuntu:latest",
   "base_image_digest": "sha256:a4453623f2f8319cfff65c43da9be80fe83b1a7ce689579b475867d69495b782",
-  "built_at": "2026-02-06T16:40:55+00:00",
+  "built_at": "2026-02-11T06:29:25+00:00",
   "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/ansible:13.3.0-ubuntu",
     "ghcr": "ghcr.io/oorabona/ansible:13.3.0-ubuntu"
   },
-  "build_args": {"PYASN1_VERSION": "0.6.2","PARAMIKO_VERSION": "4.0.0","CFFI_VERSION": "2.0.0","CRYPTOGRAPHY_VERSION": "46.0.4","PYCRYPTODOME_VERSION": "3.23.0","PYNACL_VERSION": "1.6.2"}
+  "build_args": {"PYASN1_VERSION": "0.6.2","PARAMIKO_VERSION": "4.0.0","CFFI_VERSION": "2.0.0","CRYPTOGRAPHY_VERSION": "46.0.5","PYCRYPTODOME_VERSION": "3.23.0","PYNACL_VERSION": "1.6.2"}
 }
