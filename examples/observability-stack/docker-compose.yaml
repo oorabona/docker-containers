@@ -10,7 +10,7 @@
 #   docker compose up -d
 #   # Grafana:    http://localhost:3000 (admin / admin)
 #   # Vector API: http://localhost:8686/health
-#   # PostgreSQL: localhost:5432 (vector / vector)
+#   # PostgreSQL: localhost:15432 (vector / vector / observability)
 #
 # Query examples (via Grafana or psql):
 #   SELECT * FROM logs ORDER BY timestamp DESC LIMIT 20;
