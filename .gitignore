@@ -57,6 +57,9 @@ docs/audit/
 docs/site/_site
 docs/site/.claude
 
+# Build lineage metadata (cached in GitHub Actions, not committed)
+.build-lineage/
+
 # CI artifact staging (download-artifact temporary files)
 .build-lineage-artifacts/
 
