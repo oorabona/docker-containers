@@ -29,10 +29,16 @@ RUN { \
     } > /usr/local/etc/php/conf.d/opcache-wordpress.ini
 
 # Install WP-CLI
+# Note: WP-CLI's bundled php-cli-tools triggers PHP 8.5 deprecation warnings
+# (upstream: github.com/wp-cli/php-cli-tools/issues/162).
+# Suppress E_DEPRECATED globally — standard practice for WordPress production
+# (WP core and plugins routinely emit deprecation notices).
 ARG WPCLI_VERSION
 RUN set -ex; \
     curl -fsSL -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
     chmod +x /usr/local/bin/wp; \
+    # Suppress deprecation warnings for CLI only (E_ALL & ~E_DEPRECATED = 22527)
+    echo 'error_reporting = E_ALL & ~E_DEPRECATED' > /usr/local/etc/php/conf.d/cli-no-deprecated.ini; \
     # Verify WP-CLI works
     wp --info --allow-root
 
