@@ -41,6 +41,24 @@ wp_cmd() {
 	wp "$@" 2>/dev/null
 }
 
+# Generate security hardening PHP defines based on environment variables.
+# Each constant defaults to off (permissive) when the env var is unset.
+# Managed hosting platforms (e.g. khi) set these to lock down the container.
+_security_defines() {
+	if [ "${DISALLOW_FILE_MODS:-}" = "true" ]; then
+		echo "define('DISALLOW_FILE_MODS', true);"
+	fi
+	if [ "${DISALLOW_FILE_EDIT:-}" = "true" ]; then
+		echo "define('DISALLOW_FILE_EDIT', true);"
+	fi
+	if [ "${WP_AUTO_UPDATE_CORE:-}" = "false" ]; then
+		echo "define('WP_AUTO_UPDATE_CORE', false);"
+	fi
+	if [ "${AUTOMATIC_UPDATER_DISABLED:-}" = "true" ]; then
+		echo "define('AUTOMATIC_UPDATER_DISABLED', true);"
+	fi
+}
+
 if [ "$1" = "php-fpm" ]; then
 
 	# --- Phase 1: Generate wp-config.php ---
@@ -56,20 +74,17 @@ if [ "$1" = "php-fpm" ]; then
 			fi
 
 			# wp config create requires db params even for SQLite; they're ignored
-			wp_cmd config create \
-				--dbname=wordpress --dbuser='' --dbpass='' --dbhost='' \
-				--skip-check \
-				--extra-php <<-'PHP'
+			{
+				cat <<-'PHP'
 				/* SQLite database path */
 				define('DB_DIR', ABSPATH . 'wp-content/database/');
 				define('DB_FILE', '.ht.sqlite');
-
-				/* Security hardening — container is intended to be read-only */
-				define('DISALLOW_FILE_MODS', true);
-				define('DISALLOW_FILE_EDIT', true);
-				define('WP_AUTO_UPDATE_CORE', false);
-				define('AUTOMATIC_UPDATER_DISABLED', true);
 				PHP
+				_security_defines
+			} | wp_cmd config create \
+				--dbname=wordpress --dbuser='' --dbpass='' --dbhost='' \
+				--skip-check \
+				--extra-php
 		elif [ -n "${WORDPRESS_DB_HOST:-}" ]; then
 			# MySQL/MariaDB mode
 			file_env 'WORDPRESS_DB_HOST'
@@ -77,19 +92,13 @@ if [ "$1" = "php-fpm" ]; then
 			file_env 'WORDPRESS_DB_USER' 'root'
 			file_env 'WORDPRESS_DB_PASSWORD' ''
 
-			wp_cmd config create \
+			_security_defines | wp_cmd config create \
 				--dbhost="$WORDPRESS_DB_HOST" \
 				--dbname="$WORDPRESS_DB_NAME" \
 				--dbuser="$WORDPRESS_DB_USER" \
 				--dbpass="$WORDPRESS_DB_PASSWORD" \
 				--skip-check \
-				--extra-php <<-'PHP'
-				/* Security hardening — container is intended to be read-only */
-				define('DISALLOW_FILE_MODS', true);
-				define('DISALLOW_FILE_EDIT', true);
-				define('WP_AUTO_UPDATE_CORE', false);
-				define('AUTOMATIC_UPDATER_DISABLED', true);
-				PHP
+				--extra-php
 		fi
 	fi
 
