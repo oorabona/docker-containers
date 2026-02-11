@@ -58,7 +58,7 @@ permissions:
   packages: write
   pages: write
   id-token: write
-  pull-requests: write  # Required for peter-evans/create-pull-request (lineage PRs)
+  # pull-requests: write — removed: lineage now cached, no longer creating PRs
   security-events: write  # Required for uploading SARIF to GitHub Security
 
 jobs:
@@ -671,10 +671,10 @@ jobs:
           )"
           fi
 
-  commit-lineage:
-    name: Commit build lineage
+  cache-lineage:
+    name: Cache build lineage
     needs: [build-and-push, create-manifest]
-    # Run on partial failure: successful builds still have lineage to commit
+    # Run on partial failure: successful builds still have lineage to cache
     if: |
       always() &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
@@ -683,12 +683,14 @@ jobs:
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Restore previous lineage cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
 
-      - name: Download all lineage artifacts
+      - name: Download current build artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4
         with:
           pattern: build-lineage-*
@@ -702,59 +704,29 @@ jobs:
           if [ -d ".build-lineage-artifacts" ]; then
             find .build-lineage-artifacts -name '*.json' -exec cp {} .build-lineage/ \;
             count=$(find .build-lineage -name '*.json' | wc -l)
-            echo "Merged $count lineage files:"
-            ls -la .build-lineage/
-            echo "has_files=true" >> $GITHUB_OUTPUT
+            echo "Consolidated $count lineage files"
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No lineage artifacts found — skipping commit"
-            echo "has_files=false" >> $GITHUB_OUTPUT
+            echo "No lineage artifacts found"
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Import GPG key
+      - name: Save consolidated lineage cache
         if: steps.merge.outputs.has_files == 'true'
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          git_user_signingkey: true
-          git_commit_gpgsign: true
-          git_config_global: true
-          git_committer_name: github-actions[bot]
-          git_committer_email: oorabona@users.noreply.github.com
-
-      - name: Create lineage PR
-        if: steps.merge.outputs.has_files == 'true'
-        id: create_pr
-        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "ci: update build lineage metadata"
-          committer: github-actions[bot] <oorabona@users.noreply.github.com>
-          title: "ci: update build lineage metadata"
-          body: |
-            Automated build lineage update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-          branch: ci/update-lineage-${{ github.run_id }}
-          add-paths: .build-lineage/
-          delete-branch: true
-          labels: automation
-
-      - name: Enable auto-merge on lineage PR
-        if: steps.merge.outputs.has_files == 'true' && steps.create_pr.outputs.pull-request-number
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
-        run: |
-          echo "Created PR #$PR_NUMBER"
-          gh pr merge "$PR_NUMBER" --auto --squash --delete-branch
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
 
   update-dashboard:
-    needs: [detect-containers, build-and-push, create-manifest, commit-lineage]
+    needs: [detect-containers, build-and-push, create-manifest, cache-lineage]
     # Update dashboard after builds (even partial failures) on master
     # Dashboard will show warnings for failed/missing builds
     if: |
       always() &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
-      (needs.commit-lineage.result == 'success' || needs.commit-lineage.result == 'skipped') &&
+      (needs.cache-lineage.result == 'success' || needs.cache-lineage.result == 'skipped') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     uses: ./.github/workflows/update-dashboard.yaml

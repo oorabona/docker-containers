@@ -47,6 +47,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Restore build lineage cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .build-lineage
+          key: build-lineage-never-exact-match
+          restore-keys: build-lineage-
+
       - name: Generate dashboard data
         run: |
           chmod +x generate-dashboard.sh
