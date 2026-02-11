@@ -138,10 +138,10 @@ The `wp-config.php` reads all settings from environment variables — no secrets
 | `WP_HOME` | `http://localhost` | Public site URL |
 | `WP_DEBUG` | `false` | Enable WordPress debug mode |
 | `WP_ADMIN_PATH` | — | Secret URL path to access the admin area |
-| `DISALLOW_FILE_MODS` | — | Set `true` to block plugin/theme installs via wp-admin |
-| `DISALLOW_FILE_EDIT` | — | Set `true` to block code editor in wp-admin |
-| `WP_AUTO_UPDATE_CORE` | — | Set `false` to disable automatic core updates |
-| `AUTOMATIC_UPDATER_DISABLED` | — | Set `true` to disable all background updates |
+| `DISALLOW_FILE_MODS` | `true` | Block plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | Block code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | Disable automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | Disable all background updates |
 
 ## Security model
 
