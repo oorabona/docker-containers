@@ -5,7 +5,7 @@ FROM alpine:${OS_VERSION}
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
 ARG PKCS11_HELPER_VERSION
-ARG EASYRSA_VERSION=3.2.2
+ARG EASYRSA_VERSION=3.2.5
 ARG NPROC=1
 
 # Testing: pamtester is only available in edge, not for now.
@@ -13,7 +13,7 @@ ARG NPROC=1
 RUN set -ex \
     && DOWNLOAD_VERSION="${UPSTREAM_VERSION:-$VERSION}" \
     && apk add --update iptables bash ca-certificates curl linux-pam libselinux openssl nss gnutls gzip \
-        google-authenticator libqrencode \
+        google-authenticator libqrencode libcap-ng \
     && apk add --no-cache --virtual .build-deps \
         gcc \
         pkgconfig \
