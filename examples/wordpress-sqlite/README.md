@@ -69,7 +69,7 @@ Also blocked by default: `/xmlrpc.php` (common brute-force vector).
 
 ## Adding plugins and themes
 
-The wp-admin UI is locked (`DISALLOW_FILE_MODS=true`). Three ways to add plugins:
+The wp-admin UI is locked when `DISALLOW_FILE_MODS=true` (enabled by default in the compose file). Three ways to add plugins:
 
 ### 1. At first boot — `WP_PLUGINS` env var
 
@@ -120,10 +120,25 @@ USER wordpress
 | `WP_ADMIN_EMAIL` | (required) | Admin email |
 | `WP_PLUGINS` | — | Comma-separated plugin slugs (first boot only) |
 | `WP_ADMIN_PATH` | — | Secret URL path to access the admin area |
+| `DISALLOW_FILE_MODS` | `true` | Block plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | Block code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | Disable automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | Disable all background updates |
 
 ## Security model
 
-- **DISALLOW_FILE_MODS** — no plugin/theme installs via wp-admin
+Security constants are **configurable via environment variables** (not hardcoded). The compose file enables them by default:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `DISALLOW_FILE_MODS` | `true` | No plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | No code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | No automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | No background updates at all |
+
+Set any of these to an empty value to disable that restriction.
+
+Additional security layers:
 - **OpenResty** blocks access to `wp-content/database/` (protects SQLite file)
 - **OpenResty** blocks PHP execution in uploads, xmlrpc.php
 - **WP_ADMIN_PATH** — hides login URL and entire `/wp-admin/` area (optional)

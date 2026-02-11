@@ -42,6 +42,11 @@ services:
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: wordpress_pass
       WP_HOME: "http://localhost:8080"
+      # Security hardening (opt-in, recommended for production)
+      DISALLOW_FILE_MODS: "true"
+      DISALLOW_FILE_EDIT: "true"
+      WP_AUTO_UPDATE_CORE: "false"
+      AUTOMATIC_UPDATER_DISABLED: "true"
     depends_on:
       mariadb:
         condition: service_healthy

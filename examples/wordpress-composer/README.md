@@ -138,10 +138,25 @@ The `wp-config.php` reads all settings from environment variables — no secrets
 | `WP_HOME` | `http://localhost` | Public site URL |
 | `WP_DEBUG` | `false` | Enable WordPress debug mode |
 | `WP_ADMIN_PATH` | — | Secret URL path to access the admin area |
+| `DISALLOW_FILE_MODS` | — | Set `true` to block plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | — | Set `true` to block code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | — | Set `false` to disable automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | — | Set `true` to disable all background updates |
 
 ## Security model
 
-- **DISALLOW_FILE_MODS** — no plugin/theme installs via wp-admin
+Security constants are **configurable via environment variables** (not hardcoded). The compose file enables them by default:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `DISALLOW_FILE_MODS` | `true` | No plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | No code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | No automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | No background updates at all |
+
+Set any of these to an empty value to disable that restriction.
+
+Additional security layers:
 - **Composer autoloader** only — no remote code execution
 - **OpenResty** blocks access to `/vendor/`, PHP in uploads, xmlrpc.php
 - **WP_ADMIN_PATH** — hides login URL and entire `/wp/wp-admin/` area (optional)

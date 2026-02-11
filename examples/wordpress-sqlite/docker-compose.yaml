@@ -10,8 +10,10 @@
 #   docker compose up -d
 #   # Site is auto-installed and ready at http://localhost:8080
 #
-# Security model:
-#   - DISALLOW_FILE_MODS=true — no plugin/theme changes via wp-admin
+# Security model (all configurable via env vars — see below):
+#   - DISALLOW_FILE_MODS — no plugin/theme changes via wp-admin
+#   - DISALLOW_FILE_EDIT — no code editor in wp-admin
+#   - WP_AUTO_UPDATE_CORE / AUTOMATIC_UPDATER_DISABLED — no background updates
 #   - OpenResty blocks PHP execution in uploads and access to SQLite DB file
 #   - SQLite DB file stored on a named volume
 
@@ -43,6 +45,11 @@ services:
       WP_ADMIN_USER: admin
       WP_ADMIN_EMAIL: admin@example.com
       WP_ADMIN_PASSWORD: change_me_now
+      # Security hardening (opt-in, recommended for production)
+      DISALLOW_FILE_MODS: "true"
+      DISALLOW_FILE_EDIT: "true"
+      WP_AUTO_UPDATE_CORE: "false"
+      AUTOMATIC_UPDATER_DISABLED: "true"
     healthcheck:
       test: ["CMD-SHELL", "php-fpm -t"]
       interval: 10s
