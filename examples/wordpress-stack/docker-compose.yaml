@@ -10,11 +10,11 @@
 #   docker compose up -d
 #   # Site is auto-installed and ready at http://localhost:8080
 #
-# Security model:
-#   - DISALLOW_FILE_MODS=true — no plugin/theme changes via wp-admin
-#   - DISALLOW_FILE_EDIT=true — no code editor in wp-admin
+# Security model (all configurable via env vars — see below):
+#   - DISALLOW_FILE_MODS — no plugin/theme changes via wp-admin
+#   - DISALLOW_FILE_EDIT — no code editor in wp-admin
+#   - WP_AUTO_UPDATE_CORE / AUTOMATIC_UPDATER_DISABLED — no background updates
 #   - OpenResty blocks PHP execution in uploads directory
-#   - Updates are done by rebuilding the image, not through wp-admin
 #   - All sensitive env vars support Docker secrets (_FILE suffix)
 #
 # Production hardening (after first successful boot):
@@ -57,6 +57,11 @@ services:
       WP_ADMIN_PASSWORD: change_me_now
       WP_LOCALE: en_US
       WP_TIMEZONE: "UTC"
+      # Security hardening (opt-in, recommended for production)
+      DISALLOW_FILE_MODS: "true"
+      DISALLOW_FILE_EDIT: "true"
+      WP_AUTO_UPDATE_CORE: "false"
+      AUTOMATIC_UPDATER_DISABLED: "true"
     depends_on:
       mariadb:
         condition: service_healthy

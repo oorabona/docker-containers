@@ -18,7 +18,7 @@ Full-featured WordPress deployment with MariaDB database, auto-install via WP-CL
 ├──────────────────────────────────────┤
 │  WordPress (PHP-FPM)                 │
 │  Auto-installed via WP_AUTO_INSTALL  │
-│  DISALLOW_FILE_MODS=true             │
+│  Security hardening via env vars     │
 ├──────────────────────────────────────┤
 │  MariaDB 11                          │
 │  Persistent volume for data          │
@@ -61,7 +61,7 @@ Also blocked by default (regardless of `WP_ADMIN_PATH`): `/xmlrpc.php` (common b
 
 ## Adding plugins and themes
 
-The wp-admin UI is locked (`DISALLOW_FILE_MODS=true`): no plugin or theme installation from the dashboard. This is intentional — it prevents unauthorized modifications and encourages reproducible deployments.
+The wp-admin UI is locked when `DISALLOW_FILE_MODS=true` (enabled by default in the compose file): no plugin or theme installation from the dashboard. This prevents unauthorized modifications and encourages reproducible deployments.
 
 Three ways to add plugins:
 
@@ -136,11 +136,25 @@ All settings via environment variables (Docker secrets supported via `_FILE` suf
 | `WP_TIMEZONE` | `UTC` | Site timezone |
 | `WP_PLUGINS` | — | Comma-separated plugin slugs (first boot only) |
 | `WP_ADMIN_PATH` | — | Secret URL path to access the admin area |
+| `DISALLOW_FILE_MODS` | `true` | Block plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | Block code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | Disable automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | Disable all background updates |
 
 ## Security model
 
-- **DISALLOW_FILE_MODS** — no plugin/theme installs via wp-admin
-- **DISALLOW_FILE_EDIT** — no code editor in wp-admin
+Security constants are **configurable via environment variables** (not hardcoded). The compose file enables them by default:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `DISALLOW_FILE_MODS` | `true` | No plugin/theme installs via wp-admin |
+| `DISALLOW_FILE_EDIT` | `true` | No code editor in wp-admin |
+| `WP_AUTO_UPDATE_CORE` | `false` | No automatic core updates |
+| `AUTOMATIC_UPDATER_DISABLED` | `true` | No background updates at all |
+
+Set any of these to an empty value to disable that restriction (e.g., `DISALLOW_FILE_MODS: ""`).
+
+Additional security layers:
 - **OpenResty** blocks PHP execution in uploads directory and xmlrpc.php
 - **WP_ADMIN_PATH** — hides login URL and entire `/wp-admin/` area (optional)
 - **Network isolation** — MariaDB only accessible from WordPress (backend network)
