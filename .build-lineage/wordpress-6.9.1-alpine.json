@@ -7,10 +7,10 @@
   "platform": "linux/amd64",
   "runtime": "GitHub Actions (registry cache)",
   "image_id": "unknown",
-  "build_digest": "c29845daceb0",
+  "build_digest": "f024dba53a01",
   "base_image_ref": "ghcr.io/oorabona/php:latest",
-  "base_image_digest": "sha256:0709072d2317a43d7ba76e7fd6734e5f0f281d999cc012a56c55302c4608086c",
-  "built_at": "2026-02-11T19:14:48+00:00",
+  "base_image_digest": "sha256:7763fb7de3f9739a8dfa7f770d0ae19765fa2c338a4d18e8eae8c025e000856b",
+  "built_at": "2026-02-11T19:34:03+00:00",
   "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/wordpress:6.9.1-alpine",
