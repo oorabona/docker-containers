@@ -57,11 +57,11 @@ services:
       WP_ADMIN_PASSWORD: change_me_now
       WP_LOCALE: en_US
       WP_TIMEZONE: "UTC"
-      # Security hardening (opt-in, recommended for production)
-      DISALLOW_FILE_MODS: "true"
-      DISALLOW_FILE_EDIT: "true"
-      WP_AUTO_UPDATE_CORE: "false"
-      AUTOMATIC_UPDATER_DISABLED: "true"
+      # Security hardening (enabled by default, override via .env or host env)
+      DISALLOW_FILE_MODS: ${DISALLOW_FILE_MODS:-true}
+      DISALLOW_FILE_EDIT: ${DISALLOW_FILE_EDIT:-true}
+      WP_AUTO_UPDATE_CORE: ${WP_AUTO_UPDATE_CORE:-false}
+      AUTOMATIC_UPDATER_DISABLED: ${AUTOMATIC_UPDATER_DISABLED:-true}
     depends_on:
       mariadb:
         condition: service_healthy

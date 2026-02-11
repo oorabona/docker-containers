@@ -252,9 +252,9 @@ build_container() {
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
     _prepare_build_args "$version" "$flavor"
 
-    # Prepare tags
+    # Prepare tags — always include :latest for local builds so examples work
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$tag" == "latest" ]]; then
+    if [[ "$tag" != "latest" ]]; then
         tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
     fi
 
