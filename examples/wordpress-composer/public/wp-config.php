@@ -43,11 +43,11 @@ define('WP_SITEURL', $wp_home . '/wp');
 define('WP_CONTENT_DIR', __DIR__ . '/wp-content');
 define('WP_CONTENT_URL', $wp_home . '/wp-content');
 
-/** Security hardening — container is intended to be immutable */
-define('DISALLOW_FILE_MODS', true);
-define('DISALLOW_FILE_EDIT', true);
-define('WP_AUTO_UPDATE_CORE', false);
-define('AUTOMATIC_UPDATER_DISABLED', true);
+/** Security hardening — configurable via environment, locked by default */
+define('DISALLOW_FILE_MODS', filter_var(getenv('DISALLOW_FILE_MODS') ?: 'true', FILTER_VALIDATE_BOOLEAN));
+define('DISALLOW_FILE_EDIT', filter_var(getenv('DISALLOW_FILE_EDIT') ?: 'true', FILTER_VALIDATE_BOOLEAN));
+define('WP_AUTO_UPDATE_CORE', filter_var(getenv('WP_AUTO_UPDATE_CORE') ?: 'false', FILTER_VALIDATE_BOOLEAN));
+define('AUTOMATIC_UPDATER_DISABLED', filter_var(getenv('AUTOMATIC_UPDATER_DISABLED') ?: 'true', FILTER_VALIDATE_BOOLEAN));
 
 /** Debug — controlled via environment */
 define('WP_DEBUG', filter_var(getenv('WP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN));
