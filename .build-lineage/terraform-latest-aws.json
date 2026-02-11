@@ -7,14 +7,14 @@
   "platform": "linux/amd64",
   "runtime": "GitHub Actions (registry cache)",
   "image_id": "unknown",
-  "build_digest": "163cc939d6df",
+  "build_digest": "240cc1ed2891",
   "base_image_ref": "hashicorp/terraform:1.14.4",
   "base_image_digest": "sha256:f96f4a14d53eff20bdaef7b03f6cd9f61212e3d9fde3d441d1c7a8fcfa965318",
-  "built_at": "2026-02-10T06:28:41+00:00",
+  "built_at": "2026-02-11T06:29:29+00:00",
   "github_actions": true,
   "images": {
     "dockerhub": "docker.io/oorabona/terraform:latest-aws",
     "ghcr": "ghcr.io/oorabona/terraform:latest-aws"
   },
-  "build_args": {"TFLINT_VERSION": "0.61.0","TRIVY_VERSION": "0.69.1","TERRAGRUNT_VERSION": "0.99.1","TERRAFORM_DOCS_VERSION": "0.21.0","INFRACOST_VERSION": "0.10.43","GITHUB_CLI_VERSION": "2.86.0","AWS_CLI_VERSION": "1.44.35","AZURE_CLI_VERSION": "2.83.0","GCP_CLI_VERSION": "latest"}
+  "build_args": {"TFLINT_VERSION": "0.61.0","TRIVY_VERSION": "0.69.1","TERRAGRUNT_VERSION": "0.99.1","TERRAFORM_DOCS_VERSION": "0.21.0","INFRACOST_VERSION": "0.10.43","GITHUB_CLI_VERSION": "2.86.0","AWS_CLI_VERSION": "1.44.36","AZURE_CLI_VERSION": "2.83.0","GCP_CLI_VERSION": "latest"}
 }
