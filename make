@@ -56,6 +56,7 @@ help() {
   log_help "check-dep-updates [target]" "Check 3rd party dependency versions for updates"
   log_help "sizes [target]" "Show image sizes (all or specific container)"
   log_help "lineage [target]" "Show build lineage JSON (all or specific container)"
+  log_help "list-builds <target> [version]" "List all builds for a container (CI-ready JSON)"
   echo
   echo Where:
   log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
@@ -494,6 +495,27 @@ build_extensions() {
   ./scripts/build-extensions.sh "$target" $version_args $local_only
 }
 
+# List all builds for a container (CI-ready JSON output)
+# Usage: list_builds <target> [version]
+list_builds() {
+    local target="$1"
+    local wanted_version="${2:-latest}"
+
+    if ! validate_target "$target"; then
+        log_error "$target is not a valid target!" >&2
+        return 1
+    fi
+
+    local version
+    version=$(get_build_version "$target" "$wanted_version")
+    if [[ $? -ne 0 || -z "$version" ]]; then
+        log_error "Failed to resolve version for $target" >&2
+        return 1
+    fi
+
+    list_container_builds "$target" "$version"
+}
+
 show_lineage() {
   local target="${1:-}"
   local lineage_dir=".build-lineage"
@@ -548,5 +570,6 @@ case "${1:-}" in
   list ) list_containers ;;
   sizes ) show_sizes "${2:-}" ;;
   lineage ) show_lineage "${2:-}" ;;
+  list-builds ) shift; list_builds "$@" ;;
   * ) help ;;
 esac

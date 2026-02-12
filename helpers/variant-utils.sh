@@ -282,9 +282,12 @@ variant_image_tag() {
 
 # Get all version+variant combinations for CI matrix
 # Output: JSON array for GitHub Actions matrix
-# Format: [{"version":"18","variant":"base","tag":"18-alpine","flavor":"base"}, ...]
+# Format: [{"version":"18","variant":"base","tag":"18-alpine","flavor":"base","is_default":true,"dockerfile":"","priority":0}, ...]
+# Usage: list_build_matrix <container_dir> [real_version]
+#   real_version: if provided, substitutes "latest" version tags with this value
 list_build_matrix() {
     local container_dir="$1"
+    local real_version="${2:-}"
     local variants_file="$container_dir/variants.yaml"
 
     if [[ ! -f "$variants_file" ]]; then
@@ -298,15 +301,30 @@ list_build_matrix() {
     while IFS= read -r pg_version; do
         [[ -z "$pg_version" ]] && continue
 
+        # Determine the effective version for output and tag generation
+        # If pg_version is "latest" and a real_version was provided, substitute it
+        local effective_version="$pg_version"
+        if [[ "$pg_version" == "latest" && -n "$real_version" && "$real_version" != "latest" ]]; then
+            effective_version="$real_version"
+        fi
+
         while IFS= read -r variant_name; do
             [[ -z "$variant_name" ]] && continue
 
             local tag
-            tag=$(variant_image_tag "$pg_version" "$variant_name" "$container_dir")
+            tag=$(variant_image_tag "$effective_version" "$variant_name" "$container_dir")
             local flavor
             flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$pg_version")
             local is_default
             is_default=$(variant_property "$container_dir" "$variant_name" "default" "$pg_version")
+
+            # Priority: base/"" → 0, full → 2, else → 1
+            local priority=1
+            if [[ "$flavor" == "base" || -z "$flavor" ]]; then
+                priority=0
+            elif [[ "$flavor" == "full" ]]; then
+                priority=2
+            fi
 
             if [[ "$first" != "true" ]]; then
                 result+=","
@@ -316,12 +334,72 @@ list_build_matrix() {
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$pg_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"dockerfile\":\"$dockerfile\"}"
+            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"dockerfile\":\"$dockerfile\",\"priority\":$priority}"
         done < <(list_variants "$container_dir" "$pg_version")
     done < <(list_versions "$container_dir")
 
     result+="]"
     echo "$result"
+}
+
+# Get CI-ready build list for a container (single entry point for all container types)
+# Usage: list_container_builds <container_name> <real_version>
+# Output: JSON array sorted by priority, with container name in each entry
+# Handles: multi-version (postgres), single-version with "latest" tag (terraform), no-variant (ansible)
+list_container_builds() {
+    local container_name="$1"
+    local real_version="$2"
+    local container_dir="./$container_name"
+
+    if has_variants "$container_dir"; then
+        local vc
+        vc=$(version_count "$container_dir")
+
+        if [[ "$vc" -gt 0 ]]; then
+            # Multi-version or single "latest" version structure — use list_build_matrix
+            list_build_matrix "$container_dir" "$real_version" \
+              | jq -c --arg c "$container_name" \
+                  '[.[] | . + {container: $c}] | sort_by(.priority, .container, .version)'
+        else
+            # Legacy single-version structure (no versions[] array) — iterate variants directly
+            local version="$real_version"
+            local builds="[]"
+
+            while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+
+                local tag
+                tag=$(variant_image_tag "$version" "$variant_name" "$container_dir")
+                local flavor
+                flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+                local is_default
+                is_default=$(variant_property "$container_dir" "$variant_name" "default")
+
+                local priority=1
+                if [[ "$flavor" == "base" || -z "$flavor" ]]; then
+                    priority=0
+                elif [[ "$flavor" == "full" ]]; then
+                    priority=2
+                fi
+
+                builds=$(echo "$builds" | jq -c \
+                  --arg container "$container_name" \
+                  --arg version "$version" \
+                  --arg variant "$variant_name" \
+                  --arg tag "$tag" \
+                  --arg flavor "$flavor" \
+                  --argjson is_default "$([[ "$is_default" == "true" ]] && echo "true" || echo "false")" \
+                  --argjson priority "$priority" \
+                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, dockerfile:"", priority:$priority}]')
+            done < <(list_variants "$container_dir")
+
+            echo "$builds" | jq -c 'sort_by(.priority, .container, .version)'
+        fi
+    else
+        # No variants: single entry
+        jq -nc --arg c "$container_name" --arg v "$real_version" \
+          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, dockerfile:"", priority:0}]'
+    fi
 }
 
 # Get all variant tags for a specific version (for dashboard display)
@@ -366,4 +444,4 @@ list_variant_tags() {
 # Export functions for use in other scripts
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant flavor_arg_name base_suffix
-export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_variant_tags
+export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
