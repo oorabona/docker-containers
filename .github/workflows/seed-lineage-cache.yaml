@@ -13,11 +13,12 @@ jobs:
       - name: Checkout with history
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Restore lineage files from git history
         run: |
-          git checkout HEAD~1 -- .build-lineage/
+          # Last commit with .build-lineage/ tracked (before migration)
+          git checkout 8e256b2 -- .build-lineage/
           count=$(find .build-lineage -name '*.json' | wc -l)
           echo "Restored $count lineage files from previous commit"
           ls -la .build-lineage/
