@@ -205,6 +205,16 @@ runs:
                 is_default=$(echo "$entry" | jq -r '.default')
                 dockerfile=$(echo "$entry" | jq -r '.dockerfile // ""')
 
+                # If version is "latest" in variants.yaml, substitute with real version
+                # and recalculate tag (e.g. terraform uses dynamic versioning)
+                if [[ "$pg_version" == "latest" ]]; then
+                  real_version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
+                  if [[ -n "$real_version" && "$real_version" != "null" && "$real_version" != "latest" ]]; then
+                    pg_version="$real_version"
+                    tag=$(variant_image_tag "$real_version" "$variant_name" "$container_dir")
+                  fi
+                fi
+
                 builds_json=$(echo "$builds_json" | jq -c \
                   --arg container "$container" \
                   --arg version "$pg_version" \
