@@ -456,3 +456,49 @@ EOF
     last_priority=$(echo "$output" | jq '.[-1].priority')
     [ "$last_priority" = "2" ]
 }
+
+# --- is_latest_version ---
+
+@test "list_build_matrix: postgres is_latest_version only for first version (18)" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_postgres_variants "pg"
+    run list_build_matrix "pg"
+    [ "$status" -eq 0 ]
+    # PG 18 (first in YAML) should have is_latest_version=true
+    local v18_latest
+    v18_latest=$(echo "$output" | jq '[.[] | select(.version == "18") | .is_latest_version] | all')
+    [ "$v18_latest" = "true" ]
+    # PG 17 should have is_latest_version=false
+    local v17_latest
+    v17_latest=$(echo "$output" | jq '[.[] | select(.version == "17") | .is_latest_version] | any')
+    [ "$v17_latest" = "false" ]
+}
+
+@test "list_build_matrix: terraform is_latest_version always true (single version)" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_terraform_variants "tf"
+    run list_build_matrix "tf" "1.14.5"
+    [ "$status" -eq 0 ]
+    local all_latest
+    all_latest=$(echo "$output" | jq 'all(.is_latest_version == true)')
+    [ "$all_latest" = "true" ]
+}
+
+@test "list_container_builds: non-variant has is_latest_version true" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "novar2"
+    run list_container_builds "novar2" "3.0.0"
+    [ "$status" -eq 0 ]
+    local is_latest
+    is_latest=$(echo "$output" | jq '.[0].is_latest_version')
+    [ "$is_latest" = "true" ]
+}

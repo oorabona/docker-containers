@@ -479,6 +479,7 @@ jobs:
           TAG: ${{ matrix.build.tag }}
           VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
+          IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -e
@@ -489,14 +490,15 @@ jobs:
           # Build tag arguments - version tag is always included
           tag_args="-t $ghcr_image:$TAG"
 
-          # Add :latest tag for default variants (or non-variant containers)
-          if [[ "$IS_DEFAULT" == "true" ]]; then
+          # Rolling tags only for the latest version (e.g., PG 18 but not PG 17/16)
+          # Add :latest tag for default variant of the latest version
+          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
             tag_args="$tag_args -t $ghcr_image:latest"
-            echo "::notice::This is the default variant - will also tag as :latest"
+            echo "::notice::This is the default variant of latest version - will also tag as :latest"
           fi
 
-          # Add :latest-{variant} tag for non-default variants (e.g., latest-base, latest-aws)
-          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" ]]; then
+          # Add :latest-{variant} tag for non-default variants of the latest version
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
             tag_args="$tag_args -t $ghcr_image:latest-$VARIANT"
             echo "::notice::Adding rolling tag: latest-$VARIANT"
           fi
@@ -527,6 +529,7 @@ jobs:
           TAG: ${{ matrix.build.tag }}
           VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
+          IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           # Skip if no Docker Hub credentials
@@ -542,13 +545,12 @@ jobs:
           # Build tag arguments - version tag is always included
           tag_args="-t $dockerhub_image:$TAG"
 
-          # Add :latest tag for default variants (or non-variant containers)
-          if [[ "$IS_DEFAULT" == "true" ]]; then
+          # Rolling tags only for the latest version
+          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
             tag_args="$tag_args -t $dockerhub_image:latest"
           fi
 
-          # Add :latest-{variant} tag for non-default variants (e.g., latest-base, latest-aws)
-          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" ]]; then
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
             tag_args="$tag_args -t $dockerhub_image:latest-$VARIANT"
           fi
 
