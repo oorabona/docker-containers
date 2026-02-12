@@ -255,21 +255,26 @@ jobs:
             DELETED=0
 
             # Process each version: check if ANY tag is in the valid set
+            # Skip untagged versions — they are arch-specific manifests referenced by tagged manifest lists
             while IFS='|' read -r VERSION_ID TAGS; do
               [[ -z "$VERSION_ID" ]] && continue
 
-              HAS_VALID=false
-              if [[ -n "$TAGS" ]]; then
-                for TAG in $(echo "$TAGS" | tr ',' ' '); do
-                  if echo "$VALID_TAGS" | grep -qxF "$TAG"; then
-                    HAS_VALID=true
-                    break
-                  fi
-                done
+              # Untagged versions are multi-platform build layers — never delete
+              if [[ -z "$TAGS" ]]; then
+                KEPT=$((KEPT + 1))
+                continue
               fi
 
+              HAS_VALID=false
+              for TAG in $(echo "$TAGS" | tr ',' ' '); do
+                if echo "$VALID_TAGS" | grep -qxF "$TAG"; then
+                  HAS_VALID=true
+                  break
+                fi
+              done
+
               if [[ "$HAS_VALID" == "true" ]]; then
-                echo "  ✓ Keep (tags: ${TAGS:-untagged})"
+                echo "  ✓ Keep (tags: $TAGS)"
                 KEPT=$((KEPT + 1))
               else
                 echo "  ✗ Obsolete (tags: ${TAGS:-untagged})"
