@@ -477,6 +477,7 @@ jobs:
         env:
           CONTAINER: ${{ matrix.build.container }}
           TAG: ${{ matrix.build.tag }}
+          VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
@@ -488,10 +489,16 @@ jobs:
           # Build tag arguments - version tag is always included
           tag_args="-t $ghcr_image:$TAG"
 
-          # Only add :latest tag for default variants (or non-variant containers)
+          # Add :latest tag for default variants (or non-variant containers)
           if [[ "$IS_DEFAULT" == "true" ]]; then
             tag_args="$tag_args -t $ghcr_image:latest"
             echo "::notice::This is the default variant - will also tag as :latest"
+          fi
+
+          # Add :latest-{variant} tag for non-default variants (e.g., latest-base, latest-aws)
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" ]]; then
+            tag_args="$tag_args -t $ghcr_image:latest-$VARIANT"
+            echo "::notice::Adding rolling tag: latest-$VARIANT"
           fi
 
           # Try multi-arch manifest first
@@ -518,6 +525,7 @@ jobs:
         env:
           CONTAINER: ${{ matrix.build.container }}
           TAG: ${{ matrix.build.tag }}
+          VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
@@ -534,9 +542,14 @@ jobs:
           # Build tag arguments - version tag is always included
           tag_args="-t $dockerhub_image:$TAG"
 
-          # Only add :latest tag for default variants (or non-variant containers)
+          # Add :latest tag for default variants (or non-variant containers)
           if [[ "$IS_DEFAULT" == "true" ]]; then
             tag_args="$tag_args -t $dockerhub_image:latest"
+          fi
+
+          # Add :latest-{variant} tag for non-default variants (e.g., latest-base, latest-aws)
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" ]]; then
+            tag_args="$tag_args -t $dockerhub_image:latest-$VARIANT"
           fi
 
           # Try multi-arch manifest first

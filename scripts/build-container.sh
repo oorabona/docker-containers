@@ -252,10 +252,22 @@ build_container() {
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
     _prepare_build_args "$version" "$flavor"
 
-    # Prepare tags — always include :latest for local builds so examples work
+    # Prepare tags — versioned tag always included, plus rolling latest tags
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
     if [[ "$tag" != "latest" ]]; then
-        tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
+        # For variant builds: add latest-{flavor} (e.g., latest-aws, latest-vector)
+        # For default/non-variant builds: add :latest
+        if [[ -n "$flavor" ]]; then
+            local is_default
+            is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
+            if [[ "$is_default" == "true" ]]; then
+                tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
+            else
+                tag_args="$tag_args -t $dockerhub_image:latest-$flavor -t $ghcr_image:latest-$flavor"
+            fi
+        else
+            tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
+        fi
     fi
 
     # Compute build digest label for smart rebuild detection
