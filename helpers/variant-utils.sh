@@ -282,9 +282,10 @@ variant_image_tag() {
 
 # Get all version+variant combinations for CI matrix
 # Output: JSON array for GitHub Actions matrix
-# Format: [{"version":"18","variant":"base","tag":"18-alpine","flavor":"base","is_default":true,"dockerfile":"","priority":0}, ...]
+# Format: [{"version":"18","variant":"base","tag":"18-alpine","flavor":"base","is_default":true,"is_latest_version":true,"dockerfile":"","priority":0}, ...]
 # Usage: list_build_matrix <container_dir> [real_version]
 #   real_version: if provided, substitutes "latest" version tags with this value
+#   is_latest_version: true only for the first (newest) version in variants.yaml
 list_build_matrix() {
     local container_dir="$1"
     local real_version="${2:-}"
@@ -297,6 +298,7 @@ list_build_matrix() {
 
     local result="["
     local first=true
+    local is_first_version=true
 
     while IFS= read -r pg_version; do
         [[ -z "$pg_version" ]] && continue
@@ -307,6 +309,10 @@ list_build_matrix() {
         if [[ "$pg_version" == "latest" && -n "$real_version" && "$real_version" != "latest" ]]; then
             effective_version="$real_version"
         fi
+
+        # First version in YAML = newest = gets rolling latest tags
+        local is_latest_version="$is_first_version"
+        is_first_version=false
 
         while IFS= read -r variant_name; do
             [[ -z "$variant_name" ]] && continue
@@ -334,7 +340,7 @@ list_build_matrix() {
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"dockerfile\":\"$dockerfile\",\"priority\":$priority}"
+            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority}"
         done < <(list_variants "$container_dir" "$pg_version")
     done < <(list_versions "$container_dir")
 
@@ -390,7 +396,7 @@ list_container_builds() {
                   --arg flavor "$flavor" \
                   --argjson is_default "$([[ "$is_default" == "true" ]] && echo "true" || echo "false")" \
                   --argjson priority "$priority" \
-                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, dockerfile:"", priority:$priority}]')
+                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority}]')
             done < <(list_variants "$container_dir")
 
             echo "$builds" | jq -c 'sort_by(.priority, .container, .version)'
@@ -398,7 +404,7 @@ list_container_builds() {
     else
         # No variants: single entry
         jq -nc --arg c "$container_name" --arg v "$real_version" \
-          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, dockerfile:"", priority:0}]'
+          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0}]'
     fi
 }
 
