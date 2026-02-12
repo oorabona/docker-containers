@@ -309,7 +309,7 @@ resolve_variant_lineage_json() {
     fi
 
     BD="$build_digest" BI="$base_image" \
-        yq -n -o json '.build_digest = env(BD) | .base_image = env(BI)'
+        yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI)'
 }
 
 # Build a single variant entry as JSON
@@ -873,15 +873,15 @@ generate_data() {
             PC="$pull_count" PCF="$pull_count_formatted" SC2="$star_count" \
             SA="$sizes_amd64" SR="$sizes_arm64" \
             yq -n -o json '
-                .name = env(NAME) |
-                .current_version = env(CV) | .latest_version = env(LV) |
-                .status_color = env(SC) | .status_text = env(ST) | .build_status = env(BS) |
-                .description = env(DESC) |
-                .ghcr_image = env(GHCR) | .dockerhub_image = env(DH) |
-                .build_digest = env(BD) | .base_image = env(BI) |
+                .name = strenv(NAME) |
+                .current_version = strenv(CV) | .latest_version = strenv(LV) |
+                .status_color = strenv(SC) | .status_text = strenv(ST) | .build_status = strenv(BS) |
+                .description = strenv(DESC) |
+                .ghcr_image = strenv(GHCR) | .dockerhub_image = strenv(DH) |
+                .build_digest = strenv(BD) | .base_image = strenv(BI) |
                 .github_username = "oorabona" | .dockerhub_username = "oorabona" |
-                .pull_count = env(PC) | .pull_count_formatted = env(PCF) | .star_count = env(SC2) |
-                .size_amd64 = env(SA) | .size_arm64 = env(SR)
+                .pull_count = strenv(PC) | .pull_count_formatted = strenv(PCF) | .star_count = strenv(SC2) |
+                .size_amd64 = strenv(SA) | .size_arm64 = strenv(SR)
             ')
 
         # Add container-level build args from lineage
