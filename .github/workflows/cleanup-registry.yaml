@@ -196,8 +196,9 @@ jobs:
             CONTAINERS=$(./make list)
           fi
 
-          TOTAL_DELETED=0
           TOTAL_KEPT=0
+          TOTAL_OBSOLETE=0
+          TOTAL_ORPHANS=0
 
           for CONTAINER in $CONTAINERS; do
             echo ""
@@ -251,19 +252,20 @@ jobs:
             VERSION_COUNT=$(echo "$VERSIONS" | jq 'length')
             echo "  Found $VERSION_COUNT GHCR versions"
 
+            # Save to temp file for two-pass processing: id|digest|tags
+            VERSIONS_FILE=$(mktemp)
+            echo "$VERSIONS" | jq -r '.[] | "\(.id)|\(.name)|\(.metadata.container.tags // [] | join(","))"' > "$VERSIONS_FILE"
+
             KEPT=0
-            DELETED=0
+            OBSOLETE=0
+            ORPHANS=0
 
-            # Process each version: check if ANY tag is in the valid set
-            # Skip untagged versions — they are arch-specific manifests referenced by tagged manifest lists
-            while IFS='|' read -r VERSION_ID TAGS; do
+            # ── Phase 1: Process tagged versions ──
+            KEPT_DIGESTS=()
+
+            while IFS='|' read -r VERSION_ID DIGEST TAGS; do
               [[ -z "$VERSION_ID" ]] && continue
-
-              # Untagged versions are multi-platform build layers — never delete
-              if [[ -z "$TAGS" ]]; then
-                KEPT=$((KEPT + 1))
-                continue
-              fi
+              [[ -z "$TAGS" ]] && continue  # Skip untagged for phase 3
 
               HAS_VALID=false
               for TAG in $(echo "$TAGS" | tr ',' ' '); do
@@ -276,8 +278,9 @@ jobs:
               if [[ "$HAS_VALID" == "true" ]]; then
                 echo "  ✓ Keep (tags: $TAGS)"
                 KEPT=$((KEPT + 1))
+                KEPT_DIGESTS+=("$DIGEST")
               else
-                echo "  ✗ Obsolete (tags: ${TAGS:-untagged})"
+                echo "  ✗ Obsolete (tags: $TAGS)"
                 if [[ "$DRY_RUN" == "true" ]]; then
                   echo "    [DRY RUN] Would delete version $VERSION_ID"
                 else
@@ -291,13 +294,90 @@ jobs:
                     echo "    ✗ Failed to delete"
                   fi
                 fi
-                DELETED=$((DELETED + 1))
+                OBSOLETE=$((OBSOLETE + 1))
               fi
-            done < <(echo "$VERSIONS" | jq -r '.[] | "\(.id)|\(.metadata.container.tags // [] | join(","))"')
+            done < "$VERSIONS_FILE"
 
+            # ── Phase 2: Resolve manifest list children to find protected digests ──
+            if [[ ${#KEPT_DIGESTS[@]} -gt 0 ]]; then
+              echo ""
+              echo "  Resolving manifest references for ${#KEPT_DIGESTS[@]} kept images..."
+
+              # Get GHCR registry token
+              GHCR_TOKEN=$(curl -sf \
+                -u "_:${GH_TOKEN}" \
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:${OWNER}/${CONTAINER}:pull" \
+                | jq -r '.token' 2>/dev/null || echo "")
+
+              if [[ -z "$GHCR_TOKEN" ]]; then
+                echo "  ⚠ Failed to get GHCR token, skipping orphan cleanup"
+              else
+                # Start with kept version digests as protected
+                PROTECTED_FILE=$(mktemp)
+                printf '%s\n' "${KEPT_DIGESTS[@]}" > "$PROTECTED_FILE"
+
+                FETCH_FAILURES=0
+                for DIGEST in "${KEPT_DIGESTS[@]}"; do
+                  MANIFEST=$(curl -sf \
+                    -H "Authorization: Bearer $GHCR_TOKEN" \
+                    -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json" \
+                    "https://ghcr.io/v2/${OWNER}/${CONTAINER}/manifests/${DIGEST}" 2>/dev/null || echo "")
+
+                  if [[ -z "$MANIFEST" ]]; then
+                    FETCH_FAILURES=$((FETCH_FAILURES + 1))
+                    echo "  ⚠ Failed to fetch manifest for ${DIGEST:0:19}..."
+                    continue
+                  fi
+
+                  CHILDREN=$(echo "$MANIFEST" | jq -r '.manifests[]?.digest // empty' 2>/dev/null || true)
+                  if [[ -n "$CHILDREN" ]]; then
+                    echo "$CHILDREN" >> "$PROTECTED_FILE"
+                  fi
+                done
+
+                if [[ "$FETCH_FAILURES" -gt 0 ]]; then
+                  echo "  ⚠ $FETCH_FAILURES manifest fetch(es) failed, skipping orphan cleanup for safety"
+                else
+                  PROTECTED_DIGESTS=$(sort -u "$PROTECTED_FILE")
+                  PROTECTED_COUNT=$(echo "$PROTECTED_DIGESTS" | wc -l)
+                  echo "  Protected digests: $PROTECTED_COUNT (${#KEPT_DIGESTS[@]} manifests + children)"
+
+                  # ── Phase 3: Delete untagged orphans ──
+                  while IFS='|' read -r VERSION_ID DIGEST TAGS; do
+                    [[ -z "$VERSION_ID" ]] && continue
+                    [[ -n "$TAGS" ]] && continue  # Skip tagged (already processed)
+
+                    if echo "$PROTECTED_DIGESTS" | grep -qxF "$DIGEST"; then
+                      KEPT=$((KEPT + 1))
+                    else
+                      echo "  ✗ Orphan (digest: ${DIGEST:0:19}...)"
+                      if [[ "$DRY_RUN" == "true" ]]; then
+                        echo "    [DRY RUN] Would delete version $VERSION_ID"
+                      else
+                        if gh api \
+                          --method DELETE \
+                          -H "Accept: application/vnd.github+json" \
+                          -H "X-GitHub-Api-Version: 2022-11-28" \
+                          "/users/${OWNER}/packages/container/${CONTAINER}/versions/${VERSION_ID}" 2>/dev/null; then
+                          echo "    ✓ Deleted"
+                        else
+                          echo "    ✗ Failed to delete"
+                        fi
+                      fi
+                      ORPHANS=$((ORPHANS + 1))
+                    fi
+                  done < "$VERSIONS_FILE"
+                fi
+
+                rm -f "$PROTECTED_FILE"
+              fi
+            fi
+
+            rm -f "$VERSIONS_FILE"
             TOTAL_KEPT=$((TOTAL_KEPT + KEPT))
-            TOTAL_DELETED=$((TOTAL_DELETED + DELETED))
-            echo "  Summary: kept=$KEPT, obsolete=$DELETED"
+            TOTAL_OBSOLETE=$((TOTAL_OBSOLETE + OBSOLETE))
+            TOTAL_ORPHANS=$((TOTAL_ORPHANS + ORPHANS))
+            echo "  Summary: kept=$KEPT, obsolete=$OBSOLETE, orphans=$ORPHANS"
           done
 
           echo ""
@@ -305,5 +385,6 @@ jobs:
           echo "Purge Summary"
           echo "========================================"
           echo "Versions kept: $TOTAL_KEPT"
-          echo "Versions purged: $TOTAL_DELETED"
+          echo "Obsolete tags purged: $TOTAL_OBSOLETE"
+          echo "Orphan images purged: $TOTAL_ORPHANS"
           echo "========================================"
