@@ -174,13 +174,13 @@ jobs:
           echo "========================================"
 
       - name: Install yq
-        if: inputs.purge_obsolete == true
+        if: github.event_name == 'schedule' || inputs.purge_obsolete == true
         uses: mikefarah/yq@2be0094729a1006f61e8339ce9934bfb3cbb549f # v4.52.2
         with:
           cmd: yq --version
 
       - name: Purge obsolete images
-        if: inputs.purge_obsolete == true
+        if: github.event_name == 'schedule' || inputs.purge_obsolete == true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
