@@ -2,8 +2,9 @@
 # Lightweight container for building and serving Jekyll sites
 ARG RUBY_VERSION=3.3
 ARG ALPINE_VERSION=3.21
+ARG BASE_IMAGE=ruby
 
-FROM ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}
+FROM ${BASE_IMAGE}:${RUBY_VERSION}-alpine${ALPINE_VERSION}
 
 ARG JEKYLL_VERSION=4.4.1
 ARG BUNDLER_VERSION=4.0.6

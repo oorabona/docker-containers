@@ -1,7 +1,9 @@
 ARG VERSION
 ARG COMPOSER_VERSION
-FROM composer:${COMPOSER_VERSION} AS composer
-FROM php:${VERSION} AS php
+ARG COMPOSER_BASE=composer
+ARG BASE_IMAGE=php
+FROM ${COMPOSER_BASE}:${COMPOSER_VERSION} AS composer
+FROM ${BASE_IMAGE}:${VERSION} AS php
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 

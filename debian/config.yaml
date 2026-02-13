@@ -2,5 +2,10 @@
 # Base image and third-party dependency versions
 
 base_image: "debian:${VERSION}"
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: debian
+    ghcr_repo: debian-base
+    tags: ["latest"]
 
 build_args: {}

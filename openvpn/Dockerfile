@@ -1,6 +1,7 @@
 # Smallest base image
 ARG OS_VERSION=latest
-FROM alpine:${OS_VERSION}
+ARG BASE_IMAGE=alpine
+FROM ${BASE_IMAGE}:${OS_VERSION}
 
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""

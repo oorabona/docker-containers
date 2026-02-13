@@ -2,8 +2,15 @@
 # Base image and third-party dependency versions
 
 base_image: "ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}"
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ruby
+    ghcr_repo: ruby-base
+    tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"]
 
 build_args:
+  RUBY_VERSION: "3.3"
+  ALPINE_VERSION: "3.21"
   BUNDLER_VERSION: "4.0.6"
   WEBRICK_VERSION: "1.9.2"
   JEKYLL_FEED_VERSION: "0.17.0"

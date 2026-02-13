@@ -2,6 +2,15 @@
 # Base image and third-party dependency versions
 
 base_image: "php:${VERSION}"
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: php
+    ghcr_repo: php-base
+    tags: ["${VERSION}"]
+  - arg: COMPOSER_BASE
+    source: composer
+    ghcr_repo: composer-base
+    tags: ["${COMPOSER_VERSION}"]
 
 build_args:
   COMPOSER_VERSION: "2.9.5"

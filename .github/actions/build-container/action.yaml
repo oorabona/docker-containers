@@ -236,27 +236,28 @@ runs:
           export SKIP_EXISTING_BUILDS="false"
         fi
 
-        # For postgres: use GHCR cached base images if available
+        # Use GHCR cached base images if available (configured in config.yaml)
         # This avoids Docker Hub rate limits (200 pulls/6h)
         # IMPORTANT: build_version is used for --build-arg VERSION in Dockerfile
-        # - For postgres: must be base_tag (e.g., "17-alpine") for FROM postgres:VERSION
+        # - For containers with base_suffix (e.g., postgres): must be base_tag (e.g., "17-alpine")
         # - For other containers: use current_version as-is
         build_version="$current_version"
 
-        if [[ "$container" == "postgres" ]]; then
-          owner="${{ github.repository_owner }}"
+        # Adjust build_version for containers with base_suffix (e.g., postgres → "17-alpine")
+        if has_variants "./$container"; then
           base_sfx=$(base_suffix "./$container")
-          [[ -z "$base_sfx" ]] && base_sfx="-alpine"
-          base_tag="${current_version}${base_sfx}"
-          build_version="$base_tag"
+          if [[ -n "$base_sfx" ]]; then
+            build_version="${current_version}${base_sfx}"
+          fi
+        fi
 
-          cache_image="ghcr.io/$owner/postgres-base:${base_tag}"
-          echo "Checking for cached base image: $cache_image"
-          if docker pull --quiet "$cache_image" &>/dev/null; then
-            echo "✅ Using cached base image: $cache_image (for all variants)"
-            export CUSTOM_BUILD_ARGS="--build-arg BASE_IMAGE=ghcr.io/$owner/postgres-base"
-          else
-            echo "⚠️ Cache not available for $cache_image, using Docker Hub directly"
+        # Use GHCR-cached base images (seeded by upstream-monitor workflow)
+        source ./helpers/base-cache-utils.sh
+        if has_base_cache "./$container"; then
+          cache_args=$(get_cache_build_args "./$container" "${{ github.repository_owner }}" "$build_version")
+          if [[ -n "$cache_args" ]]; then
+            export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
+            echo "✅ Using GHCR base images: $cache_args"
           fi
         fi
 
