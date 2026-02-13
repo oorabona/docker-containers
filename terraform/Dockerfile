@@ -15,12 +15,17 @@ ARG AWS_CLI_VERSION
 ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
+# Base image overrides for GHCR caching (CI sets these to avoid Docker Hub rate limits)
+ARG TERRAFORM_BASE=hashicorp/terraform
+ARG ALPINE_BASE=alpine
+ARG PYTHON_BASE=python
+
 # Stage 1: Get Terraform binary
 # Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION
-FROM hashicorp/terraform:${UPSTREAM_VERSION:-${VERSION}} AS terraform
+FROM ${TERRAFORM_BASE}:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
 # Stage 2: Security tools (included in all flavors)
-FROM alpine:latest AS security-tools
+FROM ${ALPINE_BASE}:latest AS security-tools
 ARG TARGETARCH
 ARG TFLINT_VERSION
 ARG TRIVY_VERSION
@@ -39,7 +44,7 @@ RUN apk add --no-cache curl unzip ca-certificates && \
     chmod +x trivy
 
 # Stage 3: DevOps tools (included in all flavors)
-FROM alpine:latest AS devops-tools
+FROM ${ALPINE_BASE}:latest AS devops-tools
 ARG TARGETARCH
 ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
@@ -65,7 +70,7 @@ RUN apk add --no-cache curl tar ca-certificates && \
 # Stage 4: GCP CLI (only built when needed for gcp/full flavors)
 # NOTE: GCP SDK installer always fetches latest version - version pinning not supported
 # The GCP_CLI_VERSION in config.json is for reference/tracking only
-FROM python:3.12-alpine AS cloud-tools-gcp
+FROM ${PYTHON_BASE}:3.12-alpine AS cloud-tools-gcp
 ARG FLAVOR
 # Only install GCP SDK if flavor needs it
 RUN if [ "${FLAVOR}" = "gcp" ] || [ "${FLAVOR}" = "full" ]; then \
@@ -79,7 +84,7 @@ RUN if [ "${FLAVOR}" = "gcp" ] || [ "${FLAVOR}" = "full" ]; then \
     fi
 
 # Final stage: Assemble everything based on FLAVOR
-FROM alpine:latest
+FROM ${ALPINE_BASE}:latest
 
 ARG FLAVOR
 

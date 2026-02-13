@@ -1,6 +1,7 @@
 # Build stage
 ARG OS_VERSION=latest
-FROM ubuntu:${OS_VERSION} as builder
+ARG BASE_IMAGE=ubuntu
+FROM ${BASE_IMAGE}:${OS_VERSION} as builder
 
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
@@ -26,7 +27,8 @@ RUN apt-get update -y \
 
 # Runtime stage
 ARG OS_VERSION=latest
-FROM ubuntu:${OS_VERSION}
+ARG BASE_IMAGE=ubuntu
+FROM ${BASE_IMAGE}:${OS_VERSION}
 
 ARG VERSION=latest
 

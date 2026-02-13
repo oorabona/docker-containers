@@ -1,5 +1,6 @@
 ARG VERSION=latest
-FROM debian:${VERSION}
+ARG BASE_IMAGE=debian
+FROM ${BASE_IMAGE}:${VERSION}
 ARG LOCALES=en_US
 ARG USER=debian
 ARG GROUP=debian

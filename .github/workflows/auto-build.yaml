@@ -88,97 +88,13 @@ jobs:
           container: ${{ github.event.inputs.container || inputs.container }}
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
 
-  # Cache base images to GHCR to avoid Docker Hub rate limits
-  # These images are pulled once from Docker Hub and cached in GHCR
-  cache-base-images:
-    name: Cache Base Images
-    needs: detect-containers
-    if: |
-      needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Log in to container registries
-        uses: ./.github/actions/docker-login
-        with:
-          ghcr_username: ${{ github.actor }}
-          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Cache postgres base images
-        # Cache is required to avoid Docker Hub rate limits
-        # If this fails, builds will fail with 429 errors
-        run: |
-          source ./helpers/variant-utils.sh
-
-          owner="${{ github.repository_owner }}"
-          cache_repo="ghcr.io/$owner/postgres-base"
-
-          # Get base suffix from variants.yaml (e.g., "-alpine")
-          base_suffix=$(base_suffix "./postgres")
-          [[ -z "$base_suffix" ]] && base_suffix="-alpine"
-
-          echo "📦 Caching postgres base images to $cache_repo (suffix: $base_suffix)"
-
-          failed=0
-          succeeded=0
-
-          for major_version in $(list_versions "./postgres"); do
-            # Full tag: 17-alpine (major version + base suffix)
-            full_tag="${major_version}${base_suffix}"
-            source_image="docker.io/library/postgres:${full_tag}"
-            cache_image="$cache_repo:${full_tag}"
-
-            echo "🔍 Checking $cache_image..."
-
-            # Check if cache exists (skip if already present)
-            cache_exists=false
-            if docker manifest inspect "$cache_image" >/dev/null 2>&1; then
-              echo "  ✓ Cache exists for $full_tag"
-              cache_exists=true
-              ((succeeded++)) || true
-              continue
-            fi
-
-            if [[ "$cache_exists" == "false" ]] || [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-              echo "  → Copying $source_image to $cache_image (multi-arch)..."
-              # Use buildx imagetools to copy with full multi-arch manifest
-              # This preserves linux/amd64, linux/arm64, etc.
-              if docker buildx imagetools create \
-                --tag "$cache_image" \
-                "$source_image" 2>&1; then
-                echo "  ✅ Cached $full_tag (all platforms)"
-                ((succeeded++)) || true
-              else
-                echo "  ⚠️ Failed to cache $full_tag (rate limit?)"
-                ((failed++)) || true
-              fi
-            fi
-          done
-
-          echo ""
-          echo "📊 Cache summary: $succeeded cached, $failed failed"
-          if [[ $failed -gt 0 ]]; then
-            echo "::warning::Some images couldn't be cached (Docker Hub rate limit?). Builds will use direct Docker Hub pulls."
-          fi
-          echo "✅ Base image caching complete"
-
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
     name: Build PostgreSQL Extensions
-    needs: [detect-containers, cache-base-images]
+    needs: [detect-containers]
     if: |
-      always() &&
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
+      contains(needs.detect-containers.outputs.containers, 'postgres')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -270,11 +186,10 @@ jobs:
 
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
-    needs: [detect-containers, cache-base-images, build-extensions]
+    needs: [detect-containers, build-extensions]
     if: |
       always() &&
       needs.detect-containers.outputs.builds_count > 0 &&
-      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped') &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped')
     runs-on: ${{ matrix.runner }}
     strategy:

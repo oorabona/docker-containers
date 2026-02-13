@@ -19,6 +19,7 @@ permissions:
   contents: write     # Push version bumps and merge PRs
   pull-requests: write  # Create and merge PRs
   actions: write       # Trigger auto-build and update-dashboard workflows
+  packages: write      # Push base images to GHCR (refresh-base-image-cache)
   pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
   id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
 
@@ -293,13 +294,20 @@ jobs:
     with:
       trigger_reason: "Post upstream-monitor PR merge"
 
-  # Keep postgres base images cached on GHCR to avoid Docker Hub rate limits
-  # This runs in parallel with version checks and updates cache if images changed
-  update-base-image-cache:
+  # Cache all Docker Hub base images to GHCR to avoid rate limits during builds
+  # Reads base_image_cache from each container's config.yaml, deduplicates,
+  # and copies/updates images using buildx imagetools (with digest comparison)
+  # This is the ONLY place base images are seeded — builds always pull from GHCR
+  refresh-base-image-cache:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        uses: mikefarah/yq@2be0094729a1006f61e8339ce9934bfb3cbb549f # v4.52.2
+        with:
+          cmd: yq --version
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -319,81 +327,96 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Update postgres base image cache
+      - name: Refresh base image cache
         shell: bash
-        # Cache is required to avoid Docker Hub rate limits on build workflows
+        env:
+          OWNER: ${{ github.repository_owner }}
         run: |
-          source ./helpers/variant-utils.sh
+          source ./helpers/base-cache-utils.sh
 
-          owner="${{ github.repository_owner }}"
-          cache_repo="ghcr.io/$owner/postgres-base"
+          # Discover all containers
+          containers_json=$(./make list 2>/dev/null | jq -Rc '[inputs]' || echo '[]')
 
-          # Get base suffix from variants.yaml (e.g., "-alpine")
-          base_suffix=$(base_suffix "./postgres")
-          [[ -z "$base_suffix" ]] && base_suffix="-alpine"
+          # Build a versions map (best-effort, "latest" as fallback)
+          versions_json="{}"
+          for c in $(echo "$containers_json" | jq -r '.[]'); do
+            v=$(./make version "$c" 2>/dev/null || echo "latest")
+            [[ -z "$v" || "$v" == "unknown" ]] && v="latest"
+            versions_json=$(echo "$versions_json" | jq -c --arg c "$c" --arg v "$v" '. + {($c): $v}')
+          done
 
-          echo "📦 Checking postgres base image cache (suffix: $base_suffix)"
+          # Collect and deduplicate all base images
+          cache_images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
+          total=$(echo "$cache_images" | jq 'length')
+
+          if [[ "$total" -eq 0 ]]; then
+            echo "ℹ️ No base images to cache"
+            exit 0
+          fi
+
+          echo "📦 Refreshing $total base images (deduplicated across all containers)"
 
           updated=0
           skipped=0
           failed=0
 
-          for major_version in $(list_versions "./postgres"); do
-            full_tag="${major_version}${base_suffix}"
-            source_image="docker.io/library/postgres:${full_tag}"
-            cache_image="$cache_repo:${full_tag}"
+          for ((i = 0; i < total; i++)); do
+            source_name=$(echo "$cache_images" | jq -r ".[$i].source")
+            tag=$(echo "$cache_images" | jq -r ".[$i].tag")
+            ghcr_image=$(echo "$cache_images" | jq -r ".[$i].ghcr_image")
+
+            # Construct Docker Hub source
+            if [[ "$source_name" == */* ]]; then
+              source_image="docker.io/${source_name}:${tag}"
+            else
+              source_image="docker.io/library/${source_name}:${tag}"
+            fi
 
             echo ""
-            echo "🔍 Checking $full_tag..."
+            echo "🔍 Checking ${source_name}:${tag}..."
 
-            # Get source digest from Docker Hub
+            # Compare digests to detect upstream changes
             source_digest=$(docker buildx imagetools inspect "$source_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
 
             if [[ -z "$source_digest" ]]; then
-              echo "  ⚠️ Could not get digest from Docker Hub (rate limit?)"
-              failed=$((failed + 1))
+              echo "  ⚠️ Could not inspect Docker Hub image (rate limit?)"
+              ((failed++)) || true
               continue
             fi
 
-            # Get cache digest from GHCR (if exists)
-            cache_digest=$(docker buildx imagetools inspect "$cache_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
+            cache_digest=$(docker buildx imagetools inspect "$ghcr_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
 
             if [[ "$source_digest" == "$cache_digest" ]]; then
-              echo "  ✓ Cache up-to-date (digest: ${source_digest:0:20}...)"
-              skipped=$((skipped + 1))
+              echo "  ✓ Up-to-date (${source_digest:0:20}...)"
+              ((skipped++)) || true
               continue
             fi
 
-            # Cache is missing or outdated - update it
             if [[ -z "$cache_digest" ]]; then
-              echo "  → Cache missing, creating..."
+              echo "  → Seeding cache..."
             else
-              echo "  → Cache outdated, updating..."
-              echo "    Source: ${source_digest:0:20}..."
-              echo "    Cache:  ${cache_digest:0:20}..."
+              echo "  → Upstream changed, updating..."
             fi
 
-            # Copy multi-arch image to GHCR
             if docker buildx imagetools create \
-              --tag "$cache_image" \
+              --tag "$ghcr_image" \
               "$source_image" 2>&1; then
-              echo "  ✅ Cached $full_tag (all platforms)"
-              updated=$((updated + 1))
+              echo "  ✅ Cached $(echo "$ghcr_image" | sed 's|.*/||')"
+              ((updated++)) || true
             else
-              echo "  ⚠️ Failed to cache $full_tag"
-              failed=$((failed + 1))
+              echo "  ⚠️ Failed to cache (rate limit?)"
+              ((failed++)) || true
             fi
           done
 
           echo ""
-          echo "📊 Cache update summary: $updated updated, $skipped up-to-date, $failed failed"
+          echo "📊 Cache summary: $updated updated, $skipped up-to-date, $failed failed"
 
           if [[ $failed -gt 0 ]]; then
-            echo "::warning::Some images couldn't be cached (Docker Hub rate limit?)"
+            echo "::warning::$failed images couldn't be cached (Docker Hub rate limit?)"
           fi
-
           if [[ $updated -gt 0 ]]; then
-            echo "::notice::Updated $updated base image(s) in GHCR cache"
+            echo "::notice::Refreshed $updated base image(s) in GHCR cache"
           fi
 
   # Check 3rd party dependency versions (runs in parallel with base image checks)

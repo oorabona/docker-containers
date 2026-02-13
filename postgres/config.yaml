@@ -3,6 +3,11 @@
 # Extension versions are managed in extensions/config.yaml
 
 base_image: "${BASE_IMAGE}:${VERSION}"
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: postgres
+    ghcr_repo: postgres-base
+    tags_from_versions: true
 
 build_args: {}
 

@@ -3,6 +3,19 @@
 # NOTE: Tool versions are auto-updated during build by terraform/build script
 
 base_image: "hashicorp/terraform:${UPSTREAM_VERSION}"
+base_image_cache:
+  - arg: TERRAFORM_BASE
+    source: hashicorp/terraform
+    ghcr_repo: terraform-base
+    tags: ["${VERSION}"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["latest"]
+  - arg: PYTHON_BASE
+    source: python
+    ghcr_repo: python-base
+    tags: ["3.12-alpine"]
 build_args:
   TFLINT_VERSION: "0.61.0"
   TRIVY_VERSION: "0.69.1"

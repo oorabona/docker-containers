@@ -2,6 +2,11 @@
 # Base image and third-party dependency versions
 
 base_image: "alpine:latest"
+base_image_cache:
+  - arg: RESTY_IMAGE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["latest"]
 build_args:
   RESTY_OPENSSL_VERSION: "1.1.1w"
   RESTY_OPENSSL_PATCH_VERSION: "1.1.1f"

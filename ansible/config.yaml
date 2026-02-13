@@ -2,6 +2,11 @@
 # Base image and third-party dependency versions
 
 base_image: "ubuntu:${OS_VERSION}"
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
 build_args:
   PYASN1_VERSION: "0.6.2"
   PARAMIKO_VERSION: "4.0.0"
