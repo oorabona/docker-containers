@@ -22,16 +22,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source variant utils for tags_from_versions resolution
 source "$SCRIPT_DIR/variant-utils.sh"
 
-# Resolve a tag template by substituting ${VERSION} and ${KEY} placeholders
-# Usage: _resolve_tag_template <template> <build_version> <config_file>
+# Resolve a tag template by substituting placeholders:
+#   ${VERSION}          → detected build version (e.g., "1.14.5-alpine")
+#   ${UPSTREAM_VERSION} → raw upstream version via version.sh --upstream (e.g., "1.14.5")
+#   ${KEY}              → value from build_args in config.yaml
+# Usage: _resolve_tag_template <template> <build_version> <config_file> [container_dir]
 # Output: resolved tag string
 _resolve_tag_template() {
     local tag_template="$1"
     local build_version="$2"
     local config_file="$3"
+    local container_dir="${4:-$(dirname "$config_file")}"
 
     # Resolve ${VERSION} → detected build version
     local tag="${tag_template//\$\{VERSION\}/$build_version}"
+
+    # Resolve ${UPSTREAM_VERSION} → raw upstream version (without suffix)
+    if [[ "$tag" == *'${UPSTREAM_VERSION}'* ]]; then
+        local upstream_ver=""
+        if [[ -x "$container_dir/version.sh" ]]; then
+            upstream_ver=$("$container_dir/version.sh" --upstream 2>/dev/null || true)
+        fi
+        # Fallback: strip tag suffix from build_version
+        if [[ -z "$upstream_ver" ]]; then
+            local suffix
+            suffix=$("$container_dir/version.sh" --tag-suffix 2>/dev/null || true)
+            if [[ -n "$suffix" ]]; then
+                upstream_ver="${build_version%"$suffix"}"
+            else
+                upstream_ver="$build_version"
+            fi
+        fi
+        tag="${tag//\$\{UPSTREAM_VERSION\}/$upstream_ver}"
+    fi
 
     # Resolve ${KEY} → value from build_args in config.yaml
     while [[ "$tag" =~ \$\{([A-Z_]+)\} ]]; do
@@ -83,7 +106,7 @@ _collect_entry_tags() {
             local tag_template
             tag_template=$(yq -r ".base_image_cache[$entry_index].tags[$k]" "$config_file")
             local tag
-            tag=$(_resolve_tag_template "$tag_template" "$build_version" "$config_file")
+            tag=$(_resolve_tag_template "$tag_template" "$build_version" "$config_file" "$container_dir")
 
             images=$(echo "$images" | jq -c \
                 --arg source "$source" \

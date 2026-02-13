@@ -6,6 +6,6 @@ base_image_cache:
   - arg: BASE_IMAGE
     source: debian
     ghcr_repo: debian-base
-    tags: ["latest"]
+    tags: ["${VERSION}"]
 
 build_args: {}
