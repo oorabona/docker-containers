@@ -7,7 +7,7 @@ base_image_cache:
   - arg: TERRAFORM_BASE
     source: hashicorp/terraform
     ghcr_repo: terraform-base
-    tags: ["${VERSION}"]
+    tags: ["${UPSTREAM_VERSION}"]
   - arg: ALPINE_BASE
     source: alpine
     ghcr_repo: alpine-base
