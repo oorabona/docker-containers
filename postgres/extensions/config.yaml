@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.21.7"
+    version: "0.21.8"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
