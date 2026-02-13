@@ -260,8 +260,9 @@ jobs:
             OBSOLETE=0
             ORPHANS=0
 
-            # ── Phase 1: Process tagged versions ──
+            # ── Phase 1: Classify tagged versions (no deletions yet) ──
             KEPT_DIGESTS=()
+            OBSOLETE_FILE=$(mktemp)  # id|digest|tags for versions to potentially delete
 
             while IFS='|' read -r VERSION_ID DIGEST TAGS; do
               [[ -z "$VERSION_ID" ]] && continue
@@ -280,25 +281,15 @@ jobs:
                 KEPT=$((KEPT + 1))
                 KEPT_DIGESTS+=("$DIGEST")
               else
-                echo "  ✗ Obsolete (tags: $TAGS)"
-                if [[ "$DRY_RUN" == "true" ]]; then
-                  echo "    [DRY RUN] Would delete version $VERSION_ID"
-                else
-                  if gh api \
-                    --method DELETE \
-                    -H "Accept: application/vnd.github+json" \
-                    -H "X-GitHub-Api-Version: 2022-11-28" \
-                    "/users/${OWNER}/packages/container/${CONTAINER}/versions/${VERSION_ID}" 2>/dev/null; then
-                    echo "    ✓ Deleted"
-                  else
-                    echo "    ✗ Failed to delete"
-                  fi
-                fi
-                OBSOLETE=$((OBSOLETE + 1))
+                echo "  ? Obsolete candidate (tags: $TAGS)"
+                echo "$VERSION_ID|$DIGEST|$TAGS" >> "$OBSOLETE_FILE"
               fi
             done < "$VERSIONS_FILE"
 
             # ── Phase 2: Resolve manifest list children to find protected digests ──
+            PROTECTED_DIGESTS=""
+            RESOLVE_OK=false
+
             if [[ ${#KEPT_DIGESTS[@]} -gt 0 ]]; then
               echo ""
               echo "  Resolving manifest references for ${#KEPT_DIGESTS[@]} kept images..."
@@ -310,7 +301,7 @@ jobs:
                 | jq -r '.token' 2>/dev/null || echo "")
 
               if [[ -z "$GHCR_TOKEN" ]]; then
-                echo "  ⚠ Failed to get GHCR token, skipping orphan cleanup"
+                echo "  ⚠ Failed to get GHCR token, skipping all deletions for safety"
               else
                 # Start with kept version digests as protected
                 PROTECTED_FILE=$(mktemp)
@@ -336,42 +327,77 @@ jobs:
                 done
 
                 if [[ "$FETCH_FAILURES" -gt 0 ]]; then
-                  echo "  ⚠ $FETCH_FAILURES manifest fetch(es) failed, skipping orphan cleanup for safety"
+                  echo "  ⚠ $FETCH_FAILURES manifest fetch(es) failed, skipping all deletions for safety"
                 else
                   PROTECTED_DIGESTS=$(sort -u "$PROTECTED_FILE")
                   PROTECTED_COUNT=$(echo "$PROTECTED_DIGESTS" | wc -l)
                   echo "  Protected digests: $PROTECTED_COUNT (${#KEPT_DIGESTS[@]} manifests + children)"
-
-                  # ── Phase 3: Delete untagged orphans ──
-                  while IFS='|' read -r VERSION_ID DIGEST TAGS; do
-                    [[ -z "$VERSION_ID" ]] && continue
-                    [[ -n "$TAGS" ]] && continue  # Skip tagged (already processed)
-
-                    if echo "$PROTECTED_DIGESTS" | grep -qxF "$DIGEST"; then
-                      KEPT=$((KEPT + 1))
-                    else
-                      echo "  ✗ Orphan (digest: ${DIGEST:0:19}...)"
-                      if [[ "$DRY_RUN" == "true" ]]; then
-                        echo "    [DRY RUN] Would delete version $VERSION_ID"
-                      else
-                        if gh api \
-                          --method DELETE \
-                          -H "Accept: application/vnd.github+json" \
-                          -H "X-GitHub-Api-Version: 2022-11-28" \
-                          "/users/${OWNER}/packages/container/${CONTAINER}/versions/${VERSION_ID}" 2>/dev/null; then
-                          echo "    ✓ Deleted"
-                        else
-                          echo "    ✗ Failed to delete"
-                        fi
-                      fi
-                      ORPHANS=$((ORPHANS + 1))
-                    fi
-                  done < "$VERSIONS_FILE"
+                  RESOLVE_OK=true
                 fi
 
                 rm -f "$PROTECTED_FILE"
               fi
+            else
+              # No kept images means nothing to protect — safe to proceed
+              RESOLVE_OK=true
             fi
+
+            # ── Phase 3: Delete obsolete tagged versions + untagged orphans ──
+            if [[ "$RESOLVE_OK" == "true" ]]; then
+              # Delete obsolete tagged versions (only if digest not protected)
+              while IFS='|' read -r VERSION_ID DIGEST TAGS; do
+                [[ -z "$VERSION_ID" ]] && continue
+
+                if [[ -n "$PROTECTED_DIGESTS" ]] && echo "$PROTECTED_DIGESTS" | grep -qxF "$DIGEST"; then
+                  echo "  ✓ Keep (tags: $TAGS) — digest is manifest child"
+                  KEPT=$((KEPT + 1))
+                else
+                  echo "  ✗ Obsolete (tags: $TAGS)"
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "    [DRY RUN] Would delete version $VERSION_ID"
+                  else
+                    if gh api \
+                      --method DELETE \
+                      -H "Accept: application/vnd.github+json" \
+                      -H "X-GitHub-Api-Version: 2022-11-28" \
+                      "/users/${OWNER}/packages/container/${CONTAINER}/versions/${VERSION_ID}" 2>/dev/null; then
+                      echo "    ✓ Deleted"
+                    else
+                      echo "    ✗ Failed to delete"
+                    fi
+                  fi
+                  OBSOLETE=$((OBSOLETE + 1))
+                fi
+              done < "$OBSOLETE_FILE"
+
+              # Delete untagged orphans (digest not protected)
+              while IFS='|' read -r VERSION_ID DIGEST TAGS; do
+                [[ -z "$VERSION_ID" ]] && continue
+                [[ -n "$TAGS" ]] && continue  # Skip tagged (already processed)
+
+                if [[ -n "$PROTECTED_DIGESTS" ]] && echo "$PROTECTED_DIGESTS" | grep -qxF "$DIGEST"; then
+                  KEPT=$((KEPT + 1))
+                else
+                  echo "  ✗ Orphan (digest: ${DIGEST:0:19}...)"
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "    [DRY RUN] Would delete version $VERSION_ID"
+                  else
+                    if gh api \
+                      --method DELETE \
+                      -H "Accept: application/vnd.github+json" \
+                      -H "X-GitHub-Api-Version: 2022-11-28" \
+                      "/users/${OWNER}/packages/container/${CONTAINER}/versions/${VERSION_ID}" 2>/dev/null; then
+                      echo "    ✓ Deleted"
+                    else
+                      echo "    ✗ Failed to delete"
+                    fi
+                  fi
+                  ORPHANS=$((ORPHANS + 1))
+                fi
+              done < "$VERSIONS_FILE"
+            fi
+
+            rm -f "$OBSOLETE_FILE"
 
             rm -f "$VERSIONS_FILE"
             TOTAL_KEPT=$((TOTAL_KEPT + KEPT))
