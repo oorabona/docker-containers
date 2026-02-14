@@ -286,6 +286,7 @@ variant_image_tag() {
 # Usage: list_build_matrix <container_dir> [real_version]
 #   real_version: if provided, substitutes "latest" version tags with this value
 #   is_latest_version: true only for the first (newest) version in variants.yaml
+#   full_version: resolved upstream version (e.g., "18.2-alpine") for version-specific tags
 list_build_matrix() {
     local container_dir="$1"
     local real_version="${2:-}"
@@ -308,6 +309,19 @@ list_build_matrix() {
         local effective_version="$pg_version"
         if [[ "$pg_version" == "latest" && -n "$real_version" && "$real_version" != "latest" ]]; then
             effective_version="$real_version"
+        fi
+
+        # Resolve full upstream version for version-specific tags in manifest creation
+        # e.g., major "18" with real_version "18.2-alpine" → full_version "18.2-alpine"
+        local full_version=""
+        if [[ "$pg_version" != "latest" && -n "$real_version" && "$real_version" != "latest" ]]; then
+            if [[ "$real_version" == "${pg_version}."* || "$real_version" == "${pg_version}-"* ]]; then
+                # real_version belongs to this major version — use it directly
+                full_version="$real_version"
+            elif [[ -x "$container_dir/version.sh" ]]; then
+                # Resolve via version.sh for other major versions
+                full_version=$("$container_dir/version.sh" "$pg_version" 2>/dev/null || echo "")
+            fi
         fi
 
         # First version in YAML = newest = gets rolling latest tags
@@ -340,7 +354,7 @@ list_build_matrix() {
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority}"
+            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\"}"
         done < <(list_variants "$container_dir" "$pg_version")
     done < <(list_versions "$container_dir")
 
@@ -396,7 +410,7 @@ list_container_builds() {
                   --arg flavor "$flavor" \
                   --argjson is_default "$([[ "$is_default" == "true" ]] && echo "true" || echo "false")" \
                   --argjson priority "$priority" \
-                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority}]')
+                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority, full_version:""}]')
             done < <(list_variants "$container_dir")
 
             echo "$builds" | jq -c 'sort_by(.priority, .container, .version)'
@@ -404,7 +418,7 @@ list_container_builds() {
     else
         # No variants: single entry
         jq -nc --arg c "$container_name" --arg v "$real_version" \
-          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0}]'
+          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0, full_version:""}]'
     fi
 }
 

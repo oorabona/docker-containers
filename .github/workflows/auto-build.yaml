@@ -392,6 +392,8 @@ jobs:
         env:
           CONTAINER: ${{ matrix.build.container }}
           TAG: ${{ matrix.build.tag }}
+          VERSION: ${{ matrix.build.version }}
+          FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
@@ -402,8 +404,22 @@ jobs:
 
           echo "::group::Creating GHCR manifest for $CONTAINER:$TAG"
 
-          # Build tag arguments - version tag is always included
+          # Build tag arguments - version tag is always included (rolling, e.g., 18-alpine)
           tag_args="-t $ghcr_image:$TAG"
+
+          # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
+          # Enables dashboard version tracking via registry pattern matching
+          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
+            rest="${TAG#$VERSION}"
+            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
+            if [[ -n "$full_numeric" ]]; then
+              full_tag="${full_numeric}${rest}"
+              if [[ "$full_tag" != "$TAG" ]]; then
+                tag_args="$tag_args -t $ghcr_image:$full_tag"
+                echo "::notice::Adding version-specific tag: $full_tag"
+              fi
+            fi
+          fi
 
           # Rolling tags only for the latest version (e.g., PG 18 but not PG 17/16)
           # Add :latest tag for default variant of the latest version
@@ -442,6 +458,8 @@ jobs:
         env:
           CONTAINER: ${{ matrix.build.container }}
           TAG: ${{ matrix.build.tag }}
+          VERSION: ${{ matrix.build.version }}
+          FULL_VERSION: ${{ matrix.build.full_version }}
           VARIANT: ${{ matrix.build.variant }}
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
@@ -457,8 +475,21 @@ jobs:
 
           echo "::group::Creating Docker Hub manifest for $CONTAINER:$TAG"
 
-          # Build tag arguments - version tag is always included
+          # Build tag arguments - version tag is always included (rolling, e.g., 18-alpine)
           tag_args="-t $dockerhub_image:$TAG"
+
+          # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
+          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
+            rest="${TAG#$VERSION}"
+            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
+            if [[ -n "$full_numeric" ]]; then
+              full_tag="${full_numeric}${rest}"
+              if [[ "$full_tag" != "$TAG" ]]; then
+                tag_args="$tag_args -t $dockerhub_image:$full_tag"
+                echo "::notice::Adding version-specific tag: $full_tag"
+              fi
+            fi
+          fi
 
           # Rolling tags only for the latest version
           if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
