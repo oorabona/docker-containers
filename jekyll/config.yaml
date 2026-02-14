@@ -18,6 +18,12 @@ build_args:
   JEKYLL_SITEMAP_VERSION: "1.4.0"
 
 dependency_sources:
+  RUBY_VERSION:
+    monitor: false
+    reason: "Base image version component — tracked via base_image_cache"
+  ALPINE_VERSION:
+    monitor: false
+    reason: "Base image version component — tracked via base_image_cache"
   BUNDLER_VERSION:
     type: rubygems
     gem: bundler
