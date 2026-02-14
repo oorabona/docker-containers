@@ -18,11 +18,18 @@ get_registry_pattern() {
 
 # Get the current published version of a container from the registry
 # Must be called from within the container directory
-# Args: $1 = image name (e.g., "oorabona/postgres")
+# Args: $1 = image name (e.g., "oorabona/postgres" or "ghcr.io/oorabona/postgres")
 # Returns: version string, or empty if not found
+# Note: defaults to GHCR (primary registry) when no registry prefix is provided
 get_current_published_version() {
     local image="$1"
     local pattern
     pattern=$(get_registry_pattern)
+
+    # Default to GHCR (primary registry) unless a specific registry is provided
+    if [[ "${image%%/*}" != *.* ]]; then
+        image="ghcr.io/$image"
+    fi
+
     ../helpers/latest-docker-tag "$image" "$pattern" 2>/dev/null | head -1 | tr -d '\n'
 }
