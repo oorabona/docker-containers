@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Read dependency versions from config.yaml (single source of truth)
+# Pre-build script for OpenResty
+# Sets dynamic build arguments not in config.yaml
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if ! command -v yq >/dev/null 2>&1; then
@@ -8,33 +9,14 @@ if ! command -v yq >/dev/null 2>&1; then
     exit 1
 fi
 
-OPENSSL_VERSION=$(yq -r '.build_args.RESTY_OPENSSL_VERSION // ""' "$SCRIPT_DIR/config.yaml")
-OPENSSL_PATCH_VERSION=$(yq -r '.build_args.RESTY_OPENSSL_PATCH_VERSION // ""' "$SCRIPT_DIR/config.yaml")
-PCRE_VERSION=$(yq -r '.build_args.RESTY_PCRE_VERSION // ""' "$SCRIPT_DIR/config.yaml")
-LUAROCKS_VERSION=$(yq -r '.build_args.LUAROCKS_VERSION // ""' "$SCRIPT_DIR/config.yaml")
-
 # Get raw upstream version (without -alpine suffix) for source download
 RESTY_VERSION=$("$SCRIPT_DIR/version.sh" --upstream)
 
-echo "Building OpenResty ${VERSION} with dependencies:"
-echo "  OpenResty Source: ${RESTY_VERSION}"
-echo "  OpenSSL: ${OPENSSL_VERSION}"
-echo "  OpenSSL Patch: ${OPENSSL_PATCH_VERSION}"
-echo "  PCRE: ${PCRE_VERSION}"
-echo "  LuaRocks: ${LUAROCKS_VERSION}"
+echo "Building OpenResty ${VERSION} (source: ${RESTY_VERSION})"
 
-# Set custom build arguments for make script to use
-CUSTOM_BUILD_ARGS="--build-arg VERSION=${VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_VERSION=${RESTY_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_BASE=alpine"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_IMAGE_TAG=latest"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_OPENSSL_VERSION=${OPENSSL_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_OPENSSL_PATCH_VERSION=${OPENSSL_PATCH_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg RESTY_PCRE_VERSION=${PCRE_VERSION}"
-CUSTOM_BUILD_ARGS+=" --build-arg LUAROCKS_VERSION=${LUAROCKS_VERSION}"
+# Append dynamic args to CUSTOM_BUILD_ARGS (preserve existing cache overrides)
+# Note: static args (RESTY_OPENSSL_VERSION, etc.) are read from config.yaml build_args
+CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg RESTY_VERSION=${RESTY_VERSION}"
 CUSTOM_BUILD_ARGS+=" --build-arg ENABLE_HTTP_PROXY_CONNECT=false"
 
-# Export for make script to pick up
 export CUSTOM_BUILD_ARGS
-
-echo "Custom build args: ${CUSTOM_BUILD_ARGS}"
