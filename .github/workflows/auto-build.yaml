@@ -184,13 +184,83 @@ jobs:
             done
           done
 
+  # Cache Docker Hub base images to GHCR to avoid rate limits during builds
+  cache-base-images:
+    name: Cache base images
+    needs: [detect-containers]
+    if: |
+      needs.detect-containers.outputs.count > 0 &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        uses: mikefarah/yq@2be0094729a1006f61e8339ce9934bfb3cbb549f # v4.52.2
+        with:
+          cmd: yq --version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect and cache base images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
+          VERSIONS: ${{ needs.detect-containers.outputs.versions }}
+        run: |
+          set -euo pipefail
+          source ./helpers/base-cache-utils.sh
+
+          echo "📦 Collecting base images to cache..."
+          images=$(collect_all_cache_images "$CONTAINERS" "$VERSIONS" "$OWNER")
+          count=$(echo "$images" | jq 'length')
+          echo "Found $count unique base images to cache (deduplicated)"
+
+          if [[ "$count" -eq 0 ]]; then
+            echo "No base images to cache"
+            exit 0
+          fi
+
+          # Copy each base image from Docker Hub to GHCR
+          cached=0
+          failed=0
+          echo "$images" | jq -c '.[]' | while IFS= read -r img; do
+            source_img=$(echo "$img" | jq -r '.source')
+            tag=$(echo "$img" | jq -r '.tag')
+            ghcr_image=$(echo "$img" | jq -r '.ghcr_image')
+
+            echo ""
+            echo "🔄 Caching $source_img:$tag → $ghcr_image"
+
+            if docker buildx imagetools create \
+              --tag "$ghcr_image" \
+              "docker.io/$source_img:$tag" 2>/dev/null; then
+              echo "  ✅ Cached successfully"
+            else
+              echo "  ⚠️ Failed to cache (Docker Hub rate limit?), build will use existing cache or fall back to Docker Hub"
+            fi
+          done
+
+          echo ""
+          echo "✅ Base image caching complete"
+
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
-    needs: [detect-containers, build-extensions]
+    needs: [detect-containers, build-extensions, cache-base-images]
     if: |
       always() &&
       needs.detect-containers.outputs.builds_count > 0 &&
-      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped')
+      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
