@@ -5,10 +5,10 @@
 | **Container** | `postgres` |
 | **Version Change** | `18.1-alpine` → `18.2-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-02-17T06:20:18Z |
+| **Rebuild Date** | 2026-02-18T06:22:44Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/22088137032) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/22129084985) |
 
 ## Build Status
 
