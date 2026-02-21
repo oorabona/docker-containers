@@ -524,6 +524,8 @@ jobs:
           echo "::endgroup::"
 
       # Docker Hub Manifest - SECONDARY (optional, can fail)
+      # Uses GHCR images as sources (cross-registry) since reading Docker Hub
+      # arch-specific tags with imagetools can fail without a buildx builder
       - name: Create Docker Hub multi-arch manifest (secondary)
         env:
           CONTAINER: ${{ matrix.build.container }}
@@ -534,6 +536,7 @@ jobs:
           IS_DEFAULT: ${{ matrix.build.is_default }}
           IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           # Skip if no Docker Hub credentials
           if [[ -z "$DOCKERHUB_USERNAME" ]]; then
@@ -542,6 +545,7 @@ jobs:
           fi
 
           dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
+          ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
 
           echo "::group::Creating Docker Hub manifest for $CONTAINER:$TAG"
 
@@ -570,17 +574,18 @@ jobs:
             tag_args="$tag_args -t $dockerhub_image:latest-$VARIANT"
           fi
 
-          # Try multi-arch manifest first
+          # Use GHCR images as sources (cross-registry copy) — more reliable than
+          # reading back from Docker Hub which can fail without buildx builder setup
           if docker buildx imagetools create $tag_args \
-            "$dockerhub_image:$TAG-amd64" \
-            "$dockerhub_image:$TAG-arm64" 2>/dev/null; then
-            echo "::notice::Docker Hub multi-arch manifest created successfully"
+            "$ghcr_image:$TAG-amd64" \
+            "$ghcr_image:$TAG-arm64"; then
+            echo "::notice::Docker Hub multi-arch manifest created successfully (from GHCR sources)"
           # Fallback to single platform
           elif docker buildx imagetools create $tag_args \
-            "$dockerhub_image:$TAG-amd64" 2>/dev/null; then
+            "$ghcr_image:$TAG-amd64"; then
             echo "::warning::Docker Hub manifest created with amd64 only"
           elif docker buildx imagetools create $tag_args \
-            "$dockerhub_image:$TAG-arm64" 2>/dev/null; then
+            "$ghcr_image:$TAG-arm64"; then
             echo "::warning::Docker Hub manifest created with arm64 only"
           else
             echo "::warning::Docker Hub manifest creation failed - images available on GHCR only"
