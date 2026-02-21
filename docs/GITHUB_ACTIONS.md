@@ -1,16 +1,16 @@
 # GitHub Actions Reference
 
-*Last Updated: January 16, 2026 - Added registry-based build caching*
+*Last Updated: February 21, 2026 - Added recreate-manifests workflow, Docker Hub cross-registry manifest fix*
 
 This guide covers the automated workflows and actions used for container management in our production-ready CI/CD system.
 
 ## 🎯 **Architecture Status: ✅ OPTIMIZED**
 
-- **4 Workflows**: All active and properly integrated
-- **6 Actions**: All used across workflows  
+- **8 Workflows**: All active and properly integrated
+- **7 Actions**: All used across workflows
 - **Core Scripts**: Fully integrated with automation
 - **Make Script**: All functions utilized by workflows
-- **Recent Optimizations**: Trivy issues fixed, JSON parsing corrected, redundant checking removed
+- **Recent**: recreate-manifests workflow, Docker Hub cross-registry manifest creation, base image caching
 
 ## Architecture Overview
 
@@ -99,32 +99,55 @@ Builds and pushes containers when triggered by upstream monitor or code changes.
 - **Push/PR Events**: GitHub's native path filtering for container file changes
 - **Manual**: `gh workflow run auto-build.yaml`
 
-**Responsibilities:**
-- Build specific containers (from upstream changes or code changes)
-- Push containers to registries
-- Trigger dashboard updates
+**Pipeline stages:**
+1. `detect-containers` — Smart change detection via git diff or force input
+2. `cache-base-images` — Cache Docker Hub base images to GHCR (avoids rate limits)
+3. `build-extensions` — Build PostgreSQL extension images (if postgres detected)
+4. `build-and-push` — Multi-platform builds (native amd64 + arm64 runners)
+5. `create-manifest` — Multi-arch manifest lists (GHCR primary, Docker Hub via cross-registry from GHCR sources)
+6. `cache-lineage` — Cache `.build-lineage/` JSON artifacts
+7. `update-dashboard` — Trigger dashboard regeneration
 
 **Features:**
-- Multi-architecture builds (amd64, arm64)
+- Native multi-architecture builds (separate amd64/arm64 runners, no QEMU)
 - **Hybrid detection**: Matrix for upstream changes, path filtering for code changes
 - Registry push automation via `build-container` action
-- Automatic dashboard updates
+- Docker Hub manifests created using GHCR images as cross-registry sources
+- Build lineage tracking (base image digest, build args, timestamps)
 
 **Usage:**
 ```bash
 # Build all containers manually
 gh workflow run auto-build.yaml
 
-# Force rebuild specific container  
-gh workflow run auto-build.yaml 
-  --field container=wordpress 
+# Force rebuild specific container
+gh workflow run auto-build.yaml \
+  --field container=wordpress \
   --field force_rebuild=true
 ```
 
-**Workflow Chain:**
-1. Detects containers using `detect-containers` action
-2. Builds containers using `build-container` action
-3. **Triggers** `update-dashboard.yaml` via `workflow_call`
+### 2b. Recreate Manifests (`recreate-manifests.yaml`) - Manifest-Only
+
+Recreates multi-arch manifest lists without rebuilding containers. Use when manifests need to be regenerated (e.g., after a manifest fix, or to sync Docker Hub with GHCR).
+
+**Triggers:**
+- **Manual only**: `gh workflow run recreate-manifests.yaml`
+
+**Inputs:**
+- `container` (optional): Specific container, or all if empty
+- `registry`: `both` (default), `ghcr`, or `dockerhub`
+
+**Usage:**
+```bash
+# Recreate Docker Hub manifests for all containers
+gh workflow run recreate-manifests.yaml -f registry=dockerhub
+
+# Recreate all manifests for postgres only
+gh workflow run recreate-manifests.yaml -f container=postgres
+
+# Recreate both GHCR + Docker Hub for all
+gh workflow run recreate-manifests.yaml
+```
 
 ### 3. Update Dashboard (`update-dashboard.yaml`) - Documentation Sync
 
@@ -204,7 +227,8 @@ Validates all version.sh scripts for functionality and standards compliance.
 | Workflow | Actions Used | Usage Count | Trigger Type |
 |----------|-------------|-------------|--------------|
 | `upstream-monitor.yaml` | `check-upstream-versions`<br>`check-dependency-versions`<br>`update-version`<br>`close-duplicate-prs` | 4 actions | **Schedule** (6 AM UTC daily)<br>Manual dispatch |
-| `auto-build.yaml` | `detect-containers`<br>`build-container`<br>`setup-github-cli` | 3 actions | **workflow_call** (from upstream-monitor)<br>Push/PR events<br>Manual dispatch |
+| `auto-build.yaml` | `detect-containers`<br>`build-container`<br>`docker-login` | 3 actions | **workflow_call** (from upstream-monitor)<br>Push/PR events<br>Manual dispatch |
+| `recreate-manifests.yaml` | `detect-containers`<br>`docker-login` | 2 actions | Manual dispatch only |
 | `update-dashboard.yaml` | None (uses scripts directly) | 0 actions | **workflow_call** (from auto-build)<br>Manual dispatch |
 | `validate-version-scripts.yaml` | `check-upstream-versions` | 1 action | Push/PR events<br>Manual dispatch |
 
@@ -422,6 +446,12 @@ gh workflow run auto-build.yaml \
 gh workflow run auto-build.yaml \
   --field container=wordpress \
   --field force_rebuild=true
+
+# MANIFEST-ONLY: Recreate Docker Hub manifests without rebuilding
+gh workflow run recreate-manifests.yaml -f registry=dockerhub
+
+# Recreate manifests for specific container
+gh workflow run recreate-manifests.yaml -f container=postgres
 
 # UTILITY: Update dashboard only
 gh workflow run update-dashboard.yaml

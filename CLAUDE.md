@@ -35,7 +35,8 @@ docker-containers/
 │   ├── LOCAL_DEVELOPMENT.md
 │   └── TESTING_GUIDE.md
 ├── .github/workflows/       # GitHub Actions
-│   ├── auto-build.yaml      # Automatic container builds
+│   ├── auto-build.yaml      # Build and push containers (full pipeline)
+│   ├── recreate-manifests.yaml # Recreate multi-arch manifests without rebuilding
 │   ├── upstream-monitor.yaml # Version monitoring
 │   ├── update-dashboard.yaml # Dashboard generation
 │   └── validate-version-scripts.yaml
@@ -122,7 +123,8 @@ docker-containers/
 
 | Workflow | Trigger | Purpose |
 |----------|---------|--------|
-| `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers |
+| `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers (detect → cache-base-images → build → manifest → cache-lineage → dashboard) |
+| `recreate-manifests.yaml` | Manual | Recreate multi-arch manifest lists without rebuilding (inputs: container, registry: both/ghcr/dockerhub) |
 | `upstream-monitor.yaml` | Schedule (6 AM UTC daily), manual | Check upstream + dependency updates |
 | `update-dashboard.yaml` | workflow_call, manual | Regenerate status dashboard |
 | `validate-version-scripts.yaml` | PR | Validate version.sh scripts |
