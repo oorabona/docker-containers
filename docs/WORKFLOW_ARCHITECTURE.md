@@ -107,6 +107,8 @@ This document describes the complete CI/CD architecture: version detection, mult
 - Smart rebuild detection via build digest labels
 - Registry cache (`--cache-from/--cache-to type=registry`)
 - Build lineage tracking (base image digest, build args, timestamps)
+- `skip_extensions` input: skip extension compilation, reuse existing GHCR extension images
+- Docker Hub manifests created via cross-registry from GHCR sources
 
 ### 2. upstream-monitor.yaml
 
