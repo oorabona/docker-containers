@@ -10,7 +10,8 @@
 
 ## Blocked / Deferred
 
-- [ ] ⏸️ [Build] PG 18 distributed/full flavors — blocked on Citus PG 18 compatibility (upstream)
+- [x] ✅ [Build] PG 18 distributed/full flavors — Citus 14.0.0 released, variants added, build success (2026-02-21)
+- [ ] 🐛 [CI] Docker Hub manifest creation fails silently — `docker buildx imagetools create` on Docker Hub sources returns error, GHCR manifests work fine. Docker Hub has arch-specific tags but no multi-arch manifest lists. Non-blocking (continue-on-error).
 - [-] ⏭️ [Build] _has_build_args_include() only checks first variant (head -1) — low risk, all current containers have consistent structure
 - [-] ⏭️ [Dashboard] Build history — show last N builds per variant (wait for SBOM data accumulation + format stabilization)
 - [-] ⏭️ [Dashboard] Changelog inter-versions — diff extensions/tools between builds (leverage SBOM attestations via sbomdiff/docker scout compare)
