@@ -124,6 +124,12 @@ gh workflow run auto-build.yaml
 gh workflow run auto-build.yaml \
   --field container=wordpress \
   --field force_rebuild=true
+
+# Rebuild containers without recompiling extensions (faster)
+gh workflow run auto-build.yaml \
+  --field container=postgres \
+  --field force_rebuild=true \
+  --field skip_extensions=true
 ```
 
 ### 2b. Recreate Manifests (`recreate-manifests.yaml`) - Manifest-Only
