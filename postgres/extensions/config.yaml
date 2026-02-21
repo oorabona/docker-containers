@@ -30,7 +30,7 @@ extensions:
     shared_preload: false
     priority: 1 # Build order (lower = first)
   pg_partman:
-    version: "5.4.1"
+    version: "5.4.2"
     description: "Partition management for time-series and large tables"
     repo: "pgpartman/pg_partman"
     build_deps:
@@ -72,7 +72,7 @@ extensions:
     requires_glibc: true
     disabled: true # Temporarily disabled until Debian-based build pipeline is ready
   citus:
-    version: "13.2.0"
+    version: "14.0.0"
     description: "Distributed PostgreSQL for horizontal scaling"
     repo: "citusdata/citus"
     license: "AGPL-3.0"
@@ -84,11 +84,10 @@ extensions:
       - icu-dev
     shared_preload: true
     priority: 3
-    # Citus does not build against PG 18 yet
-    # See: https://wiki.postgresql.org/wiki/PostgreSQL_18_Open_Items
-    max_pg_version: 17
+    # Citus 14.0.0 adds PG 18 support
+    max_pg_version: 18
   timescaledb:
-    version: "2.25.0"
+    version: "2.25.1"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
