@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_extensions:
+        description: 'Skip extension compilation (use existing GHCR extension images)'
+        required: false
+        default: false
+        type: boolean
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
@@ -49,6 +54,11 @@ on:
         type: string
       force_rebuild:
         description: 'Force rebuild even if no updates'
+        required: false
+        default: false
+        type: boolean
+      skip_extensions:
+        description: 'Skip extension compilation (use existing GHCR extension images)'
         required: false
         default: false
         type: boolean
@@ -94,7 +104,8 @@ jobs:
     needs: [detect-containers]
     if: |
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres')
+      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
