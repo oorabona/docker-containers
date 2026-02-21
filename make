@@ -410,12 +410,13 @@ check_updates() {
     pushd "$container" > /dev/null
     
     # Get current and latest versions using container-specific patterns
+    # Query GHCR (primary registry) to avoid stale Docker Hub data causing duplicate PRs
     local pattern
     if pattern=$(./version.sh --registry-pattern 2>/dev/null); then
-      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     else
-      # Fallback: try common version pattern  
-      current_version=$(../helpers/latest-docker-tag "oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+      # Fallback: try common version pattern
+      current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     fi
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
     
