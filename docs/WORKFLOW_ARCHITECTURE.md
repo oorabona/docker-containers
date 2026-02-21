@@ -4,7 +4,7 @@
 
 This document describes the complete CI/CD architecture: version detection, multi-platform builds, registry push, dashboard generation, and maintenance automation.
 
-**Last Updated:** January 2026
+**Last Updated:** February 2026
 
 ## Complete Automation Flow
 
@@ -75,6 +75,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 ┌───────────────────────────────────────────────────────────────┐
 │ SUPPORTING WORKFLOWS                                          │
 │                                                               │
+│  recreate-manifests       ─ Manifest-only (no rebuild)        │
 │  shellcheck.yaml          ─ Lint all .sh on push/PR           │
 │  validate-version-scripts ─ Test version.sh on PR             │
 │  sync-dockerhub-readme    ─ Sync README to Docker Hub         │
@@ -127,7 +128,31 @@ This document describes the complete CI/CD architecture: version detection, mult
 2. Builds Jekyll site
 3. Deploys to GitHub Pages
 
-### 4. Supporting Workflows
+### 4. Recreate Manifests (`recreate-manifests.yaml`)
+
+**Triggers:** `workflow_dispatch` only
+
+Recreates multi-arch manifest lists without rebuilding containers. Useful when manifests need to be regenerated (e.g., after a manifest creation fix, or to sync Docker Hub with GHCR).
+
+**Inputs:**
+- `container` (optional): Specific container, or all if empty
+- `registry`: `both` (default), `ghcr`, or `dockerhub`
+
+**Flow:**
+1. `detect-containers` action lists all containers/variants (force_rebuild=true)
+2. `create-manifest` matrix creates manifest lists using `docker buildx imagetools create`
+3. Docker Hub manifests use GHCR images as cross-registry sources
+
+**Usage:**
+```bash
+# Recreate Docker Hub manifests for all containers
+gh workflow run recreate-manifests.yaml -f registry=dockerhub
+
+# Recreate manifests for a specific container on both registries
+gh workflow run recreate-manifests.yaml -f container=postgres
+```
+
+### 5. Supporting Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
@@ -146,6 +171,8 @@ All located in `.github/actions/`:
 | `build-container` | Builds single container with Docker Buildx for specified platform |
 | `check-upstream-versions` | Compares upstream version.sh output vs published registry tags |
 | `close-duplicate-prs` | Closes existing PRs for same container/version |
+| `check-dependency-versions` | Checks 3rd party dependency versions against upstream releases |
+| `update-version` | Updates container version files and creates commits |
 | `docker-login` | Logs into GHCR (required) and Docker Hub (optional) |
 | `setup-github-cli` | Ensures `gh` CLI is available for PR/merge operations |
 
