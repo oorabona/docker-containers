@@ -1,0 +1,204 @@
+name: Recreate Manifests
+
+on:
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Specific container (leave empty for all)'
+        required: false
+        type: string
+      registry:
+        description: 'Target registry'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - ghcr
+          - dockerhub
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-containers:
+    runs-on: ubuntu-latest
+    outputs:
+      builds: ${{ steps.detect.outputs.builds }}
+      builds_count: ${{ steps.detect.outputs.builds_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq for variant detection
+        uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51 # v4.52.4
+        with:
+          cmd: yq --version
+
+      - name: Detect containers
+        id: detect
+        uses: ./.github/actions/detect-containers
+        with:
+          container: ${{ inputs.container }}
+          force_rebuild: true
+
+      - name: Summary
+        env:
+          REGISTRY: ${{ inputs.registry || 'both' }}
+          CONTAINER_INPUT: ${{ inputs.container }}
+          BUILDS_COUNT: ${{ steps.detect.outputs.builds_count }}
+        run: |
+          echo "## Recreate Manifests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`$REGISTRY\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Manifests** | $BUILDS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$CONTAINER_INPUT" ]; then
+            echo "| **Container** | \`$CONTAINER_INPUT\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Scope** | All containers |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  create-manifest:
+    name: Manifest ${{ matrix.build.container }}:${{ matrix.build.tag }}
+    needs: [detect-containers]
+    if: needs.detect-containers.outputs.builds_count > 0
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
+      fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # GHCR Manifest
+      - name: Create GHCR multi-arch manifest
+        if: inputs.registry != 'dockerhub'
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          VERSION: ${{ matrix.build.version }}
+          FULL_VERSION: ${{ matrix.build.full_version }}
+          VARIANT: ${{ matrix.build.variant }}
+          IS_DEFAULT: ${{ matrix.build.is_default }}
+          IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          set -e
+          ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
+
+          echo "::group::Creating GHCR manifest for $CONTAINER:$TAG"
+
+          tag_args="-t $ghcr_image:$TAG"
+
+          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
+            rest="${TAG#$VERSION}"
+            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
+            if [[ -n "$full_numeric" ]]; then
+              full_tag="${full_numeric}${rest}"
+              if [[ "$full_tag" != "$TAG" ]]; then
+                tag_args="$tag_args -t $ghcr_image:$full_tag"
+                echo "::notice::Adding version-specific tag: $full_tag"
+              fi
+            fi
+          fi
+
+          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
+            tag_args="$tag_args -t $ghcr_image:latest"
+          fi
+
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
+            tag_args="$tag_args -t $ghcr_image:latest-$VARIANT"
+          fi
+
+          if docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-amd64" \
+            "$ghcr_image:$TAG-arm64" 2>/dev/null; then
+            echo "::notice::GHCR multi-arch manifest created successfully"
+          elif docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-amd64" 2>/dev/null; then
+            echo "::warning::GHCR manifest created with amd64 only (arm64 not available)"
+          elif docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-arm64" 2>/dev/null; then
+            echo "::warning::GHCR manifest created with arm64 only (amd64 not available)"
+          else
+            echo "::error::No arch-specific images found on GHCR for $CONTAINER:$TAG"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      # Docker Hub Manifest (cross-registry from GHCR sources)
+      - name: Create Docker Hub multi-arch manifest
+        if: inputs.registry != 'ghcr'
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          VERSION: ${{ matrix.build.version }}
+          FULL_VERSION: ${{ matrix.build.full_version }}
+          VARIANT: ${{ matrix.build.variant }}
+          IS_DEFAULT: ${{ matrix.build.is_default }}
+          IS_LATEST_VERSION: ${{ matrix.build.is_latest_version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          if [[ -z "$DOCKERHUB_USERNAME" ]]; then
+            echo "::notice::Skipping Docker Hub manifest (no credentials)"
+            exit 0
+          fi
+
+          dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
+          ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
+
+          echo "::group::Creating Docker Hub manifest for $CONTAINER:$TAG"
+
+          tag_args="-t $dockerhub_image:$TAG"
+
+          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
+            rest="${TAG#$VERSION}"
+            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
+            if [[ -n "$full_numeric" ]]; then
+              full_tag="${full_numeric}${rest}"
+              if [[ "$full_tag" != "$TAG" ]]; then
+                tag_args="$tag_args -t $dockerhub_image:$full_tag"
+                echo "::notice::Adding version-specific tag: $full_tag"
+              fi
+            fi
+          fi
+
+          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
+            tag_args="$tag_args -t $dockerhub_image:latest"
+          fi
+
+          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
+            tag_args="$tag_args -t $dockerhub_image:latest-$VARIANT"
+          fi
+
+          # Cross-registry: read from GHCR, write to Docker Hub
+          if docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-amd64" \
+            "$ghcr_image:$TAG-arm64"; then
+            echo "::notice::Docker Hub multi-arch manifest created successfully (from GHCR sources)"
+          elif docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-amd64"; then
+            echo "::warning::Docker Hub manifest created with amd64 only"
+          elif docker buildx imagetools create $tag_args \
+            "$ghcr_image:$TAG-arm64"; then
+            echo "::warning::Docker Hub manifest created with arm64 only"
+          else
+            echo "::warning::Docker Hub manifest creation failed for $CONTAINER:$TAG"
+          fi
+
+          echo "::endgroup::"
+        continue-on-error: true
