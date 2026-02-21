@@ -10,6 +10,14 @@ inputs:
     description: 'Force rebuild even if image exists'
     required: false
     default: 'false'
+  scope_versions:
+    description: 'Comma-separated major versions to build (e.g., "18"). Empty = all.'
+    required: false
+    default: ''
+  scope_flavors:
+    description: 'Comma-separated flavors to build (e.g., "distributed,full"). Empty = all.'
+    required: false
+    default: ''
 
 outputs:
   containers_list:
@@ -169,6 +177,9 @@ runs:
       id: expand-variants
       if: steps.find-containers.outputs.count != '0'
       shell: bash
+      env:
+        SCOPE_VERSIONS: ${{ inputs.scope_versions }}
+        SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
       run: |
         set -e
         source ./helpers/variant-utils.sh
@@ -183,6 +194,33 @@ runs:
           echo "📦 Expanding builds for $container (version: $version)..."
 
           container_builds=$(list_container_builds "$container" "$version")
+
+          # Apply scope filtering if scope_versions or scope_flavors are set
+          if [[ -n "$SCOPE_VERSIONS" || -n "$SCOPE_FLAVORS" ]]; then
+            # Convert comma-separated values to JSON arrays for jq
+            versions_filter="[]"
+            if [[ -n "$SCOPE_VERSIONS" ]]; then
+              versions_filter=$(echo "$SCOPE_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            fi
+            flavors_filter="[]"
+            if [[ -n "$SCOPE_FLAVORS" ]]; then
+              flavors_filter=$(echo "$SCOPE_FLAVORS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            fi
+
+            before_count=$(echo "$container_builds" | jq 'length')
+            container_builds=$(echo "$container_builds" | jq -c \
+              --argjson sv "$versions_filter" --argjson sf "$flavors_filter" \
+              '[.[] | select(
+                (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
+                (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
+              )]')
+            after_count=$(echo "$container_builds" | jq 'length')
+
+            if [[ "$before_count" != "$after_count" ]]; then
+              echo "  🔍 Scope filter: $before_count → $after_count builds (versions=${SCOPE_VERSIONS:-all}, flavors=${SCOPE_FLAVORS:-all})"
+            fi
+          fi
+
           count=$(echo "$container_builds" | jq 'length')
 
           builds_json=$(echo "$builds_json" | jq -c ". + $container_builds")
