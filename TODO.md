@@ -12,7 +12,7 @@
 
 - [x] ✅ [Build] PG 18 distributed/full flavors — Citus 14.0.0 released, variants added, build success (2026-02-21)
 - [x] ✅ [CI] Docker Hub manifest creation fails silently — root cause: missing buildx setup, fix: cross-registry GHCR→Docker Hub sources (PR #175, 2026-02-21)
-- [-] ⏭️ [Build] _has_build_args_include() only checks first variant (head -1) — low risk, all current containers have consistent structure
+- [x] ✅ [Build] _has_build_args_include() only checks first variant (head -1) — fixed to check all variants (2026-02-22)
 - [-] ⏭️ [Dashboard] Build history — show last N builds per variant (wait for SBOM data accumulation + format stabilization)
 - [-] ⏭️ [Dashboard] Changelog inter-versions — diff extensions/tools between builds (leverage SBOM attestations via sbomdiff/docker scout compare)
 
