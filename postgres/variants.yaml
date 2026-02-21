@@ -18,10 +18,7 @@ build:
 # Versions to build (all maintained PostgreSQL releases)
 versions:
   - tag: "18"
-    # PG18 - extension support (pgvector, timescaledb, pg_partman, hypopg, pg_qualstats)
-    # NOTE: distributed and full flavors excluded — Citus does not build against PG 18 yet
-    # See: https://wiki.postgresql.org/wiki/PostgreSQL_18_Open_Items (Extension Bugs)
-    # Re-evaluate when Citus releases PG 18 support
+    # PG18 - full extension support (Citus 14.0.0 adds PG 18 compatibility)
     variants:
       - name: base
         suffix: ""
@@ -40,6 +37,14 @@ versions:
         suffix: "-timeseries"
         flavor: timeseries
         description: "PostgreSQL + TimescaleDB for time-series data"
+      - name: distributed
+        suffix: "-distributed"
+        flavor: distributed
+        description: "PostgreSQL + Citus for horizontal scaling"
+      - name: full
+        suffix: "-full"
+        flavor: full
+        description: "PostgreSQL with all compiled extensions"
 
   - tag: "17"
     # PG17 - full extension support
