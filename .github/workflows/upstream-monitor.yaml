@@ -270,9 +270,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTAINER: ${{ matrix.container }}
+          NEW_VERSION: ${{ steps.classify.outputs.new_version }}
         run: |
           echo "🔨 Triggering build for $CONTAINER after successful merge"
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true
+
+          # Extract major version for scoped builds (e.g., "18.2-alpine" → "18")
+          affected_major=$(echo "$NEW_VERSION" | grep -oE '^[0-9]+')
+
+          scope_args=""
+          if [[ -n "$affected_major" ]]; then
+            scope_args="-f scope_versions=$affected_major"
+            echo "🎯 Scoped to version: $affected_major"
+          fi
+
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args
           echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Show PR details (test mode)
@@ -643,9 +654,38 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTAINER: ${{ matrix.container }}
+          DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
         run: |
           echo "🔨 Triggering build for $CONTAINER after dependency update merge"
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true
+
+          scope_args=""
+
+          # For containers with extensions (e.g., postgres), compute affected flavors
+          if [[ -f "$CONTAINER/extensions/config.yaml" ]]; then
+            source ./helpers/extension-utils.sh
+
+            # Extract updated extension names from dep_version_info
+            updated_extensions=$(echo "$DEP_INFO" | jq -r --arg c "$CONTAINER" \
+              '.[] | select(.container == $c) | .updates[].name' | paste -sd ',' -)
+
+            if [[ -n "$updated_extensions" ]]; then
+              echo "🔍 Updated extensions: $updated_extensions"
+
+              # Compute affected flavors across all PG versions.
+              # pg_major is intentionally omitted: scope is broad here because dependency
+              # updates apply to all versions. The detect-containers jq filter handles
+              # precise version filtering via scope_versions if set.
+              affected_flavors=$(compute_affected_flavors \
+                "$CONTAINER/extensions/config.yaml" "$updated_extensions")
+
+              if [[ -n "$affected_flavors" ]]; then
+                scope_args="-f scope_flavors=$affected_flavors -f scope_extensions=$updated_extensions"
+                echo "🎯 Scoped to flavors: $affected_flavors, extensions: $updated_extensions"
+              fi
+            fi
+          fi
+
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args
           echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Show PR details (test mode)

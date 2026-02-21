@@ -123,7 +123,7 @@ docker-containers/
 
 | Workflow | Trigger | Purpose |
 |----------|---------|--------|
-| `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers (inputs: container, force_rebuild, skip_extensions) |
+| `auto-build.yaml` | Push, PR, workflow_call, manual | Build and push containers (inputs: container, force_rebuild, skip_extensions, scope_versions, scope_flavors, scope_extensions) |
 | `recreate-manifests.yaml` | Manual | Recreate multi-arch manifest lists without rebuilding (inputs: container, registry: both/ghcr/dockerhub) |
 | `upstream-monitor.yaml` | Schedule (6 AM UTC daily), manual | Check upstream + dependency updates |
 | `update-dashboard.yaml` | workflow_call, manual | Regenerate status dashboard |

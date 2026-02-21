@@ -108,6 +108,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 - Registry cache (`--cache-from/--cache-to type=registry`)
 - Build lineage tracking (base image digest, build args, timestamps)
 - `skip_extensions` input: skip extension compilation, reuse existing GHCR extension images
+- **Scoped builds**: `scope_versions`, `scope_flavors`, `scope_extensions` inputs filter the build matrix to only affected builds. Upstream-monitor computes the scope automatically (e.g., PG 18 base update → only PG 18 variants, citus update → only distributed+full flavors). Empty scope = build everything (backward compatible).
 - Docker Hub manifests created via cross-registry from GHCR sources
 
 ### 2. upstream-monitor.yaml
@@ -169,7 +170,7 @@ All located in `.github/actions/`:
 
 | Action | Purpose |
 |--------|---------|
-| `detect-containers` | Smart container detection: git diff, force_rebuild flag, or explicit input; outputs JSON matrix |
+| `detect-containers` | Smart container detection: git diff, force_rebuild flag, or explicit input; supports scope_versions/scope_flavors filtering; outputs JSON matrix |
 | `build-container` | Builds single container with Docker Buildx for specified platform |
 | `check-upstream-versions` | Compares upstream version.sh output vs published registry tags |
 | `close-duplicate-prs` | Closes existing PRs for same container/version |

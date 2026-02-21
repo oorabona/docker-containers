@@ -18,6 +18,21 @@ on:
         required: false
         default: false
         type: boolean
+      scope_versions:
+        description: 'Comma-separated major versions to build (e.g., "18"). Empty = all.'
+        required: false
+        type: string
+        default: ''
+      scope_flavors:
+        description: 'Comma-separated flavors to build (e.g., "distributed,full"). Empty = all.'
+        required: false
+        type: string
+        default: ''
+      scope_extensions:
+        description: 'Comma-separated extensions to rebuild (e.g., "citus"). Empty = all.'
+        required: false
+        type: string
+        default: ''
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
@@ -62,6 +77,21 @@ on:
         required: false
         default: false
         type: boolean
+      scope_versions:
+        description: 'Comma-separated major versions to build (e.g., "18"). Empty = all.'
+        required: false
+        type: string
+        default: ''
+      scope_flavors:
+        description: 'Comma-separated flavors to build (e.g., "distributed,full"). Empty = all.'
+        required: false
+        type: string
+        default: ''
+      scope_extensions:
+        description: 'Comma-separated extensions to rebuild (e.g., "citus"). Empty = all.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -97,6 +127,8 @@ jobs:
         with:
           container: ${{ github.event.inputs.container || inputs.container }}
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
+          scope_versions: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
+          scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
 
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
@@ -177,6 +209,8 @@ jobs:
         if: steps.ext-versions.outputs.containers != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
+          SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -190,8 +224,27 @@ jobs:
             IFS=',' read -ra VERSION_LIST <<< "$versions"
             for major_version in "${VERSION_LIST[@]}"; do
               [[ -z "$major_version" ]] && continue
-              echo "🔧 Building extensions for $container v$major_version..."
-              ./scripts/build-extensions.sh "$container" --major-version "$major_version"
+
+              # Skip versions not in scope (if scope_versions is set)
+              if [[ -n "$SCOPE_VERSIONS" ]]; then
+                if ! echo ",$SCOPE_VERSIONS," | grep -q ",$major_version,"; then
+                  echo "⏭️ Skipping extensions for $container v$major_version (not in scope: $SCOPE_VERSIONS)"
+                  continue
+                fi
+              fi
+
+              # Build specific extensions or all
+              if [[ -n "$SCOPE_EXTENSIONS" ]]; then
+                echo "🔧 Building scoped extensions ($SCOPE_EXTENSIONS) for $container v$major_version..."
+                IFS=',' read -ra EXT_LIST <<< "$SCOPE_EXTENSIONS"
+                for ext in "${EXT_LIST[@]}"; do
+                  [[ -z "$ext" ]] && continue
+                  ./scripts/build-extensions.sh "$container" --major-version "$major_version" --extension "$ext"
+                done
+              else
+                echo "🔧 Building all extensions for $container v$major_version..."
+                ./scripts/build-extensions.sh "$container" --major-version "$major_version"
+              fi
             done
           done
 

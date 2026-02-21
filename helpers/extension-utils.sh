@@ -292,6 +292,94 @@ generate_dockerfile() {
     done < "$template"
 }
 
+# Compute which flavors are affected by a set of changed extensions
+# Uses the flavors section from config.yaml to determine which flavors
+# include any of the changed extensions.
+#
+# Usage: compute_affected_flavors <config_file> <comma_separated_extensions> [pg_major]
+# Example: compute_affected_flavors postgres/extensions/config.yaml "citus" "18"
+#   → "distributed,full"
+# Example: compute_affected_flavors postgres/extensions/config.yaml "pgvector,citus"
+#   → "distributed,full,vector"
+#
+# If pg_major is provided, extensions are filtered by max_pg_version and disabled status.
+# This prevents including flavors whose only matching extension is incompatible with
+# the given PG version (e.g., citus with max_pg_version < pg_major).
+#
+# Output: comma-separated list of affected flavors (sorted, deduplicated)
+# Returns empty string if no flavors are affected
+compute_affected_flavors() {
+    local config_file="$1"
+    local changed_extensions="$2"
+    local pg_major="${3:-}"
+
+    if [[ -z "$changed_extensions" ]]; then
+        echo ""
+        return 0
+    fi
+
+    if ! command -v yq &>/dev/null; then
+        log_error "yq not found"
+        return 1
+    fi
+
+    # Get list of flavors
+    local flavors
+    flavors=$(yq -r '.flavors | keys[]' "$config_file")
+
+    local affected=()
+
+    while IFS= read -r flavor; do
+        [[ -z "$flavor" ]] && continue
+
+        # Get extensions in this flavor
+        local flavor_exts
+        flavor_exts=$(flav="$flavor" yq -r '.flavors[strenv(flav)][]' "$config_file" 2>/dev/null || true)
+        [[ -z "$flavor_exts" ]] && continue
+
+        # Check if any changed extension is in this flavor and eligible
+        local matched=false
+        IFS=',' read -ra ext_array <<< "$changed_extensions"
+        for changed_ext in "${ext_array[@]}"; do
+            [[ -z "$changed_ext" ]] && continue
+
+            # Check if this extension is in the flavor
+            if ! echo "$flavor_exts" | grep -qFx "$changed_ext"; then
+                continue
+            fi
+
+            # Check if extension is disabled
+            local disabled
+            disabled=$(ext="$changed_ext" yq -r '.extensions[strenv(ext)].disabled // false' "$config_file")
+            [[ "$disabled" == "true" ]] && continue
+
+            # Check max_pg_version compatibility
+            if [[ -n "$pg_major" ]]; then
+                local max_pg
+                max_pg=$(ext="$changed_ext" yq -r '.extensions[strenv(ext)].max_pg_version // 999' "$config_file")
+                if (( max_pg < pg_major )); then
+                    continue
+                fi
+            fi
+
+            matched=true
+            break
+        done
+
+        if [[ "$matched" == "true" ]]; then
+            affected+=("$flavor")
+        fi
+    done <<< "$flavors"
+
+    # Output sorted, comma-separated
+    local result=""
+    if [[ ${#affected[@]} -gt 0 ]]; then
+        result=$(printf '%s\n' "${affected[@]}" | sort -u | paste -sd ',' -)
+    fi
+
+    echo "$result"
+}
+
 # Pull extension image from registry
 pull_ext_image() {
     local ext_name="$1"

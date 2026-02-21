@@ -115,6 +115,13 @@ Builds and pushes containers when triggered by upstream monitor or code changes.
 - Docker Hub manifests created using GHCR images as cross-registry sources
 - Build lineage tracking (base image digest, build args, timestamps)
 
+**Scoped Build Inputs (optional):**
+- `scope_versions`: Comma-separated major versions (e.g., `"18"`). Empty = all.
+- `scope_flavors`: Comma-separated flavors (e.g., `"distributed,full"`). Empty = all.
+- `scope_extensions`: Comma-separated extensions (e.g., `"citus"`). Empty = all.
+
+When set, only matching builds are included in the matrix. Used automatically by upstream-monitor to avoid unnecessary rebuilds.
+
 **Usage:**
 ```bash
 # Build all containers manually
@@ -130,6 +137,20 @@ gh workflow run auto-build.yaml \
   --field container=postgres \
   --field force_rebuild=true \
   --field skip_extensions=true
+
+# Scoped build: only PG 18 vector+full variants
+gh workflow run auto-build.yaml \
+  --field container=postgres \
+  --field force_rebuild=true \
+  --field scope_versions=18 \
+  --field scope_flavors=vector,full
+
+# Scoped build: rebuild only citus-affected flavors
+gh workflow run auto-build.yaml \
+  --field container=postgres \
+  --field force_rebuild=true \
+  --field scope_flavors=distributed,full \
+  --field scope_extensions=citus
 ```
 
 ### 2b. Recreate Manifests (`recreate-manifests.yaml`) - Manifest-Only
