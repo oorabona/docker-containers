@@ -168,12 +168,10 @@ compute_build_digest() {
     echo -n "$concatenated" | sha256sum | cut -c1-12
 }
 
-# Helper: check if variants.yaml has build_args_include entries
+# Helper: check if any variant in variants.yaml has build_args_include entries
 _has_build_args_include() {
     if command -v yq &>/dev/null; then
-        local count
-        count=$(yq -r '.versions[].variants[].build_args_include | length' variants.yaml 2>/dev/null | head -1)
-        [[ -n "$count" && "$count" -gt 0 ]]
+        yq -e '.versions[].variants[] | select(.build_args_include | length > 0)' variants.yaml &>/dev/null
     else
         grep -q 'build_args_include' variants.yaml 2>/dev/null
     fi
