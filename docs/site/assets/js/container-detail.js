@@ -258,6 +258,20 @@
 
     // --- SBOM section rendering ---
 
+    // Current SBOM packages data (set when variant is selected)
+    var currentSbomPackages = null;
+
+    // Type labels for display
+    var sbomTypeLabels = {
+      apk: 'Alpine packages',
+      golang: 'Go binaries',
+      generic: 'Standalone binaries',
+      oci: 'Container image',
+      pip: 'Python packages',
+      npm: 'Node.js packages',
+      other: 'Other'
+    };
+
     function updateSbomSection(variantEl) {
       var section = document.getElementById('sbom-section');
       if (!section) return;
@@ -269,17 +283,35 @@
       try { summary = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
       if (!summary.total || summary.total === 0) { section.style.display = 'none'; return; }
 
+      // Parse packages data
+      currentSbomPackages = null;
+      var pkgAttr = variantEl.dataset.sbomPackages;
+      if (pkgAttr) {
+        try { currentSbomPackages = JSON.parse(pkgAttr); } catch(e) { /* ignore */ }
+      }
+
       section.style.display = '';
       var badge = document.getElementById('sbom-total-badge');
       if (badge) badge.textContent = summary.total + ' packages';
 
       var breakdown = document.getElementById('sbom-breakdown');
+      var panel = document.getElementById('sbom-package-panel');
+      if (panel) { panel.style.display = 'none'; panel.textContent = ''; }
+
       if (breakdown) {
         breakdown.textContent = '';
         Object.keys(summary).forEach(function(key) {
           if (key === 'total') return;
           var chip = document.createElement('span');
           chip.className = 'sbom-type-chip';
+          if (currentSbomPackages && currentSbomPackages[key]) {
+            chip.className += ' sbom-type-chip-clickable';
+            chip.setAttribute('role', 'button');
+            chip.setAttribute('tabindex', '0');
+            chip.setAttribute('aria-expanded', 'false');
+            chip.title = 'Click to show ' + (sbomTypeLabels[key] || key) + ' details';
+          }
+          chip.dataset.type = key;
           chip.textContent = key + ' ';
           var count = document.createElement('span');
           count.className = 'sbom-type-count';
@@ -288,6 +320,72 @@
           breakdown.appendChild(chip);
         });
       }
+    }
+
+    function togglePackagePanel(type) {
+      var panel = document.getElementById('sbom-package-panel');
+      if (!panel || !currentSbomPackages || !currentSbomPackages[type]) return;
+
+      // If already showing this type, collapse
+      if (panel.style.display !== 'none' && panel.dataset.activeType === type) {
+        panel.style.display = 'none';
+        panel.dataset.activeType = '';
+        // Update chip aria
+        var chips = document.querySelectorAll('.sbom-type-chip-clickable');
+        chips.forEach(function(c) { c.setAttribute('aria-expanded', 'false'); c.classList.remove('sbom-type-chip-active'); });
+        return;
+      }
+
+      var packages = currentSbomPackages[type];
+      panel.textContent = '';
+      panel.dataset.activeType = type;
+
+      // Header
+      var header = document.createElement('div');
+      header.className = 'sbom-panel-header';
+      var title = document.createElement('span');
+      title.className = 'sbom-panel-title';
+      title.textContent = (sbomTypeLabels[type] || type) + ' (' + packages.length + ')';
+      header.appendChild(title);
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'sbom-panel-close';
+      closeBtn.textContent = '\u00D7';
+      closeBtn.title = 'Close';
+      closeBtn.setAttribute('aria-label', 'Close package list');
+      closeBtn.onclick = function() { togglePackagePanel(type); };
+      header.appendChild(closeBtn);
+      panel.appendChild(header);
+
+      // Package grid
+      var grid = document.createElement('div');
+      grid.className = 'sbom-package-grid';
+      packages.forEach(function(pkg) {
+        var item = document.createElement('div');
+        item.className = 'sbom-package-item';
+        var name = document.createElement('span');
+        name.className = 'sbom-pkg-name';
+        name.textContent = pkg.n;
+        name.title = pkg.n;
+        item.appendChild(name);
+        var ver = document.createElement('span');
+        ver.className = 'sbom-pkg-version';
+        ver.textContent = pkg.v;
+        ver.title = pkg.v;
+        item.appendChild(ver);
+        grid.appendChild(item);
+      });
+      panel.appendChild(grid);
+
+      panel.style.display = '';
+
+      // Update chip states
+      var chips = document.querySelectorAll('.sbom-type-chip-clickable');
+      chips.forEach(function(c) {
+        var isActive = c.dataset.type === type;
+        c.setAttribute('aria-expanded', isActive ? 'true' : 'false');
+        if (isActive) c.classList.add('sbom-type-chip-active');
+        else c.classList.remove('sbom-type-chip-active');
+      });
     }
 
     function updateChangelogSection(variantEl) {
@@ -424,6 +522,9 @@
       var tag = e.target.closest('.variant-tag');
       if (tag) selectVariant(tag);
 
+      var chip = e.target.closest('.sbom-type-chip-clickable');
+      if (chip) togglePackagePanel(chip.dataset.type);
+
       if (e.target.closest('.theme-toggle')) {
         currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
         localStorage.setItem('preferredTheme', currentTheme);
@@ -433,6 +534,8 @@
 
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Enter' || e.key === ' ') {
+        var chip = e.target.closest('.sbom-type-chip-clickable');
+        if (chip) { e.preventDefault(); togglePackagePanel(chip.dataset.type); return; }
         var tag = e.target.closest('.variant-tag');
         if (tag) { e.preventDefault(); selectVariant(tag); }
       }

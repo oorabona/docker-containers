@@ -126,6 +126,7 @@
                           data-base-image="{{ variant.base_image | default: '' }}"
                           {% if variant.build_args %}data-build-args='[{% for arg in variant.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif %}
                           {% if variant.sbom_summary %}data-sbom-summary='{{ variant.sbom_summary | jsonify }}'{% endif %}
+                          {% if variant.sbom_packages %}data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif %}
                           {% if variant.changelog %}data-changelog='{{ variant.changelog | jsonify }}'{% endif %}
                           {% if variant.build_history %}data-build-history='{{ variant.build_history | jsonify }}'{% endif %}
                           role="button"
@@ -200,6 +201,7 @@
         {% if page.sbom_summary or page.changelog or page.build_history %}
         <div id="sbom-data-carrier" style="display:none;"
              {% if page.sbom_summary %}data-sbom-summary='{{ page.sbom_summary | jsonify }}'{% endif %}
+             {% if page.sbom_packages %}data-sbom-packages='{{ page.sbom_packages | jsonify }}'{% endif %}
              {% if page.changelog %}data-changelog='{{ page.changelog | jsonify }}'{% endif %}
              {% if page.build_history %}data-build-history='{{ page.build_history | jsonify }}'{% endif %}>
         </div>
@@ -214,6 +216,7 @@
             <span class="sbom-total-badge" id="sbom-total-badge"></span>
           </div>
           <div class="sbom-breakdown" id="sbom-breakdown"></div>
+          <div class="sbom-package-panel" id="sbom-package-panel" style="display:none;"></div>
         </section>
 
         <!-- Recent Changes (from SBOM changelog) — shown on selected variant -->
