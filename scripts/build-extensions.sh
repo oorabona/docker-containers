@@ -301,7 +301,7 @@ main() {
 
     # Check registry auth (unless local-only or dry-run)
     if [[ "$LOCAL_ONLY" != "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
-        check_registry_auth || log_warning"Continuing without registry auth check"
+        check_registry_auth || log_warning "Continuing without registry auth check"
     fi
 
     # Handle pull-only mode: pull from registry first, then build what's missing
@@ -318,7 +318,7 @@ main() {
             for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
                 local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
                 if [[ ! -f "$dockerfile" ]]; then
-                    log_warning"$ext: no Dockerfile (skipped)"
+                    log_warning "$ext: no Dockerfile (skipped)"
                     continue
                 fi
                 extensions_to_pull+=("$ext")
@@ -334,22 +334,22 @@ main() {
 
             # Skip if already exists locally (unless --force)
             if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
-                log_success"$ext $version already exists locally"
+                log_success "$ext $version already exists locally"
                 continue
             fi
 
             # Try to pull from registry
             if pull_extension "$ext" "$config_file" "$major_ver" 2>/dev/null; then
-                log_success"$ext $version pulled from registry"
+                log_success "$ext $version pulled from registry"
             else
-                log_warning"$ext $version not in registry, will build locally"
+                log_warning "$ext $version not in registry, will build locally"
                 extensions_to_build+=("$ext")
             fi
         done
 
         # Build locally those that couldn't be pulled
         if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
-            log_success"All extensions pulled successfully"
+            log_success "All extensions pulled successfully"
             exit 0
         fi
 
@@ -372,7 +372,7 @@ main() {
                 continue
             fi
 
-            log_success"$ext built and tagged locally"
+            log_success "$ext built and tagged locally"
         done
 
         echo ""
@@ -380,7 +380,7 @@ main() {
             log_error "Failed extensions: ${failed[*]}"
             exit 1
         else
-            log_success"All extensions available locally (pulled + built)"
+            log_success "All extensions available locally (pulled + built)"
         fi
         exit 0
     fi
@@ -398,7 +398,7 @@ main() {
 
             # Skip extensions without Dockerfile (marked as complex or not yet implemented)
             if [[ ! -f "$dockerfile" ]]; then
-                log_warning"$ext: no Dockerfile (skipped)"
+                log_warning "$ext: no Dockerfile (skipped)"
                 continue
             fi
 
@@ -412,7 +412,7 @@ main() {
             if [[ "$LOCAL_ONLY" == "true" ]]; then
                 # Check if image exists locally
                 if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
-                    log_success"$ext $version already exists locally"
+                    log_success "$ext $version already exists locally"
                 else
                     extensions_to_build+=("$ext")
                 fi
@@ -421,13 +421,13 @@ main() {
             elif ! image_exists_in_registry "$image" 2>/dev/null; then
                 extensions_to_build+=("$ext")
             else
-                log_success"$ext $version already exists in registry"
+                log_success "$ext $version already exists in registry"
             fi
         done
     fi
 
     if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
-        log_success"All extensions are up to date"
+        log_success "All extensions are up to date"
         exit 0
     fi
 
@@ -455,9 +455,9 @@ main() {
 
         # Push to registry (unless local-only)
         if [[ "$LOCAL_ONLY" == "true" ]]; then
-            log_success"$ext built and tagged locally"
+            log_success "$ext built and tagged locally"
         elif push_extension "$ext" "$config_file" "$major_ver"; then
-            log_success"$ext completed successfully"
+            log_success "$ext completed successfully"
         else
             log_error "$ext push failed"
             failed+=("$ext")
@@ -470,9 +470,9 @@ main() {
         exit 1
     else
         if [[ "$LOCAL_ONLY" == "true" ]]; then
-            log_success"All extensions built locally"
+            log_success "All extensions built locally"
         else
-            log_success"All extensions built and pushed successfully"
+            log_success "All extensions built and pushed successfully"
         fi
     fi
 }

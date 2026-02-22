@@ -80,7 +80,7 @@ check_registry_auth() {
         return 0
     fi
 
-    log_warning"Not logged into $registry. Run: docker login $registry"
+    log_warning "Not logged into $registry. Run: docker login $registry"
     return 1
 }
 
@@ -165,7 +165,7 @@ build_ext_image() {
         --build-arg EXT_REPO="$ext_repo" \
         "$context_dir"
 
-    log_success"Built: $local_tag"
+    log_success "Built: $local_tag"
 }
 
 # Tag extension image with registry name (for COPY --from= to find it)
@@ -186,7 +186,7 @@ tag_ext_image() {
         return 1
     fi
 
-    log_success"Tagged: $remote_tag"
+    log_success "Tagged: $remote_tag"
 }
 
 # Push extension image to registry (assumes already tagged)
@@ -204,7 +204,7 @@ push_ext_image() {
         return 1
     fi
 
-    log_success"Pushed: $remote_tag"
+    log_success "Pushed: $remote_tag"
 }
 
 # ============================================================================
@@ -382,6 +382,6 @@ pull_ext_image() {
     log_info "Pulling $remote_tag"
     docker pull "$remote_tag"
 
-    log_success"Pulled: $remote_tag"
+    log_success "Pulled: $remote_tag"
 }
 
