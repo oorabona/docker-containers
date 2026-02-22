@@ -471,19 +471,18 @@ collect_variants_json() {
                 local var_json
                 var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
                     "$ver_tag" "$current_version" "$base_image" "true")
-                variants_arr=$(echo "$variants_arr" | jq --argjson v "$var_json" '. + [$v]')
+                variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
             done < <(list_variants "$container_dir" "$ver_tag")
 
             local ver_json
-            ver_json=$(jq -n \
+            ver_json=$(printf '%s' "$variants_arr" | jq \
                 --arg tag "$ver_tag" --arg base_tag "$base_tag" \
-                --argjson variants "$variants_arr" \
-                '{tag: $tag, base_tag: $base_tag, variants: $variants}')
-            versions_json=$(echo "$versions_json" | jq --argjson v "$ver_json" '. + [$v]')
+                '{tag: $tag, base_tag: $base_tag, variants: .}')
+            versions_json=$(printf '%s\n%s' "$versions_json" "$ver_json" | jq -s '.[0] + [.[1]]')
         done < <(list_versions "$container_dir")
 
-        jq -n --argjson versions "$versions_json" \
-            '{has_variants: true, versions: $versions}'
+        printf '%s' "$versions_json" | jq \
+            '{has_variants: true, versions: .}'
     else
         # Single-version: {has_variants: true, variants: [...]}
         local variants_arr="[]"
@@ -492,11 +491,11 @@ collect_variants_json() {
             local var_json
             var_json=$(collect_variant_json "$container" "$container_dir" "$variant_name" \
                 "$current_version" "$current_version" "$base_image" "false")
-            variants_arr=$(echo "$variants_arr" | jq --argjson v "$var_json" '. + [$v]')
+            variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
         done < <(list_variants "$container_dir")
 
-        jq -n --argjson variants "$variants_arr" \
-            '{has_variants: true, variants: $variants}'
+        printf '%s' "$variants_arr" | jq \
+            '{has_variants: true, variants: .}'
     fi
 }
 
@@ -984,7 +983,7 @@ generate_data() {
             local variants_data
             variants_data=$(collect_variants_json "$container" "$container_dir" "$current_version" "$base_image")
             # Multi-variant: per-variant digests are in variants_data, clear container-level digest
-            container_json=$(echo "$container_json" | jq --argjson v "$variants_data" '. + $v | .build_digest = "per-variant"')
+            container_json=$(printf '%s\n%s' "$container_json" "$variants_data" | jq -s '.[0] + .[1] | .build_digest = "per-variant"')
 
             # Check for variants with missing lineage (build_digest == "unknown")
             # If any variant is missing, downgrade container build_status to "warning"
@@ -1021,7 +1020,7 @@ generate_data() {
         generate_container_page "$container" "$container_json"
 
         # Accumulate for containers.yml
-        all_containers_json=$(echo "$all_containers_json" | jq --argjson c "$container_json" '. + [$c]')
+        all_containers_json=$(printf '%s\n%s' "$all_containers_json" "$container_json" | jq -s '.[0] + [.[1]]')
     done
 
     # Write containers.yml from accumulated JSON
