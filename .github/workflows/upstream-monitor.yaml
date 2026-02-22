@@ -26,6 +26,7 @@ permissions:
 jobs:
   check-upstream-versions:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       containers_with_updates: ${{ steps.check.outputs.containers_with_updates }}
       update_count: ${{ steps.check.outputs.update_count }}
@@ -54,6 +55,7 @@ jobs:
     needs: check-upstream-versions
     if: needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge
@@ -311,6 +313,7 @@ jobs:
   # This is the ONLY place base images are seeded — builds always pull from GHCR
   refresh-base-image-cache:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -433,6 +436,7 @@ jobs:
   # Check 3rd party dependency versions (runs in parallel with base image checks)
   check-dependency-updates:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       containers_with_dep_updates: ${{ steps.check.outputs.containers_with_dep_updates }}
       dep_update_count: ${{ steps.check.outputs.dep_update_count }}
@@ -461,6 +465,7 @@ jobs:
     needs: [check-dependency-updates, create-update-prs]
     if: always() && needs.check-dependency-updates.outputs.dep_update_count > 0
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge

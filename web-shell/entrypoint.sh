@@ -5,9 +5,13 @@ SHELL_USER="${SHELL_USER:-debian}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 ENABLE_SSH="${ENABLE_SSH:-false}"
 
-# Update password if provided via environment
+# Set password from environment (required for SSH/sudo access)
 if [[ -n "${SHELL_PASSWORD:-}" ]]; then
     echo "${SHELL_USER}:${SHELL_PASSWORD}" | chpasswd
+else
+    # Lock password login if no password provided (key-only or ttyd-only access)
+    passwd -l "${SHELL_USER}" 2>/dev/null || true
+    echo "⚠️  No SHELL_PASSWORD set — password login disabled (use SSH keys or ttyd)"
 fi
 
 # Import SSH public key if provided

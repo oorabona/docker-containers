@@ -41,6 +41,7 @@ jobs:
   # Build job with integrated dashboard generation
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -159,6 +160,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: build
     # Only deploy if:
     # 1. Triggered by push to master branch, OR
@@ -195,6 +197,7 @@ jobs:
   # Summary for skipped deployments (PR contexts)
   deploy-skipped:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: build
     # Show summary when deployment is skipped (PR context)
     if: github.event_name == 'workflow_call' && github.ref != 'refs/heads/master'

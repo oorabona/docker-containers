@@ -6,7 +6,7 @@
 
 ## Pending
 
-(none)
+- [ ] 🔧 [Security] Purge sslh/nginx-selfsigned.key from git history (git filter-repo) — Priority: L (from /review F-001, dev-only self-signed cert)
 
 ## Blocked / Deferred
 
