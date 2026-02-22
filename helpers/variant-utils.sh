@@ -93,8 +93,10 @@ list_variants() {
         local result
         result=$(yq -r ".versions[] | select(.tag == \"$version\") | .variants[].name" "$variants_file" 2>/dev/null)
 
-        # If no variants found for this version, try "latest" as fallback
-        # This supports containers with dynamic versions (like terraform)
+        # If no variants found for this version, try "latest" as fallback.
+        # This is intentional for containers with dynamic versions (e.g., terraform)
+        # where variants.yaml uses tag: "latest" as a placeholder that gets resolved
+        # to the actual upstream version at build time by list_build_matrix.
         if [[ -z "$result" ]]; then
             result=$(yq -r '.versions[] | select(.tag == "latest") | .variants[].name' "$variants_file" 2>/dev/null)
         fi

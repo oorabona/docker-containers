@@ -75,7 +75,9 @@ ARG FLAVOR
 # Only install GCP SDK if flavor needs it
 RUN if [ "${FLAVOR}" = "gcp" ] || [ "${FLAVOR}" = "full" ]; then \
         apk add --no-cache curl bash && \
-        curl -fsSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/opt && \
+        curl -fsSL https://sdk.cloud.google.com -o /tmp/gcloud-install.sh && \
+        bash /tmp/gcloud-install.sh --disable-prompts --install-dir=/opt && \
+        rm -f /tmp/gcloud-install.sh && \
         # Create marker file
         touch /opt/.gcp-installed; \
     else \

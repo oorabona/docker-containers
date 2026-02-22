@@ -162,50 +162,8 @@ jobs:
       - name: Get versions requiring extensions
         id: ext-versions
         run: |
-          source ./helpers/variant-utils.sh
-
-          # Find containers that require extensions (have requires_extensions: true in variants.yaml)
-          containers_with_extensions=""
-          versions_by_container=""
-
-          for container_dir in */; do
-            container="${container_dir%/}"
-            [[ ! -f "$container_dir/variants.yaml" ]] && continue
-
-            if requires_extensions "./$container"; then
-              echo "📦 Container $container requires extensions"
-              containers_with_extensions="$containers_with_extensions $container"
-
-              # Get versions that have non-base variants
-              versions_needing_extensions=""
-              while IFS= read -r major_version; do
-                [[ -z "$major_version" ]] && continue
-
-                has_extension_variants=false
-                while IFS= read -r variant; do
-                  [[ -z "$variant" ]] && continue
-                  flavor=$(variant_property "./$container" "$variant" "flavor" "$major_version")
-                  if [[ "$flavor" != "base" ]]; then
-                    has_extension_variants=true
-                    break
-                  fi
-                done < <(list_variants "./$container" "$major_version")
-
-                if [[ "$has_extension_variants" == "true" ]]; then
-                  versions_needing_extensions="$versions_needing_extensions $major_version"
-                  echo "  → v$major_version needs extensions"
-                fi
-              done < <(list_versions "./$container")
-
-              versions_by_container="$versions_by_container|$container:$(echo $versions_needing_extensions | xargs | tr ' ' ',')"
-            fi
-          done
-
-          # Output results
-          containers_with_extensions=$(echo "$containers_with_extensions" | xargs)
-          echo "containers=$containers_with_extensions" >> $GITHUB_OUTPUT
-          echo "versions_map=${versions_by_container#|}" >> $GITHUB_OUTPUT
-          echo "📋 Containers with extensions: $containers_with_extensions"
+          chmod +x scripts/list-extension-versions.sh
+          scripts/list-extension-versions.sh
 
       - name: Build and push extension images
         if: steps.ext-versions.outputs.containers != ''
@@ -213,11 +171,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
+          VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
-          # Parse versions map and build for each container/version
-          IFS='|' read -ra ENTRIES <<< "${{ steps.ext-versions.outputs.versions_map }}"
+          # Parse versions map (passed via env to prevent expression injection)
+          IFS='|' read -ra ENTRIES <<< "$VERSIONS_MAP"
           for entry in "${ENTRIES[@]}"; do
             [[ -z "$entry" ]] && continue
             container="${entry%%:*}"
@@ -587,62 +546,13 @@ jobs:
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -e
+          source ./helpers/create-manifest.sh
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
-
           echo "::group::Creating GHCR manifest for $CONTAINER:$TAG"
-
-          # Build tag arguments - version tag is always included (rolling, e.g., 18-alpine)
-          tag_args="-t $ghcr_image:$TAG"
-
-          # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
-          # Enables dashboard version tracking via registry pattern matching
-          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
-            rest="${TAG#$VERSION}"
-            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
-            if [[ -n "$full_numeric" ]]; then
-              full_tag="${full_numeric}${rest}"
-              if [[ "$full_tag" != "$TAG" ]]; then
-                tag_args="$tag_args -t $ghcr_image:$full_tag"
-                echo "::notice::Adding version-specific tag: $full_tag"
-              fi
-            fi
-          fi
-
-          # Rolling tags only for the latest version (e.g., PG 18 but not PG 17/16)
-          # Add :latest tag for default variant of the latest version
-          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
-            tag_args="$tag_args -t $ghcr_image:latest"
-            echo "::notice::This is the default variant of latest version - will also tag as :latest"
-          fi
-
-          # Add :latest-{variant} tag for non-default variants of the latest version
-          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
-            tag_args="$tag_args -t $ghcr_image:latest-$VARIANT"
-            echo "::notice::Adding rolling tag: latest-$VARIANT"
-          fi
-
-          # Try multi-arch manifest first
-          if docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-amd64" \
-            "$ghcr_image:$TAG-arm64" 2>/dev/null; then
-            echo "::notice::GHCR multi-arch manifest created successfully"
-          # Fallback to single platform
-          elif docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-amd64" 2>/dev/null; then
-            echo "::warning::GHCR manifest created with amd64 only (arm64 not available)"
-          elif docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-arm64" 2>/dev/null; then
-            echo "::warning::GHCR manifest created with arm64 only (amd64 not available)"
-          else
-            echo "::error::No platform-specific images found for GHCR"
-            exit 1
-          fi
-
+          create_registry_manifest "$ghcr_image" "$ghcr_image" true
           echo "::endgroup::"
 
       # Docker Hub Manifest - SECONDARY (optional, can fail)
-      # Uses GHCR images as sources (cross-registry) since reading Docker Hub
-      # arch-specific tags with imagetools can fail without a buildx builder
       - name: Create Docker Hub multi-arch manifest (secondary)
         env:
           CONTAINER: ${{ matrix.build.container }}
@@ -655,59 +565,15 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
-          # Skip if no Docker Hub credentials
           if [[ -z "$DOCKERHUB_USERNAME" ]]; then
             echo "::notice::Skipping Docker Hub manifest (no credentials)"
             exit 0
           fi
-
+          source ./helpers/create-manifest.sh
           dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
-
           echo "::group::Creating Docker Hub manifest for $CONTAINER:$TAG"
-
-          # Build tag arguments - version tag is always included (rolling, e.g., 18-alpine)
-          tag_args="-t $dockerhub_image:$TAG"
-
-          # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
-          if [[ -n "$FULL_VERSION" && "$FULL_VERSION" != "$TAG" ]]; then
-            rest="${TAG#$VERSION}"
-            full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?')
-            if [[ -n "$full_numeric" ]]; then
-              full_tag="${full_numeric}${rest}"
-              if [[ "$full_tag" != "$TAG" ]]; then
-                tag_args="$tag_args -t $dockerhub_image:$full_tag"
-                echo "::notice::Adding version-specific tag: $full_tag"
-              fi
-            fi
-          fi
-
-          # Rolling tags only for the latest version
-          if [[ "$IS_DEFAULT" == "true" && "$IS_LATEST_VERSION" == "true" ]]; then
-            tag_args="$tag_args -t $dockerhub_image:latest"
-          fi
-
-          if [[ -n "$VARIANT" && "$IS_DEFAULT" != "true" && "$IS_LATEST_VERSION" == "true" ]]; then
-            tag_args="$tag_args -t $dockerhub_image:latest-$VARIANT"
-          fi
-
-          # Use GHCR images as sources (cross-registry copy) — more reliable than
-          # reading back from Docker Hub which can fail without buildx builder setup
-          if docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-amd64" \
-            "$ghcr_image:$TAG-arm64"; then
-            echo "::notice::Docker Hub multi-arch manifest created successfully (from GHCR sources)"
-          # Fallback to single platform
-          elif docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-amd64"; then
-            echo "::warning::Docker Hub manifest created with amd64 only"
-          elif docker buildx imagetools create $tag_args \
-            "$ghcr_image:$TAG-arm64"; then
-            echo "::warning::Docker Hub manifest created with arm64 only"
-          else
-            echo "::warning::Docker Hub manifest creation failed - images available on GHCR only"
-          fi
-
+          create_registry_manifest "$dockerhub_image" "$ghcr_image" false
           echo "::endgroup::"
         continue-on-error: true
 
