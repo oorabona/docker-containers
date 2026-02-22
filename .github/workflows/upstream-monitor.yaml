@@ -16,12 +16,12 @@ on:
         type: boolean
 
 permissions:
-  contents: write     # Push version bumps and merge PRs
-  pull-requests: write  # Create and merge PRs
+  contents: write      # Push version bumps and merge PRs
+  pull-requests: write # Create and merge PRs
   actions: write       # Trigger auto-build and update-dashboard workflows
-  packages: write      # Push base images to GHCR (refresh-base-image-cache)
-  pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
-  id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
+  packages: write      # Push base images to GHCR (refresh-base-image-cache job)
+  pages: write         # Inherited by update-dashboard reusable workflow (deploy to Pages)
+  id-token: write      # Inherited by update-dashboard reusable workflow (OIDC for Pages)
 
 jobs:
   check-upstream-versions:

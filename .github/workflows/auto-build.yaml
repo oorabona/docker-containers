@@ -94,13 +94,12 @@ on:
         default: ''
 
 permissions:
-  contents: write
-  packages: write
-  pages: write
-  id-token: write
-  attestations: write  # Required for GitHub SBOM attestations (actions/attest-sbom)
-  # pull-requests: write — removed: lineage now cached, no longer creating PRs
-  security-events: write  # Required for uploading SARIF to GitHub Security
+  contents: read         # Checkout only — no git push or PR creation
+  packages: write        # Push container images to GHCR
+  pages: write           # Required by update-dashboard reusable workflow (deploy to Pages)
+  id-token: write        # OIDC for Pages deployment + SBOM attestation (Sigstore)
+  attestations: write    # GitHub SBOM attestations (actions/attest-sbom)
+  security-events: write # Upload Trivy SARIF to GitHub Security (codeql-action/upload-sarif)
 
 jobs:
   detect-containers:
