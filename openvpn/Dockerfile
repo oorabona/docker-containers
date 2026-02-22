@@ -59,7 +59,7 @@ RUN set -ex \
     && make install-exec \
     && apk del .build-deps \
     && cd /usr/local/bin \
-    && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/main/openvpn/setup.sh --output ovpn \
+    && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/3be0f6fe14bfe139068257410454fdd9a704d156/openvpn/setup.sh --output ovpn \
     && chmod +x ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 

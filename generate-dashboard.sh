@@ -739,7 +739,7 @@ populate_container_build_status_cache() {
     runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=5&status=completed" 15)
 
     if [[ -z "$runs_json" ]] || ! echo "$runs_json" | jq -e '.workflow_runs[0]' >/dev/null 2>&1; then
-        log_warn "Could not fetch workflow runs, using lineage-based status"
+        log_warning "Could not fetch workflow runs, using lineage-based status"
         CONTAINER_BUILD_STATUS_CACHE="{}"
         return
     fi

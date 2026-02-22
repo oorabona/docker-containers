@@ -304,10 +304,10 @@ runs:
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
-      continue-on-error: true  # Scan is advisory - don't block builds on scan failures
+      continue-on-error: true  # Vulnerability scan is advisory — don't block builds on findings
 
     - name: Generate SARIF report
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
       with:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
@@ -317,25 +317,24 @@ runs:
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
-      continue-on-error: true
+      continue-on-error: true  # SARIF generation failure should not block build
 
     - name: Upload SARIF to GitHub Security
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && always() }}
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
         wait-for-processing: false
-      continue-on-error: true  # Don't fail if SARIF upload fails (file may not exist)
+      # No continue-on-error: SARIF upload to Security tab must succeed for visibility
 
     - name: Check scan result
       if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
       shell: bash
-      continue-on-error: true  # Security scan is advisory, not blocking
       run: |
         if [ "${{ steps.trivy-scan.outcome }}" = "failure" ]; then
           echo "::warning::Security scan found vulnerabilities above threshold"
-          echo "::warning::Review the scan results above - this is advisory only"
+          echo "::warning::Review the Security tab for details"
         else
           echo "::notice::Security scan passed - no blocking vulnerabilities found"
         fi

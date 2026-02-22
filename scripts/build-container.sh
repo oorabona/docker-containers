@@ -161,11 +161,9 @@ _emit_build_lineage() {
     local image_id
     image_id=$(docker images --no-trunc -q "$dockerhub_image:$tag" 2>/dev/null | head -1 || true)
 
-    local build_args_json="{}"
-    if [[ -f "./config.yaml" ]]; then
-        build_args_json=$(yq -r '(.build_args // {}) | to_entries | map("\"" + .key + "\": \"" + .value + "\"") | join(",") | "{" + . + "}"' ./config.yaml 2>/dev/null || true)
-        [[ -z "$build_args_json" || "$build_args_json" == "{}" ]] && build_args_json="{}"
-    fi
+    # Use shared build-args-utils.sh function (already sourced at top)
+    local build_args_data
+    build_args_data=$(build_args_json ".")
 
     cat > "$lineage_file" <<LINEAGE_EOF
 {
@@ -186,7 +184,7 @@ _emit_build_lineage() {
     "dockerhub": "$dockerhub_image:$tag",
     "ghcr": "$ghcr_image:$tag"
   },
-  "build_args": $build_args_json
+  "build_args": $build_args_data
 }
 LINEAGE_EOF
     log_info "Build lineage: $lineage_file"

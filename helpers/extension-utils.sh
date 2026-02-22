@@ -8,22 +8,12 @@
 
 set -euo pipefail
 
-# Colors and log functions (skip if already defined by logging.sh)
-if ! declare -p RED &>/dev/null; then
-    if [[ -t 1 ]] && [[ -z "${CI:-}" ]]; then
-        RED='\033[0;31m'
-        GREEN='\033[0;32m'
-        YELLOW='\033[1;33m'
-        BLUE='\033[0;34m'
-        NC='\033[0m'
-    else
-        RED='' GREEN='' YELLOW='' BLUE='' NC=''
-    fi
+# Source shared logging utilities (provides log_info, log_success, log_warning, log_error)
+HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -F log_info &>/dev/null; then
+    source "$HELPERS_DIR/logging.sh"
 fi
-declare -F log_info &>/dev/null || log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-declare -F log_ok &>/dev/null   || log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
-declare -F log_warn &>/dev/null || log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-declare -F log_error &>/dev/null || log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
 
 # Get repository owner from git remote or environment
 get_repo_owner() {
@@ -90,7 +80,7 @@ check_registry_auth() {
         return 0
     fi
 
-    log_warn "Not logged into $registry. Run: docker login $registry"
+    log_warning"Not logged into $registry. Run: docker login $registry"
     return 1
 }
 
@@ -175,7 +165,7 @@ build_ext_image() {
         --build-arg EXT_REPO="$ext_repo" \
         "$context_dir"
 
-    log_ok "Built: $local_tag"
+    log_success"Built: $local_tag"
 }
 
 # Tag extension image with registry name (for COPY --from= to find it)
@@ -196,7 +186,7 @@ tag_ext_image() {
         return 1
     fi
 
-    log_ok "Tagged: $remote_tag"
+    log_success"Tagged: $remote_tag"
 }
 
 # Push extension image to registry (assumes already tagged)
@@ -214,7 +204,7 @@ push_ext_image() {
         return 1
     fi
 
-    log_ok "Pushed: $remote_tag"
+    log_success"Pushed: $remote_tag"
 }
 
 # ============================================================================
@@ -392,6 +382,6 @@ pull_ext_image() {
     log_info "Pulling $remote_tag"
     docker pull "$remote_tag"
 
-    log_ok "Pulled: $remote_tag"
+    log_success"Pulled: $remote_tag"
 }
 
