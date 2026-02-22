@@ -428,21 +428,27 @@ collect_variant_json() {
     changelog=$(get_changelog "$container" "$sbom_tag")
     build_history=$(get_build_history "$container" "$sbom_tag")
 
-    # Assemble JSON
-    jq -n \
+    # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
+    # (SBOM packages can be very large for containers with many dependencies)
+    printf '%s\n%s\n%s\n%s\n%s\n%s' \
+        "$lineage_json" "$build_args_json" \
+        "$sbom_summary" "$sbom_packages" \
+        "$changelog" "$build_history" | \
+    jq -s \
         --arg name "$variant_name" \
         --arg tag "$variant_tag" \
         --arg desc "$variant_desc" \
         --argjson is_default "$is_default" \
         --arg size_amd64 "$size_amd64" \
         --arg size_arm64 "$size_arm64" \
-        --argjson lineage "$lineage_json" \
-        --argjson build_args "$build_args_json" \
-        --argjson sbom_summary "$sbom_summary" \
-        --argjson sbom_packages "$sbom_packages" \
-        --argjson changelog "$changelog" \
-        --argjson build_history "$build_history" \
-        '{
+        '
+        .[0] as $lineage |
+        .[1] as $build_args |
+        .[2] as $sbom_summary |
+        .[3] as $sbom_packages |
+        .[4] as $changelog |
+        .[5] as $build_history |
+        {
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
             size_amd64: $size_amd64, size_arm64: $size_arm64,
@@ -1012,15 +1018,20 @@ generate_data() {
             changelog=$(get_changelog "$container" "$current_version")
             build_history=$(get_build_history "$container" "$current_version")
 
-            container_json=$(echo "$container_json" | jq \
-                --argjson sbom_summary "$sbom_summary" \
-                --argjson sbom_packages "$sbom_packages" \
-                --argjson changelog "$changelog" \
-                --argjson build_history "$build_history" \
-                '. + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
-                   + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
-                   + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
-                   + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)')
+            # Pipe large SBOM data via stdin to avoid ARG_MAX limits
+            container_json=$(printf '%s\n%s\n%s\n%s\n%s' \
+                "$container_json" "$sbom_summary" "$sbom_packages" "$changelog" "$build_history" | \
+                jq -s '
+                .[0] as $base |
+                .[1] as $sbom_summary |
+                .[2] as $sbom_packages |
+                .[3] as $changelog |
+                .[4] as $build_history |
+                $base
+                + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
+                + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
+                + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
+                + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)')
         fi
 
         # Generate per-container Jekyll page (uses same JSON — no duplication)
