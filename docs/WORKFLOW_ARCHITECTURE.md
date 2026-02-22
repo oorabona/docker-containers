@@ -57,6 +57,7 @@ This document describes the complete CI/CD architecture: version detection, mult
 │  │ build-and-push (matrix: per-container per-platform)│      │
 │  │  amd64 runner ─────┐                               │      │
 │  │  arm64 runner ─────┼──▶ push to GHCR + DockerHub   │      │
+│  │  amd64 only: SBOM (syft) + GitHub attestation      │      │
 │  └────────────────────┼───────────────────────────────┘      │
 │                       │                                       │
 │  ┌────────────────────▼───────────────────────────────┐      │
@@ -64,7 +65,8 @@ This document describes the complete CI/CD architecture: version detection, mult
 │  └────────────────────┬───────────────────────────────┘      │
 │                       │                                       │
 │  ┌────────────────────▼───────────────────────────────┐      │
-│  │ commit-lineage (.build-lineage/ artifacts)          │      │
+│  │ cache-lineage (.build-lineage/ + SBOM processing)   │      │
+│  │  compare SBOMs → changelog + build history          │      │
 │  └────────────────────┬───────────────────────────────┘      │
 │                       │                                       │
 │  ┌────────────────────▼───────────────────────────────┐      │
@@ -97,10 +99,10 @@ This document describes the complete CI/CD architecture: version detection, mult
 | `detect-containers` | Smart change detection via git diff or force input | - |
 | `cache-base-images` | Cache postgres base images (avoids Docker Hub rate limits) | detect |
 | `build-extensions` | Build PostgreSQL extension images (pgvector, etc.) | cache |
-| `build-and-push` | Multi-platform builds per container (amd64 + arm64 runners) | extensions |
+| `build-and-push` | Multi-platform builds per container (amd64 + arm64 runners) + SBOM + attestation | extensions |
 | `create-manifest` | Create multi-arch manifest lists and push | build |
-| `commit-lineage` | Commit `.build-lineage/` JSON artifacts | manifest |
-| `update-dashboard` | Trigger dashboard regeneration | commit |
+| `cache-lineage` | Cache `.build-lineage/` artifacts + process SBOMs (changelog, history) | manifest |
+| `update-dashboard` | Trigger dashboard regeneration | cache-lineage |
 
 **Key features:**
 - Native multi-platform builds (separate amd64/arm64 runners, no QEMU)
@@ -200,6 +202,7 @@ All located in `.github/actions/`:
 | `build-cache-utils.sh` | Compute build digests, check registry for skip-rebuild |
 | `extension-utils.sh` | PostgreSQL extension image build helpers |
 | `registry-utils.sh` | Docker Hub and GHCR API query utilities |
+| `sbom-utils.sh` | SBOM generation (syft), package diffing, changelog, build history |
 | `version-utils.sh` | Version detection with registry pattern fallback |
 | `retry.sh` | Retry with exponential backoff for transient failures |
 | `latest-docker-tag` | Get latest Docker tag matching regex from any registry |
@@ -262,3 +265,42 @@ This enables:
 - Smart rebuild detection (skip if digest matches)
 - Dashboard version mismatch detection
 - Audit trail for container provenance
+
+### SBOM & Supply Chain Compliance
+
+Each build also generates an SBOM (Software Bill of Materials) using **syft** in SPDX JSON format. SBOMs are generated from the amd64 image only (packages are identical across architectures).
+
+**SBOM artifacts** (per variant):
+
+| File | Purpose |
+|------|---------|
+| `<container>-<tag>.sbom.json` | Full SPDX SBOM (~100-500KB) |
+| `<container>-<tag>.changelog.json` | Package diff vs previous build |
+| `<container>-<tag>.history.json` | Last 10 builds with package counts |
+
+**Changelog JSON schema:**
+```json
+{
+  "generated_at": "2026-02-22T14:30:00Z",
+  "summary": { "added": 2, "removed": 0, "updated": 5 },
+  "changes": [
+    { "type": "updated", "name": "musl", "pkg_type": "apk", "from": "1.2.4-r2", "to": "1.2.5-r0" },
+    { "type": "added", "name": "libfoo", "pkg_type": "apk", "version": "1.0.0-r0" }
+  ]
+}
+```
+
+**GitHub Attestation:** Each amd64 build is attested via `actions/attest-sbom` (Sigstore-signed). Attestations are visible in the repository's attestation page and can be verified with `gh attestation verify`.
+
+**Data flow:**
+```
+build-and-push (amd64) → syft scan → SBOM artifact
+                                   → GitHub attestation (Sigstore)
+cache-lineage          → download SBOM artifacts
+                       → compare with cached SBOM → changelog
+                       → extract summary → append to history
+                       → cache all in .build-lineage/
+update-dashboard       → restore cache
+                       → generate-dashboard.sh reads SBOM data
+                       → dashboard shows package summary, changelog, history
+```

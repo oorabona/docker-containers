@@ -9,6 +9,7 @@ export DOCKEROPTS="${DOCKEROPTS:-}"
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 source "$(dirname "$0")/helpers/registry-utils.sh"
+source "$(dirname "$0")/helpers/sbom-utils.sh"
 
 # Source focused utility scripts
 source "$(dirname "$0")/scripts/check-version.sh"
@@ -57,6 +58,7 @@ help() {
   log_help "sizes [target]" "Show image sizes (all or specific container)"
   log_help "lineage [target]" "Show build lineage JSON (all or specific container)"
   log_help "list-builds <target> [version]" "List all builds for a container (CI-ready JSON)"
+  log_help "sbom <target> [tag]" "Generate SBOM for a container image (requires syft)"
   echo
   echo Where:
   log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
@@ -517,6 +519,33 @@ list_builds() {
     list_container_builds "$target" "$version"
 }
 
+# Generate SBOM for a container image
+# Usage: generate_sbom_local <target> [tag]
+generate_sbom_local() {
+    local target="${1:-}"
+    local tag="${2:-latest}"
+    local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Usage: sbom <target> [tag]"
+        return 1
+    fi
+
+    if ! validate_target "$target"; then
+        log_error "$target is not a valid target!"
+        return 1
+    fi
+
+    install_syft || return 1
+
+    local image_ref="ghcr.io/${github_username}/${target}:${tag}"
+    local sbom_file=".build-lineage/${target}-${tag}.sbom.json"
+
+    generate_sbom "$image_ref" "$sbom_file"
+    log_info "Package summary:"
+    extract_sbom_summary "$sbom_file" | jq '.'
+}
+
 show_lineage() {
   local target="${1:-}"
   local lineage_dir=".build-lineage"
@@ -572,5 +601,6 @@ case "${1:-}" in
   sizes ) show_sizes "${2:-}" ;;
   lineage ) show_lineage "${2:-}" ;;
   list-builds ) shift; list_builds "$@" ;;
+  sbom ) shift; generate_sbom_local "$@" ;;
   * ) help ;;
 esac

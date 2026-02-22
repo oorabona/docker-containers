@@ -231,6 +231,110 @@
     .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
     .table-wrapper table { margin: 0; }
 
+    /* SBOM / Package Summary */
+    .sbom-section { padding: 1.5rem; margin-bottom: 2rem; }
+    .sbom-header {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
+    }
+    .sbom-header h2 { margin: 0; font-size: 1.25rem; }
+    .sbom-total-badge {
+      font-size: 0.75rem; font-weight: 600; padding: 0.25rem 0.625rem;
+      border-radius: 999px; margin-left: auto;
+      background: rgba(59, 130, 246, 0.2); color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .sbom-breakdown {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .sbom-type-chip {
+      font-size: 0.75rem; padding: 0.375rem 0.75rem; border-radius: 6px;
+      background: rgba(139, 92, 246, 0.12); color: var(--accent-purple);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .sbom-type-count {
+      font-weight: 600; margin-left: 0.25rem;
+    }
+
+    /* Changelog */
+    .changelog-section { padding: 1.5rem; margin-bottom: 2rem; }
+    .changelog-header {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
+    }
+    .changelog-header h2 { margin: 0; font-size: 1.25rem; }
+    .changelog-summary-badge {
+      font-size: 0.6875rem; font-weight: 600; padding: 0.25rem 0.625rem;
+      border-radius: 999px; margin-left: auto;
+      background: rgba(245, 158, 11, 0.2); color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .changelog-table-wrap { overflow-x: auto; }
+    .changelog-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .changelog-table th {
+      text-align: left; font-size: 0.6875rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--detail-text-muted); padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    .changelog-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .changelog-table tbody tr { animation: lineageItemIn 0.4s ease both; }
+    .changelog-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+    .changelog-type-badge {
+      font-size: 0.625rem; font-weight: 600; text-transform: uppercase;
+      padding: 0.125rem 0.5rem; border-radius: 999px;
+    }
+    .changelog-type-added { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .changelog-type-removed { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .changelog-type-updated { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .changelog-pkg-name {
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem;
+    }
+    .changelog-version {
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+      color: var(--detail-text-muted);
+    }
+    .changelog-version-new { color: #34d399; }
+
+    /* Build History */
+    .history-section { padding: 1.5rem; margin-bottom: 2rem; }
+    .history-header {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
+    }
+    .history-header h2 { margin: 0; font-size: 1.25rem; }
+    .history-table-wrap { overflow-x: auto; }
+    .history-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .history-table th {
+      text-align: left; font-size: 0.6875rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--detail-text-muted); padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    .history-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .history-table tbody tr { animation: lineageItemIn 0.4s ease both; }
+    .history-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+    .history-date { font-size: 0.75rem; color: var(--detail-text-muted); }
+    .history-version {
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+    }
+    .history-changes {
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.6875rem;
+      color: var(--detail-text-muted);
+    }
+
+    /* Light theme: SBOM section overrides */
+    [data-theme="light"] .sbom-total-badge { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.3); }
+    [data-theme="light"] .sbom-type-chip { background: rgba(139, 92, 246, 0.08); color: #5b21b6; border-color: rgba(139, 92, 246, 0.2); }
+    [data-theme="light"] .changelog-summary-badge { background: rgba(245, 158, 11, 0.12); color: #92400e; border-color: rgba(245, 158, 11, 0.3); }
+    [data-theme="light"] .changelog-type-added { background: rgba(16, 185, 129, 0.1); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
+    [data-theme="light"] .changelog-type-removed { background: rgba(239, 68, 68, 0.1); color: #b91c1c; border-color: rgba(239, 68, 68, 0.3); }
+    [data-theme="light"] .changelog-type-updated { background: rgba(59, 130, 246, 0.1); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.3); }
+    [data-theme="light"] .changelog-version-new { color: #047857; }
+    [data-theme="light"] .changelog-table td,
+    [data-theme="light"] .history-table td { border-bottom-color: rgba(0, 0, 0, 0.06); }
+    [data-theme="light"] .changelog-table tbody tr:nth-child(even),
+    [data-theme="light"] .history-table tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
+
     /* Dependency Health */
     .dep-health-section { padding: 1.5rem; margin-bottom: 2rem; }
     .dep-health-header {
@@ -403,11 +507,13 @@
       .variants-section { padding: 1rem; }
       .variant-tags-row { gap: 0.375rem; }
       .variant-tag { font-size: 0.7rem; padding: 0.25rem 0.5rem; }
-      .dep-health-section { padding: 1rem; }
-      .dep-health-header { flex-wrap: wrap; }
-      .dep-summary-badge { margin-left: 0; }
-      .dep-update-table { font-size: 0.75rem; }
-      .dep-update-table th, .dep-update-table td { padding: 0.5rem; }
+      .dep-health-section, .sbom-section, .changelog-section, .history-section { padding: 1rem; }
+      .dep-health-header, .sbom-header, .changelog-header, .history-header { flex-wrap: wrap; }
+      .dep-summary-badge, .sbom-total-badge, .changelog-summary-badge { margin-left: 0; }
+      .dep-update-table, .changelog-table, .history-table { font-size: 0.75rem; }
+      .dep-update-table th, .dep-update-table td,
+      .changelog-table th, .changelog-table td,
+      .history-table th, .history-table td { padding: 0.5rem; }
       .shape { display: none; }
     }
     @media (max-width: 480px) {

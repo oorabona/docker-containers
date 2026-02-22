@@ -109,6 +109,7 @@ docker-containers/
 | Check version | `./make version <target>` |
 | Check updates | `./make check-updates [target]` |
 | Check dep updates | `./make check-dep-updates [target]` |
+| Generate SBOM | `./make sbom <target> [tag]` |
 | Test all | `./test-all-containers.sh` |
 | Validate scripts | `./validate-version-scripts.sh` |
 

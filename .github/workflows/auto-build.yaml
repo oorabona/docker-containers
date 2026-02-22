@@ -98,6 +98,7 @@ permissions:
   packages: write
   pages: write
   id-token: write
+  attestations: write  # Required for GitHub SBOM attestations (actions/attest-sbom)
   # pull-requests: write — removed: lineage now cached, no longer creating PRs
   security-events: write  # Required for uploading SARIF to GitHub Security
 
@@ -496,6 +497,54 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+      # SBOM generation (amd64 only — packages are identical across arches)
+      - name: Install syft
+        id: install-syft
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
+        uses: anchore/sbom-action/download-syft@e11c554e6c84d6c62b2524a8b50ae8e4e87b2fad # v0.18.0
+
+      - name: Generate SBOM
+        id: sbom
+        if: steps.install-syft.outcome == 'success'
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          source ./helpers/sbom-utils.sh
+          image_ref="ghcr.io/${GITHUB_USERNAME}/${CONTAINER}:${TAG}-amd64"
+          sbom_file=".build-lineage/${CONTAINER}-${TAG}.sbom.json"
+          generate_sbom "$image_ref" "$sbom_file"
+          echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
+
+          # Capture digest for attestation (from local image after push)
+          digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null | head -1 | sed 's/.*@//' || echo "")
+          if [[ -z "$digest" ]]; then
+            # Fallback: query registry
+            digest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null | sha256sum | awk '{print "sha256:"$1}' || echo "")
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Upload SBOM artifact
+        if: steps.sbom.outcome == 'success'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: ${{ steps.sbom.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Attest SBOM
+        if: steps.sbom.outcome == 'success' && steps.sbom.outputs.digest != ''
+        uses: actions/attest-sbom@115c3be05ff3974bcbd0b9b7d2e30da2a3a62dcc # v2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
+          subject-digest: ${{ steps.sbom.outputs.digest }}
+          sbom-path: ${{ steps.sbom.outputs.sbom_file }}
+        continue-on-error: true
+
   create-manifest:
     name: Create Manifest ${{ matrix.build.container }}:${{ matrix.build.tag }}
     needs: [detect-containers, build-and-push]
@@ -783,6 +832,11 @@ jobs:
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          sparse-checkout: helpers
+
       - name: Restore previous lineage cache
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
@@ -810,6 +864,54 @@ jobs:
             echo "No lineage artifacts found"
             echo "has_files=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4
+        with:
+          pattern: sbom-*
+          path: .build-lineage-sbom-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Process SBOMs (compare + history)
+        run: |
+          source helpers/sbom-utils.sh
+
+          if [[ ! -d ".build-lineage-sbom-artifacts" ]]; then
+            echo "No SBOM artifacts found — skipping processing"
+            exit 0
+          fi
+
+          for new_sbom_dir in .build-lineage-sbom-artifacts/*/; do
+            [[ -d "$new_sbom_dir" ]] || continue
+            sbom_file=$(find "$new_sbom_dir" -name '*.sbom.json' -print -quit)
+            [[ -z "$sbom_file" ]] && continue
+
+            basename=$(basename "$sbom_file")
+            container_tag="${basename%.sbom.json}"
+
+            echo "::group::Processing SBOM for $container_tag"
+
+            # Compare with previously cached SBOM (if exists)
+            cached_sbom=".build-lineage/${basename}"
+            if [[ -f "$cached_sbom" ]]; then
+              compare_sboms "$sbom_file" "$cached_sbom" \
+                ".build-lineage/${container_tag}.changelog.json" || true
+            else
+              echo "No previous SBOM for $container_tag — first build"
+            fi
+
+            # Extract summary and append to build history
+            summary=$(extract_sbom_summary "$sbom_file")
+            lineage_file=".build-lineage/${container_tag}.json"
+            append_build_history "$lineage_file" "$summary" \
+              ".build-lineage/${container_tag}.history.json" || true
+
+            # Replace cached SBOM with new one
+            cp "$sbom_file" "$cached_sbom"
+
+            echo "::endgroup::"
+          done
 
       - name: Save consolidated lineage cache
         if: steps.merge.outputs.has_files == 'true'
