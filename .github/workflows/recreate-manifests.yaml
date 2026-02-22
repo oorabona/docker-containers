@@ -28,11 +28,6 @@ permissions:
   pages: write      # Required when generate_sboms triggers dashboard update
   id-token: write   # Required when generate_sboms triggers dashboard update
 
-# Allow only one concurrent deployment when dashboard update is triggered
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
 jobs:
   detect-containers:
     runs-on: ubuntu-latest
