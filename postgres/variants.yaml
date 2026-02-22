@@ -28,19 +28,23 @@ versions:
       - name: vector
         suffix: "-vector"
         flavor: vector
-        description: "PostgreSQL + pgvector for AI/RAG applications"
+        description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
-        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
-        description: "PostgreSQL + TimescaleDB for time-series data"
+        description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+      - name: spatial
+        suffix: "-spatial"
+        flavor: spatial
+        description: "PostgreSQL + PostGIS for geospatial workloads"
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
-        description: "PostgreSQL + Citus for horizontal scaling"
+        description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
       - name: full
         suffix: "-full"
         flavor: full
@@ -57,24 +61,23 @@ versions:
       - name: vector
         suffix: "-vector"
         flavor: vector
-        description: "PostgreSQL + pgvector for AI/RAG applications"
+        description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
-        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
-        description: "PostgreSQL + TimescaleDB for time-series data"
+        description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+      - name: spatial
+        suffix: "-spatial"
+        flavor: spatial
+        description: "PostgreSQL + PostGIS for geospatial workloads"
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
-        description: "PostgreSQL + Citus for horizontal scaling"
-      # search flavor disabled - ParadeDB requires Debian/glibc for pgrx
-      # - name: search
-      #   suffix: "-search"
-      #   flavor: search
-      #   description: "PostgreSQL + ParadeDB for full-text search (BM25)"
+        description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
       - name: full
         suffix: "-full"
         flavor: full
@@ -91,24 +94,23 @@ versions:
       - name: vector
         suffix: "-vector"
         flavor: vector
-        description: "PostgreSQL + pgvector for AI/RAG applications"
+        description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
-        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats"
+        description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
-        description: "PostgreSQL + TimescaleDB for time-series data"
+        description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+      - name: spatial
+        suffix: "-spatial"
+        flavor: spatial
+        description: "PostgreSQL + PostGIS for geospatial workloads"
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
-        description: "PostgreSQL + Citus for horizontal scaling"
-      # search flavor disabled - ParadeDB requires Debian/glibc for pgrx
-      # - name: search
-      #   suffix: "-search"
-      #   flavor: search
-      #   description: "PostgreSQL + ParadeDB for full-text search (BM25)"
+        description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
       - name: full
         suffix: "-full"
         flavor: full

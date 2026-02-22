@@ -1,20 +1,28 @@
 # Vector PostgreSQL flavor
-# Optimized for AI/ML workloads with vector similarity search
-# Use case: RAG applications, semantic search, embeddings storage
+# Optimized for AI/ML workloads with vector similarity search and full-text search
+# Use case: RAG applications, semantic search, embeddings storage, hybrid search
 
 name: vector
-description: "PostgreSQL with pgvector for AI/RAG applications"
+description: "PostgreSQL with pgvector + pg_search for AI/RAG and hybrid search"
 extends: base
 
 # Compiled extensions to include
 extensions:
-  - pgvector
+  - pgvector     # Vector similarity search
+  - paradedb     # pg_search: BM25 full-text search (Elasticsearch alternative)
+  - pg_cron      # Cron-based job scheduling
+  - pg_ivm       # Incremental View Maintenance
 
 # Additional built-in extensions (inherited from base + these)
 builtin_extensions: []
 
 # shared_preload_libraries (inherited from base)
-shared_preload_libraries: []
+# pg_cron requires shared_preload; paradedb does NOT (PG17+)
+shared_preload_libraries:
+  - pg_cron
+
+# License notice: paradedb (pg_search) is AGPL-3.0 licensed.
+# Ensure compliance with AGPL terms when distributing this flavor.
 
 # Image tags to publish
 tags:

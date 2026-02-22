@@ -42,3 +42,15 @@ dependency_sources:
     type: github-release
     repo: timescale/timescaledb
     strip_v: false
+  pg_cron:
+    type: github-release
+    repo: citusdata/pg_cron
+    strip_v: true
+  pg_ivm:
+    type: github-release
+    repo: sraoss/pg_ivm
+    strip_v: true
+  postgis:
+    type: github-release
+    repo: postgis/postgis
+    strip_v: false

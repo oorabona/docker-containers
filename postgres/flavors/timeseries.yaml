@@ -1,18 +1,21 @@
 # TimescaleDB PostgreSQL flavor
 # Optimized for time-series data and real-time analytics
-# Use case: IoT, metrics, logs, financial data
+# Use case: IoT, metrics, logs, financial data, geospatial time-series
 #
 # License: Apache-2.0 (core) + TSL (advanced features)
 # Note: TSL features cannot be used in DBaaS offerings
 
 name: timeseries
-description: "PostgreSQL for time-series with TimescaleDB"
+description: "PostgreSQL for time-series with TimescaleDB and geospatial"
 extends: base
 
 # Compiled extensions to include
 extensions:
   - timescaledb   # Time-series hypertables, compression, continuous aggregates
   - pg_partman    # Complementary partition management
+  - postgis       # Geospatial objects and spatial indexing
+  - pg_cron       # Cron-based job scheduling
+  - pg_ivm        # Incremental View Maintenance
 
 # Additional built-in extensions
 builtin_extensions:
@@ -20,9 +23,10 @@ builtin_extensions:
   - pg_prewarm
 
 # shared_preload_libraries
-# TimescaleDB requires shared_preload_libraries
+# TimescaleDB and pg_cron require shared_preload_libraries
 shared_preload_libraries:
   - timescaledb
+  - pg_cron
 
 # Image tags to publish
 tags:
