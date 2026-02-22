@@ -39,32 +39,11 @@ get_platform_config() {
     fi
 }
 
-# Prepare common build arguments
+# Prepare common build arguments (delegates to shared prepare_build_args)
 get_build_args() {
     local version="$1"
-    local build_args=""
-
-    [[ -n "$version" ]] && build_args="$build_args --build-arg VERSION=$version"
-
-    # Extract major version from version string (e.g., "16-alpine" -> "16")
-    local major_version
-    major_version=$(echo "$version" | grep -oE '^[0-9]+' | head -1)
-    [[ -n "$major_version" ]] && build_args="$build_args --build-arg MAJOR_VERSION=$major_version"
-
-    # Get upstream version if container has version.sh with --upstream support
-    # This separates download URL version from Docker tag version
-    if [[ -f "./version.sh" ]]; then
-        local upstream_version
-        upstream_version=$(./version.sh --upstream 2>/dev/null || true)
-        if [[ -n "$upstream_version" && "$upstream_version" != "$version" ]]; then
-            build_args="$build_args --build-arg UPSTREAM_VERSION=$upstream_version"
-        fi
-    fi
-
-    [[ -n "${NPROC:-}" ]] && build_args="$build_args --build-arg NPROC=$NPROC"
-    [[ -n "${CUSTOM_BUILD_ARGS:-}" ]] && build_args="$build_args $CUSTOM_BUILD_ARGS"
-
-    echo "$build_args"
+    prepare_build_args "$version" ""
+    echo "$_BUILD_ARGS"
 }
 
 # Get label args for build digest tracking

@@ -220,14 +220,6 @@ image_needs_rebuild() {
     return 1  # Skip rebuild
 }
 
-# Check if image exists in registry (simple existence check)
-# Usage: image_exists_in_registry <image>
-# Returns: 0 if exists, 1 if not
-image_exists_in_registry() {
-    local image="$1"
-    docker manifest inspect "$image" &>/dev/null
-}
-
 # Get build args for adding digest label
 # Usage: get_digest_label_args <digest>
 get_digest_label_args() {
@@ -271,7 +263,6 @@ export -f _digest_log
 export -f _has_build_args_include
 export -f _has_build_args
 export -f image_needs_rebuild
-export -f image_exists_in_registry
 export -f get_digest_label_args
 export -f should_skip_build
 export BUILD_DIGEST_LABEL
