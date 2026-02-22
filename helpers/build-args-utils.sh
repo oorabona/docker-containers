@@ -2,7 +2,12 @@
 
 # Shared build_args extraction from config.yaml
 # Eliminates duplication across build-container.sh and generate-dashboard.sh
-# Requires: yq, helpers/logging.sh (sourced by callers)
+# Requires: yq, helpers/logging.sh
+
+# Source logging if not already loaded
+if ! declare -F log_warning &>/dev/null; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/logging.sh"
+fi
 
 # Get build args as Docker --build-arg flags
 # Usage: build_args_flags "./container-dir"

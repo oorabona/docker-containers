@@ -7,6 +7,7 @@
 ## Pending
 
 - [ ] 🔧 [Security] Purge sslh/nginx-selfsigned.key from git history (git filter-repo) — Priority: L (from /review F-001, dev-only self-signed cert)
+- [ ] 🔧 [Security] Add sha256sum verification for yq binary downloads in CI workflows — Priority: L (from /review F-002, pre-existing)
 
 ## Blocked / Deferred
 
