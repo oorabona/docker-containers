@@ -7,11 +7,11 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SBOM_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source logging if available
-if [[ -f "$SCRIPT_DIR/logging.sh" ]]; then
-    source "$SCRIPT_DIR/logging.sh"
+if [[ -f "$_SBOM_UTILS_DIR/logging.sh" ]]; then
+    source "$_SBOM_UTILS_DIR/logging.sh"
 else
     log_info()    { echo "INFO: $*" >&2; }
     log_success() { echo "OK: $*" >&2; }
