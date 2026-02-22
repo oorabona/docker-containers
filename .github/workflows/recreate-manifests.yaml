@@ -16,10 +16,22 @@ on:
           - both
           - ghcr
           - dockerhub
+      generate_sboms:
+        description: 'Generate SBOMs for published images (no rebuild needed)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   packages: write
+  pages: write      # Required when generate_sboms triggers dashboard update
+  id-token: write   # Required when generate_sboms triggers dashboard update
+
+# Allow only one concurrent deployment when dashboard update is triggered
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   detect-containers:
@@ -48,6 +60,7 @@ jobs:
           REGISTRY: ${{ inputs.registry || 'both' }}
           CONTAINER_INPUT: ${{ inputs.container }}
           BUILDS_COUNT: ${{ steps.detect.outputs.builds_count }}
+          GENERATE_SBOMS: ${{ inputs.generate_sboms }}
         run: |
           echo "## Recreate Manifests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -59,6 +72,9 @@ jobs:
             echo "| **Container** | \`$CONTAINER_INPUT\` |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Scope** | All containers |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "$GENERATE_SBOMS" = "true" ]; then
+            echo "| **SBOMs** | Enabled |" >> $GITHUB_STEP_SUMMARY
           fi
 
   create-manifest:
@@ -202,3 +218,121 @@ jobs:
 
           echo "::endgroup::"
         continue-on-error: true
+
+      # SBOM generation (scans published amd64 image from GHCR — no rebuild needed)
+      - name: Install syft
+        if: inputs.generate_sboms == true
+        uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+
+      - name: Generate SBOM
+        id: sbom
+        if: inputs.generate_sboms == true
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          source ./helpers/sbom-utils.sh
+          image_ref="ghcr.io/${GITHUB_USERNAME}/${CONTAINER}:${TAG}-amd64"
+          sbom_file=".build-lineage/${CONTAINER}-${TAG}.sbom.json"
+          generate_sbom "$image_ref" "$sbom_file"
+          echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Upload SBOM artifact
+        if: steps.sbom.outcome == 'success'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: ${{ steps.sbom.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+
+  # Process SBOMs into lineage cache (compare, history, summary)
+  process-sboms:
+    name: Process SBOMs
+    needs: [detect-containers, create-manifest]
+    if: |
+      always() &&
+      inputs.generate_sboms == true &&
+      needs.create-manifest.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          sparse-checkout: helpers
+
+      - name: Restore lineage cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: .build-lineage
+          key: build-lineage-never-exact-match
+          restore-keys: build-lineage-
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4
+        with:
+          pattern: sbom-*
+          path: .build-lineage-sbom-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Process SBOMs (compare + history)
+        run: |
+          source helpers/sbom-utils.sh
+
+          if [[ ! -d ".build-lineage-sbom-artifacts" ]]; then
+            echo "No SBOM artifacts found — skipping processing"
+            exit 0
+          fi
+
+          sbom_count=0
+          while IFS= read -r -d '' sbom_file; do
+            sbom_count=$((sbom_count + 1))
+            basename_file=$(basename "$sbom_file")
+            container_tag="${basename_file%.sbom.json}"
+
+            echo "::group::Processing SBOM for $container_tag"
+
+            # Compare with previously cached SBOM (if exists)
+            cached_sbom=".build-lineage/${basename_file}"
+            if [[ -f "$cached_sbom" ]]; then
+              compare_sboms "$sbom_file" "$cached_sbom" \
+                ".build-lineage/${container_tag}.changelog.json" || true
+            else
+              echo "No previous SBOM for $container_tag — first build"
+            fi
+
+            # Extract summary and append to build history
+            summary=$(extract_sbom_summary "$sbom_file")
+            lineage_file=".build-lineage/${container_tag}.json"
+            append_build_history "$lineage_file" "$summary" \
+              ".build-lineage/${container_tag}.history.json" || true
+
+            # Replace cached SBOM with new one
+            cp "$sbom_file" "$cached_sbom"
+
+            echo "::endgroup::"
+          done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)
+
+          echo "Processed $sbom_count SBOM(s)"
+
+      - name: Save updated lineage cache
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+
+  # Update dashboard after SBOM processing
+  update-dashboard:
+    needs: [create-manifest, process-sboms]
+    if: |
+      always() &&
+      inputs.generate_sboms == true &&
+      needs.process-sboms.result == 'success'
+    uses: ./.github/workflows/update-dashboard.yaml
+    with:
+      trigger_reason: "Post-SBOM generation dashboard update"
+    secrets: inherit
