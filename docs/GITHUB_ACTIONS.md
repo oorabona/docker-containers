@@ -1,6 +1,6 @@
 # GitHub Actions Reference
 
-*Last Updated: February 21, 2026 - Added recreate-manifests workflow, Docker Hub cross-registry manifest fix*
+*Last Updated: February 22, 2026 - Added SBOM generation (syft), GitHub attestation, package changelog & build history*
 
 This guide covers the automated workflows and actions used for container management in our production-ready CI/CD system.
 
@@ -10,7 +10,7 @@ This guide covers the automated workflows and actions used for container managem
 - **7 Actions**: All used across workflows
 - **Core Scripts**: Fully integrated with automation
 - **Make Script**: All functions utilized by workflows
-- **Recent**: recreate-manifests workflow, Docker Hub cross-registry manifest creation, base image caching
+- **Recent**: SBOM generation (syft) + GitHub attestation, package changelog & build history, recreate-manifests workflow
 
 ## Architecture Overview
 
@@ -103,9 +103,9 @@ Builds and pushes containers when triggered by upstream monitor or code changes.
 1. `detect-containers` — Smart change detection via git diff or force input
 2. `cache-base-images` — Cache Docker Hub base images to GHCR (avoids rate limits)
 3. `build-extensions` — Build PostgreSQL extension images (if postgres detected)
-4. `build-and-push` — Multi-platform builds (native amd64 + arm64 runners)
+4. `build-and-push` — Multi-platform builds (native amd64 + arm64 runners) + SBOM generation + GitHub attestation
 5. `create-manifest` — Multi-arch manifest lists (GHCR primary, Docker Hub via cross-registry from GHCR sources)
-6. `cache-lineage` — Cache `.build-lineage/` JSON artifacts
+6. `cache-lineage` — Cache `.build-lineage/` JSON artifacts + process SBOMs (changelog, build history)
 7. `update-dashboard` — Trigger dashboard regeneration
 
 **Features:**
@@ -114,6 +114,10 @@ Builds and pushes containers when triggered by upstream monitor or code changes.
 - Registry push automation via `build-container` action
 - Docker Hub manifests created using GHCR images as cross-registry sources
 - Build lineage tracking (base image digest, build args, timestamps)
+- **SBOM generation** via syft (SPDX JSON format, amd64 only — packages identical across arches)
+- **GitHub attestation** via `actions/attest-sbom` (Sigstore-signed supply chain compliance)
+- **Package changelog** — inter-version package diffs (added/removed/updated)
+- **Build history** — last 10 builds per variant with package counts
 
 **Scoped Build Inputs (optional):**
 - `scope_versions`: Comma-separated major versions (e.g., `"18"`). Empty = all.
@@ -573,12 +577,14 @@ permissions:
   actions: write       # Trigger auto-build workflow via workflow_call
 ```
 
-### Auto Build Workflow  
+### Auto Build Workflow
 ```yaml
 permissions:
   contents: read       # Read repository files for building
   packages: write      # Push to GHCR (ghcr.io registry)
   actions: write       # Trigger update-dashboard workflow via workflow_call
+  attestations: write  # GitHub SBOM attestation via Sigstore
+  id-token: write      # OIDC token for Sigstore signing
 ```
 
 ### Update Dashboard Workflow

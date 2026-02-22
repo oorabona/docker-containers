@@ -15,6 +15,7 @@ source "$SCRIPT_DIR/helpers/variant-utils.sh"
 source "$SCRIPT_DIR/helpers/build-args-utils.sh"
 source "$SCRIPT_DIR/helpers/registry-utils.sh"
 source "$SCRIPT_DIR/helpers/version-utils.sh"
+source "$SCRIPT_DIR/helpers/sbom-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
@@ -312,6 +313,44 @@ resolve_variant_lineage_json() {
         yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI)'
 }
 
+# --- SBOM data helpers ---
+
+# Read SBOM summary for a variant
+# Returns: JSON object or empty object
+get_sbom_summary() {
+    local container="$1" tag="$2"
+    local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
+    if [[ -f "$sbom_file" ]]; then
+        extract_sbom_summary "$sbom_file"
+    else
+        echo "{}"
+    fi
+}
+
+# Read changelog for a variant
+# Returns: changelog JSON or empty object
+get_changelog() {
+    local container="$1" tag="$2"
+    local file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.changelog.json"
+    if [[ -f "$file" ]]; then
+        jq '.' "$file" 2>/dev/null || echo "{}"
+    else
+        echo "{}"
+    fi
+}
+
+# Read build history for a variant
+# Returns: history JSON array or empty array
+get_build_history() {
+    local container="$1" tag="$2"
+    local file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.history.json"
+    if [[ -f "$file" ]]; then
+        jq '.' "$file" 2>/dev/null || echo "[]"
+    else
+        echo "[]"
+    fi
+}
+
 # Build a single variant entry as JSON
 # Handles sizes, lineage, and build_args in one place (no duplication)
 collect_variant_json() {
@@ -363,6 +402,12 @@ collect_variant_json() {
     fi
     [[ -z "$build_args_json" ]] && build_args_json="[]"
 
+    # SBOM data (package summary, changelog, build history)
+    local sbom_summary changelog build_history
+    sbom_summary=$(get_sbom_summary "$container" "$variant_tag")
+    changelog=$(get_changelog "$container" "$variant_tag")
+    build_history=$(get_build_history "$container" "$variant_tag")
+
     # Assemble JSON
     jq -n \
         --arg name "$variant_name" \
@@ -373,13 +418,20 @@ collect_variant_json() {
         --arg size_arm64 "$size_arm64" \
         --argjson lineage "$lineage_json" \
         --argjson build_args "$build_args_json" \
+        --argjson sbom_summary "$sbom_summary" \
+        --argjson changelog "$changelog" \
+        --argjson build_history "$build_history" \
         '{
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
             size_amd64: $size_amd64, size_arm64: $size_arm64,
             build_digest: $lineage.build_digest,
             base_image: $lineage.base_image
-        } + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)'
+        }
+        + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
+        + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
+        + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
+        + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)'
 }
 
 # Build the variants structure for a container as JSON

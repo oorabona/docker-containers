@@ -60,6 +60,11 @@
       // Update dep health section for selected variant
       var argNames = buildArgs.map(function(a) { return a.name; });
       updateDepHealth(argNames);
+
+      // Update SBOM sections for selected variant
+      updateSbomSection(el);
+      updateChangelogSection(el);
+      updateHistorySection(el);
     }
 
     // Create a lineage item DOM element safely (no innerHTML)
@@ -249,6 +254,169 @@
           tag.classList.add('has-dep-updates');
         }
       });
+    }
+
+    // --- SBOM section rendering ---
+
+    function updateSbomSection(variantEl) {
+      var section = document.getElementById('sbom-section');
+      if (!section) return;
+
+      var attr = variantEl.dataset.sbomSummary;
+      if (!attr) { section.style.display = 'none'; return; }
+
+      var summary;
+      try { summary = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
+      if (!summary.total || summary.total === 0) { section.style.display = 'none'; return; }
+
+      section.style.display = '';
+      var badge = document.getElementById('sbom-total-badge');
+      if (badge) badge.textContent = summary.total + ' packages';
+
+      var breakdown = document.getElementById('sbom-breakdown');
+      if (breakdown) {
+        breakdown.textContent = '';
+        Object.keys(summary).forEach(function(key) {
+          if (key === 'total') return;
+          var chip = document.createElement('span');
+          chip.className = 'sbom-type-chip';
+          chip.textContent = key + ' ';
+          var count = document.createElement('span');
+          count.className = 'sbom-type-count';
+          count.textContent = summary[key];
+          chip.appendChild(count);
+          breakdown.appendChild(chip);
+        });
+      }
+    }
+
+    function updateChangelogSection(variantEl) {
+      var section = document.getElementById('changelog-section');
+      if (!section) return;
+
+      var attr = variantEl.dataset.changelog;
+      if (!attr) { section.style.display = 'none'; return; }
+
+      var changelog;
+      try { changelog = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
+      if (!changelog.changes || changelog.changes.length === 0) { section.style.display = 'none'; return; }
+
+      section.style.display = '';
+      var badge = document.getElementById('changelog-summary-badge');
+      if (badge && changelog.summary) {
+        badge.textContent = '+' + (changelog.summary.added || 0) +
+          ' -' + (changelog.summary.removed || 0) +
+          ' ~' + (changelog.summary.updated || 0);
+      }
+
+      var wrap = document.getElementById('changelog-table-wrap');
+      if (wrap) {
+        wrap.textContent = '';
+        var table = document.createElement('table');
+        table.className = 'changelog-table';
+
+        var thead = document.createElement('thead');
+        var headerRow = document.createElement('tr');
+        ['Type', 'Package', 'Previous', 'Current'].forEach(function(h) {
+          var th = document.createElement('th');
+          th.textContent = h;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        var tbody = document.createElement('tbody');
+        changelog.changes.slice(0, 50).forEach(function(change, i) {
+          var tr = document.createElement('tr');
+          tr.style.animationDelay = (i * 0.04) + 's';
+
+          var tdType = document.createElement('td');
+          var typeBadge = document.createElement('span');
+          typeBadge.className = 'changelog-type-badge changelog-type-' + change.type;
+          typeBadge.textContent = change.type;
+          tdType.appendChild(typeBadge);
+          tr.appendChild(tdType);
+
+          var tdName = document.createElement('td');
+          tdName.className = 'changelog-pkg-name';
+          tdName.textContent = change.name;
+          tr.appendChild(tdName);
+
+          var tdFrom = document.createElement('td');
+          tdFrom.className = 'changelog-version';
+          tdFrom.textContent = change.from || change.version || '---';
+          tr.appendChild(tdFrom);
+
+          var tdTo = document.createElement('td');
+          tdTo.className = 'changelog-version changelog-version-new';
+          tdTo.textContent = change.to || (change.type === 'added' ? change.version : '---');
+          tr.appendChild(tdTo);
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+      }
+    }
+
+    function updateHistorySection(variantEl) {
+      var section = document.getElementById('history-section');
+      if (!section) return;
+
+      var attr = variantEl.dataset.buildHistory;
+      if (!attr) { section.style.display = 'none'; return; }
+
+      var history;
+      try { history = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
+      if (!history || history.length === 0) { section.style.display = 'none'; return; }
+
+      section.style.display = '';
+      var wrap = document.getElementById('history-table-wrap');
+      if (wrap) {
+        wrap.textContent = '';
+        var table = document.createElement('table');
+        table.className = 'history-table';
+
+        var thead = document.createElement('thead');
+        var headerRow = document.createElement('tr');
+        ['Date', 'Version', 'Packages', 'Changes'].forEach(function(h) {
+          var th = document.createElement('th');
+          th.textContent = h;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        var tbody = document.createElement('tbody');
+        history.forEach(function(build, i) {
+          var tr = document.createElement('tr');
+          tr.style.animationDelay = (i * 0.04) + 's';
+
+          var tdDate = document.createElement('td');
+          tdDate.className = 'history-date';
+          var d = new Date(build.built_at);
+          tdDate.textContent = isNaN(d.getTime()) ? build.built_at : d.toISOString().slice(0, 10);
+          tr.appendChild(tdDate);
+
+          var tdVer = document.createElement('td');
+          tdVer.className = 'history-version';
+          tdVer.textContent = build.version || '---';
+          tr.appendChild(tdVer);
+
+          var tdPkgs = document.createElement('td');
+          tdPkgs.textContent = build.packages_total || '---';
+          tr.appendChild(tdPkgs);
+
+          var tdChanges = document.createElement('td');
+          tdChanges.className = 'history-changes';
+          tdChanges.textContent = build.changes_summary || '---';
+          tr.appendChild(tdChanges);
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+      }
     }
 
     // Event delegation
