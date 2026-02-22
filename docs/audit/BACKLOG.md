@@ -38,12 +38,12 @@
 | AUD-040 | extension-utils.sh own logging namespace (log_ok, log_warn) | `helpers/extension-utils.sh:11` | C2 | I2 | R1 | M | 1.0 | P2 | NEW |
 | AUD-041 | Legacy dual-structure in variant-utils.sh (7 functions affected) | `helpers/variant-utils.sh:80+` | C2 | I2 | R1 | M | 1.0 | P2 | AUD-014 |
 | AUD-042 | build-extensions inline bash duplicates variant-utils.sh | `auto-build.yaml:163-250` | C2 | I2 | R1 | M | 1.0 | P2 | NEW |
-| AUD-043 | CDN resources without SRI integrity attributes | `dashboard.html:7`, `container-detail.html:16` | C1 | I2 | R1 | S | 2.0 | P1 | NEW |
+| AUD-043 | CDN resources without SRI integrity attributes | `dashboard.html:7`, `container-detail.html:16` | C1 | I2 | R1 | S | 2.0 | P1 | ✅ RESOLVED |
 | AUD-044 | Hardcoded committer email (6 occurrences) | `upstream-monitor.yaml:74+` | C1 | I1 | R1 | S | 1.0 | P2 | AUD-016 |
 | AUD-045 | `_emit_build_lineage()` re-implements `build_args_json()` inline | `build-container.sh:193` | C1 | I2 | R1 | S | 2.0 | P1 | AUD-003 |
 | AUD-046 | ~~Only 5/12 containers have test.sh~~ | `*/test.sh` | — | — | — | — | — | ✅ RESOLVED | AUD-011 |
 | AUD-047 | GitHub Actions expression injection risk (versions_map) | `auto-build.yaml:219` | C2 | I3 | R2 | M | 3.0 | P1 | NEW |
-| AUD-048 | pushd/popd CWD mutation (fragile under set -e) | `scripts/check-version.sh:28` | C1 | I2 | R1 | S | 2.0 | P1 | NEW |
+| AUD-048 | pushd/popd CWD mutation (fragile under set -e) | `scripts/check-version.sh:28` | C1 | I2 | R1 | S | 2.0 | P1 | ✅ RESOLVED |
 
 ---
 
@@ -192,6 +192,8 @@
 | AUD-027 | Overly broad workflow permissions | ✅ auto-build: contents:write→read; both workflows: improved permission comments |
 | AUD-028 | Duplicate image_exists_in_registry | ✅ Removed dead copy from build-cache-utils.sh (canonical in extension-utils.sh) |
 | AUD-029 | Duplicate build args logic | ✅ Consolidated into shared prepare_build_args() in build-args-utils.sh |
+| AUD-043 | CDN resources without SRI | ✅ Added integrity="sha384-..." + crossorigin="anonymous" to tabler icons CSS |
+| AUD-048 | pushd/popd CWD mutation | ✅ Replaced with `cd` subshells in check-version.sh (no CWD side-effects) |
 
 ---
 
@@ -199,6 +201,6 @@
 
 - [x] P0 items addressed (10/10 resolved as of 2026-02-22)
 - [ ] P1 items in sprint planning
-- [ ] Quick wins executed (10 items)
+- [x] Quick wins executed (10/10 resolved as of 2026-02-22)
 - [ ] Axes reviewed
 - [ ] Next audit scheduled
