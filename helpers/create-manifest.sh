@@ -67,26 +67,30 @@ create_registry_manifest() {
     tag_args=$(_compute_tag_args "$target_image")
 
     # Try multi-arch manifest first (amd64 + arm64)
-    if docker buildx imagetools create $tag_args \
+    local err_output
+    if err_output=$(docker buildx imagetools create $tag_args \
         "$source_image:$TAG-amd64" \
-        "$source_image:$TAG-arm64" 2>/dev/null; then
+        "$source_image:$TAG-arm64" 2>&1); then
         echo "::notice::Multi-arch manifest created successfully for $target_image:$TAG"
         return 0
     fi
+    echo "::debug::Multi-arch attempt failed: $err_output"
 
     # Fallback to single platform (amd64)
-    if docker buildx imagetools create $tag_args \
-        "$source_image:$TAG-amd64" 2>/dev/null; then
+    if err_output=$(docker buildx imagetools create $tag_args \
+        "$source_image:$TAG-amd64" 2>&1); then
         echo "::warning::Manifest created with amd64 only for $target_image:$TAG (arm64 not available)"
         return 0
     fi
+    echo "::debug::amd64-only attempt failed: $err_output"
 
     # Fallback to single platform (arm64)
-    if docker buildx imagetools create $tag_args \
-        "$source_image:$TAG-arm64" 2>/dev/null; then
+    if err_output=$(docker buildx imagetools create $tag_args \
+        "$source_image:$TAG-arm64" 2>&1); then
         echo "::warning::Manifest created with arm64 only for $target_image:$TAG (amd64 not available)"
         return 0
     fi
+    echo "::debug::arm64-only attempt failed: $err_output"
 
     # All attempts failed
     if [[ "$fail_on_error" == "true" ]]; then
