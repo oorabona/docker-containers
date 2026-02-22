@@ -441,5 +441,15 @@
     // Initialize: dep badges on variant buttons, then auto-select default variant
     initDepBadges();
     var defaultVariant = document.querySelector('.variant-tag.selected');
-    if (defaultVariant) selectVariant(defaultVariant);
+    if (defaultVariant) {
+      selectVariant(defaultVariant);
+    } else {
+      // Non-variant containers: read SBOM data from hidden carrier element
+      var carrier = document.getElementById('sbom-data-carrier');
+      if (carrier) {
+        updateSbomSection(carrier);
+        updateChangelogSection(carrier);
+        updateHistorySection(carrier);
+      }
+    }
   })();

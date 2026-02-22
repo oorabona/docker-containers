@@ -195,6 +195,17 @@
         </section>
         {% endif %}
 
+        <!-- SBOM data carrier for non-variant containers (hidden, read by JS) -->
+        {% unless page.has_variants %}
+        {% if page.sbom_summary or page.changelog or page.build_history %}
+        <div id="sbom-data-carrier" style="display:none;"
+             {% if page.sbom_summary %}data-sbom-summary='{{ page.sbom_summary | jsonify }}'{% endif %}
+             {% if page.changelog %}data-changelog='{{ page.changelog | jsonify }}'{% endif %}
+             {% if page.build_history %}data-build-history='{{ page.build_history | jsonify }}'{% endif %}>
+        </div>
+        {% endif %}
+        {% endunless %}
+
         <!-- Package Summary (from SBOM) — shown on selected variant -->
         <section class="sbom-section glass" aria-label="Package summary" style="display:none;" id="sbom-section">
           <div class="sbom-header">

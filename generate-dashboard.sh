@@ -983,6 +983,20 @@ generate_data() {
             fi
         else
             container_json=$(echo "$container_json" | jq '. + {has_variants: false}')
+
+            # Collect SBOM data for non-variant containers (stored at container level)
+            local sbom_summary changelog build_history
+            sbom_summary=$(get_sbom_summary "$container" "$current_version")
+            changelog=$(get_changelog "$container" "$current_version")
+            build_history=$(get_build_history "$container" "$current_version")
+
+            container_json=$(echo "$container_json" | jq \
+                --argjson sbom_summary "$sbom_summary" \
+                --argjson changelog "$changelog" \
+                --argjson build_history "$build_history" \
+                '. + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
+                   + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
+                   + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)')
         fi
 
         # Generate per-container Jekyll page (uses same JSON — no duplication)
