@@ -50,7 +50,7 @@ docker run -d --name web-shell \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SHELL_USER` | `debian` | User for terminal sessions |
-| `SHELL_PASSWORD` | _(unchanged)_ | Override user password at runtime |
+| `SHELL_PASSWORD` | _(locked)_ | Set user password at runtime (required for SSH/sudo) |
 | `TTYD_PORT` | `7681` | Web terminal listen port |
 | `ENABLE_SSH` | `false` | Start SSH daemon on port 2222 |
 | `SSH_PUBLIC_KEY` | _(none)_ | Import SSH authorized key |
@@ -163,7 +163,7 @@ Web Shell is designed as a building block for web hosting platforms, providing b
 ## Security Considerations
 
 - Runs as root for `chpasswd` and `sshd`, but ttyd spawns shells as the configured `SHELL_USER`
-- Default password is `changeme` — always override with `SHELL_PASSWORD`
+- No default password — set `SHELL_PASSWORD` at runtime (account is locked without it)
 - SSH listens on port 2222 (non-standard) with root login disabled
 - For production: use `TTYD_CREDENTIAL` or place behind an auth reverse proxy
 - Mount TLS certificates for encrypted connections

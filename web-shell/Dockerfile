@@ -51,10 +51,9 @@ RUN sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config \
     && mkdir -p /run/sshd
 
-# Set password for the default user (inherited from debian base: 'debian')
-# Override at runtime with SHELL_PASSWORD env var
+# Password is set at runtime via SHELL_PASSWORD env var (see entrypoint.sh)
+# No default password baked into the image for security
 ARG SHELL_USER=debian
-RUN echo "${SHELL_USER}:changeme" | chpasswd
 
 # Bash prompt and aliases
 COPY bashrc /home/${SHELL_USER}/.bashrc

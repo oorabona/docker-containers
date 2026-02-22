@@ -63,6 +63,11 @@ docs/site/.claude
 # CI artifact staging (download-artifact temporary files)
 .build-lineage-artifacts/
 
+# Private keys and certificates (generate at build/runtime, never commit)
+*.key
+*.pem
+*.crt
+
 # Docker volumes and runtime
 volumes/
 .docker/

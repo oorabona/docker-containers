@@ -31,6 +31,7 @@ permissions:
 jobs:
   detect-containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       builds: ${{ steps.detect.outputs.builds }}
       builds_count: ${{ steps.detect.outputs.builds_count }}
@@ -77,6 +78,7 @@ jobs:
     needs: [detect-containers]
     if: needs.detect-containers.outputs.builds_count > 0
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
@@ -253,6 +255,7 @@ jobs:
       inputs.generate_sboms == true &&
       needs.create-manifest.result != 'cancelled'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

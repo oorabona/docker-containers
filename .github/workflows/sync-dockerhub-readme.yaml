@@ -15,6 +15,7 @@ on:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       containers: ${{ steps.detect.outputs.containers }}
     steps:
@@ -55,6 +56,7 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.containers != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
