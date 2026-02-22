@@ -327,6 +327,18 @@ get_sbom_summary() {
     fi
 }
 
+# Read SBOM packages grouped by type (for drill-down)
+# Returns: JSON object or empty object
+get_sbom_packages() {
+    local container="$1" tag="$2"
+    local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
+    if [[ -f "$sbom_file" ]]; then
+        extract_sbom_packages "$sbom_file"
+    else
+        echo "{}"
+    fi
+}
+
 # Read changelog for a variant
 # Returns: changelog JSON or empty object
 get_changelog() {
@@ -402,9 +414,10 @@ collect_variant_json() {
     fi
     [[ -z "$build_args_json" ]] && build_args_json="[]"
 
-    # SBOM data (package summary, changelog, build history)
-    local sbom_summary changelog build_history
+    # SBOM data (package summary, packages detail, changelog, build history)
+    local sbom_summary sbom_packages changelog build_history
     sbom_summary=$(get_sbom_summary "$container" "$variant_tag")
+    sbom_packages=$(get_sbom_packages "$container" "$variant_tag")
     changelog=$(get_changelog "$container" "$variant_tag")
     build_history=$(get_build_history "$container" "$variant_tag")
 
@@ -419,6 +432,7 @@ collect_variant_json() {
         --argjson lineage "$lineage_json" \
         --argjson build_args "$build_args_json" \
         --argjson sbom_summary "$sbom_summary" \
+        --argjson sbom_packages "$sbom_packages" \
         --argjson changelog "$changelog" \
         --argjson build_history "$build_history" \
         '{
@@ -430,6 +444,7 @@ collect_variant_json() {
         }
         + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
         + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
+        + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
         + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
         + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)'
 }
@@ -985,16 +1000,19 @@ generate_data() {
             container_json=$(echo "$container_json" | jq '. + {has_variants: false}')
 
             # Collect SBOM data for non-variant containers (stored at container level)
-            local sbom_summary changelog build_history
+            local sbom_summary sbom_packages changelog build_history
             sbom_summary=$(get_sbom_summary "$container" "$current_version")
+            sbom_packages=$(get_sbom_packages "$container" "$current_version")
             changelog=$(get_changelog "$container" "$current_version")
             build_history=$(get_build_history "$container" "$current_version")
 
             container_json=$(echo "$container_json" | jq \
                 --argjson sbom_summary "$sbom_summary" \
+                --argjson sbom_packages "$sbom_packages" \
                 --argjson changelog "$changelog" \
                 --argjson build_history "$build_history" \
                 '. + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
+                   + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
                    + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
                    + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)')
         fi

@@ -252,9 +252,70 @@
       background: rgba(139, 92, 246, 0.12); color: var(--accent-purple);
       border: 1px solid rgba(139, 92, 246, 0.2);
       font-family: 'SF Mono', 'Fira Code', monospace;
+      transition: all 0.2s ease;
+    }
+    .sbom-type-chip-clickable {
+      cursor: pointer; user-select: none;
+    }
+    .sbom-type-chip-clickable:hover {
+      background: rgba(139, 92, 246, 0.25);
+      border-color: rgba(139, 92, 246, 0.4);
+      transform: translateY(-1px);
+    }
+    .sbom-type-chip-active {
+      background: rgba(139, 92, 246, 0.3);
+      border-color: rgba(139, 92, 246, 0.5);
+      box-shadow: 0 0 8px rgba(139, 92, 246, 0.2);
     }
     .sbom-type-count {
       font-weight: 600; margin-left: 0.25rem;
+    }
+
+    /* Package drill-down panel */
+    .sbom-package-panel {
+      margin-top: 1rem; padding: 1rem;
+      background: rgba(0, 0, 0, 0.15);
+      border: 1px solid var(--glass-border);
+      border-radius: 8px;
+      animation: sbomPanelIn 0.25s ease;
+    }
+    @keyframes sbomPanelIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .sbom-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 0.75rem; padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    .sbom-panel-title {
+      font-size: 0.8125rem; font-weight: 600; color: var(--accent-purple);
+    }
+    .sbom-panel-close {
+      background: none; border: none; color: var(--detail-text-muted);
+      font-size: 1.25rem; cursor: pointer; padding: 0 0.25rem; line-height: 1;
+    }
+    .sbom-panel-close:hover { color: var(--detail-text-primary); }
+    .sbom-package-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.25rem;
+      max-height: 320px; overflow-y: auto;
+    }
+    .sbom-package-item {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 0.25rem 0.5rem; border-radius: 4px;
+      font-size: 0.75rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .sbom-package-item:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+    .sbom-pkg-name {
+      color: var(--detail-text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      margin-right: 0.5rem;
+    }
+    .sbom-pkg-version {
+      color: var(--detail-text-muted); white-space: nowrap;
+      flex-shrink: 0; font-size: 0.6875rem;
     }
 
     /* Changelog */
@@ -325,6 +386,10 @@
     /* Light theme: SBOM section overrides */
     [data-theme="light"] .sbom-total-badge { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.3); }
     [data-theme="light"] .sbom-type-chip { background: rgba(139, 92, 246, 0.08); color: #5b21b6; border-color: rgba(139, 92, 246, 0.2); }
+    [data-theme="light"] .sbom-type-chip-clickable:hover { background: rgba(139, 92, 246, 0.15); }
+    [data-theme="light"] .sbom-type-chip-active { background: rgba(139, 92, 246, 0.2); box-shadow: 0 0 8px rgba(139, 92, 246, 0.1); }
+    [data-theme="light"] .sbom-package-panel { background: rgba(0, 0, 0, 0.03); }
+    [data-theme="light"] .sbom-package-item:nth-child(odd) { background: rgba(0, 0, 0, 0.03); }
     [data-theme="light"] .changelog-summary-badge { background: rgba(245, 158, 11, 0.12); color: #92400e; border-color: rgba(245, 158, 11, 0.3); }
     [data-theme="light"] .changelog-type-added { background: rgba(16, 185, 129, 0.1); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
     [data-theme="light"] .changelog-type-removed { background: rgba(239, 68, 68, 0.1); color: #b91c1c; border-color: rgba(239, 68, 68, 0.3); }
