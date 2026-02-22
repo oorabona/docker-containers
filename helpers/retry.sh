@@ -3,6 +3,11 @@
 # Shared retry utilities for docker-containers repository
 # Provides generic retry functions with backoff strategies
 
+# Source logging if not already loaded
+if ! declare -F log_error &>/dev/null; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/logging.sh"
+fi
+
 # Retry a command with exponential backoff
 # Usage: retry_with_backoff <max_attempts> <initial_delay> <command...>
 # Example: retry_with_backoff 3 2 docker push myimage:latest

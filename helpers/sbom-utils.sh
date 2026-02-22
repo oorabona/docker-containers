@@ -27,10 +27,11 @@ install_syft() {
         return 0
     fi
 
-    log_info "Installing syft..."
-    if curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null; then
-        log_success "syft installed successfully"
-    elif curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b "$HOME/.local/bin" 2>/dev/null; then
+    local syft_version="v1.42.1"
+    log_info "Installing syft ${syft_version}..."
+    if curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b /usr/local/bin 2>/dev/null; then
+        log_success "syft ${syft_version} installed successfully"
+    elif curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${syft_version}/install.sh" | sh -s -- -b "$HOME/.local/bin" 2>/dev/null; then
         export PATH="$HOME/.local/bin:$PATH"
         log_success "syft installed to ~/.local/bin"
     else
