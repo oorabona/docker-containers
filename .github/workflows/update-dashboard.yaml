@@ -15,7 +15,9 @@ on:
         required: false
         type: string
         default: 'Manual update'
-  # Also trigger on pushes to master (for Jekyll site updates)
+  # Also trigger on pushes to master (for Jekyll site/doc updates).
+  # NOTE: No overlap with auto-build.yaml push paths (container files).
+  # Container builds invoke this workflow via workflow_call instead.
   push:
     branches: ["master"]
     paths:

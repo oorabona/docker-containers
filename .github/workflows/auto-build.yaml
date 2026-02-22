@@ -55,7 +55,6 @@ on:
       - '*/config.yaml'
       - '*/docker-compose.yml'
       - '*/compose.yml'
-      - '*/LAST_REBUILD.md'
       - '*/extensions/config.yaml'
       - 'helpers/extension-utils.sh'
       - 'make'
@@ -323,7 +322,7 @@ jobs:
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
-          force_rebuild: ${{ github.event.inputs.force_rebuild }}
+          force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

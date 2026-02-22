@@ -55,7 +55,7 @@ jobs:
     needs: check-upstream-versions
     if: needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge
@@ -465,7 +465,7 @@ jobs:
     needs: [check-dependency-updates, create-update-prs]
     if: always() && needs.check-dependency-updates.outputs.dep_update_count > 0
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 1  # Serialize to avoid "base branch was modified" race on merge
