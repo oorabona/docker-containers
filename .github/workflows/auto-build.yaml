@@ -882,18 +882,17 @@ jobs:
             exit 0
           fi
 
-          for new_sbom_dir in .build-lineage-sbom-artifacts/*/; do
-            [[ -d "$new_sbom_dir" ]] || continue
-            sbom_file=$(find "$new_sbom_dir" -name '*.sbom.json' -print -quit)
-            [[ -z "$sbom_file" ]] && continue
-
-            basename=$(basename "$sbom_file")
-            container_tag="${basename%.sbom.json}"
+          # Find SBOM files (may be flat or in subdirectories depending on artifact count)
+          sbom_count=0
+          while IFS= read -r -d '' sbom_file; do
+            sbom_count=$((sbom_count + 1))
+            basename_file=$(basename "$sbom_file")
+            container_tag="${basename_file%.sbom.json}"
 
             echo "::group::Processing SBOM for $container_tag"
 
             # Compare with previously cached SBOM (if exists)
-            cached_sbom=".build-lineage/${basename}"
+            cached_sbom=".build-lineage/${basename_file}"
             if [[ -f "$cached_sbom" ]]; then
               compare_sboms "$sbom_file" "$cached_sbom" \
                 ".build-lineage/${container_tag}.changelog.json" || true
@@ -911,7 +910,9 @@ jobs:
             cp "$sbom_file" "$cached_sbom"
 
             echo "::endgroup::"
-          done
+          done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)
+
+          echo "Processed $sbom_count SBOM(s)"
 
       - name: Save consolidated lineage cache
         if: steps.merge.outputs.has_files == 'true'
