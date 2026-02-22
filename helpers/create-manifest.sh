@@ -34,7 +34,7 @@ _compute_tag_args() {
             local full_tag="${full_numeric}${rest}"
             if [[ "$full_tag" != "$TAG" ]]; then
                 tag_args="$tag_args -t $target_image:$full_tag"
-                echo "::notice::Adding version-specific tag: $full_tag"
+                echo "::notice::Adding version-specific tag: $full_tag" >&2
             fi
         fi
     fi
