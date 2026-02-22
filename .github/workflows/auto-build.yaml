@@ -501,7 +501,7 @@ jobs:
       - name: Install syft
         id: install-syft
         if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
-        uses: anchore/sbom-action/download-syft@e11c554e6c84d6c62b2524a8b50ae8e4e87b2fad # v0.18.0
+        uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
 
       - name: Generate SBOM
         id: sbom
@@ -538,7 +538,7 @@ jobs:
 
       - name: Attest SBOM
         if: steps.sbom.outcome == 'success' && steps.sbom.outputs.digest != ''
-        uses: actions/attest-sbom@115c3be05ff3974bcbd0b9b7d2e30da2a3a62dcc # v2
+        uses: actions/attest-sbom@10926c72720ffc3f7b666661c8e55b1344e2a365 # v2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
           subject-digest: ${{ steps.sbom.outputs.digest }}
