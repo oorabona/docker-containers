@@ -1,9 +1,9 @@
 # Analytics PostgreSQL flavor
 # Optimized for data warehouse and analytics workloads
-# Use case: Large tables, partitioning, query optimization
+# Use case: Large tables, partitioning, query optimization, geospatial analytics
 
 name: analytics
-description: "PostgreSQL for analytics with partitioning and query tuning"
+description: "PostgreSQL for analytics with partitioning, query tuning, and geospatial"
 extends: base
 
 # Compiled extensions to include
@@ -11,6 +11,9 @@ extensions:
   - pg_partman    # Automatic partition management
   - hypopg        # Hypothetical indexes for query planning
   - pg_qualstats  # Predicate statistics for index suggestions
+  - postgis       # Geospatial objects and spatial indexing
+  - pg_cron       # Cron-based job scheduling
+  - pg_ivm        # Incremental View Maintenance
 
 # Additional built-in extensions
 builtin_extensions:
@@ -18,9 +21,10 @@ builtin_extensions:
   - pg_prewarm      # Preload data into buffer cache
 
 # shared_preload_libraries
-# pg_qualstats requires shared_preload_libraries
+# pg_qualstats and pg_cron require shared_preload_libraries
 shared_preload_libraries:
   - pg_qualstats
+  - pg_cron
 
 # Image tags to publish
 tags:

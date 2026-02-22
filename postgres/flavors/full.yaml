@@ -1,28 +1,26 @@
 # Full PostgreSQL flavor
-# All available compiled extensions (Alpine-compatible)
+# All available compiled extensions
 # Use case: Development, testing, exploration
 #
-# WARNING: This image includes AGPL-licensed extensions (Citus)
+# WARNING: This image includes AGPL-licensed extensions (Citus, ParadeDB)
 # Modifications to these extensions must be shared under AGPL
-#
-# NOTE: ParadeDB excluded - requires glibc/Debian for pgrx compilation
 
 name: full
 description: "PostgreSQL with all compiled extensions (dev/test)"
 extends: base
 
-# All compiled extensions (Alpine-compatible only)
+# All compiled extensions
 extensions:
   - pgvector      # Vector similarity search
+  - paradedb      # pg_search: BM25 full-text search
   - pg_partman    # Partition management
   - hypopg        # Hypothetical indexes
   - pg_qualstats  # Predicate statistics
+  - postgis       # Geospatial objects and spatial indexing
   - citus         # Distributed PostgreSQL
   - timescaledb   # Time-series database
-  # Excluded (requires Debian):
-  # - paradedb    # Full-text search (BM25) - needs glibc for pgrx
-  # Future additions:
-  # - postgis     # Once GEOS/PROJ deps are handled
+  - pg_cron       # Cron-based job scheduling
+  - pg_ivm        # Incremental View Maintenance
 
 # Additional built-in extensions
 builtin_extensions:
@@ -37,6 +35,7 @@ shared_preload_libraries:
   - pg_qualstats
   - citus
   - timescaledb
+  - pg_cron
 
 # Image tags to publish
 tags:

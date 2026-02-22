@@ -1,0 +1,28 @@
+# Spatial PostgreSQL flavor
+# Optimized for geospatial workloads with PostGIS
+# Use case: GIS applications, location services, geospatial analytics
+#
+# Requires runtime dependencies: geos, gdal, proj, json-c, libxml2, protobuf-c
+
+name: spatial
+description: "PostgreSQL with PostGIS for geospatial workloads"
+extends: base
+
+# Compiled extensions to include
+extensions:
+  - postgis     # Geospatial objects, spatial indexing, geometry processing
+  - pg_cron     # Cron-based job scheduling
+  - pg_ivm      # Incremental View Maintenance
+
+# Additional built-in extensions
+builtin_extensions: []
+
+# shared_preload_libraries
+# pg_cron requires shared_preload_libraries
+shared_preload_libraries:
+  - pg_cron
+
+# Image tags to publish
+tags:
+  - "{version}-alpine-spatial"   # e.g., 17.5-alpine-spatial
+  - "{major}-alpine-spatial"     # e.g., 17-alpine-spatial

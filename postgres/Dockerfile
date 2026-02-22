@@ -2,13 +2,12 @@
 #
 # Flavors:
 #   - base:        Built-in extensions only (default)
-#   - vector:      + pgvector for AI/RAG
-#   - analytics:   + pg_partman, hypopg, pg_qualstats
-#   - timeseries:  + timescaledb for time-series data
-#   - distributed: + citus for horizontal scaling
-#   - full:        All Alpine-compatible extensions
-#
-# NOTE: search flavor (ParadeDB) disabled - requires Debian for pgrx compilation
+#   - vector:      + pgvector, pg_search (ParadeDB), pg_cron, pg_ivm
+#   - analytics:   + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm
+#   - timeseries:  + timescaledb, pg_partman, postgis, pg_cron, pg_ivm
+#   - spatial:     + postgis, pg_cron, pg_ivm
+#   - distributed: + citus, pg_cron, pg_ivm
+#   - full:        All compiled extensions
 #
 # Usage:
 #   docker build --build-arg VERSION=17-alpine --build-arg FLAVOR=vector .
@@ -70,6 +69,14 @@ RUN if [ -n "${LOCALES}" ]; then \
 # Only extensions for this flavor+PG version are copied
 # @@EXTENSION_COPIES@@
 
+# Install runtime dependencies for extensions that need system libraries
+# PostGIS requires GEOS, GDAL, PROJ etc. at runtime
+RUN set -eux; \
+    case "${FLAVOR}" in \
+        analytics|timeseries|spatial|full) \
+            apk add --no-cache geos gdal proj json-c libxml2 protobuf-c ;; \
+    esac
+
 # Install extensions based on flavor
 RUN set -eux; \
     # Function to install an extension from staging
@@ -91,27 +98,47 @@ RUN set -eux; \
             echo "Base flavor: no compiled extensions" \
             ;; \
         vector) \
-            install_ext pgvector \
+            install_ext pgvector; \
+            install_ext paradedb; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
             ;; \
         analytics) \
             install_ext pg_partman; \
             install_ext hypopg; \
-            install_ext pg_qualstats \
+            install_ext pg_qualstats; \
+            install_ext postgis; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
             ;; \
         timeseries) \
             install_ext timescaledb; \
-            install_ext pg_partman \
+            install_ext pg_partman; \
+            install_ext postgis; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
+            ;; \
+        spatial) \
+            install_ext postgis; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
             ;; \
         distributed) \
-            install_ext citus \
+            install_ext citus; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
             ;; \
         full) \
             install_ext pgvector; \
+            install_ext paradedb; \
             install_ext pg_partman; \
             install_ext hypopg; \
             install_ext pg_qualstats; \
+            install_ext postgis; \
             install_ext citus; \
-            install_ext timescaledb \
+            install_ext timescaledb; \
+            install_ext pg_cron; \
+            install_ext pg_ivm \
             ;; \
         *) \
             echo "Unknown flavor: ${FLAVOR}"; \
@@ -125,7 +152,11 @@ RUN set -eux; \
 # Create initialization script for all built-in extensions
 # These are bundled with standard PostgreSQL — no compilation needed
 # All flavors get them; zero overhead until explicitly used
-RUN printf '%s\n' \
+# Note: adminpack was removed in PG17 — conditionally included for PG16 and below
+ARG MAJOR_VERSION
+RUN set -eux; \
+    { \
+    printf '%s\n' \
     '-- Built-in PostgreSQL extensions (available in all flavors)' \
     '' \
     '-- Statistics and monitoring' \
@@ -144,20 +175,28 @@ RUN printf '%s\n' \
     '' \
     '-- Foreign data wrappers' \
     'CREATE EXTENSION IF NOT EXISTS file_fdw;' \
-    'CREATE EXTENSION IF NOT EXISTS postgres_fdw;' \
-    '' \
-    '-- Administration' \
-    'CREATE EXTENSION IF NOT EXISTS adminpack;' \
-    > /docker-entrypoint-initdb.d/00-init-extensions.sql
+    'CREATE EXTENSION IF NOT EXISTS postgres_fdw;'; \
+    if [ "${MAJOR_VERSION}" -lt 17 ] 2>/dev/null; then \
+        printf '%s\n' '' '-- Administration (removed in PG17)' \
+            'CREATE EXTENSION IF NOT EXISTS adminpack;'; \
+    fi; \
+    } > /docker-entrypoint-initdb.d/00-init-extensions.sql
 
 # Create flavor-specific initialization script for compiled extensions only
 # Built-in extensions are already in 00-init-extensions.sql (all flavors)
 # This case block mirrors config.yaml flavors — only compiled extensions here
+#
+# NOTE: pg_cron is NOT auto-created here. It requires cron.database_name to match
+# the target database (defaults to 'postgres'). Users should CREATE EXTENSION pg_cron
+# in their desired database after setting cron.database_name in postgresql.conf.
+# The pg_cron background worker is already loaded via shared_preload_libraries.
 RUN case "${FLAVOR}" in \
         vector) \
             printf '%s\n' \
                 '-- Vector flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS vector;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_search;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         analytics) \
@@ -166,6 +205,8 @@ RUN case "${FLAVOR}" in \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
                 'CREATE EXTENSION IF NOT EXISTS hypopg;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_qualstats;' \
+                'CREATE EXTENSION IF NOT EXISTS postgis;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         timeseries) \
@@ -173,23 +214,36 @@ RUN case "${FLAVOR}" in \
                 '-- TimescaleDB flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
+                'CREATE EXTENSION IF NOT EXISTS postgis;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
+                > /docker-entrypoint-initdb.d/01-init-flavor.sql \
+            ;; \
+        spatial) \
+            printf '%s\n' \
+                '-- Spatial flavor: compiled extensions' \
+                'CREATE EXTENSION IF NOT EXISTS postgis;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         distributed) \
             printf '%s\n' \
                 '-- Citus distributed flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS citus;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
         full) \
             printf '%s\n' \
                 '-- Full flavor: compiled extensions' \
                 'CREATE EXTENSION IF NOT EXISTS vector;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_search;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_partman;' \
                 'CREATE EXTENSION IF NOT EXISTS hypopg;' \
                 'CREATE EXTENSION IF NOT EXISTS pg_qualstats;' \
+                'CREATE EXTENSION IF NOT EXISTS postgis;' \
                 'CREATE EXTENSION IF NOT EXISTS citus;' \
                 'CREATE EXTENSION IF NOT EXISTS timescaledb;' \
+                'CREATE EXTENSION IF NOT EXISTS pg_ivm;' \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
     esac
@@ -216,6 +270,10 @@ RUN PRELOAD=""; \
     # pg_qualstats if present
     if [ -f /usr/local/lib/postgresql/pg_qualstats.so ]; then \
         PRELOAD="${PRELOAD:+$PRELOAD,}pg_qualstats"; \
+    fi; \
+    # pg_cron if present (background worker for job scheduling)
+    if [ -f /usr/local/lib/postgresql/pg_cron.so ]; then \
+        PRELOAD="${PRELOAD:+$PRELOAD,}pg_cron"; \
     fi; \
     # Save for reference
     echo "$PRELOAD" > /etc/postgresql-preload.conf; \

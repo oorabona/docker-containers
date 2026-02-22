@@ -12,6 +12,8 @@ extends: base
 # Compiled extensions to include
 extensions:
   - citus         # Distributed tables, sharding, columnar storage
+  - pg_cron       # Cron-based job scheduling
+  - pg_ivm        # Incremental View Maintenance
 
 # Additional built-in extensions
 builtin_extensions:
@@ -19,9 +21,10 @@ builtin_extensions:
   - pg_prewarm
 
 # shared_preload_libraries
-# Citus requires shared_preload_libraries
+# Citus and pg_cron require shared_preload_libraries
 shared_preload_libraries:
   - citus
+  - pg_cron
 
 # Image tags to publish
 tags:

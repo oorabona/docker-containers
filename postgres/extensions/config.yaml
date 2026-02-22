@@ -62,15 +62,15 @@ extensions:
       - build-base
       - rust
       - cargo
-      - clang
-      - llvm-dev
-      - libclang-dev
+      - clang19
+      - clang19-libclang
+      - llvm19-dev
+      - openssl-dev
+      - icu-dev
     shared_preload: false # Not required for PG17+
     priority: 3
-    # NOTE: ParadeDB requires glibc (Debian) for compilation due to pgrx/bindgen
-    # Alpine/musl not supported - use postgres:XX-bookworm as base
-    requires_glibc: true
-    disabled: true # Temporarily disabled until Debian-based build pipeline is ready
+    # EXPERIMENTAL: Alpine/musl build with RUSTFLAGS="-C target-feature=-crt-static"
+    # If build fails, re-add disabled: true and fall back to Debian-based build
   citus:
     version: "14.0.0"
     description: "Distributed PostgreSQL for horizontal scaling"
@@ -97,21 +97,44 @@ extensions:
       - openssl-dev
     shared_preload: true
     priority: 3
-    # PostGIS commented out for now - very complex dependencies
-    # postgis:
-    #   version: "3.4.2"
-    #   description: "Geospatial database extension"
-    #   repo: "postgis/postgis"
-    #   build_deps:
-    #     - build-base
-    #     - geos-dev
-    #     - proj-dev
-    #     - gdal-dev
-    #     - json-c-dev
-    #     - libxml2-dev
-    #   shared_preload: false
-    #   complex: true
-    #   priority: 4
+  pg_cron:
+    version: "1.6.7"
+    description: "Cron-based job scheduling inside PostgreSQL"
+    repo: "citusdata/pg_cron"
+    build_deps:
+      - build-base
+    shared_preload: true
+    priority: 1
+  pg_ivm:
+    version: "1.13"
+    description: "Incremental View Maintenance for materialized views"
+    repo: "sraoss/pg_ivm"
+    build_deps:
+      - build-base
+    shared_preload: false
+    priority: 1
+  postgis:
+    version: "3.5.5"
+    description: "Geospatial database extension (PostGIS)"
+    repo: "postgis/postgis"
+    build_deps:
+      - build-base
+      - geos-dev
+      - proj-dev
+      - gdal-dev
+      - json-c-dev
+      - libxml2-dev
+      - protobuf-c-dev
+    shared_preload: false
+    priority: 2
+    # Runtime dependencies: apk packages needed in the final image
+    runtime_deps:
+      - geos
+      - gdal
+      - proj
+      - json-c
+      - libxml2
+      - protobuf-c
 # Built-in extensions (no compilation needed, just CREATE EXTENSION)
 builtin_extensions:
   # Statistics and monitoring
@@ -142,19 +165,38 @@ flavors:
   base: []
   vector:
     - pgvector
+    - paradedb
+    - pg_cron
+    - pg_ivm
   analytics:
     - pg_partman
     - hypopg
     - pg_qualstats
+    - postgis
+    - pg_cron
+    - pg_ivm
   timeseries:
     - timescaledb
     - pg_partman
+    - postgis
+    - pg_cron
+    - pg_ivm
+  spatial:
+    - postgis
+    - pg_cron
+    - pg_ivm
   distributed:
     - citus
+    - pg_cron
+    - pg_ivm
   full:
     - pgvector
+    - paradedb
     - pg_partman
     - hypopg
     - pg_qualstats
+    - postgis
     - citus
     - timescaledb
+    - pg_cron
+    - pg_ivm
