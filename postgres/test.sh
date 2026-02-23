@@ -232,20 +232,15 @@ test_paradedb() {
         fail "pg_search extension not installed"
     fi
 
-    # Create test table with BM25 index
+    # Create test table
     exec_sql "CREATE TABLE IF NOT EXISTS test_search (id SERIAL PRIMARY KEY, content TEXT);" >/dev/null
     exec_sql "INSERT INTO test_search (content) VALUES ('hello world'), ('postgresql database'), ('full text search') ON CONFLICT DO NOTHING;" >/dev/null
 
-    # Create BM25 index (ParadeDB syntax)
-    result=$(exec_sql "CALL paradedb.create_bm25(
-        index_name => 'test_search_idx',
-        table_name => 'test_search',
-        key_field => 'id',
-        text_fields => paradedb.field('content')
-    );" 2>/dev/null || echo "skip")
+    # Create BM25 index (v0.12+ native PostgreSQL index syntax)
+    result=$(exec_sql "CREATE INDEX IF NOT EXISTS test_search_idx ON test_search USING bm25 (id, content) WITH (key_field = 'id');" >/dev/null 2>&1 && echo "ok" || echo "skip")
 
-    if [[ "$result" != "skip" ]]; then
-        # Test search query
+    if [[ "$result" == "ok" ]]; then
+        # Test search query using @@@ operator
         search_result=$(exec_sql "SELECT COUNT(*) FROM test_search WHERE id @@@ paradedb.parse('content:hello');" 2>/dev/null || echo "0")
         if [[ "$search_result" -ge 1 ]]; then
             pass "paradedb: BM25 search works"
@@ -253,7 +248,7 @@ test_paradedb() {
             info "paradedb: BM25 index created but search returned no results"
         fi
     else
-        info "paradedb: BM25 index creation skipped (may need initialization)"
+        info "paradedb: BM25 index creation skipped"
     fi
 
     # Cleanup
