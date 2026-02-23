@@ -21,6 +21,9 @@ docker pull ghcr.io/oorabona/postgres:17-analytics-alpine
 # With TimescaleDB for time-series data
 docker pull ghcr.io/oorabona/postgres:17-timeseries-alpine
 
+# With PostGIS for geospatial data
+docker pull ghcr.io/oorabona/postgres:17-spatial-alpine
+
 # With Citus for distributed PostgreSQL
 docker pull ghcr.io/oorabona/postgres:17-distributed-alpine
 
@@ -33,10 +36,11 @@ docker pull ghcr.io/oorabona/postgres:17-full-alpine
 | Flavor | Description | Extensions | Use Case |
 |--------|-------------|------------|----------|
 | **base** | Standard PostgreSQL | Built-in only | General purpose, smallest size |
-| **vector** | AI/ML optimized | + pgvector | RAG, embeddings, semantic search |
-| **analytics** | Data warehouse | + pg_partman, hypopg, pg_qualstats | Large tables, query tuning |
-| **timeseries** | Time-series data | + TimescaleDB, pg_partman | IoT, metrics, logs |
-| **distributed** | Horizontal scaling | + Citus | Multi-node clusters, sharding |
+| **vector** | AI/ML optimized | + pgvector, paradedb, pg_cron, pg_ivm | RAG, embeddings, full-text search |
+| **analytics** | Data warehouse | + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm | Large tables, query tuning, geospatial |
+| **timeseries** | Time-series data | + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm | IoT, metrics, logs |
+| **spatial** | Geospatial | + postgis, pg_cron, pg_ivm | GIS, mapping, location data |
+| **distributed** | Horizontal scaling | + Citus, pg_cron, pg_ivm | Multi-node clusters, sharding |
 | **full** | Everything | All extensions | Development, testing |
 
 ### Flavor Details
@@ -114,6 +118,28 @@ GROUP BY bucket, device_id
 ORDER BY bucket DESC;
 ```
 
+#### Spatial (`*-spatial-alpine`)
+Includes base + PostGIS for geospatial workloads:
+- **PostGIS** - Geospatial types, indexing, and functions
+- **pg_cron** - Scheduled jobs
+- **pg_ivm** - Incremental materialized views
+
+```sql
+CREATE EXTENSION postgis;
+
+CREATE TABLE places (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    location GEOGRAPHY(POINT, 4326)
+);
+
+-- Find places within 10km
+SELECT name, ST_Distance(location, ST_MakePoint(-73.99, 40.73)::geography) AS dist
+FROM places
+WHERE ST_DWithin(location, ST_MakePoint(-73.99, 40.73)::geography, 10000)
+ORDER BY dist;
+```
+
 #### Distributed (`*-distributed-alpine`)
 Includes base + Citus for horizontal scaling:
 - **Citus** - Distributed PostgreSQL for multi-node clusters
@@ -133,15 +159,15 @@ GROUP BY tenant_id;
 ```
 
 #### Full (`*-full-alpine`)
-All extensions for development and testing. Includes everything from all other flavors (vector, analytics, timeseries, distributed).
+All extensions for development and testing. Includes everything from all other flavors (vector, analytics, timeseries, spatial, distributed).
 
 ## Supported Versions
 
 | Version | Flavors | Status |
 |---------|---------|--------|
-| PostgreSQL 18 | base | Extensions not yet compatible |
-| PostgreSQL 17 | base, vector, analytics, timeseries, distributed, full | **Recommended** |
-| PostgreSQL 16 | base, vector, analytics, timeseries, distributed, full | LTS |
+| PostgreSQL 18 | base, vector, analytics, timeseries, spatial, distributed, full | **Latest** |
+| PostgreSQL 17 | base, vector, analytics, timeseries, spatial, distributed, full | **Recommended** |
+| PostgreSQL 16 | base, vector, analytics, timeseries, spatial, distributed, full | LTS |
 
 ### Image Tags
 
@@ -265,11 +291,15 @@ default_statistics_target = 100
 | Extension | Version | Description | Flavors | License |
 |-----------|---------|-------------|---------|---------|
 | pgvector | 0.8.1 | Vector similarity search | vector, full | PostgreSQL |
-| pg_partman | 5.4.0 | Partition management | analytics, timeseries, full | PostgreSQL |
+| ParadeDB (pg_search) | 0.21.8 | BM25 full-text search | vector, full | AGPL-3.0 |
+| pg_partman | 5.4.2 | Partition management | analytics, timeseries, full | PostgreSQL |
 | hypopg | 1.4.2 | Hypothetical indexes | analytics, full | PostgreSQL |
 | pg_qualstats | 2.1.3 | Predicate statistics | analytics, full | PostgreSQL |
-| TimescaleDB | 2.24.0 | Time-series database | timeseries, full | Apache-2.0 + TSL |
-| Citus | 13.2.0 | Distributed PostgreSQL | distributed, full | AGPL-3.0 |
+| PostGIS | 3.6.2 | Geospatial types and functions | analytics, timeseries, spatial, full | GPL-2.0 |
+| TimescaleDB | 2.25.1 | Time-series database | timeseries, full | Apache-2.0 + TSL |
+| Citus | 14.0.0 | Distributed PostgreSQL | distributed, full | AGPL-3.0 |
+| pg_cron | 1.6.7 | Job scheduler | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
+| pg_ivm | 1.13 | Incremental materialized views | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
 
 ### Built-in Extensions
 
@@ -422,6 +452,9 @@ postgres/
 │   ├── base.yaml           # Base flavor config
 │   ├── vector.yaml         # Vector flavor config
 │   ├── analytics.yaml      # Analytics flavor config
+│   ├── timeseries.yaml     # Timeseries flavor config
+│   ├── spatial.yaml        # Spatial flavor config
+│   ├── distributed.yaml    # Distributed flavor config
 │   └── full.yaml           # Full flavor config
 └── custom-init/            # Custom initialization scripts
 ```
@@ -558,10 +591,7 @@ To add an extension not yet supported:
 
 ### Planned Extensions
 
-- **ParadeDB** - Full-text search with BM25 (Elasticsearch alternative)
-  - *Note: Requires Debian/glibc for pgrx compilation, Alpine builds not supported*
-- **PostGIS** - Geospatial database extension
-  - *Complex dependencies, requires careful build configuration*
+(none currently — all target extensions have been integrated)
 
 ### Future Improvements
 
