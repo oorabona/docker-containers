@@ -12,7 +12,7 @@
 - [ ] 💡 [Testing] Add README.md for test-harness/ (usage examples, API reference) — Priority: L (from plan checkpoint)
 - [ ] 💡 [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (from plan checkpoint)
 
-- [ ] 🐛 [Postgres] distributed flavor: citus.so fails to load libcurl.so.4 at runtime (17-alpine-distributed image) — Priority: M
+- [x] ✅ [Postgres] distributed flavor: citus.so fails to load libcurl.so.4 at runtime — fixed: added libcurl to runtime_deps (2026-02-23)
 
 ## Blocked / Deferred
 

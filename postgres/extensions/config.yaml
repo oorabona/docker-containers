@@ -82,6 +82,8 @@ extensions:
       - lz4-dev
       - zstd-dev
       - icu-dev
+    runtime_deps:
+      - libcurl
     shared_preload: true
     priority: 3
     # Citus 14.0.0 adds PG 18 support
