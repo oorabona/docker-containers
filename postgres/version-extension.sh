@@ -53,37 +53,10 @@ get_ext_configured_version() {
 }
 
 # Get latest release version from GitHub API
-# Handles both "v1.2.3" and "1.2.3" tag formats
+# Delegates to helpers/latest-github-release which handles semver sorting
 get_github_latest_version() {
     local repo="$1"
-    local response
-    local version
-
-    # Try GitHub API (rate limited without auth, but usually works for single requests)
-    response=$(curl -sL \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
-        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
-
-    # Extract tag_name
-    version=$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
-
-    # If no release found, try tags
-    if [[ -z "$version" || "$version" == "null" ]]; then
-        response=$(curl -sL \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
-            "https://api.github.com/repos/${repo}/tags?per_page=1" 2>/dev/null)
-
-        version=$(echo "$response" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
-    fi
-
-    # Strip 'v' prefix if present
-    version="${version#v}"
-
-    echo "$version"
+    "$SCRIPT_DIR/../helpers/latest-github-release" "$repo" --strip-v 2>/dev/null || echo ""
 }
 
 # List all extensions
