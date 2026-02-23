@@ -21,8 +21,9 @@
 # Assertions (all return 0 — safe with set -e):
 #   th_assert_eq       "desc" "$actual" "$expected"
 #   th_assert_ne       "desc" "$actual" "$unexpected"
-#   th_assert_contains "desc" "$haystack" "$needle"
-#   th_assert_not_empty "desc" "$value"
+#   th_assert_contains     "desc" "$haystack" "$needle"
+#   th_assert_not_contains "desc" "$haystack" "$needle"
+#   th_assert_not_empty    "desc" "$value"
 #   th_assert_ge       "desc" "$actual" "$minimum"     # numeric >=
 #   th_assert_gt       "desc" "$actual" "$minimum"     # numeric >
 #   th_assert_matches  "desc" "$value" "$regex"
@@ -91,6 +92,7 @@ _th_setup_colors() {
 # ---------------------------------------------------------------------------
 # Internal: timing (millisecond precision with bash 5.0+ EPOCHREALTIME)
 # ---------------------------------------------------------------------------
+_TH_TIMING_WARNED=0
 _th_now_ms() {
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
         local e="$EPOCHREALTIME"
@@ -101,6 +103,10 @@ _th_now_ms() {
             printf '%d' "$(( e * 1000 ))"
         fi
     else
+        if [[ "$_TH_TIMING_WARNED" -eq 0 ]]; then
+            printf 'test-harness: bash %s detected — per-test timing limited to second precision (bash 5.0+ recommended)\n' "${BASH_VERSION}" >&2
+            _TH_TIMING_WARNED=1
+        fi
         printf '%d' "$(( $(date +%s) * 1000 ))"
     fi
 }
@@ -232,6 +238,13 @@ th_init() {
         esac
     done
 
+    # Validate reporter (F-001: invalid value silently produced no output)
+    case "$_TH_REPORT" in
+        table|tap|json) ;;
+        *) printf 'test-harness: unknown reporter "%s", falling back to table\n' "$_TH_REPORT" >&2
+           _TH_REPORT="table" ;;
+    esac
+
     _th_setup_colors
     _TH_SUITE_START_MS=$(_th_now_ms)
 
@@ -302,6 +315,17 @@ th_assert_contains() {
         _th_record pass "$name"
     else
         _th_record fail "$name" "'$haystack' does not contain '$needle'"
+    fi
+    return 0
+}
+
+# Assert haystack does NOT contain needle.
+th_assert_not_contains() {
+    local name="$1" haystack="$2" needle="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        _th_record pass "$name"
+    else
+        _th_record fail "$name" "'$haystack' should not contain '$needle'"
     fi
     return 0
 }

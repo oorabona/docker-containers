@@ -503,7 +503,7 @@ run_all_flavors() {
             fi
             overall_skip=$((overall_skip + 1))
             flavor_results+=("${flavor}: SKIP (no image)")
-            json_outputs+=("{\"suite\": \"PostgreSQL E2E — ${flavor}\", \"counts\": {\"total\": 1, \"pass\": 0, \"fail\": 0, \"skip\": 1}}")
+            json_outputs+=("{\"suite\": \"PostgreSQL E2E — ${flavor}\", \"version\": \"$TH_VERSION\", \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)\", \"duration_ms\": 0, \"counts\": {\"total\": 1, \"pass\": 0, \"fail\": 0, \"skip\": 1}, \"tests\": [{\"id\": 1, \"group\": \"\", \"name\": \"Flavor ${flavor}\", \"status\": \"skip\", \"duration_ms\": 0, \"detail\": \"image not found: ${image_tag}\"}]}")
             continue
         fi
 
