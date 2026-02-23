@@ -16,6 +16,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=13.2.0
 ARG EXT_REPO=citusdata/citus
+ARG MAJOR_VERSION
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -47,8 +48,7 @@ WORKDIR /build/citus
 # Configure and build
 RUN ./configure PG_CONFIG=/usr/local/bin/pg_config \
     --with-lz4 \
-    --with-zstd \
-    --without-libcurl
+    --with-zstd
 
 # Build with parallelism
 RUN make -j$(nproc)

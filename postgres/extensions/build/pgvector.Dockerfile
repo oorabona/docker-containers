@@ -14,6 +14,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=0.8.0
 ARG EXT_REPO=pgvector/pgvector
+ARG MAJOR_VERSION
 
 # Install build dependencies
 # Note: llvm19-dev and clang19 for LLVM JIT support

@@ -260,6 +260,91 @@ test_paradedb() {
     exec_sql "DROP TABLE IF EXISTS test_search CASCADE;" >/dev/null
 }
 
+test_pg_cron() {
+    info "Testing pg_cron extension..."
+
+    # pg_cron can only be created in the database matching cron.database_name (default: postgres)
+    # Verify it's loaded via shared_preload_libraries and functional in the postgres database
+    if ! extension_exists "pg_cron"; then
+        fail "pg_cron extension not available"
+    fi
+
+    # Check pg_cron is running (background worker loaded)
+    result=$(exec_sql "SHOW shared_preload_libraries;")
+    if [[ "$result" == *"pg_cron"* ]]; then
+        pass "pg_cron: loaded in shared_preload_libraries"
+    else
+        fail "pg_cron: not in shared_preload_libraries"
+    fi
+
+    # Create extension in the postgres database (cron.database_name default)
+    local cron_db
+    cron_db=$(exec_sql "SHOW cron.database_name;" 2>/dev/null || echo "postgres")
+    docker exec "$CONTAINER_NAME" psql -U "$POSTGRES_USER" -d "$cron_db" -t -A -c \
+        "CREATE EXTENSION IF NOT EXISTS pg_cron;" >/dev/null 2>&1 || true
+
+    # Verify cron.job table exists in the cron database
+    result=$(docker exec "$CONTAINER_NAME" psql -U "$POSTGRES_USER" -d "$cron_db" -t -A -c \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'cron' AND table_name = 'job';" 2>/dev/null)
+    if [[ "$result" -ge 1 ]]; then
+        pass "pg_cron: cron.job table available in '$cron_db' database"
+    else
+        fail "pg_cron: cron.job table not found"
+    fi
+}
+
+test_pg_ivm() {
+    info "Testing pg_ivm extension..."
+
+    if ! extension_installed "pg_ivm"; then
+        fail "pg_ivm extension not installed"
+    fi
+
+    # Create a base table and incrementally maintained materialized view
+    exec_sql "CREATE TABLE IF NOT EXISTS test_ivm_base (id int, val int);" >/dev/null
+    exec_sql "INSERT INTO test_ivm_base VALUES (1, 10), (2, 20) ON CONFLICT DO NOTHING;" >/dev/null
+
+    result=$(exec_sql "SELECT COUNT(*) FROM pg_proc WHERE proname = 'create_immv';" 2>/dev/null)
+    if [[ "$result" -ge 1 ]]; then
+        pass "pg_ivm: create_immv function available"
+    else
+        fail "pg_ivm: create_immv function not found"
+    fi
+
+    # Cleanup
+    exec_sql "DROP TABLE IF EXISTS test_ivm_base CASCADE;" >/dev/null
+}
+
+test_postgis() {
+    info "Testing PostGIS extension..."
+
+    if ! extension_installed "postgis"; then
+        fail "postgis extension not installed"
+    fi
+
+    # Check PostGIS version
+    result=$(exec_sql "SELECT PostGIS_Version();" 2>/dev/null)
+    if [[ -n "$result" ]]; then
+        pass "postgis: version $result"
+    else
+        fail "postgis: could not get version"
+    fi
+
+    # Test spatial operations
+    exec_sql "CREATE TABLE IF NOT EXISTS test_geo (id serial PRIMARY KEY, geom geometry(Point, 4326));" >/dev/null
+    exec_sql "INSERT INTO test_geo (geom) VALUES (ST_SetSRID(ST_MakePoint(-73.99, 40.73), 4326)) ON CONFLICT DO NOTHING;" >/dev/null
+
+    result=$(exec_sql "SELECT ST_AsText(geom) FROM test_geo LIMIT 1;")
+    if [[ "$result" == *"POINT"* ]]; then
+        pass "postgis: spatial operations work"
+    else
+        fail "postgis: spatial operations failed"
+    fi
+
+    # Cleanup
+    exec_sql "DROP TABLE IF EXISTS test_geo;" >/dev/null
+}
+
 # ============================================================================
 # Flavor-Based Test Runner
 # ============================================================================
@@ -275,50 +360,67 @@ run_flavor_tests() {
     test_basic_query
     test_builtin_extensions
 
-    # Flavor-specific tests
+    # Flavor-specific tests (matches config.yaml flavor composition)
     case "$flavor" in
         base)
             info "Base flavor: no additional extension tests"
             ;;
         vector)
             test_pgvector
+            test_paradedb
+            test_pg_cron
+            test_pg_ivm
             ;;
         analytics)
             test_pg_partman
             test_hypopg
             test_pg_qualstats
+            test_postgis
+            test_pg_cron
+            test_pg_ivm
             ;;
         timeseries)
             test_timescaledb
             test_pg_partman
+            test_postgis
+            test_pg_cron
+            test_pg_ivm
+            ;;
+        spatial)
+            test_postgis
+            test_pg_cron
+            test_pg_ivm
             ;;
         distributed)
             test_citus
+            test_pg_cron
+            test_pg_ivm
             ;;
-        # search flavor disabled - ParadeDB requires Debian/glibc
-        # search)
-        #     test_paradedb
-        #     test_pgvector
-        #     ;;
         full)
             test_pgvector
+            test_paradedb
             test_pg_partman
             test_hypopg
             test_pg_qualstats
-            test_timescaledb
+            test_postgis
             test_citus
-            # test_paradedb - disabled, requires Debian
+            test_timescaledb
+            test_pg_cron
+            test_pg_ivm
             ;;
         *)
             info "Unknown flavor '$flavor', running all extension tests"
             # Try all extensions, don't fail if not present
             extension_installed "vector" && test_pgvector || true
+            extension_installed "pg_search" && test_paradedb || true
             extension_installed "pg_partman" && test_pg_partman || true
             extension_installed "hypopg" && test_hypopg || true
             extension_installed "pg_qualstats" && test_pg_qualstats || true
+            extension_installed "postgis" && test_postgis || true
             extension_installed "timescaledb" && test_timescaledb || true
             extension_installed "citus" && test_citus || true
-            # extension_installed "pg_search" && test_paradedb || true  # Disabled
+            extension_installed "pg_cron" && test_pg_cron || true
+            extension_installed "pg_ivm" && test_pg_ivm || true
             ;;
     esac
 
