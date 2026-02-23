@@ -20,6 +20,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=3.5.5
 ARG EXT_REPO=postgis/postgis
+ARG MAJOR_VERSION
 
 # Install build dependencies
 # PostGIS requires GEOS, PROJ, GDAL, json-c, libxml2, protobuf-c for spatial operations

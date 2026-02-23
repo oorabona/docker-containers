@@ -16,6 +16,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=2.24.0
 ARG EXT_REPO=timescale/timescaledb
+ARG MAJOR_VERSION
 
 # Install build dependencies
 RUN apk add --no-cache \

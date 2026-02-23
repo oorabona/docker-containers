@@ -9,6 +9,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=2.1.1
 ARG EXT_REPO=powa-team/pg_qualstats
+ARG MAJOR_VERSION
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation

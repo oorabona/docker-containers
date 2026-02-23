@@ -9,6 +9,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=1.4.1
 ARG EXT_REPO=HypoPG/hypopg
+ARG MAJOR_VERSION
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation

@@ -17,6 +17,7 @@ FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=1.13
 ARG EXT_REPO=sraoss/pg_ivm
+ARG MAJOR_VERSION
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation
