@@ -16,7 +16,7 @@
 # Output: /output/ contains files to extract via docker cp
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=3.5.5
 ARG EXT_REPO=postgis/postgis
@@ -84,3 +84,7 @@ RUN echo "extension=postgis" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/

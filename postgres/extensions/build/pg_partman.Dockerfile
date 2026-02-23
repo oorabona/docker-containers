@@ -5,7 +5,7 @@
 # and serial-based table partitioning
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=5.2.4
 ARG EXT_REPO=pgpartman/pg_partman
@@ -45,3 +45,7 @@ RUN echo "extension=pg_partman" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/

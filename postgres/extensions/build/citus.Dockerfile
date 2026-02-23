@@ -12,7 +12,7 @@
 # Output: /output/ contains files to extract via docker cp
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=13.2.0
 ARG EXT_REPO=citusdata/citus
@@ -75,3 +75,7 @@ RUN echo "extension=citus" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/
