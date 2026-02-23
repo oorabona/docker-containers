@@ -39,7 +39,7 @@
 | AUD-041 | Legacy dual-structure in variant-utils.sh (7 functions affected) | `helpers/variant-utils.sh:80+` | C2 | I2 | R1 | M | 1.0 | P2 | ✅ RESOLVED |
 | AUD-042 | build-extensions inline bash duplicates variant-utils.sh | `auto-build.yaml:163-250` | C2 | I2 | R1 | M | 1.0 | P2 | ✅ RESOLVED |
 | AUD-043 | CDN resources without SRI integrity attributes | `dashboard.html:7`, `container-detail.html:16` | C1 | I2 | R1 | S | 2.0 | P1 | ✅ RESOLVED |
-| AUD-044 | Hardcoded committer email (6 occurrences) | `upstream-monitor.yaml:74+` | C1 | I1 | R1 | S | 1.0 | P2 | ✅ RESOLVED |
+| AUD-044 | Hardcoded committer email (6 occurrences) | `upstream-monitor.yaml:74+` | C1 | I1 | R1 | S | 1.0 | P2 | ✅ RESOLVED (intentional — GPG signing) |
 | AUD-045 | `_emit_build_lineage()` re-implements `build_args_json()` inline | `build-container.sh:193` | C1 | I2 | R1 | S | 2.0 | P1 | ✅ RESOLVED |
 | AUD-046 | ~~Only 5/12 containers have test.sh~~ | `*/test.sh` | — | — | — | — | — | ✅ RESOLVED | AUD-011 |
 | AUD-047 | GitHub Actions expression injection risk (versions_map) | `auto-build.yaml:219` | C2 | I3 | R2 | M | 3.0 | P1 | ✅ RESOLVED |
@@ -202,7 +202,7 @@
 | AUD-040 | extension-utils.sh logging namespace | ✅ Removed custom log_ok/log_warn, sourced logging.sh, renamed all calls to log_success/log_warning |
 | AUD-041 | Legacy variant-utils.sh dual-structure | ✅ Documented "latest" fallback as intentional for dynamic-version containers (terraform) |
 | AUD-042 | build-extensions inline bash | ✅ Extracted to `scripts/list-extension-versions.sh` — 45 lines inline → 2-line call |
-| AUD-044 | Hardcoded committer email | ✅ Replaced 6 occurrences with `github-actions[bot]` noreply address |
+| AUD-044 | Hardcoded committer email | ✅ Intentional — uses owner GPG key (`oorabona@users.noreply.github.com`) for signed commits on PRs |
 | AUD-045 | Inline yq duplication | ✅ Replaced with `build_args_json()` call from shared `build-args-utils.sh` |
 | AUD-047 | Expression injection risk | ✅ Passed `versions_map` via env var instead of `${{ }}` expression interpolation |
 
