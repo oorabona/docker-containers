@@ -69,13 +69,7 @@ RUN if [ -n "${LOCALES}" ]; then \
 # Only extensions for this flavor+PG version are copied
 # @@EXTENSION_COPIES@@
 
-# Install runtime dependencies for extensions that need system libraries
-# PostGIS requires GEOS, GDAL, PROJ etc. at runtime
-RUN set -eux; \
-    case "${FLAVOR}" in \
-        analytics|timeseries|spatial|full) \
-            apk add --no-cache geos gdal proj json-c libxml2 protobuf-c ;; \
-    esac
+# @@RUNTIME_DEPS@@
 
 # Install extensions based on flavor
 RUN set -eux; \
