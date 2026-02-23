@@ -2,7 +2,7 @@
 
 ## In Progress
 
-(none)
+- [x] ✅ [Testing] Build standalone test harness with TAP/table/JSON reporters — Priority: M (2026-02-23)
 
 ## Pending
 
@@ -15,6 +15,9 @@
 - [x] ✅ [Postgres] Fix Citus --without-libcurl build flag causing runtime symbol resolution failure — Priority: H (2026-02-23)
 - [x] ✅ [Postgres] Fix ARG MAJOR_VERSION scoping in 9 extension Dockerfiles (empty metadata) — Priority: L (2026-02-23)
 - [x] ✅ [Postgres] Update test.sh with pg_cron, pg_ivm, postgis tests and spatial flavor — Priority: M (2026-02-23)
+
+- [ ] 💡 [Testing] Add README.md for test-harness/ (usage examples, API reference) — Priority: L (from plan checkpoint)
+- [ ] 💡 [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (from plan checkpoint)
 
 ## Blocked / Deferred
 
