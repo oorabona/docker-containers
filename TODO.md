@@ -9,9 +9,9 @@
 - [ ] 🔧 [Security] Purge sslh/nginx-selfsigned.key from git history (git filter-repo) — Priority: L (from /review F-001, dev-only self-signed cert)
 - [ ] 🔧 [Security] Add sha256sum verification for yq binary downloads in CI workflows — Priority: L (from /review F-002, pre-existing)
 
-- [ ] 🔧 [Postgres] runtime_deps field in extensions/config.yaml is declared but never consumed by build tooling — Priority: M (from /review F-001)
-- [ ] 🔧 [Docs] Update README.md flavor table to reflect new extensions and spatial flavor — Priority: M (from /review F-004)
-- [ ] 🔧 [Postgres] ParadeDB builder image is ~11.4 GB — consider multi-stage with scratch output stage — Priority: L (from /review F-005)
+- [x] ✅ [Postgres] runtime_deps field in extensions/config.yaml is declared but never consumed by build tooling — Priority: M (from /review F-001) (2026-02-23)
+- [x] ✅ [Docs] Update README.md flavor table to reflect new extensions and spatial flavor — Priority: M (from /review F-004) (2026-02-23)
+- [x] ✅ [Postgres] ParadeDB builder image is ~11.4 GB — consider multi-stage with scratch output stage — Priority: L (from /review F-005) (2026-02-23)
 
 ## Blocked / Deferred
 

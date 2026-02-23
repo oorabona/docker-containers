@@ -17,7 +17,7 @@
 # See: https://github.com/pgcentralfoundation/pgrx/pull/362
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG MAJOR_VERSION
 ARG EXT_VERSION=0.21.8
@@ -61,7 +61,10 @@ WORKDIR /build/paradedb/pg_search
 
 # Build pg_search extension
 # Note: This takes a while due to Rust compilation (~15-30 min)
-RUN cargo pgrx package --pg-config /usr/local/bin/pg_config
+# Cache mounts persist cargo registry + git index across builds to speed up rebuilds
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo pgrx package --pg-config /usr/local/bin/pg_config
 
 # Prepare output structure
 # pgrx packages to /build/paradedb/target/release/pg_search-pg{major}/usr/local/...
@@ -84,3 +87,7 @@ RUN echo "extension=paradedb" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/

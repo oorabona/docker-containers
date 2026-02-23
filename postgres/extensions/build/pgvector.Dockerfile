@@ -10,7 +10,7 @@
 # Output: /output/ contains files to extract via docker cp
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=0.8.0
 ARG EXT_REPO=pgvector/pgvector
@@ -55,3 +55,7 @@ RUN echo "extension=pgvector" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/

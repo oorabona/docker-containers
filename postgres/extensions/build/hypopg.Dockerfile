@@ -5,7 +5,7 @@
 # without actually creating the indexes
 
 ARG MAJOR_VERSION=17
-FROM postgres:${MAJOR_VERSION}-alpine
+FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG EXT_VERSION=1.4.1
 ARG EXT_REPO=HypoPG/hypopg
@@ -45,3 +45,7 @@ RUN echo "extension=hypopg" > /output/metadata.txt && \
 
 # List output for verification
 RUN ls -laR /output/
+
+# Final stage: only the compiled extension files
+FROM scratch
+COPY --from=builder /output/ /output/
