@@ -76,63 +76,56 @@ extension_installed() {
 # Base Tests
 # ============================================================================
 test_connectivity() {
-    th_info "Waiting for PostgreSQL to be ready (query + init)..."
+    th_info "Waiting for PostgreSQL to be ready..."
     th_start
-
-    # Strategy: wait for container logs to confirm the REAL PostgreSQL is ready.
-    # Docker postgres entrypoint runs a TEMP PG for init scripts, then starts
-    # the REAL PG. Querying too early can hit the temp PG or the gap between
-    # temp stop → real start, causing intermittent failures.
-    #
-    # Log sequence (fresh init):
-    #   "database system is ready to accept connections"  ← temp PG
-    #   "PostgreSQL init process complete; ready for start up."
-    #   "database system is ready to accept connections"  ← real PG
-    #
-    # Log sequence (existing database, no init):
-    #   "database system is ready to accept connections"  ← real PG directly
 
     local max_wait=60
     local elapsed=0
 
-    while [[ "$elapsed" -lt "$max_wait" ]]; do
-        local logs
-        logs=$(docker logs "$CONTAINER_NAME" 2>&1)
+    # Phase 1: if container has a HEALTHCHECK, wait for Docker to report "healthy".
+    # pg_isready checks TCP connectivity — it only sees the real PG, not the
+    # temporary PG used during init (which listens on a Unix socket only).
+    local has_healthcheck
+    has_healthcheck=$(docker inspect --format '{{if .State.Health}}yes{{else}}no{{end}}' "$CONTAINER_NAME" 2>/dev/null || echo "no")
 
-        local ready_count
-        ready_count=$(printf '%s\n' "$logs" | grep -c "database system is ready to accept connections" || true)
+    if [[ "$has_healthcheck" == "yes" ]]; then
+        while [[ "$elapsed" -lt "$max_wait" ]]; do
+            local health
+            health=$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "starting")
+            [[ "$health" == "healthy" ]] && break
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+    else
+        # Fallback for containers without HEALTHCHECK: poll with queries
+        while [[ "$elapsed" -lt "$max_wait" ]]; do
+            local result
+            result=$(exec_sql "SELECT 1;" 2>/dev/null) || true
+            [[ "$result" == "1" ]] && break
+            sleep 1
+            elapsed=$((elapsed + 1))
+        done
+    fi
 
-        local has_init=false
-        printf '%s\n' "$logs" | grep -q "PostgreSQL init process complete" && has_init=true
-
-        # Fresh init needs 2 "ready" messages; existing DB needs 1
-        local needed=1
-        [[ "$has_init" == true ]] && needed=2
-
-        if [[ "$ready_count" -ge "$needed" ]]; then
-            # Verify stability: 5 consecutive successful queries with pauses.
-            # Heavy extensions (citus, timescaledb, postgis) do background init
-            # after startup that can briefly interrupt query execution.
-            local stable=0
-            for _ in 1 2 3 4 5; do
-                local result
-                result=$(exec_sql "SELECT 1 + 1;" 2>/dev/null) || true
-                if [[ "$result" == "2" ]]; then
-                    stable=$((stable + 1))
-                else
-                    stable=0
-                fi
-                sleep 0.5
-            done
-            if [[ "$stable" -ge 5 ]]; then
-                th_pass "PostgreSQL is ready"
-                return 0
-            fi
+    # Phase 2: stability check — heavy extensions (citus, timescaledb, postgis)
+    # do background init after startup that can briefly interrupt queries.
+    local stable=0
+    for _ in 1 2 3 4 5; do
+        local result
+        result=$(exec_sql "SELECT 1 + 1;" 2>/dev/null) || true
+        if [[ "$result" == "2" ]]; then
+            stable=$((stable + 1))
+        else
+            stable=0
         fi
-
-        sleep 1
-        elapsed=$((elapsed + 1))
+        sleep 0.5
     done
+
+    if [[ "$stable" -ge 5 ]]; then
+        th_pass "PostgreSQL is ready"
+        return 0
+    fi
+
     th_fail "PostgreSQL not ready after ${max_wait} seconds"
 }
 
@@ -514,6 +507,11 @@ run_all_flavors() {
             -e POSTGRES_USER="$POSTGRES_USER" \
             -e POSTGRES_DB="$POSTGRES_DB" \
             -e POSTGRES_HOST_AUTH_METHOD=trust \
+            --health-cmd "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" \
+            --health-interval=2s \
+            --health-timeout=3s \
+            --health-retries=3 \
+            --health-start-period=5s \
             -l "flavor=${flavor}" \
             "$image_tag" >/dev/null 2>&1
 
