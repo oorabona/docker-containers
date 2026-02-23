@@ -73,6 +73,38 @@
           </div>
         </div>
 
+        <!-- Pull command -->
+        <div class="detail-pull-section glass"
+             id="detail-pull"
+             data-ghcr-base="ghcr.io/{{ page.github_username }}/{{ page.name }}"
+             data-dockerhub-base="docker.io/{{ page.dockerhub_username }}/{{ page.name }}"
+             data-default-tag="{{ page.current_version }}">
+          <div class="detail-pull-row">
+            <div class="detail-pull-label">
+              <i class="ti ti-terminal-2" aria-hidden="true"></i>
+              <span>Pull</span>
+            </div>
+            <div class="detail-registry-toggle" role="radiogroup" aria-label="Container registry">
+              <button class="detail-registry-btn active" data-registry="ghcr"
+                      role="radio" aria-checked="true" type="button">GHCR</button>
+              <button class="detail-registry-btn" data-registry="dockerhub"
+                      role="radio" aria-checked="false" type="button">Docker Hub</button>
+            </div>
+          </div>
+          <div class="detail-pull-input-group">
+            <input type="text"
+                   class="detail-pull-input"
+                   id="detail-pull-cmd"
+                   value="docker pull ghcr.io/{{ page.github_username }}/{{ page.name }}:{{ page.current_version }}"
+                   readonly
+                   aria-label="Docker pull command">
+            <button class="detail-copy-btn" type="button" id="detail-copy-btn"
+                    aria-label="Copy pull command to clipboard">
+              <i class="ti ti-copy" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
         <!-- Meta cards -->
         <div class="detail-meta" id="detail-meta">
           <div class="meta-card glass">

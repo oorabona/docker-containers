@@ -20,6 +20,60 @@
 
     initTheme();
 
+    // Registry management for pull command
+    var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
+
+    function updatePullCommand(tag) {
+      var pullSection = document.getElementById('detail-pull');
+      var input = document.getElementById('detail-pull-cmd');
+      if (!pullSection || !input) return;
+
+      var base = currentRegistry === 'ghcr'
+        ? pullSection.dataset.ghcrBase
+        : pullSection.dataset.dockerhubBase;
+      var effectiveTag = tag || pullSection.dataset.defaultTag;
+      input.value = 'docker pull ' + base + ':' + effectiveTag;
+    }
+
+    function setDetailRegistry(registry) {
+      currentRegistry = registry;
+      localStorage.setItem('preferredRegistry', registry);
+
+      document.querySelectorAll('.detail-registry-btn').forEach(function(btn) {
+        var isActive = btn.dataset.registry === registry;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
+      });
+
+      // Get current variant tag
+      var selected = document.querySelector('.variant-tag.selected');
+      var tag = selected ? selected.dataset.tag : null;
+      updatePullCommand(tag);
+    }
+
+    function copyDetailPullCommand() {
+      var input = document.getElementById('detail-pull-cmd');
+      var button = document.getElementById('detail-copy-btn');
+      if (!input || !button) return;
+
+      var icon = button.querySelector('i');
+
+      function showCopied() {
+        if (icon) icon.className = 'ti ti-check';
+        button.classList.add('copied');
+        setTimeout(function() {
+          if (icon) icon.className = 'ti ti-copy';
+          button.classList.remove('copied');
+        }, 2000);
+      }
+
+      navigator.clipboard.writeText(input.value).then(showCopied).catch(function() {
+        input.select();
+        document.execCommand('copy');
+        showCopied();
+      });
+    }
+
     // Variant selection
     function selectVariant(el) {
       var section = el.closest('.variants-section');
@@ -65,6 +119,9 @@
       updateSbomSection(el);
       updateChangelogSection(el);
       updateHistorySection(el);
+
+      // Update pull command with selected variant tag
+      updatePullCommand(tag);
     }
 
     // Create a lineage item DOM element safely (no innerHTML)
@@ -525,6 +582,13 @@
       var chip = e.target.closest('.sbom-type-chip-clickable');
       if (chip) togglePackagePanel(chip.dataset.type);
 
+      var regBtn = e.target.closest('.detail-registry-btn');
+      if (regBtn) setDetailRegistry(regBtn.dataset.registry);
+
+      if (e.target.closest('#detail-copy-btn') || e.target.closest('.detail-copy-btn')) {
+        copyDetailPullCommand();
+      }
+
       if (e.target.closest('.theme-toggle')) {
         currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
         localStorage.setItem('preferredTheme', currentTheme);
@@ -554,5 +618,14 @@
         updateChangelogSection(carrier);
         updateHistorySection(carrier);
       }
+    }
+
+    // Initialize registry toggle from localStorage preference
+    setDetailRegistry(currentRegistry);
+
+    // Auto-select pull input text on click
+    var pullInput = document.getElementById('detail-pull-cmd');
+    if (pullInput) {
+      pullInput.addEventListener('click', function() { this.select(); });
     }
   })();
