@@ -93,6 +93,10 @@ test_connectivity() {
             local health
             health=$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "starting")
             [[ "$health" == "healthy" ]] && break
+            if [[ "$health" == "unhealthy" ]]; then
+                th_fail "PostgreSQL HEALTHCHECK reported unhealthy"
+                return 1
+            fi
             sleep 1
             elapsed=$((elapsed + 1))
         done
@@ -100,7 +104,7 @@ test_connectivity() {
         # Fallback for containers without HEALTHCHECK: poll with queries
         while [[ "$elapsed" -lt "$max_wait" ]]; do
             local result
-            result=$(exec_sql "SELECT 1;" 2>/dev/null) || true
+            result=$(exec_sql "SELECT 1;") || true
             [[ "$result" == "1" ]] && break
             sleep 1
             elapsed=$((elapsed + 1))
@@ -112,7 +116,7 @@ test_connectivity() {
     local stable=0
     for _ in 1 2 3 4 5; do
         local result
-        result=$(exec_sql "SELECT 1 + 1;" 2>/dev/null) || true
+        result=$(exec_sql "SELECT 1 + 1;") || true
         if [[ "$result" == "2" ]]; then
             stable=$((stable + 1))
         else
