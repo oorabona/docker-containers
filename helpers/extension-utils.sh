@@ -251,6 +251,7 @@ generate_dockerfile() {
     # Build the FROM stages block
     local stages_block=""
     local copies_block=""
+    local all_runtime_deps=""
 
     if [[ -n "$extensions" ]]; then
         while IFS= read -r ext_name; do
@@ -263,7 +264,23 @@ generate_dockerfile() {
             stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'
+
+            # Collect runtime_deps (if any)
+            local deps
+            deps=$(ext="$ext_name" yq -r '(.extensions[strenv(ext)].runtime_deps // [])[]' "$config_file" 2>/dev/null || true)
+            if [[ -n "$deps" ]]; then
+                all_runtime_deps+="${deps}"$'\n'
+            fi
         done <<< "$extensions"
+    fi
+
+    # Build runtime_deps block (deduplicated)
+    local runtime_deps_block=""
+    if [[ -n "$all_runtime_deps" ]]; then
+        local unique_deps
+        unique_deps=$(printf '%s' "$all_runtime_deps" | sort -u | tr '\n' ' ' | sed 's/ $//')
+        runtime_deps_block="# Runtime dependencies for extensions (auto-generated from config.yaml)"$'\n'
+        runtime_deps_block+="RUN apk add --no-cache ${unique_deps}"$'\n'
     fi
 
     # Replace markers in template line by line
@@ -274,6 +291,9 @@ generate_dockerfile() {
                 ;;
             *'@@EXTENSION_COPIES@@'*)
                 [[ -n "$copies_block" ]] && printf '%s' "$copies_block"
+                ;;
+            *'@@RUNTIME_DEPS@@'*)
+                [[ -n "$runtime_deps_block" ]] && printf '%s' "$runtime_deps_block"
                 ;;
             *)
                 printf '%s\n' "$line"
