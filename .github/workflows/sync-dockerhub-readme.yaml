@@ -47,7 +47,14 @@ jobs:
             fi
 
             # Extract container names from paths like "php/README.md"
-            CONTAINERS=$(echo "$CHANGED" | grep -E '^[^/]+/README\.md$' | cut -d'/' -f1 | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            # Filter to directories that have a Dockerfile (actual containers, not helpers/test-harness/etc.)
+            CONTAINERS=$(echo "$CHANGED" | grep -E '^[^/]+/README\.md$' | cut -d'/' -f1 | while read -r dir; do
+              if [[ -f "$dir/Dockerfile" ]]; then
+                echo "$dir"
+              else
+                echo "::notice::Skipping $dir (no Dockerfile, not a container)" >&2
+              fi
+            done | jq -R -s -c 'split("\n") | map(select(length > 0))')
             echo "containers=$CONTAINERS" >> "$GITHUB_OUTPUT"
             echo "Containers to sync: $CONTAINERS"
           fi
