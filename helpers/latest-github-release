@@ -97,7 +97,12 @@ latest-github-release() {
         is_draft=$(echo "$response" | jq -r '.draft // false')
 
         if [[ -n "$tag_name" && "$is_prerelease" != "true" && "$is_draft" != "true" ]]; then
-            version="$tag_name"
+            # Validate tag looks like a version (v1.2.3 or 1.2.3, not vdev-v0.2.0)
+            if [[ "$tag_name" =~ ^v?[0-9] ]]; then
+                version="$tag_name"
+            else
+                log_info "Latest release tag '${tag_name}' is not a version — falling back to releases list"
+            fi
         fi
     fi
 
@@ -106,7 +111,7 @@ latest-github-release() {
         log_info "No latest release for ${repo}, scanning releases list..."
         if response=$(_get_releases "$repo" 2>/dev/null); then
             version=$(echo "$response" | jq -r '
-                [.[] | select(.prerelease == false and .draft == false)]
+                [.[] | select(.prerelease == false and .draft == false) | select(.tag_name | test("^v?[0-9]"))]
                 | sort_by(.published_at)
                 | last
                 | .tag_name // empty
