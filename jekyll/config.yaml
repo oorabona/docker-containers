@@ -7,16 +7,14 @@ base_image_cache:
     source: ruby
     ghcr_repo: ruby-base
     tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"]
-
 build_args:
   RUBY_VERSION: "3.3"
   ALPINE_VERSION: "3.21"
-  BUNDLER_VERSION: "4.0.6"
+  BUNDLER_VERSION: "4.0.7"
   WEBRICK_VERSION: "1.9.2"
   JEKYLL_FEED_VERSION: "0.17.0"
   JEKYLL_SEO_TAG_VERSION: "2.8.0"
   JEKYLL_SITEMAP_VERSION: "1.4.0"
-
 dependency_sources:
   RUBY_VERSION:
     monitor: false
