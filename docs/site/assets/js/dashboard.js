@@ -1,11 +1,10 @@
   (function() {
     'use strict';
 
-    // State
+    // State (theme managed by shared theme.js)
     var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
     var currentSearch = '';
     var currentStatus = 'all';
-    var currentTheme = localStorage.getItem('preferredTheme') || 'dark';
 
     // Announce status changes to screen readers (F-005: aria-live)
     function announceStatus(message) {
@@ -14,36 +13,6 @@
         liveRegion.textContent = message;
       }
     }
-
-    // Theme management
-    function initTheme() {
-      var savedTheme = localStorage.getItem('preferredTheme');
-      if (!savedTheme) {
-        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        currentTheme = prefersDark ? 'dark' : 'light';
-      } else {
-        currentTheme = savedTheme;
-      }
-      applyTheme(currentTheme);
-    }
-
-    function applyTheme(theme) {
-      document.documentElement.setAttribute('data-theme', theme);
-      var icon = document.querySelector('.theme-toggle i');
-      if (icon) {
-        icon.className = theme === 'dark' ? 'ti ti-moon' : 'ti ti-sun';
-      }
-    }
-
-    function toggleTheme() {
-      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('preferredTheme', currentTheme);
-      applyTheme(currentTheme);
-      announceStatus('Theme switched to ' + currentTheme + ' mode');
-    }
-
-    // Apply theme immediately to avoid flash
-    initTheme();
 
     // Set global registry for all containers
     function setGlobalRegistry(registry, save) {
@@ -233,9 +202,12 @@
       // Update filter counts
       updateFilterCounts();
 
-      // Theme toggle
+      // Theme toggle (shared toggleTheme from theme.js + accessibility announcement)
       var themeBtn = document.querySelector('.theme-toggle');
-      if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+      if (themeBtn) themeBtn.addEventListener('click', function() {
+        toggleTheme();
+        announceStatus('Theme switched to ' + currentTheme + ' mode');
+      });
 
       // Registry buttons
       document.querySelectorAll('.registry-btn').forEach(function(btn) {

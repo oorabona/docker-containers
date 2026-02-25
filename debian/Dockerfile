@@ -33,6 +33,11 @@ RUN groupadd -r ${GROUP} && useradd -r -g ${GROUP} -d ${HOME} -s ${SHELL} ${USER
 RUN echo "${USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/${USER} \
     && chmod 440 /etc/sudoers.d/${USER}
 
+LABEL org.opencontainers.image.title="Debian" \
+      org.opencontainers.image.description="Base Debian image with locales, sudo, and non-root user" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
+
 # Add healthcheck to verify system is ready
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD whoami || exit 1

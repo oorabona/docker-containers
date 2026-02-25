@@ -1,24 +1,7 @@
   (function() {
     'use strict';
 
-    // Theme management
-    var currentTheme = localStorage.getItem('preferredTheme') || 'dark';
-
-    function applyTheme(theme) {
-      document.documentElement.setAttribute('data-theme', theme);
-      var icon = document.querySelector('.theme-toggle i');
-      if (icon) icon.className = theme === 'dark' ? 'ti ti-moon' : 'ti ti-sun';
-    }
-
-    function initTheme() {
-      var saved = localStorage.getItem('preferredTheme');
-      if (!saved) {
-        currentTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      }
-      applyTheme(currentTheme);
-    }
-
-    initTheme();
+    // Theme managed by shared theme.js (currentTheme, initTheme, applyTheme, toggleTheme)
 
     // Registry management for pull command
     var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
@@ -590,9 +573,7 @@
       }
 
       if (e.target.closest('.theme-toggle')) {
-        currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        localStorage.setItem('preferredTheme', currentTheme);
-        applyTheme(currentTheme);
+        toggleTheme();
       }
     });
 

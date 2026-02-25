@@ -60,8 +60,12 @@ COPY bashrc /home/${SHELL_USER}/.bashrc
 RUN chown ${SHELL_USER}:${SHELL_USER} /home/${SHELL_USER}/.bashrc
 
 # Entrypoint handles ttyd + optional sshd
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
+LABEL org.opencontainers.image.title="Web Shell" \
+      org.opencontainers.image.description="Secure browser-based terminal with ttyd and SSH" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
 
 # ttyd web terminal
 EXPOSE 7681

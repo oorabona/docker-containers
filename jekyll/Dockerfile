@@ -14,7 +14,8 @@ ARG JEKYLL_SEO_TAG_VERSION=2.8.0
 ARG JEKYLL_SITEMAP_VERSION=1.4.0
 
 # Install build dependencies and Jekyll with common plugins
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/usr/local/bundle/cache \
+    apk add --no-cache \
         build-base \
         git \
         nodejs \
@@ -27,7 +28,12 @@ RUN apk add --no-cache \
         jekyll-seo-tag:${JEKYLL_SEO_TAG_VERSION} \
         jekyll-sitemap:${JEKYLL_SITEMAP_VERSION} \
     && apk del build-base \
-    && rm -rf /root/.gem /root/.bundle /usr/local/bundle/cache
+    && rm -rf /root/.gem /root/.bundle
+
+LABEL org.opencontainers.image.title="Jekyll" \
+      org.opencontainers.image.description="Jekyll static site generator with common plugins" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
 
 # Create working directory
 # Note: Running as root for compatibility with mounted volumes

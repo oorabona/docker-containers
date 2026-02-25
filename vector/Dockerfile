@@ -37,6 +37,11 @@ RUN addgroup -g 1000 -S vector \
 # Mount your own config at /etc/vector/vector.yaml for production use
 COPY vector.yaml /etc/vector/vector.yaml
 
+LABEL org.opencontainers.image.title="Vector" \
+      org.opencontainers.image.description="High-performance observability data pipeline" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
+
 USER vector
 
 # Vector API port (for `vector top`, health checks, GraphQL)

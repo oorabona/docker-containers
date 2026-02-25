@@ -69,6 +69,11 @@ RUN deluser --remove-home www-data \
 	&& chown -R nobody:nobody /usr/local/etc/php-fpm.d \
 	&& usermod -d /var/www/ nobody
 
+LABEL org.opencontainers.image.title="PHP-FPM" \
+      org.opencontainers.image.description="PHP-FPM with Composer, OPcache, and GD extensions" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
+
 # Validate FPM config (must use the non-root user)
 USER nobody
 RUN php-fpm -t

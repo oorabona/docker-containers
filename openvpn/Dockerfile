@@ -63,6 +63,11 @@ RUN set -ex \
     && chmod +x ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
+LABEL org.opencontainers.image.title="OpenVPN" \
+      org.opencontainers.image.description="OpenVPN server with PKCS11, PAM, and EasyRSA support" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
+
 # Create a volume for the configuration
 VOLUME ["/etc/openvpn"]
 

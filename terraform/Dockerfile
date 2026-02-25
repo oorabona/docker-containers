@@ -121,7 +121,9 @@ ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
 # Install cloud CLIs based on flavor
-RUN set -ex && \
+# pip cache mount benefits aws/azure/full flavors; harmless no-op for base/gcp
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -ex && \
     case "${FLAVOR}" in \
         base) \
             echo "Base flavor: no cloud CLIs" \
@@ -129,13 +131,13 @@ RUN set -ex && \
         aws) \
             echo "AWS flavor: installing AWS CLI" && \
             apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
-            pip3 install --break-system-packages --no-cache-dir awscli==${AWS_CLI_VERSION} && \
+            pip3 install --break-system-packages awscli==${AWS_CLI_VERSION} && \
             apk del .build-deps \
             ;; \
         azure) \
             echo "Azure flavor: installing Azure CLI" && \
             apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
-            pip3 install --break-system-packages --no-cache-dir azure-cli==${AZURE_CLI_VERSION} && \
+            pip3 install --break-system-packages azure-cli==${AZURE_CLI_VERSION} && \
             apk del .build-deps \
             ;; \
         gcp) \
@@ -144,7 +146,7 @@ RUN set -ex && \
         full) \
             echo "Full flavor: installing AWS + Azure CLIs" && \
             apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
-            pip3 install --break-system-packages --no-cache-dir \
+            pip3 install --break-system-packages \
                 awscli==${AWS_CLI_VERSION} \
                 azure-cli==${AZURE_CLI_VERSION} \
                 j2cli && \
@@ -154,7 +156,7 @@ RUN set -ex && \
             echo "Unknown flavor: ${FLAVOR}" && exit 1 \
             ;; \
     esac && \
-    rm -rf /var/cache/apk/* /tmp/* /root/.cache
+    rm -rf /var/cache/apk/* /tmp/*
 
 # Copy Google Cloud SDK only for gcp and full flavors
 # The conditional is handled in the cloud-tools-gcp stage
@@ -181,6 +183,11 @@ WORKDIR /data
 
 # Entrypoint to enable live customization
 COPY --chown=terraform:terraform docker-entrypoint.sh /docker-entrypoint.sh
+
+LABEL org.opencontainers.image.title="Terraform" \
+      org.opencontainers.image.description="Terraform CLI with security, DevOps, and cloud tools" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
 
 # Run as non-root user
 USER terraform

@@ -43,8 +43,7 @@ RUN set -ex; \
     wp --info --allow-root
 
 # Copy entrypoint scripts
-COPY *.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh
+COPY --chmod=755 *.sh /usr/local/bin/
 
 # Setup directories and download WordPress core + SQLite drop-in
 ARG VERSION
@@ -59,6 +58,11 @@ RUN set -ex; \
     unzip -qo /tmp/sqlite-plugin.zip -d /var/www/html/wp-content/plugins/; \
     rm /tmp/sqlite-plugin.zip; \
     chown -R wordpress:wordpress /var/www/
+
+LABEL org.opencontainers.image.title="WordPress" \
+      org.opencontainers.image.description="WordPress with PHP-FPM, WP-CLI, and SQLite support" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
 
 WORKDIR /var/www/html
 

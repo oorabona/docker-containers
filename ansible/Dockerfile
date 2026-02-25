@@ -14,7 +14,8 @@ ARG PYNACL_VERSION=1.6.2
 ENV VIRTUAL_ENV=/opt/ansible-venv
 
 # Use UPSTREAM_VERSION for pip install if provided (raw version without suffix), fallback to VERSION
-RUN apt-get update -y \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    apt-get update -y \
     && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv build-essential \
         python3-dev libffi-dev rustc cargo libsodium-dev libssl-dev \
@@ -53,8 +54,12 @@ RUN useradd -ms /bin/bash -G sudo ansible \
     && echo "ansible ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
     && chown -R ansible:ansible $VIRTUAL_ENV
 
-COPY *.sh /
-RUN chmod +x /*.sh
+COPY --chmod=755 *.sh /
+
+LABEL org.opencontainers.image.title="Ansible" \
+      org.opencontainers.image.description="Ansible automation platform with Python venv isolation" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona"
 
 USER ansible
 WORKDIR /home/ansible/playbook
