@@ -1,7 +1,7 @@
   (function() {
     'use strict';
 
-    // Theme managed by shared theme.js (currentTheme, initTheme, applyTheme, toggleTheme)
+    // Theme managed by shared theme.js (window.ThemeManager namespace)
 
     // Registry management for pull command
     var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
@@ -573,7 +573,7 @@
       }
 
       if (e.target.closest('.theme-toggle')) {
-        toggleTheme();
+        ThemeManager.toggleTheme();
       }
     });
 

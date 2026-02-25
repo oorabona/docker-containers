@@ -33,7 +33,8 @@ RUN --mount=type=cache,target=/usr/local/bundle/cache \
 LABEL org.opencontainers.image.title="Jekyll" \
       org.opencontainers.image.description="Jekyll static site generator with common plugins" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # Create working directory
 # Note: Running as root for compatibility with mounted volumes

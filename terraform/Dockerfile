@@ -187,7 +187,8 @@ COPY --chown=terraform:terraform docker-entrypoint.sh /docker-entrypoint.sh
 LABEL org.opencontainers.image.title="Terraform" \
       org.opencontainers.image.description="Terraform CLI with security, DevOps, and cloud tools" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # Run as non-root user
 USER terraform

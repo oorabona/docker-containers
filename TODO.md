@@ -18,8 +18,8 @@
 
 - [-] ⏭️ [Security] Jekyll non-root user — breaking change risk (volume permissions), needs migration plan — Priority: L
 - [-] ⏭️ [Infra] apk/apt BuildKit cache mounts — marginal benefit vs complexity — Priority: L
-- [ ] 🔧 [Infra] Add `org.opencontainers.image.licenses` to all Dockerfile LABEL blocks — Priority: M (from /review F-004)
-- [ ] 🔧 [Dashboard] Consider `window.ThemeManager` namespace for theme.js globals if third-party scripts are added — Priority: M (from /review F-006)
+- [x] ✅ [Infra] Add `org.opencontainers.image.licenses` to all Dockerfile LABEL blocks (2026-02-25)
+- [x] ✅ [Dashboard] `window.ThemeManager` namespace for theme.js globals (2026-02-25)
 
 ## Completed (older)
 

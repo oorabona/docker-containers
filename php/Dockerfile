@@ -72,7 +72,8 @@ RUN deluser --remove-home www-data \
 LABEL org.opencontainers.image.title="PHP-FPM" \
       org.opencontainers.image.description="PHP-FPM with Composer, OPcache, and GD extensions" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # Validate FPM config (must use the non-root user)
 USER nobody

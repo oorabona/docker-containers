@@ -202,11 +202,11 @@
       // Update filter counts
       updateFilterCounts();
 
-      // Theme toggle (shared toggleTheme from theme.js + accessibility announcement)
+      // Theme toggle (ThemeManager from theme.js + accessibility announcement)
       var themeBtn = document.querySelector('.theme-toggle');
       if (themeBtn) themeBtn.addEventListener('click', function() {
-        toggleTheme();
-        announceStatus('Theme switched to ' + currentTheme + ' mode');
+        ThemeManager.toggleTheme();
+        announceStatus('Theme switched to ' + ThemeManager.currentTheme + ' mode');
       });
 
       // Registry buttons

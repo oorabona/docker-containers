@@ -85,7 +85,8 @@ COPY --from=builder /output/bin/busybox /bin/busybox
 LABEL org.opencontainers.image.title="sslh" \
       org.opencontainers.image.description="SSL/SSH multiplexer — minimal scratch image" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # Run as nobody user
 USER nobody:nobody

@@ -62,7 +62,8 @@ RUN set -ex; \
 LABEL org.opencontainers.image.title="WordPress" \
       org.opencontainers.image.description="WordPress with PHP-FPM, WP-CLI, and SQLite support" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /var/www/html
 

@@ -59,7 +59,8 @@ COPY --chmod=755 *.sh /
 LABEL org.opencontainers.image.title="Ansible" \
       org.opencontainers.image.description="Ansible automation platform with Python venv isolation" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 USER ansible
 WORKDIR /home/ansible/playbook

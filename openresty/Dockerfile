@@ -186,6 +186,12 @@ RUN addgroup -g 101 -S nginx \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost/nginx_status || exit 1
 
+LABEL org.opencontainers.image.title="OpenResty" \
+      org.opencontainers.image.description="OpenResty (Nginx + Lua) with LuaRocks and custom modules" \
+      org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
+
 CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
 
 # Use SIGQUIT instead of default SIGTERM to cleanly drain requests

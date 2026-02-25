@@ -50,7 +50,9 @@ ARG SHARED_PRELOAD_LIBRARIES=pg_stat_statements
 # Labels
 LABEL org.opencontainers.image.title="PostgreSQL ${FLAVOR}"
 LABEL org.opencontainers.image.description="PostgreSQL with ${FLAVOR} extensions"
+LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
 LABEL org.opencontainers.image.vendor="oorabona"
+LABEL org.opencontainers.image.licenses="MIT"
 LABEL flavor="${FLAVOR}"
 
 # Install locales if specified

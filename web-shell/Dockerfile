@@ -65,7 +65,8 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 LABEL org.opencontainers.image.title="Web Shell" \
       org.opencontainers.image.description="Secure browser-based terminal with ttyd and SSH" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # ttyd web terminal
 EXPOSE 7681

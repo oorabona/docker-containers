@@ -66,7 +66,8 @@ RUN set -ex \
 LABEL org.opencontainers.image.title="OpenVPN" \
       org.opencontainers.image.description="OpenVPN server with PKCS11, PAM, and EasyRSA support" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 # Create a volume for the configuration
 VOLUME ["/etc/openvpn"]

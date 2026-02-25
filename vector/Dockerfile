@@ -40,7 +40,8 @@ COPY vector.yaml /etc/vector/vector.yaml
 LABEL org.opencontainers.image.title="Vector" \
       org.opencontainers.image.description="High-performance observability data pipeline" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
-      org.opencontainers.image.vendor="oorabona"
+      org.opencontainers.image.vendor="oorabona" \
+      org.opencontainers.image.licenses="MIT"
 
 USER vector
 
