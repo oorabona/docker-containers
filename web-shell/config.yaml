@@ -87,7 +87,7 @@ distros:
   rocky:
     base_image: "${ROCKY_BASE:-rockylinux}:${ROCKY_TAG:-9}"
     pkg_manager: dnf
-    install_cmd: "dnf install -y --setopt=install_weak_deps=False"
+    install_cmd: "dnf install -y --setopt=install_weak_deps=False --allowerasing"
     cleanup_cmd: "dnf clean all"
     shell_user: user
     user_exists: false
