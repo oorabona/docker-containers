@@ -653,12 +653,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Check if similar issue already exists (open, same run)
-          existing=$(gh issue list --label "build-failure" --state open --limit 5 --json title,number \
+          existing=$(gh issue list --repo "${{ github.repository }}" --label "build-failure" --state open --limit 5 --json title,number \
             | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
 
           if [[ -n "$existing" ]]; then
             echo "ℹ️ Adding comment to existing issue #$existing"
-            gh issue comment "$existing" --body "$(cat <<EOF
+            gh issue comment --repo "${{ github.repository }}" "$existing" --body "$(cat <<EOF
           ## 🔄 Another build failure detected
 
           **Run:** [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
@@ -669,7 +669,7 @@ jobs:
           )"
           else
             echo "🚨 Creating new build failure issue"
-            gh issue create \
+            gh issue create --repo "${{ github.repository }}" \
               --title "🚨 Auto Build Failed - $(date -u +%Y-%m-%d)" \
               --label "build-failure,automation" \
               --body "$(cat <<EOF
