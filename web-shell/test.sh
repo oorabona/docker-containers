@@ -37,12 +37,17 @@ for tool in $TOOLS; do
     fi
 done
 
-# Check shell user exists
+# Check shell user exists (read SHELL_USER from the container's environment)
 echo "  Checking shell user..."
-if docker exec "$CONTAINER_NAME" id debian &>/dev/null; then
-    echo "  ✅ Shell user 'debian' exists"
+SHELL_USER=$(docker exec "$CONTAINER_NAME" printenv SHELL_USER 2>/dev/null)
+if [[ -z "$SHELL_USER" ]]; then
+    echo "  ❌ Could not read SHELL_USER from container environment"
+    exit 1
+fi
+if docker exec "$CONTAINER_NAME" id "$SHELL_USER" &>/dev/null; then
+    echo "  ✅ Shell user '${SHELL_USER}' exists"
 else
-    echo "  ❌ Shell user 'debian' not found"
+    echo "  ❌ Shell user '${SHELL_USER}' not found"
     exit 1
 fi
 

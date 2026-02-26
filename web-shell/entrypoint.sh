@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-SHELL_USER="${SHELL_USER:-debian}"
+SHELL_USER="${SHELL_USER:?SHELL_USER env var must be set (built into image via ENV SHELL_USER)}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 ENABLE_SSH="${ENABLE_SSH:-false}"
 
