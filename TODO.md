@@ -8,7 +8,7 @@
 
 - [x] ✅ [CI] Standardize actions/cache version — Trivy cache v4→v5 split restore/save (2026-02-26)
 - [x] ✅ [CI] Update anchore/sbom-action from v0.22.2 to v0.23.0 (2026-02-26)
-- [ ] 💡 [Dashboard] Build trend visualization — capture duration_seconds + status in history, add Chart.js charts on detail pages — Priority: M
+- [x] ✅ [Dashboard] Build trend visualization — duration_seconds in history, Chart.js charts on detail pages (2026-02-26)
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (deferred: low value vs complexity of docker load/pull in CI, local tests suffice)
 
 ## Completed

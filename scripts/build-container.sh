@@ -179,6 +179,7 @@ _emit_build_lineage() {
   "base_image_ref": "${_BASE_IMAGE_REF:-unknown}",
   "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",
+  "duration_seconds": ${_BUILD_DURATION_SECONDS:-null},
   "github_actions": ${GITHUB_ACTIONS:-false},
   "images": {
     "dockerhub": "$dockerhub_image:$tag",
@@ -270,6 +271,9 @@ build_container() {
         fi
     fi
 
+    # Capture build timing
+    local _build_start=$SECONDS
+
     # Execute docker build
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log_success "GitHub Actions detected - building locally for validation..."
@@ -312,6 +316,7 @@ build_container() {
         log_success "✅ Local build completed - layered image available in Docker daemon"
     fi
 
+    _BUILD_DURATION_SECONDS=$(( SECONDS - _build_start ))
     _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
         "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
 

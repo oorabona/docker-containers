@@ -497,6 +497,100 @@
       }
     }
 
+    var _historyChart = null;
+
+    function formatDuration(seconds) {
+      if (seconds == null) return '---';
+      if (seconds < 60) return seconds + 's';
+      var m = Math.floor(seconds / 60);
+      var s = seconds % 60;
+      return m + 'm' + (s > 0 ? s + 's' : '');
+    }
+
+    function renderHistoryChart(history) {
+      var chartWrap = document.getElementById('history-chart-wrap');
+      var canvas = document.getElementById('history-trend-chart');
+      if (!chartWrap || !canvas || typeof Chart === 'undefined') return;
+      if (history.length < 2) { chartWrap.style.display = 'none'; return; }
+
+      // Destroy previous chart instance
+      if (_historyChart) { _historyChart.destroy(); _historyChart = null; }
+
+      // Reverse for chronological order (oldest first)
+      var sorted = history.slice().reverse();
+      var labels = sorted.map(function(b) {
+        var d = new Date(b.built_at);
+        return isNaN(d.getTime()) ? '?' : d.toISOString().slice(5, 10);
+      });
+      var pkgData = sorted.map(function(b) { return b.packages_total || null; });
+      var durData = sorted.map(function(b) { return b.duration_seconds || null; });
+      var hasDuration = durData.some(function(v) { return v !== null; });
+
+      var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+      var gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+      var textColor = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)';
+
+      var datasets = [{
+        label: 'Packages',
+        data: pkgData,
+        borderColor: '#6366f1',
+        backgroundColor: 'rgba(99,102,241,0.1)',
+        fill: true,
+        tension: 0.3,
+        yAxisID: 'y',
+        pointRadius: 3,
+        pointHoverRadius: 5
+      }];
+
+      if (hasDuration) {
+        datasets.push({
+          label: 'Build (min)',
+          data: durData.map(function(v) { return v != null ? +(v / 60).toFixed(1) : null; }),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245,158,11,0.1)',
+          fill: false,
+          tension: 0.3,
+          yAxisID: 'y1',
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderDash: [4, 2]
+        });
+      }
+
+      var scales = {
+        x: { grid: { color: gridColor }, ticks: { color: textColor, font: { size: 10 } } },
+        y: {
+          position: 'left',
+          title: { display: true, text: 'Packages', color: textColor, font: { size: 10 } },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 10 } }
+        }
+      };
+      if (hasDuration) {
+        scales.y1 = {
+          position: 'right',
+          title: { display: true, text: 'Build (min)', color: textColor, font: { size: 10 } },
+          grid: { drawOnChartArea: false },
+          ticks: { color: textColor, font: { size: 10 } }
+        };
+      }
+
+      chartWrap.style.display = '';
+      _historyChart = new Chart(canvas, {
+        type: 'line',
+        data: { labels: labels, datasets: datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { labels: { color: textColor, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle' } }
+          },
+          scales: scales
+        }
+      });
+    }
+
     function updateHistorySection(variantEl) {
       var section = document.getElementById('history-section');
       if (!section) return;
@@ -509,15 +603,25 @@
       if (!history || history.length === 0) { section.style.display = 'none'; return; }
 
       section.style.display = '';
+
+      // Render trend chart
+      renderHistoryChart(history);
+
+      // Render table
       var wrap = document.getElementById('history-table-wrap');
       if (wrap) {
         wrap.textContent = '';
         var table = document.createElement('table');
         table.className = 'history-table';
 
+        var hasDuration = history.some(function(b) { return b.duration_seconds != null; });
+        var headers = ['Date', 'Version', 'Packages'];
+        if (hasDuration) headers.push('Duration');
+        headers.push('Changes');
+
         var thead = document.createElement('thead');
         var headerRow = document.createElement('tr');
-        ['Date', 'Version', 'Packages', 'Changes'].forEach(function(h) {
+        headers.forEach(function(h) {
           var th = document.createElement('th');
           th.textContent = h;
           headerRow.appendChild(th);
@@ -544,6 +648,13 @@
           var tdPkgs = document.createElement('td');
           tdPkgs.textContent = build.packages_total || '---';
           tr.appendChild(tdPkgs);
+
+          if (hasDuration) {
+            var tdDur = document.createElement('td');
+            tdDur.className = 'history-duration';
+            tdDur.textContent = formatDuration(build.duration_seconds);
+            tr.appendChild(tdDur);
+          }
 
           var tdChanges = document.createElement('td');
           tdChanges.className = 'history-changes';

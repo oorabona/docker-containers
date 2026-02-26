@@ -364,6 +364,7 @@
       margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
     .history-header h2 { margin: 0; font-size: 1.25rem; }
+    .history-chart-wrap { height: 220px; margin-bottom: 1.25rem; }
     .history-table-wrap { overflow-x: auto; }
     .history-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
     .history-table th {
@@ -380,6 +381,10 @@
     }
     .history-changes {
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.6875rem;
+      color: var(--detail-text-muted);
+    }
+    .history-duration {
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
       color: var(--detail-text-muted);
     }
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <meta http-equiv="X-UA-Compatible" content="ie=edge"/>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://img.shields.io https://github.com; connect-src 'self'"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://img.shields.io https://github.com; connect-src 'self'"/>
   <title>{{ page.name }} | Container Details | {{ site.title }}</title>
 
   <!-- Google Fonts -->
@@ -267,6 +267,9 @@
             <i class="ti ti-history" aria-hidden="true"></i>
             <h2>Build History</h2>
           </div>
+          <div class="history-chart-wrap" id="history-chart-wrap" style="display:none;">
+            <canvas id="history-trend-chart" height="200"></canvas>
+          </div>
           <div class="history-table-wrap" id="history-table-wrap"></div>
         </section>
 
@@ -430,6 +433,7 @@
   </div>
 
   <!-- Minimal JS: shared theme + page-specific logic -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="{{ site.baseurl }}/assets/js/theme.js"></script>
   <script src="{{ site.baseurl }}/assets/js/container-detail.js"></script>
 </body>
