@@ -1,12 +1,12 @@
 #!/bin/bash
 # Get latest upstream ttyd version (drives web-shell container versioning)
 # Supports multiple output formats for different use cases:
-#   version.sh                 → full version with suffix (e.g., 1.7.7-debian)
+#   version.sh                 → full version with suffix (e.g., 1.7.7)
 #   version.sh --upstream      → raw upstream version (e.g., 1.7.7)
-#   version.sh --tag-suffix    → just the suffix (e.g., -debian)
+#   version.sh --tag-suffix    → just the suffix (e.g., empty for default debian variant)
 #   version.sh --registry-pattern → regex for published version matching
 
-TAG_SUFFIX="-debian"
+TAG_SUFFIX=""
 
 # Handle options
 case "$1" in

@@ -1,41 +1,25 @@
 # Web Shell - Secure browser-based terminal
-# Built on our Debian base image (locales, user, sudo pre-configured)
+# Multi-distribution support (debian, alpine, ubuntu, rocky)
 # ttyd for web terminal + common DevOps/hosting tools
 # https://github.com/tsl0922/ttyd
+#
+# NOTE: This is a template — markers are expanded by generate-dockerfile.sh.
+# Package lists are in config.yaml — do not add packages here.
 
 ARG VERSION=latest
 ARG UPSTREAM_VERSION=""
 ARG TTYD_VERSION="1.7.7"
-ARG DEBIAN_TAG="trixie"
-
-FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}
+# @@BASE_IMAGE@@
 
 USER root
 
 ARG TTYD_VERSION
 ARG TARGETARCH
 
-# Install common tools for hosting/DevOps use + download ttyd
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        # Editors
-        vim-tiny nano \
-        # File management
-        tree file less findutils \
-        # Network tools
-        curl wget dnsutils iputils-ping net-tools \
-        # Process management
-        htop procps \
-        # Data tools
-        jq \
-        # Version control
-        git \
-        # Archive tools
-        bzip2 xz-utils unzip zip \
-        # SSH server (for traditional SSH access)
-        openssh-server \
-    && rm -rf /var/lib/apt/lists/* \
-    # Install ttyd pre-built binary
-    && case "${TARGETARCH}" in \
+# @@INSTALL_PACKAGES@@
+
+# Install ttyd pre-built binary (static binary, works on all distros)
+RUN case "${TARGETARCH}" in \
         amd64) ARCH="x86_64" ;; \
         arm64) ARCH="aarch64" ;; \
         *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
@@ -45,19 +29,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod +x /usr/local/bin/ttyd \
     && ttyd --version
 
-# Configure SSH server
-RUN sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config \
-    && mkdir -p /run/sshd
+# @@SSH_SETUP@@
 
 # Password is set at runtime via SHELL_PASSWORD env var (see entrypoint.sh)
 # No default password baked into the image for security
-ARG SHELL_USER=debian
+# @@USER_SETUP@@
 
-# Bash prompt and aliases
-COPY bashrc /home/${SHELL_USER}/.bashrc
-RUN chown ${SHELL_USER}:${SHELL_USER} /home/${SHELL_USER}/.bashrc
+# Propagate SHELL_USER from build-time ARG to runtime ENV
+# (entrypoint.sh reads this to configure password, SSH, and ttyd)
+ENV SHELL_USER=${SHELL_USER}
 
 # Entrypoint handles ttyd + optional sshd
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh

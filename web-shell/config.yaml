@@ -10,3 +10,96 @@ dependency_sources:
   TTYD_VERSION:
     type: github-release
     repo: tsl0922/ttyd
+
+# Base image cache for Docker Hub rate limiting
+# NOTE: Debian is already on GHCR (ghcr.io/oorabona/debian) — no caching needed
+# NOTE: rocky-base is a new GHCR cache repo — requires Write permissions setup
+base_image_cache:
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["3.21"]
+  - arg: UBUNTU_BASE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["noble"]
+  - arg: ROCKY_BASE
+    source: rockylinux
+    ghcr_repo: rocky-base
+    tags: ["9"]
+
+# Distro definitions for generate-dockerfile.sh
+# Each distro declares its base image, package manager, user setup, and package groups
+distros:
+  debian:
+    base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
+    pkg_manager: apt
+    install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
+    cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
+    shell_user: debian
+    user_exists: true
+    packages:
+      editors: [vim-tiny, nano]
+      file-tools: [tree, file, less, findutils]
+      network: [curl, wget, ca-certificates, dnsutils, iputils-ping, net-tools]
+      monitoring: [htop, procps]
+      data-tools: [jq]
+      vcs: [git]
+      archive: [bzip2, xz-utils, unzip, zip]
+      ssh: [openssh-server]
+
+  alpine:
+    base_image: "${ALPINE_BASE:-alpine}:${ALPINE_TAG:-3.21}"
+    pkg_manager: apk
+    install_cmd: "apk add --no-cache"
+    cleanup_cmd: ""
+    shell_user: user
+    user_exists: false
+    shell_packages: [bash, sudo]
+    packages:
+      editors: [vim, nano]
+      file-tools: [tree, file, less, findutils]
+      network: [curl, wget, ca-certificates, bind-tools, iputils, net-tools]
+      monitoring: [htop, procps]
+      data-tools: [jq]
+      vcs: [git]
+      archive: [bzip2, xz, unzip, zip]
+      ssh: [openssh-server]
+
+  ubuntu:
+    base_image: "${UBUNTU_BASE:-ubuntu}:${UBUNTU_TAG:-noble}"
+    pkg_manager: apt
+    install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
+    cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
+    shell_user: user
+    user_exists: false
+    shell_packages: [sudo]
+    packages:
+      editors: [vim-tiny, nano]
+      file-tools: [tree, file, less, findutils]
+      network: [curl, wget, ca-certificates, dnsutils, iputils-ping, net-tools]
+      monitoring: [htop, procps]
+      data-tools: [jq]
+      vcs: [git]
+      archive: [bzip2, xz-utils, unzip, zip]
+      ssh: [openssh-server]
+
+  rocky:
+    base_image: "${ROCKY_BASE:-rockylinux}:${ROCKY_TAG:-9}"
+    pkg_manager: dnf
+    install_cmd: "dnf install -y --setopt=install_weak_deps=False --allowerasing"
+    cleanup_cmd: "dnf clean all"
+    shell_user: user
+    user_exists: false
+    shell_packages: [sudo]
+    # EPEL required for jq on Rocky — pre_install runs before main package install
+    pre_install: "dnf install -y epel-release"
+    packages:
+      editors: [vim-minimal, nano]
+      file-tools: [tree, file, less, findutils]
+      network: [curl, wget, ca-certificates, bind-utils, iputils, net-tools]
+      monitoring: [htop, procps-ng]
+      data-tools: [jq]
+      vcs: [git]
+      archive: [bzip2, xz, unzip, zip]
+      ssh: [openssh-server]
