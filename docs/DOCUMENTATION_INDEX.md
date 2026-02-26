@@ -4,7 +4,7 @@ doc-meta:
   scope: project
   type: index
   created: 2026-01-16
-  updated: 2026-01-16
+  updated: 2026-02-26
 ---
 
 # Documentation Index
@@ -14,22 +14,30 @@ doc-meta:
 | Category | Document | Status |
 |----------|----------|--------|
 | Container Config | [CONTAINER_CONFIG.md](CONTAINER_CONFIG.md) | canonical |
+| Development Guide | [DEVELOPMENT.md](DEVELOPMENT.md) | canonical |
 | GitHub Actions | [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md) | canonical |
 | Workflow Architecture | [WORKFLOW_ARCHITECTURE.md](WORKFLOW_ARCHITECTURE.md) | canonical |
 | Local Development | [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) | canonical |
 | Testing Guide | [TESTING_GUIDE.md](TESTING_GUIDE.md) | canonical |
+| Size Optimization | [CONTAINER_SIZE_OPTIMIZATION.md](CONTAINER_SIZE_OPTIMIZATION.md) | canonical |
 
-## By Scope
+## Architecture Decision Records
 
-_Add scope indexes as they are created:_
-- [Container Builds](scopes/DOCS_CONTAINERS_INDEX.md) _(to create)_
-- [GitHub Actions](scopes/DOCS_GITHUB_ACTIONS_INDEX.md) _(to create)_
+| ADR | Title |
+|-----|-------|
+| [ADR-001](adr/ADR-001-multi-platform-native-runners.md) | Multi-platform native runners |
+| [ADR-002](adr/ADR-002-smart-rebuild-detection.md) | Smart rebuild detection |
+| [ADR-003](adr/ADR-003-variant-system.md) | Variant system |
+| [ADR-004](adr/ADR-004-build-lineage-tracking.md) | Build lineage tracking |
 
-## Active Specifications
+## Audit Reports
 
-| Story | Spec | Status |
-|-------|------|--------|
-| _None yet_ | | |
+| Document | Description |
+|----------|-------------|
+| [OVERVIEW.md](audit/OVERVIEW.md) | Architecture overview |
+| [ARCHITECTURE.md](audit/ARCHITECTURE.md) | Architecture analysis |
+| [KNOWLEDGE.md](audit/KNOWLEDGE.md) | Knowledge base |
+| [BACKLOG.md](audit/BACKLOG.md) | Audit-generated backlog |
 
 ## Backlogs
 
