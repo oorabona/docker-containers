@@ -12,6 +12,7 @@ source "$PROJECT_ROOT/helpers/logging.sh"
 source "$PROJECT_ROOT/helpers/variant-utils.sh"
 source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 source "$PROJECT_ROOT/helpers/build-args-utils.sh"
+source "$PROJECT_ROOT/helpers/template-utils.sh"
 source "$PROJECT_ROOT/helpers/extension-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
@@ -249,26 +250,42 @@ build_container() {
 
     _resolve_base_image "$dockerfile" "$version" "label_args"
 
-    # Generate Dockerfile from template if it contains extension markers
+    # Generate Dockerfile from template if it contains @@MARKER@@ patterns
     local _generated_dockerfile=""
-    if grep -q '@@EXTENSION_STAGES@@' "$dockerfile" 2>/dev/null; then
-        local ext_config="$PROJECT_ROOT/$container/extensions/config.yaml"
-        if [[ -f "$ext_config" ]]; then
-            _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
-                log_error "Failed to create temp file for generated Dockerfile"
-                return 1
-            }
-            if ! generate_dockerfile "$ext_config" "$dockerfile" "${flavor:-base}" "$_MAJOR_VERSION" > "$_generated_dockerfile"; then
+    if has_template_markers "$dockerfile"; then
+        _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
+            log_error "Failed to create temp file for generated Dockerfile"
+            return 1
+        }
+
+        # Dispatch to the appropriate generator based on container type
+        local _gen_ok=false
+        if [[ -f "$PROJECT_ROOT/$container/extensions/config.yaml" ]]; then
+            # Postgres extension template
+            local ext_config="$PROJECT_ROOT/$container/extensions/config.yaml"
+            if generate_dockerfile "$ext_config" "$dockerfile" "${flavor:-base}" "$_MAJOR_VERSION" > "$_generated_dockerfile"; then
+                _gen_ok=true
+                log_info "Generated Dockerfile for flavor=${flavor:-base} pg=$_MAJOR_VERSION"
+            else
                 log_error "Failed to generate Dockerfile for flavor=${flavor:-base} pg=$_MAJOR_VERSION"
-                rm -f "$_generated_dockerfile"
-                return 1
             fi
-            log_info "Generated Dockerfile for flavor=${flavor:-base} pg=$_MAJOR_VERSION"
-            dockerfile="$_generated_dockerfile"
+        elif [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]]; then
+            # Container-specific generator script (convention)
+            if "$PROJECT_ROOT/$container/generate-dockerfile.sh" "$dockerfile" "${flavor:-}" "$version" > "$_generated_dockerfile"; then
+                _gen_ok=true
+                log_info "Generated Dockerfile via $container/generate-dockerfile.sh"
+            else
+                log_error "Failed to generate Dockerfile via $container/generate-dockerfile.sh"
+            fi
         else
-            log_error "Dockerfile has extension markers but no $ext_config found"
+            log_error "Dockerfile has template markers but no generator found for $container"
+        fi
+
+        if [[ "$_gen_ok" != "true" ]]; then
+            rm -f "$_generated_dockerfile"
             return 1
         fi
+        dockerfile="$_generated_dockerfile"
     fi
 
     # Capture build timing

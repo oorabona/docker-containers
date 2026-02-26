@@ -14,6 +14,11 @@ if ! declare -F log_info &>/dev/null; then
     source "$HELPERS_DIR/logging.sh"
 fi
 
+# Source generic template utilities (provides expand_template, has_template_markers)
+if ! declare -F expand_template &>/dev/null; then
+    source "$HELPERS_DIR/template-utils.sh"
+fi
+
 
 # Get repository owner from git remote or environment
 get_repo_owner() {
@@ -283,23 +288,11 @@ generate_dockerfile() {
         runtime_deps_block+="RUN apk add --no-cache ${unique_deps}"$'\n'
     fi
 
-    # Replace markers in template line by line
-    while IFS= read -r line; do
-        case "$line" in
-            *'@@EXTENSION_STAGES@@'*)
-                [[ -n "$stages_block" ]] && printf '%s' "$stages_block"
-                ;;
-            *'@@EXTENSION_COPIES@@'*)
-                [[ -n "$copies_block" ]] && printf '%s' "$copies_block"
-                ;;
-            *'@@RUNTIME_DEPS@@'*)
-                [[ -n "$runtime_deps_block" ]] && printf '%s' "$runtime_deps_block"
-                ;;
-            *)
-                printf '%s\n' "$line"
-                ;;
-        esac
-    done < "$template"
+    # Expand template using generic template engine
+    expand_template "$template" \
+        "EXTENSION_STAGES" "$stages_block" \
+        "EXTENSION_COPIES" "$copies_block" \
+        "RUNTIME_DEPS" "$runtime_deps_block"
 }
 
 # Compute which flavors are affected by a set of changed extensions

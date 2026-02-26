@@ -78,7 +78,11 @@ COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/
 COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/
 ```
 
-The generation is handled by `generate_dockerfile()` in `helpers/extension-utils.sh`, called automatically by `build_container()` when it detects template markers. The flavor→extension mapping is defined in `postgres/extensions/config.yaml` under the `flavors:` key.
+The generation uses a two-layer system:
+1. **Generic template engine** (`helpers/template-utils.sh`): `expand_template()` replaces `@@MARKER@@` lines in any Dockerfile template with generated content. `has_template_markers()` detects templates.
+2. **Postgres generator** (`generate_dockerfile()` in `helpers/extension-utils.sh`): computes extension-specific content (FROM stages, COPY instructions, runtime deps) and calls `expand_template()`.
+
+`build_container()` dispatches automatically: if `extensions/config.yaml` exists, it uses the postgres generator. Other containers can provide a `generate-dockerfile.sh` script in their directory. The flavor→extension mapping is defined in `postgres/extensions/config.yaml` under the `flavors:` key.
 
 ### Extension Image Naming
 
