@@ -20,7 +20,7 @@ release_prefix: "extensions-pg"
 # Each extension produces: {name}-{version}-pg{major}-alpine.tar.gz
 extensions:
   pgvector:
-    version: "0.8.1"
+    version: "0.8.2"
     description: "Vector similarity search for AI/RAG applications"
     repo: "pgvector/pgvector"
     build_deps:
