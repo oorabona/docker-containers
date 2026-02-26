@@ -6,6 +6,9 @@
 
 ## Pending
 
+- [ ] 🔧 [CI] Standardize actions/cache version (v4 in build-container vs v5 in workflows) — Priority: M
+- [ ] 🔧 [CI] Update anchore/sbom-action from v0.22.2 to v0.24.0 — Priority: L
+- [ ] 💡 [Dashboard] Build trend visualization — capture duration_seconds + status in history, add Chart.js charts on detail pages — Priority: M
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (deferred: low value vs complexity of docker load/pull in CI, local tests suffice)
 
 ## Completed
