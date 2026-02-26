@@ -304,6 +304,7 @@ runs:
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
+        timeout: '15m0s'
       continue-on-error: true  # Vulnerability scan is advisory — don't block builds on findings
 
     - name: Generate SARIF report
@@ -317,6 +318,7 @@ runs:
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
+        timeout: '15m0s'
       continue-on-error: true  # SARIF generation failure should not block build
 
     - name: Upload SARIF to GitHub Security
