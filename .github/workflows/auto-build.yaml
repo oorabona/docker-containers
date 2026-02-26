@@ -327,6 +327,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_base_cache: ${{ github.event_name != 'pull_request' }}
         continue-on-error: true
 
       - name: Retry build on failure
@@ -345,6 +346,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_base_cache: ${{ github.event_name != 'pull_request' }}
         continue-on-error: true
 
       - name: Handle build failure

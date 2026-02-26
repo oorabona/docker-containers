@@ -49,6 +49,10 @@ inputs:
     description: Minimum severity to fail build (CRITICAL, HIGH, MEDIUM, LOW)
     required: false
     default: 'CRITICAL'
+  use_base_cache:
+    description: 'Use GHCR base image cache (skip on PRs where cache-base-images is not run)'
+    required: false
+    default: 'true'
 outputs:
   built:
     description: Whether the container was built
@@ -252,12 +256,16 @@ runs:
         fi
 
         # Use GHCR-cached base images (seeded by upstream-monitor workflow)
-        source ./helpers/base-cache-utils.sh
-        if has_base_cache "./$container"; then
-          cache_args=$(get_cache_build_args "./$container" "${{ github.repository_owner }}" "$build_version")
-          if [[ -n "$cache_args" ]]; then
-            export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
-            echo "✅ Using GHCR base images: $cache_args"
+        # Skip on PRs: cache-base-images job is not run for pull_request events,
+        # so GHCR cache images may not exist yet — fall back to Docker Hub defaults.
+        if [[ "${{ inputs.use_base_cache }}" == "true" ]]; then
+          source ./helpers/base-cache-utils.sh
+          if has_base_cache "./$container"; then
+            cache_args=$(get_cache_build_args "./$container" "${{ github.repository_owner }}" "$build_version")
+            if [[ -n "$cache_args" ]]; then
+              export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
+              echo "✅ Using GHCR base images: $cache_args"
+            fi
           fi
         fi
 
