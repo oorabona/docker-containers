@@ -267,12 +267,13 @@ jobs:
             echo ""
             echo "🔄 Caching $source_img:$tag → $ghcr_image"
 
-            if docker buildx imagetools create \
+            if output=$(docker buildx imagetools create \
               --tag "$ghcr_image" \
-              "docker.io/$source_img:$tag" 2>/dev/null; then
+              "docker.io/$source_img:$tag" 2>&1); then
               echo "  ✅ Cached successfully"
             else
-              echo "  ⚠️ Failed to cache (Docker Hub rate limit?), build will use existing cache or fall back to Docker Hub"
+              echo "  ⚠️ Failed to cache $source_img:$tag → $ghcr_image"
+              echo "  Error: $output"
             fi
           done
 

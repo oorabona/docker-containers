@@ -181,7 +181,8 @@ collect_all_cache_images() {
 #   owner:         GHCR owner, e.g. "oorabona"
 #   build_version: detected version (for resolving ${VERSION} in tags)
 # Output: space-separated --build-arg flags, e.g.:
-#   --build-arg BASE_IMAGE=ghcr.io/oorabona/ubuntu-base
+#   --build-arg BASE_IMAGE=ghcr.io/oorabona/ubuntu-base          (tags: ["latest"])
+#   --build-arg ALPINE_BASE=ghcr.io/oorabona/alpine-base:3.21    (tags: ["3.21"])
 get_cache_build_args() {
     local container_dir="$1"
     local owner="$2"
@@ -200,9 +201,17 @@ get_cache_build_args() {
         arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
         ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
 
-        # The build-arg overrides the Dockerfile ARG with the GHCR repo path
-        # The tag is handled by the Dockerfile's existing tag logic
-        args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+        # For version-specific tags (non-latest), include the tag in the build-arg
+        # so Dockerfiles using single-ARG pattern (ARG X=image:tag / FROM ${X}) work.
+        # Containers with tags: ["latest"] or tags_from_versions keep the old behavior
+        # (tag resolved by a separate Dockerfile ARG).
+        local tag
+        tag=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "$config_file")
+        if [[ "$tag" != "latest" ]]; then
+            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}:${tag}"
+        else
+            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+        fi
     done
 
     echo "$args"

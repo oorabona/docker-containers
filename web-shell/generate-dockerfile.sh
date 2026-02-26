@@ -79,19 +79,16 @@ case "$flavor" in
 FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}'
         ;;
     alpine)
-        base_block='ARG ALPINE_BASE=alpine
-ARG ALPINE_TAG=3.21
-FROM ${ALPINE_BASE}:${ALPINE_TAG}'
+        base_block='ARG ALPINE_BASE=alpine:3.21
+FROM ${ALPINE_BASE}'
         ;;
     ubuntu)
-        base_block='ARG UBUNTU_BASE=ubuntu
-ARG UBUNTU_TAG=noble
-FROM ${UBUNTU_BASE}:${UBUNTU_TAG}'
+        base_block='ARG UBUNTU_BASE=ubuntu:noble
+FROM ${UBUNTU_BASE}'
         ;;
     rocky)
-        base_block='ARG ROCKY_BASE=rockylinux
-ARG ROCKY_TAG=9
-FROM ${ROCKY_BASE}:${ROCKY_TAG}'
+        base_block='ARG ROCKY_BASE=rockylinux:9
+FROM ${ROCKY_BASE}'
         ;;
     *)
         log_error "No BASE_IMAGE template for distro: $flavor"
