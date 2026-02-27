@@ -319,6 +319,18 @@ jobs:
           gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args
           echo "✅ Build workflow triggered for $CONTAINER"
 
+      - name: Cleanup outdated registry images
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true' && steps.rotate.outputs.rotated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          echo "🧹 Triggering registry cleanup for $CONTAINER (version rotated out)"
+          gh workflow run cleanup-registry.yaml \
+            -f purge_obsolete=true \
+            -f container_filter="$CONTAINER"
+          echo "✅ Cleanup workflow triggered for $CONTAINER"
+
       - name: Show PR details (test mode)
         if: steps.env_check.outputs.is_local_test == 'true'
         run: |
