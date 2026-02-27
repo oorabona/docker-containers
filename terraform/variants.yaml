@@ -2,21 +2,18 @@
 # Defines multiple image variants to reduce attack surface and image sizes
 #
 # Each variant produces a separate image tag:
-#   ghcr.io/oorabona/terraform:latest          (full - default for backwards compatibility)
-#   ghcr.io/oorabona/terraform:1.10.5-base     (base variant)
-#   ghcr.io/oorabona/terraform:1.10.5-aws      (AWS variant)
+#   ghcr.io/oorabona/terraform:1.14.6-alpine-base  (base variant)
+#   ghcr.io/oorabona/terraform:1.14.6-alpine-aws   (AWS variant)
+#   ghcr.io/oorabona/terraform:1.14.6-alpine        (full - default)
 #   etc.
 
 # Build configuration
 build:
-  # No extension dependencies (unlike postgres)
   requires_extensions: false
+  version_retention: 3
 
-# Single version entry with multiple variants
-# NOTE: Terraform uses dynamic versioning - actual version comes from version.sh
-# The "latest" tag is a fallback key for variant lookups when version is dynamic
 versions:
-  - tag: "latest"
+  - tag: "1.14.6-alpine"
     variants:
       - name: base
         suffix: "-base"

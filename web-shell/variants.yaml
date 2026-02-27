@@ -2,21 +2,18 @@
 # Defines multi-distribution image variants
 #
 # Each variant produces a separate image tag:
-#   ghcr.io/oorabona/web-shell:latest            (debian - default)
+#   ghcr.io/oorabona/web-shell:1.7.7             (debian - default)
 #   ghcr.io/oorabona/web-shell:1.7.7-alpine      (alpine variant)
 #   ghcr.io/oorabona/web-shell:1.7.7-ubuntu      (ubuntu variant)
 #   ghcr.io/oorabona/web-shell:1.7.7-rocky       (rocky variant)
 
 # Build configuration
 build:
-  # No extension dependencies
   requires_extensions: false
+  version_retention: 3
 
-# Single version entry with multiple distro variants
-# NOTE: web-shell uses dynamic versioning from ttyd — actual version comes from version.sh
-# The "latest" tag is a fallback key for variant lookups when version is dynamic
 versions:
-  - tag: "latest"
+  - tag: "1.7.7"
     variants:
       - name: debian
         suffix: ""
