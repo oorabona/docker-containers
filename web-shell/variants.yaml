@@ -9,8 +9,6 @@
 
 # Build configuration
 build:
-  # Build arg to pass for distro selection
-  flavor_arg: DISTRO
   # No extension dependencies
   requires_extensions: false
 

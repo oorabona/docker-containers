@@ -9,8 +9,6 @@
 
 # Build configuration
 build:
-  # Build arg to pass for flavor selection
-  flavor_arg: FLAVOR
   # No extension dependencies (unlike postgres)
   requires_extensions: false
 

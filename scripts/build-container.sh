@@ -241,12 +241,7 @@ build_container() {
         fi
     fi
 
-    # Compute build digest label for smart rebuild detection
     local label_args=""
-    if [[ -z "${BUILD_DIGEST:-}" ]]; then
-        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
-    fi
-    label_args="--label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 
     _resolve_base_image "$dockerfile" "$version" "label_args"
 
@@ -287,6 +282,13 @@ build_container() {
         fi
         dockerfile="$_generated_dockerfile"
     fi
+
+    # Compute build digest AFTER template expansion so the digest captures
+    # all config.yaml data (packages, install commands) embedded in the generated Dockerfile
+    if [[ -z "${BUILD_DIGEST:-}" ]]; then
+        BUILD_DIGEST=$(compute_build_digest "$dockerfile" "$flavor")
+    fi
+    label_args+=" --label $BUILD_DIGEST_LABEL=$BUILD_DIGEST"
 
     # Capture build timing
     local _build_start=$SECONDS

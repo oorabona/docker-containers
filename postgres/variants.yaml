@@ -8,8 +8,6 @@
 
 # Build configuration
 build:
-  # Build arg to pass for flavor selection
-  flavor_arg: FLAVOR
   # Dependencies: extension images must exist before building variants with extensions
   requires_extensions: true
   # Base image suffix (appended to version tag)

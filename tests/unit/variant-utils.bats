@@ -33,7 +33,7 @@ create_postgres_variants() {
     cat > "$dir/variants.yaml" <<'EOF'
 build:
   base_suffix: "-alpine"
-  flavor_arg: "FLAVOR"
+
   requires_extensions: true
 
 versions:
@@ -70,7 +70,7 @@ create_terraform_variants() {
     cat > "$dir/variants.yaml" <<'EOF'
 build:
   base_suffix: ""
-  flavor_arg: "FLAVOR"
+
 
 versions:
   - tag: "latest"

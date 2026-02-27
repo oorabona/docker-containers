@@ -204,19 +204,6 @@ default_variant() {
     fi
 }
 
-# Get flavor arg name from build config
-flavor_arg_name() {
-    local container_dir="$1"
-    local variants_file="$container_dir/variants.yaml"
-
-    if [[ ! -f "$variants_file" ]]; then
-        echo "FLAVOR"
-        return
-    fi
-
-    yq -r '.build.flavor_arg // "FLAVOR"' "$variants_file" 2>/dev/null || echo "FLAVOR"
-}
-
 # Get base suffix from build config (e.g., "-alpine")
 base_suffix() {
     local container_dir="$1"
@@ -465,5 +452,5 @@ list_variant_tags() {
 
 # Export functions for use in other scripts
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
-export -f variant_property default_variant flavor_arg_name base_suffix
+export -f variant_property default_variant base_suffix
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags

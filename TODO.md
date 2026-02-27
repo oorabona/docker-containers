@@ -14,8 +14,8 @@
 
 ## Review Findings (non-blocking)
 
-- [ ] 🔧 [Web-Shell] compute_build_digest should include config.yaml (not just Dockerfile.template) — Priority: M (from /review F-004)
-- [ ] 🔧 [Web-Shell] flavor_arg DISTRO in variants.yaml may be unused by build system — verify or remove — Priority: M (from /review F-005)
+- [x] ✅ [Web-Shell] compute_build_digest now runs after template expansion — captures config.yaml data (2026-02-27, F-004)
+- [x] ✅ [Web-Shell] Removed unused flavor_arg from all variants.yaml + dead flavor_arg_name() function (2026-02-27, F-005)
 
 ## Blocked / Deferred
 
