@@ -89,17 +89,9 @@ list_variants() {
     fi
 
     if [[ -n "$version" ]]; then
-        # New structure: get variants for specific version
+        # Get variants for specific version
         local result
         result=$(yq -r ".versions[] | select(.tag == \"$version\") | .variants[].name" "$variants_file" 2>/dev/null)
-
-        # If no variants found for this version, try "latest" as fallback.
-        # This is intentional for containers with dynamic versions (e.g., terraform)
-        # where variants.yaml uses tag: "latest" as a placeholder that gets resolved
-        # to the actual upstream version at build time by list_build_matrix.
-        if [[ -z "$result" ]]; then
-            result=$(yq -r '.versions[] | select(.tag == "latest") | .variants[].name' "$variants_file" 2>/dev/null)
-        fi
 
         echo "$result"
     else
@@ -160,11 +152,6 @@ variant_property() {
         local result
         result=$(yq -r ".versions[] | select(.tag == \"$version\") | .variants[] | select(.name == \"$variant_name\") | .$property // \"\"" "$variants_file" 2>/dev/null)
 
-        # If not found for this version, try "latest" as fallback
-        if [[ -z "$result" ]]; then
-            result=$(yq -r '.versions[] | select(.tag == "latest") | .variants[] | select(.name == "'"$variant_name"'") | .'"$property"' // ""' "$variants_file" 2>/dev/null)
-        fi
-
         echo "$result"
     else
         # Fallback: try old structure
@@ -202,6 +189,20 @@ default_variant() {
             echo "$result"
         fi
     fi
+}
+
+# Get version_retention setting from build config
+# Returns: retention count (0 = no automatic rotation)
+version_retention() {
+    local container_dir="$1"
+    local variants_file="$container_dir/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        echo "0"
+        return
+    fi
+
+    yq -r '.build.version_retention // 0' "$variants_file" 2>/dev/null || echo "0"
 }
 
 # Get base suffix from build config (e.g., "-alpine")
@@ -304,7 +305,10 @@ list_build_matrix() {
         # e.g., major "18" with real_version "18.2-alpine" → full_version "18.2-alpine"
         local full_version=""
         if [[ "$pg_version" != "latest" && -n "$real_version" && "$real_version" != "latest" ]]; then
-            if [[ "$real_version" == "${pg_version}."* || "$real_version" == "${pg_version}-"* ]]; then
+            if [[ "$real_version" == "$pg_version" ]]; then
+                # Exact match (e.g., real_version "1.14.6-alpine" == tag "1.14.6-alpine")
+                full_version="$real_version"
+            elif [[ "$real_version" == "${pg_version}."* || "$real_version" == "${pg_version}-"* ]]; then
                 # real_version belongs to this major version — use it directly
                 full_version="$real_version"
             elif [[ -x "$container_dir/version.sh" ]]; then
@@ -317,34 +321,52 @@ list_build_matrix() {
         local is_latest_version="$is_first_version"
         is_first_version=false
 
-        while IFS= read -r variant_name; do
-            [[ -z "$variant_name" ]] && continue
+        local variants_list
+        variants_list=$(list_variants "$container_dir" "$pg_version")
 
-            local tag
-            tag=$(variant_image_tag "$effective_version" "$variant_name" "$container_dir")
-            local flavor
-            flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$pg_version")
-            local is_default
-            is_default=$(variant_property "$container_dir" "$variant_name" "default" "$pg_version")
-
-            # Priority: base/"" → 0, full → 2, else → 1
-            local priority=1
-            if [[ "$flavor" == "base" || -z "$flavor" ]]; then
-                priority=0
-            elif [[ "$flavor" == "full" ]]; then
-                priority=2
-            fi
-
+        if [[ -z "$variants_list" ]]; then
+            # Versions-only entry (no variants) — produce a single build entry
             if [[ "$first" != "true" ]]; then
                 result+=","
             fi
             first=false
 
+            local base_sfx
+            base_sfx=$(base_suffix "$container_dir")
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\"}"
-        done < <(list_variants "$container_dir" "$pg_version")
+            result+="{\"version\":\"$effective_version\",\"variant\":\"\",\"tag\":\"${effective_version}${base_sfx}\",\"flavor\":\"\",\"is_default\":true,\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":0,\"full_version\":\"$full_version\"}"
+        else
+            while IFS= read -r variant_name; do
+                [[ -z "$variant_name" ]] && continue
+
+                local tag
+                tag=$(variant_image_tag "$effective_version" "$variant_name" "$container_dir")
+                local flavor
+                flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$pg_version")
+                local is_default
+                is_default=$(variant_property "$container_dir" "$variant_name" "default" "$pg_version")
+
+                # Priority: base/"" → 0, full → 2, else → 1
+                local priority=1
+                if [[ "$flavor" == "base" || -z "$flavor" ]]; then
+                    priority=0
+                elif [[ "$flavor" == "full" ]]; then
+                    priority=2
+                fi
+
+                if [[ "$first" != "true" ]]; then
+                    result+=","
+                fi
+                first=false
+
+                local dockerfile
+                dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
+
+                result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\"}"
+            done <<< "$variants_list"
+        fi
     done < <(list_versions "$container_dir")
 
     result+="]"
@@ -452,5 +474,5 @@ list_variant_tags() {
 
 # Export functions for use in other scripts
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
-export -f variant_property default_variant base_suffix
+export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
