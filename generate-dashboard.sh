@@ -415,13 +415,7 @@ collect_variant_json() {
     [[ -z "$build_args_json" ]] && build_args_json="[]"
 
     # SBOM data (package summary, packages detail, changelog, build history)
-    # CI generates SBOMs using resolved version tags (e.g., "1.14.5-alpine-base")
-    # but variants.yaml may use "latest" as placeholder (e.g., terraform).
-    # Resolve the SBOM tag using current_version to match CI naming.
     local sbom_tag="$variant_tag"
-    if [[ "$version" == "latest" && "$current_version" != "no-published-version" ]]; then
-        sbom_tag=$(variant_image_tag "$current_version" "$variant_name" "$container_dir")
-    fi
     local sbom_summary sbom_packages changelog build_history
     sbom_summary=$(get_sbom_summary "$container" "$sbom_tag")
     sbom_packages=$(get_sbom_packages "$container" "$sbom_tag")

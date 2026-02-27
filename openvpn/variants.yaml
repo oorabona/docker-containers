@@ -1,0 +1,6 @@
+# OpenVPN Container Variants
+build:
+  version_retention: 3
+
+versions:
+  - tag: "v2.7.0-alpine"

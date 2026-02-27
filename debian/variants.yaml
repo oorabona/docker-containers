@@ -1,0 +1,6 @@
+# Debian Container Variants
+build:
+  version_retention: 3
+
+versions:
+  - tag: "trixie"

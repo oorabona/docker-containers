@@ -130,6 +130,34 @@ jobs:
           echo "Change: $current_version -> $new_version ($change_type)"
           echo "Reason: $reason"
 
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Rotate version in variants.yaml
+        id: rotate
+        env:
+          CONTAINER: ${{ matrix.container }}
+          NEW_VERSION: ${{ steps.classify.outputs.new_version }}
+        run: |
+          if [[ -f "$CONTAINER/variants.yaml" ]]; then
+            retention=$(yq -r '.build.version_retention // 0' "$CONTAINER/variants.yaml")
+            if [[ "$retention" -gt 0 ]]; then
+              echo "🔄 Rotating version for $CONTAINER (retention: $retention)"
+              ./scripts/rotate-versions.sh "$CONTAINER" "$NEW_VERSION"
+              echo "rotated=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "ℹ️ No version_retention for $CONTAINER — skipping rotation"
+              echo "rotated=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "ℹ️ No variants.yaml for $CONTAINER — skipping rotation"
+            echo "rotated=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Close duplicate PRs
         id: close_duplicates
         uses: ./.github/actions/close-duplicate-prs
@@ -273,16 +301,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTAINER: ${{ matrix.container }}
           NEW_VERSION: ${{ steps.classify.outputs.new_version }}
+          ROTATED: ${{ steps.rotate.outputs.rotated }}
         run: |
           echo "🔨 Triggering build for $CONTAINER after successful merge"
 
-          # Extract major version for scoped builds (e.g., "18.2-alpine" → "18")
-          affected_major=$(echo "$NEW_VERSION" | grep -oE '^[0-9]+')
-
           scope_args=""
-          if [[ -n "$affected_major" ]]; then
-            scope_args="-f scope_versions=$affected_major"
-            echo "🎯 Scoped to version: $affected_major"
+          # Only scope by major version for multi-major containers (e.g., postgres)
+          # Containers with version_retention use full version tags — no major scoping needed
+          if [[ "$ROTATED" != "true" ]]; then
+            affected_major=$(echo "$NEW_VERSION" | grep -oE '^[0-9]+')
+            if [[ -n "$affected_major" ]]; then
+              scope_args="-f scope_versions=$affected_major"
+              echo "🎯 Scoped to version: $affected_major"
+            fi
           fi
 
           gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args

@@ -1,0 +1,6 @@
+# SSLH Container Variants
+build:
+  version_retention: 3
+
+versions:
+  - tag: "v2.3.0-alpine"
