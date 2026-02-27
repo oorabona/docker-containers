@@ -70,10 +70,10 @@ create_terraform_variants() {
     cat > "$dir/variants.yaml" <<'EOF'
 build:
   base_suffix: ""
-
+  version_retention: 3
 
 versions:
-  - tag: "latest"
+  - tag: "1.14.6-alpine"
     variants:
       - name: base
         suffix: ""
@@ -202,26 +202,26 @@ EOF
     [ "$output" = "18-alpine-analytics" ]
 }
 
-@test "variant_image_tag: terraform base → latest (no base_suffix)" {
+@test "variant_image_tag: terraform base → 1.14.6-alpine (no base_suffix)" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
     create_terraform_variants "tf"
-    run variant_image_tag "latest" "base" "tf"
+    run variant_image_tag "1.14.6-alpine" "base" "tf"
     [ "$status" -eq 0 ]
-    [ "$output" = "latest" ]
+    [ "$output" = "1.14.6-alpine" ]
 }
 
-@test "variant_image_tag: terraform aws → latest-aws" {
+@test "variant_image_tag: terraform aws → 1.14.6-alpine-aws" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
     create_terraform_variants "tf"
-    run variant_image_tag "latest" "aws" "tf"
+    run variant_image_tag "1.14.6-alpine" "aws" "tf"
     [ "$status" -eq 0 ]
-    [ "$output" = "latest-aws" ]
+    [ "$output" = "1.14.6-alpine-aws" ]
 }
 
 # --- default_variant (requires real yq) ---
@@ -309,24 +309,21 @@ EOF
 
 # --- list_build_matrix with real_version ---
 
-@test "list_build_matrix: with real_version substitutes latest" {
+@test "list_build_matrix: terraform uses version tag directly" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
     create_terraform_variants "tf"
-    run list_build_matrix "tf" "1.14.5"
+    run list_build_matrix "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
-    # All entries should have version=1.14.5, not "latest"
+    # All entries should have version=1.14.6-alpine (the tag from variants.yaml)
     local count
-    count=$(echo "$output" | jq '[.[] | select(.version == "1.14.5")] | length')
+    count=$(echo "$output" | jq '[.[] | select(.version == "1.14.6-alpine")] | length')
     [ "$count" -gt 0 ]
-    local latest_count
-    latest_count=$(echo "$output" | jq '[.[] | select(.version == "latest")] | length')
-    [ "$latest_count" -eq 0 ]
 }
 
-@test "list_build_matrix: without real_version keeps latest" {
+@test "list_build_matrix: without real_version keeps yaml tag" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
@@ -334,9 +331,9 @@ EOF
     create_terraform_variants "tf"
     run list_build_matrix "tf"
     [ "$status" -eq 0 ]
-    local latest_count
-    latest_count=$(echo "$output" | jq '[.[] | select(.version == "latest")] | length')
-    [ "$latest_count" -gt 0 ]
+    local tag_count
+    tag_count=$(echo "$output" | jq '[.[] | select(.version == "1.14.6-alpine")] | length')
+    [ "$tag_count" -gt 0 ]
 }
 
 @test "list_build_matrix: postgres ignores real_version (tags are not latest)" {
@@ -362,7 +359,7 @@ EOF
     hash -r
 
     create_terraform_variants "tf"
-    run list_build_matrix "tf" "1.14.5"
+    run list_build_matrix "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
     # base variant: is_default=true, priority=0
     local base_default
@@ -381,26 +378,26 @@ EOF
     [ "$aws_priority" = "1" ]
 }
 
-@test "list_build_matrix: terraform real_version produces correct tags" {
+@test "list_build_matrix: terraform produces correct tags from version" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
     hash -r
 
     create_terraform_variants "tf"
-    run list_build_matrix "tf" "1.14.5"
+    run list_build_matrix "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
-    # base has suffix "" and base_suffix="" → tag = "1.14.5"
+    # base has suffix "" and base_suffix="" → tag = "1.14.6-alpine"
     local base_tag
     base_tag=$(echo "$output" | jq -r '[.[] | select(.variant == "base")] | .[0].tag')
-    [ "$base_tag" = "1.14.5" ]
-    # aws has suffix "-aws" → tag = "1.14.5-aws"
+    [ "$base_tag" = "1.14.6-alpine" ]
+    # aws has suffix "-aws" → tag = "1.14.6-alpine-aws"
     local aws_tag
     aws_tag=$(echo "$output" | jq -r '[.[] | select(.variant == "aws")] | .[0].tag')
-    [ "$aws_tag" = "1.14.5-aws" ]
-    # full has suffix "-full" → tag = "1.14.5-full"
+    [ "$aws_tag" = "1.14.6-alpine-aws" ]
+    # full has suffix "-full" → tag = "1.14.6-alpine-full"
     local full_tag
     full_tag=$(echo "$output" | jq -r '[.[] | select(.variant == "full")] | .[0].tag')
-    [ "$full_tag" = "1.14.5-full" ]
+    [ "$full_tag" = "1.14.6-alpine-full" ]
 }
 
 # --- list_container_builds ---
@@ -411,7 +408,7 @@ EOF
     hash -r
 
     create_terraform_variants "tf"
-    run list_container_builds "tf" "1.14.5"
+    run list_container_builds "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
     local all_have_container
     all_have_container=$(echo "$output" | jq 'all(.container == "tf")')
@@ -445,7 +442,7 @@ EOF
     hash -r
 
     create_terraform_variants "tf"
-    run list_container_builds "tf" "1.14.5"
+    run list_container_builds "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
     # First entry should have priority 0 (base)
     local first_priority
@@ -483,7 +480,7 @@ EOF
     hash -r
 
     create_terraform_variants "tf"
-    run list_build_matrix "tf" "1.14.5"
+    run list_build_matrix "tf" "1.14.6-alpine"
     [ "$status" -eq 0 ]
     local all_latest
     all_latest=$(echo "$output" | jq 'all(.is_latest_version == true)')
@@ -501,4 +498,110 @@ EOF
     local is_latest
     is_latest=$(echo "$output" | jq '.[0].is_latest_version')
     [ "$is_latest" = "true" ]
+}
+
+# --- version_retention ---
+
+@test "version_retention: terraform returns 3" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_terraform_variants "tf"
+    run version_retention "tf"
+    [ "$status" -eq 0 ]
+    [ "$output" = "3" ]
+}
+
+@test "version_retention: postgres returns 0 (no version_retention)" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_postgres_variants "pg"
+    run version_retention "pg"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+@test "version_retention: no variants.yaml returns 0" {
+    mkdir -p "novar"
+    run version_retention "novar"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+# --- versions-only build path (no variants) ---
+
+create_simple_container_variants() {
+    local dir="${1:-.}"
+    mkdir -p "$dir"
+    cat > "$dir/variants.yaml" <<'EOF'
+build:
+  version_retention: 3
+
+versions:
+  - tag: "2.0.0"
+  - tag: "1.9.0"
+EOF
+}
+
+@test "list_build_matrix: versions-only produces entries without variants" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_simple_container_variants "simple"
+    run list_build_matrix "simple" "2.0.0"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 2 ]
+    # First entry (version 2.0.0) should be is_latest_version=true
+    local first_version
+    first_version=$(echo "$output" | jq -r '.[0].version')
+    [ "$first_version" = "2.0.0" ]
+    local first_latest
+    first_latest=$(echo "$output" | jq '.[0].is_latest_version')
+    [ "$first_latest" = "true" ]
+    # Variant should be empty
+    local first_variant
+    first_variant=$(echo "$output" | jq -r '.[0].variant')
+    [ "$first_variant" = "" ]
+    # Second entry should be is_latest_version=false
+    local second_latest
+    second_latest=$(echo "$output" | jq '.[1].is_latest_version')
+    [ "$second_latest" = "false" ]
+}
+
+@test "list_container_builds: versions-only produces sorted entries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_simple_container_variants "simple"
+    run list_container_builds "simple" "2.0.0"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 2 ]
+    local all_have_container
+    all_have_container=$(echo "$output" | jq 'all(.container == "simple")')
+    [ "$all_have_container" = "true" ]
+}
+
+# --- full_version direct match ---
+
+@test "list_build_matrix: full_version exact match for real version tags" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_terraform_variants "tf"
+    run list_build_matrix "tf" "1.14.6-alpine"
+    [ "$status" -eq 0 ]
+    # full_version should match the real_version since tag == real_version
+    local full_version
+    full_version=$(echo "$output" | jq -r '.[0].full_version')
+    [ "$full_version" = "1.14.6-alpine" ]
 }
