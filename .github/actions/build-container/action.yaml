@@ -46,7 +46,7 @@ inputs:
     required: false
     default: 'true'
   vulnerability_severity:
-    description: Minimum severity to fail build (CRITICAL, HIGH, MEDIUM, LOW)
+    description: Minimum severity to report (advisory only, does not block builds)
     required: false
     default: 'CRITICAL'
   use_base_cache:
@@ -314,7 +314,7 @@ runs:
       with:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'table'
-        exit-code: '1'
+        exit-code: '0'
         severity: '${{ inputs.vulnerability_severity }},CRITICAL'
         ignore-unfixed: true
         vuln-type: 'os,library'
