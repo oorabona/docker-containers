@@ -151,6 +151,22 @@ jobs:
             echo "✅ No unwanted Docker/script files found"
           fi
 
+      - name: Remove stale pages artifact
+        # On rerun, the build job re-executes (deploy depends on it) and
+        # uploads a second github-pages artifact. deploy-pages then fails
+        # with "Multiple artifacts named github-pages". Delete any existing
+        # artifact from this run before uploading the fresh one.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name == "github-pages") | .id' |
+          while read -r id; do
+            echo "Deleting stale github-pages artifact: $id"
+            gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/$id" || true
+          done
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
