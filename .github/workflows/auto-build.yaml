@@ -503,7 +503,7 @@ jobs:
 
       - name: Attest SBOM
         if: steps.sbom.outcome == 'success' && steps.sbom.outputs.digest != ''
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4.0.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
           subject-digest: ${{ steps.sbom.outputs.digest }}
