@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload SBOM artifact
         if: steps.sbom.outcome == 'success'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
           path: ${{ steps.sbom.outputs.sbom_file }}
