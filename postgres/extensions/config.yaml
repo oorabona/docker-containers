@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.21.10"
+    version: "0.21.12"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
@@ -89,7 +89,7 @@ extensions:
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
   timescaledb:
-    version: "2.25.1"
+    version: "2.25.2"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
