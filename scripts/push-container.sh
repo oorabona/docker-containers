@@ -100,7 +100,7 @@ push_ghcr() {
     log_success "Cache: $cache_image"
 
     # Build and push with retry (includes cache update)
-    retry_with_backoff 3 5 docker buildx build \
+    retry_with_backoff 3 5 $DOCKER buildx build \
         --platform "$platforms" \
         --push \
         --provenance=mode=min \
@@ -117,7 +117,7 @@ push_ghcr() {
     log_success "GHCR push successful: $ghcr_image:$effective_tag"
 
     # Handle squashing for non-platform-specific builds
-    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" ]]; then
+    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" && "${DRY_RUN:-false}" != "true" ]]; then
         log_success "Squashing GHCR image..."
         ../helpers/skopeo-squash "$ghcr_image:$effective_tag" "$ghcr_image:$effective_tag" ghcr || {
             log_warning "GHCR squashing failed, keeping layered version"
@@ -151,7 +151,7 @@ push_dockerhub() {
         log_info "Using skopeo copy: GHCR → Docker Hub (no rebuild)"
 
         # Copy the tagged image
-        if retry_with_backoff 5 10 skopeo copy \
+        if retry_with_backoff 5 10 $SKOPEO copy \
             --all \
             "docker://$ghcr_image:$effective_tag" \
             "docker://$dockerhub_image:$effective_tag"; then
@@ -160,7 +160,7 @@ push_dockerhub() {
 
             # Also copy as :latest if requested
             if [[ "$wanted" == "latest" ]]; then
-                skopeo copy --all \
+                $SKOPEO copy --all \
                     "docker://$ghcr_image:$effective_tag" \
                     "docker://$dockerhub_image:latest" 2>/dev/null || \
                     log_warning "Failed to tag latest on Docker Hub"
@@ -192,7 +192,7 @@ push_dockerhub() {
     log_success "Image: $dockerhub_image:$effective_tag"
     log_success "Platform: $platforms"
 
-    retry_with_backoff 5 10 docker buildx build \
+    retry_with_backoff 5 10 $DOCKER buildx build \
         --platform "$platforms" \
         --push \
         --provenance=mode=min \
@@ -209,7 +209,7 @@ push_dockerhub() {
     log_success "Docker Hub push successful: $dockerhub_image:$effective_tag"
 
     # Handle squashing for non-platform-specific builds
-    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" ]]; then
+    if [[ "${SQUASH_IMAGE:-false}" == "true" && -z "$platform_suffix" && "${DRY_RUN:-false}" != "true" ]]; then
         log_success "Squashing Docker Hub image..."
         ../helpers/skopeo-squash "$dockerhub_image:$effective_tag" "$dockerhub_image:$effective_tag" dockerhub || {
             log_warning "Docker Hub squashing failed, keeping layered version"

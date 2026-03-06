@@ -298,7 +298,7 @@ build_container() {
         log_success "GitHub Actions detected - building locally for validation..."
         log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS | Dockerfile: $dockerfile"
 
-        docker buildx build \
+        $DOCKER buildx build \
             -f "$dockerfile" \
             --platform "$_PLATFORMS" \
             --load \
@@ -317,7 +317,7 @@ build_container() {
         log_success "Building $container:$tag locally (Dockerfile: $dockerfile)..."
         log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS"
 
-        docker buildx build \
+        $DOCKER buildx build \
             -f "$dockerfile" \
             --platform "$_PLATFORMS" \
             --load \
@@ -336,8 +336,12 @@ build_container() {
     fi
 
     _BUILD_DURATION_SECONDS=$(( SECONDS - _build_start ))
-    _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
-        "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
+    if [[ "${DRY_RUN:-false}" != "true" ]]; then
+        _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
+            "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
+    else
+        log_info "[DRY-RUN] Would write lineage: .build-lineage/${container}-${tag}.json"
+    fi
 
     # Cleanup generated Dockerfile
     # NOTE: Using if/fi instead of [[ ]] && to avoid non-zero exit code when variable is empty

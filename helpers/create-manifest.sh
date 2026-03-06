@@ -14,10 +14,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/logging.sh"
+
 # Compute tag arguments for manifest creation
 # Reads from env: TAG, VERSION, FULL_VERSION, VARIANT, IS_DEFAULT, IS_LATEST_VERSION
 # Args: $1 = target image (e.g., ghcr.io/owner/container)
-# Output: tag arguments string for docker buildx imagetools create
+# Output: tag arguments string for $DOCKER buildx imagetools create
 _compute_tag_args() {
     local target_image="$1"
 
@@ -68,7 +71,7 @@ create_registry_manifest() {
 
     # Try multi-arch manifest first (amd64 + arm64)
     local err_output
-    if err_output=$(docker buildx imagetools create $tag_args \
+    if err_output=$($DOCKER buildx imagetools create $tag_args \
         "$source_image:$TAG-amd64" \
         "$source_image:$TAG-arm64" 2>&1); then
         echo "::notice::Multi-arch manifest created successfully for $target_image:$TAG"
@@ -77,7 +80,7 @@ create_registry_manifest() {
     echo "::warning::Multi-arch attempt failed: $err_output"
 
     # Fallback to single platform (amd64)
-    if err_output=$(docker buildx imagetools create $tag_args \
+    if err_output=$($DOCKER buildx imagetools create $tag_args \
         "$source_image:$TAG-amd64" 2>&1); then
         echo "::warning::Manifest created with amd64 only for $target_image:$TAG (arm64 not available)"
         return 0
@@ -85,7 +88,7 @@ create_registry_manifest() {
     echo "::warning::amd64-only attempt failed: $err_output"
 
     # Fallback to single platform (arm64)
-    if err_output=$(docker buildx imagetools create $tag_args \
+    if err_output=$($DOCKER buildx imagetools create $tag_args \
         "$source_image:$TAG-arm64" 2>&1); then
         echo "::warning::Manifest created with arm64 only for $target_image:$TAG (amd64 not available)"
         return 0

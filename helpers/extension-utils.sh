@@ -162,7 +162,7 @@ build_ext_image() {
 
     log_info "Building $ext_name $ext_version for PostgreSQL $pg_major"
 
-    docker build \
+    $DOCKER build \
         -f "$dockerfile" \
         -t "$local_tag" \
         --build-arg MAJOR_VERSION="$pg_major" \
@@ -186,7 +186,7 @@ tag_ext_image() {
     remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Tagging $local_tag -> $remote_tag"
-    if ! docker tag "$local_tag" "$remote_tag"; then
+    if ! $DOCKER tag "$local_tag" "$remote_tag"; then
         log_error "Failed to tag $local_tag -> $remote_tag"
         return 1
     fi
@@ -204,7 +204,7 @@ push_ext_image() {
     remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Pushing $remote_tag"
-    if ! docker push "$remote_tag"; then
+    if ! $DOCKER push "$remote_tag"; then
         log_error "Failed to push $remote_tag"
         return 1
     fi
@@ -393,7 +393,7 @@ pull_ext_image() {
     remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Pulling $remote_tag"
-    docker pull "$remote_tag"
+    $DOCKER pull "$remote_tag"
 
     log_success "Pulled: $remote_tag"
 }

@@ -33,6 +33,11 @@ on:
         required: false
         type: string
         default: ''
+      dry_run:
+        description: 'Dry run — resolve everything but skip docker build/push/manifest'
+        required: false
+        default: false
+        type: boolean
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
@@ -91,6 +96,11 @@ on:
         required: false
         type: string
         default: ''
+      dry_run:
+        description: 'Dry run — resolve everything but skip docker build/push/manifest'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read         # Checkout only — no git push or PR creation
@@ -99,6 +109,9 @@ permissions:
   id-token: write        # OIDC for Pages deployment + SBOM attestation (Sigstore)
   attestations: write    # GitHub SBOM attestations (actions/attest-sbom)
   security-events: write # Upload Trivy SARIF to GitHub Security (codeql-action/upload-sarif)
+
+env:
+  DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
 
 jobs:
   detect-containers:

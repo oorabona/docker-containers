@@ -12,6 +12,18 @@ if [[ -z "${RED:-}" ]]; then
     readonly NC='\033[0m' # No Color
 fi
 
+# Dry-run support: $DOCKER/$SKOPEO replace hardcoded commands
+# DRY_RUN=true -> commands print instead of executing
+# DOCKER/SKOPEO can also be overridden directly (e.g., podman)
+if [[ -z "${DOCKER:-}" ]]; then
+    DOCKER="docker"
+    [[ "${DRY_RUN:-false}" == "true" ]] && DOCKER="echo docker"
+fi
+if [[ -z "${SKOPEO:-}" ]]; then
+    SKOPEO="skopeo"
+    [[ "${DRY_RUN:-false}" == "true" ]] && SKOPEO="echo skopeo"
+fi
+
 # Logging functions
 log_success() {
     echo -e "${GREEN}✅ $*${NC}" >&2
