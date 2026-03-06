@@ -72,6 +72,9 @@ outputs:
   dockerhub_pushed:
     description: Whether Docker Hub push succeeded
     value: ${{ steps.push-dockerhub.outputs.success }}
+  image_loaded:
+    description: Whether the image was actually loaded into the Docker daemon (false if skipped or dry-run)
+    value: ${{ steps.build.outputs.image_loaded }}
   scan_passed:
     description: Whether security scan passed (or was skipped)
     value: ${{ steps.trivy-scan.outcome != 'failure' || inputs.scan_vulnerabilities != 'true' }}
@@ -294,17 +297,27 @@ runs:
         fi
 
         echo "::endgroup::"
-        echo "::notice::Build successful for $container:$current_tag"
+
+        # Check if image was actually loaded into the daemon
+        # (skipped builds via SKIP_EXISTING_BUILDS leave no local image)
+        ghcr_image="ghcr.io/${{ github.repository_owner }}/$container:$current_tag"
+        if docker image inspect "$ghcr_image" &>/dev/null; then
+          echo "image_loaded=true" >> $GITHUB_OUTPUT
+          echo "::notice::Build successful for $container:$current_tag"
+        else
+          echo "image_loaded=false" >> $GITHUB_OUTPUT
+          echo "::notice::Build skipped for $container:$current_tag (image already published with matching digest)"
+        fi
 
     # Security Scanning with Trivy
     # Note: Image is tagged as ghcr.io/owner/container:version by the build step
     - name: Ensure Trivy cache directory exists
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
       shell: bash
       run: mkdir -p ~/.cache/trivy
 
     - name: Restore Trivy vulnerability database cache
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
       uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
         path: ~/.cache/trivy
@@ -313,7 +326,7 @@ runs:
           trivy-db-${{ runner.os }}-
 
     - name: Scan for vulnerabilities (Trivy)
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
       id: trivy-scan
       uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
       with:
@@ -328,7 +341,7 @@ runs:
       continue-on-error: true  # Vulnerability scan is advisory — don't block builds on findings
 
     - name: Generate SARIF report
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
       with:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
@@ -342,7 +355,7 @@ runs:
       continue-on-error: true  # SARIF generation failure should not block build
 
     - name: Upload SARIF to GitHub Security
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
       with:
         sarif_file: 'trivy-results.sarif'
@@ -351,14 +364,14 @@ runs:
       # No continue-on-error: SARIF upload to Security tab must succeed for visibility
 
     - name: Save Trivy vulnerability database cache
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
       uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
         path: ~/.cache/trivy
         key: trivy-db-${{ runner.os }}-${{ hashFiles('.github/actions/build-container/action.yaml') }}
 
     - name: Check scan result
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
       shell: bash
       run: |
         if [ "${{ steps.trivy-scan.outcome }}" = "failure" ]; then
@@ -371,7 +384,7 @@ runs:
     # GHCR Push - PRIMARY REGISTRY (required)
     # Push the already-built image with platform suffix for multi-arch manifest creation
     - name: Push to GHCR (primary)
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' }}
       id: push-ghcr
       shell: bash
       run: |
@@ -405,7 +418,7 @@ runs:
     # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
     # Tag and push the already-built image with platform suffix
     - name: Push to Docker Hub (secondary)
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' && env.DRY_RUN != 'true' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
       id: push-dockerhub
       shell: bash
       run: |
@@ -433,7 +446,7 @@ runs:
       continue-on-error: true
 
     - name: Skip push for pull request
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name == 'pull_request' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name == 'pull_request' }}
       shell: bash
       run: |
         echo "::notice::Skipping push (pull request - test build only)"
