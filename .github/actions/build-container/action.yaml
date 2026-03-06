@@ -269,10 +269,13 @@ runs:
               # Verify at least one cached image is accessible before using GHCR args.
               # If cache-base-images job failed silently, fall back to Docker Hub defaults.
               first_image=$(echo "$cache_args" | grep -oP 'ghcr\.io/[^ ]+' | head -1)
-              # For tagless refs (two-ARG pattern), verify with build_version tag
+              # For tagless refs (two-ARG pattern), verify with the first configured
+              # cache tag from config.yaml (not build_version, which is the container
+              # version and may not match the base image tag scheme)
               check_image="$first_image"
               if [[ ! "$first_image" =~ :[^/]+$ ]]; then
-                check_image="${first_image}:${build_version}"
+                first_cache_tag=$(yq -r '.base_image_cache[0].tags[0]' "./$container/config.yaml" 2>/dev/null || echo "latest")
+                check_image="${first_image}:${first_cache_tag}"
               fi
               if docker manifest inspect "$check_image" &>/dev/null; then
                 export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
