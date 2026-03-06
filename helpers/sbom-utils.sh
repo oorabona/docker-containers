@@ -69,26 +69,6 @@ generate_sbom() {
 # Extract sorted package list from SBOM (for diffing)
 # Usage: extract_package_list <sbom_file>
 # Output: one "type:name=version" per line, sorted
-extract_package_list() {
-    local sbom_file="$1"
-
-    if [[ ! -f "$sbom_file" ]]; then
-        log_error "SBOM file not found: $sbom_file"
-        return 1
-    fi
-
-    jq -r '
-        .packages // [] |
-        map(select(.name != null and .versionInfo != null)) |
-        map(
-            (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
-            (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "unknown" | if . == "" then "unknown" else . end) else "unknown" end) + ":" +
-            .name + "=" + .versionInfo
-        ) |
-        sort |
-        .[]
-    ' "$sbom_file" 2>/dev/null
-}
 
 # Extract SBOM summary (package counts by type)
 # Usage: extract_sbom_summary <sbom_file>
@@ -118,29 +98,6 @@ extract_sbom_summary() {
 # Extract packages grouped by type (for dashboard drill-down)
 # Usage: extract_sbom_packages <sbom_file>
 # Output: JSON {"apk": [{"n":"busybox","v":"1.37.0"},...], "golang": [...], ...}
-extract_sbom_packages() {
-    local sbom_file="$1"
-
-    if [[ ! -f "$sbom_file" ]]; then
-        echo '{}'
-        return
-    fi
-
-    jq '
-        [.packages // [] |
-        .[] |
-        select(.name != null and .versionInfo != null) |
-        (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
-        {
-            type: (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end),
-            n: .name,
-            v: .versionInfo
-        }] |
-        group_by(.type) |
-        map({key: .[0].type, value: [.[] | {n, v}] | sort_by(.n)}) |
-        from_entries
-    ' "$sbom_file" 2>/dev/null || echo '{}'
-}
 
 # Compare two SBOMs and produce changelog JSON
 # Usage: compare_sboms <new_sbom> <old_sbom> <output_file>

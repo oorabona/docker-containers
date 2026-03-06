@@ -4,6 +4,11 @@
 
 (None)
 
+## Completed (recent)
+
+- [x] ✅ [Code-Health] Removed dead code: `extract_package_list` + `extract_sbom_packages` from `helpers/sbom-utils.sh` — 0 callers (2026-03-06)
+- [x] ✅ [Code-Health] Refactored `main()` in `scripts/build-extensions.sh` — extracted 3 helpers, 211→77 lines (2026-03-06)
+
 ## Pending
 
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (deferred: low value vs complexity of docker load/pull in CI, local tests suffice)
