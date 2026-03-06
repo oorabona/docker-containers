@@ -30,7 +30,7 @@ extensions:
     shared_preload: false
     priority: 1 # Build order (lower = first)
   pg_partman:
-    version: "5.4.2"
+    version: "5.4.3"
     description: "Partition management for time-series and large tables"
     repo: "pgpartman/pg_partman"
     build_deps:
@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.21.12"
+    version: "0.21.13"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
