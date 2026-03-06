@@ -201,25 +201,10 @@ get_cache_build_args() {
         arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
         ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
 
-        local tags_from_versions
-        tags_from_versions=$(yq -r ".base_image_cache[$i].tags_from_versions // false" "$config_file")
-
-        if [[ "$tags_from_versions" == "true" ]]; then
-            # Two-ARG Dockerfile pattern: FROM ${BASE_IMAGE}:${VERSION}
-            # Don't include tag — Dockerfile's VERSION arg provides it
-            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
-        else
-            # Resolve tag templates (e.g., ${UPSTREAM_VERSION} → actual version)
-            local tag_template
-            tag_template=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "$config_file")
-            local tag
-            tag=$(_resolve_tag_template "$tag_template" "$build_version" "$config_file" "$container_dir")
-            if [[ "$tag" != "latest" ]]; then
-                args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}:${tag}"
-            else
-                args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
-            fi
-        fi
+        # Never include tag — all Dockerfiles use Two-ARG pattern
+        # (tag comes from separate ARG or is hardcoded in FROM)
+        # The tags[] field in config.yaml is for the cache job, not build-args
+        args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
     done
 
     echo "$args"
