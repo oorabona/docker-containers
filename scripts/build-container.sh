@@ -387,6 +387,18 @@ build_container_variants() {
     # Construct the base image version for FROM statement (e.g., "17-alpine")
     local base_image_version="${major_version}${base_sfx}"
 
+    # Check if this version actually has variants (versions-only containers
+    # have variants.yaml for version_retention but no .variants entries)
+    local variant_list
+    variant_list=$(list_variants "$container_dir" "$major_version")
+    if [[ -z "$variant_list" ]]; then
+        log_info "$container has no variants for version $major_version, building single image..."
+        local rc=0
+        build_container "$container" "$base_image_version" "$base_image_version" "" "$dockerfile" || rc=$?
+        echo "[{\"name\":\"default\",\"tag\":\"$base_image_version\",\"flavor\":\"\",\"status\":\"built\"}]"
+        return $rc
+    fi
+
     log_info "$container has variants, building multiple images..."
     log_info "Major version: $major_version | Base version: $base_image_version | Dockerfile: $dockerfile"
 
@@ -429,7 +441,7 @@ build_container_variants() {
         first=false
 
         results+="{\"name\":\"$variant_name\",\"tag\":\"$variant_tag\",\"flavor\":\"$flavor\",\"description\":\"$description\",\"status\":\"$status\"}"
-    done < <(list_variants "$container_dir" "$major_version")
+    done <<< "$variant_list"
 
     results+="]"
     echo "$results"
