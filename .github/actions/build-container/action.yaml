@@ -371,7 +371,7 @@ runs:
     # GHCR Push - PRIMARY REGISTRY (required)
     # Push the already-built image with platform suffix for multi-arch manifest creation
     - name: Push to GHCR (primary)
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' }}
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && env.DRY_RUN != 'true' }}
       id: push-ghcr
       shell: bash
       run: |
@@ -405,7 +405,7 @@ runs:
     # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
     # Tag and push the already-built image with platform suffix
     - name: Push to Docker Hub (secondary)
-      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' && env.DRY_RUN != 'true' }}
       id: push-dockerhub
       shell: bash
       run: |

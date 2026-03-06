@@ -478,7 +478,7 @@ jobs:
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
         id: install-syft
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
         uses: anchore/sbom-action/download-syft@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
 
       - name: Generate SBOM
