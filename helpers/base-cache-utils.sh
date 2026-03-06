@@ -201,16 +201,24 @@ get_cache_build_args() {
         arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
         ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
 
-        # For version-specific tags (non-latest), include the tag in the build-arg
-        # so Dockerfiles using single-ARG pattern (ARG X=image:tag / FROM ${X}) work.
-        # Containers with tags: ["latest"] or tags_from_versions keep the old behavior
-        # (tag resolved by a separate Dockerfile ARG).
-        local tag
-        tag=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "$config_file")
-        if [[ "$tag" != "latest" ]]; then
-            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}:${tag}"
-        else
+        local tags_from_versions
+        tags_from_versions=$(yq -r ".base_image_cache[$i].tags_from_versions // false" "$config_file")
+
+        if [[ "$tags_from_versions" == "true" ]]; then
+            # Two-ARG Dockerfile pattern: FROM ${BASE_IMAGE}:${VERSION}
+            # Don't include tag — Dockerfile's VERSION arg provides it
             args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+        else
+            # Resolve tag templates (e.g., ${UPSTREAM_VERSION} → actual version)
+            local tag_template
+            tag_template=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "$config_file")
+            local tag
+            tag=$(_resolve_tag_template "$tag_template" "$build_version" "$config_file" "$container_dir")
+            if [[ "$tag" != "latest" ]]; then
+                args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}:${tag}"
+            else
+                args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+            fi
         fi
     done
 

@@ -266,11 +266,16 @@ runs:
               # Verify at least one cached image is accessible before using GHCR args.
               # If cache-base-images job failed silently, fall back to Docker Hub defaults.
               first_image=$(echo "$cache_args" | grep -oP 'ghcr\.io/[^ ]+' | head -1)
-              if docker manifest inspect "$first_image" &>/dev/null; then
+              # For tagless refs (two-ARG pattern), verify with build_version tag
+              check_image="$first_image"
+              if [[ ! "$first_image" =~ :[^/]+$ ]]; then
+                check_image="${first_image}:${build_version}"
+              fi
+              if docker manifest inspect "$check_image" &>/dev/null; then
                 export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
                 echo "✅ Using GHCR base images: $cache_args"
               else
-                echo "⚠️ GHCR cache image not accessible ($first_image) — using Docker Hub defaults"
+                echo "⚠️ GHCR cache image not accessible ($check_image) — using Docker Hub defaults"
               fi
             fi
           fi
