@@ -2,11 +2,9 @@
 # Base image and third-party dependency versions
 
 base_image: "${PHP_IMAGE}"
-
 build_args:
   WPCLI_VERSION: "2.12.0"
-  SQLITE_PLUGIN_VERSION: "2.2.17"
-
+  SQLITE_PLUGIN_VERSION: "2.2.18"
 dependency_sources:
   WPCLI_VERSION:
     type: github-release
