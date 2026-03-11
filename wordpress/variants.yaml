@@ -1,6 +1,6 @@
 # WordPress Container Variants
 build:
   version_retention: 3
-
 versions:
+  - tag: 6.9.2-alpine
   - tag: "6.9.1-alpine"
