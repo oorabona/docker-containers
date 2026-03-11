@@ -1,6 +1,6 @@
 # Vector Container Variants
 build:
   version_retention: 3
-
 versions:
+  - tag: 0.54.0-alpine
   - tag: "0.53.0-alpine"
