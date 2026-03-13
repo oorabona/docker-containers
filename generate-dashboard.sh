@@ -333,7 +333,12 @@ get_sbom_packages() {
     local container="$1" tag="$2"
     local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
     if [[ -f "$sbom_file" ]]; then
-        extract_sbom_packages "$sbom_file"
+        jq -r '
+            [.packages[]? | {type: (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator | split("/")[0] | ltrimstr("pkg:")), name: .name, version: .versionInfo}]
+            | group_by(.type)
+            | map({key: .[0].type, value: [.[] | {n: .name, v: .version}]})
+            | from_entries
+        ' "$sbom_file" 2>/dev/null || echo "{}"
     else
         echo "{}"
     fi
