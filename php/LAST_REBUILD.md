@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `php` |
-| **Version Change** | `8.5.2-fpm-alpine` → `8.5.3-fpm-alpine` |
+| **Version Change** | `8.5.3-fpm-alpine` → `8.5.4-fpm-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-02-14T06:13:30Z |
+| **Rebuild Date** | 2026-03-13T06:16:18Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/22012514038) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/23038795309) |
 
 ## Build Status
 
