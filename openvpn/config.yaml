@@ -9,7 +9,7 @@ base_image_cache:
     tags: ["latest"]
 build_args:
   PKCS11_HELPER_VERSION: "1.31.0"
-  EASYRSA_VERSION: "3.2.5"
+  EASYRSA_VERSION: "3.2.6"
 dependency_sources:
   PKCS11_HELPER_VERSION:
     type: github-release
