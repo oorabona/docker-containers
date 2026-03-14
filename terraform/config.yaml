@@ -23,7 +23,7 @@ build_args:
   TERRAFORM_DOCS_VERSION: "0.21.0"
   INFRACOST_VERSION: "0.10.43"
   GITHUB_CLI_VERSION: "2.88.1"
-  AWS_CLI_VERSION: "1.44.57"
+  AWS_CLI_VERSION: "1.44.58"
   AZURE_CLI_VERSION: "2.84.0"
   GCP_CLI_VERSION: "latest"
 # Maps build_arg names to their upstream source for monitoring
