@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # GitHub Actions self-hosted runner — Windows Server Core ltsc2022
-# Build: docker build --build-arg RUNNER_VERSION=2.332.0 --build-arg FLAVOR=base -f Dockerfile.windows .
+# Build: docker build --build-arg VERSION=2.332.0 --build-arg FLAVOR=base -f Dockerfile.windows .
 # Note: Process isolation is the default on Windows Server 2022.
 #       Hyper-V isolation is unavailable on standard GitHub-hosted runners.
 #       Do NOT add --isolation in this Dockerfile; set it at docker run time if needed.
@@ -8,7 +8,7 @@
 ARG WINDOWS_BASE=mcr.microsoft.com/windows/servercore:ltsc2022
 FROM ${WINDOWS_BASE}
 
-ARG RUNNER_VERSION=2.332.0
+ARG VERSION=2.332.0
 ARG FLAVOR=base
 
 # Use PowerShell as the default shell for all subsequent RUN instructions.
@@ -68,7 +68,7 @@ WORKDIR C:\\actions-runner
 # The .sha256 file published by GitHub contains the hex digest followed by two spaces
 # and the filename (e.g., "abc123  actions-runner-win-x64-2.332.0.zip").
 # We reconstruct that format locally and compare with Get-FileHash.
-RUN $v = $env:RUNNER_VERSION; \
+RUN $v = $env:VERSION; \
     $archive = 'actions-runner-win-x64-' + $v + '.zip'; \
     $base_url = 'https://github.com/actions/runner/releases/download/v' + $v; \
     Write-Host ('Downloading runner archive: ' + $archive); \
@@ -94,7 +94,7 @@ COPY entrypoint.ps1 C:\\entrypoint.ps1
 # org.opencontainers.image.revision is injected at build time by the CI action.
 LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022)"
 LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
-LABEL com.github.runner.version="${RUNNER_VERSION}"
+LABEL com.github.runner.version="${VERSION}"
 LABEL com.github.runner.flavor="${FLAVOR}"
 LABEL com.github.runner.distro="windows-ltsc2022"
 

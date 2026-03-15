@@ -7,10 +7,10 @@
 # Package lists and distro settings are in config.yaml — do not hardcode them here.
 #
 # Build: generate-dockerfile.sh <distro> <build_flavor> > Dockerfile.<distro>-<build_flavor>
-#        docker buildx build --build-arg RUNNER_VERSION=2.332.0 -f Dockerfile.<distro>-<build_flavor> .
+#        docker buildx build --build-arg VERSION=2.332.0 -f Dockerfile.<distro>-<build_flavor> .
 # @@BASE_IMAGE@@
 
-ARG RUNNER_VERSION
+ARG VERSION
 ARG TARGETARCH
 
 # @@LABELS@@
@@ -36,10 +36,10 @@ WORKDIR /home/runner/actions-runner
 # Runner agent download with SHA256 checksum verification
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
     curl -fsSL \
-      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz" \
+      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz" \
       -o runner.tar.gz && \
     curl -fsSL \
-      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz.sha256" \
+      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz.sha256" \
       -o runner.sha256 && \
     echo "$(cat runner.sha256)  runner.tar.gz" | sha256sum -c - && \
     tar xzf runner.tar.gz && \
