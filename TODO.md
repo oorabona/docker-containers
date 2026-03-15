@@ -6,14 +6,15 @@
 
 ## Completed (recent)
 
-- [x] ✅ [CI] Fix sslh build — 3 layered fixes: `image_loaded` output, versions-only variant fallback, cache tag verification (2026-03-06)
-- [x] ✅ [Infra] DRY_RUN mode — `$DOCKER`/`$SKOPEO` variable substitution, CI `dry_run` input, 6 bats tests (2026-03-06)
-- [x] ✅ [CI] Fix GHCR cache tag doubling — never include tag in build-args, all Dockerfiles use Two-ARG pattern (2026-03-06)
-- [x] ✅ [Code-Health] Removed dead code: `extract_package_list` + `extract_sbom_packages` from `helpers/sbom-utils.sh` — 0 callers (2026-03-06)
-- [x] ✅ [Code-Health] Refactored `main()` in `scripts/build-extensions.sh` — extracted 3 helpers, 211→77 lines (2026-03-06)
+- [x] ✅ [Runner] Build github-runner container — 6 variants (3 OS × 2 flavors), Linux+Windows, semi-ephemeral (2026-03-15)
 
 ## Pending
 
+- [ ] 💡 [Runner] Add ubuntu-2204 + debian-bookworm distros — Priority: M (from /adversarial, deferred: MVP scope reduction)
+- [ ] 💡 [Runner] Docker-in-Docker (DinD) support — Priority: M (from /adversarial, deferred: security implications)
+- [ ] 💡 [Runner] Extract shared generate-dockerfile.sh logic to helpers/ — Priority: L (from /adversarial, deferred: wait for 3+ containers using pattern)
+- [ ] 💡 [Runner] SIGKILL orphan runner cleanup script/cron — Priority: L (from /adversarial, deferred: GitHub auto-cleans after 14 days)
+- [ ] 💡 [Runner] Windows Pester tests on CI — Priority: M (requires windows-latest runner)
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (deferred: low value vs complexity of docker load/pull in CI, local tests suffice)
 
 ## Completed

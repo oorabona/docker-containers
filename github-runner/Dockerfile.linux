@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+# GitHub Actions self-hosted runner — Linux template
+# Multi-distro: ubuntu-2404, ubuntu-2204, debian-trixie, debian-bookworm
+# Generated Dockerfiles are produced by generate-dockerfile.sh (do NOT edit generated output)
+#
+# NOTE: This is a template — markers are expanded by generate-dockerfile.sh.
+# Package lists and distro settings are in config.yaml — do not hardcode them here.
+#
+# Build: generate-dockerfile.sh <distro> <build_flavor> > Dockerfile.<distro>-<build_flavor>
+#        docker buildx build --build-arg VERSION=2.332.0 -f Dockerfile.<distro>-<build_flavor> .
+# @@BASE_IMAGE@@
+
+ARG VERSION
+ARG TARGETARCH
+
+# @@LABELS@@
+
+# Install base packages with BuildKit cache mounts for faster rebuilds
+# @@INSTALL_PACKAGES@@
+
+# Install dev-flavor extra packages (empty for base flavor)
+# @@DEV_PACKAGES@@
+
+# Install tini as PID 1 init (zombie reaping + signal forwarding to runner agent)
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# @@CREATE_USER@@
+
+# Add runner to docker group for DooD (Docker-outside-of-Docker)
+# Mount the host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
+RUN groupadd -f docker && usermod -aG docker runner
+
+WORKDIR /home/runner/actions-runner
+
+# Runner agent download with SHA256 checksum verification
+RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
+    curl -fsSL \
+      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz" \
+      -o runner.tar.gz && \
+    curl -fsSL \
+      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz.sha256" \
+      -o runner.sha256 && \
+    echo "$(cat runner.sha256)  runner.tar.gz" | sha256sum -c - && \
+    tar xzf runner.tar.gz && \
+    rm runner.tar.gz runner.sha256 && \
+    ./bin/installdependencies.sh
+
+COPY entrypoint.sh /home/runner/entrypoint.sh
+RUN chmod +x /home/runner/entrypoint.sh
+
+# Disable runner auto-update to prevent crash loops in containerised deployments
+ENV RUNNER_DISABLE_AUTO_UPDATE=1
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+ENV HOME=/home/runner
+
+USER runner
+ENTRYPOINT ["tini", "--", "/home/runner/entrypoint.sh"]
