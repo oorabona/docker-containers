@@ -193,8 +193,10 @@ LINEAGE_EOF
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile]
-# If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor]
+# flavor:       distro name from variants.yaml (e.g. ubuntu-2404) — used for tag logic
+# build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
+#               falls back to flavor when not provided (backward-compatible)
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
@@ -202,6 +204,7 @@ build_container() {
     local tag="$3"
     local flavor="${4:-}"
     local dockerfile="${5:-Dockerfile}"
+    local build_flavor="${6:-$flavor}"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -221,7 +224,7 @@ build_container() {
 
     _resolve_platforms
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
-    _prepare_build_args "$version" "$flavor"
+    _prepare_build_args "$version" "$build_flavor"
 
     # Prepare tags — versioned tag always included, plus rolling latest tags
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
@@ -266,7 +269,9 @@ build_container() {
             fi
         elif [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]]; then
             # Container-specific generator script (convention)
-            if "$PROJECT_ROOT/$container/generate-dockerfile.sh" "$dockerfile" "${flavor:-}" "$version" > "$_generated_dockerfile"; then
+            # Args: <template> <flavor> <version> [<build_flavor>]
+            # build_flavor is passed when the variant declares it (e.g. github-runner distro+build_flavor split)
+            if "$PROJECT_ROOT/$container/generate-dockerfile.sh" "$dockerfile" "${flavor:-}" "$version" "${build_flavor:-}" > "$_generated_dockerfile"; then
                 _gen_ok=true
                 log_info "Generated Dockerfile via $container/generate-dockerfile.sh"
             else
@@ -419,14 +424,17 @@ build_container_variants() {
         variant_tag=$(variant_image_tag "$major_version" "$variant_name" "$container_dir")
         local flavor
         flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$major_version")
+        local build_flavor
+        build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$major_version")
         local description
         description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
 
-        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor})"
 
         # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
+        # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true

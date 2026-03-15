@@ -1,0 +1,70 @@
+# GitHub Runner container configuration
+# Self-hosted GitHub Actions runner (Linux + Windows)
+
+name: github-runner
+description: "Self-hosted GitHub Actions runner (Linux + Windows)"
+
+# Used by build system for Linux variants; Windows uses Dockerfile.windows directly
+generate_dockerfile: true
+dockerfile_generator: generate-dockerfile.sh
+
+# Base image cache for Docker Hub rate limiting
+# NOTE: debian-trixie comes from ghcr.io/oorabona/debian — no caching needed
+base_image_cache:
+  - arg: UBUNTU_2404_BASE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["24.04"]
+
+# Distro definitions for generate-dockerfile.sh
+# Each distro declares its base image, package manager, user setup, and package groups
+distros:
+  ubuntu-2404:
+    base_image: "${UBUNTU_2404_BASE:-ubuntu:24.04}"
+    base_image_arg: UBUNTU_2404_BASE
+    pkg_manager: apt
+    install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
+    cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
+    runner_user: runner
+    user_exists: false
+    arch_map:
+      amd64: x64
+      arm64: arm64
+
+  debian-trixie:
+    base_image: "ghcr.io/oorabona/debian:trixie"
+    base_image_arg: DEBIAN_TRIXIE_BASE
+    pkg_manager: apt
+    install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
+    cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
+    runner_user: runner
+    user_exists: false
+    arch_map:
+      amd64: x64
+      arm64: arm64
+
+  windows-ltsc2022:
+    base_image: "mcr.microsoft.com/windows/servercore:ltsc2022"
+    pkg_manager: none   # chocolatey / direct download
+    runner_user: runneradmin
+    isolation: process  # Hyper-V not required on Server 2022
+
+# Flavor definitions — base packages + dev extras for each distro
+flavors:
+  base:
+    packages:
+      apt: [git, curl, jq, unzip, ca-certificates, libicu-dev, libkrb5-dev]
+    windows_packages: [git, jq, curl]  # choco
+
+  dev:
+    extends: base
+    packages:
+      apt:
+        - build-essential
+        - pkg-config
+        - libssl-dev
+        - libgtk-3-dev
+        - libwebkit2gtk-4.1-dev
+        - libayatana-appindicator3-dev
+        - librsvg2-dev
+    windows_packages: []  # VS Build Tools workload handled in Dockerfile.windows

@@ -336,7 +336,7 @@ list_build_matrix() {
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$effective_version\",\"variant\":\"\",\"tag\":\"${effective_version}${base_sfx}\",\"flavor\":\"\",\"is_default\":true,\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":0,\"full_version\":\"$full_version\"}"
+            result+="{\"version\":\"$effective_version\",\"variant\":\"\",\"tag\":\"${effective_version}${base_sfx}\",\"flavor\":\"\",\"is_default\":true,\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":0,\"full_version\":\"$full_version\",\"os\":\"linux\",\"runner\":\"ubuntu-latest\"}"
         else
             while IFS= read -r variant_name; do
                 [[ -z "$variant_name" ]] && continue
@@ -364,7 +364,15 @@ list_build_matrix() {
                 local dockerfile
                 dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-                result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\"}"
+                local variant_os
+                variant_os=$(variant_property "$container_dir" "$variant_name" "os" "$pg_version")
+                local runner_label="ubuntu-latest"
+                if [[ "$variant_os" == "windows" ]]; then
+                    runner_label="windows-latest"
+                fi
+                [[ -z "$variant_os" ]] && variant_os="linux"
+
+                result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\",\"os\":\"$variant_os\",\"runner\":\"$runner_label\"}"
             done <<< "$variants_list"
         fi
     done < <(list_versions "$container_dir")
@@ -421,7 +429,7 @@ list_container_builds() {
                   --arg flavor "$flavor" \
                   --argjson is_default "$([[ "$is_default" == "true" ]] && echo "true" || echo "false")" \
                   --argjson priority "$priority" \
-                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority, full_version:""}]')
+                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority, full_version:"", os:"linux", runner:"ubuntu-latest"}]')
             done < <(list_variants "$container_dir")
 
             echo "$builds" | jq -c 'sort_by(.priority, .container, .version)'
@@ -429,7 +437,7 @@ list_container_builds() {
     else
         # No variants: single entry
         jq -nc --arg c "$container_name" --arg v "$real_version" \
-          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0, full_version:""}]'
+          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0, full_version:"", os:"linux", runner:"ubuntu-latest"}]'
     fi
 }
 

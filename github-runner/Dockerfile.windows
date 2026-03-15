@@ -1,0 +1,108 @@
+# syntax=docker/dockerfile:1
+# GitHub Actions self-hosted runner — Windows Server Core ltsc2022
+# Build: docker build --build-arg RUNNER_VERSION=2.332.0 --build-arg FLAVOR=base -f Dockerfile.windows .
+# Note: Process isolation is the default on Windows Server 2022.
+#       Hyper-V isolation is unavailable on standard GitHub-hosted runners.
+#       Do NOT add --isolation in this Dockerfile; set it at docker run time if needed.
+
+ARG WINDOWS_BASE=mcr.microsoft.com/windows/servercore:ltsc2022
+FROM ${WINDOWS_BASE}
+
+ARG RUNNER_VERSION=2.332.0
+ARG FLAVOR=base
+
+# Use PowerShell as the default shell for all subsequent RUN instructions.
+# $ErrorActionPreference = 'Stop'  → treat all errors as terminating (fail fast)
+# $ProgressPreference = 'SilentlyContinue' → suppress download progress bars (cleaner logs)
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Disable runner auto-update — prevents the agent from self-updating and crashing
+# the container mid-job (containers are rebuilt to upgrade the runner version).
+ENV RUNNER_DISABLE_AUTO_UPDATE=1
+
+# Install Chocolatey package manager
+RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
+    [System.Net.ServicePointManager]::SecurityProtocol = \
+      [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Enable NTFS long path support (paths > 260 characters).
+# Required by many build tools (Rust, Node deep node_modules trees, etc.).
+RUN Set-ItemProperty \
+      -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' \
+      -Name 'LongPathsEnabled' \
+      -Value 1
+
+# Configure Git to honour the LongPathsEnabled registry key at the system level.
+# Must run after git is installed — choco git is installed in the next step.
+# We install git first so this config applies to the base layer.
+RUN choco install -y git --no-progress; \
+    git config --system core.longpaths true
+
+# Base packages: curl, jq, unzip (git already installed above)
+RUN choco install -y curl jq unzip --no-progress
+
+# Dev packages: VS Build Tools 2022 with the VC++ workload (Tauri, native addons, etc.)
+# Only installed when FLAVOR=dev; skipped for base flavor to keep the image lean.
+RUN if ($env:FLAVOR -eq 'dev') { \
+      Write-Host "Installing VS Build Tools (FLAVOR=dev)..."; \
+      choco install -y visualstudio2022buildtools --no-progress \
+        --package-parameters \
+          '--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet'; \
+    } else { \
+      Write-Host "Skipping VS Build Tools (FLAVOR=$($env:FLAVOR))"; \
+    }
+
+# Create the runneradmin local account and add it to the Administrators group.
+# The runner agent requires administrative privileges on Windows.
+RUN net user runneradmin /add /Y; \
+    net localgroup administrators runneradmin /add
+
+WORKDIR C:\\actions-runner
+
+# Download the runner agent archive + SHA256 checksum, verify integrity, then extract.
+# The .sha256 file published by GitHub contains the hex digest followed by two spaces
+# and the filename (e.g., "abc123  actions-runner-win-x64-2.332.0.zip").
+# We reconstruct that format locally and compare with Get-FileHash.
+RUN $archive  = "actions-runner-win-x64-${env:RUNNER_VERSION}.zip"; \
+    $base_url = "https://github.com/actions/runner/releases/download/v${env:RUNNER_VERSION}"; \
+    \
+    Write-Host "Downloading runner archive..."; \
+    Invoke-WebRequest -Uri "${base_url}/${archive}" -OutFile runner.zip; \
+    \
+    Write-Host "Downloading SHA256 checksum..."; \
+    Invoke-WebRequest -Uri "${base_url}/${archive}.sha256" -OutFile runner.sha256; \
+    \
+    # The .sha256 file contains "<hex>  <filename>"; extract the digest (first field).
+    $expected = ((Get-Content runner.sha256) -split '\s+')[0].ToLower(); \
+    $actual   = (Get-FileHash runner.zip -Algorithm SHA256).Hash.ToLower(); \
+    \
+    Write-Host "Expected SHA256: $expected"; \
+    Write-Host "Actual   SHA256: $actual"; \
+    \
+    if ($expected -ne $actual) { \
+      Write-Error "SHA256 checksum mismatch — aborting build"; \
+      exit 1; \
+    } \
+    Write-Host "Checksum verified."; \
+    \
+    Expand-Archive -Path runner.zip -DestinationPath . -Force; \
+    Remove-Item runner.zip, runner.sha256
+
+# Copy the Windows entrypoint script into the image root.
+COPY entrypoint.ps1 C:\\entrypoint.ps1
+
+# Labels — set after ARG declarations so build-time values are captured.
+# org.opencontainers.image.revision is injected at build time by the CI action.
+LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022)"
+LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
+LABEL com.github.runner.version="${RUNNER_VERSION}"
+LABEL com.github.runner.flavor="${FLAVOR}"
+LABEL com.github.runner.distro="windows-ltsc2022"
+
+# Switch to the unprivileged runner account for all subsequent operations.
+# The runner agent itself will re-elevate via the local Administrators membership
+# when installing service dependencies.
+USER runneradmin
+
+ENTRYPOINT ["powershell", "-File", "C:\\entrypoint.ps1"]
