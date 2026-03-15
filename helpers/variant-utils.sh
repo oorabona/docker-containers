@@ -336,7 +336,7 @@ list_build_matrix() {
             local dockerfile
             dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
 
-            result+="{\"version\":\"$effective_version\",\"variant\":\"\",\"tag\":\"${effective_version}${base_sfx}\",\"flavor\":\"\",\"is_default\":true,\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":0,\"full_version\":\"$full_version\",\"os\":\"linux\",\"runner\":\"ubuntu-latest\"}"
+            result+="{\"version\":\"$effective_version\",\"variant\":\"\",\"tag\":\"${effective_version}${base_sfx}\",\"flavor\":\"\",\"build_flavor\":\"\",\"is_default\":true,\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":0,\"full_version\":\"$full_version\",\"os\":\"linux\",\"runner\":\"ubuntu-latest\"}"
         else
             while IFS= read -r variant_name; do
                 [[ -z "$variant_name" ]] && continue
@@ -345,6 +345,8 @@ list_build_matrix() {
                 tag=$(variant_image_tag "$effective_version" "$variant_name" "$container_dir")
                 local flavor
                 flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$pg_version")
+                local build_flavor
+                build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$pg_version")
                 local is_default
                 is_default=$(variant_property "$container_dir" "$variant_name" "default" "$pg_version")
 
@@ -375,7 +377,7 @@ list_build_matrix() {
                 fi
                 [[ -z "$variant_os" ]] && variant_os="linux"
 
-                result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\",\"os\":\"$variant_os\",\"runner\":\"$runner_label\"}"
+                result+="{\"version\":\"$effective_version\",\"variant\":\"$variant_name\",\"tag\":\"$tag\",\"flavor\":\"$flavor\",\"build_flavor\":\"$build_flavor\",\"is_default\":$([[ "$is_default" == "true" ]] && echo "true" || echo "false"),\"is_latest_version\":$is_latest_version,\"dockerfile\":\"$dockerfile\",\"priority\":$priority,\"full_version\":\"$full_version\",\"os\":\"$variant_os\",\"runner\":\"$runner_label\"}"
             done <<< "$variants_list"
         fi
     done < <(list_versions "$container_dir")
@@ -430,9 +432,10 @@ list_container_builds() {
                   --arg variant "$variant_name" \
                   --arg tag "$tag" \
                   --arg flavor "$flavor" \
+                  --arg build_flavor "" \
                   --argjson is_default "$([[ "$is_default" == "true" ]] && echo "true" || echo "false")" \
                   --argjson priority "$priority" \
-                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority, full_version:"", os:"linux", runner:"ubuntu-latest"}]')
+                  '. + [{container:$container, version:$version, variant:$variant, tag:$tag, flavor:$flavor, build_flavor:$build_flavor, is_default:$is_default, is_latest_version:true, dockerfile:"", priority:$priority, full_version:"", os:"linux", runner:"ubuntu-latest"}]')
             done < <(list_variants "$container_dir")
 
             echo "$builds" | jq -c 'sort_by(.priority, .container, .version)'
@@ -440,7 +443,7 @@ list_container_builds() {
     else
         # No variants: single entry
         jq -nc --arg c "$container_name" --arg v "$real_version" \
-          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0, full_version:"", os:"linux", runner:"ubuntu-latest"}]'
+          '[{container:$c, version:$v, variant:"", tag:$v, flavor:"", build_flavor:"", is_default:true, is_latest_version:true, dockerfile:"", priority:0, full_version:"", os:"linux", runner:"ubuntu-latest"}]'
     fi
 }
 

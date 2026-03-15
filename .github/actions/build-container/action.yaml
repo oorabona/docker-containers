@@ -16,6 +16,10 @@ inputs:
     description: Build flavor for variant containers (passed as FLAVOR build arg)
     required: false
     default: ''
+  build_flavor:
+    description: Build-time flavor selector (e.g. base/dev) passed as --build-flavor to make
+    required: false
+    default: ''
   variant:
     description: Variant name (for logging/identification)
     required: false
@@ -295,9 +299,11 @@ runs:
         fi
 
         # Build via ./make — sources container build files, handles CUSTOM_BUILD_ARGS
+        build_flavor="${{ inputs.build_flavor }}"
         make_args=("build" "$container" "$build_version")
         [[ -n "$current_tag" ]] && make_args+=("$current_tag")
         [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
+        [[ -n "$build_flavor" ]] && make_args+=("--build-flavor" "$build_flavor")
         [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
 
         log_info "Calling: ./make ${make_args[*]}"

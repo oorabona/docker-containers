@@ -352,6 +352,7 @@ jobs:
           version: ${{ matrix.build.version }}
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
@@ -371,6 +372,7 @@ jobs:
           version: ${{ matrix.build.version }}
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
