@@ -47,7 +47,16 @@ check_multiplatform_support() {
 
 # Resolve build platforms based on environment and capabilities
 # Sets: _PLATFORMS
+# When running on Windows (RUNNER_OS=Windows or MINGW/MSYS uname), clears _PLATFORMS
+# so the caller switches to plain `docker build` without --platform.
 _resolve_platforms() {
+    # Windows detection: GitHub Actions sets RUNNER_OS=Windows; Git Bash exposes MINGW/MSYS via uname
+    if [[ "${RUNNER_OS:-}" == "Windows" ]] || [[ "$(uname -s 2>/dev/null)" =~ MINGW|MSYS ]]; then
+        _PLATFORMS=""
+        log_info "Windows runner detected — skipping --platform flag"
+        return
+    fi
+
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         _PLATFORMS="$BUILD_PLATFORM"
         log_success "Using native platform: $_PLATFORMS"
@@ -301,21 +310,35 @@ build_container() {
     # Execute docker build
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log_success "GitHub Actions detected - building locally for validation..."
-        log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS | Dockerfile: $dockerfile"
+        log_success "Runtime: $_RUNTIME_INFO | Platform: ${_PLATFORMS:-native} | Dockerfile: $dockerfile"
 
-        $DOCKER buildx build \
-            -f "$dockerfile" \
-            --platform "$_PLATFORMS" \
-            --load \
-            $_CACHE_ARGS \
-            $_BUILD_ARGS \
-            $label_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
-            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
-            return 1
-        }
+        if [[ -z "${_PLATFORMS:-}" ]]; then
+            # Windows runner: plain docker build (no buildx, no --platform, no --load needed)
+            $DOCKER build \
+                -f "$dockerfile" \
+                $_BUILD_ARGS \
+                $label_args \
+                $tag_args \
+                . || {
+                log_error "Build failed for $container:$tag"
+                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+                return 1
+            }
+        else
+            $DOCKER buildx build \
+                -f "$dockerfile" \
+                --platform "$_PLATFORMS" \
+                --load \
+                $_CACHE_ARGS \
+                $_BUILD_ARGS \
+                $label_args \
+                $tag_args \
+                . || {
+                log_error "Build failed for $container:$tag"
+                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+                return 1
+            }
+        fi
 
         log_success "✅ Build completed - image loaded locally (no push)"
     else

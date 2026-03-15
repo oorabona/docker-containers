@@ -337,21 +337,8 @@ jobs:
         with:
           cmd: yq --version
 
-      - name: Build container (Windows)
-        id: build-windows
-        if: matrix.build.os == 'windows'
-        uses: ./.github/actions/build-container-windows
-        with:
-          container: ${{ matrix.build.container }}
-          version: ${{ matrix.build.version }}
-          tag: ${{ matrix.build.tag }}
-          flavor: ${{ matrix.build.flavor }}
-          push: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          ghcr_token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build container with retry logic
         id: build
-        if: matrix.build.os != 'windows'
         uses: ./.github/actions/build-container
         with:
           container: ${{ matrix.build.container }}
@@ -369,7 +356,7 @@ jobs:
         continue-on-error: true
 
       - name: Retry build on failure
-        if: matrix.build.os != 'windows' && steps.build.outcome == 'failure'
+        if: steps.build.outcome == 'failure'
         id: retry
         uses: ./.github/actions/build-container
         with:
@@ -388,7 +375,7 @@ jobs:
         continue-on-error: true
 
       - name: Handle build failure
-        if: matrix.build.os != 'windows' && steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -417,9 +404,7 @@ jobs:
           exit 1
 
       - name: Report successful build
-        if: |
-          (matrix.build.os != 'windows' && (steps.build.outcome == 'success' || steps.retry.outcome == 'success')) ||
-          (matrix.build.os == 'windows' && steps.build-windows.outcome == 'success')
+        if: steps.build.outcome == 'success' || steps.retry.outcome == 'success'
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
