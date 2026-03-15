@@ -54,7 +54,7 @@ RUN if ($env:FLAVOR -eq 'dev') { \
         --package-parameters \
           '--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet'; \
     } else { \
-      Write-Host "Skipping VS Build Tools (FLAVOR=$($env:FLAVOR))"; \
+      Write-Host "Skipping VS Build Tools (FLAVOR=$env:FLAVOR)"; \
     }
 
 # Create the runneradmin local account and add it to the Administrators group.
