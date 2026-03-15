@@ -362,7 +362,10 @@ list_build_matrix() {
                 first=false
 
                 local dockerfile
-                dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
+                dockerfile=$(variant_property "$container_dir" "$variant_name" "dockerfile" "$pg_version")
+                if [[ -z "$dockerfile" ]]; then
+                    dockerfile=$(version_dockerfile "$container_dir" "$pg_version")
+                fi
 
                 local variant_os
                 variant_os=$(variant_property "$container_dir" "$variant_name" "os" "$pg_version")

@@ -407,10 +407,9 @@ build_container_variants() {
     local base_sfx
     base_sfx=$(base_suffix "$container_dir")
 
-    # Get custom dockerfile for this version (if any)
-    local dockerfile
-    dockerfile=$(version_dockerfile "$container_dir" "$major_version")
-    [[ -z "$dockerfile" ]] && dockerfile="Dockerfile"
+    # Get version-level dockerfile fallback (if any)
+    local version_df
+    version_df=$(version_dockerfile "$container_dir" "$major_version")
 
     # Construct the base image version for FROM statement (e.g., "17-alpine")
     local base_image_version="${major_version}${base_sfx}"
@@ -421,6 +420,7 @@ build_container_variants() {
     variant_list=$(list_variants "$container_dir" "$major_version")
     if [[ -z "$variant_list" ]]; then
         log_info "$container has no variants for version $major_version, building single image..."
+        local dockerfile="${version_df:-Dockerfile}"
         local rc=0
         build_container "$container" "$base_image_version" "$base_image_version" "" "$dockerfile" || rc=$?
         echo "[{\"name\":\"default\",\"tag\":\"$base_image_version\",\"flavor\":\"\",\"status\":\"built\"}]"
@@ -428,7 +428,7 @@ build_container_variants() {
     fi
 
     log_info "$container has variants, building multiple images..."
-    log_info "Major version: $major_version | Base version: $base_image_version | Dockerfile: $dockerfile"
+    log_info "Major version: $major_version | Base version: $base_image_version"
 
     local results="["
     local first=true
@@ -452,7 +452,12 @@ build_container_variants() {
         local description
         description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
 
-        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor})"
+        # Resolve dockerfile: variant-level > version-level > default
+        local dockerfile
+        dockerfile=$(variant_property "$container_dir" "$variant_name" "dockerfile" "$major_version")
+        [[ -z "$dockerfile" ]] && dockerfile="${version_df:-Dockerfile}"
+
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, dockerfile: $dockerfile)"
 
         # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
         # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic

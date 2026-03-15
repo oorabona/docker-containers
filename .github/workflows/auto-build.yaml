@@ -376,6 +376,7 @@ jobs:
 
       - name: Handle build failure
         if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -405,6 +406,7 @@ jobs:
 
       - name: Report successful build
         if: steps.build.outcome == 'success' || steps.retry.outcome == 'success'
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -426,6 +428,7 @@ jobs:
 
       - name: Generate build summary
         if: always()
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
