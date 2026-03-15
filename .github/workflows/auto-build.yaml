@@ -331,11 +331,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install yq (needed for extension Dockerfile generation)
+      - name: Install yq (Linux)
         if: matrix.build.os != 'windows'
         uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51 # v4.52.4
         with:
           cmd: yq --version
+
+      - name: Install yq (Windows)
+        if: matrix.build.os == 'windows'
+        shell: bash
+        run: |
+          choco install yq -y --no-progress
+          yq --version
 
       - name: Build container with retry logic
         id: build

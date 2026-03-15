@@ -36,7 +36,11 @@ RUN Set-ItemProperty \
 # Configure Git to honour the LongPathsEnabled registry key at the system level.
 # Must run after git is installed — choco git is installed in the next step.
 # We install git first so this config applies to the base layer.
-RUN choco install -y git --no-progress; \
+RUN choco install -y git --no-progress
+
+# Refresh PATH after choco install (git is now in C:\Program Files\Git\cmd)
+# Then configure longpaths at the system level.
+RUN $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
     git config --system core.longpaths true
 
 # Base packages: curl, jq, unzip (git already installed above)
