@@ -648,9 +648,12 @@ jobs:
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -e
-          # Windows containers are single-arch — no multi-arch manifest needed
+          # Windows containers are single-arch — create tag alias instead of multi-arch manifest
           if [[ "${{ matrix.build.os }}" == "windows" ]]; then
-            echo "::notice::Skipping manifest creation for Windows variant ${{ matrix.build.tag }}"
+            ghcr_src="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG-amd64"
+            ghcr_dst="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG"
+            echo "::notice::Creating Windows tag alias: $ghcr_dst"
+            docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Failed to create tag alias"
             exit 0
           fi
           source ./helpers/create-manifest.sh
