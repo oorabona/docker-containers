@@ -17,6 +17,7 @@
 - [ ] 💡 [Runner] Windows Pester tests on CI — Priority: M (requires windows-latest runner)
 - [ ] 💡 [CI] Rationalize build inputs: replace force_rebuild+scope_flavors with `rebuild` (none/changed/all/force) + `scope` (variant/os/arch filter) — Priority: M
 - [ ] 💡 [CI] Cache runner agent tarball in GH Actions cache (key by version, ~200MB saving per build) — Priority: L
+- [ ] 🔧 [Infra] Extract `has_dockerfile()` helper — 3 places hardcode `Dockerfile` check (make, detect-containers, generate-dashboard.sh) — Priority: M
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (auto-build.yaml) — Priority: L (deferred: low value vs complexity of docker load/pull in CI, local tests suffice)
 
 ## Completed
