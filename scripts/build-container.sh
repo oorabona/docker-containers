@@ -297,6 +297,20 @@ build_container() {
         dockerfile="$_generated_dockerfile"
     fi
 
+    # Pre-build context hook: download external artifacts needed by the Dockerfile
+    # (e.g., github-runner downloads the runner agent tarball via gh CLI)
+    if [[ -x "$PROJECT_ROOT/$container/prepare-build-context.sh" ]]; then
+        local _ctx_arch="${BUILD_PLATFORM##*/}"  # linux/amd64 → amd64
+        [[ -z "$_ctx_arch" ]] && _ctx_arch="amd64"
+        local _ctx_os="linux"
+        [[ -z "${_PLATFORMS:-}" ]] && _ctx_os="windows"
+        log_info "Preparing build context via $container/prepare-build-context.sh ($version $_ctx_arch $_ctx_os)"
+        "$PROJECT_ROOT/$container/prepare-build-context.sh" "$version" "$_ctx_arch" "$_ctx_os" || {
+            log_error "prepare-build-context.sh failed for $container"
+            return 1
+        }
+    fi
+
     # Compute build digest AFTER template expansion so the digest captures
     # all config.yaml data (packages, install commands) embedded in the generated Dockerfile
     if [[ -z "${BUILD_DIGEST:-}" ]]; then

@@ -64,28 +64,11 @@ RUN net user runneradmin /add /Y; \
 
 WORKDIR C:\\actions-runner
 
-# Download the runner agent archive + SHA256 checksum, verify integrity, then extract.
-# The .sha256 file published by GitHub contains the hex digest followed by two spaces
-# and the filename (e.g., "abc123  actions-runner-win-x64-2.332.0.zip").
-# We reconstruct that format locally and compare with Get-FileHash.
-RUN $v = $env:VERSION; \
-    $archive = 'actions-runner-win-x64-' + $v + '.zip'; \
-    $base_url = 'https://github.com/actions/runner/releases/download/v' + $v; \
-    Write-Host ('Downloading runner archive: ' + $archive); \
-    Invoke-WebRequest -Uri ($base_url + '/' + $archive) -OutFile runner.zip; \
-    Write-Host 'Downloading SHA256 checksum...'; \
-    Invoke-WebRequest -Uri ($base_url + '/' + $archive + '.sha256') -OutFile runner.sha256; \
-    $expected = ((Get-Content runner.sha256) -split '\s+')[0].ToLower(); \
-    $actual = (Get-FileHash runner.zip -Algorithm SHA256).Hash.ToLower(); \
-    Write-Host ('Expected SHA256: ' + $expected); \
-    Write-Host ('Actual   SHA256: ' + $actual); \
-    if ($expected -ne $actual) { \
-      Write-Error 'SHA256 checksum mismatch'; \
-      exit 1; \
-    }; \
-    Write-Host 'Checksum verified.'; \
-    Expand-Archive -Path runner.zip -DestinationPath . -Force; \
-    Remove-Item runner.zip, runner.sha256
+# Runner agent — pre-downloaded by prepare-build-context.sh into the build context
+# (avoids network issues inside Docker build containers hitting GitHub CDN)
+COPY runner.zip runner.zip
+RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
+    Remove-Item runner.zip
 
 # Copy the Windows entrypoint script into the image root.
 COPY entrypoint.ps1 C:\\entrypoint.ps1

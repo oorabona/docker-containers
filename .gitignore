@@ -72,3 +72,6 @@ docs/site/.claude
 volumes/
 .docker/
 .playwright-mcp/
+
+# Runner agent downloaded by prepare-build-context.sh
+github-runner/runner.*
