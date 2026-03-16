@@ -33,14 +33,15 @@ RUN groupadd -f docker && usermod -aG docker runner
 
 WORKDIR /home/runner/actions-runner
 
+# Map Docker platform arch to GitHub runner arch naming
+ARG RUNNER_ARCH=${TARGETARCH}
 # Runner agent download with SHA256 checksum verification
-RUN case "$TARGETARCH" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac && \
-    curl -fsSL \
-      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz" \
-      -o runner.tar.gz && \
-    curl -fsSL \
-      "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz.sha256" \
-      -o runner.sha256 && \
+RUN if [ "$RUNNER_ARCH" = "arm64" ]; then ARCH=arm64; else ARCH=x64; fi && \
+    URL="https://github.com/actions/runner/releases/download/v${VERSION}" && \
+    FILE="actions-runner-linux-${ARCH}-${VERSION}.tar.gz" && \
+    echo "Downloading ${FILE}..." && \
+    curl -fsSL "${URL}/${FILE}" -o runner.tar.gz && \
+    curl -fsSL "${URL}/${FILE}.sha256" -o runner.sha256 && \
     echo "$(cat runner.sha256)  runner.tar.gz" | sha256sum -c - && \
     tar xzf runner.tar.gz && \
     rm runner.tar.gz runner.sha256 && \
