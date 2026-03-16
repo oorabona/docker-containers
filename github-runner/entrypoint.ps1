@@ -8,7 +8,8 @@
     runs one job, then deregisters and exits. Mirrors entrypoint.sh logic.
 
 .ENVIRONMENT
-    GITHUB_TOKEN          - PAT with repo/admin:org scope (mutually exclusive with APP_*)
+    RUNNER_TOKEN          - Direct registration token from GitHub UI (expires in 1h; mutually exclusive with GITHUB_TOKEN / APP_*)
+    GITHUB_TOKEN          - PAT with repo/admin:org scope (mutually exclusive with RUNNER_TOKEN / APP_*)
     APP_ID                - GitHub App ID
     APP_PRIVATE_KEY       - GitHub App RSA private key (PEM string, literal \n supported)
     APP_PRIVATE_KEY_FILE  - Path to GitHub App PEM file (alternative to APP_PRIVATE_KEY)
@@ -358,7 +359,7 @@ function Get-AuthToken {
 
     # --- GitHub App path ----------------------------------------------------
     if (-not $env:APP_ID) {
-        Write-Err "Must set GITHUB_TOKEN or APP_ID+APP_PRIVATE_KEY[_FILE] for authentication."
+        Write-Err "Must set RUNNER_TOKEN, GITHUB_TOKEN, or APP_ID+APP_PRIVATE_KEY[_FILE] for authentication."
         exit 1
     }
 
@@ -494,12 +495,17 @@ Write-Info "Group       : $group"
 Write-Info "API base    : $apiBase"
 Write-Info "Tool cache  : $($env:RUNNER_TOOL_CACHE)"
 
-# 2. Obtain auth token (PAT or GitHub App installation token)
-$authToken = Get-AuthToken -ApiBase $apiBase -Scope $scope
-
-# 3. Obtain registration token (with retry + backoff)
-$regTokenUrl = "$apiBase/$scope/actions/runners/registration-token"
-$script:RegToken = Get-RegistrationToken -AuthToken $authToken -ApiUrl $regTokenUrl
+# 2. Obtain registration token
+# RUNNER_TOKEN path: the env var IS the registration token — skip API auth entirely
+if ($env:RUNNER_TOKEN) {
+    Write-Info "Using direct registration token (RUNNER_TOKEN) — skipping API auth."
+    $script:RegToken = $env:RUNNER_TOKEN
+} else {
+    # PAT or GitHub App path: exchange for a registration token via the API
+    $authToken = Get-AuthToken -ApiBase $apiBase -Scope $scope
+    $regTokenUrl = "$apiBase/$scope/actions/runners/registration-token"
+    $script:RegToken = Get-RegistrationToken -AuthToken $authToken -ApiUrl $regTokenUrl
+}
 
 # 4. Change to runner working directory
 Set-Location 'C:\actions-runner'
@@ -544,7 +550,9 @@ try {
     Write-Info "Runner agent exited with code $exitCode"
 
 } finally {
-    # 8. Cleanup — runs on any exit path (normal, exception, signal)
+    # 8. Cleanup — runs on any exit path (normal, exception, signal).
+    # When using RUNNER_TOKEN the removal token is unavailable (no bearer token to
+    # re-call the API).  Remove-Runner is called best-effort; it will warn if it fails.
     Remove-Runner -RegistrationToken $script:RegToken
 }
 

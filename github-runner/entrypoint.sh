@@ -86,12 +86,15 @@ validate_env() {
   export RUNNER_SCOPE RUNNER_URL REG_TOKEN_API REMOVAL_TOKEN_API INSTALLATION_API
 
   # Determine auth mode
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  if [[ -n "${RUNNER_TOKEN:-}" ]]; then
+    AUTH_MODE="token"
+  elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
     AUTH_MODE="pat"
   elif [[ -n "${APP_ID:-}" ]] && { [[ -n "${APP_PRIVATE_KEY:-}" ]] || [[ -n "${APP_PRIVATE_KEY_FILE:-}" ]]; }; then
     AUTH_MODE="app"
   else
     log_error "Authentication not configured. Provide one of:"
+    log_error "  Token mode:    RUNNER_TOKEN=<registration-token-from-github-ui>"
     log_error "  PAT mode:      GITHUB_TOKEN=<pat-with-repo-or-admin:org-scope>"
     log_error "  App mode:      APP_ID=<id> APP_PRIVATE_KEY=<pem> (or APP_PRIVATE_KEY_FILE=<path>)"
     exit 1
@@ -311,8 +314,11 @@ cleanup() {
   local removal_token=""
 
   # Obtain a fresh removal token; ignore errors (best-effort deregistration)
+  # RUNNER_TOKEN mode has no bearer token — skip the API removal-token fetch
   local bearer_token=""
-  bearer_token=$(resolve_bearer_token 2>/dev/null) || true
+  if [[ "${AUTH_MODE:-}" != "token" ]]; then
+    bearer_token=$(resolve_bearer_token 2>/dev/null) || true
+  fi
   if [[ -n "$bearer_token" ]]; then
     # Swap REG_TOKEN_API for REMOVAL_TOKEN_API temporarily
     local saved_api="$REG_TOKEN_API"
@@ -350,10 +356,17 @@ main() {
 
   log_info "Auth mode: ${AUTH_MODE}, Scope: ${RUNNER_SCOPE}, URL: ${RUNNER_URL}"
 
-  # Steps 5-8: Obtain bearer token then registration token
-  local bearer_token reg_token
-  bearer_token=$(resolve_bearer_token)
-  reg_token=$(get_registration_token "$bearer_token")
+  # Steps 5-8: Obtain registration token
+  # RUNNER_TOKEN path: the env var IS the registration token — skip API call entirely
+  local reg_token
+  if [[ "$AUTH_MODE" == "token" ]]; then
+    log_info "Using direct registration token (RUNNER_TOKEN) — skipping API auth."
+    reg_token="$RUNNER_TOKEN"
+  else
+    local bearer_token
+    bearer_token=$(resolve_bearer_token)
+    reg_token=$(get_registration_token "$bearer_token")
+  fi
 
   # Step 9: Configure runner (registers with GitHub)
   configure_runner "$reg_token"

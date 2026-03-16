@@ -22,10 +22,11 @@ The container registers itself with GitHub, executes one job, then exits with co
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GITHUB_TOKEN` | One of PAT/App | — | PAT with `repo` or `admin:org` scope |
-| `APP_ID` | One of PAT/App | — | GitHub App ID |
-| `APP_PRIVATE_KEY` | One of PAT/App | — | GitHub App private key (PEM string with literal `\n`) |
-| `APP_PRIVATE_KEY_FILE` | One of PAT/App | — | Path to GitHub App PEM file (alternative to `APP_PRIVATE_KEY`) |
+| `RUNNER_TOKEN` | One of Token/PAT/App | — | Direct registration token from GitHub UI (expires in 1h) |
+| `GITHUB_TOKEN` | One of Token/PAT/App | — | PAT with `repo` or `admin:org` scope |
+| `APP_ID` | One of Token/PAT/App | — | GitHub App ID |
+| `APP_PRIVATE_KEY` | One of Token/PAT/App | — | GitHub App private key (PEM string with literal `\n`) |
+| `APP_PRIVATE_KEY_FILE` | One of Token/PAT/App | — | Path to GitHub App PEM file (alternative to `APP_PRIVATE_KEY`) |
 | `GITHUB_REPOSITORY` | One of Repo/Org | — | Target repository in `owner/repo` format |
 | `GITHUB_ORG` | One of Repo/Org | — | Target organisation name |
 | `RUNNER_NAME_PREFIX` | No | `runner` | Prefix for the unique runner name |
@@ -71,6 +72,32 @@ docker run --rm \
 ```
 
 JWT generation uses `openssl` (pure bash, no extra dependencies).
+
+## Quick Start with Podman Desktop (Windows)
+
+1. Go to your repo on GitHub: **Settings** → **Actions** → **Runners** → **New self-hosted runner**
+2. Copy the registration token from the configure step (it starts with `A` and is valid for 1 hour)
+3. Run with Podman:
+
+```bash
+podman run --rm \
+  -e RUNNER_TOKEN=AXXXXXXXXXXXXXXXXXX \
+  -e GITHUB_REPOSITORY=owner/repo \
+  -e RUNNER_LABELS=self-hosted,windows,x64 \
+  ghcr.io/oorabona/github-runner:2.332.0-windows-ltsc2022
+```
+
+For Linux containers on Podman Desktop (WSL backend):
+
+```bash
+podman run --rm \
+  -e RUNNER_TOKEN=AXXXXXXXXXXXXXXXXXX \
+  -e GITHUB_REPOSITORY=owner/repo \
+  -e RUNNER_LABELS=self-hosted,linux,x64 \
+  ghcr.io/oorabona/github-runner:2.332.0
+```
+
+> **Note:** The registration token expires after 1 hour. For persistent runners or scaled deployments, use PAT or GitHub App auth instead — those never expire and can refresh a fresh registration token on every container start.
 
 ## Flavors
 
