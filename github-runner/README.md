@@ -73,29 +73,40 @@ docker run --rm \
 
 JWT generation uses `openssl` (pure bash, no extra dependencies).
 
-## Quick Start with Podman Desktop (Windows)
+## Running on Windows
 
 1. Go to your repo on GitHub: **Settings** → **Actions** → **Runners** → **New self-hosted runner**
 2. Copy the registration token from the configure step (it starts with `A` and is valid for 1 hour)
-3. Run with Podman:
+
+### Linux runners (Podman Desktop or Docker Desktop)
+
+Both Podman Desktop and Docker Desktop can run Linux runner images on Windows via WSL2:
 
 ```bash
 podman run --rm \
   -e RUNNER_TOKEN=AXXXXXXXXXXXXXXXXXX \
   -e GITHUB_REPOSITORY=owner/repo \
-  -e RUNNER_LABELS=self-hosted,windows,x64 \
+  ghcr.io/oorabona/github-runner:2.332.0
+```
+
+### Windows runners (Docker Desktop only)
+
+Windows container images require Docker Desktop (or Rancher Desktop with moby engine).
+Podman does not support Windows containers.
+
+1. Switch Docker Desktop to **Windows containers** (right-click tray icon → "Switch to Windows containers")
+2. Go to your repo → Settings → Actions → Runners → New self-hosted runner
+3. Copy the registration token
+
+```bash
+docker run --rm \
+  -e RUNNER_TOKEN=AXXXXXXXXXXXXXXXXXX \
+  -e GITHUB_REPOSITORY=owner/repo \
   ghcr.io/oorabona/github-runner:2.332.0-windows-ltsc2022
 ```
 
-For Linux containers on Podman Desktop (WSL backend):
-
-```bash
-podman run --rm \
-  -e RUNNER_TOKEN=AXXXXXXXXXXXXXXXXXX \
-  -e GITHUB_REPOSITORY=owner/repo \
-  -e RUNNER_LABELS=self-hosted,linux,x64 \
-  ghcr.io/oorabona/github-runner:2.332.0
-```
+> **Note:** Windows containers require process isolation (default on Windows Server)
+> or Hyper-V isolation (Windows 11 Pro/Enterprise).
 
 > **Note:** The registration token expires after 1 hour. For persistent runners or scaled deployments, use PAT or GitHub App auth instead — those never expire and can refresh a fresh registration token on every container start.
 
