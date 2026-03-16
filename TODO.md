@@ -10,12 +10,12 @@
 
 ## Pending
 
-- [ ] 🔧 [Infra] P1: Extract `has_dockerfile()` helper — 3 places hardcode `Dockerfile` check (make, detect-containers, generate-dashboard.sh)
-- [ ] 💡 [CI] P2: Rationalize build inputs — `rebuild` (none/changed/all/force) + `scope` (variant/os/arch filter)
-- [ ] 💡 [CI] P3: Cache runner agent tarball in GH Actions cache (key by version, ~200MB saving per build)
-- [ ] 💡 [Runner] P5: Windows Pester tests on CI (requires windows-latest runner)
-- [ ] 💡 [Runner] P7: SIGKILL orphan runner cleanup script/cron (GitHub auto-cleans after 14 days)
-- [ ] 💡 [Runner] P8: Extract shared generate-dockerfile.sh logic to helpers/
+- [x] ✅ [Infra] Extract `has_dockerfile()` + `list_containers()` helpers (2026-03-16)
+- [x] ✅ [CI] Rationalize build inputs — `rebuild` + `scope` inputs (2026-03-16)
+- [x] ✅ [CI] Cache runner agent tarball in GH Actions cache (2026-03-16)
+- [x] ✅ [Runner] Windows Pester + Linux bats tests in CI (2026-03-16)
+- [x] ✅ [Runner] Orphan runner cleanup script (2026-03-16)
+- [x] ✅ [Infra] Extract shared generate-utils.sh for template generators (2026-03-16)
 - [-] ⏭️ [Runner] Add ubuntu-2204 + debian-bookworm distros (deferred: MVP sufficient)
 - [-] ⏭️ [Runner] Docker-in-Docker (DinD) support (deferred: DooD covers most use cases)
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (deferred: low value vs complexity)
