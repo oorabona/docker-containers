@@ -49,7 +49,7 @@ RUN choco install -y curl jq unzip --no-progress
 # Dev packages: VS Build Tools 2022 with the VC++ workload (Tauri, native addons, etc.)
 # Only installed when FLAVOR=dev; skipped for base flavor to keep the image lean.
 RUN if ($env:FLAVOR -eq 'dev') { \
-      Write-Host "Installing VS Build Tools (FLAVOR=dev)..."; \
+      Write-Host 'Installing VS Build Tools...'; \
       choco install -y visualstudio2022buildtools --no-progress \
         --package-parameters \
           '--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet'; \
