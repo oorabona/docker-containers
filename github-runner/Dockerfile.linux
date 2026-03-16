@@ -10,6 +10,9 @@
 #        docker buildx build --build-arg VERSION=2.332.0 -f Dockerfile.<distro>-<build_flavor> .
 # @@BASE_IMAGE@@
 
+# Ensure root for package installation (some base images set a non-root USER)
+USER root
+
 ARG VERSION
 ARG TARGETARCH
 
