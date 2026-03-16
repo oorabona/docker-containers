@@ -64,6 +64,9 @@ exclude:
   - "*/export.sh"
   - "*/docker-entrypoint.sh"
   - ".dashboard-stats"
+  - "docs/plans/"
+  - "docs/decisions.md"
+  - "docs/historic/"
 
 # Include essential Jekyll files (this overrides excludes for specific patterns)
 include:
