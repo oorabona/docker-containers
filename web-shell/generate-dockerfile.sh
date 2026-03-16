@@ -2,7 +2,7 @@
 # Generate Dockerfile from template for web-shell multi-distro variants
 # Called by build_container() when Dockerfile has @@MARKER@@ patterns
 #
-# Usage: generate-dockerfile.sh <template_path> <flavor> [<version>]
+# Usage: generate-dockerfile.sh <template_path> <distro> [<version>]
 # Output: Generated Dockerfile to stdout
 #
 # Markers expanded:
@@ -18,38 +18,32 @@ HELPERS_DIR="$(cd "$SCRIPT_DIR/../helpers" && pwd)"
 
 source "$HELPERS_DIR/logging.sh"
 source "$HELPERS_DIR/template-utils.sh"
+source "$HELPERS_DIR/generate-utils.sh"
 
-template="${1:?Usage: generate-dockerfile.sh <template> <flavor> [version]}"
-flavor="${2:-debian}"
+template="${1:?Usage: generate-dockerfile.sh <template> <distro> [version]}"
+distro="${2:-debian}"
 version="${3:-}"
 
 config="$SCRIPT_DIR/config.yaml"
 
 [[ -f "$config" ]] || { log_error "config.yaml not found: $config"; exit 1; }
 
-# Verify flavor exists in distros config
-if [[ "$(yq e ".distros.${flavor}" "$config")" == "null" ]]; then
-    log_error "Unknown distro: $flavor (available: $(yq e '.distros | keys | join(", ")' "$config"))"
-    exit 1
-fi
+validate_distro "$config" "$distro" || exit 1
 
 # --- Read distro config ---
-_yq() { yq e ".distros.${flavor}.${1}" "$config"; }
-_yq_default() { yq e ".distros.${flavor}.${1} // \"${2}\"" "$config"; }
-
-install_cmd=$(_yq install_cmd)
-cleanup_cmd=$(_yq_default cleanup_cmd "")
-shell_user=$(_yq shell_user)
-user_exists=$(_yq_default user_exists "false")
-pkg_manager=$(_yq pkg_manager)
-pre_install=$(_yq_default pre_install "")
+install_cmd=$(  distro_property "$config" "$distro" "install_cmd")
+cleanup_cmd=$(  distro_property "$config" "$distro" "cleanup_cmd" "")
+shell_user=$(   distro_property "$config" "$distro" "shell_user")
+user_exists=$(  distro_property "$config" "$distro" "user_exists" "false")
+pkg_manager=$(  distro_property "$config" "$distro" "pkg_manager")
+pre_install=$(  distro_property "$config" "$distro" "pre_install" "")
 
 # Collect packages: shell_packages (bash, sudo) + all meta-group packages
-shell_pkgs=$(yq e '(.distros.'"${flavor}"'.shell_packages // []) | join(" ")' "$config")
-meta_pkgs=$(yq e '[.distros.'"${flavor}"'.packages | to_entries[] | .value[]] | join(" ")' "$config")
+shell_pkgs=$(yq e '(.distros.'"${distro}"'.shell_packages // []) | join(" ")' "$config")
+meta_pkgs=$(yq e '[.distros.'"${distro}"'.packages | to_entries[] | .value[]] | join(" ")' "$config")
 all_pkgs="${shell_pkgs:+$shell_pkgs }${meta_pkgs}"
 
-log_info "Generating Dockerfile: distro=$flavor user=$shell_user pkgs=$(echo "$all_pkgs" | wc -w | tr -d ' ')"
+log_info "Generating Dockerfile: distro=$distro user=$shell_user pkgs=$(echo "$all_pkgs" | wc -w | tr -d ' ')"
 
 # Wrap a space-separated list of words into continuation lines (max ~72 chars)
 _wrap_list() {
@@ -73,7 +67,7 @@ _wrap_list() {
 # @@BASE_IMAGE@@ — Distro-specific ARGs + FROM instruction
 # Values like ${DEBIAN_TAG} are Docker ARG references — output literally
 # ============================================================
-case "$flavor" in
+case "$distro" in
     debian)
         base_block='ARG DEBIAN_TAG="trixie"
 FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}'
@@ -91,7 +85,7 @@ FROM ${UBUNTU_BASE}'
 FROM ${ROCKY_BASE}'
         ;;
     *)
-        log_error "No BASE_IMAGE template for distro: $flavor"
+        log_error "No BASE_IMAGE template for distro: $distro"
         exit 1
         ;;
 esac

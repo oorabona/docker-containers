@@ -21,6 +21,7 @@ HELPERS_DIR="$(cd "$SCRIPT_DIR/../helpers" && pwd)"
 
 source "$HELPERS_DIR/logging.sh"
 source "$HELPERS_DIR/template-utils.sh"
+source "$HELPERS_DIR/generate-utils.sh"
 
 CONFIG="$SCRIPT_DIR/config.yaml"
 TEMPLATE="$SCRIPT_DIR/Dockerfile.linux"
@@ -35,45 +36,27 @@ generate_one() {
     local distro="$1"
     local flavor="$2"
 
-    # ---- Validate distro ---------------------------------------------------
-    local distro_check
-    distro_check=$(yq e ".distros.${distro}" "$CONFIG")
-    if [[ "$distro_check" == "null" ]]; then
-        log_error "Unknown distro: $distro"
-        log_error "Available distros: $(yq e '.distros | keys | join(", ")' "$CONFIG")"
-        exit 1
-    fi
+    validate_distro "$CONFIG" "$distro" || exit 1
 
     # Reject Windows — it has its own standalone Dockerfile
     local pkg_manager
-    pkg_manager=$(yq e ".distros.${distro}.pkg_manager" "$CONFIG")
+    pkg_manager=$(distro_property "$CONFIG" "$distro" "pkg_manager")
     if [[ "$pkg_manager" == "none" ]]; then
         log_error "Distro $distro uses pkg_manager=none (Windows) — use Dockerfile.windows instead"
         exit 1
     fi
 
-    # ---- Validate flavor ---------------------------------------------------
-    local flavor_check
-    flavor_check=$(yq e ".flavors.${flavor}" "$CONFIG")
-    if [[ "$flavor_check" == "null" ]]; then
-        log_error "Unknown flavor: $flavor"
-        log_error "Available flavors: $(yq e '.flavors | keys | join(", ")' "$CONFIG")"
-        exit 1
-    fi
+    validate_flavor "$CONFIG" "$flavor" || exit 1
 
     log_info "Generating Dockerfile: distro=$distro flavor=$flavor" >&2
 
-    # ---- Helpers for reading distro config ---------------------------------
-    _yq_distro() { yq e ".distros.${distro}.${1}" "$CONFIG"; }
-    _yq_distro_default() { yq e ".distros.${distro}.${1} // \"${2}\"" "$CONFIG"; }
-
     local base_image base_image_arg install_cmd cleanup_cmd runner_user user_exists
-    base_image=$(     _yq_distro      "base_image")
-    base_image_arg=$( _yq_distro      "base_image_arg")
-    install_cmd=$(    _yq_distro      "install_cmd")
-    cleanup_cmd=$(    _yq_distro_default "cleanup_cmd" "")
-    runner_user=$(    _yq_distro      "runner_user")
-    user_exists=$(    _yq_distro_default "user_exists" "false")
+    base_image=$(     distro_property "$CONFIG" "$distro" "base_image")
+    base_image_arg=$( distro_property "$CONFIG" "$distro" "base_image_arg")
+    install_cmd=$(    distro_property "$CONFIG" "$distro" "install_cmd")
+    cleanup_cmd=$(    distro_property "$CONFIG" "$distro" "cleanup_cmd" "")
+    runner_user=$(    distro_property "$CONFIG" "$distro" "runner_user")
+    user_exists=$(    distro_property "$CONFIG" "$distro" "user_exists" "false")
 
     # ---- Wrap helper: indent a list of words at ~80 chars ------------------
     _wrap_list() {
@@ -98,7 +81,6 @@ generate_one() {
     # Strip the ${VAR:-default} shell syntax from base_image if present;
     # we emit "ARG <arg>=<raw_default>" so Docker resolves it cleanly.
     # ========================================================================
-    # Extract raw default (e.g. "ubuntu:24.04" from "${UBUNTU_2404_BASE:-ubuntu:24.04}")
     local raw_default
     if [[ "$base_image" =~ ^\$\{[A-Za-z0-9_]+:-(.+)\}$ ]]; then
         raw_default="${BASH_REMATCH[1]}"
@@ -122,7 +104,6 @@ generate_one() {
     # ========================================================================
     # @@INSTALL_PACKAGES@@ — base packages with BuildKit cache mounts
     # ========================================================================
-    # Base flavor packages (always installed)
     local base_pkgs_raw base_pkgs
     base_pkgs_raw=$(yq e '.flavors.base.packages.apt | join(" ")' "$CONFIG")
     # shellcheck disable=SC2086  # intentional word splitting
@@ -181,29 +162,19 @@ generate_one() {
 # ---------------------------------------------------------------------------
 # Main: dispatch based on calling convention
 # ---------------------------------------------------------------------------
-if [[ $# -eq 2 ]]; then
-    # Direct invocation: generate-dockerfile.sh <distro> <build_flavor>
-    generate_one "$1" "$2"
-elif [[ $# -eq 4 ]]; then
-    # build-container.sh convention: <template> <distro> <version> <build_flavor>
-    # $1=template (ignored — we always use Dockerfile.linux), $2=distro, $3=version (ignored), $4=build_flavor
-    generate_one "$2" "$4"
-elif [[ $# -eq 0 ]]; then
+if [[ $# -eq 0 ]]; then
     # Generate all Linux distros × all flavors
-    all_distros=$(yq e '.distros | keys | .[]' "$CONFIG")
-    all_flavors=$(yq e '.flavors | keys | .[]' "$CONFIG")
+    all_flavors=$(list_flavors "$CONFIG")
 
     while IFS= read -r distro; do
-        # Skip Windows distros
-        pm=$(yq e ".distros.${distro}.pkg_manager" "$CONFIG")
-        [[ "$pm" == "none" ]] && continue
-
         while IFS= read -r flv; do
             out_file="$SCRIPT_DIR/Dockerfile.${distro}-${flv}"
             log_info "Writing $out_file" >&2
             generate_one "$distro" "$flv" > "$out_file"
         done <<< "$all_flavors"
-    done <<< "$all_distros"
+    done < <(list_distros "$CONFIG" --exclude-windows)
+elif parse_generator_args "$@"; then
+    generate_one "$GEN_DISTRO" "$GEN_FLAVOR"
 else
     echo "Usage: generate-dockerfile.sh [<distro> <build_flavor>]" >&2
     echo "  With 2 args: print generated Dockerfile to stdout" >&2

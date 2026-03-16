@@ -7,9 +7,17 @@ inputs:
     required: false
     default: ''
   force_rebuild:
-    description: 'Force rebuild even if image exists'
+    description: '[deprecated] Force rebuild even if image exists — use rebuild=all instead'
     required: false
     default: 'false'
+  rebuild:
+    description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+    required: false
+    default: 'none'
+  scope:
+    description: 'Filter variants by name/os/arch/build_flavor (e.g. "windows", "dev", "ubuntu-2404-dev")'
+    required: false
+    default: ''
   scope_versions:
     description: 'Comma-separated major versions to build (e.g., "18"). Empty = all.'
     required: false
@@ -88,16 +96,18 @@ runs:
             changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null) || { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
           else
             # For manual triggers (workflow_dispatch)
-            # If force_rebuild is true, build ALL containers
-            if [[ "${{ inputs.force_rebuild }}" == "true" ]]; then
-              echo "🔄 Force rebuild requested - building all containers"
+            # rebuild != none OR force_rebuild=true → build ALL containers
+            effective_rebuild="${{ inputs.rebuild }}"
+            [[ "${{ inputs.force_rebuild }}" == "true" && "$effective_rebuild" == "none" ]] && effective_rebuild="all"
+            if [[ "$effective_rebuild" != "none" ]]; then
+              echo "🔄 Rebuild mode '$effective_rebuild' — building all containers"
               while IFS= read -r container; do
                 [[ -n "$container" ]] && containers_to_build+=("$container")
               done <<< "$valid_containers"
               changed_files=""  # Skip file-based detection
             else
               changed_files=""
-              echo "ℹ️  Manual trigger without force_rebuild - specify a container or use force_rebuild=true"
+              echo "ℹ️  Manual trigger without rebuild mode — specify a container or set rebuild!=none"
             fi
           fi
 
@@ -180,6 +190,7 @@ runs:
       env:
         SCOPE_VERSIONS: ${{ inputs.scope_versions }}
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
+        BUILD_SCOPE: ${{ inputs.scope }}
       run: |
         set -e
         source ./helpers/variant-utils.sh
@@ -195,7 +206,7 @@ runs:
 
           container_builds=$(list_container_builds "$container" "$version")
 
-          # Apply scope filtering if scope_versions or scope_flavors are set
+          # Apply scope_versions / scope_flavors filters (legacy inputs)
           if [[ -n "$SCOPE_VERSIONS" || -n "$SCOPE_FLAVORS" ]]; then
             # Convert comma-separated values to JSON arrays for jq
             versions_filter="[]"
@@ -219,6 +230,22 @@ runs:
             if [[ "$before_count" != "$after_count" ]]; then
               echo "  🔍 Scope filter: $before_count → $after_count builds (versions=${SCOPE_VERSIONS:-all}, flavors=${SCOPE_FLAVORS:-all})"
             fi
+          fi
+
+          # Apply BUILD_SCOPE filter (new unified scope input)
+          # Matches against: variant, os, build_flavor — any field containing the scope string
+          if [[ -n "$BUILD_SCOPE" ]]; then
+            before_count=$(echo "$container_builds" | jq 'length')
+            container_builds=$(echo "$container_builds" | jq -c \
+              --arg s "$BUILD_SCOPE" \
+              '[.[] | select(
+                (.variant // "" | contains($s)) or
+                (.os // "" | contains($s)) or
+                (.build_flavor // "" | contains($s)) or
+                (.flavor // "" | contains($s))
+              )]')
+            after_count=$(echo "$container_builds" | jq 'length')
+            echo "  🔍 BUILD_SCOPE \"$BUILD_SCOPE\" filter: $before_count → $after_count builds"
           fi
 
           count=$(echo "$container_builds" | jq 'length')

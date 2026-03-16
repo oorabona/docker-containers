@@ -32,8 +32,12 @@ inputs:
     description: Target platform (e.g., linux/amd64 or linux/arm64)
     required: false
     default: 'linux/amd64'
-  force_rebuild:
-    description: Force rebuild even if image exists
+  rebuild_mode:
+    description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+    required: false
+    default: 'none'
+  docker_no_cache:
+    description: 'Pass --no-cache to docker build (set to "true" for rebuild=force mode)'
     required: false
     default: 'false'
   dockerhub_username:
@@ -174,8 +178,9 @@ runs:
         fi
 
         # Determine if build is needed
-        if [ "${{ inputs.force_rebuild }}" = "true" ]; then
-          echo "::notice::Force rebuild requested"
+        rebuild_mode="${{ inputs.rebuild_mode }}"
+        if [ "$rebuild_mode" = "all" ] || [ "$rebuild_mode" = "force" ]; then
+          echo "::notice::Rebuild mode '$rebuild_mode' — skipping digest check"
           needs_build=true
         elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
           echo "::notice::Code changes detected - build needed"
@@ -220,6 +225,18 @@ runs:
           echo "::endgroup::"
         fi
 
+    - name: Cache runner agent
+      if: contains(inputs.container, 'github-runner')
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        path: |
+          github-runner/runner.tar.gz
+          github-runner/runner.zip
+          github-runner/runner.sha256
+        key: runner-agent-${{ inputs.version }}-${{ steps.check-build.outputs.platform_suffix }}
+        restore-keys: |
+          runner-agent-${{ inputs.version }}-
+
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       id: build
@@ -227,7 +244,8 @@ runs:
       env:
         BUILD_PLATFORM: ${{ inputs.platform }}
         GH_TOKEN: ${{ inputs.github_token }}
-        FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        REBUILD_MODE: ${{ inputs.rebuild_mode }}
+        DOCKER_NO_CACHE: ${{ inputs.docker_no_cache }}
       run: |
         set -euo pipefail
         source ./helpers/logging.sh
@@ -247,11 +265,16 @@ runs:
           echo "::group::Building $container:$current_tag (dockerfile: $dockerfile) for $BUILD_PLATFORM"
         fi
 
-        # Compute SKIP_EXISTING_BUILDS in-step
-        if [[ "${{ github.event_name }}" != "pull_request" && "${FORCE_REBUILD}" != "true" ]]; then
-          export SKIP_EXISTING_BUILDS="true"
-        else
+        # Derive SKIP_EXISTING_BUILDS from rebuild_mode
+        # - pull_request always skips digest check (build to validate, never push)
+        # - rebuild=all or rebuild=force → never skip (force a fresh build)
+        # - otherwise → skip if image already exists with matching digest
+        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
           export SKIP_EXISTING_BUILDS="false"
+        elif [[ "$REBUILD_MODE" == "all" || "$REBUILD_MODE" == "force" ]]; then
+          export SKIP_EXISTING_BUILDS="false"
+        else
+          export SKIP_EXISTING_BUILDS="true"
         fi
 
         # Use GHCR cached base images if available (configured in config.yaml)

@@ -223,7 +223,8 @@ build_container() {
     unset BUILD_DIGEST
 
     # Smart rebuild detection: skip if image exists with matching digest
-    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" && "${FORCE_REBUILD:-false}" != "true" ]]; then
+    # SKIP_EXISTING_BUILDS is set by the build-container action based on rebuild_mode
+    if [[ "${SKIP_EXISTING_BUILDS:-false}" == "true" ]]; then
         if should_skip_build "$ghcr_image:$tag" "$dockerfile" "$flavor" "false"; then
             log_success "⏭️  Skipping $container:$tag - image exists with matching digest"
             return 0
@@ -321,6 +322,10 @@ build_container() {
     # Capture build timing
     local _build_start=$SECONDS
 
+    # --no-cache flag: activated by rebuild=force mode
+    local _no_cache=""
+    [[ "${DOCKER_NO_CACHE:-false}" == "true" ]] && _no_cache="--no-cache"
+
     # Execute docker build
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log_success "GitHub Actions detected - building locally for validation..."
@@ -330,6 +335,7 @@ build_container() {
             # Windows runner: plain docker build (no buildx, no --platform, no --load needed)
             $DOCKER build \
                 -f "$dockerfile" \
+                ${_no_cache} \
                 $_BUILD_ARGS \
                 $label_args \
                 $tag_args \
@@ -343,6 +349,7 @@ build_container() {
                 -f "$dockerfile" \
                 --platform "$_PLATFORMS" \
                 --load \
+                ${_no_cache} \
                 $_CACHE_ARGS \
                 $_BUILD_ARGS \
                 $label_args \
@@ -364,6 +371,7 @@ build_container() {
             --platform "$_PLATFORMS" \
             --load \
             --pull=never \
+            ${_no_cache} \
             $_CACHE_ARGS \
             $_BUILD_ARGS \
             $label_args \

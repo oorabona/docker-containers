@@ -22,7 +22,7 @@ source "$(dirname "$0")/scripts/push-container.sh"
 # shellcheck disable=SC1090
 [ -r "${DEPLOY_MK:-}" ] && source "$DEPLOY_MK"
 
-targets=$(find -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.*" \) | cut -d'/' -f2 | sort -u)
+targets=$(list_containers "$(dirname "$0")")
 
 # Validate if a target is valid (has a Dockerfile)
 validate_target() {
@@ -35,7 +35,7 @@ validate_target() {
     return 1
   fi
   
-  if ! ls "$target"/Dockerfile* &>/dev/null; then
+  if ! has_dockerfile "$target"; then
     return 1
   fi
   
