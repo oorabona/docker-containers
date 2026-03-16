@@ -119,6 +119,13 @@ runs:
       shell: bash
       run: echo "${{ inputs.github_token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
+    - name: Log in to Docker Hub (Windows)
+      if: runner.os == 'Windows' && inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
+      id: dockerhub-login-windows
+      shell: bash
+      run: echo "${{ inputs.dockerhub_token }}" | docker login docker.io -u ${{ inputs.dockerhub_username }} --password-stdin
+      continue-on-error: true
+
     - name: Check if build is needed and get version
       id: check-build
       shell: bash
@@ -457,7 +464,7 @@ runs:
     # Docker Hub Push - SECONDARY REGISTRY (optional, can fail)
     # Tag and push the already-built image with platform suffix
     - name: Push to Docker Hub (secondary)
-      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' && steps.dockerhub-login.outcome == 'success' }}
+      if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name != 'pull_request' && (steps.dockerhub-login.outcome == 'success' || steps.dockerhub-login-windows.outcome == 'success') }}
       id: push-dockerhub
       shell: bash
       run: |
