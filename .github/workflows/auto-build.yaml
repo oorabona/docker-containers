@@ -9,10 +9,20 @@ on:
         required: false
         type: string
       force_rebuild:
-        description: 'Force rebuild even if up-to-date'
+        description: '[deprecated] Force rebuild even if up-to-date — use rebuild=all instead'
         required: false
         default: false
         type: boolean
+      rebuild:
+        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+        required: false
+        type: string
+        default: 'none'
+      scope:
+        description: 'Filter variants: e.g. "windows", "dev", "ubuntu-2404-dev", "arm64"'
+        required: false
+        type: string
+        default: ''
       skip_extensions:
         description: 'Skip extension compilation (use existing GHCR extension images)'
         required: false
@@ -78,10 +88,21 @@ on:
         required: false
         type: string
       force_rebuild:
-        description: 'Force rebuild even if no updates'
+        description: '[deprecated] Force rebuild even if no updates — use rebuild=all instead'
         required: false
         default: false
         type: boolean
+      rebuild:
+        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+        required: false
+        type: choice
+        options: ['none', 'changed', 'all', 'force']
+        default: 'none'
+      scope:
+        description: 'Filter variants: e.g. "windows", "dev", "ubuntu-2404-dev", "arm64"'
+        required: false
+        type: string
+        default: ''
       skip_extensions:
         description: 'Skip extension compilation (use existing GHCR extension images)'
         required: false
@@ -118,6 +139,14 @@ permissions:
 
 env:
   DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+  # Resolve effective rebuild mode (backward compat: force_rebuild=true → rebuild=all)
+  REBUILD_MODE: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
+  # Skip digest check unless rebuild=all or rebuild=force or force_rebuild=true
+  SKIP_EXISTING_BUILDS: ${{ (inputs.rebuild == 'all' || inputs.rebuild == 'force' || inputs.force_rebuild == true) && 'false' || 'true' }}
+  # Pass --no-cache to docker build when rebuild=force
+  DOCKER_NO_CACHE: ${{ inputs.rebuild == 'force' && 'true' || 'false' }}
+  # Variant scope filter (free-text, matched against variant/os/build_flavor fields)
+  BUILD_SCOPE: ${{ inputs.scope || '' }}
 
 jobs:
   detect-containers:
@@ -146,6 +175,8 @@ jobs:
         with:
           container: ${{ github.event.inputs.container || inputs.container }}
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
+          rebuild: ${{ env.REBUILD_MODE }}
+          scope: ${{ env.BUILD_SCOPE }}
           scope_versions: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
 
@@ -356,7 +387,8 @@ jobs:
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
-          force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
+          rebuild_mode: ${{ env.REBUILD_MODE }}
+          docker_no_cache: ${{ env.DOCKER_NO_CACHE }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -376,7 +408,8 @@ jobs:
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
-          force_rebuild: true  # Force rebuild on retry
+          rebuild_mode: all  # Always ignore digest on retry
+          docker_no_cache: 'false'
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -435,6 +468,30 @@ jobs:
           echo "**Attempt:** $attempt" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
 
+      - name: Run Pester tests (Windows)
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base'
+        shell: pwsh
+        run: |
+          if (Test-Path "${{ matrix.build.container }}/tests/test-runner-windows.ps1") {
+            Install-Module -Name Pester -Force -SkipPublisherCheck -Scope CurrentUser
+            $config = New-PesterConfiguration
+            $config.Run.Path = "${{ matrix.build.container }}/tests/test-runner-windows.ps1"
+            $config.Output.Verbosity = 'Detailed'
+            $results = Invoke-Pester -Configuration $config
+            if ($results.FailedCount -gt 0) {
+              Write-Error "$($results.FailedCount) Pester test(s) failed"
+              exit 1
+            }
+          }
+
+      - name: Run bats tests (Linux)
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          if [[ -f "${{ matrix.build.container }}/tests/test-runner-linux.bats" ]]; then
+            bats "${{ matrix.build.container }}/tests/test-runner-linux.bats"
+          fi
+
       - name: Generate build summary
         if: always()
         shell: bash
@@ -471,8 +528,8 @@ jobs:
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
             if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "- 📝 **Trigger**: Code changes detected in container files" >> $GITHUB_STEP_SUMMARY
-            elif [ "${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}" = "true" ]; then
-              echo "- 🔄 **Trigger**: Force rebuild requested" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ env.REBUILD_MODE }}" != "none" ]; then
+              echo "- 🔄 **Trigger**: Rebuild mode: ${{ env.REBUILD_MODE }}" >> $GITHUB_STEP_SUMMARY
             elif [ "${{ github.event_name }}" = "workflow_call" ]; then
               echo "- 🔄 **Trigger**: Upstream version changes detected" >> $GITHUB_STEP_SUMMARY
             else

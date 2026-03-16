@@ -49,3 +49,17 @@ log_step() {
 log_help() {
     printf "\033[36m%-25s\033[0m %s\n" "$1" "$2"
 }
+
+# Check if a directory contains a Dockerfile (standard or template-based)
+# Usage: has_dockerfile <dir>
+has_dockerfile() {
+    local dir="${1:-.}"
+    ls "$dir"/Dockerfile* &>/dev/null
+}
+
+# List all container directories (those with a Dockerfile)
+# Usage: list_containers [base_dir]
+list_containers() {
+    local base="${1:-.}"
+    find "$base" -maxdepth 2 \( -name "Dockerfile" -o -name "Dockerfile.*" \) | sed 's|^\./||' | cut -d'/' -f1 | sort -u
+}

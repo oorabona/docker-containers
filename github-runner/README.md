@@ -186,15 +186,23 @@ The entrypoint exits immediately on DNS / connection failures (curl exits non-ze
 
 ### Orphan runners after SIGKILL
 
-If the container is killed with `SIGKILL` (OOM kill, `docker kill`, etc.) the SIGTERM cleanup handler does not run and the runner stays registered as offline. GitHub automatically removes offline runners after 14 days. To remove them manually:
+If the container is killed with `SIGKILL` (OOM kill, `docker kill`, etc.) the SIGTERM cleanup handler does not run and the runner stays registered as offline on GitHub. GitHub automatically removes offline runners after 14 days, but the `cleanup-offline-runners.sh` script lets you remove them immediately.
 
 ```bash
-# List offline runners via GitHub CLI
-gh api repos/owner/repo/actions/runners | jq '.runners[] | select(.status=="offline")'
+# Dry-run: list offline runners without removing (default)
+./github-runner/cleanup-offline-runners.sh owner/repo
 
-# Delete a specific runner by ID
-gh api -X DELETE repos/owner/repo/actions/runners/<id>
+# Org-level
+./github-runner/cleanup-offline-runners.sh --org myorg
+
+# Actually remove them
+./github-runner/cleanup-offline-runners.sh owner/repo --force
+
+# Uses GITHUB_REPOSITORY or GITHUB_ORG from the environment
+./github-runner/cleanup-offline-runners.sh --force
 ```
+
+The script requires the `gh` CLI to be authenticated (or `GITHUB_TOKEN` in the environment with `repo` scope for repository runners or `admin:org` scope for org runners). It always prints a table of offline runners before acting.
 
 ### Volume UID mismatch
 

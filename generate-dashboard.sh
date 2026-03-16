@@ -885,7 +885,7 @@ generate_data() {
 
         is_skip_directory "$container" && continue
         [[ -f "$container/version.sh" ]] || continue
-        ls "$container"/Dockerfile* &>/dev/null || continue
+        has_dockerfile "$container" || continue
 
         log_info "Processing $container..."
 
