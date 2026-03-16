@@ -143,7 +143,7 @@ _resolve_base_image() {
                 local arg_value="${arg_val#*=}"
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_value}"
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_value}"
-            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oP '(?<=--build-arg )\S+' || true)
+            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
         fi
     fi
 

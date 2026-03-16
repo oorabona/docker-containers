@@ -32,7 +32,7 @@ _compute_tag_args() {
     if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" ]]; then
         local rest="${TAG#$VERSION}"
         local full_numeric
-        full_numeric=$(echo "$FULL_VERSION" | grep -oP '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+        full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
         if [[ -n "$full_numeric" ]]; then
             local full_tag="${full_numeric}${rest}"
             if [[ "$full_tag" != "$TAG" ]]; then

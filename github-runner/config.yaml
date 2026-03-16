@@ -53,7 +53,7 @@ distros:
 flavors:
   base:
     packages:
-      apt: [git, curl, jq, unzip, ca-certificates, libicu-dev, libkrb5-dev]
+      apt: [git, curl, jq, unzip, ca-certificates]
     windows_packages: [git, jq, curl]  # choco
 
   dev:
