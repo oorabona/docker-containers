@@ -34,7 +34,7 @@ RUN groupadd -f docker && usermod -aG docker runner
 WORKDIR /home/runner/actions-runner
 
 # Runner agent download with SHA256 checksum verification
-RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
+RUN case "$TARGETARCH" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac && \
     curl -fsSL \
       "https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz" \
       -o runner.tar.gz && \
