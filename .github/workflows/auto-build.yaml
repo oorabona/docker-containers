@@ -43,6 +43,8 @@ on:
     branches: [main, master]
     paths:
       - '*/Dockerfile'
+      - '*/Dockerfile.*'
+      - '*/Dockerfile.windows'
       - '*/version.sh'
       - '*/config.yaml'
       - '*/variants.yaml'
@@ -57,6 +59,8 @@ on:
     branches: [main, master]
     paths:
       - '*/Dockerfile'
+      - '*/Dockerfile.*'
+      - '*/Dockerfile.windows'
       - '*/version.sh'
       - '*/config.yaml'
       - '*/variants.yaml'
@@ -303,7 +307,7 @@ jobs:
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -318,15 +322,27 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
+        exclude:
+          # Windows containers are amd64 only — skip arm64 fan-out
+          - arch: arm64
+            build: {os: windows}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install yq (needed for extension Dockerfile generation)
+      - name: Install yq (Linux)
+        if: matrix.build.os != 'windows'
         uses: mikefarah/yq@5a7e72a743649b1b3a47d1a1d8214f3453173c51 # v4.52.4
         with:
           cmd: yq --version
+
+      - name: Install yq (Windows)
+        if: matrix.build.os == 'windows'
+        shell: bash
+        run: |
+          choco install yq -y --no-progress
+          yq --version
 
       - name: Build container with retry logic
         id: build
@@ -336,6 +352,7 @@ jobs:
           version: ${{ matrix.build.version }}
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
@@ -355,6 +372,7 @@ jobs:
           version: ${{ matrix.build.version }}
           tag: ${{ matrix.build.tag }}
           flavor: ${{ matrix.build.flavor }}
+          build_flavor: ${{ matrix.build.build_flavor }}
           variant: ${{ matrix.build.variant }}
           dockerfile: ${{ matrix.build.dockerfile }}
           platform: ${{ matrix.platform }}
@@ -367,6 +385,7 @@ jobs:
 
       - name: Handle build failure
         if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -396,6 +415,7 @@ jobs:
 
       - name: Report successful build
         if: steps.build.outcome == 'success' || steps.retry.outcome == 'success'
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -417,6 +437,7 @@ jobs:
 
       - name: Generate build summary
         if: always()
+        shell: bash
         run: |
           container="${{ matrix.build.container }}"
           variant="${{ matrix.build.variant }}"
@@ -480,7 +501,7 @@ jobs:
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
         id: install-syft
-        if: (steps.build.outputs.image_loaded == 'true' || steps.retry.outputs.image_loaded == 'true') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
+        if: matrix.build.os != 'windows' && (steps.build.outputs.image_loaded == 'true' || steps.retry.outputs.image_loaded == 'true') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
         uses: anchore/sbom-action/download-syft@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
 
       - name: Generate SBOM
@@ -570,6 +591,11 @@ jobs:
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -e
+          # Windows containers are single-arch — no multi-arch manifest needed
+          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
+            echo "::notice::Skipping manifest creation for Windows variant ${{ matrix.build.tag }}"
+            exit 0
+          fi
           source ./helpers/create-manifest.sh
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
           echo "::group::Creating GHCR manifest for $CONTAINER:$TAG"
@@ -589,6 +615,11 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
+          # Windows containers are single-arch — no multi-arch manifest needed
+          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
+            echo "::notice::Skipping manifest creation for Windows variant ${{ matrix.build.tag }}"
+            exit 0
+          fi
           if [[ -z "$DOCKERHUB_USERNAME" ]]; then
             echo "::notice::Skipping Docker Hub manifest (no credentials)"
             exit 0

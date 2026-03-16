@@ -16,6 +16,10 @@ inputs:
     description: Build flavor for variant containers (passed as FLAVOR build arg)
     required: false
     default: ''
+  build_flavor:
+    description: Build-time flavor selector (e.g. base/dev) passed as --build-flavor to make
+    required: false
+    default: ''
   variant:
     description: Variant name (for logging/identification)
     required: false
@@ -82,12 +86,14 @@ runs:
   using: composite
   steps:
     - name: Set up Docker Buildx
+      if: runner.os != 'Windows'
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       # Uses docker-container driver (default) which supports --push
       # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal
       # Retry logic handles intermittent Docker Hub issues
 
     - name: Log in to GitHub Container Registry
+      if: runner.os != 'Windows'
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
       with:
         registry: ghcr.io
@@ -95,7 +101,7 @@ runs:
         password: ${{ inputs.github_token }}
 
     - name: Log in to Docker Hub
-      if: ${{ inputs.dockerhub_username != '' && inputs.dockerhub_token != '' }}
+      if: runner.os != 'Windows' && inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
       id: dockerhub-login
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
       with:
@@ -103,6 +109,11 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
       continue-on-error: true
+
+    - name: Log in to GHCR (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "${{ inputs.github_token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
     - name: Check if build is needed and get version
       id: check-build
@@ -288,9 +299,11 @@ runs:
         fi
 
         # Build via ./make — sources container build files, handles CUSTOM_BUILD_ARGS
+        build_flavor="${{ inputs.build_flavor }}"
         make_args=("build" "$container" "$build_version")
         [[ -n "$current_tag" ]] && make_args+=("$current_tag")
         [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
+        [[ -n "$build_flavor" ]] && make_args+=("--build-flavor" "$build_flavor")
         [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
 
         log_info "Calling: ./make ${make_args[*]}"

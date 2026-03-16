@@ -1,0 +1,53 @@
+# github-runner/compose.yaml
+# Usage:
+#   cp .env.example .env  (fill in GITHUB_TOKEN + GITHUB_REPOSITORY or GITHUB_ORG)
+#   docker compose up
+#   docker compose up --scale runner=3
+#
+# Env file: github-runner/.env (git-ignored)
+# Required vars in .env: GITHUB_TOKEN or APP_ID+APP_PRIVATE_KEY, GITHUB_REPOSITORY or GITHUB_ORG
+
+services:
+  runner:
+    image: ghcr.io/oorabona/github-runner:latest
+    env_file: .env
+    environment:
+      RUNNER_TOOL_CACHE: /cache/tool-cache
+    volumes:
+      - tool-cache:/cache/tool-cache
+      - cargo-cache:/home/runner/.cargo
+      - npm-cache:/home/runner/.npm
+      - nuget-cache:/home/runner/.nuget
+      - pnpm-store:/home/runner/.pnpm-store
+      # DooD (Docker-outside-of-Docker) — uncomment to allow workflows to run docker commands
+      # ⚠️ Security: grants container full access to the host Docker daemon (root-equivalent)
+      #   Any workflow running on this runner can escape the container via the Docker socket.
+      #   Only enable on trusted, isolated infrastructure. Never expose to untrusted workflows.
+      # - /var/run/docker.sock:/var/run/docker.sock
+    restart: "no"   # ephemeral: each container handles exactly one job then exits
+
+  runner-windows:
+    image: ghcr.io/oorabona/github-runner:latest-windows-ltsc2022
+    env_file: .env
+    environment:
+      RUNNER_TOOL_CACHE: C:\cache\tool-cache
+    volumes:
+      - windows-tool-cache:C:\cache\tool-cache
+    restart: "no"
+    platform: windows/amd64
+    profiles:
+      - windows   # opt-in: docker compose --profile windows up
+
+volumes:
+  tool-cache:
+    name: github-runner-tool-cache
+  cargo-cache:
+    name: github-runner-cargo-cache
+  npm-cache:
+    name: github-runner-npm-cache
+  nuget-cache:
+    name: github-runner-nuget-cache
+  pnpm-store:
+    name: github-runner-pnpm-store
+  windows-tool-cache:
+    name: github-runner-windows-tool-cache

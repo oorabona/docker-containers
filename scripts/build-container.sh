@@ -47,7 +47,16 @@ check_multiplatform_support() {
 
 # Resolve build platforms based on environment and capabilities
 # Sets: _PLATFORMS
+# When running on Windows (RUNNER_OS=Windows or MINGW/MSYS uname), clears _PLATFORMS
+# so the caller switches to plain `docker build` without --platform.
 _resolve_platforms() {
+    # Windows detection: GitHub Actions sets RUNNER_OS=Windows; Git Bash exposes MINGW/MSYS via uname
+    if [[ "${RUNNER_OS:-}" == "Windows" ]] || [[ "$(uname -s 2>/dev/null)" =~ MINGW|MSYS ]]; then
+        _PLATFORMS=""
+        log_info "Windows runner detected — skipping --platform flag"
+        return
+    fi
+
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         _PLATFORMS="$BUILD_PLATFORM"
         log_success "Using native platform: $_PLATFORMS"
@@ -193,8 +202,10 @@ LINEAGE_EOF
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile]
-# If flavor is provided, it's passed as --build-arg FLAVOR=<flavor>
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor]
+# flavor:       distro name from variants.yaml (e.g. ubuntu-2404) — used for tag logic
+# build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
+#               falls back to flavor when not provided (backward-compatible)
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
@@ -202,6 +213,7 @@ build_container() {
     local tag="$3"
     local flavor="${4:-}"
     local dockerfile="${5:-Dockerfile}"
+    local build_flavor="${6:-$flavor}"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -221,7 +233,7 @@ build_container() {
 
     _resolve_platforms
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
-    _prepare_build_args "$version" "$flavor"
+    _prepare_build_args "$version" "$build_flavor"
 
     # Prepare tags — versioned tag always included, plus rolling latest tags
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
@@ -266,7 +278,9 @@ build_container() {
             fi
         elif [[ -x "$PROJECT_ROOT/$container/generate-dockerfile.sh" ]]; then
             # Container-specific generator script (convention)
-            if "$PROJECT_ROOT/$container/generate-dockerfile.sh" "$dockerfile" "${flavor:-}" "$version" > "$_generated_dockerfile"; then
+            # Args: <template> <flavor> <version> [<build_flavor>]
+            # build_flavor is passed when the variant declares it (e.g. github-runner distro+build_flavor split)
+            if "$PROJECT_ROOT/$container/generate-dockerfile.sh" "$dockerfile" "${flavor:-}" "$version" "${build_flavor:-}" > "$_generated_dockerfile"; then
                 _gen_ok=true
                 log_info "Generated Dockerfile via $container/generate-dockerfile.sh"
             else
@@ -296,21 +310,35 @@ build_container() {
     # Execute docker build
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log_success "GitHub Actions detected - building locally for validation..."
-        log_success "Runtime: $_RUNTIME_INFO | Platform: $_PLATFORMS | Dockerfile: $dockerfile"
+        log_success "Runtime: $_RUNTIME_INFO | Platform: ${_PLATFORMS:-native} | Dockerfile: $dockerfile"
 
-        $DOCKER buildx build \
-            -f "$dockerfile" \
-            --platform "$_PLATFORMS" \
-            --load \
-            $_CACHE_ARGS \
-            $_BUILD_ARGS \
-            $label_args \
-            $tag_args \
-            . || {
-            log_error "Build failed for $container:$tag"
-            [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
-            return 1
-        }
+        if [[ -z "${_PLATFORMS:-}" ]]; then
+            # Windows runner: plain docker build (no buildx, no --platform, no --load needed)
+            $DOCKER build \
+                -f "$dockerfile" \
+                $_BUILD_ARGS \
+                $label_args \
+                $tag_args \
+                . || {
+                log_error "Build failed for $container:$tag"
+                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+                return 1
+            }
+        else
+            $DOCKER buildx build \
+                -f "$dockerfile" \
+                --platform "$_PLATFORMS" \
+                --load \
+                $_CACHE_ARGS \
+                $_BUILD_ARGS \
+                $label_args \
+                $tag_args \
+                . || {
+                log_error "Build failed for $container:$tag"
+                [[ -n "$_generated_dockerfile" ]] && rm -f "$_generated_dockerfile"
+                return 1
+            }
+        fi
 
         log_success "✅ Build completed - image loaded locally (no push)"
     else
@@ -379,10 +407,9 @@ build_container_variants() {
     local base_sfx
     base_sfx=$(base_suffix "$container_dir")
 
-    # Get custom dockerfile for this version (if any)
-    local dockerfile
-    dockerfile=$(version_dockerfile "$container_dir" "$major_version")
-    [[ -z "$dockerfile" ]] && dockerfile="Dockerfile"
+    # Get version-level dockerfile fallback (if any)
+    local version_df
+    version_df=$(version_dockerfile "$container_dir" "$major_version")
 
     # Construct the base image version for FROM statement (e.g., "17-alpine")
     local base_image_version="${major_version}${base_sfx}"
@@ -393,6 +420,7 @@ build_container_variants() {
     variant_list=$(list_variants "$container_dir" "$major_version")
     if [[ -z "$variant_list" ]]; then
         log_info "$container has no variants for version $major_version, building single image..."
+        local dockerfile="${version_df:-Dockerfile}"
         local rc=0
         build_container "$container" "$base_image_version" "$base_image_version" "" "$dockerfile" || rc=$?
         echo "[{\"name\":\"default\",\"tag\":\"$base_image_version\",\"flavor\":\"\",\"status\":\"built\"}]"
@@ -400,7 +428,7 @@ build_container_variants() {
     fi
 
     log_info "$container has variants, building multiple images..."
-    log_info "Major version: $major_version | Base version: $base_image_version | Dockerfile: $dockerfile"
+    log_info "Major version: $major_version | Base version: $base_image_version"
 
     local results="["
     local first=true
@@ -419,14 +447,22 @@ build_container_variants() {
         variant_tag=$(variant_image_tag "$major_version" "$variant_name" "$container_dir")
         local flavor
         flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$major_version")
+        local build_flavor
+        build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$major_version")
         local description
         description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
 
-        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor)"
+        # Resolve dockerfile: variant-level > version-level > default
+        local dockerfile
+        dockerfile=$(variant_property "$container_dir" "$variant_name" "dockerfile" "$major_version")
+        [[ -z "$dockerfile" ]] && dockerfile="${version_df:-Dockerfile}"
+
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, dockerfile: $dockerfile)"
 
         # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
+        # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
