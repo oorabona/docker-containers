@@ -60,15 +60,13 @@ function Test-RootCheck {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 
-    # SYSTEM SID: S-1-5-18
+    # Only block SYSTEM (S-1-5-18) -- running as ContainerAdministrator or
+    # a member of Administrators is normal for Windows containers.
     $isSystem = $identity.User.Value -eq 'S-1-5-18'
 
-    # ContainerAdministrator is represented as the built-in Administrators group
-    $isContainerAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-    if ($isSystem -or $isContainerAdmin) {
-        Write-Err "Running as SYSTEM or ContainerAdministrator is not supported."
-        Write-Err "Set ALLOW_ROOT=true to override (security risk -- document this decision)."
+    if ($isSystem) {
+        Write-Err "Running as SYSTEM is not supported."
+        Write-Err "Set ALLOW_ROOT=true to override."
         exit 1
     }
 }
