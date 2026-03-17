@@ -532,15 +532,18 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
     }
 }
 
+# Console signal handling is unavailable in Windows containers (no console handle
+# even with -it). Graceful shutdown is handled by Docker SIGTERM + PowerShell.Exiting
+# event registered above. This is a no-op but kept for non-container environments.
 try {
     [Console]::TreatControlCAsInput = $false
     $null = [Console]::CancelKeyPress.Add({
         param($sender, $e)
-        $e.Cancel = $true   # Prevent immediate SIGINT termination; let finally block run
+        $e.Cancel = $true
         Write-Host "[INFO]  Ctrl+C received -- requesting graceful shutdown"
-})
+    })
 } catch {
-    Write-Warn "Console signal handling unavailable (no TTY) -- Ctrl+C will not trigger graceful shutdown"
+    # Expected in Windows containers -- Docker handles shutdown signals
 }
 
 # 7. Run the runner agent -- blocks until the job completes (--ephemeral exits after one job)
