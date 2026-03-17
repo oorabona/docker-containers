@@ -519,6 +519,34 @@ runs:
         echo "::endgroup::"
       continue-on-error: true
 
+    # Flatten image layers to reduce pull size (especially Windows — many RUN steps)
+    # crane flatten replaces N layers with 1, applied in-place on the registry.
+    - name: Flatten image layers
+      if: ${{ steps.push-ghcr.outputs.success == 'true' }}
+      shell: bash
+      run: |
+        image_name="${{ steps.check-build.outputs.image_name }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        image_ref="ghcr.io/$image_name:$current_tag-$platform_suffix"
+
+        # Install crane
+        CRANE_VERSION=0.20.3
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Windows_x86_64.tar.gz" -o /tmp/crane.tar.gz
+        else
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" -o /tmp/crane.tar.gz
+        fi
+        tar -xzf /tmp/crane.tar.gz -C /tmp crane
+        chmod +x /tmp/crane
+
+        echo "::group::Flattening layers for $image_ref"
+        /tmp/crane flatten "$image_ref" -t "$image_ref" && \
+          echo "::notice::Layers flattened for $image_ref" || \
+          echo "::warning::Layer flattening failed — image still usable with original layers"
+        echo "::endgroup::"
+      continue-on-error: true
+
     # Push bare tag immediately so images are pullable without waiting for manifest job.
     # For multi-arch: this is a single-platform placeholder — the manifest job will
     # replace it with a proper multi-arch manifest list once all arches complete.
