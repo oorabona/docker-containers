@@ -26,7 +26,7 @@ services:
       # - /var/run/docker.sock:/var/run/docker.sock
     # Semi-ephemeral: runner is --ephemeral (exits after one job) but compose
     # restarts it with warm caches. Use "no" for single-shot jobs.
-    restart: unless-stopped
+    restart: always
 
   runner-windows:
     # Pin to version tag — latest-windows-ltsc2022 not yet supported
@@ -40,7 +40,7 @@ services:
       - windows-npm-cache:C:\Users\runneradmin\.npm
       - windows-nuget-cache:C:\Users\runneradmin\.nuget
       - windows-pnpm-store:C:\Users\runneradmin\.pnpm-store
-    restart: unless-stopped
+    restart: always
     platform: windows/amd64
     profiles:
       - windows   # opt-in: docker compose --profile windows up
