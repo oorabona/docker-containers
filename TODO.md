@@ -20,12 +20,12 @@
 - [-] ⏭️ [Runner] Docker-in-Docker (DinD) support (deferred: DooD covers most use cases)
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (deferred: low value vs complexity)
 - [ ] 🔧 [Runner] Windows: create non-admin runner user — Priority: M (ContainerAdministrator = admin, security concern)
-- [ ] 🐛 [Runner] Fix Pester tests for CI context — 28/28 fail (mocking context differs from local) — Priority: L
-- [ ] 💡 [CI] `rebuild=sync` mode — skopeo copy between registries without rebuilding — Priority: L
-- [ ] 💡 [CI] Create `latest-*` rolling tags for Windows variants (currently only versioned tags) — Priority: M
-- [ ] 🔧 [CI] Decouple manifest jobs from build matrix — manifests should run per-variant as builds complete, not wait for ALL builds — Priority: M
+- [x] ✅ [Runner] Fix Pester tests — ENTRYPOINT_TESTING guard + opt-in via run_tests input (2026-03-17)
+- [x] ✅ [CI] `rebuild=sync` mode — skopeo copy GHCR→DockerHub (2026-03-17)
+- [x] ✅ [CI] Create `latest-*` rolling tags for Windows variants (2026-03-17)
+- [x] ✅ [CI] Decouple manifests — early tag alias per-build + manifest job upgrades (2026-03-17)
 - [ ] 🔧 [Runner] Remove double deregistration — runner agent cleans up, then PowerShell.Exiting tries again — Priority: L
-- [ ] 💡 [CI] Enable SBOM generation for Windows images — syft can scan registry images from Linux runner — Priority: M
+- [x] ✅ [CI] SBOM generation for Windows — syft in manifest job on Linux (2026-03-17)
 
 ## Completed
 
