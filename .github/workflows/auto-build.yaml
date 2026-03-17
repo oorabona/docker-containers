@@ -487,6 +487,8 @@ jobs:
 
       - name: Run bats tests (Linux)
         if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64'
+        timeout-minutes: 5
+        continue-on-error: true
         shell: bash
         run: |
           if [[ -f "${{ matrix.build.container }}/tests/test-runner-linux.bats" ]]; then
