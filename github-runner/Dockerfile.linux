@@ -51,5 +51,11 @@ ENV RUNNER_DISABLE_AUTO_UPDATE=1
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ENV HOME=/home/runner
 
+# Pre-create cache directories owned by runner so Docker volumes mount with correct ownership
+RUN mkdir -p /opt/hostedtoolcache /home/runner/.cargo /home/runner/.npm \
+             /home/runner/.nuget /home/runner/.pnpm-store \
+    && chown -R runner:runner /opt/hostedtoolcache /home/runner/.cargo /home/runner/.npm \
+                              /home/runner/.nuget /home/runner/.pnpm-store
+
 USER runner
 ENTRYPOINT ["tini", "--", "/home/runner/entrypoint.sh"]
