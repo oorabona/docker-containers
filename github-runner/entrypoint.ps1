@@ -221,7 +221,7 @@ function Get-RegistrationToken {
 
         } catch [Net.WebException] {
             $webEx    = $_.Exception
-            $httpCode = [int]$webEx.Response?.StatusCode
+            $httpCode = if ($webEx.Response) { [int]$webEx.Response.StatusCode } else { 0 }
 
             # Honour Retry-After on rate-limit responses
             if ($httpCode -eq 429) {
