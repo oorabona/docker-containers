@@ -14,61 +14,47 @@ ARG FLAVOR=base
 # Bootstrap with PS 5.1, install Chocolatey + pwsh, then switch to PS 7
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Install Chocolatey (needs PS 5.1 bootstrap)
+# Layer 1: Chocolatey + pwsh + base packages + Git (combined to reduce layers)
 RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
-    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')); \
+    choco install pwsh git curl jq unzip -y --no-progress; \
+    # Add Git\bin to system PATH (bash.exe, sh.exe for shell: bash in workflows) \
+    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
+    # Enable NTFS long paths \
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1; \
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
+    git config --system core.longpaths true; \
+    # Cleanup Chocolatey cache \
+    Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue
 
-# Install PowerShell 7 and switch shell for all subsequent RUN steps
-RUN choco install pwsh -y --no-progress
 SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
 # Disable runner auto-update — prevents the agent from self-updating and crashing
 # the container mid-job (containers are rebuilt to upgrade the runner version).
 ENV RUNNER_DISABLE_AUTO_UPDATE=1
 
-# Enable NTFS long path support (paths > 260 characters).
-# Required by many build tools (Rust, Node deep node_modules trees, etc.).
-RUN Set-ItemProperty \
-      -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' \
-      -Name 'LongPathsEnabled' \
-      -Value 1
-
-# Configure Git to honour the LongPathsEnabled registry key at the system level.
-# Must run after git is installed — choco git is installed in the next step.
-# We install git first so this config applies to the base layer.
-RUN choco install -y git --no-progress
-
-# Add Git\bin to system PATH (bash.exe, sh.exe — needed by shell: bash in workflows)
-# Choco only adds Git\cmd (git.exe) — Git\bin has the Unix tools
-RUN $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
-    git config --system core.longpaths true
-
-# Base packages: curl, jq, unzip (git already installed above)
-RUN choco install -y curl jq unzip --no-progress
-
-# Dev packages: VS Build Tools 2022 with the VC++ workload (Tauri, native addons, etc.)
-# Only installed when FLAVOR=dev; skipped for base flavor to keep the image lean.
+# Layer 2 (dev only): VS Build Tools 2022 + Windows 11 SDK
+# Separate layer so base and dev share Layer 1
 RUN if ($env:FLAVOR -eq 'dev') { \
-      Write-Host 'Installing VS Build Tools...'; \
+      Write-Host 'Installing VS Build Tools + Windows 11 SDK...'; \
       choco install -y visualstudio2022buildtools --no-progress \
         --package-parameters \
           '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
+      # Cleanup installer cache (~1.5 GB) \
+      Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue; \
+      Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue; \
     } else { \
       Write-Host ('Skipping VS Build Tools, FLAVOR=' + $env:FLAVOR); \
     }
 
-# Create the runneradmin local account and add it to the Administrators group.
-# The runner agent requires administrative privileges on Windows.
+# Layer 3: User + runner agent
 RUN net user runneradmin /add /Y; \
     net localgroup administrators runneradmin /add
 
 WORKDIR C:\\actions-runner
 
-# Runner agent — pre-downloaded by prepare-build-context.sh into the build context
-# (avoids network issues inside Docker build containers hitting GitHub CDN)
 COPY runner.zip runner.zip
 RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
     Remove-Item runner.zip
