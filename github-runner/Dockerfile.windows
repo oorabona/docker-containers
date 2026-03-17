@@ -11,20 +11,21 @@ FROM ${WINDOWS_BASE}
 ARG VERSION=2.332.0
 ARG FLAVOR=base
 
-# Use PowerShell as the default shell for all subsequent RUN instructions.
-# $ErrorActionPreference = 'Stop'  → treat all errors as terminating (fail fast)
-# $ProgressPreference = 'SilentlyContinue' → suppress download progress bars (cleaner logs)
+# Bootstrap with PS 5.1, install Chocolatey + pwsh, then switch to PS 7
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Install Chocolatey (needs PS 5.1 bootstrap)
+RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Install PowerShell 7 and switch shell for all subsequent RUN steps
+RUN choco install pwsh -y --no-progress
+SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
 # Disable runner auto-update — prevents the agent from self-updating and crashing
 # the container mid-job (containers are rebuilt to upgrade the runner version).
 ENV RUNNER_DISABLE_AUTO_UPDATE=1
-
-# Install Chocolatey package manager
-RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
-    [System.Net.ServicePointManager]::SecurityProtocol = \
-      [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
-    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 
 # Enable NTFS long path support (paths > 260 characters).
 # Required by many build tools (Rust, Node deep node_modules trees, etc.).
@@ -86,4 +87,4 @@ LABEL com.github.runner.distro="windows-ltsc2022"
 # when installing service dependencies.
 USER runneradmin
 
-ENTRYPOINT ["powershell", "-File", "C:\\entrypoint.ps1"]
+ENTRYPOINT ["pwsh", "-File", "C:\\entrypoint.ps1"]
