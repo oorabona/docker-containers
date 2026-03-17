@@ -2,6 +2,28 @@
 
 Self-hosted GitHub Actions runner in a Docker container. Supports Linux (Ubuntu 24.04, Debian Trixie) and Windows (Server 2022 ltsc2022), each in `base` and `dev` flavors. Runners are semi-ephemeral: each container handles exactly one job then exits, while named Docker volumes persist tool caches across restarts.
 
+## Why this image?
+
+GitHub provides an [official runner image](https://github.com/actions/runner/pkgs/container/actions-runner) (`ghcr.io/actions/actions-runner`) designed for [ARC](https://github.com/actions/actions-runner-controller) (Actions Runner Controller) on Kubernetes. If you run K8s, ARC is the recommended approach.
+
+This image fills a different gap:
+
+| Feature | Official (ARC) | This image |
+|---------|:-:|:-:|
+| Linux containers | ✅ | ✅ |
+| Windows containers | ❌ | ✅ |
+| Kubernetes required | Yes | No |
+| `docker compose up` | ❌ | ✅ |
+| GitHub App auth (JWT) | Via ARC config | Built into entrypoint |
+| PAT / registration token auth | Via ARC config | Built into entrypoint |
+| Semi-ephemeral with warm caches | Manual | `restart: always` + volumes |
+| Org-level runners | Via ARC | Via env var (`GITHUB_ORG`) |
+| Multi-distro (Ubuntu, Debian) | Ubuntu only | Ubuntu + Debian |
+
+**Use this image when:** you want self-hosted runners on Docker Desktop, Podman, or any Docker host — without Kubernetes.
+
+**Use the official image when:** you have a Kubernetes cluster and want to use ARC.
+
 ## Quick Start
 
 ```bash
