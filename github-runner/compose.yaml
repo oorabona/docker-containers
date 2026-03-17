@@ -24,7 +24,9 @@ services:
       #   Any workflow running on this runner can escape the container via the Docker socket.
       #   Only enable on trusted, isolated infrastructure. Never expose to untrusted workflows.
       # - /var/run/docker.sock:/var/run/docker.sock
-    restart: "no"   # ephemeral: each container handles exactly one job then exits
+    # Semi-ephemeral: runner is --ephemeral (exits after one job) but compose
+    # restarts it with warm caches. Use "no" for single-shot jobs.
+    restart: unless-stopped
 
   runner-windows:
     image: ghcr.io/oorabona/github-runner:latest-windows-ltsc2022
@@ -33,7 +35,11 @@ services:
       RUNNER_TOOL_CACHE: C:\cache\tool-cache
     volumes:
       - windows-tool-cache:C:\cache\tool-cache
-    restart: "no"
+      - windows-cargo-cache:C:\Users\runneradmin\.cargo
+      - windows-npm-cache:C:\Users\runneradmin\.npm
+      - windows-nuget-cache:C:\Users\runneradmin\.nuget
+      - windows-pnpm-store:C:\Users\runneradmin\.pnpm-store
+    restart: unless-stopped
     platform: windows/amd64
     profiles:
       - windows   # opt-in: docker compose --profile windows up
@@ -51,3 +57,11 @@ volumes:
     name: github-runner-pnpm-store
   windows-tool-cache:
     name: github-runner-windows-tool-cache
+  windows-cargo-cache:
+    name: github-runner-windows-cargo-cache
+  windows-npm-cache:
+    name: github-runner-windows-npm-cache
+  windows-nuget-cache:
+    name: github-runner-windows-nuget-cache
+  windows-pnpm-store:
+    name: github-runner-windows-pnpm-store
