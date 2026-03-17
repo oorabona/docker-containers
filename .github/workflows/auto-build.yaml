@@ -490,11 +490,11 @@ jobs:
         shell: bash
         run: |
           if [[ -f "${{ matrix.build.container }}/tests/test-runner-linux.bats" ]]; then
-            # Install bats from pinned GitHub release (faster than apt-get)
+            # Install bats from pinned GitHub release
             if ! command -v bats &>/dev/null; then
               BATS_VERSION=1.11.1
-              gh release download "v${BATS_VERSION}" --repo bats-core/bats-core --archive tar.gz -D /tmp
-              tar -xzf "/tmp/bats-core-${BATS_VERSION}.tar.gz" -C /tmp
+              curl -sL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" -o /tmp/bats.tar.gz
+              tar -xzf /tmp/bats.tar.gz -C /tmp
               sudo "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
             fi
             bats "${{ matrix.build.container }}/tests/test-runner-linux.bats"
