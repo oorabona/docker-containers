@@ -25,6 +25,7 @@
 - [ ] 💡 [CI] Create `latest-*` rolling tags for Windows variants (currently only versioned tags) — Priority: M
 - [ ] 🔧 [CI] Decouple manifest jobs from build matrix — manifests should run per-variant as builds complete, not wait for ALL builds — Priority: M
 - [ ] 🔧 [Runner] Remove double deregistration — runner agent cleans up, then PowerShell.Exiting tries again — Priority: L
+- [ ] 💡 [CI] Enable SBOM generation for Windows images — syft can scan registry images from Linux runner — Priority: M
 
 ## Completed
 
