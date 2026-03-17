@@ -491,6 +491,28 @@ runs:
         echo "::endgroup::"
       continue-on-error: true
 
+    # Windows is single-arch — create bare tag alias immediately after push
+    # so it's available without waiting for the manifest job (which waits for ALL builds)
+    - name: Create tag alias (Windows single-arch)
+      if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os == 'Windows' }}
+      shell: bash
+      run: |
+        image_name="${{ steps.check-build.outputs.image_name }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+
+        ghcr_src="ghcr.io/$image_name:$current_tag-$platform_suffix"
+        ghcr_dst="ghcr.io/$image_name:$current_tag"
+        echo "::notice::Creating Windows tag alias: $ghcr_dst"
+        docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Tag alias failed (will be created by manifest job)"
+
+        # Docker Hub alias too
+        if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
+          dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
+          dh_dst="docker.io/$image_name:$current_tag"
+          docker buildx imagetools create -t "$dh_dst" "$dh_src" || true
+        fi
+
     - name: Skip push for pull request
       if: ${{ steps.build.outputs.image_loaded == 'true' && github.event_name == 'pull_request' }}
       shell: bash
