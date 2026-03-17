@@ -19,6 +19,9 @@
 - [-] ⏭️ [Runner] Add ubuntu-2204 + debian-bookworm distros (deferred: MVP sufficient)
 - [-] ⏭️ [Runner] Docker-in-Docker (DinD) support (deferred: DooD covers most use cases)
 - [-] ⏭️ [Testing] Integrate test-harness into CI pipeline (deferred: low value vs complexity)
+- [ ] 🔧 [Runner] Windows: create non-admin runner user — Priority: M (ContainerAdministrator = admin, security concern)
+- [ ] 🐛 [Runner] Fix Pester tests for CI context — 28/28 fail (mocking context differs from local) — Priority: L
+- [ ] 💡 [CI] `rebuild=sync` mode — skopeo copy between registries without rebuilding — Priority: L
 
 ## Completed
 
