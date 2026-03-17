@@ -14,7 +14,7 @@ on:
         default: false
         type: boolean
       rebuild:
-        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache, sync=copy GHCR→DockerHub'
         required: false
         type: string
         default: 'none'
@@ -98,10 +98,10 @@ on:
         default: false
         type: boolean
       rebuild:
-        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache'
+        description: 'Build mode: none=auto-detect, changed=targeted, all=ignore digest, force=no-cache, sync=copy GHCR→DockerHub'
         required: false
         type: choice
-        options: ['none', 'changed', 'all', 'force']
+        options: ['none', 'changed', 'all', 'force', 'sync']
         default: 'none'
       scope:
         description: 'Filter variants: e.g. "windows", "dev", "ubuntu-2404-dev", "arm64"'
@@ -340,11 +340,58 @@ jobs:
           echo ""
           echo "✅ Base image caching complete"
 
+  sync-registries:
+    name: Sync ${{ matrix.build.container }}:${{ matrix.build.tag }} GHCR→DockerHub
+    needs: [detect-containers]
+    if: |
+      inputs.rebuild == 'sync' &&
+      needs.detect-containers.outputs.builds_count > 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Sync image to Docker Hub
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          if [[ -z "$DOCKERHUB_USERNAME" ]]; then
+            echo "::notice::Skipping sync (no Docker Hub credentials)"
+            exit 0
+          fi
+
+          src="docker://ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG"
+          dst="docker://docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG"
+          echo "::notice::Syncing $src → $dst"
+          skopeo copy --all "$src" "$dst" || \
+            echo "::warning::Sync failed for $CONTAINER:$TAG — image may not exist on GHCR"
+
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
     needs: [detect-containers, build-extensions, cache-base-images]
     if: |
       always() &&
+      inputs.rebuild != 'sync' &&
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
@@ -629,8 +676,10 @@ jobs:
     # Run manifest creation even if some builds failed (individual manifests will
     # fail gracefully if their arch-specific images are missing). This prevents
     # one failed build from blocking manifests for all other successful builds.
+    # Skip entirely when rebuild=sync (build-and-push was skipped, nothing to manifest).
     if: |
       always() &&
+      inputs.rebuild != 'sync' &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
       needs.detect-containers.outputs.builds_count > 0 &&
       github.event_name != 'pull_request'
@@ -674,6 +723,24 @@ jobs:
             ghcr_dst="ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG"
             echo "::notice::Creating Windows tag alias: $ghcr_dst"
             docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Failed to create tag alias"
+
+            # Create latest-* rolling tags for Windows (only for the latest version)
+            if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
+              if [[ "${IS_DEFAULT}" == "true" ]]; then
+                latest_tag="latest"
+              elif [[ -n "${VARIANT}" ]]; then
+                latest_tag="latest-${VARIANT}"
+              else
+                latest_tag=""
+              fi
+
+              if [[ -n "$latest_tag" ]]; then
+                echo "::notice::Creating Windows rolling tag: ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag"
+                docker buildx imagetools create \
+                  -t "ghcr.io/$GITHUB_USERNAME/$CONTAINER:$latest_tag" \
+                  "$ghcr_src" || echo "::warning::Failed to create rolling tag $latest_tag"
+              fi
+            fi
             exit 0
           fi
           source ./helpers/create-manifest.sh
@@ -695,15 +762,38 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
-          # Windows containers are single-arch — no multi-arch manifest needed
-          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
-            echo "::notice::Skipping manifest creation for Windows variant ${{ matrix.build.tag }}"
-            exit 0
-          fi
           if [[ -z "$DOCKERHUB_USERNAME" ]]; then
             echo "::notice::Skipping Docker Hub manifest (no credentials)"
             exit 0
           fi
+
+          # Windows containers are single-arch — create tag alias + latest-* rolling tags
+          if [[ "${{ matrix.build.os }}" == "windows" ]]; then
+            dh_src="docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG-amd64"
+            dh_dst="docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG"
+            echo "::notice::Creating Windows Docker Hub tag alias: $dh_dst"
+            docker buildx imagetools create -t "$dh_dst" "$dh_src" || echo "::warning::Failed to create Docker Hub tag alias"
+
+            # Create latest-* rolling tags for Windows (only for the latest version)
+            if [[ "${IS_LATEST_VERSION}" == "true" ]]; then
+              if [[ "${IS_DEFAULT}" == "true" ]]; then
+                latest_tag="latest"
+              elif [[ -n "${VARIANT}" ]]; then
+                latest_tag="latest-${VARIANT}"
+              else
+                latest_tag=""
+              fi
+
+              if [[ -n "$latest_tag" ]]; then
+                echo "::notice::Creating Windows Docker Hub rolling tag: docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag"
+                docker buildx imagetools create \
+                  -t "docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$latest_tag" \
+                  "$dh_src" || true
+              fi
+            fi
+            exit 0
+          fi
+
           source ./helpers/create-manifest.sh
           dockerhub_image="docker.io/$DOCKERHUB_USERNAME/$CONTAINER"
           ghcr_image="ghcr.io/$GITHUB_USERNAME/$CONTAINER"
@@ -712,8 +802,58 @@ jobs:
           echo "::endgroup::"
         continue-on-error: true
 
+      # SBOM for Windows images — syft runs on Linux (manifest job runner) and scans the registry image
+      - name: Install syft (Windows SBOM)
+        id: install-syft-windows
+        if: matrix.build.os == 'windows' && github.event_name != 'pull_request'
+        uses: anchore/sbom-action/download-syft@57aae528053a48a3f6235f2d9461b05fbcb7366d # v0.23.1
+
+      - name: Generate SBOM (Windows)
+        id: sbom-windows
+        if: steps.install-syft-windows.outcome == 'success'
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          source ./helpers/sbom-utils.sh
+          image_ref="ghcr.io/${GITHUB_USERNAME}/${CONTAINER}:${TAG}-amd64"
+          sbom_file=".build-lineage/${CONTAINER}-${TAG}.sbom.json"
+          mkdir -p .build-lineage
+          generate_sbom "$image_ref" "$sbom_file"
+          echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
+
+          # Capture digest for attestation
+          digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image_ref" 2>/dev/null \
+            | jq -r '.digest // empty' || echo "")
+          if [[ -z "$digest" ]]; then
+            digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null \
+              | head -1 | sed 's/.*@//' || echo "")
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Upload SBOM artifact (Windows)
+        if: steps.sbom-windows.outcome == 'success'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4
+        with:
+          name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: ${{ steps.sbom-windows.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Attest SBOM (Windows)
+        if: steps.sbom-windows.outcome == 'success' && steps.sbom-windows.outputs.digest != ''
+        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4.0.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
+          subject-digest: ${{ steps.sbom-windows.outputs.digest }}
+          sbom-path: ${{ steps.sbom-windows.outputs.sbom_file }}
+        continue-on-error: true
+
   summary:
-    needs: [detect-containers, build-and-push, create-manifest]
+    needs: [detect-containers, build-and-push, create-manifest, sync-registries]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

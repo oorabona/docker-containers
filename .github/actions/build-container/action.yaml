@@ -80,6 +80,9 @@ outputs:
   dockerhub_pushed:
     description: Whether Docker Hub push succeeded
     value: ${{ steps.push-dockerhub.outputs.success }}
+  is_default:
+    description: Whether this build is the default variant (used for latest tag routing)
+    value: ${{ steps.check-build.outputs.is_default }}
   image_loaded:
     description: Whether the image was actually loaded into the Docker daemon (false if skipped or dry-run)
     value: ${{ steps.build.outputs.image_loaded }}
@@ -201,11 +204,24 @@ runs:
         platform="${{ inputs.platform }}"
         platform_suffix="${platform##*/}"
 
+        # Determine if this is the default variant (for latest tag logic)
+        local_is_default="false"
+        if [[ -n "$flavor" ]]; then
+          source ./helpers/variant-utils.sh 2>/dev/null || true
+          if declare -f variant_property >/dev/null 2>&1; then
+            local_is_default=$(variant_property "$container" "$flavor" "default" 2>/dev/null || echo "false")
+          fi
+        else
+          # No flavor = single-variant container, always default
+          local_is_default="true"
+        fi
+
         echo "needs_build=$needs_build" >> $GITHUB_OUTPUT
         echo "current_version=$current_version" >> $GITHUB_OUTPUT
         echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
         echo "image_name=$image_name" >> $GITHUB_OUTPUT
         echo "flavor=$flavor" >> $GITHUB_OUTPUT
+        echo "is_default=$local_is_default" >> $GITHUB_OUTPUT
         echo "dockerfile=$dockerfile" >> $GITHUB_OUTPUT
         echo "platform_suffix=$platform_suffix" >> $GITHUB_OUTPUT
 
@@ -506,7 +522,7 @@ runs:
     # Push bare tag immediately so images are pullable without waiting for manifest job.
     # For multi-arch: this is a single-platform placeholder — the manifest job will
     # replace it with a proper multi-arch manifest list once all arches complete.
-    # For single-arch (Windows): this IS the final tag.
+    # For single-arch (Windows): this IS the final tag (including latest-* rolling tags).
     - name: Create early tag alias
       if: ${{ steps.push-ghcr.outputs.success == 'true' }}
       shell: bash
@@ -514,6 +530,8 @@ runs:
         image_name="${{ steps.check-build.outputs.image_name }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
         platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        flavor="${{ steps.check-build.outputs.flavor }}"
+        is_default="${{ steps.check-build.outputs.is_default }}"
 
         ghcr_src="ghcr.io/$image_name:$current_tag-$platform_suffix"
         ghcr_dst="ghcr.io/$image_name:$current_tag"
@@ -525,6 +543,29 @@ runs:
           dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
           dh_dst="docker.io/$image_name:$current_tag"
           docker buildx imagetools create -t "$dh_dst" "$dh_src" || true
+        fi
+
+        # Create latest-* rolling tags for Windows (single-arch — manifest job won't handle these)
+        # For Linux: manifest job creates the authoritative multi-arch latest tags
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          if [[ "$is_default" == "true" ]]; then
+            latest_tag="latest"
+          elif [[ -n "$flavor" ]]; then
+            latest_tag="latest-$flavor"
+          else
+            latest_tag=""
+          fi
+
+          if [[ -n "$latest_tag" ]]; then
+            echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
+            docker buildx imagetools create -t "ghcr.io/$image_name:$latest_tag" "$ghcr_src" || \
+              echo "::warning::Failed to create rolling tag ghcr.io/$image_name:$latest_tag"
+
+            if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
+              dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
+              docker buildx imagetools create -t "docker.io/$image_name:$latest_tag" "$dh_src" || true
+            fi
+          fi
         fi
 
     - name: Skip push for pull request
