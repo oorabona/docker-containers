@@ -72,6 +72,14 @@ RUN choco install -y visualstudio2022buildtools --no-progress \
     Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue; \
     Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
 
+# Add MSVC and Windows SDK tools to system PATH so rc.exe, cl.exe, link.exe work without vcvarsall.bat
+RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
+    $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
+    $sdkBin = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'; \
+    $msvcBin = "$vsBase\$msvcVer\bin\Hostx64\x64"; \
+    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', "$machPath;$msvcBin;$sdkBin", 'Machine')
+
 LABEL com.github.runner.flavor="dev"
 
 USER runneradmin
