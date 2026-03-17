@@ -532,12 +532,16 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
     }
 }
 
-[Console]::TreatControlCAsInput = $false
-$null = [Console]::CancelKeyPress.Add({
-    param($sender, $e)
-    $e.Cancel = $true   # Prevent immediate SIGINT termination; let finally block run
-    Write-Host "[INFO]  Ctrl+C received -- requesting graceful shutdown"
+try {
+    [Console]::TreatControlCAsInput = $false
+    $null = [Console]::CancelKeyPress.Add({
+        param($sender, $e)
+        $e.Cancel = $true   # Prevent immediate SIGINT termination; let finally block run
+        Write-Host "[INFO]  Ctrl+C received -- requesting graceful shutdown"
 })
+} catch {
+    Write-Warn "Console signal handling unavailable (no TTY) -- Ctrl+C will not trigger graceful shutdown"
+}
 
 # 7. Run the runner agent -- blocks until the job completes (--ephemeral exits after one job)
 Write-Info "Starting runner agent ..."
