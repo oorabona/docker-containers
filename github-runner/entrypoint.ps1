@@ -450,9 +450,9 @@ function Initialize-CacheDirectories {
 # MAIN -- guarded so the file can be dot-sourced by Pester tests
 # ===========================================================================
 
-# When dot-sourced (e.g. `. ./entrypoint.ps1` from a test), InvocationName is '.'
-# and the main block is skipped -- only the function definitions are loaded.
-if ($MyInvocation.InvocationName -ne '.') {
+# When sourced for testing, set ENTRYPOINT_TESTING=1 to skip the main block.
+# Also supports dot-source detection via InvocationName (legacy).
+if ($env:ENTRYPOINT_TESTING -ne '1' -and $MyInvocation.InvocationName -ne '.') {
 
 # 0. Root / privilege check
 Test-RootCheck

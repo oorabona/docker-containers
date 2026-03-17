@@ -35,8 +35,8 @@ BeforeAll {
         throw "entrypoint.ps1 not found at: $script:EntrypointPs"
     }
 
-    # Dot-source the entrypoint to load function definitions only.
-    # The dot-source guard (InvocationName -ne '.') prevents main from running.
+    # Load function definitions only — ENTRYPOINT_TESTING skips the main block.
+    $env:ENTRYPOINT_TESTING = '1'
     . $script:EntrypointPs
 
     # ---------------------------------------------------------------------------
