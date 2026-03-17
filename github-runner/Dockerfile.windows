@@ -55,7 +55,7 @@ RUN if ($env:FLAVOR -eq 'dev') { \
       Write-Host 'Installing VS Build Tools...'; \
       choco install -y visualstudio2022buildtools --no-progress \
         --package-parameters \
-          '--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet'; \
+          '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
     } else { \
       Write-Host ('Skipping VS Build Tools, FLAVOR=' + $env:FLAVOR); \
     }
