@@ -22,19 +22,16 @@ ARG VERSION=2.332.0
 # Bootstrap with PS 5.1, install Chocolatey + pwsh, then switch to PS 7
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Single layer: Chocolatey + pwsh + base packages + Git + PATH + longpaths
+# Single layer: Chocolatey + pwsh + git + curl + jq + unzip + PATH + longpaths
 RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
     iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')); \
     choco install pwsh git curl jq unzip -y --no-progress; \
-    # Add Git\bin to system PATH (bash.exe, sh.exe for shell: bash in workflows) \
     $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
     [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
-    # Enable NTFS long paths \
     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1; \
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
     git config --system core.longpaths true; \
-    # Cleanup Chocolatey cache \
     Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue
 
 SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
@@ -73,7 +70,6 @@ USER ContainerAdministrator
 RUN choco install -y visualstudio2022buildtools --no-progress \
       --package-parameters \
         '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
-    # Cleanup installer caches (~1.5 GB) \
     Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue; \
     Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
 
