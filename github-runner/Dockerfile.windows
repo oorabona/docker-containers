@@ -66,11 +66,13 @@ FROM base AS dev
 
 USER ContainerAdministrator
 
-# VS Build Tools + SDK install + PATH setup + cleanup (single layer to save disk)
+# VS Build Tools + Windows 11 SDK
 RUN choco install -y visualstudio2022buildtools --no-progress \
       --package-parameters \
-        '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
-    $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
+        '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'
+
+# Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe) + cleanup caches
+RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
     $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
     $sdkBin = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'; \
     $msvcBin = "$vsBase\$msvcVer\bin\Hostx64\x64"; \
