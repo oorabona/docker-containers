@@ -60,14 +60,20 @@ function Test-RootCheck {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 
-    # Only block SYSTEM (S-1-5-18) -- running as ContainerAdministrator or
-    # a member of Administrators is normal for Windows containers.
+    # SYSTEM (S-1-5-18) = hard block (misconfigured container)
     $isSystem = $identity.User.Value -eq 'S-1-5-18'
-
     if ($isSystem) {
         Write-Err "Running as SYSTEM is not supported."
         Write-Err "Set ALLOW_ROOT=true to override."
         exit 1
+    }
+
+    # ContainerAdministrator/Administrators = warn but allow
+    # Windows containers typically require admin; the container boundary
+    # provides isolation. A future improvement would be a non-admin runner user.
+    $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        Write-Warn "Running as Administrator. Consider using a non-privileged user for better security."
     }
 }
 
