@@ -5,10 +5,6 @@
 # Build:
 #   docker build --build-arg VERSION=2.332.0 --target base -f Dockerfile.windows .
 #   docker build --build-arg VERSION=2.332.0 --target dev  -f Dockerfile.windows .
-#
-# Note: Process isolation is the default on Windows Server 2022.
-#       Hyper-V isolation is unavailable on standard GitHub-hosted runners.
-#       Do NOT add --isolation in this Dockerfile; set it at docker run time if needed.
 
 ARG WINDOWS_BASE=mcr.microsoft.com/windows/servercore:ltsc2022
 
@@ -19,31 +15,35 @@ FROM ${WINDOWS_BASE} AS base
 
 ARG VERSION=2.332.0
 
-# Bootstrap with PS 5.1, install Chocolatey + pwsh, then switch to PS 7
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Single layer: Chocolatey + pwsh + git + curl + jq + unzip + PATH + longpaths
+# Install Chocolatey
 RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
-    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')); \
-    choco install pwsh git curl jq unzip -y --no-progress; \
-    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
-    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1; \
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
-    git config --system core.longpaths true; \
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Install pwsh + base packages
+RUN choco install pwsh git curl jq unzip -y --no-progress; \
     Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue
 
 SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
+# Git config: add Git\bin to PATH (bash.exe) + enable long paths
+RUN $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1; \
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
+    git config --system core.longpaths true
+
 ENV RUNNER_DISABLE_AUTO_UPDATE=1
 
-# Create user + install runner agent
+# Create user
 RUN net user runneradmin /add /Y; \
     net localgroup administrators runneradmin /add
 
 WORKDIR C:\\actions-runner
 
+# Runner agent
 COPY runner.zip runner.zip
 RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
     Remove-Item runner.zip
@@ -66,7 +66,6 @@ FROM base AS dev
 
 USER ContainerAdministrator
 
-# VS Build Tools + Windows 11 SDK (Tauri, Rust, native addons)
 RUN choco install -y visualstudio2022buildtools --no-progress \
       --package-parameters \
         '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
