@@ -75,3 +75,7 @@ volumes/
 
 # Runner agent downloaded by prepare-build-context.sh
 github-runner/runner.*
+
+# Generated Dockerfiles (template expansion output — recreated by generate-dockerfile.sh)
+github-runner/Dockerfile.ubuntu-*
+github-runner/Dockerfile.debian-*
