@@ -68,7 +68,7 @@ function Test-RootCheck {
 
     if ($isSystem -or $isContainerAdmin) {
         Write-Err "Running as SYSTEM or ContainerAdministrator is not supported."
-        Write-Err "Set ALLOW_ROOT=true to override (security risk — document this decision)."
+        Write-Err "Set ALLOW_ROOT=true to override (security risk -- document this decision)."
         exit 1
     }
 }
@@ -96,12 +96,12 @@ function New-JWT {
     $exp = $now + 540         # 9-minute lifetime (GitHub max is 10 min)
 
     $headerJson  = '{"alg":"RS256","typ":"JWT"}'
-    $payloadJson = "{`"iat`":$iat,`"exp`":$exp,`"iss`":`"$AppId`"}"
+    $payloadJson = '{"iat":' + $iat + ',"exp":' + $exp + ',"iss":"' + $AppId + '"}'
 
     $header  = ConvertTo-JwtBase64 ([Text.Encoding]::UTF8.GetBytes($headerJson))
     $payload = ConvertTo-JwtBase64 ([Text.Encoding]::UTF8.GetBytes($payloadJson))
 
-    $signingInput = "$header.$payload"
+    $signingInput = $header + '.' + $payload
 
     # --- Load RSA key -------------------------------------------------------
     $pemContent = Get-Content -Raw $KeyPemPath
@@ -143,7 +143,7 @@ function New-JWT {
     }
 
     $sig = ConvertTo-JwtBase64 $sigBytes
-    return "$signingInput.$sig"
+    return $signingInput + '.' + $sig
 }
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,14 @@ function Get-RegistrationToken {
                 $retryAfter = $webEx.Response.Headers['Retry-After']
                 if ($retryAfter -match '^\d+$') {
                     $delay = [int]$retryAfter
-                    Write-Warn "Rate-limited (HTTP 429) — Retry-After: ${delay}s"
+                    Write-Warn "Rate-limited (HTTP 429) -- Retry-After: ${delay}s"
                 }
             }
 
-            Write-Warn "Attempt $attempt/$maxAttempts failed (HTTP $httpCode) — retry in ${delay}s"
+            Write-Warn "Attempt $attempt/$maxAttempts failed (HTTP $httpCode) -- retry in ${delay}s"
 
         } catch {
-            Write-Warn "Attempt $attempt/$maxAttempts failed: $($_.Exception.Message) — retry in ${delay}s"
+            Write-Warn "Attempt $attempt/$maxAttempts failed: $($_.Exception.Message) -- retry in ${delay}s"
         }
 
         if ($attempt -lt $maxAttempts) {
@@ -277,13 +277,13 @@ function Register-Runner {
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -eq 3) {
-        Write-Warn "Runner name conflict (exit 3) — retrying with --replace"
+        Write-Warn "Runner name conflict (exit 3) -- retrying with --replace"
         & '.\config.cmd' @configArgs '--replace'
         $exitCode = $LASTEXITCODE
     }
 
     if ($exitCode -ne 0) {
-        Write-Err "config.cmd exited with code $exitCode — registration failed"
+        Write-Err "config.cmd exited with code $exitCode -- registration failed"
         exit $exitCode
     }
 
@@ -310,9 +310,9 @@ function Remove-Runner {
 # Function: Resolve-PemFile
 # Returns a path to a temporary PEM file for the RSA private key.
 # Handles three cases:
-#   1. APP_PRIVATE_KEY_FILE env var — use directly
-#   2. APP_PRIVATE_KEY env var with literal \n — expand and write temp file
-#   3. APP_PRIVATE_KEY env var with real newlines — write temp file
+#   1. APP_PRIVATE_KEY_FILE env var -- use directly
+#   2. APP_PRIVATE_KEY env var with literal \n -- expand and write temp file
+#   3. APP_PRIVATE_KEY env var with real newlines -- write temp file
 # ---------------------------------------------------------------------------
 function Resolve-PemFile {
     [OutputType([string])]
@@ -443,11 +443,11 @@ function Initialize-CacheDirectories {
 }
 
 # ===========================================================================
-# MAIN — guarded so the file can be dot-sourced by Pester tests
+# MAIN -- guarded so the file can be dot-sourced by Pester tests
 # ===========================================================================
 
 # When dot-sourced (e.g. `. ./entrypoint.ps1` from a test), InvocationName is '.'
-# and the main block is skipped — only the function definitions are loaded.
+# and the main block is skipped -- only the function definitions are loaded.
 if ($MyInvocation.InvocationName -ne '.') {
 
 # 0. Root / privilege check
@@ -496,9 +496,9 @@ Write-Info "API base    : $apiBase"
 Write-Info "Tool cache  : $($env:RUNNER_TOOL_CACHE)"
 
 # 2. Obtain registration token
-# RUNNER_TOKEN path: the env var IS the registration token — skip API auth entirely
+# RUNNER_TOKEN path: the env var IS the registration token -- skip API auth entirely
 if ($env:RUNNER_TOKEN) {
-    Write-Info "Using direct registration token (RUNNER_TOKEN) — skipping API auth."
+    Write-Info "Using direct registration token (RUNNER_TOKEN) -- skipping API auth."
     $script:RegToken = $env:RUNNER_TOKEN
 } else {
     # PAT or GitHub App path: exchange for a registration token via the API
@@ -518,9 +518,9 @@ Register-Runner `
     -RunnerLabels      $labels `
     -RunnerGroup       $group
 
-# 6. Signal handling — deregister on PowerShell engine exit and on Ctrl+C
+# 6. Signal handling -- deregister on PowerShell engine exit and on Ctrl+C
 $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-    Write-Host "[INFO]  PowerShell engine exiting — deregistering runner"
+    Write-Host "[INFO]  PowerShell engine exiting -- deregistering runner"
     try {
         & 'C:\actions-runner\config.cmd' remove --token $script:RegToken 2>$null
     } catch {
@@ -532,10 +532,10 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 $null = [Console]::CancelKeyPress.Add({
     param($sender, $e)
     $e.Cancel = $true   # Prevent immediate SIGINT termination; let finally block run
-    Write-Host "[INFO]  Ctrl+C received — requesting graceful shutdown"
+    Write-Host "[INFO]  Ctrl+C received -- requesting graceful shutdown"
 })
 
-# 7. Run the runner agent — blocks until the job completes (--ephemeral exits after one job)
+# 7. Run the runner agent -- blocks until the job completes (--ephemeral exits after one job)
 Write-Info "Starting runner agent ..."
 
 try {
@@ -550,7 +550,7 @@ try {
     Write-Info "Runner agent exited with code $exitCode"
 
 } finally {
-    # 8. Cleanup — runs on any exit path (normal, exception, signal).
+    # 8. Cleanup -- runs on any exit path (normal, exception, signal).
     # When using RUNNER_TOKEN the removal token is unavailable (no bearer token to
     # re-call the API).  Remove-Runner is called best-effort; it will warn if it fails.
     Remove-Runner -RegistrationToken $script:RegToken
