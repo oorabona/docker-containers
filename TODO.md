@@ -22,6 +22,9 @@
 - [ ] 🔧 [Runner] Windows: create non-admin runner user — Priority: M (ContainerAdministrator = admin, security concern)
 - [ ] 🐛 [Runner] Fix Pester tests for CI context — 28/28 fail (mocking context differs from local) — Priority: L
 - [ ] 💡 [CI] `rebuild=sync` mode — skopeo copy between registries without rebuilding — Priority: L
+- [ ] 💡 [CI] Create `latest-*` rolling tags for Windows variants (currently only versioned tags) — Priority: M
+- [ ] 🔧 [CI] Decouple manifest jobs from build matrix — manifests should run per-variant as builds complete, not wait for ALL builds — Priority: M
+- [ ] 🔧 [Runner] Remove double deregistration — runner agent cleans up, then PowerShell.Exiting tries again — Priority: L
 
 ## Completed
 
