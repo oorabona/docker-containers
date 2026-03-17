@@ -13,18 +13,25 @@ log_warn()    { echo "[WARN]  $*" >&2; }
 log_error()   { echo "[ERROR] $*" >&2; }
 
 # ---------------------------------------------------------------------------
-# 1. Root check
+# 1. Root → drop privileges via gosu (fix volume perms first)
 # ---------------------------------------------------------------------------
-check_not_root() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    if [[ "${ALLOW_ROOT:-false}" != "true" ]]; then
-      log_error "Running as root is not supported."
-      log_error "Set ALLOW_ROOT=true to override (security risk — only for testing)."
-      exit 1
-    fi
-    log_warn "Running as root. ALLOW_ROOT=true is set. This is a security risk."
+# When the container starts as root (default since Dockerfile has no USER),
+# we fix volume ownership, then re-exec this script as the 'runner' user.
+# This handles any volume mount — no need to hardcode cache paths.
+if [[ "$(id -u)" -eq 0 ]]; then
+  # Fix ownership on /home/runner (covers any volume mounted under it)
+  chown -R runner:runner /home/runner 2>/dev/null || true
+
+  # Fix tool cache if it exists
+  if [[ -d "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}" ]]; then
+    chown -R runner:runner "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}" 2>/dev/null || true
   fi
-}
+
+  # Re-exec as runner user
+  exec gosu runner "$0" "$@"
+fi
+
+# --- From here on, we are running as 'runner' (uid != 0) ---
 
 # ---------------------------------------------------------------------------
 # 2. Disable runner auto-update (prevents crash loop in containers)
@@ -32,12 +39,9 @@ check_not_root() {
 export RUNNER_DISABLE_AUTO_UPDATE=1
 
 # ---------------------------------------------------------------------------
-# 3. Volume permission fix
+# 3. Create cache directories (if missing)
 # ---------------------------------------------------------------------------
-fix_volume_permissions() {
-  local current_uid
-  current_uid="$(id -u)"
-
+ensure_cache_dirs() {
   local cache_dirs=(
     "${RUNNER_TOOL_CACHE:-${HOME}/.cache}"
     "${HOME}/.cargo"
@@ -47,16 +51,8 @@ fix_volume_permissions() {
   )
 
   for dir in "${cache_dirs[@]}"; do
-    if [[ -e "$dir" ]] && [[ ! -w "$dir" ]]; then
-      log_warn "Cache directory not writable: $dir — attempting permission fix"
-      if mkdir -p "$dir" 2>/dev/null && chown "${current_uid}" "$dir" 2>/dev/null; then
-        log_info "Fixed permissions on: $dir"
-      else
-        log_warn "Could not fix permissions on $dir (owner: $(stat -c '%U' "$dir" 2>/dev/null || echo 'unknown')). Runner will still work but this cache will be unavailable."
-      fi
-    elif [[ ! -e "$dir" ]]; then
-      # Pre-create the directory so Docker volumes are accessible
-      mkdir -p "$dir" 2>/dev/null || true
+    if [[ ! -d "$dir" ]]; then
+      mkdir -p "$dir" 2>/dev/null && log_info "Created cache directory: $dir" || true
     fi
   done
 }
@@ -343,13 +339,10 @@ trap cleanup SIGTERM SIGINT
 main() {
   log_info "GitHub Actions runner entrypoint starting."
 
-  # Step 1: Root check
-  check_not_root
-
+  # Step 1: Root→gosu already handled above (before main)
   # Step 2: RUNNER_DISABLE_AUTO_UPDATE already exported above
-
-  # Step 3: Fix volume permissions
-  fix_volume_permissions
+  # Step 3: Ensure cache directories exist
+  ensure_cache_dirs
 
   # Step 4: Validate environment and determine scope/auth mode
   validate_env

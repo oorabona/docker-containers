@@ -51,11 +51,10 @@ ENV RUNNER_DISABLE_AUTO_UPDATE=1
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ENV HOME=/home/runner
 
-# Pre-create cache directories owned by runner so Docker volumes mount with correct ownership
-RUN mkdir -p /opt/hostedtoolcache /home/runner/.cargo /home/runner/.npm \
-             /home/runner/.nuget /home/runner/.pnpm-store \
-    && chown -R runner:runner /opt/hostedtoolcache /home/runner/.cargo /home/runner/.npm \
-                              /home/runner/.nuget /home/runner/.pnpm-store
+# Entrypoint runs as root to fix volume permissions, then drops to runner via gosu
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && gosu nobody true
 
-USER runner
+# Do NOT set USER here — entrypoint starts as root, fixes volume perms, then exec gosu runner
 ENTRYPOINT ["tini", "--", "/home/runner/entrypoint.sh"]
