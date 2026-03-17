@@ -490,10 +490,12 @@ jobs:
         shell: bash
         run: |
           if [[ -f "${{ matrix.build.container }}/tests/test-runner-linux.bats" ]]; then
-            # Install bats from GitHub release (faster than apt-get)
+            # Install bats from pinned GitHub release (faster than apt-get)
             if ! command -v bats &>/dev/null; then
-              sudo git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
-              sudo /tmp/bats-core/install.sh /usr/local
+              BATS_VERSION=1.11.1
+              gh release download "v${BATS_VERSION}" --repo bats-core/bats-core --archive tar.gz -D /tmp
+              tar -xzf "/tmp/bats-core-${BATS_VERSION}.tar.gz" -C /tmp
+              sudo "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
             fi
             bats "${{ matrix.build.container }}/tests/test-runner-linux.bats"
           fi
