@@ -48,6 +48,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_tests:
+        description: 'Run container tests (bats/Pester) after build'
+        required: false
+        default: false
+        type: boolean
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
@@ -125,6 +130,11 @@ on:
         default: ''
       dry_run:
         description: 'Dry run — resolve everything but skip docker build/push/manifest'
+        required: false
+        default: false
+        type: boolean
+      run_tests:
+        description: 'Run container tests (bats/Pester) after build'
         required: false
         default: false
         type: boolean
@@ -469,8 +479,8 @@ jobs:
           echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
 
       - name: Run Pester tests (Windows)
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base'
-        continue-on-error: true  # TODO: fix Pester tests for CI context
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base' && inputs.run_tests == true
+        continue-on-error: true
         shell: pwsh
         run: |
           if (Test-Path "${{ matrix.build.container }}/tests/test-runner-windows.ps1") {
@@ -486,7 +496,7 @@ jobs:
           }
 
       - name: Run bats tests (Linux)
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64'
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64' && inputs.run_tests == true
         timeout-minutes: 5
         continue-on-error: true
         shell: bash
