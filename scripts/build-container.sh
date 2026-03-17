@@ -331,10 +331,17 @@ build_container() {
         log_success "GitHub Actions detected - building locally for validation..."
         log_success "Runtime: $_RUNTIME_INFO | Platform: ${_PLATFORMS:-native} | Dockerfile: $dockerfile"
 
+        # Multi-stage target: if the Dockerfile has FROM...AS stages matching build_flavor
+        local _target_arg=""
+        if [[ -n "$build_flavor" ]] && grep -qE "^FROM .* AS ${build_flavor}\b" "$dockerfile" 2>/dev/null; then
+            _target_arg="--target $build_flavor"
+        fi
+
         if [[ -z "${_PLATFORMS:-}" ]]; then
             # Windows runner: plain docker build (no buildx, no --platform, no --load needed)
             $DOCKER build \
                 -f "$dockerfile" \
+                ${_target_arg} \
                 ${_no_cache} \
                 $_BUILD_ARGS \
                 $label_args \
@@ -347,6 +354,7 @@ build_container() {
         else
             $DOCKER buildx build \
                 -f "$dockerfile" \
+                ${_target_arg} \
                 --platform "$_PLATFORMS" \
                 --load \
                 ${_no_cache} \

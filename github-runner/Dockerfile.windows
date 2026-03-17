@@ -1,20 +1,28 @@
 # syntax=docker/dockerfile:1
 # GitHub Actions self-hosted runner — Windows Server Core ltsc2022
-# Build: docker build --build-arg VERSION=2.332.0 --build-arg FLAVOR=base -f Dockerfile.windows .
+# Multi-stage: base and dev share all layers up to VS Build Tools.
+#
+# Build:
+#   docker build --build-arg VERSION=2.332.0 --target base -f Dockerfile.windows .
+#   docker build --build-arg VERSION=2.332.0 --target dev  -f Dockerfile.windows .
+#
 # Note: Process isolation is the default on Windows Server 2022.
 #       Hyper-V isolation is unavailable on standard GitHub-hosted runners.
 #       Do NOT add --isolation in this Dockerfile; set it at docker run time if needed.
 
 ARG WINDOWS_BASE=mcr.microsoft.com/windows/servercore:ltsc2022
-FROM ${WINDOWS_BASE}
+
+# =============================================================================
+# Stage: base — Chocolatey, pwsh, git, curl, jq, unzip, runner agent
+# =============================================================================
+FROM ${WINDOWS_BASE} AS base
 
 ARG VERSION=2.332.0
-ARG FLAVOR=base
 
 # Bootstrap with PS 5.1, install Chocolatey + pwsh, then switch to PS 7
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Layer 1: Chocolatey + pwsh + base packages + Git (combined to reduce layers)
+# Single layer: Chocolatey + pwsh + base packages + Git + PATH + longpaths
 RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
     iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')); \
@@ -31,25 +39,9 @@ RUN Set-ExecutionPolicy Bypass -Scope Process -Force; \
 
 SHELL ["pwsh", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Disable runner auto-update — prevents the agent from self-updating and crashing
-# the container mid-job (containers are rebuilt to upgrade the runner version).
 ENV RUNNER_DISABLE_AUTO_UPDATE=1
 
-# Layer 2 (dev only): VS Build Tools 2022 + Windows 11 SDK
-# Separate layer so base and dev share Layer 1
-RUN if ($env:FLAVOR -eq 'dev') { \
-      Write-Host 'Installing VS Build Tools + Windows 11 SDK...'; \
-      choco install -y visualstudio2022buildtools --no-progress \
-        --package-parameters \
-          '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
-      # Cleanup installer cache (~1.5 GB) \
-      Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue; \
-      Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue; \
-    } else { \
-      Write-Host ('Skipping VS Build Tools, FLAVOR=' + $env:FLAVOR); \
-    }
-
-# Layer 3: User + runner agent
+# Create user + install runner agent
 RUN net user runneradmin /add /Y; \
     net localgroup administrators runneradmin /add
 
@@ -59,20 +51,32 @@ COPY runner.zip runner.zip
 RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
     Remove-Item runner.zip
 
-# Copy the Windows entrypoint script into the image root.
 COPY entrypoint.ps1 C:\\entrypoint.ps1
 
-# Labels — set after ARG declarations so build-time values are captured.
-# org.opencontainers.image.revision is injected at build time by the CI action.
 LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022)"
 LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
 LABEL com.github.runner.version="${VERSION}"
-LABEL com.github.runner.flavor="${FLAVOR}"
+LABEL com.github.runner.flavor="base"
 LABEL com.github.runner.distro="windows-ltsc2022"
 
-# Switch to the unprivileged runner account for all subsequent operations.
-# The runner agent itself will re-elevate via the local Administrators membership
-# when installing service dependencies.
 USER runneradmin
-
 ENTRYPOINT ["pwsh", "-File", "C:\\entrypoint.ps1"]
+
+# =============================================================================
+# Stage: dev — extends base with VS Build Tools 2022 + Windows 11 SDK
+# =============================================================================
+FROM base AS dev
+
+USER ContainerAdministrator
+
+# VS Build Tools + Windows 11 SDK (Tauri, Rust, native addons)
+RUN choco install -y visualstudio2022buildtools --no-progress \
+      --package-parameters \
+        '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
+    # Cleanup installer caches (~1.5 GB) \
+    Remove-Item -Recurse -Force C:\Users\ContainerAdministrator\AppData\Local\Temp\chocolatey -ErrorAction SilentlyContinue; \
+    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
+
+LABEL com.github.runner.flavor="dev"
+
+USER runneradmin
