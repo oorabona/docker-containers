@@ -132,6 +132,78 @@ docker run --rm \
 
 > **Note:** The registration token expires after 1 hour. For persistent runners or scaled deployments, use PAT or GitHub App auth instead — those never expire and can refresh a fresh registration token on every container start.
 
+## Pre-installed software
+
+### What is included per flavor
+
+#### Linux — base
+
+| Package | Purpose |
+|---------|---------|
+| `git` | Source control |
+| `curl` | HTTP client |
+| `jq` | JSON processing |
+| `unzip` | Archive extraction |
+| `ca-certificates` | TLS root certificates |
+| `tini` | PID 1 init (zombie reaping + signal forwarding) |
+| `gosu` | Privilege drop from root to `runner` at startup |
+
+The `runner` user is also added to the `docker` group so DooD works without `sudo`.
+
+#### Linux — dev
+
+Everything in `base`, plus the following Tauri / native-addon build prerequisites:
+
+| Package | Purpose |
+|---------|---------|
+| `build-essential` | GCC toolchain, make |
+| `pkg-config` | Library metadata |
+| `libssl-dev` | OpenSSL headers |
+| `libgtk-3-dev` | GTK 3 headers (Tauri) |
+| `libwebkit2gtk-4.1-dev` | WebKit2GTK headers (Tauri) |
+| `libayatana-appindicator3-dev` | System tray support (Tauri) |
+| `librsvg2-dev` | SVG rendering (Tauri) |
+
+Language runtimes (Rust, Node, Python, Go, …) are intentionally **not** pre-installed — see the setup-action table below.
+
+#### Windows — base
+
+| Package | Purpose |
+|---------|---------|
+| `git` | Source control (via Chocolatey) |
+| `curl` | HTTP client (via Chocolatey) |
+| `jq` | JSON processing (via Chocolatey) |
+| `unzip` | Archive extraction (via Chocolatey) |
+| `pwsh` (PowerShell 7) | Default shell for RUN steps and entrypoint |
+
+Long-path support (`LongPathsEnabled`) and `git config core.longpaths true` are applied at build time.
+
+#### Windows — dev
+
+Everything in Windows base, plus:
+
+| Package | Purpose |
+|---------|---------|
+| VS Build Tools 2022 (`VCTools` workload) | MSVC compiler, Windows SDK — required for Tauri, native Node addons, Rust on Windows |
+
+### What needs a setup-* action
+
+Language runtimes are not pre-installed in any flavor. Use the standard setup actions — with persistent volumes they are downloaded only on the first job.
+
+| Tool | Pre-installed? | Action to use | Cached after first run? |
+|------|:-:|------|:-:|
+| Node.js | No | `actions/setup-node@v4` | Yes (`RUNNER_TOOL_CACHE`) |
+| Python | No | `actions/setup-python@v5` | Yes |
+| Go | No | `actions/setup-go@v5` | Yes |
+| Java | No | `actions/setup-java@v4` | Yes |
+| .NET | No | `actions/setup-dotnet@v4` | Yes |
+| Rust | No | `dtolnay/rust-toolchain@stable` | Yes (`.cargo` volume) |
+| Docker CLI | No (DooD available) | Mount host socket | N/A |
+
+### Persistent caches
+
+> **Tip:** With `restart: always` and persistent volumes, `setup-*` actions download tools only on the first job. Subsequent jobs find them in the `RUNNER_TOOL_CACHE` volume, matching the performance of pre-installed tools without the image bloat. See [Cache Volumes](#cache-volumes) for the full volume list.
+
 ## Flavors
 
 | Flavor | Tag suffix | Included |
