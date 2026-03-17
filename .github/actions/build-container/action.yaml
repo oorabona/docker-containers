@@ -260,17 +260,40 @@ runs:
         restore-keys: |
           runner-agent-${{ inputs.version }}-
 
-    # Free disk space on Windows before building — VS Build Tools + Windows SDK
-    # need ~15 GB and the runner only has ~80 GB total
+    # Free disk space on Windows before building
+    # windows-latest has ~80 GB but ~40 GB is pre-installed software we don't need.
+    # VS Build Tools + Windows SDK + Docker layers need ~25 GB free.
     - name: Free disk space (Windows)
       if: ${{ steps.check-build.outputs.needs_build == 'true' && runner.os == 'Windows' }}
       shell: pwsh
       run: |
-        # Remove stale Docker data (dangling images, build cache)
+        $before = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+        Write-Host "::notice::Disk space before cleanup: $before GB"
+
+        # Remove pre-installed software that we don't need for Docker builds
+        $remove = @(
+          'C:\Program Files\Microsoft Visual Studio\2022'
+          'C:\Program Files (x86)\Microsoft Visual Studio\2022'
+          'C:\Program Files\dotnet'
+          'C:\Program Files (x86)\Microsoft SDKs\Azure'
+          'C:\Program Files\Microsoft SQL Server'
+          'C:\android'
+          'C:\Program Files\MongoDB'
+          'C:\hostedtoolcache'
+          'C:\imagegeneration'
+        )
+        foreach ($path in $remove) {
+          if (Test-Path $path) {
+            Write-Host "Removing $path ..."
+            Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+          }
+        }
+
+        # Docker cleanup
         docker system prune -af --volumes 2>$null
-        # Show available disk space
-        $free = (Get-PSDrive C).Free / 1GB
-        Write-Host "::notice::Available disk space: $([math]::Round($free, 1)) GB"
+
+        $after = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+        Write-Host "::notice::Disk space after cleanup: $after GB (freed $([math]::Round($after - $before, 1)) GB)"
 
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
