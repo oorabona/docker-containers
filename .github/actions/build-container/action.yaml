@@ -491,10 +491,12 @@ runs:
         echo "::endgroup::"
       continue-on-error: true
 
-    # Windows is single-arch — create bare tag alias immediately after push
-    # so it's available without waiting for the manifest job (which waits for ALL builds)
-    - name: Create tag alias (Windows single-arch)
-      if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os == 'Windows' }}
+    # Push bare tag immediately so images are pullable without waiting for manifest job.
+    # For multi-arch: this is a single-platform placeholder — the manifest job will
+    # replace it with a proper multi-arch manifest list once all arches complete.
+    # For single-arch (Windows): this IS the final tag.
+    - name: Create early tag alias
+      if: ${{ steps.push-ghcr.outputs.success == 'true' }}
       shell: bash
       run: |
         image_name="${{ steps.check-build.outputs.image_name }}"
@@ -503,7 +505,7 @@ runs:
 
         ghcr_src="ghcr.io/$image_name:$current_tag-$platform_suffix"
         ghcr_dst="ghcr.io/$image_name:$current_tag"
-        echo "::notice::Creating Windows tag alias: $ghcr_dst"
+        echo "::notice::Creating early tag alias: $ghcr_dst (will be upgraded to multi-arch by manifest job)"
         docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Tag alias failed (will be created by manifest job)"
 
         # Docker Hub alias too
