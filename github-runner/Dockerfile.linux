@@ -25,10 +25,15 @@ ARG TARGETARCH
 # @@DEV_PACKAGES@@
 
 # Install tini as PID 1 init (zombie reaping + signal forwarding to runner agent)
-RUN apt-get update && apt-get install -y --no-install-recommends tini \
+# Install sudo — many workflows expect `sudo apt-get install` to work
+RUN apt-get update && apt-get install -y --no-install-recommends tini sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # @@CREATE_USER@@
+
+# Allow runner to use sudo without password (matches GitHub-hosted runner behavior)
+RUN echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner \
+    && chmod 0440 /etc/sudoers.d/runner
 
 # Add runner to docker group for DooD (Docker-outside-of-Docker)
 # Mount the host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
