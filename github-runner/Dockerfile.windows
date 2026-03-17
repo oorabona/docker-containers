@@ -41,11 +41,8 @@ RUN choco install -y git --no-progress
 
 # Add Git\bin to system PATH (bash.exe, sh.exe — needed by shell: bash in workflows)
 # Choco only adds Git\cmd (git.exe) — Git\bin has the Unix tools
-RUN $gitBin = 'C:\Program Files\Git\bin'; \
-    $currentPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    if ($currentPath -notlike "*$gitBin*") { \
-        [System.Environment]::SetEnvironmentVariable('Path', "$currentPath;$gitBin", 'Machine') \
-    }; \
+RUN $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', $machPath + ';C:\Program Files\Git\bin', 'Machine'); \
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User'); \
     git config --system core.longpaths true
 
