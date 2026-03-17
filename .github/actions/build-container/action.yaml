@@ -244,6 +244,18 @@ runs:
         restore-keys: |
           runner-agent-${{ inputs.version }}-
 
+    # Free disk space on Windows before building — VS Build Tools + Windows SDK
+    # need ~15 GB and the runner only has ~80 GB total
+    - name: Free disk space (Windows)
+      if: ${{ steps.check-build.outputs.needs_build == 'true' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        # Remove stale Docker data (dangling images, build cache)
+        docker system prune -af --volumes 2>$null
+        # Show available disk space
+        $free = (Get-PSDrive C).Free / 1GB
+        Write-Host "::notice::Available disk space: $([math]::Round($free, 1)) GB"
+
     - name: Build container
       if: ${{ steps.check-build.outputs.needs_build == 'true' }}
       id: build
