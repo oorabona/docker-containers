@@ -29,7 +29,8 @@ services:
     restart: unless-stopped
 
   runner-windows:
-    image: ghcr.io/oorabona/github-runner:latest-windows-ltsc2022
+    # Pin to version tag — latest-windows-ltsc2022 not yet supported
+    image: ghcr.io/oorabona/github-runner:2.332.0-windows-ltsc2022
     env_file: .env
     environment:
       RUNNER_TOOL_CACHE: C:\cache\tool-cache
