@@ -15,10 +15,8 @@ base_image_cache:
     source: ubuntu
     ghcr_repo: ubuntu-base
     tags: ["24.04"]
-  - arg: WINDOWS_FULL
-    source: mcr.microsoft.com/windows/server
-    ghcr_repo: windows-server-base
-    tags: ["ltsc2022"]
+  # NOTE: windows/server cannot be cached via skopeo (MCR auth required)
+  # Dev stage pulls directly from MCR during build
 
 # Distro definitions for generate-dockerfile.sh
 # Each distro declares its base image, package manager, user setup, and package groups
