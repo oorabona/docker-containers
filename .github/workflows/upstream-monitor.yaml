@@ -271,7 +271,7 @@ jobs:
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
             # Try to merge with retries (handles "base branch was modified" race)
             for attempt in $(seq 1 $MAX_RETRIES); do
-              if gh pr merge "$PR_NUMBER" --squash 2>&1; then
+              if gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
                 echo "merged=true" >> "$GITHUB_OUTPUT"
                 echo "✅ Auto-merged PR #$PR_NUMBER"
                 exit 0
@@ -674,7 +674,7 @@ jobs:
           if timeout "$MERGE_TIMEOUT" gh pr checks "$PR_NUMBER" --watch; then
             # Try to merge with retries (handles "base branch was modified" race)
             for attempt in $(seq 1 $MAX_RETRIES); do
-              if gh pr merge "$PR_NUMBER" --squash 2>&1; then
+              if gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
                 echo "merged=true" >> "$GITHUB_OUTPUT"
                 echo "✅ Auto-merged PR #$PR_NUMBER"
                 exit 0
