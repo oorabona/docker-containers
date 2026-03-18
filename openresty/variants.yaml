@@ -1,6 +1,6 @@
 # OpenResty Container Variants
 build:
   version_retention: 3
-
 versions:
+  - tag: 1.29.2.2-alpine
   - tag: "1.29.2.1-alpine"
