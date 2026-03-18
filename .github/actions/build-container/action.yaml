@@ -542,10 +542,11 @@ runs:
         echo "::endgroup::"
       continue-on-error: true
 
-    # Flatten image layers to reduce pull size (especially Windows — many RUN steps)
+    # Flatten image layers to reduce pull size.
     # crane flatten replaces N layers with 1, applied in-place on the registry.
+    # SKIP on Windows — flatten breaks hardlinks in Windows layers (InkObj.dll.mui etc.)
     - name: Flatten image layers
-      if: ${{ steps.push-ghcr.outputs.success == 'true' }}
+      if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os != 'Windows' }}
       shell: bash
       run: |
         image_name="${{ steps.check-build.outputs.image_name }}"
