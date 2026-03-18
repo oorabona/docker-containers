@@ -67,9 +67,14 @@ FROM base AS dev
 USER ContainerAdministrator
 
 # VS Build Tools + Windows 11 SDK
-RUN choco install -y visualstudio2022buildtools --no-progress \
+# choco returns non-zero on warnings (not failures) — verify install by checking cl.exe exists
+RUN $ErrorActionPreference = 'Continue'; \
+    choco install -y visualstudio2022buildtools --no-progress \
       --package-parameters \
-        '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'
+        '--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --includeRecommended --quiet'; \
+    $ErrorActionPreference = 'Stop'; \
+    $cl = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC' -Recurse -Filter 'cl.exe' -ErrorAction Stop | Select-Object -First 1; \
+    if (-not $cl) { throw 'VS Build Tools installation failed: cl.exe not found' }
 
 # Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe) + cleanup caches
 RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
