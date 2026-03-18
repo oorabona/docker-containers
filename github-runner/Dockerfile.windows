@@ -76,13 +76,19 @@ RUN Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -Out
     Remove-Item C:\vs_buildtools.exe -Force
 
 # Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe) + cleanup caches
-RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
-    $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
-    $sdkBin = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'; \
-    $msvcBin = "$vsBase\$msvcVer\bin\Hostx64\x64"; \
-    $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', "$machPath;$msvcBin;$sdkBin", 'Machine'); \
-    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
+# Paths are discovered dynamically — works with both choco and direct installer
+RUN $ErrorActionPreference = 'Continue'; \
+    $cl = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio' -Recurse -Filter 'cl.exe' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1; \
+    $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits' -Recurse -Filter 'rc.exe' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1; \
+    $paths = @(); \
+    if ($cl) { $paths += $cl.DirectoryName; Write-Host "Found cl.exe: $($cl.FullName)" } else { Write-Host 'WARNING: cl.exe not found' }; \
+    if ($rc) { $paths += $rc.DirectoryName; Write-Host "Found rc.exe: $($rc.FullName)" } else { Write-Host 'WARNING: rc.exe not found' }; \
+    if ($paths.Count -gt 0) { \
+      $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
+      [System.Environment]::SetEnvironmentVariable('Path', "$machPath;$($paths -join ';')", 'Machine') \
+    }; \
+    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue; \
+    $ErrorActionPreference = 'Stop'
 
 LABEL com.github.runner.flavor="dev"
 
