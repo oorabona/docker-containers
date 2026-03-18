@@ -115,9 +115,12 @@ RUN net user runneradmin /add /Y; \
 
 WORKDIR C:\\actions-runner
 
-# Runner agent (COPY from base to avoid re-extracting)
-COPY --from=base C:\\actions-runner C:\\actions-runner
-COPY --from=base C:\\entrypoint.ps1 C:\\entrypoint.ps1
+# Runner agent
+COPY runner.zip runner.zip
+RUN Expand-Archive -Path runner.zip -DestinationPath . -Force; \
+    Remove-Item runner.zip
+
+COPY entrypoint.ps1 C:\\entrypoint.ps1
 
 # VS Build Tools 2022 + Windows 11 SDK — direct Microsoft installer
 RUN Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile C:\vs_buildtools.exe; \
