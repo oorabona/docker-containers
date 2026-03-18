@@ -76,14 +76,15 @@ RUN Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -Out
     Remove-Item C:\vs_buildtools.exe -Force
 
 # Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe) + cleanup caches
+# No double quotes — pwsh -Command from Docker SHELL breaks on embedded double quotes
 RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
     $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
     $sdkBin = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'; \
-    $msvcBin = Join-Path $vsBase "$msvcVer\bin\Hostx64\x64"; \
-    Write-Host "MSVC: $msvcBin"; \
-    Write-Host "SDK:  $sdkBin"; \
+    $msvcBin = $vsBase + '\' + $msvcVer + '\bin\Hostx64\x64'; \
+    Write-Host ('MSVC: ' + $msvcBin); \
+    Write-Host ('SDK:  ' + $sdkBin); \
     $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', "$machPath;$msvcBin;$sdkBin", 'Machine'); \
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine'); \
     Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
 
 LABEL com.github.runner.flavor="dev"
