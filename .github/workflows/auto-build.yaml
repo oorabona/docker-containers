@@ -626,7 +626,7 @@ jobs:
       - name: Install syft
         id: install-syft
         if: matrix.build.os != 'windows' && (steps.build.outputs.image_loaded == 'true' || steps.retry.outputs.image_loaded == 'true') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
-        uses: anchore/sbom-action/download-syft@57aae528053a48a3f6235f2d9461b05fbcb7366d # v0.23.1
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM
         id: sbom
@@ -806,7 +806,7 @@ jobs:
       - name: Install syft (Windows SBOM)
         id: install-syft-windows
         if: matrix.build.os == 'windows' && github.event_name != 'pull_request'
-        uses: anchore/sbom-action/download-syft@57aae528053a48a3f6235f2d9461b05fbcb7366d # v0.23.1
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM (Windows)
         id: sbom-windows
