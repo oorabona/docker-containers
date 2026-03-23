@@ -663,7 +663,7 @@ jobs:
 
       - name: Attest SBOM
         if: steps.sbom.outcome == 'success' && steps.sbom.outputs.digest != ''
-        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4.0.0
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
           subject-digest: ${{ steps.sbom.outputs.digest }}
@@ -845,7 +845,7 @@ jobs:
 
       - name: Attest SBOM (Windows)
         if: steps.sbom-windows.outcome == 'success' && steps.sbom-windows.outputs.digest != ''
-        uses: actions/attest-sbom@07e74fc4e78d1aad915e867f9a094073a9f71527 # v4.0.0
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
           subject-digest: ${{ steps.sbom-windows.outputs.digest }}
