@@ -4,7 +4,7 @@
 base_image: "${PHP_IMAGE}"
 build_args:
   WPCLI_VERSION: "2.12.0"
-  SQLITE_PLUGIN_VERSION: "2.2.19"
+  SQLITE_PLUGIN_VERSION: "2.2.20"
 dependency_sources:
   WPCLI_VERSION:
     type: github-release
