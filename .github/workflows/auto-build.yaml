@@ -139,6 +139,12 @@ on:
         default: false
         type: boolean
 
+# Serialize builds to prevent race conditions (e.g. two merges triggering
+# concurrent extension builds that compete for the same builder images)
+concurrency:
+  group: auto-build-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read         # Checkout only — no git push or PR creation
   packages: write        # Push container images to GHCR
