@@ -1,6 +1,6 @@
 # Ansible Container Variants
 build:
   version_retention: 3
-
 versions:
+  - tag: 13.5.0-ubuntu
   - tag: "13.4.0-ubuntu"
