@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.22.3"
+    version: "0.22.4"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
@@ -89,7 +89,7 @@ extensions:
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
   timescaledb:
-    version: "2.26.0"
+    version: "2.26.1"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
@@ -108,7 +108,7 @@ extensions:
     shared_preload: true
     priority: 1
   pg_ivm:
-    version: "1.13"
+    version: "1.14"
     description: "Incremental View Maintenance for materialized views"
     repo: "sraoss/pg_ivm"
     build_deps:
