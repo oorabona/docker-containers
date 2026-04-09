@@ -11,11 +11,9 @@ base_image_cache:
     source: composer
     ghcr_repo: composer-base
     tags: ["${COMPOSER_VERSION}"]
-
 build_args:
-  COMPOSER_VERSION: "2.9.5"
+  COMPOSER_VERSION: "2.10.0-RC1"
   APCU_VERSION: "5.1.28"
-
 dependency_sources:
   COMPOSER_VERSION:
     type: github-release
