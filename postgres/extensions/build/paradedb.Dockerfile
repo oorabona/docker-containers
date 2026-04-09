@@ -20,7 +20,7 @@ ARG MAJOR_VERSION=17
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG MAJOR_VERSION
-ARG EXT_VERSION=0.21.8
+ARG EXT_VERSION=0.22.4
 ARG EXT_REPO=paradedb/paradedb
 
 # Critical: disable static CRT linking for musl/pgrx compatibility
@@ -45,17 +45,19 @@ RUN apk add --no-cache \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install pgrx - the Rust PostgreSQL extension framework
-# Version must match what ParadeDB uses (pinned in their Cargo.toml)
-RUN cargo install --locked cargo-pgrx --version 0.16.1
-
-# Initialize pgrx with our PostgreSQL installation
-RUN cargo pgrx init --pg${MAJOR_VERSION}=/usr/local/bin/pg_config
-
-# Download ParadeDB source
+# Download ParadeDB source (before pgrx install to auto-detect version)
 WORKDIR /build
 RUN git clone --branch v${EXT_VERSION} --depth 1 \
     https://github.com/${EXT_REPO}.git paradedb
+
+# Install pgrx - the Rust PostgreSQL extension framework
+# Version is auto-detected from ParadeDB's Cargo.toml to stay in sync
+RUN PGRX_VERSION=$(grep -m1 '^pgrx' /build/paradedb/pg_search/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
+    && echo "Detected pgrx version: ${PGRX_VERSION}" \
+    && cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+
+# Initialize pgrx with our PostgreSQL installation
+RUN cargo pgrx init --pg${MAJOR_VERSION}=/usr/local/bin/pg_config
 
 WORKDIR /build/paradedb/pg_search
 
