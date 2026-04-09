@@ -29,6 +29,7 @@ RUN apk add --no-cache \
     cmake \
     git \
     openssl-dev \
+    icu-dev \
     && ln -sf /usr/bin/clang-19 /usr/bin/clang \
     && ln -sf /usr/bin/clang++-19 /usr/bin/clang++
 

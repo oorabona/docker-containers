@@ -36,6 +36,7 @@ RUN apk add --no-cache \
     libtool \
     gettext-dev \
     git \
+    icu-dev \
     geos-dev \
     proj-dev \
     gdal-dev \

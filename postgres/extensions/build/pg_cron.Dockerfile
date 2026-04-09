@@ -27,8 +27,9 @@ RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 RUN apk add --no-cache \
     build-base \
     clang19 \
-    llvm19-dev \
     git \
+    icu-dev \
+    llvm19-dev \
     && ln -sf /usr/bin/clang-19 /usr/bin/clang \
     && ln -sf /usr/bin/clang++-19 /usr/bin/clang++
 
