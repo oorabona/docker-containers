@@ -10,6 +10,7 @@ base_image_cache:
 build_args:
   RUBY_VERSION: "3.3"
   ALPINE_VERSION: "3.21"
+  JEKYLL_VERSION: "4.4.1"
   BUNDLER_VERSION: "4.0.10"
   WEBRICK_VERSION: "1.9.2"
   JEKYLL_FEED_VERSION: "0.17.0"

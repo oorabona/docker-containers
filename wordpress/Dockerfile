@@ -1,6 +1,6 @@
 # WordPress container based on our PHP image
 # All PHP extensions (gd, mysqli, opcache, zip) are already included
-ARG PHP_IMAGE=ghcr.io/oorabona/php:latest
+ARG PHP_IMAGE
 FROM ${PHP_IMAGE}
 
 # Switch to root for installation
@@ -34,6 +34,10 @@ RUN { \
 # Suppress E_DEPRECATED globally — standard practice for WordPress production
 # (WP core and plugins routinely emit deprecation notices).
 ARG WPCLI_VERSION
+
+# Validate required build args
+RUN : "${WPCLI_VERSION:?required}"
+
 RUN set -ex; \
     curl -fsSL -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
     chmod +x /usr/local/bin/wp; \
@@ -48,6 +52,10 @@ COPY --chmod=755 *.sh /usr/local/bin/
 # Setup directories and download WordPress core + SQLite drop-in
 ARG VERSION
 ARG SQLITE_PLUGIN_VERSION
+
+# Validate required build args
+RUN : "${VERSION:?required}" "${SQLITE_PLUGIN_VERSION:?required}"
+
 RUN set -ex; \
     mkdir -p /var/www/html; \
     WP_VERSION="${VERSION%%-*}"; \

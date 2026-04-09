@@ -2,15 +2,18 @@
 # Downloads pre-built musl binary from GitHub releases
 # https://vector.dev
 
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
-ARG OS_IMAGE_BASE="alpine"
-ARG OS_IMAGE_TAG="latest"
+ARG VERSION
+ARG UPSTREAM_VERSION
+ARG OS_IMAGE_BASE
+ARG OS_IMAGE_TAG
 
 FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
 
 ARG UPSTREAM_VERSION
 ARG TARGETARCH
+
+# Validate required build args
+RUN : "${UPSTREAM_VERSION:?required}"
 
 # Download and install pre-built Vector binary
 # Uses musl-linked static binary for Alpine compatibility

@@ -11,21 +11,26 @@
 #   docker build --build-arg VERSION=2.332.0 --target dev  -f Dockerfile.windows .
 
 # Tool versions (pinned for reproducibility)
-ARG PWSH_VERSION=7.5.1
-ARG GIT_VERSION=2.49.0
-ARG JQ_VERSION=1.7.1
+ARG PWSH_VERSION
+ARG GIT_VERSION
+ARG JQ_VERSION
 
 # =============================================================================
 # Stage: base — ServerCore (lightweight, direct install, no Chocolatey)
 # =============================================================================
 FROM mcr.microsoft.com/windows/servercore:ltsc2022 AS base
 
-ARG VERSION=2.332.0
+ARG VERSION
 ARG PWSH_VERSION
 ARG GIT_VERSION
 ARG JQ_VERSION
 
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Validate required build args
+RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; `
+    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; `
+    if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
 
 # Install PowerShell 7 via MSI
 RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \
@@ -78,12 +83,17 @@ ENTRYPOINT ["pwsh", "-File", "C:\\entrypoint.ps1"]
 # =============================================================================
 FROM mcr.microsoft.com/windows/server:ltsc2022 AS dev
 
-ARG VERSION=2.332.0
+ARG VERSION
 ARG PWSH_VERSION
 ARG GIT_VERSION
 ARG JQ_VERSION
 
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Validate required build args
+RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; `
+    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; `
+    if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
 
 # Install PowerShell 7 via MSI
 RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v' + $env:PWSH_VERSION + '/PowerShell-' + $env:PWSH_VERSION + '-win-x64.msi') -OutFile C:\pwsh.msi; \

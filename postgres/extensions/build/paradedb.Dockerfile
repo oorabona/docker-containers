@@ -16,12 +16,15 @@
 # musl libc, which is required for pgrx dynamic loading on Alpine.
 # See: https://github.com/pgcentralfoundation/pgrx/pull/362
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
 ARG MAJOR_VERSION
-ARG EXT_VERSION=0.22.4
-ARG EXT_REPO=paradedb/paradedb
+ARG EXT_VERSION
+ARG EXT_REPO
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Critical: disable static CRT linking for musl/pgrx compatibility
 ENV RUSTFLAGS="-C target-feature=-crt-static"

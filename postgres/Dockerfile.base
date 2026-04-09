@@ -8,7 +8,7 @@
 #
 # For versions with extension support, use the main Dockerfile instead.
 
-ARG VERSION=18-alpine
+ARG VERSION
 
 # ============================================================================
 # Base Image Registry
@@ -16,7 +16,7 @@ ARG VERSION=18-alpine
 # Default: postgres (Docker Hub) for local builds and fallback
 # CI overrides with: --build-arg BASE_IMAGE=ghcr.io/oorabona/postgres-base
 # ============================================================================
-ARG BASE_IMAGE=postgres
+ARG BASE_IMAGE
 
 # ============================================================================
 # Main Image

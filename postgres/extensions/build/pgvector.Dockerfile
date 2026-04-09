@@ -9,12 +9,15 @@
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
-ARG EXT_VERSION=0.8.0
-ARG EXT_REPO=pgvector/pgvector
+ARG EXT_VERSION
+ARG EXT_REPO
 ARG MAJOR_VERSION
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies
 # Note: llvm19-dev and clang19 for LLVM JIT support

@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for modern Terraform with security and DevOps tools
 # Supports multiple flavors: base, aws, azure, gcp, full
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
+ARG VERSION
+ARG UPSTREAM_VERSION
 ARG FLAVOR=full
 
 # Build arguments for tool versions
@@ -16,9 +16,9 @@ ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
 # Base image overrides for GHCR caching (CI sets these to avoid Docker Hub rate limits)
-ARG TERRAFORM_BASE=hashicorp/terraform
-ARG ALPINE_BASE=alpine
-ARG PYTHON_BASE=python
+ARG TERRAFORM_BASE
+ARG ALPINE_BASE
+ARG PYTHON_BASE
 
 # Stage 1: Get Terraform binary
 # Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION
@@ -29,6 +29,8 @@ FROM ${ALPINE_BASE}:latest AS security-tools
 ARG TARGETARCH
 ARG TFLINT_VERSION
 ARG TRIVY_VERSION
+# Validate required build args
+RUN : "${TFLINT_VERSION:?required}" "${TRIVY_VERSION:?required}"
 # Map TARGETARCH to tool-specific naming conventions
 RUN apk add --no-cache curl unzip ca-certificates && \
     # Determine Trivy arch name (64bit for amd64, ARM64 for arm64)
@@ -50,6 +52,8 @@ ARG TERRAGRUNT_VERSION
 ARG TERRAFORM_DOCS_VERSION
 ARG INFRACOST_VERSION
 ARG GITHUB_CLI_VERSION
+# Validate required build args
+RUN : "${TERRAGRUNT_VERSION:?required}" "${TERRAFORM_DOCS_VERSION:?required}" "${INFRACOST_VERSION:?required}" "${GITHUB_CLI_VERSION:?required}"
 RUN apk add --no-cache curl tar ca-certificates && \
     # Terragrunt - Terraform wrapper (supports amd64/arm64)
     curl -fsSL https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_${TARGETARCH} -o terragrunt && \
@@ -119,6 +123,9 @@ RUN apk --no-cache add \
 ARG AWS_CLI_VERSION
 ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
+
+# Validate required build args
+RUN : "${AWS_CLI_VERSION:?required}" "${AZURE_CLI_VERSION:?required}" "${GCP_CLI_VERSION:?required}"
 
 # Install cloud CLIs based on flavor
 # pip cache mount benefits aws/azure/full flavors; harmless no-op for base/gcp

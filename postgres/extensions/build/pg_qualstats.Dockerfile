@@ -4,12 +4,15 @@
 # pg_qualstats collects statistics about predicates used in WHERE clauses
 # Useful for identifying missing indexes
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
-ARG EXT_VERSION=2.1.1
-ARG EXT_REPO=powa-team/pg_qualstats
+ARG EXT_VERSION
+ARG EXT_REPO
 ARG MAJOR_VERSION
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation

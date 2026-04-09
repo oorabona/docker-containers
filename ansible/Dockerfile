@@ -1,17 +1,20 @@
 # Build stage
-ARG OS_VERSION=latest
-ARG BASE_IMAGE=ubuntu
+ARG OS_VERSION
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}:${OS_VERSION} as builder
 
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
-ARG PYASN1_VERSION=0.6.2
-ARG PARAMIKO_VERSION=4.0.0
-ARG CFFI_VERSION=2.0.0
-ARG CRYPTOGRAPHY_VERSION=46.0.4
-ARG PYCRYPTODOME_VERSION=3.23.0
-ARG PYNACL_VERSION=1.6.2
+ARG VERSION
+ARG UPSTREAM_VERSION
+ARG PYASN1_VERSION
+ARG PARAMIKO_VERSION
+ARG CFFI_VERSION
+ARG CRYPTOGRAPHY_VERSION
+ARG PYCRYPTODOME_VERSION
+ARG PYNACL_VERSION
 ENV VIRTUAL_ENV=/opt/ansible-venv
+
+# Validate required build args
+RUN : "${VERSION:?required}" "${PYASN1_VERSION:?required}" "${PARAMIKO_VERSION:?required}" "${CFFI_VERSION:?required}" "${CRYPTOGRAPHY_VERSION:?required}" "${PYCRYPTODOME_VERSION:?required}" "${PYNACL_VERSION:?required}"
 
 # Use UPSTREAM_VERSION for pip install if provided (raw version without suffix), fallback to VERSION
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -27,11 +30,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && pip install pyasn1==${PYASN1_VERSION} paramiko==${PARAMIKO_VERSION} cffi==${CFFI_VERSION} cryptography==${CRYPTOGRAPHY_VERSION} pycryptodome==${PYCRYPTODOME_VERSION} ansible==${INSTALL_VERSION}
 
 # Runtime stage
-ARG OS_VERSION=latest
-ARG BASE_IMAGE=ubuntu
+ARG OS_VERSION
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}:${OS_VERSION}
 
-ARG VERSION=latest
+ARG VERSION
+
+# Validate required build args
+RUN : "${VERSION:?required}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/ansible-venv \

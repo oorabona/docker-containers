@@ -4,6 +4,10 @@
 
 (None)
 
+## Backlog
+
+- [ ] 🔧 [terraform] Make cloud CLI version validation conditional on FLAVOR — Priority: M (from /review F-005)
+
 ## Completed (recent)
 
 - [x] ✅ [Runner] Build github-runner container — 6 variants (3 OS × 2 flavors), Linux+Windows, semi-ephemeral (2026-03-15)

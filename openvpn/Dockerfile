@@ -1,13 +1,16 @@
 # Smallest base image
-ARG OS_VERSION=latest
-ARG BASE_IMAGE=alpine
+ARG OS_VERSION
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}:${OS_VERSION}
 
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
+ARG VERSION
+ARG UPSTREAM_VERSION
 ARG PKCS11_HELPER_VERSION
-ARG EASYRSA_VERSION=3.2.5
-ARG NPROC=1
+ARG EASYRSA_VERSION
+ARG NPROC
+
+# Validate required build args
+RUN : "${VERSION:?required}" "${PKCS11_HELPER_VERSION:?required}" "${EASYRSA_VERSION:?required}" "${NPROC:?required}"
 
 # Testing: pamtester is only available in edge, not for now.
 # Use UPSTREAM_VERSION for downloads if provided, otherwise fall back to VERSION

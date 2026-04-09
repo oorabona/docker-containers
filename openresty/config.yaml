@@ -13,6 +13,7 @@ build_args:
   RESTY_PCRE_VERSION: "8.45"
   LUAROCKS_VERSION: "3.13.0"
   NGX_PROXY_CONNECT_VERSION: "0.0.7"
+  RESTY_J: "4"
 # Maps build_arg names to their upstream source for monitoring
 # All build_args with pinned versions MUST have an entry here:
 # - monitored deps: type + source info

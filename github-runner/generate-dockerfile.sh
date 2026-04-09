@@ -89,7 +89,7 @@ generate_one() {
     fi
 
     local base_block
-    base_block="ARG ${base_image_arg}=${raw_default}"$'\n'
+    base_block="ARG ${base_image_arg}"$'\n'
     base_block+="FROM \${${base_image_arg}}"$'\n'
 
     # ========================================================================

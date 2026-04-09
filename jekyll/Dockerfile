@@ -1,17 +1,20 @@
 # Jekyll Static Site Generator
 # Lightweight container for building and serving Jekyll sites
-ARG RUBY_VERSION=3.3
-ARG ALPINE_VERSION=3.21
-ARG BASE_IMAGE=ruby
+ARG RUBY_VERSION
+ARG ALPINE_VERSION
+ARG BASE_IMAGE
 
 FROM ${BASE_IMAGE}:${RUBY_VERSION}-alpine${ALPINE_VERSION}
 
-ARG JEKYLL_VERSION=4.4.1
-ARG BUNDLER_VERSION=4.0.6
-ARG WEBRICK_VERSION=1.9.2
-ARG JEKYLL_FEED_VERSION=0.17.0
-ARG JEKYLL_SEO_TAG_VERSION=2.8.0
-ARG JEKYLL_SITEMAP_VERSION=1.4.0
+ARG JEKYLL_VERSION
+ARG BUNDLER_VERSION
+ARG WEBRICK_VERSION
+ARG JEKYLL_FEED_VERSION
+ARG JEKYLL_SEO_TAG_VERSION
+ARG JEKYLL_SITEMAP_VERSION
+
+# Validate required build args
+RUN : "${JEKYLL_VERSION:?required}" "${BUNDLER_VERSION:?required}" "${WEBRICK_VERSION:?required}" "${JEKYLL_FEED_VERSION:?required}" "${JEKYLL_SEO_TAG_VERSION:?required}" "${JEKYLL_SITEMAP_VERSION:?required}"
 
 # Install build dependencies and Jekyll with common plugins
 RUN --mount=type=cache,target=/usr/local/bundle/cache \

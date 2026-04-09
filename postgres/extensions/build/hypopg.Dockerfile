@@ -4,12 +4,15 @@
 # HypoPG allows creating hypothetical indexes to test query plans
 # without actually creating the indexes
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
-ARG EXT_VERSION=1.4.1
-ARG EXT_REPO=HypoPG/hypopg
+ARG EXT_VERSION
+ARG EXT_REPO
 ARG MAJOR_VERSION
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation

@@ -6,15 +6,18 @@
 # NOTE: This is a template — markers are expanded by generate-dockerfile.sh.
 # Package lists are in config.yaml — do not add packages here.
 
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
-ARG TTYD_VERSION="1.7.7"
+ARG VERSION
+ARG UPSTREAM_VERSION
+ARG TTYD_VERSION
 # @@BASE_IMAGE@@
 
 USER root
 
 ARG TTYD_VERSION
 ARG TARGETARCH
+
+# Validate required build args
+RUN : "${TTYD_VERSION:?required}"
 
 # @@INSTALL_PACKAGES@@
 

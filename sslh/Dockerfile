@@ -1,14 +1,17 @@
 # Multi-stage build for minimal FROM scratch image
 # Stage 1: Build sslh with static linking
 
-ARG OS_IMAGE_BASE="alpine"
-ARG OS_IMAGE_TAG="latest"
+ARG OS_IMAGE_BASE
+ARG OS_IMAGE_TAG
 
 FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG} AS builder
 
-ARG VERSION=latest
-ARG UPSTREAM_VERSION=""
-ARG NPROC=1
+ARG VERSION
+ARG UPSTREAM_VERSION
+ARG NPROC
+
+# Validate required build args
+RUN : "${VERSION:?required}" "${NPROC:?required}"
 
 WORKDIR /build
 

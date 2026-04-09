@@ -4,12 +4,15 @@
 # pg_partman provides automatic partition management for time-series
 # and serial-based table partitioning
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
-ARG EXT_VERSION=5.2.4
-ARG EXT_REPO=pgpartman/pg_partman
+ARG EXT_VERSION
+ARG EXT_REPO
 ARG MAJOR_VERSION
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies
 # Note: clang19 and llvm19-dev required for LLVM JIT bitcode compilation

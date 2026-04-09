@@ -15,12 +15,15 @@
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG MAJOR_VERSION=17
+ARG MAJOR_VERSION
 FROM postgres:${MAJOR_VERSION}-alpine AS builder
 
-ARG EXT_VERSION=3.5.5
-ARG EXT_REPO=postgis/postgis
+ARG EXT_VERSION
+ARG EXT_REPO
 ARG MAJOR_VERSION
+
+# Validate required build args
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
 
 # Install build dependencies
 # PostGIS requires GEOS, PROJ, GDAL, json-c, libxml2, protobuf-c for spatial operations

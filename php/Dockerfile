@@ -1,13 +1,16 @@
 ARG VERSION
 ARG COMPOSER_VERSION
-ARG COMPOSER_BASE=composer
-ARG BASE_IMAGE=php
+ARG COMPOSER_BASE
+ARG BASE_IMAGE
 FROM ${COMPOSER_BASE}:${COMPOSER_VERSION} AS composer
 FROM ${BASE_IMAGE}:${VERSION} AS php
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 
 ARG APCU_VERSION
+
+# Validate required build args
+RUN : "${APCU_VERSION:?required}"
 
 RUN set -ex \
     && apk add --update libzip freetype libpng libjpeg-turbo git shadow \

@@ -4,6 +4,11 @@
 name: github-runner
 description: "Self-hosted GitHub Actions runner (Linux + Windows)"
 
+build_args:
+  PWSH_VERSION: "7.5.1"
+  GIT_VERSION: "2.49.0"
+  JQ_VERSION: "1.7.1"
+
 # Used by build system for Linux variants; Windows uses Dockerfile.windows directly
 generate_dockerfile: true
 dockerfile_generator: generate-dockerfile.sh
