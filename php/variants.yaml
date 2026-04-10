@@ -2,5 +2,6 @@
 build:
   version_retention: 3
 versions:
+  - tag: 8.5.5-fpm-alpine
   - tag: 8.5.4-fpm-alpine
   - tag: "8.5.3-fpm-alpine"
