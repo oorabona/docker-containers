@@ -55,7 +55,7 @@ RUN git clone --branch v${EXT_VERSION} --depth 1 \
 
 # Install pgrx - the Rust PostgreSQL extension framework
 # Version is auto-detected from ParadeDB's Cargo.toml to stay in sync
-RUN PGRX_VERSION=$(grep -m1 '^pgrx' /build/paradedb/pg_search/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
+RUN PGRX_VERSION=$(grep -m1 '^pgrx' /build/paradedb/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
     && echo "Detected pgrx version: ${PGRX_VERSION}" \
     && cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
 
