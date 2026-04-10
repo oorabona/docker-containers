@@ -8,6 +8,7 @@ base_image_cache:
     ghcr_repo: ubuntu-base
     tags: ["latest"]
 build_args:
+  BASE_IMAGE: "ubuntu"
   PYASN1_VERSION: "0.6.3"
   PARAMIKO_VERSION: "4.0.0"
   CFFI_VERSION: "2.0.0"

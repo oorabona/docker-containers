@@ -9,7 +9,8 @@ base_image_cache:
     ghcr_repo: postgres-base
     tags_from_versions: true
 
-build_args: {}
+build_args:
+  BASE_IMAGE: "postgres"
 
 # Maps extension names to their upstream source for monitoring
 # Names must match the build_args names used in variant lineage data

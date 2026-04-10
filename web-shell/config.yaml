@@ -4,7 +4,10 @@
 base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
 
 build_args:
+  ALPINE_BASE: "alpine"
+  ROCKY_BASE: "rockylinux"
   TTYD_VERSION: "1.7.7"
+  UBUNTU_BASE: "ubuntu"
 
 dependency_sources:
   TTYD_VERSION:

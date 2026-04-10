@@ -5,6 +5,7 @@ name: github-runner
 description: "Self-hosted GitHub Actions runner (Linux + Windows)"
 
 build_args:
+  UBUNTU_2404_BASE: "ubuntu:24.04"
   PWSH_VERSION: "7.5.1"
   GIT_VERSION: "2.49.0"
   JQ_VERSION: "1.7.1"

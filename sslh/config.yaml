@@ -8,4 +8,5 @@ base_image_cache:
     ghcr_repo: alpine-base
     tags: ["latest"]
 
-build_args: {}
+build_args:
+  OS_IMAGE_BASE: "alpine"

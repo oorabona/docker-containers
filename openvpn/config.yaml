@@ -8,6 +8,7 @@ base_image_cache:
     ghcr_repo: alpine-base
     tags: ["latest"]
 build_args:
+  BASE_IMAGE: "alpine"
   PKCS11_HELPER_VERSION: "1.31.0"
   EASYRSA_VERSION: "3.2.6"
 dependency_sources:
