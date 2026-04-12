@@ -27,6 +27,9 @@ function latest-docker-tag() {
   result=$(docker run --rm "$SKOPEO_IMAGE" list-tags "$registry_url" 2>/dev/null | \
     jq -r '.Tags[]? // empty' 2>/dev/null | \
     grep -E "$pattern" 2>/dev/null | \
+    # Exclude prerelease tags (rc, alpha, beta, dev, pre, snapshot, nightly).
+    # Anchored at end of string to avoid false positives (e.g. "go-alpine" != alpha).
+    grep -viE '\-?(rc|alpha|beta|dev|pre|snapshot|nightly)[0-9.]*$' 2>/dev/null | \
     sort -V | \
     tail -n1)
   

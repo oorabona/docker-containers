@@ -12,6 +12,9 @@ build_args:
   PKCS11_HELPER_VERSION: "1.31.0"
   EASYRSA_VERSION: "3.2.6"
 dependency_sources:
+  BASE_IMAGE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
   PKCS11_HELPER_VERSION:
     type: github-release
     repo: opensc/pkcs11-helper

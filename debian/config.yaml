@@ -10,3 +10,7 @@ base_image_cache:
 
 build_args:
   BASE_IMAGE: "debian"
+dependency_sources:
+  BASE_IMAGE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"

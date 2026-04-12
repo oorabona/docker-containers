@@ -34,6 +34,15 @@ build_args:
 # - monitored deps: type + source info
 # - frozen/excluded deps: monitor: false with reason
 dependency_sources:
+  TERRAFORM_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+  ALPINE_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+  PYTHON_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
   TFLINT_VERSION:
     type: github-release
     repo: terraform-linters/tflint

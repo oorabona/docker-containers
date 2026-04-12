@@ -20,6 +20,9 @@ build_args:
 # - monitored deps: type + source info
 # - frozen/excluded deps: monitor: false with reason
 dependency_sources:
+  RESTY_IMAGE_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
   RESTY_OPENSSL_VERSION:
     monitor: false
     reason: "OpenSSL 1.1.1 is EOL, frozen"
@@ -37,3 +40,6 @@ dependency_sources:
     type: github-release
     repo: chobits/ngx_http_proxy_connect_module
     strip_v: true
+  RESTY_J:
+    monitor: false
+    reason: "Build parallelism, not a version to track"

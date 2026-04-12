@@ -10,6 +10,23 @@ build_args:
   GIT_VERSION: "2.49.0"
   JQ_VERSION: "1.7.1"
 
+dependency_sources:
+  PWSH_VERSION:
+    type: github-release
+    repo: PowerShell/PowerShell
+    strip_v: true
+  GIT_VERSION:
+    type: github-release
+    repo: git-for-windows/git
+    strip_v: true
+  JQ_VERSION:
+    type: github-release
+    repo: jqlang/jq
+    strip_v: true
+  UBUNTU_2404_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+
 # Used by build system for Linux variants; Windows uses Dockerfile.windows directly
 generate_dockerfile: true
 dockerfile_generator: generate-dockerfile.sh

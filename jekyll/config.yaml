@@ -39,3 +39,9 @@ dependency_sources:
   JEKYLL_SITEMAP_VERSION:
     type: rubygems
     gem: jekyll-sitemap
+  JEKYLL_VERSION:
+    type: rubygems
+    gem: jekyll
+  BASE_IMAGE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"

@@ -34,3 +34,6 @@ dependency_sources:
   PYNACL_VERSION:
     type: pypi
     package: PyNaCl
+  BASE_IMAGE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"

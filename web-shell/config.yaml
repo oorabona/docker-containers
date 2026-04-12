@@ -13,6 +13,15 @@ dependency_sources:
   TTYD_VERSION:
     type: github-release
     repo: tsl0922/ttyd
+  ALPINE_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+  ROCKY_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+  UBUNTU_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
 
 # Base image cache for Docker Hub rate limiting
 # NOTE: Debian is already on GHCR (ghcr.io/oorabona/debian) — no caching needed
