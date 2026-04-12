@@ -28,8 +28,8 @@ ARG JQ_VERSION
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
 # Validate required build args
-RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; `
-    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; `
+RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
+    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; \
     if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
 
 # Install PowerShell 7 via MSI
@@ -91,8 +91,8 @@ ARG JQ_VERSION
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
 # Validate required build args
-RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; `
-    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; `
+RUN if (-not $env:PWSH_VERSION) { throw 'PWSH_VERSION is required' }; \
+    if (-not $env:GIT_VERSION) { throw 'GIT_VERSION is required' }; \
     if (-not $env:JQ_VERSION) { throw 'JQ_VERSION is required' }
 
 # Install PowerShell 7 via MSI
