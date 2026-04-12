@@ -6,6 +6,7 @@ description: "Self-hosted GitHub Actions runner (Linux + Windows)"
 
 build_args:
   UBUNTU_2404_BASE: "ubuntu:24.04"
+  DEBIAN_TRIXIE_BASE: "ghcr.io/oorabona/debian:trixie"
   PWSH_VERSION: "7.5.1"
   GIT_VERSION: "2.49.0"
   JQ_VERSION: "1.7.1"
@@ -24,6 +25,9 @@ dependency_sources:
     repo: jqlang/jq
     strip_v: true
   UBUNTU_2404_BASE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
+  DEBIAN_TRIXIE_BASE:
     monitor: false
     reason: "Base image fallback, not a version to track"
 

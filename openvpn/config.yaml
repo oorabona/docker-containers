@@ -9,12 +9,16 @@ base_image_cache:
     tags: ["latest"]
 build_args:
   BASE_IMAGE: "alpine"
+  OS_VERSION: "latest"
   PKCS11_HELPER_VERSION: "1.31.0"
   EASYRSA_VERSION: "3.2.6"
 dependency_sources:
   BASE_IMAGE:
     monitor: false
     reason: "Base image fallback, not a version to track"
+  OS_VERSION:
+    monitor: false
+    reason: "Base image tag fallback, not a version to track"
   PKCS11_HELPER_VERSION:
     type: github-release
     repo: opensc/pkcs11-helper
