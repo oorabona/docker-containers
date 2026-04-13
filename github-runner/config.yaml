@@ -8,7 +8,7 @@ build_args:
   DEBIAN_TRIXIE_BASE: "ghcr.io/oorabona/debian:trixie"
   PWSH_VERSION: "7.6.0"
   GIT_VERSION: "2.53.0.windows.2"
-  JQ_VERSION: "1.7.1"
+  JQ_VERSION: "1.8.1"
 dependency_sources:
   PWSH_VERSION:
     type: github-release
