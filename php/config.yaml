@@ -14,7 +14,7 @@ base_image_cache:
 build_args:
   BASE_IMAGE: "php"
   COMPOSER_BASE: "composer"
-  COMPOSER_VERSION: "2.10.0-RC1"
+  COMPOSER_VERSION: "2.9.5"
   APCU_VERSION: "5.1.28"
 dependency_sources:
   BASE_IMAGE:
