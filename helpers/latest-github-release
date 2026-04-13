@@ -86,6 +86,13 @@ latest-github-release() {
 
     local version=""
 
+    # Version whitelist: pure digits (X / X.Y / X.Y.Z / ...) optionally with
+    # alpha labels between dots (e.g. "2.49.0.windows.2"). Optional non-digit
+    # prefix (e.g. "jq-", "v") and optional "v" allowed before the first digit.
+    # Add new vendor labels here when needed.
+    # NOTE: Single backslash for `\.` — passed verbatim to bash regex AND jq via --arg
+    local TAG_WHITELIST='^[^0-9]*v?[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
+
     # Strategy 1: Try /releases/latest endpoint (fast, single call)
     local response
     if response=$(_get_latest_release "$repo" 2>/dev/null); then
@@ -97,11 +104,11 @@ latest-github-release() {
         is_draft=$(echo "$response" | jq -r '.draft // false')
 
         if [[ -n "$tag_name" && "$is_prerelease" != "true" && "$is_draft" != "true" ]]; then
-            # Validate tag looks like a version (v1.2.3 or 1.2.3, not vdev-v0.2.0)
-            if [[ "$tag_name" =~ ^v?[0-9] ]]; then
+            # Validate tag matches our version whitelist (clean version, no rc/alpha/etc)
+            if [[ "$tag_name" =~ $TAG_WHITELIST ]]; then
                 version="$tag_name"
             else
-                log_info "Latest release tag '${tag_name}' is not a version — falling back to releases list"
+                log_info "Latest release tag '${tag_name}' is not a clean version — falling back to releases list"
             fi
         fi
     fi
@@ -110,10 +117,9 @@ latest-github-release() {
     if [[ -z "$version" ]]; then
         log_info "No latest release for ${repo}, scanning releases list..."
         if response=$(_get_releases "$repo" 2>/dev/null); then
-            version=$(echo "$response" | jq -r '
+            version=$(echo "$response" | jq -r --arg re "$TAG_WHITELIST" '
                 [.[] | select(.prerelease == false and .draft == false)
-                     | select(.tag_name | test("^v?[0-9]"))
-                     | select(.tag_name | test("(rc|alpha|beta|pre|dev|snapshot|nightly)"; "i") | not)]
+                     | select(.tag_name | test($re))]
                 | sort_by(.published_at)
                 | last
                 | .tag_name // empty
@@ -125,11 +131,8 @@ latest-github-release() {
     if [[ -z "$version" ]]; then
         log_info "No releases for ${repo}, falling back to tags..."
         if response=$(_get_tags "$repo" 2>/dev/null); then
-            # Filter for semver-like tags, exclude prereleases, sort, take latest
-            version=$(echo "$response" | jq -r '
-                [.[] | .name
-                     | select(test("^v?[0-9]+\\.[0-9]+"))
-                     | select(test("(rc|alpha|beta|pre|dev|snapshot|nightly)"; "i") | not)]
+            version=$(echo "$response" | jq -r --arg re "$TAG_WHITELIST" '
+                [.[] | .name | select(test($re))]
                 | sort_by(split(".") | map(ltrimstr("v") | tonumber? // 0))
                 | last // empty
             ')
@@ -141,7 +144,7 @@ latest-github-release() {
         return 1
     fi
 
-    # Apply tag_pattern extraction if specified
+    # Apply tag_pattern extraction if specified (custom user pattern wins)
     if [[ -n "$tag_pattern" ]]; then
         local extracted
         extracted=$(echo "$version" | grep -oP "$tag_pattern" || true)
@@ -151,9 +154,13 @@ latest-github-release() {
             log_error "Tag pattern '${tag_pattern}' did not match version '${version}'"
             return 1
         fi
+    else
+        # Default: strip non-digit prefix (e.g., "jq-", "v") to normalize
+        # "jq-1.8.1" → "1.8.1", "v7.5.1" → "7.5.1", "1.7.1" → "1.7.1"
+        version=$(echo "$version" | sed -E 's/^[^0-9]*//')
     fi
 
-    # Strip 'v' prefix if requested
+    # Strip 'v' prefix if requested (no-op when prefix already stripped above)
     if [[ "$strip_v" == "true" ]]; then
         version="${version#v}"
     fi
