@@ -3,9 +3,13 @@
 
 base_image: "${PHP_IMAGE}"
 build_args:
+  PHP_IMAGE: "ghcr.io/oorabona/php:latest"
   WPCLI_VERSION: "2.12.0"
   SQLITE_PLUGIN_VERSION: "2.2.23"
 dependency_sources:
+  PHP_IMAGE:
+    monitor: false
+    reason: "Base image fallback, not a version to track"
   WPCLI_VERSION:
     type: github-release
     repo: wp-cli/wp-cli
