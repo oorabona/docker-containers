@@ -3,14 +3,12 @@
 
 name: github-runner
 description: "Self-hosted GitHub Actions runner (Linux + Windows)"
-
 build_args:
   UBUNTU_2404_BASE: "ubuntu:24.04"
   DEBIAN_TRIXIE_BASE: "ghcr.io/oorabona/debian:trixie"
-  PWSH_VERSION: "7.5.1"
-  GIT_VERSION: "2.49.0"
+  PWSH_VERSION: "7.6.0"
+  GIT_VERSION: "2.53.0.windows.2"
   JQ_VERSION: "1.7.1"
-
 dependency_sources:
   PWSH_VERSION:
     type: github-release
@@ -30,11 +28,9 @@ dependency_sources:
   DEBIAN_TRIXIE_BASE:
     monitor: false
     reason: "Base image fallback, not a version to track"
-
 # Used by build system for Linux variants; Windows uses Dockerfile.windows directly
 generate_dockerfile: true
 dockerfile_generator: generate-dockerfile.sh
-
 # Base image cache for Docker Hub rate limiting
 # NOTE: debian-trixie comes from ghcr.io/oorabona/debian — no caching needed
 base_image_cache:
@@ -42,8 +38,8 @@ base_image_cache:
     source: ubuntu
     ghcr_repo: ubuntu-base
     tags: ["24.04"]
-  # NOTE: windows/server cannot be cached via skopeo (MCR auth required)
-  # Dev stage pulls directly from MCR during build
+# NOTE: windows/server cannot be cached via skopeo (MCR auth required)
+# Dev stage pulls directly from MCR during build
 
 # Distro definitions for generate-dockerfile.sh
 # Each distro declares its base image, package manager, user setup, and package groups
@@ -59,7 +55,6 @@ distros:
     arch_map:
       amd64: x64
       arm64: arm64
-
   debian-trixie:
     base_image: "ghcr.io/oorabona/debian:trixie"
     base_image_arg: DEBIAN_TRIXIE_BASE
@@ -71,20 +66,17 @@ distros:
     arch_map:
       amd64: x64
       arm64: arm64
-
   windows-ltsc2022:
     base_image: "mcr.microsoft.com/windows/servercore:ltsc2022"
-    pkg_manager: none   # chocolatey / direct download
+    pkg_manager: none # chocolatey / direct download
     runner_user: runneradmin
-    isolation: process  # Hyper-V not required on Server 2022
-
+    isolation: process # Hyper-V not required on Server 2022
 # Flavor definitions — base packages + dev extras for each distro
 flavors:
   base:
     packages:
       apt: [git, curl, jq, unzip, ca-certificates]
-    windows_packages: [git, jq, curl]  # choco
-
+    windows_packages: [git, jq, curl] # choco
   dev:
     extends: base
     packages:
@@ -96,4 +88,4 @@ flavors:
         - libwebkit2gtk-4.1-dev
         - libayatana-appindicator3-dev
         - librsvg2-dev
-    windows_packages: []  # VS Build Tools workload handled in Dockerfile.windows
+    windows_packages: [] # VS Build Tools workload handled in Dockerfile.windows

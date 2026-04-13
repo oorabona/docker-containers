@@ -223,7 +223,7 @@ jobs:
       - name: Create Pull Request
         if: steps.close_duplicates.outputs.existing_pr_found != 'true' && steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
-        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "build(${{ matrix.container }}): update to ${{ steps.classify.outputs.new_version }}"
@@ -608,7 +608,7 @@ jobs:
       - name: Create Pull Request
         if: steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
-        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
