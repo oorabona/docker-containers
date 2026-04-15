@@ -89,7 +89,7 @@ extensions:
     # Citus 14.0.0 adds PG 18 support
     max_pg_version: 18
   timescaledb:
-    version: "2.26.2"
+    version: "2.26.3"
     description: "Time-series database for high-performance analytics"
     repo: "timescale/timescaledb"
     license: "Apache-2.0 + TSL"
@@ -116,7 +116,7 @@ extensions:
     shared_preload: false
     priority: 1
   postgis:
-    version: "3.6.2"
+    version: "3.6.3"
     description: "Geospatial database extension (PostGIS)"
     repo: "postgis/postgis"
     build_deps:
