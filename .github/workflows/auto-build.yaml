@@ -425,18 +425,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install yq (Linux)
-        if: matrix.build.os != 'windows'
-        uses: mikefarah/yq@0f4fb8d35ec1a939d78dd6862f494d19ec589f19 # v4.52.5
-        with:
-          cmd: yq --version
-
+      # yq is pre-installed on ubuntu-latest. On Windows we download the binary
+      # directly (no Chocolatey — avoids flaky 503s). Action mikefarah/yq is
+      # Docker-based → Linux-only, so can't be used uniformly here.
       - name: Install yq (Windows)
         if: matrix.build.os == 'windows'
         shell: bash
+        env:
+          YQ_VERSION: "v4.52.5"
         run: |
-          choco install yq -y --no-progress
+          curl -fsSL -o "/usr/bin/yq.exe" \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_windows_amd64.exe"
           yq --version
+
+      - name: Verify yq (Linux)
+        if: matrix.build.os != 'windows'
+        shell: bash
+        run: yq --version
 
       - name: Build container with retry logic
         id: build
