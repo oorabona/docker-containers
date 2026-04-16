@@ -87,11 +87,12 @@ latest-github-release() {
     local version=""
 
     # Version whitelist: pure digits (X / X.Y / X.Y.Z / ...) optionally with
-    # alpha labels between dots (e.g. "2.49.0.windows.2"). Optional non-digit
-    # prefix (e.g. "jq-", "v") and optional "v" allowed before the first digit.
+    # alpha labels between dots (e.g. "2.49.0.windows.2").
+    # Prefix rules (mutually exclusive): bare "v" OR "word-" followed by digit.
+    # Rejects ambiguous "word-v" prefixes (e.g. "vdev-v0.3.1" — different product).
     # Add new vendor labels here when needed.
     # NOTE: Single backslash for `\.` — passed verbatim to bash regex AND jq via --arg
-    local TAG_WHITELIST='^[^0-9]*v?[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
+    local TAG_WHITELIST='^([a-zA-Z]+-|v)?[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
 
     # Strategy 1: Try /releases/latest endpoint (fast, single call)
     local response
