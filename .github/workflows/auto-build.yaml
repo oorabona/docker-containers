@@ -405,7 +405,7 @@ jobs:
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
       fail-fast: false
-      max-parallel: 4  # Allow more parallel builds since we're splitting by platform
+      max-parallel: 10  # Bumped from 4: Linux builds are fast; Windows (60-90min) should not starve Linux slots
       matrix:
         build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
         arch: [amd64, arm64]
