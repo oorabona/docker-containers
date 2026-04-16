@@ -10,7 +10,11 @@ base_image_cache:
 
 build_args:
   OS_IMAGE_BASE: "alpine"
+  OS_IMAGE_TAG: "latest"
 dependency_sources:
   OS_IMAGE_BASE:
     monitor: false
     reason: "Base image fallback, not a version to track"
+  OS_IMAGE_TAG:
+    monitor: false
+    reason: "Base image tag fallback, not a version to track"
