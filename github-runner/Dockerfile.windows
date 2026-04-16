@@ -38,7 +38,8 @@ RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/d
     Remove-Item C:\pwsh.msi -Force
 
 # Install Git for Windows
-RUN Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '.windows.1/Git-' + $env:GIT_VERSION + '-64-bit.exe') -OutFile C:\git-installer.exe; \
+RUN $gitNumeric = ($env:GIT_VERSION -split '\.windows\.')[0]; \
+    Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '/Git-' + $gitNumeric + '-64-bit.exe') -OutFile C:\git-installer.exe; \
     Start-Process C:\git-installer.exe -Wait -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
     Remove-Item C:\git-installer.exe -Force
 
@@ -101,7 +102,8 @@ RUN Invoke-WebRequest -Uri ('https://github.com/PowerShell/PowerShell/releases/d
     Remove-Item C:\pwsh.msi -Force
 
 # Install Git for Windows
-RUN Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '.windows.1/Git-' + $env:GIT_VERSION + '-64-bit.exe') -OutFile C:\git-installer.exe; \
+RUN $gitNumeric = ($env:GIT_VERSION -split '\.windows\.')[0]; \
+    Invoke-WebRequest -Uri ('https://github.com/git-for-windows/git/releases/download/v' + $env:GIT_VERSION + '/Git-' + $gitNumeric + '-64-bit.exe') -OutFile C:\git-installer.exe; \
     Start-Process C:\git-installer.exe -Wait -ArgumentList '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS', '/COMPONENTS=ext,ext\shellhere,ext\guihere,gitlfs,assoc,assoc_sh'; \
     Remove-Item C:\git-installer.exe -Force
 
