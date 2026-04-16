@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `vector` |
-| **Version Change** | `0.53.0-alpine` → `0.54.0-alpine` |
+| **Version Change** | `0.54.0-alpine` → `0.3.1-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-03-11T06:15:56Z |
+| **Rebuild Date** | 2026-04-16T06:36:51Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/22939530270) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/24495903629) |
 
 ## Build Status
 
