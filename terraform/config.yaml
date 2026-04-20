@@ -20,7 +20,7 @@ build_args:
   ALPINE_BASE: "alpine"
   PYTHON_BASE: "python"
   TERRAFORM_BASE: "hashicorp/terraform"
-  TFLINT_VERSION: "0.61.0"
+  TFLINT_VERSION: "0.62.0"
   TRIVY_VERSION: "0.70.0"
   TERRAGRUNT_VERSION: "1.0.1"
   TERRAFORM_DOCS_VERSION: "0.22.0"
