@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `github-runner` |
-| **Version Change** | `2.333.0` → `2.333.1` |
+| **Version Change** | `2.333.1` → `2.334.0` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-03-29T06:24:18Z |
+| **Rebuild Date** | 2026-04-22T06:37:18Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/23703115425) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/24764038091) |
 
 ## Build Status
 

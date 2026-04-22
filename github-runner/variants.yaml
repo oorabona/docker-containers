@@ -13,6 +13,47 @@
 build:
   version_retention: 3
 versions:
+  - tag: 2.334.0
+    variants:
+      - name: ubuntu-2404-base
+        suffix: ""
+        flavor: ubuntu-2404
+        build_flavor: base
+        dockerfile: Dockerfile.linux
+        description: "Ubuntu 24.04 runner — base flavor (default)"
+        default: true
+      - name: ubuntu-2404-dev
+        suffix: "-dev"
+        flavor: ubuntu-2404
+        build_flavor: dev
+        dockerfile: Dockerfile.linux
+        description: "Ubuntu 24.04 runner — dev flavor (Tauri build dependencies)"
+      - name: debian-trixie-base
+        suffix: "-debian-trixie"
+        flavor: debian-trixie
+        build_flavor: base
+        dockerfile: Dockerfile.linux
+        description: "Debian Trixie runner — base flavor"
+      - name: debian-trixie-dev
+        suffix: "-debian-trixie-dev"
+        flavor: debian-trixie
+        build_flavor: dev
+        dockerfile: Dockerfile.linux
+        description: "Debian Trixie runner — dev flavor (Tauri build dependencies)"
+      - name: windows-ltsc2022-base
+        suffix: "-windows-ltsc2022"
+        flavor: windows-ltsc2022
+        build_flavor: base
+        dockerfile: Dockerfile.windows
+        description: "Windows Server 2022 runner — base flavor"
+        os: windows
+      - name: windows-ltsc2022-dev
+        suffix: "-windows-ltsc2022-dev"
+        flavor: windows-ltsc2022
+        build_flavor: dev
+        dockerfile: Dockerfile.windows
+        description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
+        os: windows
   - tag: 2.333.1
     variants:
       - name: ubuntu-2404-base
@@ -55,47 +96,6 @@ versions:
         description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
         os: windows
   - tag: 2.333.0
-    variants:
-      - name: ubuntu-2404-base
-        suffix: ""
-        flavor: ubuntu-2404
-        build_flavor: base
-        dockerfile: Dockerfile.linux
-        description: "Ubuntu 24.04 runner — base flavor (default)"
-        default: true
-      - name: ubuntu-2404-dev
-        suffix: "-dev"
-        flavor: ubuntu-2404
-        build_flavor: dev
-        dockerfile: Dockerfile.linux
-        description: "Ubuntu 24.04 runner — dev flavor (Tauri build dependencies)"
-      - name: debian-trixie-base
-        suffix: "-debian-trixie"
-        flavor: debian-trixie
-        build_flavor: base
-        dockerfile: Dockerfile.linux
-        description: "Debian Trixie runner — base flavor"
-      - name: debian-trixie-dev
-        suffix: "-debian-trixie-dev"
-        flavor: debian-trixie
-        build_flavor: dev
-        dockerfile: Dockerfile.linux
-        description: "Debian Trixie runner — dev flavor (Tauri build dependencies)"
-      - name: windows-ltsc2022-base
-        suffix: "-windows-ltsc2022"
-        flavor: windows-ltsc2022
-        build_flavor: base
-        dockerfile: Dockerfile.windows
-        description: "Windows Server 2022 runner — base flavor"
-        os: windows
-      - name: windows-ltsc2022-dev
-        suffix: "-windows-ltsc2022-dev"
-        flavor: windows-ltsc2022
-        build_flavor: dev
-        dockerfile: Dockerfile.windows
-        description: "Windows Server 2022 runner — dev flavor (VS Build Tools)"
-        os: windows
-  - tag: "2.332.0"
     variants:
       - name: ubuntu-2404-base
         suffix: ""
