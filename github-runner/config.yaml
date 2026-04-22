@@ -6,7 +6,7 @@ description: "Self-hosted GitHub Actions runner (Linux + Windows)"
 build_args:
   UBUNTU_2404_BASE: "ubuntu:24.04"
   DEBIAN_TRIXIE_BASE: "ghcr.io/oorabona/debian:trixie"
-  PWSH_VERSION: "7.6.0"
+  PWSH_VERSION: "7.6.1"
   GIT_VERSION: "2.54.0.windows.1"
   JQ_VERSION: "1.8.1"
 dependency_sources:
