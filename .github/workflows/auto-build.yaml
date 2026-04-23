@@ -139,11 +139,11 @@ on:
         default: false
         type: boolean
 
-# Serialize builds to prevent race conditions (e.g. two merges triggering
-# concurrent extension builds that compete for the same builder images)
-concurrency:
-  group: auto-build-${{ github.ref }}
-  cancel-in-progress: false
+# NOTE: No workflow-level concurrency — serialization is per-container/per-job
+# (see `concurrency` blocks on individual jobs below). This lets unrelated
+# container builds run in parallel (e.g. postgres and vector PRs merging at
+# the same time don't block each other), while same-container races are still
+# prevented (e.g. two postgres merges serialize, cancelling stale runs).
 
 permissions:
   contents: read         # Checkout only — no git push or PR creation
@@ -204,6 +204,10 @@ jobs:
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
       (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true'
+    # Serialize extension builds across runs — shared builder images race otherwise.
+    concurrency:
+      group: build-extensions-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -401,6 +405,11 @@ jobs:
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
+    # Per-container+variant+arch concurrency: same combo serializes (latest wins),
+    # different containers run in parallel (no cross-container blocking).
+    concurrency:
+      group: build-${{ matrix.build.container }}-${{ matrix.build.variant || 'default' }}-${{ matrix.arch }}
+      cancel-in-progress: true
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
@@ -694,6 +703,10 @@ jobs:
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
       needs.detect-containers.outputs.builds_count > 0 &&
       github.event_name != 'pull_request'
+    # Per-container manifest concurrency: latest wins, unrelated containers parallel.
+    concurrency:
+      group: manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
