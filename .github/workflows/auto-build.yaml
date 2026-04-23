@@ -405,13 +405,10 @@ jobs:
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
-    # Per-container+variant+arch concurrency: same combo serializes (queues),
-    # different containers run in parallel (no cross-container blocking).
-    # cancel-in-progress: false — Windows dev is 60+ min, cancelling mid-way
-    # is wasteful; newer runs queue instead.
-    concurrency:
-      group: build-${{ matrix.build.container }}-${{ matrix.build.variant || 'default' }}-${{ matrix.arch }}
-      cancel-in-progress: false
+    # NOTE: No job-level concurrency here — caused unexpected mid-build cancellations
+    # (observed 2026-04-23). Workflow-level concurrency is already removed so
+    # different-container runs parallelize. Same-container races are rare in practice
+    # (upstream-monitor serializes PR merges via concurrency on its own workflow).
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
@@ -705,10 +702,6 @@ jobs:
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
       needs.detect-containers.outputs.builds_count > 0 &&
       github.event_name != 'pull_request'
-    # Per-container+tag manifest concurrency: same tag serializes, different parallel.
-    concurrency:
-      group: manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
