@@ -108,39 +108,10 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - name: Setup Jekyll configuration
-        run: |
-          echo "📋 Setting up Jekyll from docs/site/"
-          cp docs/site/_config.yml _config.yml
-          cp docs/site/index.md index.md
-          cp -r docs/site/_includes _includes
-          cp -r docs/site/_layouts _layouts
-          cp -r docs/site/_data _data
-          cp -r docs/site/assets assets
-          if [ -d "docs/site/_containers" ]; then
-            cp -r docs/site/_containers _containers
-            echo "Containers ready"
-          fi
-          if [ -d "docs/site/_posts" ]; then
-            cp -r docs/site/_posts _posts
-            echo "Posts ready"
-          fi
-          if [ -f "docs/site/blog.md" ]; then
-            cp docs/site/blog.md blog.md
-          fi
-          # Remove the original source so Jekyll doesn't index it twice
-          # (the include: "docs/**" in _config.yml otherwise reads docs/site/* again).
-          rm -rf docs/site
-          if [ -f "docs/site/container.html" ]; then
-            cp docs/site/container.html container.html
-          fi
-          echo "✅ Jekyll configuration ready"
-          echo "📂 Assets: $(find assets -type f | wc -l) files"
-
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
         with:
-          source: ./
+          source: ./docs/site
           destination: ./_site
 
       - name: Verify Jekyll build
