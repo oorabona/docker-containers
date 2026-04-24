@@ -119,7 +119,14 @@ jobs:
           cp -r docs/site/assets assets
           if [ -d "docs/site/_containers" ]; then
             cp -r docs/site/_containers _containers
-            echo "📂 Containers: $(ls _containers/ | wc -l) pages"
+            echo "Containers ready"
+          fi
+          if [ -d "docs/site/_posts" ]; then
+            cp -r docs/site/_posts _posts
+            echo "Posts ready"
+          fi
+          if [ -f "docs/site/blog.md" ]; then
+            cp docs/site/blog.md blog.md
           fi
           if [ -f "docs/site/container.html" ]; then
             cp docs/site/container.html container.html
