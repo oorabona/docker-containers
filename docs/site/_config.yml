@@ -17,6 +17,10 @@ markdown: kramdown
 plugins:
   - jekyll-feed
 
+# Allow posts dated after the runner's wall clock (GH Actions runner
+# sometimes trails the repo's internal timeline by a few days).
+future: true
+
 # Content settings
 show_excerpts: true
 
