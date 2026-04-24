@@ -71,6 +71,9 @@ exclude:
   - "docs/plans/"
   - "docs/decisions.md"
   - "docs/historic/"
+  # docs/site/ is already staged to the Jekyll source root by the workflow
+  # (cp -r docs/site/_* .); reading it again causes duplicate posts/pages.
+  - "docs/site/"
 
 # Include essential Jekyll files (this overrides excludes for specific patterns)
 include:
