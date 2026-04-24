@@ -17,9 +17,10 @@ markdown: kramdown
 plugins:
   - jekyll-feed
 
-# Allow posts dated after the runner's wall clock (GH Actions runner
-# sometimes trails the repo's internal timeline by a few days).
-future: true
+# Jekyll skips future-dated posts — used intentionally to stagger blog
+# publication: drop several posts at once, each with a future date; the
+# daily dashboard rebuild picks them up on their scheduled day.
+future: false
 
 # Content settings
 show_excerpts: true
