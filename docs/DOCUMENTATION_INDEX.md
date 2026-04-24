@@ -1,25 +1,16 @@
----
-doc-meta:
-  status: canonical
-  scope: project
-  type: index
-  created: 2026-01-16
-  updated: 2026-02-26
----
-
 # Documentation Index
 
-## Quick Links
+## Guides
 
-| Category | Document | Status |
-|----------|----------|--------|
-| Container Config | [CONTAINER_CONFIG.md](CONTAINER_CONFIG.md) | canonical |
-| Development Guide | [DEVELOPMENT.md](DEVELOPMENT.md) | canonical |
-| GitHub Actions | [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md) | canonical |
-| Workflow Architecture | [WORKFLOW_ARCHITECTURE.md](WORKFLOW_ARCHITECTURE.md) | canonical |
-| Local Development | [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) | canonical |
-| Testing Guide | [TESTING_GUIDE.md](TESTING_GUIDE.md) | canonical |
-| Size Optimization | [CONTAINER_SIZE_OPTIMIZATION.md](CONTAINER_SIZE_OPTIMIZATION.md) | canonical |
+| Document | Purpose |
+|----------|---------|
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Contributor guide — extensions, variants, build system |
+| [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) | Run builds and tests locally |
+| [TESTING_GUIDE.md](TESTING_GUIDE.md) | Test harness, `act` usage, CI parity |
+| [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md) | CI/CD workflows reference |
+| [WORKFLOW_ARCHITECTURE.md](WORKFLOW_ARCHITECTURE.md) | End-to-end automation flow |
+| [CONTAINER_CONFIG.md](CONTAINER_CONFIG.md) | `config.yaml` schema and build args |
+| [CONTAINER_SIZE_OPTIMIZATION.md](CONTAINER_SIZE_OPTIMIZATION.md) | Image size best practices |
 
 ## Architecture Decision Records
 
@@ -27,32 +18,15 @@ doc-meta:
 |-----|-------|
 | [ADR-001](adr/ADR-001-multi-platform-native-runners.md) | Multi-platform native runners |
 | [ADR-002](adr/ADR-002-smart-rebuild-detection.md) | Smart rebuild detection |
-| [ADR-003](adr/ADR-003-variant-system.md) | Variant system |
+| [ADR-003](adr/ADR-003-variant-system.md) | Declarative variant system |
 | [ADR-004](adr/ADR-004-build-lineage-tracking.md) | Build lineage tracking |
+| [ADR-005](adr/ADR-005-github-runner-container.md) | GitHub Actions runner container |
+| [ADR-006](adr/ADR-006-multi-distro-template-pattern.md) | Multi-distro template pattern |
 
-## Audit Reports
+## Container Documentation
 
-| Document | Description |
-|----------|-------------|
-| [OVERVIEW.md](audit/OVERVIEW.md) | Architecture overview |
-| [ARCHITECTURE.md](audit/ARCHITECTURE.md) | Architecture analysis |
-| [KNOWLEDGE.md](audit/KNOWLEDGE.md) | Knowledge base |
-| [BACKLOG.md](audit/BACKLOG.md) | Audit-generated backlog |
+Each container directory contains a `README.md` with usage, environment variables, and examples. See the repository root `README.md` for the full list of containers.
 
-## Backlogs
+## Backlog
 
-- [Main Backlog](../TODO.md)
-
-## Archived
-
-See [docs/historic/](historic/) for deprecated documentation.
-
-## Document Status Legend
-
-| Status | Meaning |
-|--------|---------|
-| `canonical` | Source of truth, actively maintained |
-| `draft` | Work in progress |
-| `review` | Pending review |
-| `deprecated` | Superseded, move to historic/ |
-| `archived` | Historical reference only |
+- [TODO.md](../TODO.md) — active backlog and ideas
