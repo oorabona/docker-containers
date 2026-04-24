@@ -36,6 +36,9 @@
         <h1 class="header-main">{{ page.title | default: "Blog" }}</h1>
       </div>
       <div class="header-actions">
+        <button class="theme-toggle" aria-label="Toggle light/dark theme">
+          <i class="ti ti-moon" aria-hidden="true"></i>
+        </button>
         <a href="{{ site.baseurl }}/" class="btn">
           <i class="ti ti-dashboard" aria-hidden="true"></i> Dashboard
         </a>
@@ -73,5 +76,15 @@
       {% endif %}
     </main>
   </div>
+
+  <script src="{{ site.baseurl }}/assets/js/theme.js"></script>
+  <script>
+    (function() {
+      var btn = document.querySelector('.theme-toggle');
+      if (btn && window.ThemeManager) {
+        btn.addEventListener('click', function() { ThemeManager.toggleTheme(); });
+      }
+    })();
+  </script>
 </body>
 </html>
