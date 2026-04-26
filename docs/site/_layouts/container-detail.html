@@ -149,8 +149,7 @@
               <div class="version-group">
                 <h3 class="version-title">{{ version.base_tag | default: version.tag }}</h3>
                 <div class="variant-tags-row">
-                  {% if version.variants[0] %}
-                    {% for variant in version.variants %}
+                  {% for variant in version.variants %}
                     <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
                           data-tag="{{ variant.tag }}"
                           data-size-amd64="{{ variant.size_amd64 | default: '' }}"
@@ -168,21 +167,7 @@
                           title="{{ variant.description }}">
                       {{ variant.name }}{% if variant.is_default %} <span class="badge-default">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                     </span>
-                    {% endfor %}
-                  {% else %}
-                    <!-- Versions-only container: synthesize a single chip from version data + top-level sizes -->
-                    <span class="variant-tag{% if forloop.first %} selected{% endif %}"
-                          data-tag="{{ version.tag }}"
-                          data-size-amd64="{{ page.size_amd64 | default: '' }}"
-                          data-size-arm64="{{ page.size_arm64 | default: '' }}"
-                          data-build-digest="{{ page.build_digest | default: '' }}"
-                          data-base-image="{{ page.base_image | default: '' }}"
-                          role="button"
-                          tabindex="0"
-                          aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}">
-                      {{ version.tag }}
-                    </span>
-                  {% endif %}
+                  {% endfor %}
                 </div>
               </div>
               {% endfor %}
