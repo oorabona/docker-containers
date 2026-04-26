@@ -9,17 +9,8 @@ This is a simple `Alpine` based container with `OpenVPN` built from sources.
 
 ## Platforms
 
-- `amd64`
-
-![Docker Image Size AMD64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/openvpn?arch=amd64&sort=semver)
-
-- `arm64`
-
-![Docker Image Size ARM64 (latest semver)](https://img.shields.io/docker/image-size/oorabona/openvpn?arch=arm64&sort=semver)
-
-- `arm/v7`
-
-![Docker Image Size ARM/v7 (latest semver)](https://img.shields.io/docker/image-size/oorabona/openvpn?arch=arm&sort=semver)
+- `amd64` ![Docker Image Size AMD64](https://img.shields.io/docker/image-size/oorabona/openvpn/latest?arch=amd64)
+- `arm64` ![Docker Image Size ARM64](https://img.shields.io/docker/image-size/oorabona/openvpn/latest?arch=arm64)
 
 ## Features
 
