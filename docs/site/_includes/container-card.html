@@ -44,7 +44,7 @@
         {{ include.star_count | default: 0 }}
       </span>
     </div>
-    {% if include.size_amd64 or include.size_arm64 or include.has_variants %}
+    {% if include.size_amd64 or include.size_arm64 %}
     <div class="card-meta-item">
       <span class="card-meta-label">Size (amd64)</span>
       <span class="card-meta-value" data-meta="size-amd64">{{ include.size_amd64 | default: "—" }}</span>
@@ -79,7 +79,7 @@
   {% endif %}
 
   <!-- Variants Section (for multi-image containers) -->
-  {% if include.has_variants %}
+  {% if include.versions or include.variants %}
   <div class="variants-section">
     <div class="variants-header">
       <i class="ti ti-versions" aria-hidden="true"></i>
@@ -137,7 +137,7 @@
   <div class="pull-section"
        data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
        data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
-       data-default-tag="{% if include.has_variants %}{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% else %}{{ include.variants[0].tag }}{% endif %}{% else %}{{ include.current_version }}{% endif %}">
+       data-default-tag="{% if include.versions %}{{ include.versions[0].variants[0].tag }}{% elsif include.variants %}{{ include.variants[0].tag }}{% else %}{{ include.current_version }}{% endif %}">
     <div class="pull-header">
       <i class="ti ti-brand-docker" aria-hidden="true"></i>
       <span>Pull command</span>
