@@ -68,6 +68,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # App token used for PR creation, labels, and merge so that downstream
+      # workflows (auto-build smoke check) trigger on the resulting PR/push.
+      # GITHUB_TOKEN-authored PRs do not trigger workflows by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Configure Git for HTTPS
         run: |
           # Ensure git remote uses HTTPS for token authentication
@@ -225,7 +235,7 @@ jobs:
         id: create_pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           commit-message: "build(${{ matrix.container }}): update to ${{ steps.classify.outputs.new_version }}"
           committer: Olivier ORABONA <oorabona@users.noreply.github.com>
           title: "${{ steps.classify.outputs.change_type == 'major' && '🔄 Major' || '🚀 Minor' }}: ${{ matrix.container }} to ${{ steps.classify.outputs.new_version }}"
@@ -250,7 +260,7 @@ jobs:
       - name: Apply labels
         if: steps.create_pr.outputs.pull-request-number
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           sleep 2
@@ -260,7 +270,7 @@ jobs:
         id: merge_pr
         if: steps.classify.outputs.change_type == 'minor' && steps.create_pr.outputs.pull-request-number
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           # --auto queues the merge for when all checks pass (no need to wait here)
@@ -498,6 +508,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # App token used for PR creation, labels, and merge so that downstream
+      # workflows (auto-build smoke check) trigger on the resulting PR/push.
+      # GITHUB_TOKEN-authored PRs do not trigger workflows by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Install yq
         run: |
           sudo wget -qO /usr/local/bin/yq \
@@ -610,7 +630,7 @@ jobs:
         id: create_pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           commit-message: "deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
           committer: Olivier ORABONA <oorabona@users.noreply.github.com>
           title: "${{ steps.prepare.outputs.max_severity == 'major' && '⚠️' || '📦' }} deps(${{ matrix.container }}): update ${{ steps.prepare.outputs.update_count }} dependencies"
@@ -631,7 +651,7 @@ jobs:
       - name: Apply labels
         if: steps.create_pr.outputs.pull-request-number
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           sleep 2
@@ -641,7 +661,7 @@ jobs:
         id: merge_dep_pr
         if: steps.prepare.outputs.max_severity != 'major' && steps.create_pr.outputs.pull-request-number
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           # --auto queues the merge for when all checks pass (no need to wait here)
