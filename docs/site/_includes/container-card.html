@@ -91,20 +91,35 @@
       <div class="version-group">
         <div class="version-label">{{ version.base_tag | default: version.tag }}</div>
         <div class="variant-tags">
-          {% for variant in version.variants %}
-            <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
-                  title="{{ variant.description }} — Click to select"
-                  data-tag="{{ variant.tag }}"
-                  data-size-amd64="{{ variant.size_amd64 | default: '' }}"
-                  data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+          {% if version.variants[0] %}
+            {% for variant in version.variants %}
+              <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                    title="{{ variant.description }} — Click to select"
+                    data-tag="{{ variant.tag }}"
+                    data-size-amd64="{{ variant.size_amd64 | default: '' }}"
+                    data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                    role="button"
+                    tabindex="0"
+                    aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                    aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
+                :{{ variant.name }}
+                {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
+              </span>
+            {% endfor %}
+          {% else %}
+            <!-- Versions-only container: synthesize a single chip from version data + top-level sizes -->
+            <span class="variant-tag{% if forloop.first %} selected{% endif %}"
+                  title="Select version {{ version.tag }}"
+                  data-tag="{{ version.tag }}"
+                  data-size-amd64="{{ include.size_amd64 | default: '' }}"
+                  data-size-arm64="{{ include.size_arm64 | default: '' }}"
                   role="button"
                   tabindex="0"
-                  aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
-                  aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
-              :{{ variant.name }}
-              {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
+                  aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
+                  aria-label="Select version {{ version.tag }}">
+              :{{ version.tag }}
             </span>
-          {% endfor %}
+          {% endif %}
         </div>
       </div>
       {% endfor %}
