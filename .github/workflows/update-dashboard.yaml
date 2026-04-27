@@ -58,6 +58,11 @@ jobs:
           key: build-lineage-never-exact-match
           restore-keys: build-lineage-
 
+      - name: Snapshot pull/star counts (idempotent per day)
+        run: |
+          chmod +x scripts/snapshot-stats.sh
+          ./scripts/snapshot-stats.sh
+
       - name: Generate dashboard data
         run: |
           chmod +x generate-dashboard.sh
@@ -148,6 +153,13 @@ jobs:
             echo "Deleting stale github-pages artifact: $id"
             gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/$id" || true
           done
+
+      - name: Save updated lineage cache (preserves stats history)
+        if: always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
