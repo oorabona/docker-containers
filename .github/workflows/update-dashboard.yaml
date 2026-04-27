@@ -24,6 +24,7 @@ on:
       - "docs/**"
       - "docs/site/_config.yml"
       - "*.md"
+      - "*/README.md"
       - "generate-dashboard.sh"
       - ".github/workflows/update-dashboard.yaml"
 
