@@ -15,6 +15,12 @@ on:
         required: false
         type: string
         default: 'Manual update'
+  # Daily refresh — guarantees stats-history snapshot lands every day,
+  # even when upstream-monitor finds no updates (quiet days).
+  # Runs after upstream-monitor (06:00 UTC) so any same-day dep updates are reflected.
+  schedule:
+    - cron: '0 7 * * *'  # 7 AM UTC daily
+
   # Also trigger on pushes to master (for Jekyll site/doc updates).
   # NOTE: No overlap with auto-build.yaml push paths (container files).
   # Container builds invoke this workflow via workflow_call instead.
