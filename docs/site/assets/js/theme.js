@@ -27,10 +27,16 @@
   // Apply theme immediately to avoid flash
   initTheme();
 
-  // Auto-bind theme toggle button — works on any layout that includes theme.js
+  // Auto-bind theme toggle button — only on page-layout (blog/static pages).
+  // Dashboard and container-detail layouts bind via ThemeManager.toggleTheme()
+  // in their own page-specific scripts; binding here too would fire twice per click.
   document.addEventListener('DOMContentLoaded', function() {
+    if (!document.body.classList.contains('page-layout')) return;
     var btn = document.querySelector('.theme-toggle');
-    if (btn) btn.addEventListener('click', toggleTheme);
+    if (!btn) return;
+    if (btn.dataset.themeAutoBound === '1') return;
+    btn.dataset.themeAutoBound = '1';
+    btn.addEventListener('click', toggleTheme);
   });
 
   // Expose as namespace for page-specific scripts

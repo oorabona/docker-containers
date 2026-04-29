@@ -139,7 +139,7 @@
         <!-- Value Proposition -->
         {%- if page.value_proposition and page.value_proposition != "" -%}
         <section class="value-prop">
-          <p>{{ page.value_proposition | strip_newlines }}</p>
+          <p>{{ page.value_proposition | strip_newlines | escape }}</p>
         </section>
         {%- endif -%}
 
@@ -169,7 +169,7 @@
           {%- if default_variant.multi_arch_platforms -%}
             <a class="trust-badge trust-badge--multi-arch"
                data-trust="multi-arch"
-               href="https://github.com/oorabona/docker-containers/pkgs/container/{{ page.name }}"
+               href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}"
                rel="noopener"
                title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " }}</a>
           {%- else -%}

@@ -22,9 +22,28 @@ fi
 # Empty Trivy summary emitted when data is unavailable
 _TRIVY_EMPTY='{"last_scan":null,"counts":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"top_advisories":[]}'
 
+# In-process cache for the full alerts list — populated once per dashboard run.
+# Avoids one paginated gh API call per variant (21 calls for postgres alone).
+_TRIVY_ALERTS_CACHE=""
+
+# _fetch_trivy_alerts_once
+# Populates _TRIVY_ALERTS_CACHE on first call; subsequent calls are no-ops.
+# On auth/network failure, sets cache to "[]" and logs a warning once.
+_fetch_trivy_alerts_once() {
+    [[ -n "$_TRIVY_ALERTS_CACHE" ]] && return 0
+    local raw
+    raw=$(gh api --paginate \
+        "repos/${TRIVY_UTILS_OWNER_REPO}/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100" \
+        2>/dev/null) || {
+        log_warning "gh api code-scanning/alerts failed (auth or network) — Trivy summaries will be empty"
+        _TRIVY_ALERTS_CACHE="[]"
+        return 0
+    }
+    _TRIVY_ALERTS_CACHE="$raw"
+}
+
 # get_trivy_summary <category>
-# Fetches open Trivy code-scanning alerts filtered by the given SARIF category,
-# then returns a JSON summary:
+# Returns a JSON summary for the given SARIF category using the cached alerts list:
 #   {
 #     "last_scan": "<ISO8601 or null>",
 #     "counts": {"critical": N, "high": N, "medium": N, "low": N, "info": N},
@@ -33,7 +52,7 @@ _TRIVY_EMPTY='{"last_scan":null,"counts":{"critical":0,"high":0,"medium":0,"low"
 #       ...  (up to 5, sorted critical→high→medium→low)
 #     ]
 #   }
-# On auth/network failure: logs a warning once and returns the empty form.
+# On auth/network failure: returns the empty form.
 # Callers must not crash when fields are null or arrays are empty.
 get_trivy_summary() {
     local category="$1"
@@ -42,19 +61,11 @@ get_trivy_summary() {
         return 0
     fi
 
-    local response
-    # --paginate handles multi-page results; each page is a JSON array
-    response=$(gh api --paginate \
-        "repos/${TRIVY_UTILS_OWNER_REPO}/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100" \
-        2>/dev/null) || {
-        log_warning "gh api code-scanning/alerts failed for category ${category} (auth or network)"
-        echo "$_TRIVY_EMPTY"
-        return 0
-    }
+    _fetch_trivy_alerts_once
 
     # --paginate emits a stream of arrays; jq -s '.[0]' reduces multi-page output.
     # Filter to the requested category, build summary.
-    echo "$response" | jq -s --arg cat "$category" '
+    echo "$_TRIVY_ALERTS_CACHE" | jq -s --arg cat "$category" '
         # Flatten paginated arrays and filter to the target category
         [.[][] | select(.most_recent_instance.category == $cat)] as $alerts
         | {

@@ -497,9 +497,9 @@ collect_variant_json() {
             is_default: $is_default,
             size_amd64: $size_amd64, size_arm64: $size_arm64,
             build_digest: $lineage.build_digest,
-            base_image: $lineage.base_image,
-            multi_arch_platforms: $multi_arch_platforms
+            base_image: $lineage.base_image
         }
+        + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
         + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
         + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
