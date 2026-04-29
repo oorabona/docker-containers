@@ -17,25 +17,11 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.36.1/dist/tabler-icons.min.css" crossorigin="anonymous">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/dashboard.css">
-
-  <style>
-    .post-wrapper { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
-    .post-meta { color: var(--text-muted, #888); font-size: 0.9rem; margin-bottom: 1rem; }
-    .post-meta a { color: inherit; }
-    .post-content { line-height: 1.7; }
-    .post-content h1, .post-content h2, .post-content h3 { margin-top: 2rem; }
-    .post-content pre { overflow-x: auto; padding: 1rem; border-radius: 8px; background: rgba(0,0,0,0.3); font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }
-    .post-content code { font-family: 'JetBrains Mono', monospace; font-size: 0.9em; }
-    .post-content :not(pre) > code { background: rgba(255,255,255,0.08); padding: 0.15em 0.4em; border-radius: 4px; }
-    .post-content blockquote { border-left: 3px solid var(--accent, #5c7cfa); padding-left: 1rem; margin-left: 0; color: var(--text-muted, #aaa); }
-    .post-content img { max-width: 100%; height: auto; }
-    .post-nav { margin: 3rem 0 1rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-    .post-nav a { color: var(--accent, #5c7cfa); text-decoration: none; }
-  </style>
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/blog.css">
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
@@ -44,42 +30,70 @@
   <div class="shape shape-2" aria-hidden="true"></div>
   <div class="shape shape-3" aria-hidden="true"></div>
 
-  <div class="container">
-    <header class="header" role="banner">
-      <div class="header-title">
-        <span class="header-pretitle"><a href="{{ site.baseurl }}/blog/">← All posts</a></span>
-        <h1 class="header-main">{{ page.title }}</h1>
-      </div>
-      <div class="header-actions">
+  <header class="site-nav" role="banner">
+    <div class="site-nav-inner">
+      <a href="{{ site.baseurl }}/" class="site-nav-brand" aria-label="Home">
+        <i class="ti ti-package" aria-hidden="true"></i>
+        <span>Docker Containers</span>
+      </a>
+      <nav class="site-nav-links">
+        <a href="{{ site.baseurl }}/" class="site-nav-link">Dashboard</a>
+        <a href="{{ site.baseurl }}/blog/" class="site-nav-link active">Blog</a>
+      </nav>
+      <div class="site-nav-actions">
         <button class="theme-toggle" aria-label="Toggle light/dark theme">
           <i class="ti ti-moon" aria-hidden="true"></i>
         </button>
-        <a href="{{ site.baseurl }}/" class="btn">
-          <i class="ti ti-dashboard" aria-hidden="true"></i> Dashboard
-        </a>
         <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
           <i class="ti ti-brand-github" aria-hidden="true"></i> Repository
         </a>
       </div>
-    </header>
+    </div>
+  </header>
 
+  <div class="container">
     <main id="main-content" class="post-wrapper">
-      <div class="post-meta">
-        <i class="ti ti-calendar" aria-hidden="true"></i> {{ page.date | date: "%B %d, %Y" }}
-        {% if page.tags %}
-          &nbsp;&middot;&nbsp;
-          <i class="ti ti-tag" aria-hidden="true"></i>
-          {% for tag in page.tags %}<span>{{ tag }}</span>{% unless forloop.last %}, {% endunless %}{% endfor %}
-        {% endif %}
-      </div>
+      <a class="post-back-link" href="{{ site.baseurl }}/blog/">
+        <i class="ti ti-arrow-left" aria-hidden="true"></i> All posts
+      </a>
 
-      <article class="post-content glass" style="padding: 2rem;">
+      <header class="post-header">
+        <h1 class="post-title">{{ page.title }}</h1>
+        {% if page.description %}
+          <p class="post-lede">{{ page.description }}</p>
+        {% endif %}
+        <div class="post-meta">
+          <span class="blog-card-meta-item">
+            <i class="ti ti-calendar" aria-hidden="true"></i>
+            {{ page.date | date: "%b %-d, %Y" }}
+          </span>
+          {% assign words = content | number_of_words %}
+          {% assign read_minutes = words | divided_by: 200 | plus: 1 %}
+          <span class="blog-card-meta-item">
+            <i class="ti ti-clock" aria-hidden="true"></i>
+            {{ read_minutes }} min read
+          </span>
+          {% if page.tags %}
+            <span class="blog-card-tags">
+              {% for tag in page.tags %}
+                <span class="tag-pill">{{ tag }}</span>
+              {% endfor %}
+            </span>
+          {% endif %}
+        </div>
+      </header>
+
+      <article class="post-content glass">
         {{ content }}
       </article>
 
       <nav class="post-nav" aria-label="Post navigation">
-        <a href="{{ site.baseurl }}/blog/"><i class="ti ti-arrow-left"></i> All posts</a>
-        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}"><i class="ti ti-brand-github"></i> Star on GitHub</a>
+        <a href="{{ site.baseurl }}/blog/" class="post-nav-link">
+          <i class="ti ti-arrow-left" aria-hidden="true"></i> All posts
+        </a>
+        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}" class="post-nav-link">
+          <i class="ti ti-brand-github" aria-hidden="true"></i> Star on GitHub
+        </a>
       </nav>
     </main>
   </div>

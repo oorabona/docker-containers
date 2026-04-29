@@ -5,23 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://img.shields.io https://github.com; connect-src 'self'"/>
   <title>{{ page.title }} | {{ site.title }}</title>
-  <meta name="description" content="Blog posts about running these containers in production."/>
+  <meta name="description" content="Insights, postmortems, and release notes on the open-source Docker images of this project."/>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.36.1/dist/tabler-icons.min.css" crossorigin="anonymous">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/dashboard.css">
-
-  <style>
-    .blog-list { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
-    .blog-entry { padding: 1.5rem; margin-bottom: 1rem; text-decoration: none; color: inherit; display: block; transition: transform 0.15s ease; }
-    .blog-entry:hover { transform: translateY(-2px); }
-    .blog-entry h2 { margin: 0 0 0.5rem; font-size: 1.3rem; }
-    .blog-entry-meta { color: var(--text-muted, #888); font-size: 0.85rem; margin-bottom: 0.5rem; }
-    .blog-entry-excerpt { color: var(--text-muted, #aaa); line-height: 1.5; }
-  </style>
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/blog.css">
 </head>
 <body>
   <div class="bg-animated" aria-hidden="true"></div>
@@ -29,48 +21,79 @@
   <div class="shape shape-2" aria-hidden="true"></div>
   <div class="shape shape-3" aria-hidden="true"></div>
 
-  <div class="container">
-    <header class="header" role="banner">
-      <div class="header-title">
-        <span class="header-pretitle">Docker Containers</span>
-        <h1 class="header-main">{{ page.title | default: "Blog" }}</h1>
-      </div>
-      <div class="header-actions">
+  <header class="site-nav" role="banner">
+    <div class="site-nav-inner">
+      <a href="{{ site.baseurl }}/" class="site-nav-brand" aria-label="Home">
+        <i class="ti ti-package" aria-hidden="true"></i>
+        <span>Docker Containers</span>
+      </a>
+      <nav class="site-nav-links">
+        <a href="{{ site.baseurl }}/" class="site-nav-link">Dashboard</a>
+        <a href="{{ site.baseurl }}/blog/" class="site-nav-link active">Blog</a>
+      </nav>
+      <div class="site-nav-actions">
         <button class="theme-toggle" aria-label="Toggle light/dark theme">
           <i class="ti ti-moon" aria-hidden="true"></i>
         </button>
-        <a href="{{ site.baseurl }}/" class="btn">
-          <i class="ti ti-dashboard" aria-hidden="true"></i> Dashboard
-        </a>
         <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
           <i class="ti ti-brand-github" aria-hidden="true"></i> Repository
         </a>
       </div>
-    </header>
+    </div>
+  </header>
 
-    <main class="blog-list">
+  <div class="container">
+    <section class="blog-hero" aria-labelledby="blog-hero-title">
+      <span class="blog-hero-eyebrow">{{ site.posts.size }} {% if site.posts.size == 1 %}post{% else %}posts{% endif %} · open-source Docker images</span>
+      <h1 id="blog-hero-title" class="blog-hero-title">
+        Insights & postmortems<br>
+        <span class="blog-hero-accent">from the build pipeline.</span>
+      </h1>
+      <p class="blog-hero-subtitle">
+        Field notes on running these containers in production — what broke, what we learned, and how the CI architecture evolved to catch the next class of regression earlier.
+      </p>
+    </section>
+
+    <main class="blog-list" id="main-content">
       {{ content }}
 
       {% if site.posts.size == 0 %}
-        <p class="glass" style="padding: 2rem; text-align: center; color: var(--text-muted);">
+        <p class="blog-empty glass">
           <i class="ti ti-notes" aria-hidden="true"></i> No posts yet.
         </p>
       {% else %}
         {% for post in site.posts %}
-          <a class="blog-entry glass" href="{{ site.baseurl }}{{ post.url }}">
-            <div class="blog-entry-meta">
-              <i class="ti ti-calendar"></i> {{ post.date | date: "%B %d, %Y" }}
-              {% if post.tags %}
-                &nbsp;&middot;&nbsp; <i class="ti ti-tag"></i>
-                {% for tag in post.tags %}{{ tag }}{% unless forloop.last %}, {% endunless %}{% endfor %}
+          {% assign words = post.content | number_of_words %}
+          {% assign read_minutes = words | divided_by: 200 | plus: 1 %}
+          <a class="blog-card glass" href="{{ site.baseurl }}{{ post.url }}">
+            <div class="blog-card-body">
+              <h2 class="blog-card-title">{{ post.title }}</h2>
+              {% if post.description %}
+                <p class="blog-card-excerpt">{{ post.description }}</p>
+              {% else %}
+                <p class="blog-card-excerpt">{{ post.excerpt | strip_html | truncate: 200 }}</p>
               {% endif %}
+              <div class="blog-card-meta">
+                <span class="blog-card-meta-item">
+                  <i class="ti ti-calendar" aria-hidden="true"></i>
+                  {{ post.date | date: "%b %-d, %Y" }}
+                </span>
+                <span class="blog-card-meta-item">
+                  <i class="ti ti-clock" aria-hidden="true"></i>
+                  {{ read_minutes }} min read
+                </span>
+                {% if post.tags %}
+                  <span class="blog-card-tags">
+                    {% for tag in post.tags limit: 3 %}
+                      <span class="tag-pill">{{ tag }}</span>
+                    {% endfor %}
+                  </span>
+                {% endif %}
+              </div>
             </div>
-            <h2>{{ post.title }}</h2>
-            {% if post.description %}
-              <p class="blog-entry-excerpt">{{ post.description }}</p>
-            {% else %}
-              <p class="blog-entry-excerpt">{{ post.excerpt | strip_html | truncate: 200 }}</p>
-            {% endif %}
+            <span class="blog-card-arrow" aria-hidden="true">
+              <i class="ti ti-arrow-right"></i>
+            </span>
           </a>
         {% endfor %}
       {% endif %}
