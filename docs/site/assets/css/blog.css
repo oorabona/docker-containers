@@ -80,6 +80,83 @@
 }
 
 /* ============================================================
+   Status pill (color-coded health indicator — used on dashboard hero)
+   ============================================================ */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 1rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.status-pill i { font-size: 1em; }
+
+.status-pill-ok {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.32);
+  color: var(--accent-green);
+}
+
+.status-pill-info {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.32);
+  color: var(--accent-blue);
+}
+
+.status-pill-warn {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.34);
+  color: var(--accent-yellow);
+}
+
+.status-pill-err {
+  background: rgba(236, 72, 153, 0.14);
+  border-color: rgba(236, 72, 153, 0.32);
+  color: var(--accent-pink);
+}
+
+/* ============================================================
+   Dashboard hero (mirrors blog hero, slightly tighter)
+   ============================================================ */
+
+.dashboard-hero {
+  max-width: 780px;
+  margin: 3rem auto 2rem;
+  padding: 0 1.25rem;
+  text-align: center;
+}
+
+.dashboard-hero-title {
+  font-size: clamp(1.85rem, 4.6vw, 2.75rem);
+  line-height: 1.12;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin: 1.1rem 0 0.85rem;
+}
+
+.dashboard-hero-accent {
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dashboard-hero-subtitle {
+  font-size: 1rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+/* ============================================================
    Blog hero
    ============================================================ */
 

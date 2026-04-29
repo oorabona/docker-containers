@@ -17,6 +17,7 @@
 
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/dashboard.css">
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/blog.css">
 </head>
 <body>
   <!-- Skip link for keyboard navigation -->
@@ -28,27 +29,67 @@
   <div class="shape shape-2" aria-hidden="true"></div>
   <div class="shape shape-3" aria-hidden="true"></div>
 
-  <div class="container">
-    <!-- Header -->
-    <header class="header" role="banner">
-      <div class="header-title">
-        <span class="header-pretitle">Container Management System</span>
-        <h1 class="header-main">{{ page.title | default: site.title }}</h1>
-      </div>
-      <div class="header-actions">
+  <header class="site-nav" role="banner">
+    <div class="site-nav-inner">
+      <a href="{{ site.baseurl }}/" class="site-nav-brand" aria-label="Home">
+        <i class="ti ti-package" aria-hidden="true"></i>
+        <span>Docker Containers</span>
+      </a>
+      <nav class="site-nav-links">
+        <a href="{{ site.baseurl }}/" class="site-nav-link active">Dashboard</a>
+        <a href="{{ site.baseurl }}/blog/" class="site-nav-link">Blog</a>
+      </nav>
+      <div class="site-nav-actions">
         <button class="theme-toggle" aria-label="Toggle light/dark theme">
           <i class="ti ti-moon" aria-hidden="true"></i>
         </button>
-        <a href="{{ site.baseurl }}/blog/" class="btn" aria-label="Blog posts">
-          <i class="ti ti-notes" aria-hidden="true"></i>
-          Blog
-        </a>
         <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer" aria-label="View repository on GitHub (opens in new tab)">
-          <i class="ti ti-brand-github" aria-hidden="true"></i>
-          Repository
+          <i class="ti ti-brand-github" aria-hidden="true"></i> Repository
         </a>
       </div>
-    </header>
+    </div>
+  </header>
+
+  <div class="container">
+    {%- assign s = site.data.stats -%}
+    {%- assign total = s.total_containers | default: 0 -%}
+    {%- assign updates = s.updates_available | default: 0 -%}
+    {%- assign success_rate = s.build_success_rate | default: 100 -%}
+    {%- if success_rate < 80 -%}
+      {%- assign health_status = "err" -%}
+      {%- assign health_label = "Build failures detected" -%}
+      {%- assign health_icon = "ti-circle-x" -%}
+    {%- elsif success_rate < 95 -%}
+      {%- assign health_status = "warn" -%}
+      {%- assign health_label = "Build attention needed" -%}
+      {%- assign health_icon = "ti-alert-triangle" -%}
+    {%- elsif updates > 0 -%}
+      {%- assign health_status = "info" -%}
+      {%- if updates == 1 -%}
+        {%- assign health_label = "1 update available" -%}
+      {%- else -%}
+        {%- assign health_label = updates | append: " updates available" -%}
+      {%- endif -%}
+      {%- assign health_icon = "ti-arrow-up-circle" -%}
+    {%- else -%}
+      {%- assign health_status = "ok" -%}
+      {%- assign health_label = "All systems green" -%}
+      {%- assign health_icon = "ti-circle-check" -%}
+    {%- endif -%}
+
+    <section class="dashboard-hero" aria-labelledby="dashboard-hero-title">
+      <span class="status-pill status-pill-{{ health_status }}">
+        <i class="ti {{ health_icon }}" aria-hidden="true"></i>
+        {{ health_label }}
+      </span>
+      <h1 id="dashboard-hero-title" class="dashboard-hero-title">
+        Open-source Docker images,<br>
+        <span class="dashboard-hero-accent">built and signed every day.</span>
+      </h1>
+      <p class="dashboard-hero-subtitle">
+        {{ total }} containers · multi-arch (amd64 + arm64) · SBOM-attested · auto-tracked upstream versions.
+      </p>
+    </section>
 
     <!-- Controls Bar -->
     <div class="controls-bar glass">
