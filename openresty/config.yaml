@@ -9,6 +9,7 @@ base_image_cache:
     tags: ["latest"]
 build_args:
   RESTY_IMAGE_BASE: "alpine"
+  RESTY_IMAGE_TAG: "latest"
   RESTY_OPENSSL_VERSION: "1.1.1w"
   RESTY_OPENSSL_PATCH_VERSION: "1.1.1f"
   RESTY_PCRE_VERSION: "8.45"
@@ -23,6 +24,9 @@ dependency_sources:
   RESTY_IMAGE_BASE:
     monitor: false
     reason: "Base image fallback, not a version to track"
+  RESTY_IMAGE_TAG:
+    monitor: false
+    reason: "Base image tag fallback, not a version to track"
   RESTY_OPENSSL_VERSION:
     monitor: false
     reason: "OpenSSL 1.1.1 is EOL, frozen"
