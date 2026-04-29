@@ -27,6 +27,12 @@
   // Apply theme immediately to avoid flash
   initTheme();
 
+  // Auto-bind theme toggle button — works on any layout that includes theme.js
+  document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.querySelector('.theme-toggle');
+    if (btn) btn.addEventListener('click', toggleTheme);
+  });
+
   // Expose as namespace for page-specific scripts
   window.ThemeManager = {
     get currentTheme() { return currentTheme; },

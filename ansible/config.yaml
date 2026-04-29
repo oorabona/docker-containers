@@ -41,3 +41,4 @@ dependency_sources:
   PYNACL_VERSION:
     type: pypi
     package: PyNaCl
+value_proposition: Pre-installed common collections, multi-version retention, ARM-native (amd64 + arm64). Daily upstream version monitoring with auto-PRs.

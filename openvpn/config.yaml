@@ -28,3 +28,4 @@ dependency_sources:
     type: github-release
     repo: OpenVPN/easy-rsa
     strip_v: true
+value_proposition: OpenVPN server image with sane defaults and signed verifiable supply chain. Multi-arch, lightweight.

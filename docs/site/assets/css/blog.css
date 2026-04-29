@@ -541,3 +541,387 @@
   .blog-card-arrow { width: 32px; height: 32px; }
   .post-content { padding: 1.5rem; }
 }
+
+/* === Phase B: trust signal layer === */
+
+/* ============================================================
+   Trust strip — row of trust badges (cards + detail pages)
+   ============================================================ */
+
+.trust-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.25rem 0;
+}
+
+/* ============================================================
+   Trust badge — chip style, slightly more prominent than .tag-pill
+   ============================================================ */
+
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+  transition: background 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+
+.trust-badge i { font-size: 0.9em; }
+
+/* SBOM — green tint (matches status-pill-ok family) */
+.trust-badge--sbom {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+
+.trust-badge--sbom:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+/* Multi-arch — blue/info tint */
+.trust-badge--multi-arch {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--accent-blue);
+}
+
+.trust-badge--multi-arch:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+/* Deps — neutral/info tint */
+.trust-badge--deps {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+
+.trust-badge--deps:hover {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+/* Verify — neutral/subtle (meta link, not a trust signal itself) */
+.trust-badge--verify {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+}
+
+.trust-badge--verify:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+[data-theme="light"] .trust-badge--verify {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+[data-theme="light"] .trust-badge--verify:hover {
+  background: rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+/* Trivy scan — default green (0 CRITICAL) */
+.trust-badge--trivy {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+
+.trust-badge--trivy:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+/* Trivy overrides per data-severity attribute */
+.trust-badge--trivy[data-severity="critical"] {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+
+.trust-badge--trivy[data-severity="critical"]:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.trust-badge--trivy[data-severity="high"] {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: var(--accent-yellow);
+}
+
+.trust-badge--trivy[data-severity="high"]:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.48);
+}
+
+/* medium / low / info: keep default green (inherits .trust-badge--trivy) */
+
+/* ============================================================
+   Security scan section (detail page anchor)
+   ============================================================ */
+
+.security-section {
+  margin-top: 2rem;
+  padding: 1.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  scroll-margin-top: 80px;
+}
+
+[data-theme="light"] .security-section {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
+.security-section h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.security-section h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.security-section .scan-meta {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+}
+
+/* ============================================================
+   Severity grid — 5-column (Critical / High / Medium / Low / Info)
+   ============================================================ */
+
+.severity-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.severity-grid > * {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0.5rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .severity-grid > * {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+.severity-grid .count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.severity-grid .label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Color coding: critical (col 1) and high (col 2) only when > 0 */
+.severity-grid > *:nth-child(1) .count[data-nonzero],
+.severity-grid > *:nth-child(1).nonzero .count {
+  color: #f87171;
+}
+
+.severity-grid > *:nth-child(2) .count[data-nonzero],
+.severity-grid > *:nth-child(2).nonzero .count {
+  color: var(--accent-yellow);
+}
+
+/* ============================================================
+   Top advisories list
+   ============================================================ */
+
+.security-section .top-advisories {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.5rem 0 0;
+}
+
+.security-section .top-advisories li {
+  font-size: 0.88rem;
+  padding-bottom: 0.4rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   Value proposition block (detail page top)
+   ============================================================ */
+
+.value-prop {
+  border-left: 3px solid var(--accent-purple);
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.value-prop > p {
+  margin: 0;
+}
+
+/* ============================================================
+   Postgres variants comparison table
+   ============================================================ */
+
+.variants-table-section {
+  margin-top: 2rem;
+  overflow-x: auto;
+}
+
+.variants-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.variants-table th,
+.variants-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  vertical-align: top;
+}
+
+[data-theme="light"] .variants-table th,
+[data-theme="light"] .variants-table td {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+.variants-table thead th {
+  font-weight: 600;
+  color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.06);
+}
+
+[data-theme="light"] .variants-table thead th {
+  background: rgba(109, 40, 217, 0.04);
+}
+
+.variants-table td:first-child code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88em;
+}
+
+/* .tag-pill chips inside cells inherit existing styles — no override needed */
+
+/* ============================================================
+   Standalone page layout (verify-images.md and similar)
+   ============================================================ */
+
+.page-layout {
+  /* Inherits body styles — no surprises */
+}
+
+.page-content {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 6rem 1rem 2rem;
+  border-radius: 16px;
+  line-height: 1.7;
+  font-size: 1rem;
+}
+
+.page-content article h1 {
+  font-size: clamp(1.85rem, 4.5vw, 2.5rem);
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin: 0 0 1.5rem;
+}
+
+.page-content article h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 2.25rem;
+  scroll-margin-top: 80px;
+}
+
+.page-content code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+[data-theme="light"] .page-content code {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.page-content pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.875rem;
+}
+
+.page-content pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875rem;
+}
+
+[data-theme="light"] .page-content pre {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+/* Mobile adjustments for Phase B components */
+@media (max-width: 640px) {
+  .trust-strip { gap: 0.35rem; }
+
+  .severity-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .severity-grid > *:nth-child(4),
+  .severity-grid > *:nth-child(5) {
+    grid-column: span 1;
+  }
+
+  .page-content {
+    padding: 5rem 1rem 2rem;
+  }
+}

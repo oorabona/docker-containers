@@ -18,3 +18,4 @@ dependency_sources:
     type: github-release
     repo: WordPress/sqlite-database-integration
     strip_v: true
+value_proposition: WordPress with PHP-FPM, multi-version retention, ARM-native. Pre-built and SBOM-attested.

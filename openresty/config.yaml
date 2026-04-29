@@ -43,3 +43,4 @@ dependency_sources:
   RESTY_J:
     monitor: false
     reason: "Build parallelism, not a version to track"
+value_proposition: OpenResty with common modules pre-compiled. Multi-arch, SBOM-attested, daily upstream monitoring.

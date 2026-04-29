@@ -76,3 +76,4 @@ dependency_sources:
   GCP_CLI_VERSION:
     monitor: false
     reason: "Always latest — no version to track"
+value_proposition: Multi-version retention (3 latest). GCP/AWS/Azure providers pre-fetched, full provider cache layer. Daily upstream monitoring of all dependencies.

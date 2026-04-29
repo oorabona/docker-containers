@@ -105,7 +105,23 @@
 
       // Update pull command with selected variant tag
       updatePullCommand(tag);
+
+      // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
+      var variantData = {
+        attestation_url: el.dataset.attestationUrl || '',
+        trivy_summary: null,
+        multi_arch_platforms: []
+      };
+      try {
+        if (el.dataset.trivySummary) variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
+      } catch (e) { /* swallow */ }
+      try {
+        if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
+      } catch (e) { /* swallow */ }
+      document.dispatchEvent(new CustomEvent('phase-b-variant-changed', { detail: variantData }));
     }
+
+
 
     // Create a lineage item DOM element safely (no innerHTML)
     function createLineageItem(name, value, index) {

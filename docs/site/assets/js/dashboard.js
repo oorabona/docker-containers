@@ -162,8 +162,24 @@
       if (sizeAmd64El) sizeAmd64El.textContent = element.dataset.sizeAmd64 || '—';
       if (sizeArm64El) sizeArm64El.textContent = element.dataset.sizeArm64 || '—';
 
+      // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
+      var variantData = {
+        attestation_url: element.dataset.attestationUrl || '',
+        trivy_summary: null,
+        multi_arch_platforms: []
+      };
+      try {
+        if (element.dataset.trivySummary) variantData.trivy_summary = JSON.parse(element.dataset.trivySummary);
+      } catch (e) { /* swallow */ }
+      try {
+        if (element.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(element.dataset.multiArchPlatforms);
+      } catch (e) { /* swallow */ }
+      card.dispatchEvent(new CustomEvent('phase-b-variant-changed', { detail: variantData, bubbles: true }));
+
       announceStatus('Selected variant ' + tag);
     }
+
+
 
     // Copy text to clipboard with visual feedback
     function copyToClipboard(inputId, button) {
