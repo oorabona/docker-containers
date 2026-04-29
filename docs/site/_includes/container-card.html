@@ -176,8 +176,6 @@
                 {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
                 {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify }}'{% endif -%}
                 {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify }}'{% endif -%}
-                onclick="selectVariantTag(this)"
-                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectVariantTag(this);}"
                 role="button"
                 tabindex="0"
                 aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"

@@ -144,7 +144,7 @@
         {%- endif -%}
 
         <!-- Trust Strip -->
-        {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] -%}
+        {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
         <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: page.current_version }}">
           <a class="trust-badge trust-badge--sbom"
              data-trust="sbom"
