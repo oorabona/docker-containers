@@ -598,16 +598,25 @@ runs:
         flavor="${{ steps.check-build.outputs.flavor }}"
         is_default="${{ steps.check-build.outputs.is_default }}"
 
+        # shellcheck disable=SC1091
+        source ./helpers/retry.sh
+
         ghcr_src="ghcr.io/$image_name:$current_tag-$platform_suffix"
         ghcr_dst="ghcr.io/$image_name:$current_tag"
         echo "::notice::Creating early tag alias: $ghcr_dst (will be upgraded to multi-arch by manifest job)"
-        docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src" || echo "::warning::Tag alias failed (will be created by manifest job)"
+        # GHCR has no rate-limit; surface real failures instead of swallowing them.
+        retry_with_backoff 3 5 docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src"
 
-        # Docker Hub alias too
-        if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
+        # Docker Hub per-arch alias is only needed on Windows.
+        # Linux: the manifest job creates the authoritative multi-arch tag at docker.io,
+        #        which overwrites any single-arch alias — so this step is redundant on Linux
+        #        and historically caused docker.io 429 rate-limit failures.
+        # Windows: the manifest job does not handle Windows variants, so we must create
+        #          the docker.io tag here. Use retry to absorb transient rate limits.
+        if [[ "${{ runner.os }}" == "Windows" && "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
           dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
           dh_dst="docker.io/$image_name:$current_tag"
-          docker buildx imagetools create -t "$dh_dst" "$dh_src" || true
+          retry_with_backoff 5 30 docker buildx imagetools create -t "$dh_dst" "$dh_src"
         fi
 
         # Create latest-* rolling tags for Windows (single-arch — manifest job won't handle these)
@@ -623,12 +632,11 @@ runs:
 
           if [[ -n "$latest_tag" ]]; then
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
-            docker buildx imagetools create -t "ghcr.io/$image_name:$latest_tag" "$ghcr_src" || \
-              echo "::warning::Failed to create rolling tag ghcr.io/$image_name:$latest_tag"
+            retry_with_backoff 3 5 docker buildx imagetools create -t "ghcr.io/$image_name:$latest_tag" "$ghcr_src"
 
             if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
               dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
-              docker buildx imagetools create -t "docker.io/$image_name:$latest_tag" "$dh_src" || true
+              retry_with_backoff 5 30 docker buildx imagetools create -t "docker.io/$image_name:$latest_tag" "$dh_src"
             fi
           fi
         fi
