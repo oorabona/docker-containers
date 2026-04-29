@@ -69,6 +69,15 @@ jobs:
           chmod +x scripts/snapshot-stats.sh
           ./scripts/snapshot-stats.sh
 
+      - name: Audit base image cache coverage (non-blocking)
+        run: |
+          chmod +x scripts/audit-base-image-cache.sh
+          {
+            echo "## Base Image Cache Coverage"
+            echo ""
+            ./scripts/audit-base-image-cache.sh --summary
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Generate dashboard data
         run: |
           chmod +x generate-dashboard.sh
