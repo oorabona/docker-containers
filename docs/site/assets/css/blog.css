@@ -150,15 +150,13 @@
 
 .blog-card {
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 1.5rem 1.75rem;
+  display: block;
   border-radius: 14px;
+  overflow: hidden;
   text-decoration: none;
   color: inherit;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  padding: 0;
 }
 
 .blog-card:hover {
@@ -166,12 +164,35 @@
   box-shadow: 0 12px 32px -16px rgba(139, 92, 246, 0.35);
 }
 
+.blog-card:hover .blog-card-cover svg { transform: scale(1.03); }
+
 .blog-card:hover .blog-card-arrow {
   transform: translateX(4px);
   color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.18);
 }
 
-.blog-card-body { min-width: 0; }
+.blog-card-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1200 / 630;
+  overflow: hidden;
+  background: linear-gradient(135deg, #4c1d95, #1e3a8a);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.blog-card-cover svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.45s ease;
+}
+
+.blog-card-body {
+  position: relative;
+  padding: 1.5rem 1.75rem 1.6rem;
+  min-width: 0;
+}
 
 .blog-card-title {
   font-size: 1.25rem;
@@ -180,6 +201,8 @@
   letter-spacing: -0.015em;
   margin: 0 0 0.5rem;
   color: var(--text, inherit);
+  /* Reserve space so the absolute arrow doesn't overlap a long title. */
+  padding-right: 3rem;
 }
 
 .blog-card-excerpt {
@@ -218,17 +241,20 @@
 }
 
 .blog-card-arrow {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: rgba(139, 92, 246, 0.08);
+  background: rgba(139, 92, 246, 0.1);
   color: var(--text-muted);
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   flex-shrink: 0;
-  transition: transform 0.18s ease, color 0.18s ease;
+  transition: transform 0.18s ease, color 0.18s ease, background 0.18s ease;
 }
 
 [data-theme="light"] .blog-card-arrow {

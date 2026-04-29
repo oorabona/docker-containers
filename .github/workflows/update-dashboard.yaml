@@ -135,6 +135,17 @@ jobs:
           source: ./docs/site
           destination: ./_site
 
+      - name: Setup Node for OG image generation
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Install sharp (raster OG covers from inline SVG)
+        run: npm install --no-save sharp@^0.33
+
+      - name: Generate OG PNG covers from rendered SVG
+        run: node scripts/generate-og-images.mjs _site
+
       - name: Verify Jekyll build
         run: |
           echo "📂 Jekyll site contents:"

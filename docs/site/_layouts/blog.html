@@ -66,6 +66,9 @@
           {% assign words = post.content | number_of_words %}
           {% assign read_minutes = words | divided_by: 200 | plus: 1 %}
           <a class="blog-card glass" href="{{ site.baseurl }}{{ post.url }}">
+            <div class="blog-card-cover">
+              {% include post-cover.svg cover_post=post %}
+            </div>
             <div class="blog-card-body">
               <h2 class="blog-card-title">{{ post.title }}</h2>
               {% if post.description %}
@@ -90,10 +93,10 @@
                   </span>
                 {% endif %}
               </div>
+              <span class="blog-card-arrow" aria-hidden="true">
+                <i class="ti ti-arrow-right"></i>
+              </span>
             </div>
-            <span class="blog-card-arrow" aria-hidden="true">
-              <i class="ti ti-arrow-right"></i>
-            </span>
           </a>
         {% endfor %}
       {% endif %}
