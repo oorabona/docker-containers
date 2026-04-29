@@ -360,20 +360,30 @@ runs:
             if [[ -n "$cache_args" ]]; then
               # Verify at least one cached image is accessible before using GHCR args.
               # If cache-base-images job failed silently, fall back to Docker Hub defaults.
-              first_image=$(echo "$cache_args" | grep -oE 'ghcr\.io/[^ ]+' | head -1)
-              # For tagless refs (two-ARG pattern), verify with the first configured
-              # cache tag from config.yaml (not build_version, which is the container
-              # version and may not match the base image tag scheme)
-              check_image="$first_image"
-              if [[ ! "$first_image" =~ :[^/]+$ ]]; then
-                first_cache_tag=$(yq -r '.base_image_cache[0].tags[0]' "./$container/config.yaml" 2>/dev/null || echo "latest")
-                check_image="${first_image}:${first_cache_tag}"
-              fi
-              if docker manifest inspect "$check_image" &>/dev/null; then
+              # Iterate every base_image_cache entry: tags[0] may be templated
+              # (e.g. "${UPSTREAM_VERSION}"), and the first entry can be unavailable
+              # while later ones are fine. Use the first reachable one as proof
+              # that the cache pipeline ran.
+              cache_ok=false
+              entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
+              for ((i = 0; i < entry_count; i++)); do
+                ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "./$container/config.yaml")
+                raw_tag=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "./$container/config.yaml")
+                resolved_tag=$(_resolve_tag_template "$raw_tag" "$build_version" "./$container/config.yaml" "./$container")
+                check_image="ghcr.io/${{ github.repository_owner }}/${ghcr_repo}:${resolved_tag}"
+                if docker manifest inspect "$check_image" &>/dev/null; then
+                  cache_ok=true
+                  echo "✅ GHCR cache verified via $check_image"
+                  break
+                else
+                  echo "⚠️ Not yet accessible: $check_image"
+                fi
+              done
+              if [[ "$cache_ok" == "true" ]]; then
                 export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
                 echo "✅ Using GHCR base images: $cache_args"
               else
-                echo "⚠️ GHCR cache image not accessible ($check_image) — using Docker Hub defaults"
+                echo "⚠️ No GHCR cache image accessible — falling back to Docker Hub defaults"
               fi
             fi
           fi

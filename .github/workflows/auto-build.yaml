@@ -156,6 +156,7 @@ permissions:
   id-token: write        # OIDC for Pages deployment + SBOM attestation (Sigstore)
   attestations: write    # GitHub SBOM attestations (actions/attest-sbom)
   security-events: write # Upload Trivy SARIF to GitHub Security (codeql-action/upload-sarif)
+  issues: write          # summary job creates a build-failure issue when builds fail
 
 env:
   DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
