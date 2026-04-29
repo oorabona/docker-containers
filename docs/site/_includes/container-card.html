@@ -150,8 +150,8 @@
                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                   {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                   {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
-                  {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify }}'{% endif -%}
-                  {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify }}'{% endif -%}
+                  {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                  {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                   role="button"
                   tabindex="0"
                   aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -174,8 +174,8 @@
                 data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                 {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                 {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
-                {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify }}'{% endif -%}
-                {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify }}'{% endif -%}
+                {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                 role="button"
                 tabindex="0"
                 aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"

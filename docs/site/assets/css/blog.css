@@ -908,6 +908,11 @@
   background: rgba(15, 23, 42, 0.05);
 }
 
+/* Postgres variants comparison: only the active version's table is visible */
+.variants-table-section .variants-table:not([data-active="true"]) {
+  display: none;
+}
+
 /* Mobile adjustments for Phase B components */
 @media (max-width: 640px) {
   .trust-strip { gap: 0.35rem; }

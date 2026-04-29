@@ -216,8 +216,8 @@
                           {% if variant.build_history %}data-build-history='{{ variant.build_history | jsonify }}'{% endif %}
                           {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                           {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
-                          {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify }}'{% endif -%}
-                          {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify }}'{% endif -%}
+                          {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                          {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                           role="button"
                           tabindex="0"
                           aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -237,8 +237,8 @@
                         data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                         {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                         {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
-                        {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify }}'{% endif -%}
-                        {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify }}'{% endif -%}
+                        {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                        {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                         role="button"
                         tabindex="0"
                         aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
@@ -252,30 +252,34 @@
         </div>
         {% endif %}
 
-        <!-- Postgres variant comparison table (postgres only) -->
-        {%- if page.name == "postgres" and page.versions[0].variants.size > 1 -%}
+        <!-- Postgres variant comparison table (postgres only, one table per version) -->
+        {%- if page.name == "postgres" and page.versions.size > 0 -%}
         <section class="variants-table-section">
           <h2>Variant Comparison</h2>
-          <p class="variants-note">Showing latest PostgreSQL {{ page.versions[0].tag }}. Switch versions to see other rows.</p>
-          <table class="variants-table">
-            <thead>
-              <tr><th>Variant</th><th>Extensions</th><th>Image size (amd64)</th><th>When to use</th></tr>
-            </thead>
-            <tbody>
-            {%- for var in page.versions[0].variants -%}
-              <tr>
-                <td><code>{{ var.name }}</code></td>
-                <td>
-                  {%- for ext in var.extensions -%}
-                    <span class="tag-pill">{{ ext }}</span>
-                  {%- endfor -%}
-                </td>
-                <td>{{ var.size_amd64 }}</td>
-                <td>{{ var.when_to_use }}</td>
-              </tr>
-            {%- endfor -%}
-            </tbody>
-          </table>
+          <p class="variants-note">
+            Showing PostgreSQL <span class="version-active-label" data-field="active-version">{{ page.versions[0].tag }}</span>. Switch a variant tag from another version to see its rows.
+          </p>
+          {%- for ver in page.versions -%}
+            <table class="variants-table" data-version="{{ ver.tag }}"{% if forloop.first %} data-active="true"{% endif %}>
+              <thead>
+                <tr><th>Variant</th><th>Extensions</th><th>Image size (amd64)</th><th>When to use</th></tr>
+              </thead>
+              <tbody>
+                {%- for var in ver.variants -%}
+                  <tr>
+                    <td><code>{{ var.name }}</code></td>
+                    <td>
+                      {%- for ext in var.extensions -%}
+                        <span class="tag-pill">{{ ext }}</span>
+                      {%- endfor -%}
+                    </td>
+                    <td>{{ var.size_amd64 }}</td>
+                    <td>{{ var.when_to_use }}</td>
+                  </tr>
+                {%- endfor -%}
+              </tbody>
+            </table>
+          {%- endfor -%}
         </section>
         {%- endif -%}
 
