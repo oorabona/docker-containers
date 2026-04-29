@@ -267,14 +267,14 @@
               <tbody>
                 {%- for var in ver.variants -%}
                   <tr>
-                    <td><code>{{ var.name }}</code></td>
+                    <td><code>{{ var.name | escape }}</code></td>
                     <td>
                       {%- for ext in var.extensions -%}
-                        <span class="tag-pill">{{ ext }}</span>
+                        <span class="tag-pill">{{ ext | escape }}</span>
                       {%- endfor -%}
                     </td>
-                    <td>{{ var.size_amd64 }}</td>
-                    <td>{{ var.when_to_use }}</td>
+                    <td>{{ var.size_amd64 | escape }}</td>
+                    <td>{{ var.when_to_use | strip_newlines | escape }}</td>
                   </tr>
                 {%- endfor -%}
               </tbody>
