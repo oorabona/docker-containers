@@ -144,7 +144,11 @@ jobs:
         run: npm install --no-save sharp@^0.33
 
       - name: Generate OG PNG covers from rendered SVG
-        run: node scripts/generate-og-images.mjs _site
+        run: |
+          # jekyll-build-pages runs as a different user, so _site is owned by
+          # them — give the runner user write access before adding files.
+          sudo chown -R "$(id -u):$(id -g)" _site
+          node scripts/generate-og-images.mjs _site
 
       - name: Verify Jekyll build
         run: |
