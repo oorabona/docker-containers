@@ -7,6 +7,11 @@
 
 ATTESTATION_UTILS_OWNER_REPO="oorabona/docker-containers"
 
+# In-process memoization cache for attestation lookups keyed by image digest.
+# Value "__MISS__" means the digest was queried and no attestation was found.
+# Avoids redundant gh API calls when multiple variants share the same build digest.
+declare -A _ATTESTATION_CACHE=() 2>/dev/null || true
+
 # Avoid re-sourcing logging.sh colors (idempotent guard)
 if [[ -z "${_LOGGING_LOADED:-}" ]]; then
     _SCRIPT_DIR_ATTEST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,11 +31,23 @@ get_attestation_id() {
         return 1
     fi
 
+    # Cache hit — avoids redundant API calls for variants sharing the same digest
+    if [[ -v _ATTESTATION_CACHE["$digest"] ]]; then
+        local cached="${_ATTESTATION_CACHE[$digest]}"
+        if [[ "$cached" == "__MISS__" ]]; then
+            return 1
+        fi
+        echo "$cached"
+        return 0
+    fi
+
+    # Cache miss — query GitHub Attestations API
     local response
     response=$(gh api \
         "repos/${ATTESTATION_UTILS_OWNER_REPO}/attestations?subject_digest=${digest}" \
         2>/dev/null) || {
         log_warning "gh api attestations failed for digest ${digest} (auth or network)"
+        _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     }
 
@@ -40,9 +57,12 @@ get_attestation_id() {
         2>/dev/null)
 
     if [[ -z "$id" ]]; then
+        # No attestation found for this digest — expected for builds with SBOM step skipped
+        _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     fi
 
+    _ATTESTATION_CACHE["$digest"]="$id"
     echo "$id"
 }
 

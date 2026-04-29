@@ -26,6 +26,11 @@ _TRIVY_EMPTY='{"last_scan":null,"counts":{"critical":0,"high":0,"medium":0,"low"
 # Avoids one paginated gh API call per variant (21 calls for postgres alone).
 _TRIVY_ALERTS_CACHE=""
 
+# Precomputed per-category summary map (JSON object) — built once by _fetch_trivy_alerts_once.
+# get_trivy_summary does a cheap jq key-lookup against this map instead of re-processing
+# the full alerts list on every call.
+_TRIVY_SUMMARY_MAP=""
+
 # _fetch_trivy_alerts_once
 # Populates _TRIVY_ALERTS_CACHE on first call; subsequent calls are no-ops.
 # On auth/network failure, sets cache to "[]" and logs a warning once.
@@ -37,9 +42,47 @@ _fetch_trivy_alerts_once() {
         2>/dev/null) || {
         log_warning "gh api code-scanning/alerts failed (auth or network) — Trivy summaries will be empty"
         _TRIVY_ALERTS_CACHE="[]"
+        _TRIVY_SUMMARY_MAP="{}"
         return 0
     }
     _TRIVY_ALERTS_CACHE="$raw"
+
+    # Precompute per-category summaries in ONE jq pass so get_trivy_summary is a cheap lookup.
+    # --paginate emits a stream of arrays; jq -s flattens them before grouping.
+    _TRIVY_SUMMARY_MAP=$(echo "$_TRIVY_ALERTS_CACHE" | jq -s '
+        [.[][] | select(.most_recent_instance.category != null)]
+        | group_by(.most_recent_instance.category)
+        | map({
+            key: .[0].most_recent_instance.category,
+            value: {
+              last_scan: ([.[].most_recent_instance.created_at] | sort | reverse | .[0]),
+              counts: {
+                critical: (map(select(.rule.severity == "critical")) | length),
+                high:     (map(select(.rule.severity == "high"))     | length),
+                medium:   (map(select(.rule.severity == "medium"))   | length),
+                low:      (map(select(.rule.severity == "low"))      | length),
+                info:     (map(select(.rule.severity == "warning" or .rule.severity == "note")) | length)
+              },
+              top_advisories: (
+                sort_by(
+                  if   .rule.severity == "critical" then 0
+                  elif .rule.severity == "high"     then 1
+                  elif .rule.severity == "medium"   then 2
+                  elif .rule.severity == "low"      then 3
+                  else 4 end
+                )
+                | .[0:5]
+                | map({
+                    rule_id:      .rule.id,
+                    severity:     .rule.severity,
+                    title:        .rule.description,
+                    package_name: ((.most_recent_instance.location.path // "") | split("/") | .[-1])
+                  })
+              )
+            }
+          })
+        | from_entries
+    ' 2>/dev/null) || _TRIVY_SUMMARY_MAP="{}"
 }
 
 # get_trivy_summary <category>
@@ -63,43 +106,21 @@ get_trivy_summary() {
 
     _fetch_trivy_alerts_once
 
-    # --paginate emits a stream of arrays; jq -s '.[0]' reduces multi-page output.
-    # Filter to the requested category, build summary.
-    echo "$_TRIVY_ALERTS_CACHE" | jq -s --arg cat "$category" '
-        # Flatten paginated arrays and filter to the target category
-        [.[][] | select(.most_recent_instance.category == $cat)] as $alerts
-        | {
-            last_scan: (
-                [$alerts[].most_recent_instance.created_at] | sort | reverse | .[0]
-            ),
-            counts: {
-                critical: ([$alerts[] | select(.rule.severity == "critical")] | length),
-                high:     ([$alerts[] | select(.rule.severity == "high")]     | length),
-                medium:   ([$alerts[] | select(.rule.severity == "medium")]   | length),
-                low:      ([$alerts[] | select(.rule.severity == "low")]      | length),
-                info:     ([$alerts[] | select(
-                                .rule.severity == "warning" or .rule.severity == "note"
-                            )] | length)
-            },
-            top_advisories: (
-                $alerts
-                | sort_by(
-                    if   .rule.severity == "critical" then 0
-                    elif .rule.severity == "high"     then 1
-                    elif .rule.severity == "medium"   then 2
-                    elif .rule.severity == "low"      then 3
-                    else 4 end
-                )
-                | .[0:5]
-                | map({
-                    rule_id:      .rule.id,
-                    severity:     .rule.severity,
-                    title:        .rule.description,
-                    package_name: ((.most_recent_instance.location.path // "") | split("/") | .[-1])
-                })
-            )
-        }
-    ' 2>/dev/null || echo "$_TRIVY_EMPTY"
+    # Fast lookup: the full jq processing was done once in _fetch_trivy_alerts_once.
+    # _TRIVY_SUMMARY_MAP is a JSON object keyed by SARIF category.
+    if [[ -z "${_TRIVY_SUMMARY_MAP:-}" || "$_TRIVY_SUMMARY_MAP" == "{}" ]]; then
+        echo "$_TRIVY_EMPTY"
+        return 0
+    fi
+
+    local result
+    result=$(echo "$_TRIVY_SUMMARY_MAP" | jq --arg cat "$category" '.[$cat] // empty' 2>/dev/null)
+
+    if [[ -z "$result" ]]; then
+        echo "$_TRIVY_EMPTY"
+    else
+        echo "$result"
+    fi
 }
 
 # build_trivy_category <container> <tag> <platform>

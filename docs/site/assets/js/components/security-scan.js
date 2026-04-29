@@ -37,7 +37,14 @@
       const counts = summary.counts || {};
       ['critical', 'high', 'medium', 'low', 'info'].forEach((k) => {
         const span = this.querySelector('[data-scan-count="' + k + '"]');
-        if (span) span.textContent = counts[k] != null ? counts[k] : 0;
+        if (!span) return;
+        const value = counts[k] != null ? counts[k] : 0;
+        span.textContent = value;
+        // Toggle .nonzero on the count span and its parent cell so CSS selectors
+        // (.severity-grid > *:nth-child(N).nonzero .count and .count[data-nonzero])
+        // can color critical/high columns when their value is > 0.
+        span.classList.toggle('nonzero', value > 0);
+        if (span.parentElement) span.parentElement.classList.toggle('nonzero', value > 0);
       });
 
       // top advisories

@@ -433,7 +433,7 @@ collect_variant_json() {
     # Attestation: look up SBOM attestation ID from GitHub Attestations API
     local build_digest attestation_id="" attestation_url=""
     build_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
-    if attestation_id=$(get_attestation_id "$build_digest" 2>/dev/null); then
+    if attestation_id=$(get_attestation_id "$build_digest"); then
         attestation_url=$(get_attestation_url "$attestation_id")
     fi
 

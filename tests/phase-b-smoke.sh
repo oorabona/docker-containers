@@ -27,6 +27,40 @@ fail() { FAIL=$((FAIL + 1)); echo "  ✗ $*" >&2; }
 warn() { WARN=$((WARN + 1)); echo "  ⚠ $*"; }
 
 # ---------------------------------------------------------------------------
+# Phase 0 — Dependency + required-input checks
+# ---------------------------------------------------------------------------
+for cmd in yq jq curl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    warn "Missing dependency: $cmd (some checks will be skipped)"
+  fi
+done
+
+CONTAINERS_YML="${REPO_ROOT}/docs/site/_data/containers.yml"
+
+required_files=(
+  "docs/site/assets/js/components/trust-strip.js"
+  "docs/site/assets/js/components/security-scan.js"
+  "docs/site/assets/css/blog.css"
+  "docs/site/assets/js/dashboard.js"
+  "docs/site/assets/js/container-detail.js"
+  "docs/site/_includes/container-card.html"
+  "docs/site/_layouts/container-detail.html"
+  "docs/site/_layouts/dashboard.html"
+)
+for f in "${required_files[@]}"; do
+  if [ ! -f "${REPO_ROOT}/${f}" ]; then
+    warn "Required input missing: ${f}"
+  fi
+done
+
+if [ ! -f "${CONTAINERS_YML}" ]; then
+  warn "containers.yml absent (run ./generate-dashboard.sh first) — Phase 1 yq checks will be skipped"
+  CONTAINERS_YML_AVAILABLE=0
+else
+  CONTAINERS_YML_AVAILABLE=1
+fi
+
+# ---------------------------------------------------------------------------
 # Phase 1 — Static source-file checks (no build required)
 # ---------------------------------------------------------------------------
 echo ""
@@ -36,19 +70,20 @@ echo "────────────────────────�
 CARD_HTML="${REPO_ROOT}/docs/site/_includes/container-card.html"
 DETAIL_HTML="${REPO_ROOT}/docs/site/_layouts/container-detail.html"
 BLOG_CSS="${REPO_ROOT}/docs/site/assets/css/blog.css"
-CONTAINERS_YML="${REPO_ROOT}/docs/site/_data/containers.yml"
 DASHBOARD_JS="${REPO_ROOT}/docs/site/assets/js/dashboard.js"
 DETAIL_JS="${REPO_ROOT}/docs/site/assets/js/container-detail.js"
 
 # Needle split to prevent hook false-positive on the literal pattern itself.
 # The two halves form ".innerHTML =" when joined.
+# Uses POSIX character class [[:space:]] — grep -E (ERE) does not support \s.
 _INNER="inner"
-_HTML_EQ="HTML\s*="
+_HTML_EQ="HTML[[:space:]]*="
 
 # 1. No raw .innerHTML= assignments in new JS (comments excluded)
-# grep -v strips comment lines before counting; || true prevents set -e on no-match
+# grep -v strips comment-only lines (lines whose code starts with // * or /*);
+# || true prevents set -e on no-match.
 inner_count=$(grep -nE "\.${_INNER}${_HTML_EQ}" "${DASHBOARD_JS}" "${DETAIL_JS}" 2>/dev/null \
-  | grep -vE '(//\s*|/\*)' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)' \
   | wc -l || true)
 if [[ "${inner_count}" -eq 0 ]]; then
   pass "No raw .innerHTML= assignments in JS files (XSS safe)"
@@ -66,39 +101,55 @@ else
 fi
 
 # 3. value_proposition populated for >= 10 containers
-vp_count=$(yq '[.[] | select(.value_proposition != null and .value_proposition != "")] | length' \
-  "${CONTAINERS_YML}" 2>/dev/null)
-if [[ "${vp_count}" -ge 10 ]]; then
-  pass "value_proposition present on ${vp_count} containers (>= 10)"
+if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
+  vp_count=$(yq '[.[] | select(.value_proposition != null and .value_proposition != "")] | length' \
+    "${CONTAINERS_YML}" 2>/dev/null)
+  if [[ "${vp_count}" -ge 10 ]]; then
+    pass "value_proposition present on ${vp_count} containers (>= 10)"
+  else
+    fail "Expected >= 10 containers with value_proposition in containers.yml, found ${vp_count}"
+  fi
 else
-  fail "Expected >= 10 containers with value_proposition in containers.yml, found ${vp_count}"
+  warn "Skipping check 3 — containers.yml not available"
 fi
 
 # 4. postgres when_to_use present on every variant (no nulls)
-pg_missing_when=$(yq '[.[] | select(.name == "postgres") | .versions[].variants[] | select(.when_to_use == null)] | length' \
-  "${CONTAINERS_YML}" 2>/dev/null)
-if [[ "${pg_missing_when}" -eq 0 ]]; then
-  pass "All postgres variants have when_to_use populated"
+if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
+  pg_missing_when=$(yq '[.[] | select(.name == "postgres") | .versions[].variants[] | select(.when_to_use == null)] | length' \
+    "${CONTAINERS_YML}" 2>/dev/null)
+  if [[ "${pg_missing_when}" -eq 0 ]]; then
+    pass "All postgres variants have when_to_use populated"
+  else
+    fail "postgres has ${pg_missing_when} variant(s) missing when_to_use"
+  fi
 else
-  fail "postgres has ${pg_missing_when} variant(s) missing when_to_use"
+  warn "Skipping check 4 — containers.yml not available"
 fi
 
 # 5. postgres vector variant (variant[1]) has compiled extensions
-pg_ext_count=$(yq '.[] | select(.name == "postgres") | .versions[0].variants[1].extensions | length' \
-  "${CONTAINERS_YML}" 2>/dev/null)
-if [[ "${pg_ext_count}" -gt 0 ]]; then
-  pass "postgres versions[0].variants[1] has ${pg_ext_count} extension(s) declared"
+if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
+  pg_ext_count=$(yq '.[] | select(.name == "postgres") | .versions[0].variants[1].extensions | length' \
+    "${CONTAINERS_YML}" 2>/dev/null)
+  if [[ "${pg_ext_count}" -gt 0 ]]; then
+    pass "postgres versions[0].variants[1] has ${pg_ext_count} extension(s) declared"
+  else
+    fail "Expected extensions on postgres variants[1] (vector flavor), found ${pg_ext_count}"
+  fi
 else
-  fail "Expected extensions on postgres variants[1] (vector flavor), found ${pg_ext_count}"
+  warn "Skipping check 5 — containers.yml not available"
 fi
 
 # 6. upstream_monitor_url present on all containers
-missing_monitor=$(yq '[.[] | select(.upstream_monitor_url == null)] | length' \
-  "${CONTAINERS_YML}" 2>/dev/null)
-if [[ "${missing_monitor}" -eq 0 ]]; then
-  pass "upstream_monitor_url present on all containers"
+if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
+  missing_monitor=$(yq '[.[] | select(.upstream_monitor_url == null)] | length' \
+    "${CONTAINERS_YML}" 2>/dev/null)
+  if [[ "${missing_monitor}" -eq 0 ]]; then
+    pass "upstream_monitor_url present on all containers"
+  else
+    fail "${missing_monitor} container(s) missing upstream_monitor_url in containers.yml"
+  fi
 else
-  fail "${missing_monitor} container(s) missing upstream_monitor_url in containers.yml"
+  warn "Skipping check 6 — containers.yml not available"
 fi
 
 # 7. Trust strip class in container-card include
@@ -243,7 +294,7 @@ fi
 
 # XSS safety: no raw .innerHTML= in new component files
 inner_comp_count=$(grep -nE "\.${_INNER}${_HTML_EQ}" "${TRUST_STRIP_JS}" "${SECURITY_SCAN_JS}" 2>/dev/null \
-  | grep -vE '(//\s*|/\*)' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)' \
   | wc -l || true)
 if [[ "${inner_comp_count}" -eq 0 ]]; then
   pass "No raw .innerHTML= assignments in web component files (XSS safe)"
@@ -343,17 +394,21 @@ elif ! command -v curl &>/dev/null; then
   warn "curl not available — cannot run live URL probes"
 else
   # 16. SBOM attestation URL (sample from first container that has one)
-  attest_url=$(yq '.[] | select(.versions[0].variants[0].attestation_url != null) | .versions[0].variants[0].attestation_url' \
-    "${CONTAINERS_YML}" 2>/dev/null | head -1)
-  if [[ -n "${attest_url}" ]]; then
-    http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${attest_url}" 2>/dev/null || true)
-    if [[ "${http_code}" == "200" ]]; then
-      pass "SBOM attestation URL reachable (HTTP ${http_code}): ${attest_url}"
+  if [[ "${CONTAINERS_YML_AVAILABLE}" -eq 1 ]]; then
+    attest_url=$(yq '.[] | select(.versions[0].variants[0].attestation_url != null) | .versions[0].variants[0].attestation_url' \
+      "${CONTAINERS_YML}" 2>/dev/null | head -1)
+    if [[ -n "${attest_url}" ]]; then
+      http_code=$(curl -sI --max-time 10 -o /dev/null -w "%{http_code}" "${attest_url}" 2>/dev/null || true)
+      if [[ "${http_code}" == "200" ]]; then
+        pass "SBOM attestation URL reachable (HTTP ${http_code}): ${attest_url}"
+      else
+        fail "SBOM attestation URL returned HTTP ${http_code}: ${attest_url}"
+      fi
     else
-      fail "SBOM attestation URL returned HTTP ${http_code}: ${attest_url}"
+      warn "No attestation_url found in containers.yml to probe"
     fi
   else
-    warn "No attestation_url found in containers.yml to probe"
+    warn "Skipping check 16 — containers.yml not available"
   fi
 
   # 17. Upstream-monitor workflow page
