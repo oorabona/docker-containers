@@ -681,7 +681,7 @@ runs:
         ghcr_dst="ghcr.io/$image_name:$current_tag"
         echo "::notice::Creating early tag alias: $ghcr_dst (will be upgraded to multi-arch by manifest job)"
         # GHCR has no rate-limit; surface real failures instead of swallowing them.
-        retry_with_backoff 3 5 docker buildx imagetools create -t "$ghcr_dst" "$ghcr_src"
+        retry_with_backoff 3 5 docker buildx imagetools create --tag "$ghcr_dst" "$ghcr_src"
 
         # Docker Hub per-arch alias is only needed on Windows.
         # Linux: the manifest job creates the authoritative multi-arch tag at docker.io,
@@ -692,7 +692,7 @@ runs:
         if [[ "${{ runner.os }}" == "Windows" && "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
           dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
           dh_dst="docker.io/$image_name:$current_tag"
-          retry_with_backoff 5 30 docker buildx imagetools create -t "$dh_dst" "$dh_src"
+          retry_with_backoff 5 30 docker buildx imagetools create --tag "$dh_dst" "$dh_src"
         fi
 
         # Create latest-* rolling tags for Windows (single-arch — manifest job won't handle these)
@@ -708,11 +708,11 @@ runs:
 
           if [[ -n "$latest_tag" ]]; then
             echo "::notice::Creating Windows rolling tag: ghcr.io/$image_name:$latest_tag"
-            retry_with_backoff 3 5 docker buildx imagetools create -t "ghcr.io/$image_name:$latest_tag" "$ghcr_src"
+            retry_with_backoff 3 5 docker buildx imagetools create --tag "ghcr.io/$image_name:$latest_tag" "$ghcr_src"
 
             if [[ "${{ steps.push-dockerhub.outputs.success }}" == "true" ]]; then
               dh_src="docker.io/$image_name:$current_tag-$platform_suffix"
-              retry_with_backoff 5 30 docker buildx imagetools create -t "docker.io/$image_name:$latest_tag" "$dh_src"
+              retry_with_backoff 5 30 docker buildx imagetools create --tag "docker.io/$image_name:$latest_tag" "$dh_src"
             fi
           fi
         fi
