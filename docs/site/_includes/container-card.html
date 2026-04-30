@@ -143,7 +143,20 @@
         <div class="version-label">{{ version.base_tag | default: version.tag }}</div>
         <div class="variant-tags">
           {% for variant in version.variants %}
+            {%- comment -%}
+              Versions-only containers synthesize a single variant with empty
+              `name` (the version itself IS the canonical build). Render the
+              tag with `display:none` so it stays invisible (the version-label
+              identifies the build) while preserving its data-* attributes
+              and `.selected` class — the trust-strip JS and detail-page
+              container-detail.js both initialize from .variant-tag.selected
+              and would lose data for the canonical build if the element were
+              skipped entirely.
+            {%- endcomment -%}
+            {%- assign synthetic = false -%}
+            {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
             <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                  {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
                   title="{{ variant.description }} — Click to select"
                   data-tag="{{ variant.tag }}"
                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
