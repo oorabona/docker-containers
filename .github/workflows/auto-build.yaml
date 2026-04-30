@@ -288,9 +288,14 @@ jobs:
   cache-base-images:
     name: Cache base images
     needs: [detect-containers]
+    # Run on push, workflow_dispatch, and own-repo PRs. Fork PRs are skipped
+    # because they lack GHCR write permission — they fall through to Docker Hub
+    # (and may 429, but that is GitHub's per-fork-PR limitation, not ours).
+    # Note: head.repo.full_name is read in an `if:` evaluation context only,
+    # never piped to shell — no injection surface.
     if: |
       needs.detect-containers.outputs.count > 0 &&
-      github.event_name != 'pull_request'
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -473,7 +478,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          use_base_cache: ${{ github.event_name != 'pull_request' }}
+          use_base_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         continue-on-error: true
 
       - name: Retry build on failure
@@ -494,7 +499,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          use_base_cache: ${{ github.event_name != 'pull_request' }}
+          use_base_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         continue-on-error: true
 
       - name: Handle build failure
