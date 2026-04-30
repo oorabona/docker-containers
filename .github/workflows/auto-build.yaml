@@ -681,17 +681,19 @@ jobs:
           generate_sbom "$image_ref" "$sbom_file"
           echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
 
-          # Capture digest for attestation. Use the registry's POST-flatten digest
-          # (via `docker buildx imagetools inspect --format '{{.Digest}}'`) so the
-          # attestation subject matches the published artifact and matches what
+          # Capture digest for attestation. Hash the raw manifest content from
+          # the registry — this is what `actions/attest-sbom` signs internally
+          # and what the GitHub attestations API is keyed on. Same approach as
           # `.github/actions/build-container/action.yaml`'s "Capture OCI subject
-          # digest" step writes into the lineage file. `docker inspect ...
-          # RepoDigests` returns the LOCAL pre-flatten digest, which would create
-          # a mismatch — attestation signed for digest A, dashboard looking up B.
-          digest=$(docker buildx imagetools inspect "$image_ref" \
-            --format '{{.Digest}}' 2>/dev/null | tr -d '[:space:]' || echo "")
-          if [[ -z "$digest" ]]; then
-            # Fallback: legacy local-inspect path (pre-flatten, but better than nothing)
+          # digest" step, so attestation subject and dashboard lookup match.
+          # `--format '{{.Digest}}'` proved unreliable in CI (empty output);
+          # `docker inspect ... RepoDigests` returns the LOCAL pre-flatten
+          # digest, which would mismatch the post-flatten registry artifact.
+          raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+          if [[ -n "$raw_manifest" ]]; then
+            digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+          else
+            # Fallback: local-inspect (pre-flatten) — last-resort, may mismatch
             digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null | head -1 | sed 's/.*@//' || echo "")
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
