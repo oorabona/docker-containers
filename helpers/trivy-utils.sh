@@ -116,7 +116,13 @@ get_trivy_summary() {
     local result
     result=$(echo "$_TRIVY_SUMMARY_MAP" | jq --arg cat "$category" '.[$cat] // empty' 2>/dev/null)
 
-    if [[ -z "$result" ]]; then
+    # Defensive: ensure result is a JSON object before emitting. If the cache is
+    # in a partial/corrupt state (e.g. subshell raced an API outage and stored
+    # an array), returning a non-object here would crash downstream jq with
+    # "Cannot index array with string 'last_scan'", silently blanking the
+    # entire variant entry in containers.yml. Force the empty form on any
+    # type mismatch.
+    if [[ -z "$result" ]] || ! echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
         echo "$_TRIVY_EMPTY"
     else
         echo "$result"

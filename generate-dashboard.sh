@@ -506,7 +506,7 @@ collect_variant_json() {
         + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
         + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
         + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)
-        + (if $trivy_summary.last_scan != null then {trivy_summary: $trivy_summary} else {} end)
+        + (if ($trivy_summary | type) == "object" and $trivy_summary.last_scan != null then {trivy_summary: $trivy_summary} else {} end)
         + (if ($extensions | type) == "array" and ($extensions | length) > 0 then {extensions: $extensions} else {} end)
         + (if ($when_to_use | length) > 0 then {when_to_use: $when_to_use} else {} end)'
 }
