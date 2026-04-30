@@ -651,6 +651,16 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+      - name: Upload Trivy scan history
+        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
+          path: .trivy-scan-history/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
         id: install-syft
@@ -671,11 +681,18 @@ jobs:
           generate_sbom "$image_ref" "$sbom_file"
           echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
 
-          # Capture digest for attestation (from local image after push)
-          digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null | head -1 | sed 's/.*@//' || echo "")
+          # Capture digest for attestation. Use the registry's POST-flatten digest
+          # (via `docker buildx imagetools inspect --format '{{.Digest}}'`) so the
+          # attestation subject matches the published artifact and matches what
+          # `.github/actions/build-container/action.yaml`'s "Capture OCI subject
+          # digest" step writes into the lineage file. `docker inspect ...
+          # RepoDigests` returns the LOCAL pre-flatten digest, which would create
+          # a mismatch — attestation signed for digest A, dashboard looking up B.
+          digest=$(docker buildx imagetools inspect "$image_ref" \
+            --format '{{.Digest}}' 2>/dev/null | tr -d '[:space:]' || echo "")
           if [[ -z "$digest" ]]; then
-            # Fallback: query registry
-            digest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null | sha256sum | awk '{print "sha256:"$1}' || echo "")
+            # Fallback: legacy local-inspect path (pre-flatten, but better than nothing)
+            digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null | head -1 | sed 's/.*@//' || echo "")
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
         continue-on-error: true
@@ -1020,12 +1037,38 @@ jobs:
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
+      - name: Restore Trivy scan history cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .trivy-scan-history
+          key: trivy-scan-history-${{ github.run_id }}
+          restore-keys: trivy-scan-history-
+
       - name: Download current build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           pattern: build-lineage-*
           path: .build-lineage-artifacts/
           merge-multiple: false
+
+      - name: Download Trivy scan history artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: trivy-scan-history-*
+          path: .trivy-scan-history-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Merge Trivy scan history files
+        run: |
+          mkdir -p .trivy-scan-history
+          if [ -d ".trivy-scan-history-artifacts" ]; then
+            find .trivy-scan-history-artifacts -name '*.json' -exec cp {} .trivy-scan-history/ \;
+            count=$(find .trivy-scan-history -name '*.json' | wc -l)
+            echo "Consolidated $count Trivy scan history file(s)"
+          else
+            echo "No Trivy scan history artifacts found"
+          fi
 
       - name: Merge lineage files
         id: merge
@@ -1096,6 +1139,12 @@ jobs:
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
+
+      - name: Save Trivy scan history cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .trivy-scan-history
+          key: trivy-scan-history-${{ github.run_id }}
 
   update-dashboard:
     needs: [detect-containers, build-and-push, create-manifest, cache-lineage]

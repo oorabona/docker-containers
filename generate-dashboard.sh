@@ -279,17 +279,21 @@ yaml_escape() {
 # These functions build container data as JSON objects, eliminating the need
 # for manual YAML string construction. The JSON is converted to YAML via yq.
 
-# Resolve variant lineage data as JSON: {build_digest, base_image}
-# Includes version mismatch check and fallback base_image derivation
+# Resolve variant lineage data as JSON: {build_digest, base_image, oci_subject_digest}
+# Includes version mismatch check and fallback base_image derivation.
+# `oci_subject_digest` is propagated from the raw lineage file when present so
+# downstream attestation lookups can use the OCI digest (the value the
+# attestations API is keyed on) rather than the internal build-cache digest.
 resolve_variant_lineage_json() {
     local container="$1" tag="$2" version="$3" fallback_base_image="${4:-unknown}" flavor="${5:-}"
 
-    local lineage_file build_digest="unknown" base_image="unknown"
+    local lineage_file build_digest="unknown" base_image="unknown" oci_subject_digest=""
     lineage_file=$(resolve_variant_lineage_file "$container" "$tag" "$flavor")
 
     if [[ -n "$lineage_file" ]]; then
         build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
         base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        oci_subject_digest=$(jq -r '.oci_subject_digest // empty' "$lineage_file" 2>/dev/null || echo "")
         # Version mismatch check: lineage file may be from a different version
         if [[ "$base_image" != "unknown" ]]; then
             local lineage_ver
@@ -302,6 +306,7 @@ resolve_variant_lineage_json() {
             if [[ -n "$lineage_major" && -n "$version_major" && "$lineage_major" != "$version_major" ]]; then
                 base_image="${base_image%%:*}:${version}"
                 build_digest="unknown"
+                oci_subject_digest=""
             fi
         fi
     else
@@ -312,8 +317,8 @@ resolve_variant_lineage_json() {
         fi
     fi
 
-    BD="$build_digest" BI="$base_image" \
-        yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI)'
+    BD="$build_digest" BI="$base_image" OCI="$oci_subject_digest" \
+        yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI) | .oci_subject_digest = strenv(OCI)'
 }
 
 # --- SBOM data helpers ---
@@ -430,10 +435,21 @@ collect_variant_json() {
     changelog=$(get_changelog "$container" "$sbom_tag")
     build_history=$(get_build_history "$container" "$sbom_tag")
 
-    # Attestation: look up SBOM attestation ID from GitHub Attestations API
-    local build_digest attestation_id="" attestation_url=""
-    build_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
-    if attestation_id=$(get_attestation_id "$build_digest"); then
+    # Attestation: look up SBOM attestation ID from GitHub Attestations API.
+    # The attestations API is keyed on the OCI subject digest (sha256:…) that
+    # `actions/attest-sbom` signs — NOT the internal build-cache digest. Prefer
+    # `.oci_subject_digest` when the build pipeline has captured it; fall back
+    # to `.build_digest` for older lineage files predating the post-flatten
+    # capture step. NB: jq's `//` only treats null/false as missing, so an
+    # empty-string `.oci_subject_digest` would short-circuit incorrectly — the
+    # explicit shell-level check below handles that case.
+    local subject_digest attestation_id="" attestation_url=""
+    subject_digest=$(echo "$lineage_json" | jq -r '.oci_subject_digest // empty')
+    if [[ -z "$subject_digest" ]]; then
+        subject_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
+    fi
+    if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
+        && attestation_id=$(get_attestation_id "$subject_digest"); then
         attestation_url=$(get_attestation_url "$attestation_id")
     fi
 

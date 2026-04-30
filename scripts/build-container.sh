@@ -186,6 +186,7 @@ _emit_build_lineage() {
   "runtime": "$runtime_info",
   "image_id": "${image_id:-unknown}",
   "build_digest": "${BUILD_DIGEST:-unknown}",
+  "oci_subject_digest": "${OCI_SUBJECT_DIGEST:-}",
   "base_image_ref": "${_BASE_IMAGE_REF:-unknown}",
   "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",

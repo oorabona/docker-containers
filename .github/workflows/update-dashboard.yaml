@@ -64,6 +64,13 @@ jobs:
           key: build-lineage-never-exact-match
           restore-keys: build-lineage-
 
+      - name: Restore Trivy scan history cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .trivy-scan-history
+          key: trivy-scan-history-never-exact-match
+          restore-keys: trivy-scan-history-
+
       - name: Snapshot pull/star counts (idempotent per day)
         run: |
           chmod +x scripts/snapshot-stats.sh
