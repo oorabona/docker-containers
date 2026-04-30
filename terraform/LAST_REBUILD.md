@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `terraform` |
-| **Version Change** | `1.14.8-alpine` → `1.14.9-alpine` |
+| **Version Change** | `1.14.9-alpine` → `1.15.0-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-04-22T06:37:41Z |
+| **Rebuild Date** | 2026-04-30T06:51:22Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/24764038091) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/25151661448) |
 
 ## Build Status
 
