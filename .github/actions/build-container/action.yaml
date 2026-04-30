@@ -633,13 +633,20 @@ runs:
         # then rewritten in-place by `crane flatten`, so its current digest is the
         # final published artifact — unambiguously this build's.
         platform_tag="ghcr.io/$image_name:$current_tag-$platform_suffix"
-        # Use buildx's top-level `.Digest` template field — this is the tag's
-        # subject digest (sha256:…), the value `actions/attest-sbom` signs and
-        # the GitHub attestations API is keyed on. NOT `.Manifest.digest`,
-        # which is the inner manifest's identity and may not be set on indexes.
-        oci_digest=$(docker buildx imagetools inspect \
-          "$platform_tag" \
-          --format '{{.Digest}}' 2>/dev/null | tr -d '[:space:]' || true)
+        # Compute the OCI subject digest by hashing the raw manifest content —
+        # this is what `actions/attest-sbom` signs (it does the same hash
+        # internally) and what the GitHub attestations API is keyed on. The
+        # `--format '{{.Digest}}'` and `--format '{{json .Manifest}}'` paths
+        # both proved unreliable in CI (empty output for some image types,
+        # version-dependent template fields). `--raw | sha256sum` is the
+        # documented fallback also used by the workflow's SBOM step (see
+        # auto-build.yaml's `Generate SBOM` step), so digest sources match.
+        raw_manifest=$(docker buildx imagetools inspect "$platform_tag" --raw 2>/dev/null || true)
+        if [[ -n "$raw_manifest" ]]; then
+          oci_digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+        else
+          oci_digest=""
+        fi
 
         if [[ -z "$oci_digest" ]]; then
           echo "::warning::Could not resolve OCI subject digest for $platform_tag — skipping"
