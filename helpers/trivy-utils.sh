@@ -32,10 +32,35 @@ _TRIVY_ALERTS_CACHE=""
 _TRIVY_SUMMARY_MAP=""
 
 # _fetch_trivy_alerts_once
-# Populates _TRIVY_ALERTS_CACHE on first call; subsequent calls are no-ops.
-# On auth/network failure, sets cache to "[]" and logs a warning once.
+# Populates _TRIVY_ALERTS_CACHE and _TRIVY_SUMMARY_MAP on first call; subsequent
+# calls are no-ops. On auth/network failure, sets caches to empty sentinels and
+# logs a warning once.
+#
+# Cross-subshell cache: generate-dashboard.sh runs collect_variant_json in $()
+# subshells; the in-memory variables are lost when each subshell exits. When
+# TRIVY_CACHE_FILE is set, the computed map is persisted to disk so sibling
+# subshells can read it without re-hitting the API.
+# NOTE: No locking is needed here — dashboard generation is single-threaded
+# (subshells are sequential, not concurrent).
 _fetch_trivy_alerts_once() {
-    [[ -n "$_TRIVY_ALERTS_CACHE" ]] && return 0
+    # Already populated in this shell? Done.
+    [[ -n "${_TRIVY_ALERTS_CACHE:-}" ]] && return 0
+
+    # Cross-subshell cache — populated by an earlier subshell of this run.
+    if [[ -n "${TRIVY_CACHE_FILE:-}" && -s "${TRIVY_CACHE_FILE}" ]]; then
+        local _cached_map
+        _cached_map=$(cat -- "${TRIVY_CACHE_FILE}" 2>/dev/null || true)
+        # Validate: must be a non-empty JSON object.
+        if [[ -n "${_cached_map}" ]] \
+            && echo "${_cached_map}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            _TRIVY_SUMMARY_MAP="${_cached_map}"
+            # Synthesise a non-empty sentinel so the in-shell guard fires next call.
+            _TRIVY_ALERTS_CACHE="[cached]"
+            return 0
+        fi
+        # Fall through: file present but empty or non-JSON object — fetch fresh.
+    fi
+
     local raw
     raw=$(gh api --paginate \
         "repos/${TRIVY_UTILS_OWNER_REPO}/code-scanning/alerts?tool_name=Trivy&state=open&per_page=100" \
@@ -83,6 +108,12 @@ _fetch_trivy_alerts_once() {
           })
         | from_entries
     ' 2>/dev/null) || _TRIVY_SUMMARY_MAP="{}"
+
+    # Persist to file cache for sibling subshells. Write failure is non-fatal.
+    # Reaching here always means the API call succeeded (failure path returns early above).
+    if [[ -n "${TRIVY_CACHE_FILE:-}" && -n "${_TRIVY_SUMMARY_MAP}" ]]; then
+        printf '%s' "${_TRIVY_SUMMARY_MAP}" > "${TRIVY_CACHE_FILE}" 2>/dev/null || true
+    fi
 }
 
 # get_trivy_summary <category>
