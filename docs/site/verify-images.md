@@ -39,6 +39,17 @@ gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate \
   -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'
 ```
 
+### Why the dashboard only highlights CRITICAL counts
+
+Each container card's Trivy badge surfaces the count of **CRITICAL**-severity findings only. High, medium, low, and informational findings are still scanned, still uploaded to GitHub Code Scanning, and still queryable through the API command above — they are intentionally not promoted to the dashboard headline.
+
+Two reasons for this choice:
+
+- **Signal vs noise.** A solo-maintained container catalog routinely carries dozens of low/medium advisories that originate in upstream base images and that the maintainer cannot fix directly. Showing the full count on the dashboard would normalize a constantly red badge and erode the meaning of "go look at this image's security posture." CRITICAL is the cut-off where downstream consumers should pause and verify before pulling.
+- **Defense in depth, not single source of truth.** GitHub's Security tab (and the `gh api` query above) remains the authoritative full-detail view for anyone running their own risk assessment. The dashboard is a glanceable surface, not a replacement for the Code Scanning UI.
+
+If you operate this catalog yourself and prefer a different threshold, the SARIF severity filter lives in `.github/actions/build-container/action.yaml` (search for the `trivy-action` step) and the dashboard summary aggregation in `helpers/trivy-utils.sh`. Both are plain code; widening the threshold is a one-line change in each file plus a fresh dashboard regeneration.
+
 ## Inspecting multi-arch manifests
 
 Multi-arch images publish a manifest list that references per-platform image manifests. To see which CPU architectures are present for any tag:
