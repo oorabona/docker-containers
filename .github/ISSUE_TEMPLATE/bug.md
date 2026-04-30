@@ -17,7 +17,17 @@ What's visible / broken from a user-facing perspective. Include the URL, the con
 
 ## Reproduction
 
-Steps to observe the bug. Mention the exact commit SHA, branch, image tag, or live URL.
+<!--
+For container-runtime bugs, fill these inline (delete what doesn't apply):
+  **Image tag:**    e.g. `ghcr.io/oorabona/postgres:18-alpine-vector`
+  **Host:**         e.g. Docker 27.5 on Ubuntu 24.04 / WSL2
+For CI bugs:
+  **Workflow run:** e.g. https://github.com/oorabona/docker-containers/actions/runs/...
+For dashboard / docs bugs:
+  **URL + browser:** e.g. https://oorabona.github.io/docker-containers/ on Firefox 132
+-->
+
+Steps to observe the bug. Reference exact commit SHA, branch, image tag, or live URL.
 
 ```
 1.
@@ -41,3 +51,14 @@ A concrete, observable check that proves the bug is fixed. e.g. *"the X badge sh
 ## Related
 
 PRs, commits, sibling issues, ADRs, or memory snapshots that contextualize this bug. Use `#N` for sibling issues, full URL for external refs.
+
+## Logs / output (optional)
+
+<details>
+<summary>Click to expand</summary>
+
+```
+<!-- paste error logs, stack traces, container output here -->
+```
+
+</details>
