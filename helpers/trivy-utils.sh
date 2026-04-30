@@ -106,15 +106,30 @@ get_trivy_summary() {
 
     _fetch_trivy_alerts_once
 
-    # Fast lookup: the full jq processing was done once in _fetch_trivy_alerts_once.
-    # _TRIVY_SUMMARY_MAP is a JSON object keyed by SARIF category.
-    if [[ -z "${_TRIVY_SUMMARY_MAP:-}" || "$_TRIVY_SUMMARY_MAP" == "{}" ]]; then
-        echo "$_TRIVY_EMPTY"
-        return 0
+    # --- Side-channel: read scan-history file if available ---
+    # Category format: container-<name>-<tag>-<platform>  (platform contains '/')
+    # e.g. container-postgres-18-alpine-linux/amd64
+    # Strip the leading "container-" prefix, then replace '/' with '-' for the filename.
+    # Resolve under the parent script's SCRIPT_DIR (the repo root) when set —
+    # generate-dashboard.sh works from any cwd, so this lookup must too. Fall
+    # back to cwd when sourced standalone (e.g. self-test).
+    local sc_root sc_relative sc_file sc_last_scan
+    sc_root="${SCRIPT_DIR:-.}"
+    sc_relative="${category#container-}"         # postgres-18-alpine-linux/amd64
+    sc_file="$sc_root/.trivy-scan-history/${sc_relative//\//-}.json"   # postgres-18-alpine-linux-amd64.json
+    sc_last_scan=""
+    if [[ -f "$sc_file" ]]; then
+        sc_last_scan=$(jq -r '.last_scan // empty' "$sc_file" 2>/dev/null || true)
     fi
 
+    # Fast lookup: the full jq processing was done once in _fetch_trivy_alerts_once.
+    # _TRIVY_SUMMARY_MAP is a JSON object keyed by SARIF category.
     local result
-    result=$(echo "$_TRIVY_SUMMARY_MAP" | jq --arg cat "$category" '.[$cat] // empty' 2>/dev/null)
+    if [[ -z "${_TRIVY_SUMMARY_MAP:-}" || "$_TRIVY_SUMMARY_MAP" == "{}" ]]; then
+        result=""
+    else
+        result=$(echo "$_TRIVY_SUMMARY_MAP" | jq --arg cat "$category" '.[$cat] // empty' 2>/dev/null)
+    fi
 
     # Defensive: ensure result is a JSON object before emitting. If the cache is
     # in a partial/corrupt state (e.g. subshell raced an API outage and stored
@@ -122,6 +137,33 @@ get_trivy_summary() {
     # "Cannot index array with string 'last_scan'", silently blanking the
     # entire variant entry in containers.yml. Force the empty form on any
     # type mismatch.
+    # Side-channel takes precedence over API when present. The Code Scanning
+    # API indexes SARIF uploads asynchronously and can lag the in-pipeline
+    # scan by minutes; the side-channel was written by THIS very pipeline run
+    # and is therefore the authoritative source of truth for "what did this
+    # scan produce". When the side-channel exists we synthesize the entire
+    # summary from `_TRIVY_EMPTY` and overlay side-channel fields, so any stale
+    # API data (e.g. old open advisories that the latest scan no longer flags)
+    # is dropped. The SARIF upload is CRITICAL-only by policy (see
+    # `/verify-images/`), so `alert_count` IS the critical count by definition;
+    # high/medium/low/info stay zero and top_advisories stays empty.
+    if [[ -n "$sc_last_scan" ]]; then
+        local sc_alert_count
+        sc_alert_count=$(jq -r '.alert_count // 0' "$sc_file" 2>/dev/null || echo 0)
+        echo "$_TRIVY_EMPTY" | jq \
+            --arg ls "$sc_last_scan" \
+            --argjson ac "$sc_alert_count" \
+            '.last_scan = $ls | .counts.critical = $ac'
+        return 0
+    fi
+
+    # No side-channel data — fall back to API result (or empty form on failure).
+    if [[ -z "$result" ]] || ! echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        echo "$_TRIVY_EMPTY"
+        return 0
+    fi
+
+    # Re-validate after potential mutation
     if [[ -z "$result" ]] || ! echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
         echo "$_TRIVY_EMPTY"
     else
@@ -138,3 +180,83 @@ build_trivy_category() {
     local container="$1" tag="$2" platform="$3"
     echo "container-${container}-${tag}-${platform}"
 }
+
+# ---------------------------------------------------------------------------
+# Self-test (runs only when script is executed directly: bash helpers/trivy-utils.sh)
+# ---------------------------------------------------------------------------
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    set -euo pipefail
+
+    echo "Running trivy-utils self-test..."
+
+    # Create a temporary scan-history directory and fake file
+    _test_dir=$(mktemp -d)
+    trap 'rm -rf "$_test_dir"' EXIT
+
+    mkdir -p "$_test_dir/.trivy-scan-history"
+    printf '{"last_scan":"2026-04-30T10:00:00Z","alert_count":0,"status":"clean"}\n' \
+        > "$_test_dir/.trivy-scan-history/container-fake-1.0-linux-amd64.json"
+
+    # Change into the temp dir so the relative path ".trivy-scan-history/..." resolves
+    pushd "$_test_dir" > /dev/null
+
+    # Simulate empty API: override the cache map so _fetch_trivy_alerts_once is a no-op
+    _TRIVY_ALERTS_CACHE="[]"
+    _TRIVY_SUMMARY_MAP="{}"
+
+    result=$(get_trivy_summary "container-container-fake-1.0-linux/amd64")
+
+    popd > /dev/null
+
+    last_scan=$(echo "$result" | jq -r '.last_scan')
+
+    if [[ "$last_scan" == "2026-04-30T10:00:00Z" ]]; then
+        echo "PASS test-1: last_scan = $last_scan (non-null, correct value)"
+    else
+        echo "FAIL test-1: expected last_scan=2026-04-30T10:00:00Z, got: $last_scan"
+        echo "Full result: $result"
+        exit 1
+    fi
+    critical=$(echo "$result" | jq -r '.counts.critical')
+    if [[ "$critical" == "0" ]]; then
+        echo "PASS test-1: counts.critical = 0 (clean scan, correct)"
+    else
+        echo "FAIL test-1: expected counts.critical=0 for clean scan, got: $critical"
+        echo "Full result: $result"
+        exit 1
+    fi
+
+    # Test 2: side-channel has alert_count=3 (dirty CRITICAL scan), API map is empty.
+    # Expected: last_scan non-null AND counts.critical == 3.
+    printf '{"last_scan":"2026-04-30T11:00:00Z","alert_count":3,"status":"dirty","scanned_severity":"CRITICAL"}\n' \
+        > "$_test_dir/.trivy-scan-history/container-dirty-2.0-linux-amd64.json"
+
+    pushd "$_test_dir" > /dev/null
+
+    _TRIVY_ALERTS_CACHE="[]"
+    _TRIVY_SUMMARY_MAP="{}"
+
+    result2=$(get_trivy_summary "container-container-dirty-2.0-linux/amd64")
+
+    popd > /dev/null
+
+    last_scan2=$(echo "$result2" | jq -r '.last_scan')
+    critical2=$(echo "$result2" | jq -r '.counts.critical')
+
+    if [[ "$last_scan2" == "2026-04-30T11:00:00Z" ]]; then
+        echo "PASS test-2: last_scan = $last_scan2 (non-null, correct value)"
+    else
+        echo "FAIL test-2: expected last_scan=2026-04-30T11:00:00Z, got: $last_scan2"
+        echo "Full result: $result2"
+        exit 1
+    fi
+    if [[ "$critical2" == "3" ]]; then
+        echo "PASS test-2: counts.critical = $critical2 (side-channel alert_count propagated correctly)"
+    else
+        echo "FAIL test-2: expected counts.critical=3, got: $critical2"
+        echo "Full result: $result2"
+        exit 1
+    fi
+
+    echo "All self-tests passed."
+fi

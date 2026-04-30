@@ -448,6 +448,7 @@ runs:
       continue-on-error: true  # Vulnerability scan is advisory — don't block builds on findings
 
     - name: Generate SARIF report
+      id: trivy-sarif
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
       uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
       with:
@@ -460,6 +461,36 @@ runs:
         cache-dir: ~/.cache/trivy
         timeout: '15m0s'
       continue-on-error: true  # SARIF generation failure should not block build
+
+    - name: Write Trivy scan history
+      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.trivy-sarif.outcome == 'success' }}
+      shell: bash
+      run: |
+        container="${{ inputs.container }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        platform="${{ inputs.platform }}"
+
+        # Replace '/' with '-' for filename safety (e.g. linux/amd64 → linux-amd64)
+        platform_safe="${platform//\//-}"
+
+        mkdir -p .trivy-scan-history
+
+        last_scan="$(date -Iseconds)"
+        alert_count=0
+        status="clean"
+
+        # Parse SARIF if it exists to count actual findings
+        if [[ -f trivy-results.sarif ]]; then
+          alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo 0)
+          if [[ "$alert_count" -gt 0 ]]; then
+            status="dirty"
+          fi
+        fi
+
+        scan_file=".trivy-scan-history/${container}-${current_tag}-${platform_safe}.json"
+        printf '{"last_scan":"%s","alert_count":%s,"status":"%s","scanned_severity":"CRITICAL"}\n' \
+          "$last_scan" "$alert_count" "$status" > "$scan_file"
+        echo "::notice::Wrote Trivy scan history to $scan_file (alert_count=$alert_count, status=$status)"
 
     - name: Upload SARIF to GitHub Security
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
@@ -582,6 +613,44 @@ runs:
           echo "::notice::Layers flattened for $image_ref" || \
           echo "::warning::Layer flattening failed — image still usable with original layers"
         echo "::endgroup::"
+      continue-on-error: true
+
+    # Capture the FINAL OCI subject digest for the platform-suffixed image — this
+    # must run after `crane flatten` so the digest reflects the published artifact,
+    # not the pre-flatten manifest. The dashboard's SBOM badge resolves attestations
+    # via this digest, so a stale value here means a broken attestation lookup.
+    - name: Capture OCI subject digest
+      if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os != 'Windows' }}
+      shell: bash
+      run: |
+        image_name="${{ steps.check-build.outputs.image_name }}"
+        current_tag="${{ steps.check-build.outputs.current_tag }}"
+        platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
+        lineage_file=".build-lineage/${image_name##*/}-${current_tag}.json"
+
+        # Resolve the OCI digest of the platform-suffixed image that was just pushed
+        # AND flattened. The platform-suffixed tag was pushed in this very job and
+        # then rewritten in-place by `crane flatten`, so its current digest is the
+        # final published artifact — unambiguously this build's.
+        platform_tag="ghcr.io/$image_name:$current_tag-$platform_suffix"
+        # Use buildx's top-level `.Digest` template field — this is the tag's
+        # subject digest (sha256:…), the value `actions/attest-sbom` signs and
+        # the GitHub attestations API is keyed on. NOT `.Manifest.digest`,
+        # which is the inner manifest's identity and may not be set on indexes.
+        oci_digest=$(docker buildx imagetools inspect \
+          "$platform_tag" \
+          --format '{{.Digest}}' 2>/dev/null | tr -d '[:space:]' || true)
+
+        if [[ -z "$oci_digest" ]]; then
+          echo "::warning::Could not resolve OCI subject digest for $platform_tag — skipping"
+        elif [[ -f "$lineage_file" ]]; then
+          tmp=$(mktemp)
+          jq --arg d "$oci_digest" '.oci_subject_digest = $d' "$lineage_file" > "$tmp" \
+            && mv "$tmp" "$lineage_file"
+          echo "::notice::OCI subject digest captured (post-flatten): $oci_digest"
+        else
+          echo "::warning::Lineage file not found at $lineage_file — OCI digest not saved"
+        fi
       continue-on-error: true
 
     # Push bare tag immediately so images are pullable without waiting for manifest job.
