@@ -552,6 +552,30 @@ collect_variants_json() {
                 variants_arr=$(printf '%s\n%s' "$variants_arr" "$var_json" | jq -s '.[0] + [.[1]]')
             done < <(list_variants "$container_dir" "$ver_tag")
 
+            # Versions-only container (no per-version variants array, e.g. sslh,
+            # jekyll, openvpn): synthesize a single canonical variant from the
+            # version itself so trust-strip plumbing in container-card.html
+            # (which dereferences default_variant.trivy_summary etc.) has data
+            # to read. Without this, default_variant falls back to `include`
+            # and the trust strip silently shows no badges. Affects ~70% of
+            # the catalog. The synthetic variant has empty `name`; the Liquid
+            # template hides the visible `:name` label when name is empty.
+            #
+            # Gate strictly on exact-tag lineage existence — `resolve_variant_lineage_file`
+            # falls back to the legacy single-file format when per-tag lineage
+            # is missing, which would surface a stale digest/attestation from
+            # a different version's build (e.g. v2.3.0 fallback bleeding into
+            # v2.3.1's trust strip). We'd rather show no badge than the wrong
+            # one. Older retained versions without a recent build will have
+            # empty trust strips until rebuilt — acceptable degradation.
+            if [[ "$variants_arr" == "[]" ]] \
+                && [[ -f "$SCRIPT_DIR/.build-lineage/${container}-${ver_tag}.json" ]]; then
+                local var_json
+                var_json=$(collect_variant_json "$container" "$container_dir" "" \
+                    "$ver_tag" "$current_version" "$base_image" "true")
+                variants_arr=$(printf '%s\n%s' "[]" "$var_json" | jq -s '.[0] + [.[1]]')
+            fi
+
             local ver_json
             ver_json=$(printf '%s' "$variants_arr" | jq \
                 --arg tag "$ver_tag" --arg base_tag "$base_tag" \

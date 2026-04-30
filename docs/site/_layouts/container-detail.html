@@ -203,7 +203,20 @@
                 <h3 class="version-title">{{ version.base_tag | default: version.tag }}</h3>
                 <div class="variant-tags-row">
                   {% for variant in version.variants %}
+                    {%- comment -%}
+                      Versions-only containers carry a synthesized empty-name
+                      variant (the version itself IS the canonical build).
+                      Render with `display:none` to hide the unlabeled pill
+                      while preserving the data-* carrier — container-detail.js
+                      reads SBOM, changelog, build-history, and lineage data
+                      from .variant-tag.selected; skipping the element would
+                      blank Build Lineage / Security / Changelog sections for
+                      the very build this page documents.
+                    {%- endcomment -%}
+                    {%- assign synthetic = false -%}
+                    {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
                     <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                          {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
                           data-tag="{{ variant.tag }}"
                           data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                           data-size-arm64="{{ variant.size_arm64 | default: '' }}"
