@@ -136,6 +136,59 @@
           </div>
         </div>
 
+        <!-- Value Proposition -->
+        {%- if page.value_proposition and page.value_proposition != "" -%}
+        <section class="value-prop">
+          <p>{{ page.value_proposition | strip_newlines | escape }}</p>
+        </section>
+        {%- endif -%}
+
+        <!-- Trust Strip -->
+        {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
+        <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: page.current_version }}">
+          <a class="trust-badge trust-badge--sbom"
+             data-trust="sbom"
+             {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% else %}href="" style="display: none"{% endif %}
+             rel="noopener"
+             title="View Sigstore attestation for this image's SBOM">📋 SBOM attested</a>
+
+          {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
+            {%- assign sev = "info" -%}
+            {%- if default_variant.trivy_summary.counts.critical > 0 -%}{%- assign sev = "critical" -%}
+            {%- elsif default_variant.trivy_summary.counts.high > 0 -%}{%- assign sev = "high" -%}
+            {%- endif -%}
+            <a class="trust-badge trust-badge--trivy"
+               data-trust="trivy"
+               data-severity="{{ sev }}"
+               href="#security"
+               title="Click to see scan details on this page">🛡 Trivy: {{ default_variant.trivy_summary.counts.critical }} CRITICAL · scanned {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+          {%- else -%}
+            <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" href="#"></a>
+          {%- endif -%}
+
+          {%- if default_variant.multi_arch_platforms -%}
+            <a class="trust-badge trust-badge--multi-arch"
+               data-trust="multi-arch"
+               href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}"
+               rel="noopener"
+               title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " }}</a>
+          {%- else -%}
+            <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" href="#"></a>
+          {%- endif -%}
+
+          {%- if page.dependency_monitoring.enabled -%}
+            <a class="trust-badge trust-badge--deps"
+               href="{{ page.upstream_monitor_url }}"
+               rel="noopener"
+               title="View the daily upstream-monitor workflow runs">
+              🔗 {{ page.dependency_monitoring.monitored }}/{{ page.dependency_monitoring.total }} deps tracked daily
+            </a>
+          {%- endif -%}
+          <a class="trust-badge trust-badge--verify"
+             href="{{ '/verify-images/' | relative_url }}"
+             title="Reproduce these checks yourself — verification guide">🔍 How to verify</a>
+        </trust-strip>
+
         <!-- Variants (before lineage, since variant selection affects displayed build args) -->
         {% if page.has_variants %}
         <div class="variants-section glass">
@@ -161,6 +214,10 @@
                           {% if variant.sbom_packages %}data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif %}
                           {% if variant.changelog %}data-changelog='{{ variant.changelog | jsonify }}'{% endif %}
                           {% if variant.build_history %}data-build-history='{{ variant.build_history | jsonify }}'{% endif %}
+                          {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
+                          {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
+                          {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                          {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                           role="button"
                           tabindex="0"
                           aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -178,6 +235,10 @@
                         data-tag="{{ variant.tag }}"
                         data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                         data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                        {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
+                        {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
+                        {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                        {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                         role="button"
                         tabindex="0"
                         aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
@@ -190,6 +251,37 @@
           </div>
         </div>
         {% endif %}
+
+        <!-- Postgres variant comparison table (postgres only, one table per version) -->
+        {%- if page.name == "postgres" and page.versions.size > 0 -%}
+        <section class="variants-table-section">
+          <h2>Variant Comparison</h2>
+          <p class="variants-note">
+            Showing PostgreSQL <span class="version-active-label" data-field="active-version">{{ page.versions[0].tag }}</span>. Switch a variant tag from another version to see its rows.
+          </p>
+          {%- for ver in page.versions -%}
+            <table class="variants-table" data-version="{{ ver.tag }}"{% if forloop.first %} data-active="true"{% endif %}>
+              <thead>
+                <tr><th>Variant</th><th>Extensions</th><th>Image size (amd64)</th><th>When to use</th></tr>
+              </thead>
+              <tbody>
+                {%- for var in ver.variants -%}
+                  <tr>
+                    <td><code>{{ var.name | escape }}</code></td>
+                    <td>
+                      {%- for ext in var.extensions -%}
+                        <span class="tag-pill">{{ ext | escape }}</span>
+                      {%- endfor -%}
+                    </td>
+                    <td>{{ var.size_amd64 | escape }}</td>
+                    <td>{{ var.when_to_use | strip_newlines | escape }}</td>
+                  </tr>
+                {%- endfor -%}
+              </tbody>
+            </table>
+          {%- endfor -%}
+        </section>
+        {%- endif -%}
 
         <!-- Build Lineage -->
         {% if page.build_digest and page.build_digest != "unknown" %}
@@ -411,6 +503,37 @@
         </section>
         {% endif %}
 
+        <!-- Security Scan Results -->
+        {%- assign sec_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
+        {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.last_scan -%}
+        <security-scan id="security" class="security-section glass" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
+          <h2>Security Scan Results</h2>
+          <p class="scan-meta">
+            Last scan: <time data-scan="last-scan">{{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</time>
+            (advisory mode — Trivy runs <code>continue-on-error</code> in CI; we surface findings, we do not block builds on them).
+          </p>
+
+          <div class="severity-grid">
+            <div><span class="count" data-scan-count="critical">{{ sec_variant.trivy_summary.counts.critical }}</span><span class="label">Critical</span></div>
+            <div><span class="count" data-scan-count="high">{{ sec_variant.trivy_summary.counts.high }}</span><span class="label">High</span></div>
+            <div><span class="count" data-scan-count="medium">{{ sec_variant.trivy_summary.counts.medium }}</span><span class="label">Medium</span></div>
+            <div><span class="count" data-scan-count="low">{{ sec_variant.trivy_summary.counts.low }}</span><span class="label">Low</span></div>
+            <div><span class="count" data-scan-count="info">{{ sec_variant.trivy_summary.counts.info }}</span><span class="label">Info</span></div>
+          </div>
+
+          <div data-scan="advisories-wrap"{% if sec_variant.trivy_summary.top_advisories.size == 0 %} style="display: none"{% endif %}>
+            <h3>Top advisories (upstream, advisory)</h3>
+            <ul class="top-advisories" data-scan="top-advisories">
+              {%- for adv in sec_variant.trivy_summary.top_advisories -%}
+              <li><strong>{{ adv.rule_id | escape }}</strong> ({{ adv.severity | upcase | escape }}) — {{ adv.package_name | escape }} — {{ adv.title | escape }}</li>
+              {%- endfor -%}
+            </ul>
+          </div>
+
+          <p class="full-report">→ Full report via <code>gh api</code> — see <a href="{{ '/verify-images/' | relative_url }}#trivy">Verify Images</a>.</p>
+        </security-scan>
+        {%- endif -%}
+
         <!-- README (rendered at build time by kramdown) -->
         <div class="readme-section glass">
           <div class="readme-header">
@@ -432,6 +555,9 @@
     </footer>
   </div>
 
+  <!-- Vanilla web components — CSP-clean, no eval -->
+  <script defer src="{{ '/assets/js/components/trust-strip.js' | relative_url }}"></script>
+  <script defer src="{{ '/assets/js/components/security-scan.js' | relative_url }}"></script>
   <!-- Minimal JS: shared theme + page-specific logic -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="{{ site.baseurl }}/assets/js/theme.js"></script>

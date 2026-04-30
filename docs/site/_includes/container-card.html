@@ -78,6 +78,57 @@
   <div class="card-description">{{ include.description | truncate: 120 }}</div>
   {% endif %}
 
+  {%- comment -%}
+    Trust strip: surfaces SBOM attestation, Trivy scan summary, multi-arch, deps tracking, verify guide.
+    <trust-strip> custom element — CSP-clean, no Alpine. Liquid renders initial state; web component
+    updates child [data-trust] badges on `phase-b-variant-changed` events (never innerHTML).
+  {%- endcomment -%}
+  {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
+  <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: include.current_version }}">
+    {%- comment -%} SBOM badge — Liquid renders initial state, web component updates on variant change {%- endcomment -%}
+    <a class="trust-badge trust-badge--sbom"
+       data-trust="sbom"
+       {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% else %}href="" style="display: none"{% endif %}
+       rel="noopener"
+       title="View Sigstore attestation for this image's SBOM">📋 SBOM attested</a>
+
+    {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
+      {%- assign sev = "info" -%}
+      {%- if default_variant.trivy_summary.counts.critical > 0 -%}{%- assign sev = "critical" -%}
+      {%- elsif default_variant.trivy_summary.counts.high > 0 -%}{%- assign sev = "high" -%}
+      {%- endif -%}
+      <a class="trust-badge trust-badge--trivy"
+         data-trust="trivy"
+         data-severity="{{ sev }}"
+         href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
+         title="Click to see scan details on this container's detail page">🛡 Trivy: {{ default_variant.trivy_summary.counts.critical }} CRITICAL · scanned {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+    {%- else -%}
+      <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" href="#"></a>
+    {%- endif -%}
+
+    {%- if default_variant.multi_arch_platforms -%}
+      <a class="trust-badge trust-badge--multi-arch"
+         data-trust="multi-arch"
+         href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}"
+         rel="noopener"
+         title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " }}</a>
+    {%- else -%}
+      <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" href="#"></a>
+    {%- endif -%}
+
+    {%- if include.dependency_monitoring.enabled -%}
+      <a class="trust-badge trust-badge--deps"
+         href="{{ include.upstream_monitor_url }}"
+         rel="noopener"
+         title="View the daily upstream-monitor workflow runs">
+        🔗 {{ include.dependency_monitoring.monitored }}/{{ include.dependency_monitoring.total }} deps tracked daily
+      </a>
+    {%- endif -%}
+    <a class="trust-badge trust-badge--verify"
+       href="{{ '/verify-images/' | relative_url }}"
+       title="Reproduce these checks yourself — verification guide">🔍 How to verify</a>
+  </trust-strip>
+
   <!-- Variants Section (for multi-image containers) -->
   {% if include.versions or include.variants %}
   <div class="variants-section">
@@ -97,6 +148,10 @@
                   data-tag="{{ variant.tag }}"
                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                  {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
+                  {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
+                  {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                  {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                   role="button"
                   tabindex="0"
                   aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
@@ -117,8 +172,10 @@
                 data-tag="{{ variant.tag }}"
                 data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                 data-size-arm64="{{ variant.size_arm64 | default: '' }}"
-                onclick="selectVariantTag(this)"
-                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectVariantTag(this);}"
+                {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
+                {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
+                {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
+                {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                 role="button"
                 tabindex="0"
                 aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"

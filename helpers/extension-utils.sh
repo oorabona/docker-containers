@@ -398,3 +398,40 @@ pull_ext_image() {
     log_success "Pulled: $remote_tag"
 }
 
+# ============================================================================
+# Dashboard helpers: flavor extension list (reads postgres/flavors/*.yaml)
+# Used by generate-dashboard.sh to surface per-variant extension metadata.
+# These are separate from the build-time helpers above.
+# ============================================================================
+
+# get_flavor_extensions_yaml <flavor_name>
+# Returns a JSON array of compiled extension names for the given postgres flavor.
+# Reads from postgres/flavors/<flavor>.yaml (.extensions key).
+# Must be called from the project root directory.
+# Returns "[]" (empty array) when the file is missing, the key is absent, or yq fails.
+get_flavor_extensions_yaml() {
+    local flavor="$1"
+    local file="postgres/flavors/${flavor}.yaml"
+
+    if [[ ! -f "$file" ]]; then
+        log_warning "extension-utils: flavor file not found: ${file}"
+        echo "[]"
+        return 0
+    fi
+
+    local result
+    result=$(yq -o=json '.extensions // []' "$file" 2>/dev/null) || {
+        log_warning "extension-utils: failed to read .extensions from ${file}"
+        echo "[]"
+        return 0
+    }
+
+    # yq may return "null" for an absent key — normalise to empty array
+    if [[ "$result" == "null" || -z "$result" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    echo "$result"
+}
+

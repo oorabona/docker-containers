@@ -45,3 +45,4 @@ dependency_sources:
   BASE_IMAGE:
     monitor: false
     reason: "Base image fallback, not a version to track"
+value_proposition: Jekyll runtime with native build deps pre-installed. Multi-version retention tracks Jekyll upstream daily.

@@ -12,7 +12,6 @@ build:
   requires_extensions: true
   # Base image suffix (appended to version tag)
   base_suffix: "-alpine"
-
 # Versions to build (all maintained PostgreSQL releases)
 versions:
   - tag: "18"
@@ -23,31 +22,37 @@ versions:
         flavor: base
         description: "PostgreSQL with built-in extensions only"
         default: true
+        when_to_use: Standard PostgreSQL with built-in extensions only — pick when you don't need vector search, analytics, or geospatial.
       - name: vector
         suffix: "-vector"
         flavor: vector
         description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
+        when_to_use: PG with pgvector and paradedb — pick for AI/ML embeddings, similarity search, or full-text search.
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
         description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with paradedb, pg_ivm, pg_partman — pick for OLAP, materialized views, partitioning.
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
         description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with timescaledb — pick for IoT, metrics, time-series workloads.
       - name: spatial
         suffix: "-spatial"
         flavor: spatial
         description: "PostgreSQL + PostGIS for geospatial workloads"
+        when_to_use: PG with postgis and pg_partman — pick for GIS, geospatial queries, partitioned spatial data.
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
         description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
+        when_to_use: PG with citus and pg_partman — pick for sharding, multi-tenant, horizontal scale.
       - name: full
         suffix: "-full"
         flavor: full
         description: "PostgreSQL with all compiled extensions"
-
+        when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
   - tag: "17"
     # PG17 - full extension support
     variants:
@@ -56,31 +61,37 @@ versions:
         flavor: base
         description: "PostgreSQL with built-in extensions only"
         default: true
+        when_to_use: Standard PostgreSQL with built-in extensions only — pick when you don't need vector search, analytics, or geospatial.
       - name: vector
         suffix: "-vector"
         flavor: vector
         description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
+        when_to_use: PG with pgvector and paradedb — pick for AI/ML embeddings, similarity search, or full-text search.
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
         description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with paradedb, pg_ivm, pg_partman — pick for OLAP, materialized views, partitioning.
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
         description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with timescaledb — pick for IoT, metrics, time-series workloads.
       - name: spatial
         suffix: "-spatial"
         flavor: spatial
         description: "PostgreSQL + PostGIS for geospatial workloads"
+        when_to_use: PG with postgis and pg_partman — pick for GIS, geospatial queries, partitioned spatial data.
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
         description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
+        when_to_use: PG with citus and pg_partman — pick for sharding, multi-tenant, horizontal scale.
       - name: full
         suffix: "-full"
         flavor: full
         description: "PostgreSQL with all compiled extensions"
-
+        when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.
   - tag: "16"
     # PG16 - full extension support
     variants:
@@ -89,27 +100,34 @@ versions:
         flavor: base
         description: "PostgreSQL with built-in extensions only"
         default: true
+        when_to_use: Standard PostgreSQL with built-in extensions only — pick when you don't need vector search, analytics, or geospatial.
       - name: vector
         suffix: "-vector"
         flavor: vector
         description: "PostgreSQL + pgvector, pg_search, pg_cron, pg_ivm"
+        when_to_use: PG with pgvector and paradedb — pick for AI/ML embeddings, similarity search, or full-text search.
       - name: analytics
         suffix: "-analytics"
         flavor: analytics
         description: "PostgreSQL + pg_partman, hypopg, pg_qualstats, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with paradedb, pg_ivm, pg_partman — pick for OLAP, materialized views, partitioning.
       - name: timeseries
         suffix: "-timeseries"
         flavor: timeseries
         description: "PostgreSQL + TimescaleDB, pg_partman, postgis, pg_cron, pg_ivm"
+        when_to_use: PG with timescaledb — pick for IoT, metrics, time-series workloads.
       - name: spatial
         suffix: "-spatial"
         flavor: spatial
         description: "PostgreSQL + PostGIS for geospatial workloads"
+        when_to_use: PG with postgis and pg_partman — pick for GIS, geospatial queries, partitioned spatial data.
       - name: distributed
         suffix: "-distributed"
         flavor: distributed
         description: "PostgreSQL + Citus, pg_cron, pg_ivm for horizontal scaling"
+        when_to_use: PG with citus and pg_partman — pick for sharding, multi-tenant, horizontal scale.
       - name: full
         suffix: "-full"
         flavor: full
         description: "PostgreSQL with all compiled extensions"
+        when_to_use: All extensions enabled — pick when prototyping or when scope is not yet defined.

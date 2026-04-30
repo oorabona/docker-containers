@@ -31,3 +31,4 @@ dependency_sources:
     type: github-release
     repo: krakjoe/apcu
     strip_v: true
+value_proposition: PHP runtime with common extensions, multi-version retention, ARM support. Pre-built for verifiable provenance.

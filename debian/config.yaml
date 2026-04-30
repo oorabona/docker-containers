@@ -7,10 +7,10 @@ base_image_cache:
     source: debian
     ghcr_repo: debian-base
     tags: ["${VERSION}"]
-
 build_args:
   BASE_IMAGE: "debian"
 dependency_sources:
   BASE_IMAGE:
     monitor: false
     reason: "Base image fallback, not a version to track"
+value_proposition: Minimal Debian base with verifiable supply chain — SBOM attestations, multi-arch, signed git history.

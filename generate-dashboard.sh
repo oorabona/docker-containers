@@ -16,6 +16,9 @@ source "$SCRIPT_DIR/helpers/build-args-utils.sh"
 source "$SCRIPT_DIR/helpers/registry-utils.sh"
 source "$SCRIPT_DIR/helpers/version-utils.sh"
 source "$SCRIPT_DIR/helpers/sbom-utils.sh"
+source "$SCRIPT_DIR/helpers/attestation-utils.sh"
+source "$SCRIPT_DIR/helpers/trivy-utils.sh"
+source "$SCRIPT_DIR/helpers/extension-utils.sh"
 
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
@@ -427,12 +430,48 @@ collect_variant_json() {
     changelog=$(get_changelog "$container" "$sbom_tag")
     build_history=$(get_build_history "$container" "$sbom_tag")
 
+    # Attestation: look up SBOM attestation ID from GitHub Attestations API
+    local build_digest attestation_id="" attestation_url=""
+    build_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
+    if attestation_id=$(get_attestation_id "$build_digest"); then
+        attestation_url=$(get_attestation_url "$attestation_id")
+    fi
+
+    # Trivy: collect vulnerability summary for the primary platform (linux/amd64)
+    local trivy_category trivy_summary
+    trivy_category=$(build_trivy_category "$container" "$variant_tag" "linux/amd64")
+    trivy_summary=$(get_trivy_summary "$trivy_category")
+
+    # Multi-arch platform list: derive from GHCR manifest (reuse ghcr_get_manifest_sizes)
+    local multi_arch_platforms_json="[]"
+    if [[ "$current_version" != "no-published-version" ]]; then
+        local raw_sizes arch_list=""
+        raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+        if [[ -n "$raw_sizes" ]]; then
+            arch_list=$(echo "$raw_sizes" | awk -F: '{print $1}' | \
+                jq -R . | jq -s '.')
+        fi
+        [[ -n "$arch_list" && "$arch_list" != "[]" ]] && multi_arch_platforms_json="$arch_list"
+    fi
+
+    # Postgres-specific: extensions and when_to_use from flavor file and variants.yaml
+    local extensions_json="null" when_to_use=""
+    if [[ "$container" == "postgres" && -n "$flavor" && "$flavor" != "null" ]]; then
+        extensions_json=$(get_flavor_extensions_yaml "$flavor")
+        if [[ "$is_versioned" == "true" ]]; then
+            when_to_use=$(variant_property "$container_dir" "$variant_name" "when_to_use" "$version")
+        else
+            when_to_use=$(variant_property "$container_dir" "$variant_name" "when_to_use")
+        fi
+    fi
+
     # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
     # (SBOM packages can be very large for containers with many dependencies)
-    printf '%s\n%s\n%s\n%s\n%s\n%s' \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
         "$lineage_json" "$build_args_json" \
         "$sbom_summary" "$sbom_packages" \
-        "$changelog" "$build_history" | \
+        "$changelog" "$build_history" \
+        "$trivy_summary" "$multi_arch_platforms_json" | \
     jq -s \
         --arg name "$variant_name" \
         --arg tag "$variant_tag" \
@@ -440,6 +479,10 @@ collect_variant_json() {
         --argjson is_default "$is_default" \
         --arg size_amd64 "$size_amd64" \
         --arg size_arm64 "$size_arm64" \
+        --arg attestation_id "$attestation_id" \
+        --arg attestation_url "$attestation_url" \
+        --argjson extensions "$extensions_json" \
+        --arg when_to_use "$when_to_use" \
         '
         .[0] as $lineage |
         .[1] as $build_args |
@@ -447,6 +490,8 @@ collect_variant_json() {
         .[3] as $sbom_packages |
         .[4] as $changelog |
         .[5] as $build_history |
+        .[6] as $trivy_summary |
+        .[7] as $multi_arch_platforms |
         {
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
@@ -454,11 +499,16 @@ collect_variant_json() {
             build_digest: $lineage.build_digest,
             base_image: $lineage.base_image
         }
+        + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
+        + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
         + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
         + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
         + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
         + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
-        + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)'
+        + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)
+        + (if $trivy_summary.last_scan != null then {trivy_summary: $trivy_summary} else {} end)
+        + (if ($extensions | type) == "array" and ($extensions | length) > 0 then {extensions: $extensions} else {} end)
+        + (if ($when_to_use | length) > 0 then {when_to_use: $when_to_use} else {} end)'
 }
 
 # Build the variants structure for a container as JSON
@@ -989,6 +1039,21 @@ generate_data() {
             fi
         fi
 
+        # Add value_proposition from config.yaml (if present)
+        if [[ -f "./$container/config.yaml" ]]; then
+            local value_proposition
+            value_proposition=$(yq -r '.value_proposition // ""' "./$container/config.yaml" 2>/dev/null || echo "")
+            if [[ -n "$value_proposition" ]]; then
+                container_json=$(VP="$value_proposition" \
+                    jq -n --argjson base "$container_json" \
+                    '$base + {value_proposition: env.VP}')
+            fi
+        fi
+
+        # Add upstream_monitor_url (constant — links to the upstream-monitor workflow)
+        container_json=$(echo "$container_json" | jq \
+            '. + {upstream_monitor_url: "https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml"}')
+
         # Add variants (collected once, used for both page and containers.yml)
         local container_dir="./$container"
         if has_variants "$container_dir"; then
@@ -1031,6 +1096,23 @@ generate_data() {
                 + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
                 + (if ($changelog | keys | length) > 0 then {changelog: $changelog} else {} end)
                 + (if ($build_history | length) > 0 then {build_history: $build_history} else {} end)')
+        fi
+
+        # Container-level multi_arch_platforms: derived from GHCR manifest for the
+        # container's current published tag. Used by non-variant containers and
+        # versions-only containers where per-variant platforms are not emitted.
+        if [[ "$current_version" != "no-published-version" ]]; then
+            local container_arch_list=""
+            local container_raw_sizes
+            container_raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$current_version" 2>/dev/null) || true
+            if [[ -n "$container_raw_sizes" ]]; then
+                container_arch_list=$(echo "$container_raw_sizes" | awk -F: '{print $1}' | \
+                    jq -R . | jq -s '.')
+            fi
+            if [[ -n "$container_arch_list" && "$container_arch_list" != "[]" ]]; then
+                container_json=$(echo "$container_json" | \
+                    jq --argjson pl "$container_arch_list" '. + {multi_arch_platforms: $pl}')
+            fi
         fi
 
         # Generate per-container Jekyll page (uses same JSON — no duplication)

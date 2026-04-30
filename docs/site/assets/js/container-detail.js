@@ -105,7 +105,49 @@
 
       // Update pull command with selected variant tag
       updatePullCommand(tag);
+
+      // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
+      var variantData = {
+        attestation_url: el.dataset.attestationUrl || '',
+        trivy_summary: null,
+        multi_arch_platforms: []
+      };
+      try {
+        if (el.dataset.trivySummary) variantData.trivy_summary = JSON.parse(el.dataset.trivySummary);
+      } catch (e) { /* swallow */ }
+      try {
+        if (el.dataset.multiArchPlatforms) variantData.multi_arch_platforms = JSON.parse(el.dataset.multiArchPlatforms);
+      } catch (e) { /* swallow */ }
+      document.dispatchEvent(new CustomEvent('phase-b-variant-changed', { detail: variantData }));
+
+      // Phase B: postgres variants comparison table follows selected variant's version.
+      // Guard on DOM presence — only postgres detail page renders .variants-table-section.
+      var variantsSection = document.querySelector('.variants-table-section');
+      if (variantsSection) {
+        // Variant tag format: "18-vector", "18.2-alpine", "17-base", etc.
+        // Extract leading major version digits (terminated by '.', '-', or end-of-string).
+        var versionMatch = tag.match(/^(\d+)(?:[.-]|$)/);
+        var versionMajor = versionMatch ? versionMatch[1] : null;
+        if (versionMajor) {
+          var tables = variantsSection.querySelectorAll('.variants-table[data-version]');
+          var activeLabel = document.querySelector('[data-field="active-version"]');
+          tables.forEach(function(t) {
+            // data-version is e.g. "18" or "17" — match by leading digits.
+            var tableVerMatch = (t.dataset.version || '').match(/^(\d+)/);
+            var tableMajor = tableVerMatch ? tableVerMatch[1] : '';
+            var isActive = tableMajor === versionMajor;
+            if (isActive) {
+              t.setAttribute('data-active', 'true');
+              if (activeLabel) activeLabel.textContent = t.dataset.version;
+            } else {
+              t.removeAttribute('data-active');
+            }
+          });
+        }
+      }
     }
+
+
 
     // Create a lineage item DOM element safely (no innerHTML)
     function createLineageItem(name, value, index) {
