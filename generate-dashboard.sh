@@ -20,6 +20,13 @@ source "$SCRIPT_DIR/helpers/attestation-utils.sh"
 source "$SCRIPT_DIR/helpers/trivy-utils.sh"
 source "$SCRIPT_DIR/helpers/extension-utils.sh"
 
+# Cross-subshell cache for Trivy summary — collect_variant_json runs in $(…)
+# subshells, so the in-memory _TRIVY_SUMMARY_MAP is lost after each call.
+# Materialize the cache to a file so sibling subshells share one API fetch.
+TRIVY_CACHE_FILE=$(mktemp "${TMPDIR:-/tmp}/trivy-summary-cache.XXXXXX")
+export TRIVY_CACHE_FILE
+trap 'rm -f -- "$TRIVY_CACHE_FILE"' EXIT
+
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
