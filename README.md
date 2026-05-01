@@ -10,12 +10,15 @@ Production-ready Docker images with **zero-touch upstream monitoring** — when 
 
 | Container | What it does | Variants |
 |-----------|-------------|----------|
-| [postgres](postgres/) | PostgreSQL with extension ecosystem | base, vector, analytics, timeseries, distributed, full |
+| [postgres](postgres/) | PostgreSQL with extension ecosystem | base, vector, analytics, timeseries, spatial, distributed, full |
 | [terraform](terraform/) | Terraform CLI, cloud-provider scoped | base, aws, azure, gcp, full |
+| [github-runner](github-runner/) | Self-hosted GitHub Actions runner | ubuntu-2404, debian-trixie, windows-ltsc2022 × base/dev |
+| [web-shell](web-shell/) | Browser-accessible shell over HTTPS | debian (default), alpine, ubuntu, rocky |
 | [wordpress](wordpress/) | WordPress with PHP optimizations | — |
 | [openresty](openresty/) | Nginx + Lua web platform | — |
 | [php](php/) | PHP-FPM runtime | — |
 | [ansible](ansible/) | Automation platform | — |
+| [vector](vector/) | Datadog Vector log/metrics shipper | — |
 | [debian](debian/) | Minimal base image | — |
 | [jekyll](jekyll/) | Static site generator | — |
 | [openvpn](openvpn/) | VPN server | — |
@@ -57,7 +60,9 @@ Upstream releases new version
 - **Smart rebuild detection** — content-based digest skips unchanged builds ([ADR-002](docs/adr/ADR-002-smart-rebuild-detection.md))
 - **Declarative variants** — one Dockerfile, N flavors via `variants.yaml` ([ADR-003](docs/adr/ADR-003-variant-system.md))
 - **Build lineage tracking** — full provenance chain from source to published image ([ADR-004](docs/adr/ADR-004-build-lineage-tracking.md))
-- **Native multi-arch** — parallel amd64/arm64 on dedicated runners, no emulation ([ADR-001](docs/adr/ADR-001-multi-platform-native-runners.md))
+- **Native multi-arch & multi-OS** — parallel `linux/amd64` + `linux/arm64` builds on dedicated runners with no emulation, plus `windows-ltsc2022` for the github-runner image ([ADR-001](docs/adr/ADR-001-multi-platform-native-runners.md))
+- **Multi-distro from one source** — github-runner and web-shell expand a single template into per-distro Dockerfiles at build time ([ADR-006](docs/adr/ADR-006-multi-distro-template-pattern.md))
+- **Supply-chain transparency** — every published image carries a Sigstore-attested SBOM, a Trivy CRITICAL scan history, and a multi-arch manifest reference. The dashboard surfaces these as click-through trust badges; the `/verify-images/` page documents how to reproduce each check locally.
 
 ## Quick start
 
@@ -130,7 +135,8 @@ That's it. The CI picks it up automatically on next push.
 - [Architecture](docs/WORKFLOW_ARCHITECTURE.md) — pipeline design
 - [Local Development](docs/LOCAL_DEVELOPMENT.md) — dev setup
 - [Testing Guide](docs/TESTING_GUIDE.md) — running tests locally
-- [Container Dashboard](https://oorabona.github.io/docker-containers/) — live build status
+- [Container Dashboard](https://oorabona.github.io/docker-containers/) — live build status with trust badges
+- [Verify Images](https://oorabona.github.io/docker-containers/verify-images/) — reproduce SBOM / Trivy / multi-arch checks locally
 
 ## License
 
