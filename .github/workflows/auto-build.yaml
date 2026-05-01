@@ -150,6 +150,7 @@ on:
 # prevented (e.g. two postgres merges serialize, cancelling stale runs).
 
 permissions:
+  actions: read          # Required for #352 hydration step in update-dashboard reusable workflow
   contents: read         # Checkout only — no git push or PR creation
   packages: write        # Push container images to GHCR
   pages: write           # Required by update-dashboard reusable workflow (deploy to Pages)
