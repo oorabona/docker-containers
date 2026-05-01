@@ -23,6 +23,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read     # Required for #352 hydration step in update-dashboard reusable workflow
   contents: read
   packages: write
   pages: write      # Required when generate_sboms triggers dashboard update

@@ -36,6 +36,7 @@ on:
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
+  actions: read  # Required for gh run list/download (#352 hydration step)
   contents: read
   pages: write
   id-token: write
@@ -70,6 +71,94 @@ jobs:
           path: .trivy-scan-history
           key: trivy-scan-history-never-exact-match
           restore-keys: trivy-scan-history-
+
+      - name: Hydrate Trivy scan history from recent auto-build runs (#352)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # Bug context (#352): cache-lineage saves a per-run-id cache for
+          # trivy-scan-history. Concurrent auto-build dispatches race on cache
+          # restore — each run sees the most-recent cache available at THAT
+          # moment, so siblings that save afterward are invisible. The dashboard
+          # then restores "most recent" cache which can be missing data.
+          # Self-heal: explicitly re-download artifacts from recent successful
+          # auto-build runs and overlay onto .trivy-scan-history/. Newer
+          # last_scan timestamp wins (see merge block below). Idempotent.
+
+          mkdir -p .trivy-scan-history
+
+          # Window: last 24h, last 30 runs on master.
+          cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
+          # Note: do NOT filter on --status=success at the API level — auto-build runs
+          # with PARTIAL failures (some matrix legs failed, others succeeded) still
+          # produce valid scan-history artifacts via the cache-lineage job which runs
+          # on success-OR-failure. Include both conclusions; exclude cancelled / in-progress.
+          runs=$(gh run list \
+            --workflow=auto-build.yaml \
+            --branch=master \
+            --limit 30 \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
+            2>/dev/null || true)
+
+          if [[ -z "$runs" ]]; then
+            echo "::notice::No recent successful auto-build runs in the last 24h; relying on cache only."
+            exit 0
+          fi
+
+          run_count=$(echo "$runs" | wc -l)
+          staging=$(mktemp -d)
+          trap 'rm -rf "$staging"' EXIT
+
+          downloaded=0
+          for run_id in $runs; do
+            if gh run download "$run_id" \
+                --pattern 'trivy-scan-history-*' \
+                --dir "$staging/$run_id" 2>/dev/null; then
+              downloaded=$((downloaded + 1))
+            fi
+          done
+
+          if [[ "$downloaded" -eq 0 ]]; then
+            echo "::notice::No trivy-scan-history artifacts available across $run_count recent run(s); relying on cache only."
+            exit 0
+          fi
+
+          # Merge: newer .last_scan (ISO 8601, lexicographically comparable) wins.
+          # mtime would reflect download/extraction time — not the original scan —
+          # and could regress a cached fresh entry behind a freshly-downloaded
+          # stale one. Reading the actual scan timestamp from each JSON makes the
+          # decision deterministic regardless of when the artifact was retrieved.
+          merged=0
+          while IFS= read -r -d '' src; do
+            base=$(basename "$src")
+            tgt=".trivy-scan-history/$base"
+
+            src_scan=$(jq -r '.last_scan // empty' "$src" 2>/dev/null || true)
+            if [[ -z "$src_scan" ]]; then
+              # Source has no last_scan — skip (don't overwrite cache with garbage).
+              continue
+            fi
+
+            if [[ -f "$tgt" ]]; then
+              tgt_scan=$(jq -r '.last_scan // empty' "$tgt" 2>/dev/null || true)
+              # ISO 8601 strings (e.g. 2026-04-30T22:16:07+00:00) compare correctly
+              # via bash string `>` because the format is zero-padded fixed-width.
+              # Tie (equal scan time) → keep cache, skip copy (no benefit + saves I/O).
+              if [[ -n "$tgt_scan" ]] && [[ ! "$src_scan" > "$tgt_scan" ]]; then
+                continue
+              fi
+            fi
+
+            cp -- "$src" "$tgt"
+            merged=$((merged + 1))
+          done < <(find "$staging" -name '*.json' -print0)
+
+          total=$(find .trivy-scan-history -name '*.json' 2>/dev/null | wc -l)
+          echo "::notice::Hydrated from $downloaded/$run_count recent run(s); merged $merged file(s); total scan-history entries: $total"
 
       - name: Snapshot pull/star counts (idempotent per day)
         run: |
@@ -197,6 +286,13 @@ jobs:
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
+
+      - name: Save hydrated Trivy scan history cache (#352, distinct key from cache-lineage)
+        if: always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .trivy-scan-history
+          key: trivy-scan-history-dashboard-${{ github.run_id }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
