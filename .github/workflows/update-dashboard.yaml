@@ -105,7 +105,7 @@ jobs:
             2>/dev/null || true)
 
           if [[ -z "$runs" ]]; then
-            echo "::notice::No recent successful auto-build runs in the last 24h; relying on cache only."
+            echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only."
             exit 0
           fi
 
