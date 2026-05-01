@@ -93,11 +93,23 @@ runs:
   using: composite
   steps:
     - name: Set up Docker Buildx
-      if: runner.os != 'Windows'
-      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      # Uses docker-container driver (default) which supports --push
-      # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal
-      # Retry logic handles intermittent Docker Hub issues
+      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      with:
+        # Linux: docker-container driver (BuildKit container) — supports --push, multi-platform.
+        # Windows: docker driver (native daemon's BuildKit) — required because Linux containers
+        # for BuildKit aren't available on Windows runners. We don't need a builder for the
+        # imagetools create calls anyway — they operate on registry manifests, not on a builder.
+        # Per #357: this step is now also run on Windows so `docker buildx imagetools create`
+        # uses the action-installed buildx (recent), not the runner's outdated stock buildx
+        # which rejects `--tag` and `-t` for imagetools create.
+        driver: ${{ runner.os == 'Windows' && 'docker' || 'docker-container' }}
+        # Pin buildx version: setup-buildx-action does NOT replace an already-installed
+        # buildx unless `version` is set explicitly (it only configures the builder otherwise).
+        # Without this, the Windows runner's outdated stock buildx would keep running and
+        # reject `--tag` / `-t` for imagetools create. Pinned on both OS for reproducibility.
+        version: 'v0.33.0'
+      # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal.
+      # Retry logic handles intermittent Docker Hub issues.
 
     - name: Log in to GitHub Container Registry
       if: runner.os != 'Windows'
