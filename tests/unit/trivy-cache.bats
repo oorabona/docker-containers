@@ -126,8 +126,8 @@ _install_gh_poison() {
 
     # Poison gh must NOT have been called (counter stays 0).
     local call_count
-    call_count=$(cat "${GH_COUNTER_FILE}")
-    [[ "$call_count" -eq 0 ]]
+    call_count=$(cat "${GH_COUNTER_FILE}" 2>/dev/null || echo 0)
+    [[ "${call_count:-0}" -eq 0 ]]
 
     # _TRIVY_SUMMARY_MAP must be a valid JSON object matching the file content.
     [[ -n "${_TRIVY_SUMMARY_MAP:-}" && "${_TRIVY_SUMMARY_MAP}" != "{}" ]]
