@@ -257,40 +257,6 @@ body {
   z-index: -1;
 }
 
-/* Header */
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 2rem;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
-.header-title { display: flex; flex-direction: column; }
-
-.header-pretitle {
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-caption);
-  text-transform: uppercase;
-  letter-spacing: var(--letter-spacing-wider);
-  color: var(--color-text-muted);
-  margin-bottom: 0.25rem;
-}
-
-.header-main {
-  font-size: 2rem;
-  font-weight: var(--font-weight-bold);
-  font-feature-settings: "ss01", "cv11";
-  font-optical-sizing: auto;
-  background: linear-gradient(135deg, var(--color-neutral-50) 0%, rgba(255,255,255,0.7) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.header-actions { display: flex; gap: 0.75rem; }
-
 /* Theme toggle — min 44px for WCAG 2.5.8 touch target */
 .theme-toggle {
   display: flex;
@@ -311,13 +277,6 @@ body {
 .theme-toggle i { font-size: 1.25rem; }
 [data-theme="light"] .theme-toggle { background: rgba(0, 0, 0, 0.05); }
 [data-theme="light"] .theme-toggle:hover { background: rgba(0, 0, 0, 0.1); }
-
-[data-theme="light"] .header-main {
-  background: linear-gradient(135deg, #1f2937 0%, rgba(31, 41, 55, 0.7) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
 
 [data-theme="light"] .glass {
   background: rgba(255, 255, 255, 0.75);
@@ -414,4 +373,280 @@ body {
   text-decoration: none;
 }
 
+/* ============================================================
+   Sticky nav (shared across all layouts)
+   ============================================================ */
+
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  background: rgba(15, 23, 42, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .site-nav,
+:root[data-theme="light"] .site-nav {
+  background: rgba(255, 255, 255, 0.7);
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+.site-nav-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0.85rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.site-nav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+  color: var(--text, inherit);
+  text-decoration: none;
+}
+
+.site-nav-brand i { font-size: 1.1rem; color: var(--accent-purple); }
+
+.site-nav-links {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: 0.5rem;
+}
+
+.site-nav-link {
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+}
+
+.site-nav-link:hover {
+  color: var(--text, inherit);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.site-nav-link.active {
+  color: var(--text, inherit);
+  background: rgba(139, 92, 246, 0.12);
+}
+
+[data-theme="light"] .site-nav-link.active {
+  background: rgba(109, 40, 217, 0.1);
+}
+
+.site-nav-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ============================================================
+   Security scan section (detail page anchor)
+   ============================================================ */
+
+.security-section {
+  margin-top: 2rem;
+  padding: 1.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  scroll-margin-top: 80px;
+}
+
+[data-theme="light"] .security-section {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
+.security-section h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.security-section h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.security-section .scan-meta {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+}
+
+/* ============================================================
+   Severity grid — 5-column (Critical / High / Medium / Low / Info)
+   ============================================================ */
+
+.severity-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.severity-grid > * {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0.5rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .severity-grid > * {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+.severity-grid .count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.severity-grid .label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Color coding: critical (col 1) and high (col 2) only when > 0 */
+.severity-grid > *:nth-child(1) .count[data-nonzero],
+.severity-grid > *:nth-child(1).nonzero .count {
+  color: #f87171;
+}
+
+.severity-grid > *:nth-child(2) .count[data-nonzero],
+.severity-grid > *:nth-child(2).nonzero .count {
+  color: var(--accent-yellow);
+}
+
+/* ============================================================
+   Top advisories list
+   ============================================================ */
+
+.security-section .top-advisories {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.5rem 0 0;
+}
+
+.security-section .top-advisories li {
+  font-size: 0.88rem;
+  padding-bottom: 0.4rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   Value-prop section (detail page)
+   ============================================================ */
+
+.value-prop {
+  border-left: 3px solid var(--accent-purple);
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.value-prop > p {
+  margin: 0;
+}
+
+/* ============================================================
+   Variants comparison table (detail page — postgres and multi-variant containers)
+   ============================================================ */
+
+.variants-table-section {
+  margin-top: 2rem;
+  overflow-x: auto;
+}
+
+.variants-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.variants-table th,
+.variants-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  vertical-align: top;
+}
+
+[data-theme="light"] .variants-table th,
+[data-theme="light"] .variants-table td {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+.variants-table thead th {
+  font-weight: 600;
+  color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.06);
+}
+
+[data-theme="light"] .variants-table thead th {
+  background: rgba(109, 40, 217, 0.04);
+}
+
+.variants-table td:first-child code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88em;
+}
+
+/* Only the active version's table is visible */
+.variants-table-section .variants-table:not([data-active="true"]) {
+  display: none;
+}
+
 .footer a:hover { text-decoration: underline; }
+
+/* ============================================================
+   Responsive — shared components mobile (max-width: 640px)
+   ============================================================ */
+
+@media (max-width: 640px) {
+  /* site-nav */
+  .site-nav-inner { padding: 0.7rem 1rem; gap: 0.75rem; }
+  .site-nav-brand span { display: none; }
+  .site-nav-links { gap: 0; }
+  .site-nav-link { padding: 0.4rem 0.6rem; font-size: 0.82rem; }
+  .site-nav-actions .btn { padding: 0.4rem 0.7rem; font-size: 0.82rem; }
+
+  /* trust-strip + severity-grid (detail page) */
+  .trust-strip { gap: 0.35rem; }
+
+  .severity-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .severity-grid > *:nth-child(4),
+  .severity-grid > *:nth-child(5) {
+    grid-column: span 1;
+  }
+}
