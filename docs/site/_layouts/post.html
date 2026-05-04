@@ -36,26 +36,7 @@
   <div class="shape shape-2" aria-hidden="true"></div>
   <div class="shape shape-3" aria-hidden="true"></div>
 
-  <header class="site-nav" role="banner">
-    <div class="site-nav-inner">
-      <a href="{{ site.baseurl }}/" class="site-nav-brand" aria-label="Home">
-        <i class="ti ti-package" aria-hidden="true"></i>
-        <span>Docker Containers</span>
-      </a>
-      <nav class="site-nav-links">
-        <a href="{{ site.baseurl }}/" class="site-nav-link">Dashboard</a>
-        <a href="{{ site.baseurl }}/blog/" class="site-nav-link active">Blog</a>
-      </nav>
-      <div class="site-nav-actions">
-        <button class="theme-toggle" aria-label="Toggle light/dark theme">
-          <i class="ti ti-moon" aria-hidden="true"></i>
-        </button>
-        <a href="https://github.com/{{ site.github_username }}/{{ site.repository }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
-          <i class="ti ti-brand-github" aria-hidden="true"></i> Repository
-        </a>
-      </div>
-    </div>
-  </header>
+  {% include site-nav.html active="blog" %}
 
   <div class="container">
     <main id="main-content" class="post-wrapper">
@@ -102,6 +83,8 @@
         </a>
       </nav>
     </main>
+
+    {% include site-footer.html %}
   </div>
 
   <script src="{{ site.baseurl }}/assets/js/theme.js"></script>
