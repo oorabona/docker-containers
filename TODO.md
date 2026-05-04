@@ -6,7 +6,10 @@
 
 ## Backlog
 
-- [ ] 🔧 [terraform] Make cloud CLI version validation conditional on FLAVOR — Priority: M (from /review F-005)
+- [ ] 🔧 [terraform] Make cloud CLI version validation conditional on FLAVOR — Priority: M
+- [ ] 🐛 [Dashboard] `Capture OCI subject digest` step has `continue-on-error: true` → silently publishes digest-less lineage on flatten/inspect failure. Fail-closed OR gate `auto-build.yaml:645` upload on capture success — Priority: L
+- [ ] 🔧 [Dashboard] Extract the SBOM processing block (compare + history + cache replace) from `auto-build.yaml` and `recreate-manifests.yaml` into a `process_sbom_artifacts` function in `helpers/sbom-utils.sh`. Both workflows currently maintain ~45-LOC duplicates that drift over time (every PR2a fix had to be applied twice). Single point of change for SBOM logic — Priority: M
+- [ ] 🔧 [Dashboard] Wire `attestation_url` and `trivy_summary` from `containers.yml` into `docs/site/_includes/container-card.html` for `has_variants: false` containers. The data pipeline now emits these fields at container level, but `docs/site/index.html` only forwards a fixed subset to the include. Without this wiring, vector/web-shell/wordpress cards continue to render empty trust-strip badges even though the data exists. Belongs in the trust-strip components PR (PR2b) — Priority: M
 
 ## Completed (recent)
 

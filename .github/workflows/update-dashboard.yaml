@@ -90,19 +90,27 @@ jobs:
 
           mkdir -p .trivy-scan-history
 
-          # Window: last 24h, last 30 runs on master.
+          # Window: last 24h, last 100 runs on master.
+          # --limit is applied API-side BEFORE the jq date filter; use 100 to avoid
+          # truncating runs still inside the 24h window on busy days with retries.
           cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
           # Note: do NOT filter on --status=success at the API level — auto-build runs
           # with PARTIAL failures (some matrix legs failed, others succeeded) still
           # produce valid scan-history artifacts via the cache-lineage job which runs
           # on success-OR-failure. Include both conclusions; exclude cancelled / in-progress.
-          runs=$(gh run list \
-            --workflow=auto-build.yaml \
-            --branch=master \
-            --limit 30 \
-            --json databaseId,createdAt,conclusion \
-            --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
-            2>/dev/null || true)
+          if ! runs=$(gh run list \
+              --workflow=auto-build.yaml \
+              --branch=master \
+              --limit 100 \
+              --json databaseId,createdAt,conclusion \
+              --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
+              2>/tmp/gh-stderr-trivy.txt); then
+            echo "::warning::gh run list failed — Trivy scan history hydration skipped, may indicate transient GitHub API issue. stderr:" >&2
+            cat /tmp/gh-stderr-trivy.txt >&2 || true
+            rm -f /tmp/gh-stderr-trivy.txt
+            exit 0
+          fi
+          rm -f /tmp/gh-stderr-trivy.txt
 
           if [[ -z "$runs" ]]; then
             echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only."
@@ -114,13 +122,30 @@ jobs:
           trap 'rm -rf "$staging"' EXIT
 
           downloaded=0
+          download_failures=0
           for run_id in $runs; do
+            stderr_file=$(mktemp)
             if gh run download "$run_id" \
                 --pattern 'trivy-scan-history-*' \
-                --dir "$staging/$run_id" 2>/dev/null; then
+                --dir "$staging/$run_id" 2>"$stderr_file"; then
               downloaded=$((downloaded + 1))
+            else
+              # gh run download exits non-zero on either real API error OR no matching artifact.
+              # Differentiate by inspecting stderr — "no artifacts match" is informational; anything else is a real failure worth surfacing.
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no trivy-scan-history-* artifact, normal cache miss.
+              else
+                echo "::warning::gh run download failed for run $run_id — may indicate transient API issue. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
             fi
+            rm -f "$stderr_file"
           done
+
+          if [[ "$download_failures" -gt 0 ]]; then
+            echo "::warning::$download_failures gh run download call(s) failed; Trivy scan history hydration may be incomplete"
+          fi
 
           if [[ "$downloaded" -eq 0 ]]; then
             echo "::notice::No trivy-scan-history artifacts available across $run_count recent run(s); relying on cache only."
@@ -159,6 +184,242 @@ jobs:
 
           total=$(find .trivy-scan-history -name '*.json' 2>/dev/null | wc -l)
           echo "::notice::Hydrated from $downloaded/$run_count recent run(s); merged $merged file(s); total scan-history entries: $total"
+
+      - name: Re-download SBOM artifacts from recent auto-build runs (self-heal cache race)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Bug context: cache-lineage saves .build-lineage/*.sbom.json to the cache, but
+          # concurrent auto-build dispatches race on cache restore -- each dashboard run
+          # sees only what was cached at restore time. In-flight or recently-completed runs
+          # may have produced SBOMs that never made it into the cache this dashboard
+          # invocation restored. Self-heal: explicitly re-download sbom-* artifacts from
+          # recent auto-build runs and overlay into .build-lineage/. Idempotent.
+
+          mkdir -p .build-lineage
+
+          # Window: last 24h, last 100 runs on master.
+          cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
+          # Note: do NOT filter on --status=success at the API level — auto-build runs
+          # with PARTIAL failures (some matrix legs failed, others succeeded) still
+          # produce valid sbom-* artifacts via the build job that succeeded for that leg.
+          # Include both conclusions; exclude cancelled / in-progress.
+          if ! run_ids=$(gh run list \
+              --workflow=auto-build.yaml \
+              --branch=master \
+              --limit 100 \
+              --json databaseId,createdAt,conclusion \
+              --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
+              2>/tmp/gh-stderr-sbom.txt); then
+            echo "::warning::gh run list failed — SBOM hydration skipped, may indicate transient GitHub API issue. stderr:" >&2
+            cat /tmp/gh-stderr-sbom.txt >&2 || true
+            rm -f /tmp/gh-stderr-sbom.txt
+            exit 0
+          fi
+          rm -f /tmp/gh-stderr-sbom.txt
+
+          if [[ -z "$run_ids" ]]; then
+            echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only for SBOM data."
+            exit 0
+          fi
+
+          run_count=$(echo "$run_ids" | wc -l)
+          staging=$(mktemp -d)
+          trap 'rm -rf "$staging"' EXIT
+
+          downloaded=0
+          download_failures=0
+          for run_id in $run_ids; do
+            stderr_file=$(mktemp)
+            if gh run download "$run_id" \
+                --pattern 'sbom-*' \
+                --dir "$staging/$run_id" 2>"$stderr_file"; then
+              downloaded=$((downloaded + 1))
+            else
+              # gh run download exits non-zero on either real API error OR no matching artifact.
+              # Differentiate by inspecting stderr — "no artifacts match" is informational; anything else is a real failure worth surfacing.
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no sbom-* artifact, normal cache miss.
+              else
+                echo "::warning::gh run download failed for run $run_id — may indicate transient API issue. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
+            fi
+            rm -f "$stderr_file"
+
+            # Also download build-lineage-* artifacts for this run (separate from sbom-*).
+            # Lineage files contain oci_subject_digest needed for attestation lookup.
+            # They are subject to the same cache race as SBOMs: a fresh SBOM with a
+            # stale lineage causes attestation_url to point at the wrong digest.
+            stderr_file=$(mktemp)
+            if gh run download "$run_id" \
+                --pattern 'build-lineage-*' \
+                --dir "$staging/$run_id-lineage" 2>"$stderr_file"; then
+              :
+            else
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # No lineage artifact for this run, normal cache miss.
+              else
+                echo "::warning::gh run download (lineage) failed for run $run_id. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
+            fi
+            rm -f "$stderr_file"
+
+            # Also download lineage-derived-* artifacts (.changelog.json, .history.json)
+            # which are written ONLY by cache-lineage and never re-uploaded as part of
+            # build-lineage-*. Without this, fresh SBOMs render alongside missing/stale
+            # derived data and the dashboard hides the entire Provenance section.
+            stderr_file=$(mktemp)
+            if gh run download "$run_id" \
+                --pattern 'lineage-derived-*' \
+                --dir "$staging/$run_id-derived" 2>"$stderr_file"; then
+              :
+            else
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no lineage-derived-* artifact
+              else
+                echo "::warning::gh run download (lineage-derived) failed for run $run_id. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
+            fi
+            rm -f "$stderr_file"
+          done
+
+          if [[ "$download_failures" -gt 0 ]]; then
+            echo "::warning::$download_failures gh run download call(s) failed; SBOM hydration may be incomplete"
+          fi
+
+          if [[ "$downloaded" -eq 0 ]]; then
+            echo "::notice::No sbom-* artifacts available across $run_count recent run(s) for SBOM merge; lineage hydration may still proceed if build-lineage-* artifacts were downloaded for these runs."
+            # Do NOT exit: the lineage merge block below uses find over $staging and can
+            # still hydrate oci_subject_digest from build-lineage-* artifacts even when
+            # every sbom-* download returned "no artifact".
+          fi
+
+          # Merge: newer .creationInfo.created (ISO 8601, lexicographically comparable) wins.
+          # mtime would reflect download/extraction time — not the original syft scan —
+          # so a freshly-downloaded stale SBOM could mask a cached fresh one. Reading the
+          # actual SPDX creation timestamp makes the decision deterministic regardless of
+          # when the artifact was retrieved.
+          merged=0
+          while IFS= read -r -d '' src; do
+            fname=$(basename "$src")
+            target=".build-lineage/$fname"
+
+            src_created=$(jq -r '.creationInfo.created // empty' "$src" 2>/dev/null || true)
+            if [[ -z "$src_created" ]]; then
+              # Source has no creationInfo.created — skip (don't overwrite cache with malformed SBOM).
+              continue
+            fi
+
+            if [[ -f "$target" ]]; then
+              tgt_created=$(jq -r '.creationInfo.created // empty' "$target" 2>/dev/null || true)
+              # ISO 8601 strings (e.g. 2026-02-22T00:46:38Z) compare correctly via bash
+              # string `>` because the format is zero-padded fixed-width.
+              # Tie (equal creation time) → keep cache, skip copy (no benefit + saves I/O).
+              if [[ -n "$tgt_created" ]] && [[ ! "$src_created" > "$tgt_created" ]]; then
+                continue
+              fi
+            fi
+
+            cp -- "$src" "$target"
+            # .changelog.json is computed against the PREVIOUS .sbom.json baseline.
+            # Replacing the SBOM invalidates it. Next BUILD's cache-lineage will
+            # regenerate it. In the interim, show no "Recent Changes" rather than
+            # stale wrong data.
+            #
+            # .history.json is a MONOTONIC log — each row was correct at write time.
+            # Do NOT delete it: container-detail.js hides the entire Provenance
+            # section when missing, which would hurt containers that don't rebuild
+            # often more than the (small) inaccuracy of the latest history row.
+            container_tag="${fname%.sbom.json}"
+            rm -f ".build-lineage/${container_tag}.changelog.json"
+            merged=$((merged + 1))
+          done < <(find "$staging" -name '*.sbom.json' -print0)
+
+          # Merge lineage files: iterate run_ids in the order gh run list returned
+          # them (newest first). First seen per filename wins — this is correct
+          # because a newer run's lineage always supersedes an older run's, and
+          # we want the freshest oci_subject_digest regardless of when artifacts
+          # were extracted (extraction mtime is meaningless as a build-order proxy).
+          # Exclude .sbom.json, .changelog.json, .history.json — only bare
+          # {container}-{tag}.json lineage files (which carry oci_subject_digest).
+          declare -A lineage_locked=()       # has digest, definitive — never overridden
+          declare -A lineage_provisional=()  # digest-less from newest run — can be replaced by later digest-bearing
+          merged_lineage=0
+          skipped_no_digest=0
+          for run_id in $run_ids; do
+            staging_run_dir="$staging/$run_id-lineage"
+            [[ -d "$staging_run_dir" ]] || continue
+            while IFS= read -r -d '' src; do
+              fname=$(basename "$src")
+              # Already have a definitive digest-bearing version: skip unconditionally.
+              if [[ -n "${lineage_locked[$fname]:-}" ]]; then
+                continue
+              fi
+              target=".build-lineage/$fname"
+              src_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$src" >/dev/null 2>&1 && echo true || echo false)
+              if [[ -f "$target" ]]; then
+                tgt_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$target" >/dev/null 2>&1 && echo true || echo false)
+                if [[ "$tgt_has_digest" == "true" && "$src_has_digest" == "false" ]]; then
+                  # Cache has digest, source doesn't — preserve cache, lock the slot.
+                  echo "::notice::Preserving cached lineage for $fname (source from run $run_id lacks oci_subject_digest)"
+                  skipped_no_digest=$((skipped_no_digest + 1))
+                  lineage_locked[$fname]=1
+                  continue
+                fi
+              fi
+              if [[ "$src_has_digest" == "true" ]]; then
+                # Definitive answer: cp and lock — no older run can override.
+                cp -- "$src" "$target"
+                lineage_locked[$fname]=1
+                merged_lineage=$((merged_lineage + 1))
+              elif [[ -z "${lineage_provisional[$fname]:-}" ]]; then
+                # No provisional yet and no digest version found — take this newest
+                # digest-less write. Only a later digest-bearing iteration can override;
+                # older digest-less iterations cannot (first-seen-from-newest wins).
+                cp -- "$src" "$target"
+                lineage_provisional[$fname]=1
+                merged_lineage=$((merged_lineage + 1))
+              fi
+              # else: already have provisional from a newer run — older digest-less is discarded.
+            done < <(find "$staging_run_dir" -name '*.json' \
+              -not -name '*.sbom.json' \
+              -not -name '*.changelog.json' \
+              -not -name '*.history.json' \
+              -print0)
+          done
+
+          if [[ "$skipped_no_digest" -gt 0 ]]; then
+            echo "::notice::Preserved $skipped_no_digest cached lineage file(s) where source lacked oci_subject_digest (digest-capture continue-on-error fallback)"
+          fi
+
+          # Merge derived files (.changelog.json, .history.json) — chronological
+          # first-seen wins (newest run first). These don't have digest semantics:
+          # the newest run's derived file is always the authoritative version.
+          declare -A derived_seen=()
+          merged_derived=0
+          for run_id in $run_ids; do
+            derived_dir="$staging/$run_id-derived"
+            [[ -d "$derived_dir" ]] || continue
+            while IFS= read -r -d '' src; do
+              fname=$(basename "$src")
+              [[ -n "${derived_seen[$fname]:-}" ]] && continue
+              cp -- "$src" ".build-lineage/$fname"
+              derived_seen[$fname]=1
+              merged_derived=$((merged_derived + 1))
+            done < <(find "$derived_dir" -name '*.json' -print0)
+          done
+
+          total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
+          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s), $merged_derived derived file(s) (changelog/history); total SBOM entries: $total"
 
       - name: Snapshot pull/star counts (idempotent per day)
         run: |
@@ -206,6 +467,11 @@ jobs:
           echo ""
           echo "📈 Stats data:"
           cat docs/site/_data/stats.yml
+
+      - name: Verify data completeness (advisory smoke gate)
+        run: |
+          chmod +x scripts/verify-dashboard-data.sh
+          scripts/verify-dashboard-data.sh docs/site/_data/containers.yml
 
       - name: Check dependency versions
         env:

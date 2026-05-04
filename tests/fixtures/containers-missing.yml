@@ -1,0 +1,14 @@
+- name: ansible
+  versions:
+    - version: "10.7.0"
+      variants:
+        - name: default
+          tag: 10.7.0
+          description: "Ansible automation platform"
+          is_default: true
+          size_amd64: "210MB"
+          size_arm64: ""
+          build_digest: "sha256:001122334455667788990011223344"
+          base_image: "python:3.12-slim"
+          multi_arch_platforms:
+            - linux/amd64

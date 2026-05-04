@@ -1,0 +1,23 @@
+# Fixture: has_variants:false containers (generate-dashboard.sh non-variant path).
+# Trust-strip fields live at container level (not inside variants[]).
+# Used by tests/unit/data-completeness.bats.
+#
+# standalone — fully populated has_variants:false container → no warnings
+# incomplete  — missing attestation_url, trivy_summary, sbom_summary → 3 warnings
+
+- name: standalone
+  has_variants: false
+  attestation_url: "https://example.com/att/standalone"
+  multi_arch_platforms:
+    - linux/amd64
+  sbom_summary:
+    total_packages: 25
+  trivy_summary:
+    last_scan: "2026-05-01T00:00:00Z"
+    counts:
+      critical: 0
+
+- name: incomplete
+  has_variants: false
+  multi_arch_platforms:
+    - linux/amd64

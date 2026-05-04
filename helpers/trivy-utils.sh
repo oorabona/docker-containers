@@ -190,6 +190,8 @@ get_trivy_summary() {
 
     # No side-channel data — fall back to API result (or empty form on failure).
     if [[ -z "$result" ]] || ! echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+            echo "[debug] trivy summary empty for category=$category (no side-channel file, no API result)" >&2
         echo "$_TRIVY_EMPTY"
         return 0
     fi

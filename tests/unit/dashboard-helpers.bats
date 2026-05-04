@@ -194,3 +194,86 @@ EOF
     run resolve_variant_lineage_file "postgres" "18-alpine-analytics" "analytics"
     [[ "$output" == *"postgres-18-alpine-analytics.json" ]]
 }
+
+# ===================================================================
+# Non-variant trust-strip emission
+# Regression test for round-14 non-variant attestation + trivy emission.
+# Integration-style: calls generate_data() with mocked helpers so the
+# non-variant (has_variants:false) code path is exercised end-to-end.
+# ===================================================================
+
+@test "generate_data: non-variant container emits attestation_url and trivy_summary" {
+    # ---- fixture: minimal container directory (no variants.yaml) ----
+    mkdir -p "$TEST_DIR/myapp"
+    printf '#!/bin/bash\necho "1.2.3"\n' > "$TEST_DIR/myapp/version.sh"
+    chmod +x "$TEST_DIR/myapp/version.sh"
+    printf 'FROM alpine:3.19\n' > "$TEST_DIR/myapp/Dockerfile"
+
+    # Lineage file with oci_subject_digest so trust-strip code path is taken
+    mkdir -p "$TEST_DIR/.build-lineage"
+    cat > "$TEST_DIR/.build-lineage/myapp-1.2.3.json" <<'EOF'
+{
+  "container": "myapp",
+  "version": "1.2.3",
+  "build_digest": "sha256:aaabbbccc",
+  "oci_subject_digest": "sha256:deadbeef1234",
+  "base_image_ref": "alpine:3.19",
+  "built_at": "2026-05-04T00:00:00+00:00"
+}
+EOF
+
+    # Output dirs expected by generate_data
+    mkdir -p "$TEST_DIR/docs/site/_data"
+    mkdir -p "$TEST_DIR/docs/site/_containers"
+
+    # Point generate-dashboard.sh globals at TEST_DIR
+    export SCRIPT_DIR="$TEST_DIR"
+    DATA_FILE="$TEST_DIR/docs/site/_data/containers.yml"
+    CONTAINERS_DIR="$TEST_DIR/docs/site/_containers"
+    STATS_FILE="$TEST_DIR/docs/site/_data/stats.yml"
+    TRIVY_CACHE_FILE=$(mktemp)
+    export TRIVY_CACHE_FILE DATA_FILE CONTAINERS_DIR STATS_FILE
+
+    # ---- mock all external helpers ----
+    get_current_published_version() { echo "1.2.3"; }
+    get_container_build_status()     { echo "success"; }
+    populate_container_build_status_cache() { :; }
+    get_dockerhub_stats()            { echo "pulls:0 stars:0"; }
+    get_ghcr_sizes()                 { echo ""; }
+    ghcr_get_manifest_sizes()        { echo ""; }
+    get_sbom_summary()               { echo "{}"; }
+    get_sbom_packages()              { echo "{}"; }
+    get_changelog()                  { echo "{}"; }
+    get_build_history()              { echo "[]"; }
+    build_trivy_category()           { echo "myapp:1.2.3"; }
+    get_attestation_id()             { echo "att-id-xyz"; }
+    get_attestation_url()            { echo "https://example.com/att/att-id-xyz"; }
+    get_trivy_summary()              { echo '{"last_scan":"2026-05-04T12:00:00Z","counts":{"critical":0,"high":0,"medium":2,"low":5,"info":0},"top_advisories":[]}'; }
+    generate_container_page()        { :; }
+    fetch_recent_activity()          { echo "[]"; }
+    calculate_build_success_rate()   { echo "5:5:100"; }
+    write_stats_file()               { :; }
+    export -f get_current_published_version get_container_build_status \
+              populate_container_build_status_cache get_dockerhub_stats \
+              get_ghcr_sizes ghcr_get_manifest_sizes get_sbom_summary \
+              get_sbom_packages get_changelog get_build_history \
+              build_trivy_category get_attestation_id get_attestation_url \
+              get_trivy_summary generate_container_page fetch_recent_activity \
+              calculate_build_success_rate write_stats_file
+
+    # ---- run generate_data (not via `run` — we need side-effects on disk) ----
+    generate_data
+
+    # ---- assert: containers.yml contains attestation_url + trivy_summary ----
+    [ -f "$DATA_FILE" ]
+    yml_content=$(cat "$DATA_FILE")
+    [[ "$yml_content" == *"attestation_url"* ]]
+    [[ "$yml_content" == *"trivy_summary"* ]]
+    [[ "$yml_content" == *"att-id-xyz"* ]]
+    [[ "$yml_content" == *"last_scan"* ]]
+    # Validate production schema: counts sub-object must be present (not flat critical/high at top level).
+    # yq -P serialises {"counts":{"critical":0,...}} as "counts:\n  critical: 0" in YAML.
+    [[ "$yml_content" == *"counts:"* ]]
+
+    rm -f "$TRIVY_CACHE_FILE"
+}

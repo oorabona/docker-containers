@@ -1,0 +1,25 @@
+# Fixture: single-version containers where top-level variants[] is present but empty.
+# Used by tests/unit/data-completeness.bats.
+#
+# ghost — has_variants:true + variants:[] → triggers <no-variants> (single-version path)
+# real  — fully populated single-version container → must NOT trigger any warning
+
+- name: ghost
+  has_variants: true
+  variants: []
+
+- name: real
+  has_variants: true
+  variants:
+    - name: full
+      tag: 1.0
+      is_default: true
+      attestation_url: "https://example.com/att/1"
+      multi_arch_platforms:
+        - linux/amd64
+      sbom_summary:
+        total_packages: 5
+      trivy_summary:
+        last_scan: "2026-05-01T00:00:00Z"
+        counts:
+          critical: 0

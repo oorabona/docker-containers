@@ -47,6 +47,8 @@ get_attestation_id() {
         "repos/${ATTESTATION_UTILS_OWNER_REPO}/attestations?subject_digest=${digest}" \
         2>/dev/null) || {
         log_warning "gh api attestations failed for digest ${digest} (auth or network)"
+        [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+            echo "[debug] attestation API call failed for digest=$digest (auth or network error)" >&2
         _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     }
@@ -58,6 +60,8 @@ get_attestation_id() {
 
     if [[ -z "$id" ]]; then
         # No attestation found for this digest — expected for builds with SBOM step skipped
+        [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+            echo "[debug] attestation API returned no records for digest=$digest (response had empty attestations array)" >&2
         _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     fi
