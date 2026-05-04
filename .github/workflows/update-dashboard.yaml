@@ -275,8 +275,10 @@ jobs:
           fi
 
           if [[ "$downloaded" -eq 0 ]]; then
-            echo "::notice::No sbom-* artifacts available across $run_count recent run(s); relying on cache only."
-            exit 0
+            echo "::notice::No sbom-* artifacts available across $run_count recent run(s) for SBOM merge; lineage hydration may still proceed if build-lineage-* artifacts were downloaded for these runs."
+            # Do NOT exit: the lineage merge block below uses find over $staging and can
+            # still hydrate oci_subject_digest from build-lineage-* artifacts even when
+            # every sbom-* download returned "no artifact".
           fi
 
           # Merge: newer .creationInfo.created (ISO 8601, lexicographically comparable) wins.
