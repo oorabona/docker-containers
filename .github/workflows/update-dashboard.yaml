@@ -270,6 +270,26 @@ jobs:
               fi
             fi
             rm -f "$stderr_file"
+
+            # Also download lineage-derived-* artifacts (.changelog.json, .history.json)
+            # which are written ONLY by cache-lineage and never re-uploaded as part of
+            # build-lineage-*. Without this, fresh SBOMs render alongside missing/stale
+            # derived data and the dashboard hides the entire Provenance section.
+            stderr_file=$(mktemp)
+            if gh run download "$run_id" \
+                --pattern 'lineage-derived-*' \
+                --dir "$staging/$run_id-derived" 2>"$stderr_file"; then
+              :
+            else
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no lineage-derived-* artifact
+              else
+                echo "::warning::gh run download (lineage-derived) failed for run $run_id. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
+            fi
+            rm -f "$stderr_file"
           done
 
           if [[ "$download_failures" -gt 0 ]]; then
@@ -331,7 +351,8 @@ jobs:
           # were extracted (extraction mtime is meaningless as a build-order proxy).
           # Exclude .sbom.json, .changelog.json, .history.json — only bare
           # {container}-{tag}.json lineage files (which carry oci_subject_digest).
-          declare -A lineage_seen=()
+          declare -A lineage_locked=()       # has digest, definitive — never overridden
+          declare -A lineage_provisional=()  # digest-less from newest run — can be replaced by later digest-bearing
           merged_lineage=0
           skipped_no_digest=0
           for run_id in $run_ids; do
@@ -339,10 +360,8 @@ jobs:
             [[ -d "$staging_run_dir" ]] || continue
             while IFS= read -r -d '' src; do
               fname=$(basename "$src")
-              # Only skip if a previous iteration already secured a digest-bearing
-              # version. A digest-less provisional copy leaves the slot open so a
-              # later run that carries oci_subject_digest can override it.
-              if [[ -n "${lineage_seen[$fname]:-}" ]]; then
+              # Already have a definitive digest-bearing version: skip unconditionally.
+              if [[ -n "${lineage_locked[$fname]:-}" ]]; then
                 continue
               fi
               target=".build-lineage/$fname"
@@ -350,25 +369,27 @@ jobs:
               if [[ -f "$target" ]]; then
                 tgt_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$target" >/dev/null 2>&1 && echo true || echo false)
                 if [[ "$tgt_has_digest" == "true" && "$src_has_digest" == "false" ]]; then
-                  # Cache has digest, source doesn't — preserve cache to avoid
-                  # regressing attestation lookup (Capture OCI subject digest is
-                  # continue-on-error; a newer run may have failed that step).
-                  # Mark seen: the cached version already satisfies the goal.
+                  # Cache has digest, source doesn't — preserve cache, lock the slot.
                   echo "::notice::Preserving cached lineage for $fname (source from run $run_id lacks oci_subject_digest)"
                   skipped_no_digest=$((skipped_no_digest + 1))
-                  lineage_seen[$fname]=1
+                  lineage_locked[$fname]=1
                   continue
                 fi
               fi
-              cp -- "$src" "$target"
-              merged_lineage=$((merged_lineage + 1))
               if [[ "$src_has_digest" == "true" ]]; then
-                # Got a digest-bearing version — lock the slot so no later
-                # (older) run can overwrite it with a stale copy.
-                lineage_seen[$fname]=1
+                # Definitive answer: cp and lock — no older run can override.
+                cp -- "$src" "$target"
+                lineage_locked[$fname]=1
+                merged_lineage=$((merged_lineage + 1))
+              elif [[ -z "${lineage_provisional[$fname]:-}" ]]; then
+                # No provisional yet and no digest version found — take this newest
+                # digest-less write. Only a later digest-bearing iteration can override;
+                # older digest-less iterations cannot (first-seen-from-newest wins).
+                cp -- "$src" "$target"
+                lineage_provisional[$fname]=1
+                merged_lineage=$((merged_lineage + 1))
               fi
-              # src lacks digest AND cache also lacks digest: leave slot open
-              # so a later iteration with a digest-bearing artifact can override.
+              # else: already have provisional from a newer run — older digest-less is discarded.
             done < <(find "$staging_run_dir" -name '*.json' \
               -not -name '*.sbom.json' \
               -not -name '*.changelog.json' \
@@ -380,8 +401,25 @@ jobs:
             echo "::notice::Preserved $skipped_no_digest cached lineage file(s) where source lacked oci_subject_digest (digest-capture continue-on-error fallback)"
           fi
 
+          # Merge derived files (.changelog.json, .history.json) — chronological
+          # first-seen wins (newest run first). These don't have digest semantics:
+          # the newest run's derived file is always the authoritative version.
+          declare -A derived_seen=()
+          merged_derived=0
+          for run_id in $run_ids; do
+            derived_dir="$staging/$run_id-derived"
+            [[ -d "$derived_dir" ]] || continue
+            while IFS= read -r -d '' src; do
+              fname=$(basename "$src")
+              [[ -n "${derived_seen[$fname]:-}" ]] && continue
+              cp -- "$src" ".build-lineage/$fname"
+              derived_seen[$fname]=1
+              merged_derived=$((merged_derived + 1))
+            done < <(find "$derived_dir" -name '*.json' -print0)
+          done
+
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
-          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s); total SBOM entries: $total"
+          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s), $merged_derived derived file(s) (changelog/history); total SBOM entries: $total"
 
       - name: Snapshot pull/star counts (idempotent per day)
         run: |

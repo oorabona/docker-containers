@@ -92,7 +92,8 @@ gaps_tsv=$(jq -r '
       .value == null or
       .value == "" or
       (.value | type == "object" and length == 0) or
-      (.value | type == "array" and length == 0)
+      (.value | type == "array" and length == 0) or
+      (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
     ) |
     "\($c)\tno-variants\t-\t-\t\(.key)"
   elif (.versions // []) | length > 0 then
@@ -117,7 +118,8 @@ gaps_tsv=$(jq -r '
         .value == null or
         .value == "" or
         (.value | type == "object" and length == 0) or
-        (.value | type == "array" and length == 0)
+        (.value | type == "array" and length == 0) or
+        (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
       ) |
       "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
     end
@@ -140,7 +142,8 @@ gaps_tsv=$(jq -r '
         .value == null or
         .value == "" or
         (.value | type == "object" and length == 0) or
-        (.value | type == "array" and length == 0)
+        (.value | type == "array" and length == 0) or
+        (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
       ) |
       "\($c)\tsingle\t\($i)\t\($tag)\t\(.key)"
     end

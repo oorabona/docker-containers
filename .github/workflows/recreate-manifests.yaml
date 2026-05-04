@@ -230,8 +230,8 @@ jobs:
             #   2. Cache is malformed   → source is valid, replace cache to self-heal.
             cached_sbom=".build-lineage/${basename_file}"
             compare_ok=true
-            if ! jq -e empty < "$sbom_file" 2>/dev/null; then
-              echo "::warning::Source SBOM for $container_tag is malformed JSON — preserving cached SBOM and skipping changelog/history"
+            if ! jq -e '(.packages // empty | type) == "array"' < "$sbom_file" >/dev/null 2>&1; then
+              echo "::warning::Source SBOM for $container_tag is not valid SPDX (missing or non-array .packages) — preserving cached SBOM"
               sbom_failed=$((sbom_failed + 1))
               compare_ok=false
             elif [[ ! -f "$cached_sbom" ]]; then
@@ -274,6 +274,18 @@ jobs:
           done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)
 
           echo "::notice::Processed $sbom_count SBOM(s); $sbom_failed processing error(s)"
+
+      - name: Upload derived lineage files (changelog + history)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: lineage-derived-${{ github.run_id }}
+          path: |
+            .build-lineage/*.changelog.json
+            .build-lineage/*.history.json
+          if-no-files-found: ignore
+          retention-days: 1
+          overwrite: true
 
       - name: Save updated lineage cache
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
