@@ -136,7 +136,7 @@
           e.preventDefault();
           var prevGroup = this._adjacentGroup(tablist, -1);
           if (prevGroup) {
-            var prevGroupTabs = Array.from(prevGroup.querySelectorAll('[role="tab"]'));
+            var prevGroupTabs = this._visibleTabs(prevGroup);
             target = prevGroupTabs[Math.min(idx, prevGroupTabs.length - 1)];
             if (target) target.focus();
           }
@@ -146,7 +146,7 @@
           e.preventDefault();
           var nextGroup = this._adjacentGroup(tablist, +1);
           if (nextGroup) {
-            var nextGroupTabs = Array.from(nextGroup.querySelectorAll('[role="tab"]'));
+            var nextGroupTabs = this._visibleTabs(nextGroup);
             target = nextGroupTabs[Math.min(idx, nextGroupTabs.length - 1)];
             if (target) target.focus();
           }
@@ -179,6 +179,18 @@
       var idx = groups.indexOf(tablist);
       return groups[idx + direction] || null;
     }
+
+
+    /* Return only visible, non-synthetic tabs from a tablist container.
+       Mirrors the M-N6 inline filter in _handleKeydown for cross-group nav. */
+    _visibleTabs(container) {
+      return Array.from(container.querySelectorAll('[role="tab"]')).filter(function(t) {
+        return t.offsetParent !== null &&
+               t.getAttribute('aria-hidden') !== 'true' &&
+               !t.hasAttribute('hidden');
+      });
+    }
+
 
     /* Fix #1: fire phase-b-variant-changed for the initial active tab so
        Provenance, <trust-strip>, and <security-scan> bootstrap correctly on
