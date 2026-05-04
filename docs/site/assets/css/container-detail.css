@@ -197,6 +197,16 @@
       gap: var(--space-inline-pill-gap);
     }
 
+    /* C2 fix (P1): variant comparison table "Extensions" column (<td> nth-child(2))
+       contains .tag-pill spans without a wrapping .variant-extensions div, so the
+       flex/gap on the parent selector above did not apply. Target the cell directly. */
+    .variants-table td:nth-child(2) {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-inline-pill-gap);
+      align-items: center;
+    }
+
     /* Variant dep update notification badge */
     .variant-tag { position: relative; }
     .variant-dep-badge {

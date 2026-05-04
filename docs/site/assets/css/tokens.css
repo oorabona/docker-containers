@@ -29,6 +29,7 @@
   --color-green-400: #4ADE80;  /* foreground on dark             */
   --color-green-500: #10B981;  /* preserve current --accent-green */
   --color-green-600: #059669;
+  --color-green-700: #047857;  /* foreground on light — 5.4:1 on #FFFFFF (WCAG AA) */
 
   /* --- Amber (status: warn / Trivy HIGH) --- */
   --color-amber-400: #FBBF24;
@@ -249,7 +250,11 @@
   --color-trust-sbom-fg:           var(--color-teal-500);
   --color-trust-trivy-critical-fg: var(--color-red-600);
   --color-trust-multiarch-fg:      var(--color-violet-500);
-  --color-trust-verify-fg:         var(--color-cyan-700);  /* #0E7490 — 7.04:1 on #FFFFFF (WCAG AA+) */
+  --color-trust-verify-fg:         var(--color-cyan-700);  /* #0E7490 — 5.36:1 on #FFFFFF (WCAG AA) */
+
+  /* feedback — P1 fix: green-400 (#4ADE80) is 1.74:1 on white; green-700 (#047857) = 5.4:1 (WCAG AA) */
+  --color-feedback-success-fg: var(--color-green-700);
+  --color-feedback-success-bg: rgba(4, 120, 87, 0.10);  /* green-700 alpha for light surfaces */
 }
 
 /* ----------------------------------------------------------

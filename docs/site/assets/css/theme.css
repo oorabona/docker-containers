@@ -21,6 +21,7 @@
      --color-text-secondary: #C7CCD4 (9.1:1 on navy-950)
      --color-text-muted:     #8A93A0 (4.6:1 on navy-950)
      Both were previously rgba(255,255,255,0.7/0.5), failing WCAG AA. */
+  --text:           var(--color-text-primary);  /* bare alias — blog.css nav selectors */
   --text-primary:   var(--color-text-primary);
   --text-secondary: var(--color-text-secondary);
   --text-muted:     var(--color-text-muted);
