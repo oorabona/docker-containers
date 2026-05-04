@@ -331,14 +331,32 @@ jobs:
           # {container}-{tag}.json lineage files (which carry oci_subject_digest).
           declare -A lineage_seen=()
           merged_lineage=0
+          skipped_no_digest=0
           for run_id in $run_ids; do
             staging_run_dir="$staging/$run_id-lineage"
             [[ -d "$staging_run_dir" ]] || continue
             while IFS= read -r -d '' src; do
               fname=$(basename "$src")
-              # Skip if a newer run already provided this lineage file this session
-              [[ -n "${lineage_seen[$fname]:-}" ]] && continue
-              cp -- "$src" ".build-lineage/$fname"
+              # First-seen wins among hits with same digest-presence; a later run
+              # only gets a turn if the earlier one lacked oci_subject_digest.
+              if [[ -n "${lineage_seen[$fname]:-}" ]]; then
+                continue
+              fi
+              target=".build-lineage/$fname"
+              src_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$src" >/dev/null 2>&1 && echo true || echo false)
+              if [[ -f "$target" ]]; then
+                tgt_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$target" >/dev/null 2>&1 && echo true || echo false)
+                if [[ "$tgt_has_digest" == "true" && "$src_has_digest" == "false" ]]; then
+                  # Cache has digest, source doesn't — preserve cache to avoid
+                  # regressing attestation lookup (Capture OCI subject digest is
+                  # continue-on-error; a newer run may have failed that step).
+                  echo "::notice::Preserving cached lineage for $fname (source from run $run_id lacks oci_subject_digest)"
+                  skipped_no_digest=$((skipped_no_digest + 1))
+                  lineage_seen[$fname]=1
+                  continue
+                fi
+              fi
+              cp -- "$src" "$target"
               lineage_seen[$fname]=1
               merged_lineage=$((merged_lineage + 1))
             done < <(find "$staging_run_dir" -name '*.json' \
@@ -347,6 +365,10 @@ jobs:
               -not -name '*.history.json' \
               -print0)
           done
+
+          if [[ "$skipped_no_digest" -gt 0 ]]; then
+            echo "::notice::Preserved $skipped_no_digest cached lineage file(s) where source lacked oci_subject_digest (digest-capture continue-on-error fallback)"
+          fi
 
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
           echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s); total SBOM entries: $total"

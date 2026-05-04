@@ -50,7 +50,7 @@ setup() {
     [ "$status" -eq 0 ]
     # Both sentinels should fire
     [[ "$output" == *"No versions found for lonely"* ]]
-    [[ "$output" == *"Version v0 of phantom has no variants"* ]]
+    [[ "$output" == *"Version 1.0 of phantom has no variants"* ]]
     # Healthy container should NOT trigger any warning
     ! [[ "$output" == *"Missing"*"healthy"* ]]
     ! [[ "$output" == *"No versions"*"healthy"* ]]

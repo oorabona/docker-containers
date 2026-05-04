@@ -51,10 +51,10 @@ if ! yaml_json=$(yq -o=json '.' "$YAML" 2>"$yq_stderr"); then
   exit 2
 fi
 
-# Valid parse but empty document
+# Valid parse but empty document — treat as hard error: generation likely failed.
 if [[ -z "$yaml_json" || "$yaml_json" == "null" ]]; then
-  echo "::notice::$YAML parsed successfully but contains no documents — nothing to verify"
-  exit 0
+  echo "::error file=$YAML::$YAML parsed but contains no documents — generation likely failed; refusing to deploy blank dashboard" >&2
+  exit 2
 fi
 
 # Root MUST be a sequence (list of containers). Reject scalars / mappings early
@@ -67,8 +67,8 @@ fi
 
 container_count=$(jq 'length' <<<"$yaml_json")
 if [[ "$container_count" -eq 0 ]]; then
-  echo "::warning::$YAML contains no containers — nothing to verify"
-  exit 0
+  echo "::error file=$YAML::$YAML is an empty array — generation likely failed; refusing to deploy blank dashboard" >&2
+  exit 2
 fi
 
 # One jq pipeline emits TSV: container<TAB>v_idx<TAB>i_idx<TAB>tag<TAB>field
