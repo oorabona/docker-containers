@@ -70,5 +70,8 @@ The trust strip is the project's non-substitutable visual signature (Phase B inv
 
 ## References
 
-- Source-of-truth specs: `~/.claude/projects/-mnt-wsl-shared-dev-docker-containers/memory/design_research_personas_journey.md`, `design_system_spec_phase_c.md`, `design_aesthetic_direction.md`, `design_catalog_refs.md`, `design_decision_log.md`.
-- Skills used to produce the spec: `design:research` (personas, journey map), `design:systems` (token taxonomy), `frontend-design` (4-gates lock + brand voice + motion ethos), `ui-ux-pro-max` (catalog validation), `design:ops` (this ADR + handoff).
+- **Design system spec** (3-tier W3C DTCG taxonomy): primitive palette (navy tonal scale, functional blue/green/amber/red, trust-domain teal/cyan/violet), semantic layer (`--color-surface-*`, `--color-text-*`, `--color-feedback-*`, `--color-trust-*`), spacing (8px Material grid, semantic aliases), type scale (Major Third 1.250, base 16px).
+- **Persona research**: 3 Cooper-style behavioral personas — primary = Camille (AppSec evaluator, screenshots trust-strip into Confluence), secondary = Yaël (SRE, needs depth), supplemental = Sam (indie, self-serve). Journey map: Awareness 0 → Triage −2 → Deep dive −1 → Verification +1 → Decision +2. Triage trough is the design moment being resolved.
+- **Aesthetic direction** (4 gates locked): dashboard+docs hybrid / refined-authoritative-proof-forward direction / trust-strip 3-hue+mono as visual signature / Jekyll + dark default + Inter+JetBrains Mono only + WCAG 2.2 AA strict. JetBrains Mono on trust-strip badges + `.eyebrow` labels is the memorable typographic identity.
+- **Catalog validation**: Swiss Modernism 2.0 + Modern Dark Cinema (Inter System) + Developer Tool/IDE palette templates independently match the locked spec. Industry references: Stripe Docs, pkg.go.dev, Sigstore website, Vercel Docs, Anthropic Docs, Linear.
+- **Skills used to produce the spec**: `design:research` (personas, journey map), `design:systems` (token taxonomy), `frontend-design` (4-gates lock + brand voice + motion ethos), `ui-ux-pro-max` (catalog validation), `design:ops` (this ADR + handoff).

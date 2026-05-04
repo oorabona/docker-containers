@@ -142,7 +142,9 @@
       padding: 0.375rem 0.75rem; border-radius: 6px;
       background: rgba(139, 92, 246, 0.15); color: var(--accent-purple);
       border: 1px solid rgba(139, 92, 246, 0.25); cursor: pointer;
-      transition: background var(--motion-duration-short) var(--easing-standard);
+      transition:
+        background var(--motion-duration-short) var(--easing-standard),
+        transform  var(--motion-duration-short) var(--easing-standard);
     }
     .variant-tag:hover { background: rgba(139, 92, 246, 0.25); transform: translateY(-1px); }
     .variant-tag.selected {
@@ -186,14 +188,13 @@
       gap: var(--space-inline-pill-gap);
     }
 
-    /* C2 fix (P1): variant comparison table "Extensions" column (<td> nth-child(2))
-       contains .tag-pill spans without a wrapping .variant-extensions div, so the
-       flex/gap on the parent selector above did not apply. Target the cell directly. */
-    .variants-table td:nth-child(2) {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--space-inline-pill-gap);
-      align-items: center;
+    /* C2 fix (M2 revised): do NOT make <td> a flex container — that opts the cell out
+       of table-cell layout causing column misalignment in some browsers.
+       Instead, give each .tag-pill inside the Extensions column inline margin so chips
+       wrap and space without changing the cell's display type. */
+    .variants-table td:nth-child(2) .tag-pill {
+      margin-right: var(--space-inline-pill-gap);  /* 6px — horizontal gap between chips */
+      margin-bottom: var(--space-2xs);             /* 2px — wrapping row gap             */
     }
 
     /* Variant dep update notification badge */

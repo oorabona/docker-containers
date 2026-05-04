@@ -349,7 +349,10 @@ body {
   color: var(--color-text-primary);
   text-decoration: none;
   cursor: pointer;
-  transition: background var(--motion-duration-normal) var(--easing-standard);
+  transition:
+    background   var(--motion-duration-normal) var(--easing-standard),
+    transform    var(--motion-duration-normal) var(--easing-standard),
+    box-shadow   var(--motion-duration-normal) var(--easing-standard);
 }
 
 .btn:hover {
