@@ -650,3 +650,77 @@ body {
     grid-column: span 1;
   }
 }
+
+/* ============================================================
+   Standalone page layout (verify-images.md and similar)
+   Relocated from blog.css (PR5): cross-layout neutral page
+   styling that doesn't belong in blog-thematic file.
+   ============================================================ */
+
+.page-layout {
+  /* Inherits body styles — no surprises */
+}
+
+.page-content {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 6rem 1rem 2rem;
+  border-radius: 16px;
+  line-height: 1.7;
+  font-size: 1rem;
+}
+
+.page-content article h1 {
+  font-size: clamp(1.85rem, 4.5vw, 2.5rem);
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin: 0 0 1.5rem;
+}
+
+.page-content article h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 2.25rem;
+  scroll-margin-top: 80px;
+}
+
+.page-content code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+[data-theme="light"] .page-content code {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.page-content pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.875rem;
+}
+
+.page-content pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875rem;
+}
+
+[data-theme="light"] .page-content pre {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .page-content {
+    padding: 5rem 1rem 2rem;
+  }
+}
