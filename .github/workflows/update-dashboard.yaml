@@ -160,6 +160,72 @@ jobs:
           total=$(find .trivy-scan-history -name '*.json' 2>/dev/null | wc -l)
           echo "::notice::Hydrated from $downloaded/$run_count recent run(s); merged $merged file(s); total scan-history entries: $total"
 
+      - name: Re-download SBOM artifacts from recent auto-build runs (self-heal cache race)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Bug context: cache-lineage saves .build-lineage/*.sbom.json to the cache, but
+          # concurrent auto-build dispatches race on cache restore -- each dashboard run
+          # sees only what was cached at restore time. In-flight or recently-completed runs
+          # may have produced SBOMs that never made it into the cache this dashboard
+          # invocation restored. Self-heal: explicitly re-download sbom-* artifacts from
+          # recent successful auto-build runs and overlay into .build-lineage/. Idempotent:
+          # only overwrites if the downloaded file is newer (by mtime).
+
+          mkdir -p .build-lineage
+
+          # Window: last 30 successful runs on master (mirrors Trivy hydration pattern above).
+          run_ids=$(gh run list \
+            --workflow=auto-build.yaml \
+            --branch=master \
+            --status=success \
+            --limit 30 \
+            --json databaseId \
+            --jq '.[].databaseId' \
+            2>/dev/null || true)
+
+          if [[ -z "$run_ids" ]]; then
+            echo "::notice::No recent successful auto-build runs found; relying on cache only for SBOM data."
+            exit 0
+          fi
+
+          run_count=$(echo "$run_ids" | wc -l)
+          staging=$(mktemp -d)
+          trap 'rm -rf "$staging"' EXIT
+
+          downloaded=0
+          for run_id in $run_ids; do
+            if gh run download "$run_id" \
+                --pattern 'sbom-*' \
+                --dir "$staging/$run_id" 2>/dev/null; then
+              downloaded=$((downloaded + 1))
+            fi
+          done
+
+          if [[ "$downloaded" -eq 0 ]]; then
+            echo "::notice::No sbom-* artifacts available across $run_count recent run(s); relying on cache only."
+            exit 0
+          fi
+
+          # Merge: newer mtime wins (mtime reflects original build time via artifact extraction).
+          # For SBOM JSON there is no embedded timestamp we can use for comparison, so mtime
+          # is the best available signal. Missing target = always copy.
+          merged=0
+          while IFS= read -r -d '' src; do
+            fname=$(basename "$src")
+            target=".build-lineage/$fname"
+            if [[ ! -f "$target" ]] || [[ "$src" -nt "$target" ]]; then
+              cp -- "$src" "$target"
+              merged=$((merged + 1))
+            fi
+          done < <(find "$staging" -name '*.sbom.json' -print0)
+
+          total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
+          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged file(s); total SBOM entries: $total"
+
       - name: Snapshot pull/star counts (idempotent per day)
         run: |
           chmod +x scripts/snapshot-stats.sh
@@ -206,6 +272,11 @@ jobs:
           echo ""
           echo "📈 Stats data:"
           cat docs/site/_data/stats.yml
+
+      - name: Verify data completeness (advisory smoke gate)
+        run: |
+          chmod +x scripts/verify-dashboard-data.sh
+          scripts/verify-dashboard-data.sh docs/site/_data/containers.yml
 
       - name: Check dependency versions
         env:

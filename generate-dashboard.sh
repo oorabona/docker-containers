@@ -441,6 +441,12 @@ collect_variant_json() {
     sbom_packages=$(get_sbom_packages "$container" "$sbom_tag")
     changelog=$(get_changelog "$container" "$sbom_tag")
     build_history=$(get_build_history "$container" "$sbom_tag")
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] sbom_summary for $container-$sbom_tag = ${sbom_summary:0:60}…" >&2
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] changelog for $container-$sbom_tag = ${changelog:0:60}…" >&2
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] build_history for $container-$sbom_tag = ${build_history:0:60}…" >&2
 
     # Attestation: look up SBOM attestation ID from GitHub Attestations API.
     # The attestations API is keyed on the OCI subject digest (sha256:…) that
@@ -454,7 +460,11 @@ collect_variant_json() {
     subject_digest=$(echo "$lineage_json" | jq -r '.oci_subject_digest // empty')
     if [[ -z "$subject_digest" ]]; then
         subject_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
+        [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+            echo "[debug] using fallback build_digest=$subject_digest (oci_subject_digest empty) for $container-$sbom_tag" >&2
     fi
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] subject_digest for $container-$sbom_tag = ${subject_digest:0:60}…" >&2
     if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
         && attestation_id=$(get_attestation_id "$subject_digest"); then
         attestation_url=$(get_attestation_url "$attestation_id")
@@ -464,6 +474,8 @@ collect_variant_json() {
     local trivy_category trivy_summary
     trivy_category=$(build_trivy_category "$container" "$variant_tag" "linux/amd64")
     trivy_summary=$(get_trivy_summary "$trivy_category")
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] trivy_summary for $container-$variant_tag = ${trivy_summary:0:60}…" >&2
 
     # Multi-arch platform list: derive from GHCR manifest (reuse ghcr_get_manifest_sizes)
     local multi_arch_platforms_json="[]"

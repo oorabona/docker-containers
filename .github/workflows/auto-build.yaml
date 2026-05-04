@@ -1096,16 +1096,19 @@ jobs:
         continue-on-error: true
 
       - name: Process SBOMs (compare + history)
+        id: process-sboms
         run: |
           source helpers/sbom-utils.sh
 
           if [[ ! -d ".build-lineage-sbom-artifacts" ]]; then
             echo "No SBOM artifacts found — skipping processing"
+            echo "sbom_count=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Find SBOM files (may be flat or in subdirectories depending on artifact count)
           sbom_count=0
+          sbom_failed=0
           while IFS= read -r -d '' sbom_file; do
             sbom_count=$((sbom_count + 1))
             basename_file=$(basename "$sbom_file")
@@ -1117,7 +1120,8 @@ jobs:
             cached_sbom=".build-lineage/${basename_file}"
             if [[ -f "$cached_sbom" ]]; then
               compare_sboms "$sbom_file" "$cached_sbom" \
-                ".build-lineage/${container_tag}.changelog.json" || true
+                ".build-lineage/${container_tag}.changelog.json" \
+                || { echo "::warning::SBOM comparison failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
             else
               echo "No previous SBOM for $container_tag — first build"
             fi
@@ -1126,7 +1130,8 @@ jobs:
             summary=$(extract_sbom_summary "$sbom_file")
             lineage_file=".build-lineage/${container_tag}.json"
             append_build_history "$lineage_file" "$summary" \
-              ".build-lineage/${container_tag}.history.json" || true
+              ".build-lineage/${container_tag}.history.json" \
+              || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
 
             # Replace cached SBOM with new one
             cp "$sbom_file" "$cached_sbom"
@@ -1134,7 +1139,16 @@ jobs:
             echo "::endgroup::"
           done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)
 
-          echo "Processed $sbom_count SBOM(s)"
+          echo "sbom_count=$sbom_count" >> "$GITHUB_OUTPUT"
+          echo "::notice::Processed $sbom_count SBOM(s); $sbom_failed processing error(s)"
+
+      - name: Log lineage cache diagnostic summary
+        run: |
+          lineage_count=$(find .build-lineage -name '*.json' -not -name '*.sbom.json' -not -name '*.history.json' -not -name '*.changelog.json' 2>/dev/null | wc -l)
+          sbom_count=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
+          changelog_count=$(find .build-lineage -name '*.changelog.json' 2>/dev/null | wc -l)
+          history_count=$(find .build-lineage -name '*.history.json' 2>/dev/null | wc -l)
+          echo "::notice::Lineage cache contents — lineage: $lineage_count, SBOMs: $sbom_count, changelogs: $changelog_count, histories: $history_count"
 
       - name: Save consolidated lineage cache
         if: steps.merge.outputs.has_files == 'true'

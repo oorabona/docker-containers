@@ -672,6 +672,20 @@ runs:
         fi
       continue-on-error: true
 
+    # Re-upload the updated lineage file (now containing oci_subject_digest) so the
+    # cache-lineage job's download-artifact step gets the post-flatten digest.
+    # Without this, the artifact uploaded by "Upload build lineage" (pre-flatten) is
+    # used by cache-lineage, and oci_subject_digest is never persisted to cache.
+    # overwrite: true required — the artifact already exists from "Upload build lineage".
+    - name: Re-upload lineage with OCI subject digest
+      if: ${{ steps.push-ghcr.outputs.success == 'true' && runner.os != 'Windows' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+      with:
+        name: build-lineage-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}
+        path: .build-lineage/${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}.json
+        retention-days: 1
+        overwrite: true
+
     # Push bare tag immediately so images are pullable without waiting for manifest job.
     # For multi-arch: this is a single-platform placeholder — the manifest job will
     # replace it with a proper multi-arch manifest list once all arches complete.
