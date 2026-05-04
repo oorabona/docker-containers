@@ -40,6 +40,8 @@ Thumbs.db
 
 # Claude Code bind mounts
 .claude
+.claude-recovery.md
+.codex
 .mcp.json
 .bash_profile
 .bashrc
