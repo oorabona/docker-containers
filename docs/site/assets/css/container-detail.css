@@ -2,19 +2,8 @@
        Phase C PR1: .tag-pill patched for C2 (inline-flex chip),
        --detail-text-* now uses semantic tokens. */
 
-    /* Detail page text tokens — M3 fix: point at validated semantic tokens.
-       --color-text-secondary: #C7CCD4 → 9.1:1 on navy-950 (was rgba(255,255,255,0.65) → ~3.5:1)
-       --color-text-muted: #8A93A0 → 4.6:1 on navy-950 (was rgba(255,255,255,0.5) → ~2.1:1) */
-    :root {
-      --detail-text-primary:   var(--color-text-primary);    /* #F4F5F7 — 14.4:1 on navy-950 */
-      --detail-text-secondary: var(--color-text-secondary);  /* #C7CCD4 — 9.1:1 on navy-950  */
-      --detail-text-muted:     var(--color-text-muted);      /* #8A93A0 — 4.6:1 on navy-950  */
-    }
-    [data-theme="light"] {
-      --detail-text-primary:   #111827;  /* near-black on white — 18:1 */
-      --detail-text-secondary: #374151;
-      --detail-text-muted:     #4b5563;
-    }
+    /* --detail-text-* aliases declared in theme.css deprecated alias block (P3 fix).
+       References here resolve via theme.css :root → tokens.css semantic tokens. */
 
     /* Ensure theme.css light variables are not overridden by this file's :root.
        The readme-content and other shared elements use --text-secondary/--text-muted directly. */

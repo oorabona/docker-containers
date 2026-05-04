@@ -168,6 +168,7 @@
    in Camille's Confluence screenshots across Q1 vs Q3 comparisons.        */
 :root,
 [data-theme="dark"] {
+  /* PR2 will wire .trust-badge--{sbom,multi-arch,trivy} to these tokens */
   /* SBOM (Sigstore-attested) — teal hue (Sigstore brand-adjacent) */
   --color-trust-sbom-fg:     var(--color-teal-400);      /* #2DD4BF             */
   --color-trust-sbom-bg:     rgba(20, 184, 166, 0.15);   /* teal-500 alpha      */
@@ -315,8 +316,10 @@ h2,
   *,
   *::before,
   *::after {
-    transition-duration: 0.01ms !important;
-    animation-duration:  0.01ms !important;
+    transition-duration:  0.01ms !important;
+    transition-delay:     0ms    !important;  /* prevents fill-mode from hiding content */
+    animation-duration:   0.01ms !important;
+    animation-delay:      0ms    !important;  /* clears staggered-reveal inline delays  */
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }

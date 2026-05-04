@@ -26,6 +26,12 @@
   --text-secondary: var(--color-text-secondary);
   --text-muted:     var(--color-text-muted);
 
+  /* Container-detail page aliases (moved from container-detail.css :root — P3 fix).
+     Keeps all deprecated aliases in one place for PR4 sweep. */
+  --detail-text-primary:   var(--color-text-primary);    /* #F4F5F7 — 14.4:1 on navy-950 */
+  --detail-text-secondary: var(--color-text-secondary);  /* #C7CCD4 — 9.1:1 on navy-950  */
+  --detail-text-muted:     var(--color-text-muted);      /* #8A93A0 — 4.6:1 on navy-950  */
+
   /* Glass surface tokens — composition primitives, keep flat */
   --glass-bg:     rgba(255, 255, 255, 0.10);
   --glass-border: rgba(255, 255, 255, 0.20);
@@ -63,6 +69,11 @@
   --text-primary:   var(--color-text-primary);
   --text-secondary: var(--color-text-secondary);
   --text-muted:     var(--color-text-muted);
+
+  /* Container-detail page aliases — light overrides */
+  --detail-text-primary:   #111827;  /* near-black on white — 18:1 */
+  --detail-text-secondary: #374151;
+  --detail-text-muted:     #4b5563;
 }
 
 /* ==========================================================
