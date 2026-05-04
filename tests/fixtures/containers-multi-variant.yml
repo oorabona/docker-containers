@@ -1,0 +1,99 @@
+- name: postgres
+  versions:
+    - version: "18"
+      variants:
+        # versions[0].variants[0] — default, all fields present.
+        - name: full
+          tag: 18-alpine-full
+          description: "All extensions"
+          is_default: true
+          size_amd64: "450MB"
+          size_arm64: "430MB"
+          build_digest: "sha256:aabbccddeeff00112233445566778899"
+          base_image: "alpine:3.19"
+          attestation_id: "12345"
+          attestation_url: "https://github.com/oorabona/docker-containers/attestations/12345"
+          multi_arch_platforms:
+            - linux/amd64
+            - linux/arm64
+          sbom_summary:
+            total_packages: 120
+            ecosystem_breakdown:
+              alpine: 80
+              go: 40
+          trivy_summary:
+            last_scan: "2026-05-01T10:00:00Z"
+            counts:
+              critical: 0
+              high: 0
+              medium: 2
+              low: 5
+              info: 0
+            top_advisories: []
+        # versions[0].variants[1] — non-default, MISSING attestation_url + trivy_summary.
+        - name: vector
+          tag: 18-alpine-vector
+          description: "pgvector only"
+          is_default: false
+          size_amd64: "200MB"
+          size_arm64: "195MB"
+          build_digest: "sha256:1122334455667788"
+          base_image: "alpine:3.19"
+          multi_arch_platforms:
+            - linux/amd64
+            - linux/arm64
+          sbom_summary:
+            total_packages: 80
+            ecosystem_breakdown:
+              alpine: 60
+              go: 20
+    - version: "17"
+      variants:
+        # versions[1].variants[0] — non-default version, empty sbom_summary.
+        - name: full
+          tag: 17-alpine-full
+          description: "All extensions v17"
+          is_default: false
+          size_amd64: "440MB"
+          size_arm64: "420MB"
+          build_digest: "sha256:aabbccddeeff99887766"
+          base_image: "alpine:3.19"
+          attestation_id: "67890"
+          attestation_url: "https://github.com/oorabona/docker-containers/attestations/67890"
+          multi_arch_platforms:
+            - linux/amd64
+            - linux/arm64
+          sbom_summary: {}
+          trivy_summary:
+            last_scan: "2026-04-30T10:00:00Z"
+            counts:
+              critical: 0
+              high: 1
+              medium: 3
+              low: 8
+              info: 0
+            top_advisories: []
+        # versions[1].variants[1] — non-default version + variant, MISSING multi_arch_platforms.
+        - name: base
+          tag: 17-alpine-base
+          description: "Base only v17"
+          is_default: false
+          size_amd64: "150MB"
+          size_arm64: "145MB"
+          build_digest: "sha256:bbccddee11223344"
+          base_image: "alpine:3.19"
+          attestation_id: "11111"
+          attestation_url: "https://github.com/oorabona/docker-containers/attestations/11111"
+          sbom_summary:
+            total_packages: 50
+            ecosystem_breakdown:
+              alpine: 50
+          trivy_summary:
+            last_scan: "2026-04-29T10:00:00Z"
+            counts:
+              critical: 0
+              high: 0
+              medium: 1
+              low: 2
+              info: 0
+            top_advisories: []

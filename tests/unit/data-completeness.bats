@@ -8,6 +8,7 @@ setup() {
     VERIFY_SCRIPT="$PROJECT_ROOT/scripts/verify-dashboard-data.sh"
     FIXTURE_COMPLETE="$PROJECT_ROOT/tests/fixtures/containers-complete.yml"
     FIXTURE_MISSING="$PROJECT_ROOT/tests/fixtures/containers-missing.yml"
+    FIXTURE_MULTI_VARIANT="$PROJECT_ROOT/tests/fixtures/containers-multi-variant.yml"
 }
 
 @test "verify-dashboard-data: complete fixture exits 0 with notice" {
@@ -25,5 +26,20 @@ setup() {
 
 @test "verify-dashboard-data STRICT=1: missing-fields fixture exits 1" {
     STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_MISSING"
+    [ "$status" -eq 1 ]
+}
+
+@test "verify-dashboard-data: multi-variant fixture flags non-default variant gaps" {
+    run "$VERIFY_SCRIPT" "$FIXTURE_MULTI_VARIANT"
+    [ "$status" -eq 0 ]
+    # Should warn for at least 3 distinct field gaps across non-default variants
+    warning_count=$(echo "$output" | grep -c "::warning file=")
+    [ "$warning_count" -ge 3 ]
+    # Should explicitly mention non-default variant paths
+    [[ "$output" == *"variants[1]"* || "$output" == *"variants[0])"* ]] || [[ "$output" == *"versions[1]"* ]]
+}
+
+@test "verify-dashboard-data STRICT=1: multi-variant fixture exits 1 on non-default gaps" {
+    STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_MULTI_VARIANT"
     [ "$status" -eq 1 ]
 }

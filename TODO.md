@@ -7,6 +7,8 @@
 ## Backlog
 
 - [ ] 🔧 [terraform] Make cloud CLI version validation conditional on FLAVOR — Priority: M (from /review F-005)
+- [ ] 🔧 [Dashboard] Batch yq calls in `verify-dashboard-data.sh` once container count > 25 — Priority: L (from PR #365 senior-review F-002)
+- [ ] 🐛 [Dashboard] `Capture OCI subject digest` step has `continue-on-error: true` → silently publishes digest-less lineage on flatten/inspect failure. Fail-closed OR gate `auto-build.yaml:645` upload on capture success — Priority: L (pre-existing, surfaced in PR #365 senior-review)
 
 ## Completed (recent)
 

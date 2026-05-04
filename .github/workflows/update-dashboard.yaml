@@ -172,23 +172,26 @@ jobs:
           # sees only what was cached at restore time. In-flight or recently-completed runs
           # may have produced SBOMs that never made it into the cache this dashboard
           # invocation restored. Self-heal: explicitly re-download sbom-* artifacts from
-          # recent successful auto-build runs and overlay into .build-lineage/. Idempotent:
-          # only overwrites if the downloaded file is newer (by mtime).
+          # recent auto-build runs and overlay into .build-lineage/. Idempotent.
 
           mkdir -p .build-lineage
 
-          # Window: last 30 successful runs on master (mirrors Trivy hydration pattern above).
+          # Window: last 24h, last 30 runs on master.
+          cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
+          # Note: do NOT filter on --status=success at the API level — auto-build runs
+          # with PARTIAL failures (some matrix legs failed, others succeeded) still
+          # produce valid sbom-* artifacts via the build job that succeeded for that leg.
+          # Include both conclusions; exclude cancelled / in-progress.
           run_ids=$(gh run list \
             --workflow=auto-build.yaml \
             --branch=master \
-            --status=success \
             --limit 30 \
-            --json databaseId \
-            --jq '.[].databaseId' \
+            --json databaseId,createdAt,conclusion \
+            --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
             2>/dev/null || true)
 
           if [[ -z "$run_ids" ]]; then
-            echo "::notice::No recent successful auto-build runs found; relying on cache only for SBOM data."
+            echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only for SBOM data."
             exit 0
           fi
 
@@ -210,17 +213,34 @@ jobs:
             exit 0
           fi
 
-          # Merge: newer mtime wins (mtime reflects original build time via artifact extraction).
-          # For SBOM JSON there is no embedded timestamp we can use for comparison, so mtime
-          # is the best available signal. Missing target = always copy.
+          # Merge: newer .creationInfo.created (ISO 8601, lexicographically comparable) wins.
+          # mtime would reflect download/extraction time — not the original syft scan —
+          # so a freshly-downloaded stale SBOM could mask a cached fresh one. Reading the
+          # actual SPDX creation timestamp makes the decision deterministic regardless of
+          # when the artifact was retrieved.
           merged=0
           while IFS= read -r -d '' src; do
             fname=$(basename "$src")
             target=".build-lineage/$fname"
-            if [[ ! -f "$target" ]] || [[ "$src" -nt "$target" ]]; then
-              cp -- "$src" "$target"
-              merged=$((merged + 1))
+
+            src_created=$(jq -r '.creationInfo.created // empty' "$src" 2>/dev/null || true)
+            if [[ -z "$src_created" ]]; then
+              # Source has no creationInfo.created — skip (don't overwrite cache with malformed SBOM).
+              continue
             fi
+
+            if [[ -f "$target" ]]; then
+              tgt_created=$(jq -r '.creationInfo.created // empty' "$target" 2>/dev/null || true)
+              # ISO 8601 strings (e.g. 2026-02-22T00:46:38Z) compare correctly via bash
+              # string `>` because the format is zero-padded fixed-width.
+              # Tie (equal creation time) → keep cache, skip copy (no benefit + saves I/O).
+              if [[ -n "$tgt_created" ]] && [[ ! "$src_created" > "$tgt_created" ]]; then
+                continue
+              fi
+            fi
+
+            cp -- "$src" "$target"
+            merged=$((merged + 1))
           done < <(find "$staging" -name '*.sbom.json' -print0)
 
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)

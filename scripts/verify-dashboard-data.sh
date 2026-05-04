@@ -3,6 +3,10 @@
 # Advisory mode (default): emits ::warning:: lines + exits 0.
 # Strict mode (STRICT=1): exits 1 on any gap.
 #
+# Coverage: ALL versions × ALL variants per container (not just the default).
+# Dashboard detail pages render trust-strip data for whichever version+variant
+# the user selects, so non-default variants must be checked too.
+#
 # Local dev note: when running without a prior update-dashboard.yaml execution,
 # containers.yml is regenerated without SBOM artifact hydration — almost all
 # trust-strip fields will be missing. That is expected pre-CI; this script
@@ -38,26 +42,35 @@ fi
 for container in "${containers[@]}"; do
   [[ -z "$container" ]] && continue
 
-  # Read the default variant (versions[0].variants[0]) as a YAML fragment
-  default_variant=$(yq ".[] | select(.name == \"$container\") | .versions[0].variants[0]" "$YAML" 2>/dev/null || true)
-
-  if [[ -z "$default_variant" ]]; then
-    echo "::warning file=$YAML::No default variant found for $container"
+  # Collect all (version_index, variant_index) pairs for this container.
+  # Use a count-based iteration rather than yq tag iteration to keep variant
+  # ordering stable.
+  version_count=$(yq ".[] | select(.name == \"$container\") | .versions | length // 0" "$YAML" 2>/dev/null)
+  if [[ -z "$version_count" || "$version_count" == "0" ]]; then
+    echo "::warning file=$YAML::No versions found for $container"
     gaps=$((gaps + 1))
     continue
   fi
 
-  for field in attestation_url trivy_summary sbom_summary multi_arch_platforms; do
-    value=$(printf '%s' "$default_variant" | yq ".$field // \"\"" - 2>/dev/null || true)
-
-    # Treat empty, "null", "{}", "[]" as missing
-    if [[ -z "$value" ]] \
-        || [[ "$value" == "null" ]] \
-        || [[ "$value" == "{}" ]] \
-        || [[ "$value" == "[]" ]]; then
-      echo "::warning file=$YAML::Missing $field for $container default_variant"
-      gaps=$((gaps + 1))
+  for ((v=0; v<version_count; v++)); do
+    variant_count=$(yq ".[] | select(.name == \"$container\") | .versions[$v].variants | length // 0" "$YAML" 2>/dev/null)
+    if [[ -z "$variant_count" || "$variant_count" == "0" ]]; then
+      continue
     fi
+
+    for ((i=0; i<variant_count; i++)); do
+      variant=$(yq ".[] | select(.name == \"$container\") | .versions[$v].variants[$i]" "$YAML" 2>/dev/null || true)
+      [[ -z "$variant" ]] && continue
+      variant_tag=$(printf '%s' "$variant" | yq '.tag // "unknown"' - 2>/dev/null)
+
+      for field in attestation_url trivy_summary sbom_summary multi_arch_platforms; do
+        value=$(printf '%s' "$variant" | yq ".$field // \"\"" - 2>/dev/null || true)
+        if [[ -z "$value" ]] || [[ "$value" == "null" ]] || [[ "$value" == "{}" ]] || [[ "$value" == "[]" ]]; then
+          echo "::warning file=$YAML::Missing $field for $container variant $variant_tag (versions[$v].variants[$i])"
+          gaps=$((gaps + 1))
+        fi
+      done
+    done
   done
 done
 
