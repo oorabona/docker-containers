@@ -8,8 +8,11 @@
 /* -----------------------------------------------------------------------
    Shared trust-badge typography — JetBrains Mono, medium, uppercase
    (identical to the rule in dashboard.css; kept in sync by design)
+   Specificity note: "body .trust-badge" (0,1,1) beats theme.css ".trust-badge" (0,1,0)
+   which loads AFTER this file in default.html / container-detail.html. Same for dashboard.css
+   which loads AFTER theme.css so the plain rule there already wins on dashboard pages.
    ----------------------------------------------------------------------- */
-.trust-badge {
+body .trust-badge {
   font-family: var(--font-family-mono);
   font-size: var(--font-size-caption);   /* 12px */
   font-weight: var(--font-weight-medium); /* 500 */

@@ -92,6 +92,12 @@
   word-break: break-all;  /* mobile: long hashes wrap inside the code block */
 }
 
+/* L-N5: verify command in Provenance row — wraps on mobile like hash-long */
+.evidence-row code.provenance-cmd {
+  word-break: break-all;
+  font-size: var(--font-size-caption);  /* slightly smaller for long commands */
+}
+
 /* -----------------------------------------------------------------------
    Inline copy button (⧉ icon)
    ----------------------------------------------------------------------- */

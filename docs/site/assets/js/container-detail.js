@@ -114,6 +114,7 @@
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
       var variantData = {
+        tag: tag,
         attestation_url: el.dataset.attestationUrl || '',
         trivy_summary: null,
         multi_arch_platforms: []
@@ -729,6 +730,7 @@
     });
 
     // Fix #3: update security-scan-card chrome (header h3 date + card visibility) on variant change
+    // M-N4: also update the clean-scan message (.scan-clean-msg) reactively.
     document.addEventListener('phase-b-variant-changed', function(e) {
       var detail = e.detail;
       if (!detail) return;
@@ -740,6 +742,20 @@
         if (header) {
           var dateStr = (detail.trivy_summary.last_scan || '').slice(0, 10);
           header.textContent = 'Trivy · last scan ' + dateStr;
+        }
+        // Update the clean-scan message: show iff critical + high == 0
+        var cleanMsg = card.querySelector('.scan-clean-msg');
+        if (cleanMsg) {
+          var counts = (detail.trivy_summary && detail.trivy_summary.counts) || {};
+          var critical = counts.critical || 0;
+          var high = counts.high || 0;
+          var scanDate = (detail.trivy_summary.last_scan || '').slice(0, 10);
+          if (critical === 0 && high === 0) {
+            cleanMsg.textContent = 'No CRITICAL alerts at last scan (' + scanDate + ').';
+            cleanMsg.style.display = '';
+          } else {
+            cleanMsg.style.display = 'none';
+          }
         }
       } else {
         // Variant has no Trivy data — hide the entire card
@@ -760,10 +776,19 @@
 
     // Event delegation
     document.addEventListener('click', function(e) {
-      // Skip .variant-tag clicks that originated inside <version-tabs> —
-      // those are handled via the 'version-tabs-changed' event above.
+      // M-N2: fallback — if version-tabs.js failed to register the custom element,
+      // we still handle tab clicks here so variant switching remains operative.
+      // If <version-tabs> is registered AND the click is inside it, defer to
+      // the 'version-tabs-changed' listener above (which calls selectVariant).
       var tag = e.target.closest('.variant-tag');
-      if (tag && !e.target.closest('version-tabs')) selectVariant(tag);
+      if (tag) {
+        var insideVersionTabs = e.target.closest('version-tabs');
+        var versionTabsDefined = typeof customElements !== 'undefined' &&
+                                 customElements.get('version-tabs');
+        if (!insideVersionTabs || !versionTabsDefined) {
+          selectVariant(tag);
+        }
+      }
 
       var chip = e.target.closest('.sbom-type-chip-clickable');
       if (chip) togglePackagePanel(chip.dataset.type);
@@ -781,12 +806,14 @@
         var textToCopy = copyBtn.dataset.copy || '';
         var liveRegion = document.getElementById('status-live');
         function showProvCopied() {
+          // M-N8: do NOT use aria-pressed on one-shot copy actions (aria-pressed is for
+          // toggle buttons only). The live region provides the announcement instead.
           copyBtn.textContent = '✓';
-          copyBtn.setAttribute('aria-pressed', 'true');
+          copyBtn.setAttribute('aria-label', 'Copied');
           if (liveRegion) liveRegion.textContent = 'Copied';
           setTimeout(function () {
             copyBtn.textContent = '⧉';
-            copyBtn.removeAttribute('aria-pressed');
+            copyBtn.setAttribute('aria-label', copyBtn.dataset.ariaLabel || 'Copy to clipboard');
             if (liveRegion) liveRegion.textContent = '';
           }, 2000);
         }

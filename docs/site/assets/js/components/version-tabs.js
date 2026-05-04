@@ -108,7 +108,14 @@
       var tablist = tab.closest('[role="tablist"]');
       if (!tablist) return;
 
-      var tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      // M-N6: exclude hidden/synthetic tabs from arrow-key navigation.
+      // Synthetic tabs use style="display: none" + aria-hidden="true"; offsetParent===null
+      // covers display:none at any ancestor level.
+      var tabs = Array.from(tablist.querySelectorAll('[role="tab"]')).filter(function(t) {
+        return t.offsetParent !== null &&
+               t.getAttribute('aria-hidden') !== 'true' &&
+               !t.hasAttribute('hidden');
+      });
       var idx = tabs.indexOf(tab);
       var target;
 

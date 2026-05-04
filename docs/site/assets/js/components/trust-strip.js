@@ -69,8 +69,12 @@
         el.style.display = 'none';
         return;
       }
-      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64")
-      el.textContent = '🏗 ' + platforms.map(function(p) { return p.toUpperCase(); }).join(' + ');
+      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64").
+      // Defensively strip "os/" prefix (e.g. "linux/amd64" → "amd64") before uppercasing.
+      el.textContent = '🏗 ' + platforms.map(function(p) {
+        var arch = p.includes('/') ? p.split('/').pop() : p;
+        return arch.toUpperCase();
+      }).join(' + ');
       el.style.display = '';
     }
   }
