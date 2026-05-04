@@ -728,6 +728,42 @@
       .meta-card { padding: 1rem; }
       .meta-card-value { font-size: 1rem; word-break: break-all; }
     }
+    /* ============================================================
+       Orphan p-elements — PR5 Phase C closure
+       ============================================================ */
+
+    /* Explanatory meta note below the Variant Comparison heading (postgres only) */
+    .variants-note {
+      font-size: var(--font-size-body-sm);   /* 14px */
+      color: var(--color-text-muted);
+      margin: 0 0 var(--space-md);           /* 16px gap before the table */
+      line-height: var(--line-height-normal);
+    }
+
+    /* "No CRITICAL alerts" success line in security-scan-card (conditional) */
+    .scan-clean-msg {
+      font-size: var(--font-size-body-sm);   /* 14px */
+      color: var(--color-trust-trivy-clean-fg);
+      margin: var(--space-sm) 0 0;           /* 8px top gap from severity-grid */
+      line-height: var(--line-height-normal);
+    }
+
+    /* "→ Full report via gh api" CTA line at the foot of security-scan-card */
+    .full-report {
+      font-size: var(--font-size-body-sm);   /* 14px */
+      color: var(--color-text-muted);
+      margin: var(--space-sm) 0 0;           /* 8px top gap */
+      line-height: var(--line-height-normal);
+    }
+
+    .full-report a {
+      color: var(--color-action-primary);
+    }
+
+    .full-report a:hover {
+      color: var(--color-action-primary-hover);
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
