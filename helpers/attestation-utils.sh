@@ -41,14 +41,16 @@ get_attestation_id() {
         return 0
     fi
 
-    # Cache miss — query GitHub Attestations API
+    # Cache miss — query GitHub Attestations API.
+    # Endpoint is /repos/{owner}/{repo}/attestations/{subject_digest} (path),
+    # NOT ?subject_digest=X (query). The query form returns 404.
     local response
     response=$(gh api \
-        "repos/${ATTESTATION_UTILS_OWNER_REPO}/attestations?subject_digest=${digest}" \
+        "repos/${ATTESTATION_UTILS_OWNER_REPO}/attestations/${digest}" \
         2>/dev/null) || {
-        log_warning "gh api attestations failed for digest ${digest} (auth or network)"
+        log_warning "gh api attestations failed for digest ${digest} (auth, network, or no attestation registered)"
         [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
-            echo "[debug] attestation API call failed for digest=$digest (auth or network error)" >&2
+            echo "[debug] attestation API call failed for digest=$digest" >&2
         _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     }
