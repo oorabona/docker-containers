@@ -1,0 +1,196 @@
+/* provenance.css — Provenance section (Camille's primary screenshot target)
+   Verbatim from design_system_spec_phase_c.md §"Provenance section CSS spec" lines 334–428,
+   with minor additions for copy-btn mobile sizing and empty-state row.
+   Depends on: tokens.css. */
+
+/* -----------------------------------------------------------------------
+   Section surface
+   ----------------------------------------------------------------------- */
+.provenance {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-inset-section);  /* 32px */
+  margin-block: var(--space-xl);
+}
+
+/* -----------------------------------------------------------------------
+   Section header
+   ----------------------------------------------------------------------- */
+.provenance-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-tight);  /* 8px */
+  margin-bottom: var(--space-stack-section);  /* 32px */
+}
+
+.provenance .eyebrow {
+  /* Augments .eyebrow from tokens.css — mono uppercase 0.08em */
+  font: var(--text-caption);
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--letter-spacing-wider);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.provenance h2 {
+  font: var(--text-h3);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+}
+
+/* -----------------------------------------------------------------------
+   Evidence definition list
+   ----------------------------------------------------------------------- */
+.evidence-list {
+  display: grid;
+  gap: var(--space-stack-tight);  /* 8px between rows — dense but scannable */
+}
+
+.evidence-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 3fr;
+  gap: var(--space-md) var(--space-lg);  /* 16px row-gap, 24px col-gap */
+  align-items: baseline;
+}
+
+.evidence-row dt {
+  font: var(--text-body-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+
+.evidence-row dd {
+  font: var(--text-body);
+  color: var(--color-text-primary);
+  margin: 0;
+  /* Flex so inline copy button sits on same baseline as value */
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+/* -----------------------------------------------------------------------
+   Hash code blocks
+   ----------------------------------------------------------------------- */
+.evidence-row code.hash {
+  font: var(--text-code);
+  background: var(--color-surface-overlay);
+  padding: var(--space-inset-squish-md);  /* 8px 16px */
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+}
+
+.evidence-row code.hash-long {
+  word-break: break-all;  /* mobile: long hashes wrap inside the code block */
+}
+
+/* -----------------------------------------------------------------------
+   Inline copy button (⧉ icon)
+   ----------------------------------------------------------------------- */
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--motion-duration-short) var(--easing-standard),
+              border-color var(--motion-duration-short) var(--easing-standard);
+}
+
+.copy-btn:hover {
+  color: var(--color-action-primary);
+  border-color: var(--color-action-primary);
+}
+
+.copy-btn:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-btn {
+    transition: none;
+  }
+}
+
+/* -----------------------------------------------------------------------
+   Empty / awaiting row state
+   ----------------------------------------------------------------------- */
+.evidence-empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: var(--font-size-body-sm);
+}
+
+/* -----------------------------------------------------------------------
+   Inline verify command block
+   ----------------------------------------------------------------------- */
+.provenance-verify-cmd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.provenance-verify-cmd code {
+  font: var(--text-code);
+  background: var(--color-surface-overlay);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+/* -----------------------------------------------------------------------
+   Section footer — verify CTA
+   ----------------------------------------------------------------------- */
+.provenance-footer {
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* -----------------------------------------------------------------------
+   Mobile (≤640px) — single column, slightly more breathing room
+   ----------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .evidence-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-2xs);  /* tight — label sits just above value */
+  }
+
+  .evidence-list {
+    gap: var(--space-stack-normal);  /* 16px between rows on mobile */
+  }
+
+  .provenance {
+    padding: var(--space-md);
+  }
+
+  /* Enlarge copy buttons to 32×32 touch target on mobile */
+  .copy-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .evidence-row dd {
+    align-items: flex-start;
+  }
+}

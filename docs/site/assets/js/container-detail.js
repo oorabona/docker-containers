@@ -710,10 +710,23 @@
       }
     }
 
+    // <version-tabs> emits 'version-tabs-changed' when user activates a tab.
+    // selectVariant() reads all data-* from the activated <button.variant-tag>
+    // and dispatches `phase-b-variant-changed` for <trust-strip>/<security-scan>.
+    document.addEventListener('version-tabs-changed', function(e) {
+      // Find the activated button by tag value — it carries all data-* the page needs
+      var activatedTab = document.querySelector(
+        '.variant-tag[data-tag="' + (e.detail && e.detail.tag ? e.detail.tag : '') + '"]'
+      );
+      if (activatedTab) selectVariant(activatedTab);
+    });
+
     // Event delegation
     document.addEventListener('click', function(e) {
+      // Skip .variant-tag clicks that originated inside <version-tabs> —
+      // those are handled via the 'version-tabs-changed' event above.
       var tag = e.target.closest('.variant-tag');
-      if (tag) selectVariant(tag);
+      if (tag && !e.target.closest('version-tabs')) selectVariant(tag);
 
       var chip = e.target.closest('.sbom-type-chip-clickable');
       if (chip) togglePackagePanel(chip.dataset.type);
@@ -725,6 +738,35 @@
         copyDetailPullCommand();
       }
 
+      // Provenance section copy buttons — .copy-btn[data-copy] pattern
+      var copyBtn = e.target.closest('.copy-btn[data-copy]');
+      if (copyBtn) {
+        var textToCopy = copyBtn.dataset.copy || '';
+        var liveRegion = document.getElementById('status-live');
+        function showProvCopied() {
+          copyBtn.textContent = '✓';
+          copyBtn.setAttribute('aria-pressed', 'true');
+          if (liveRegion) liveRegion.textContent = 'Copied';
+          setTimeout(function () {
+            copyBtn.textContent = '⧉';
+            copyBtn.removeAttribute('aria-pressed');
+            if (liveRegion) liveRegion.textContent = '';
+          }, 2000);
+        }
+        navigator.clipboard.writeText(textToCopy).then(showProvCopied).catch(function () {
+          // Fallback for Safari/older browsers
+          var ta = document.createElement('textarea');
+          ta.value = textToCopy;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showProvCopied();
+        });
+      }
+
       if (e.target.closest('.theme-toggle')) {
         ThemeManager.toggleTheme();
       }
@@ -734,8 +776,9 @@
       if (e.key === 'Enter' || e.key === ' ') {
         var chip = e.target.closest('.sbom-type-chip-clickable');
         if (chip) { e.preventDefault(); togglePackagePanel(chip.dataset.type); return; }
+        // Skip .variant-tag keydown inside <version-tabs> — handled by version-tabs.js
         var tag = e.target.closest('.variant-tag');
-        if (tag) { e.preventDefault(); selectVariant(tag); }
+        if (tag && !e.target.closest('version-tabs')) { e.preventDefault(); selectVariant(tag); }
       }
     });
 

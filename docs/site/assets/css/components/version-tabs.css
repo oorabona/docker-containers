@@ -1,0 +1,136 @@
+/* version-tabs.css — <version-tabs> component styles (M4 closure)
+   Replaces .variant-tags-row span pills with keyboard-navigable tab buttons.
+   Depends on: tokens.css (loaded before this file in default.html / container-detail.html). */
+
+/* -----------------------------------------------------------------------
+   Host element — stretch to block, no extra margin
+   ----------------------------------------------------------------------- */
+version-tabs {
+  display: block;
+}
+
+/* -----------------------------------------------------------------------
+   Version group — one tablist per version
+   ----------------------------------------------------------------------- */
+.version-tabs-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: baseline;
+  margin-block: var(--space-md);
+}
+
+/* Eyebrow version label above the tab row */
+.version-tabs-group-label {
+  /* .eyebrow is defined in tokens.css — JetBrains Mono regular uppercase 0.08em */
+  width: 100%;
+  margin-block-end: var(--space-xs);
+}
+
+/* -----------------------------------------------------------------------
+   Tab button — base state
+   ----------------------------------------------------------------------- */
+.version-tab {
+  /* Reset <button> defaults */
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+
+  /* Layout */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-inset-squish-md);  /* 8px 16px */
+  border-radius: var(--radius-md);
+
+  /* Typography */
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body-sm);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-normal);
+  text-decoration: none;
+
+  /* Color */
+  color: var(--color-text-secondary);
+
+  /* Motion */
+  transition:
+    color          var(--motion-duration-short) var(--easing-standard),
+    background     var(--motion-duration-short) var(--easing-standard),
+    border-color   var(--motion-duration-short) var(--easing-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .version-tab {
+    transition: none;
+  }
+}
+
+/* -----------------------------------------------------------------------
+   Tab button — hover state
+   ----------------------------------------------------------------------- */
+.version-tab:hover {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+/* -----------------------------------------------------------------------
+   Tab button — selected / active state
+   ----------------------------------------------------------------------- */
+.version-tab--selected,
+.version-tab[aria-selected="true"] {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+  border-bottom: 2px solid var(--color-action-primary);
+  /* Compensate 1px transparent → 2px active so layout doesn't shift */
+  padding-block-end: calc(var(--space-sm) - 1px);
+}
+
+/* -----------------------------------------------------------------------
+   Tab button — focus-visible ring (WCAG 2.2 §2.4.11 min 2px)
+   ----------------------------------------------------------------------- */
+.version-tab:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* -----------------------------------------------------------------------
+   Default-variant badge inside a tab
+   ----------------------------------------------------------------------- */
+.version-tab-default-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--letter-spacing-wide);
+  text-transform: uppercase;
+  color: var(--color-action-primary);
+  border: 1px solid var(--color-action-primary);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  line-height: 1.4;
+}
+
+/* -----------------------------------------------------------------------
+   Mobile — single-row horizontal scroll with snap
+   ----------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .version-tabs-group {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    /* Hide scrollbar cosmetically — still scrollable */
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .version-tabs-group::-webkit-scrollbar {
+    display: none;
+  }
+
+  .version-tab {
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+}
