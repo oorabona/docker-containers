@@ -1118,20 +1118,26 @@ jobs:
 
             # Compare with previously cached SBOM (if exists)
             cached_sbom=".build-lineage/${basename_file}"
+            compare_ok=true
             if [[ -f "$cached_sbom" ]]; then
-              compare_sboms "$sbom_file" "$cached_sbom" \
-                ".build-lineage/${container_tag}.changelog.json" \
-                || { echo "::warning::SBOM comparison failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
+              if ! compare_sboms "$sbom_file" "$cached_sbom" \
+                    ".build-lineage/${container_tag}.changelog.json"; then
+                echo "::warning::SBOM comparison failed for $container_tag — skipping build history append to avoid recording stale changelog"
+                sbom_failed=$((sbom_failed + 1))
+                compare_ok=false
+              fi
             else
               echo "No previous SBOM for $container_tag — first build"
             fi
 
-            # Extract summary and append to build history
-            summary=$(extract_sbom_summary "$sbom_file")
-            lineage_file=".build-lineage/${container_tag}.json"
-            append_build_history "$lineage_file" "$summary" \
-              ".build-lineage/${container_tag}.history.json" \
-              || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
+            # Extract summary and append to build history (only if compare succeeded or no prior SBOM)
+            if [[ "$compare_ok" == "true" ]]; then
+              summary=$(extract_sbom_summary "$sbom_file")
+              lineage_file=".build-lineage/${container_tag}.json"
+              append_build_history "$lineage_file" "$summary" \
+                ".build-lineage/${container_tag}.history.json" \
+                || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
+            fi
 
             # Replace cached SBOM with new one
             cp "$sbom_file" "$cached_sbom"

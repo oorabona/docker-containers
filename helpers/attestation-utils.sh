@@ -61,7 +61,7 @@ get_attestation_id() {
     if [[ -z "$id" ]]; then
         # No attestation found for this digest — expected for builds with SBOM step skipped
         [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
-            echo "[debug] attestation 404 for digest=$digest (no attestation record in GitHub API)" >&2
+            echo "[debug] attestation API returned no records for digest=$digest (response had empty attestations array)" >&2
         _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     fi

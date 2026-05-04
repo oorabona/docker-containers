@@ -43,3 +43,15 @@ setup() {
     STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_MULTI_VARIANT"
     [ "$status" -eq 1 ]
 }
+
+@test "verify-dashboard-data: empty-versions fixture flags <no-versions> and <no-variants> sentinels" {
+    FIXTURE_EMPTY_VERSIONS="$PROJECT_ROOT/tests/fixtures/containers-empty-versions.yml"
+    run "$VERIFY_SCRIPT" "$FIXTURE_EMPTY_VERSIONS"
+    [ "$status" -eq 0 ]
+    # Both sentinels should fire
+    [[ "$output" == *"No versions found for lonely"* ]]
+    [[ "$output" == *"Version 0 of phantom has no variants"* ]]
+    # Healthy container should NOT trigger any warning
+    ! [[ "$output" == *"Missing"*"healthy"* ]]
+    ! [[ "$output" == *"No versions"*"healthy"* ]]
+}

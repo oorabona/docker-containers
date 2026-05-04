@@ -41,11 +41,28 @@ fi
 
 # Convert the entire YAML to JSON once. yq's -o=json flag is fast and avoids
 # bash word-splitting hazards on nested structures.
-yaml_json=$(yq -o=json '.' "$YAML" 2>/dev/null || true)
+# Capture stderr separately so yq parse errors are surfaced (not silently swallowed).
+yq_stderr=$(mktemp)
+trap 'rm -f "$yq_stderr"' EXIT
 
+if ! yaml_json=$(yq -o=json '.' "$YAML" 2>"$yq_stderr"); then
+  echo "::error file=$YAML::yq failed to parse YAML:" >&2
+  cat "$yq_stderr" >&2
+  exit 2
+fi
+
+# Valid parse but empty document
 if [[ -z "$yaml_json" || "$yaml_json" == "null" ]]; then
-  echo "::warning::$YAML contains no parseable container data — nothing to verify"
+  echo "::notice::$YAML parsed successfully but contains no documents — nothing to verify"
   exit 0
+fi
+
+# Root MUST be a sequence (list of containers). Reject scalars / mappings early
+# with a clear error rather than letting jq's iteration error leak out later.
+if ! jq -e 'type == "array"' <<<"$yaml_json" >/dev/null 2>&1; then
+  root_type=$(jq -r 'type' <<<"$yaml_json" 2>/dev/null || echo "unknown")
+  echo "::error file=$YAML::expected top-level YAML sequence (list of containers), got $root_type" >&2
+  exit 2
 fi
 
 container_count=$(jq 'length' <<<"$yaml_json")
@@ -64,22 +81,27 @@ gaps_tsv=$(jq -r '
     "\($c)\t-\t-\t-\t<no-versions>"
   else
     (.versions // []) | to_entries[] |
-    .key as $v | (.value.variants // []) | to_entries[] |
-    .key as $i | .value as $variant |
-    ($variant.tag // "unknown") as $tag |
-    {
-      attestation_url: ($variant.attestation_url // null),
-      trivy_summary: ($variant.trivy_summary // null),
-      sbom_summary: ($variant.sbom_summary // null),
-      multi_arch_platforms: ($variant.multi_arch_platforms // null)
-    } | to_entries[] |
-    select(
-      .value == null or
-      .value == "" or
-      (.value | type == "object" and length == 0) or
-      (.value | type == "array" and length == 0)
-    ) |
-    "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
+    .key as $v | (.value.variants // []) as $variants |
+    if ($variants | length) == 0 then
+      "\($c)\t\($v)\t-\t-\t<no-variants>"
+    else
+      $variants | to_entries[] |
+      .key as $i | .value as $variant |
+      ($variant.tag // "unknown") as $tag |
+      {
+        attestation_url: ($variant.attestation_url // null),
+        trivy_summary: ($variant.trivy_summary // null),
+        sbom_summary: ($variant.sbom_summary // null),
+        multi_arch_platforms: ($variant.multi_arch_platforms // null)
+      } | to_entries[] |
+      select(
+        .value == null or
+        .value == "" or
+        (.value | type == "object" and length == 0) or
+        (.value | type == "array" and length == 0)
+      ) |
+      "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
+    end
   end
 ' <<<"$yaml_json")
 
@@ -91,11 +113,17 @@ fi
 gaps=0
 while IFS=$'\t' read -r c v i tag field; do
   [[ -z "$c" ]] && continue
-  if [[ "$field" == "<no-versions>" ]]; then
-    echo "::warning file=$YAML::No versions found for $c"
-  else
-    echo "::warning file=$YAML::Missing $field for $c variant $tag (versions[$v].variants[$i])"
-  fi
+  case "$field" in
+    "<no-versions>")
+      echo "::warning file=$YAML::No versions found for $c"
+      ;;
+    "<no-variants>")
+      echo "::warning file=$YAML::Version $v of $c has no variants — trust-strip data cannot render"
+      ;;
+    *)
+      echo "::warning file=$YAML::Missing $field for $c variant $tag (versions[$v].variants[$i])"
+      ;;
+  esac
   gaps=$((gaps + 1))
 done <<< "$gaps_tsv"
 
