@@ -438,6 +438,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate dashboard data
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           chmod +x generate-dashboard.sh
 
