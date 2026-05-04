@@ -17,7 +17,7 @@ Phase B's investment in supply-chain trust artifacts is not surfaced to the audi
 
 ## Decision
 
-Adopt a **3-tier W3C Design Token Community Group** taxonomy (primitive → semantic → component) and ship the redesign in **3 PRs of monotonic scope**:
+Adopt a **3-tier W3C Design Token Community Group** taxonomy (primitive → semantic → trust-domain) and ship the redesign in **3 PRs of monotonic scope**:
 
 - **PR1 — Foundation** (~300 LOC): `tokens.css` NEW (full primitive + semantic + light-mode-prep) + `theme.css` refactored to deprecated aliases pointing at new tokens + targeted patches in `dashboard.css` / `container-detail.css` / `blog.css` to fix CSS findings (`.container` centering, `.tag-pill` spacing, contrast bumps via tokens, font-family + type classes, motion variables, 3% noise overlay on the existing navy gradient).
 - **PR2 — Components** (~400 LOC): SBOM data wiring (Liquid template populates `data-digest`), `<security-scan-card>` web component (replaces plain-text Trivy section), `<version-tabs>` accessible component (`role="tablist"` keyboard-navigable), consolidated **Provenance section** with definition-list semantics + mono code blocks + copy buttons (the artifact Camille screenshots).
@@ -47,7 +47,7 @@ The trust strip is the project's non-substitutable visual signature (Phase B inv
 
 ## Evidence
 
-- UX audit (2026-05-01): 3 CRITICAL + 5 MAJOR + 10 MINOR findings on the live site, captured at `1440×900` desktop and `390×844` mobile viewports. 24 screenshots in the prior session's `/tmp/audit-screenshots/`.
+- UX audit (2026-05-01): 3 CRITICAL + 5 MAJOR + 10 MINOR findings on the live site, captured at `1440×900` desktop and `390×844` mobile viewports (24 screenshots).
 - Personas + journey map (`design:research` skill, 2026-05-03): heuristic Cooper-style behavioral personas — primary = Camille (AppSec evaluator), secondary = Yaël (SRE), supplemental = Sam (indie). Triage trough is the trust-or-leave moment.
 - Catalog validation (`ui-ux-pro-max` skill, 2026-05-04): Swiss Modernism 2.0 + "Modern Dark Cinema (Inter System)" + Developer Tool / IDE palette templates independently match the locked spec; tracking values for Inter weights match catalog recommendations within 0.5pt.
 - Industry references: Stripe Docs (institutional API documentation), pkg.go.dev (mono-confident package metadata), Sigstore website (teal-accented supply-chain UI), Vercel Docs (Inter-confident dark mode), Anthropic docs (refined typography, restrained palette), Linear (density + warm editorial type).

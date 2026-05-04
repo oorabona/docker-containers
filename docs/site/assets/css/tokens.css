@@ -54,6 +54,10 @@
   --color-violet-500: #8B5CF6; /* preserve current --accent-purple */
   --color-violet-700: #6D28D9; /* multi-arch on light — 7.10:1 on #FFFFFF (WCAG AAA) */
 
+  /* --- Pink (accent-only — no semantic role yet; required for --accent-pink alias) --- */
+  --color-pink-400: #EC4899;   /* dark-mode accent — no a11y claim */
+  --color-pink-700: #BE185D;   /* light-mode accent — 5.88:1 on #FFFFFF (WCAG AA)    */
+
   /* --- Neutral scale (text, borders) --- */
   --color-neutral-50:  #F4F5F7;  /* off-white — body text on dark  */
   --color-neutral-200: #C7CCD4;  /* secondary text — 9.1:1 on navy-950 */

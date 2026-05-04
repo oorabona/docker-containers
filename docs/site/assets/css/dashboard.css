@@ -3,8 +3,9 @@
     /* C1 centering: .container base rule lives in theme.css (shared layout primitive).
        Dashboard-specific responsive overrides at @media breakpoints live below. */
 
-    /* Headline Inter display tweaks (Gate 4 — ss01/cv11 typographic features) */
-    h1, h2, .hero-title, .dashboard-hero-title {
+    /* .dashboard-hero-title: dashboard-specific heading class not covered by the
+       global h1,h2,.hero-title rule in tokens.css — keep only this extension. */
+    .dashboard-hero-title {
       font-feature-settings: "ss01", "cv11";
       font-optical-sizing: auto;
     }

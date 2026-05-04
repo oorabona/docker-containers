@@ -14,7 +14,7 @@
   --accent-yellow: var(--color-amber-500);   /* was: #f59e0b */
   --accent-blue:   var(--color-blue-500);    /* was: #3b82f6 */
   --accent-purple: var(--color-violet-500);  /* was: #8b5cf6 */
-  --accent-pink:   #ec4899;                  /* no semantic equivalent yet — keep flat */
+  --accent-pink:   var(--color-pink-400);    /* #EC4899 */
 
   /* Text aliases → semantic tokens from tokens.css.
      M3 fix: --text-secondary/muted now resolve to contrast-validated values:
@@ -54,12 +54,12 @@
   --glass-border: rgba(0, 0, 0, 0.15);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
 
-  /* Deprecated accent aliases — light equivalents */
-  --accent-green:  #047857;
-  --accent-yellow: #b45309;
-  --accent-blue:   #1d4ed8;
-  --accent-purple: #6d28d9;
-  --accent-pink:   #be185d;
+  /* Deprecated accent aliases — light equivalents (reference 700-level primitives) */
+  --accent-green:  var(--color-green-700);   /* #047857 — 5.48:1 on white */
+  --accent-yellow: var(--color-amber-700);   /* #B45309 — 5.02:1 on white */
+  --accent-blue:   var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white */
+  --accent-purple: var(--color-violet-700);  /* #6D28D9 — 7.10:1 on white */
+  --accent-pink:   var(--color-pink-700);    /* #BE185D — 5.88:1 on white */
 
   --bg-gradient-1: #e0e7ff;
   --bg-gradient-2: #ddd6fe;
