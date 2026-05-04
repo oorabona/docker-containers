@@ -337,8 +337,9 @@ jobs:
             [[ -d "$staging_run_dir" ]] || continue
             while IFS= read -r -d '' src; do
               fname=$(basename "$src")
-              # First-seen wins among hits with same digest-presence; a later run
-              # only gets a turn if the earlier one lacked oci_subject_digest.
+              # Only skip if a previous iteration already secured a digest-bearing
+              # version. A digest-less provisional copy leaves the slot open so a
+              # later run that carries oci_subject_digest can override it.
               if [[ -n "${lineage_seen[$fname]:-}" ]]; then
                 continue
               fi
@@ -350,6 +351,7 @@ jobs:
                   # Cache has digest, source doesn't — preserve cache to avoid
                   # regressing attestation lookup (Capture OCI subject digest is
                   # continue-on-error; a newer run may have failed that step).
+                  # Mark seen: the cached version already satisfies the goal.
                   echo "::notice::Preserving cached lineage for $fname (source from run $run_id lacks oci_subject_digest)"
                   skipped_no_digest=$((skipped_no_digest + 1))
                   lineage_seen[$fname]=1
@@ -357,8 +359,14 @@ jobs:
                 fi
               fi
               cp -- "$src" "$target"
-              lineage_seen[$fname]=1
               merged_lineage=$((merged_lineage + 1))
+              if [[ "$src_has_digest" == "true" ]]; then
+                # Got a digest-bearing version — lock the slot so no later
+                # (older) run can overwrite it with a stale copy.
+                lineage_seen[$fname]=1
+              fi
+              # src lacks digest AND cache also lacks digest: leave slot open
+              # so a later iteration with a digest-bearing artifact can override.
             done < <(find "$staging_run_dir" -name '*.json' \
               -not -name '*.sbom.json' \
               -not -name '*.changelog.json' \

@@ -1163,7 +1163,7 @@ generate_data() {
                 attestation_url=$(get_attestation_url "$attestation_id")
             fi
             trivy_category=$(build_trivy_category "$container" "$current_version" "linux/amd64")
-            trivy_summary=$(get_trivy_summary "$trivy_category" 2>/dev/null || echo "{}")
+            trivy_summary=$(get_trivy_summary "$trivy_category" || echo "{}")
             [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
                 echo "[debug] non-variant: trivy_summary for $container-$current_version = ${trivy_summary:0:60}…" >&2
 

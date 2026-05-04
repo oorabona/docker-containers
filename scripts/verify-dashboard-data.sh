@@ -188,5 +188,10 @@ while IFS=$'\t' read -r c v i tag field; do
   gaps=$((gaps + 1))
 done <<< "$gaps_tsv"
 
-echo "::warning::$gaps data gap(s) found in $YAML (advisory mode — run update-dashboard.yaml in CI to hydrate)."
-[[ "$STRICT" == "1" ]] && exit 1 || exit 0
+if [[ "$STRICT" == "1" ]]; then
+  echo "::error file=$YAML::$gaps data gap(s) found in $YAML (STRICT mode — failing the smoke gate)" >&2
+  exit 1
+else
+  echo "::warning file=$YAML::$gaps data gap(s) found in $YAML (advisory mode — run update-dashboard.yaml in CI to hydrate)"
+  exit 0
+fi
