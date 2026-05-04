@@ -99,9 +99,10 @@
 .status-pill i { font-size: 1em; }
 
 .status-pill-ok {
-  background: rgba(16, 185, 129, 0.14);
+  /* m8 fix: use semantic feedback tokens — was ad-hoc rgba */
+  background: var(--color-feedback-success-bg);
   border-color: rgba(16, 185, 129, 0.32);
-  color: var(--accent-green);
+  color: var(--color-feedback-success-fg);
 }
 
 .status-pill-info {
@@ -543,136 +544,9 @@
 }
 
 /* === Phase B: trust signal layer === */
-
-/* ============================================================
-   Trust strip — row of trust badges (cards + detail pages)
-   ============================================================ */
-
-.trust-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 1rem 0;
-  padding: 0.25rem 0;
-}
-
-/* ============================================================
-   Trust badge — chip style, slightly more prominent than .tag-pill
-   ============================================================ */
-
-.trust-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3em;
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  font-size: 0.8rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  text-decoration: none;
-  color: inherit;
-  transition: background 150ms ease, border-color 150ms ease;
-  cursor: pointer;
-}
-
-.trust-badge i { font-size: 0.9em; }
-
-/* SBOM — green tint (matches status-pill-ok family) */
-.trust-badge--sbom {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.28);
-  color: var(--accent-green);
-}
-
-.trust-badge--sbom:hover {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(16, 185, 129, 0.45);
-}
-
-/* Multi-arch — blue/info tint */
-.trust-badge--multi-arch {
-  background: rgba(59, 130, 246, 0.12);
-  border-color: rgba(59, 130, 246, 0.28);
-  color: var(--accent-blue);
-}
-
-.trust-badge--multi-arch:hover {
-  background: rgba(59, 130, 246, 0.2);
-  border-color: rgba(59, 130, 246, 0.45);
-}
-
-/* Deps — neutral/info tint */
-.trust-badge--deps {
-  background: rgba(59, 130, 246, 0.08);
-  border-color: rgba(59, 130, 246, 0.2);
-  color: var(--accent-blue);
-}
-
-.trust-badge--deps:hover {
-  background: rgba(59, 130, 246, 0.15);
-  border-color: rgba(59, 130, 246, 0.35);
-}
-
-/* Verify — neutral/subtle (meta link, not a trust signal itself) */
-.trust-badge--verify {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.1);
-  color: var(--text-muted);
-}
-
-.trust-badge--verify:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
-[data-theme="light"] .trust-badge--verify {
-  background: rgba(15, 23, 42, 0.04);
-  border-color: rgba(15, 23, 42, 0.1);
-}
-
-[data-theme="light"] .trust-badge--verify:hover {
-  background: rgba(15, 23, 42, 0.08);
-  border-color: rgba(15, 23, 42, 0.18);
-}
-
-/* Trivy scan — default green (0 CRITICAL) */
-.trust-badge--trivy {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.28);
-  color: var(--accent-green);
-}
-
-.trust-badge--trivy:hover {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(16, 185, 129, 0.45);
-}
-
-/* Trivy overrides per data-severity attribute */
-.trust-badge--trivy[data-severity="critical"] {
-  background: rgba(239, 68, 68, 0.14);
-  border-color: rgba(239, 68, 68, 0.35);
-  color: #f87171;
-}
-
-.trust-badge--trivy[data-severity="critical"]:hover {
-  background: rgba(239, 68, 68, 0.22);
-  border-color: rgba(239, 68, 68, 0.5);
-}
-
-.trust-badge--trivy[data-severity="high"] {
-  background: rgba(245, 158, 11, 0.14);
-  border-color: rgba(245, 158, 11, 0.32);
-  color: var(--accent-yellow);
-}
-
-.trust-badge--trivy[data-severity="high"]:hover {
-  background: rgba(245, 158, 11, 0.22);
-  border-color: rgba(245, 158, 11, 0.48);
-}
-
-/* medium / low / info: keep default green (inherits .trust-badge--trivy) */
+/* .trust-strip / .trust-badge / .trust-badge--* base styles moved to theme.css (PR1 v3).
+   Reason: container-detail.html does not load blog.css, so M2 fix for .trust-badge--verify
+   was unreachable on detail pages. theme.css is loaded by all layouts. */
 
 /* ============================================================
    Security scan section (detail page anchor)

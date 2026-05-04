@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="{{ page.lang | default: site.lang | default: 'en' }}">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://img.shields.io https://github.com; connect-src 'self'"/>
+  <title>{{ page.title }} | {{ site.title }}</title>
+
+  <!-- Google Fonts: Inter (sans) + JetBrains Mono (mono) — Phase C typography spec -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tabler Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.36.1/dist/tabler-icons.min.css" crossorigin="anonymous">
+
+  <!-- tokens.css MUST load first — defines CSS custom properties that all other sheets reference -->
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
+</head>
+<body>
+  {{ content }}
+</body>
+</html>

@@ -1,0 +1,339 @@
+/* ==========================================================
+   tokens.css — Design System Foundation (Phase C PR1)
+   W3C DTCG 3-tier: Primitive → Semantic → Trust-domain
+   Dark mode default; light-mode tokens prepped (no toggle UI in PR1)
+   ========================================================== */
+
+/* ----------------------------------------------------------
+   TIER 1 — Primitive palette (raw values, no semantics)
+   ---------------------------------------------------------- */
+
+:root {
+  /* --- Navy tonal scale (page surfaces, gradient anchors) --- */
+  --color-navy-950: #0F1729;   /* deepest — page bg base         */
+  --color-navy-900: #16213E;   /* preserve current anchor        */
+  --color-navy-800: #1A2A4A;   /* elevated surface 1 (cards)     */
+  --color-navy-700: #1F3155;   /* elevated surface 2 (modals)    */
+  --color-navy-600: #2A3F66;   /* elevated surface 3 (popovers)  */
+  --color-navy-500: #344B73;   /* top elevation                  */
+
+  /* --- Blue (action / links / CTA) --- */
+  --color-blue-300: #93C5FD;
+  --color-blue-400: #60A5FA;   /* primary action on dark         */
+  --color-blue-500: #3B82F6;   /* preserve current --accent-blue */
+  --color-blue-600: #2563EB;
+  --color-blue-700: #1D4ED8;
+
+  /* --- Green (status: ok / Trivy clean / All Systems Green) --- */
+  --color-green-300: #86EFAC;
+  --color-green-400: #4ADE80;  /* foreground on dark             */
+  --color-green-500: #10B981;  /* preserve current --accent-green */
+  --color-green-600: #059669;
+  --color-green-700: #047857;  /* foreground on light — 5.4:1 on #FFFFFF (WCAG AA) */
+
+  /* --- Amber (status: warn / Trivy HIGH) --- */
+  --color-amber-400: #FBBF24;
+  --color-amber-500: #F59E0B;  /* preserve current --accent-yellow */
+  --color-amber-600: #D97706;
+  --color-amber-700: #B45309;  /* foreground on light — 5.02:1 on #FFFFFF (WCAG AA) */
+
+  /* --- Red (status: critical / Trivy CRITICAL) --- */
+  --color-red-400: #F87171;    /* foreground on dark — lighter for contrast */
+  --color-red-500: #EF4444;
+  --color-red-600: #DC2626;
+  --color-red-700: #B91C1C;    /* foreground on light — 6.47:1 on #FFFFFF (WCAG AA) */
+
+  /* --- Trust-domain accents (NEW — distinct identity) --- */
+  --color-teal-400: #2DD4BF;   /* SBOM/Sigstore — teal hue       */
+  --color-teal-500: #14B8A6;
+  --color-teal-700: #0F766E;   /* SBOM on light — 5.47:1 on #FFFFFF (WCAG AA)  */
+  --color-cyan-400: #22D3EE;   /* Verify CTA dark — 7.4:1 on navy-950          */
+  --color-cyan-500: #06B6D4;
+  --color-cyan-700: #0E7490;   /* Verify CTA light — 5.36:1 on #FFFFFF (WCAG AA) */
+  --color-violet-400: #A78BFA; /* multi-arch — architectural     */
+  --color-violet-500: #8B5CF6; /* preserve current --accent-purple */
+  --color-violet-700: #6D28D9; /* multi-arch on light — 7.10:1 on #FFFFFF (WCAG AAA) */
+
+  /* --- Pink (accent-only — no semantic role yet; required for --accent-pink alias) --- */
+  --color-pink-400: #EC4899;   /* dark-mode accent — no a11y claim */
+  --color-pink-700: #BE185D;   /* light-mode accent — 5.88:1 on #FFFFFF (WCAG AA)    */
+
+  /* --- Neutral scale (text, borders) --- */
+  --color-neutral-50:  #F4F5F7;  /* off-white — body text on dark  */
+  --color-neutral-200: #C7CCD4;  /* secondary text — 9.1:1 on navy-950 */
+  --color-neutral-400: #8A93A0;  /* muted/metadata — 4.6:1 on navy-950 */
+  --color-neutral-600: #4D556A;
+  --color-neutral-700: #303746;
+  --color-neutral-900: #14181F;  /* near-black — text on light     */
+
+  /* ----------------------------------------------------------
+     Spacing scale (8px base unit, Material Design grid)
+     ---------------------------------------------------------- */
+  --space-2xs: 2px;   /* icon internal padding                   */
+  --space-xs:  4px;   /* badge padding, hairline gaps             */
+  --space-sm:  8px;   /* component internal gaps                  */
+  --space-md:  16px;  /* standard inset, card padding             */
+  --space-lg:  24px;  /* card-to-card, section internal           */
+  --space-xl:  32px;  /* section margins                          */
+  --space-2xl: 48px;  /* page section separators                  */
+  --space-3xl: 64px;  /* hero, large blocks                       */
+
+  /* ----------------------------------------------------------
+     Type scale (Major Third 1.250 ratio, base 16px)
+     ---------------------------------------------------------- */
+  --font-size-caption:    12px;  /* labels, metadata               */
+  --font-size-body-sm:    14px;  /* secondary body, dense tables   */
+  --font-size-body:       16px;  /* primary body                   */
+  --font-size-subheading: 20px;
+  --font-size-h3:         24px;
+  --font-size-h2:         32px;
+  --font-size-h1:         40px;
+  --font-size-display:    48px;
+
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  --line-height-tight:   1.2;   /* headings                        */
+  --line-height-normal:  1.5;   /* body                            */
+  --line-height-relaxed: 1.75;  /* long-form (blog)                */
+
+  --letter-spacing-tight:  -0.02em;  /* large display               */
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide:   0.05em;   /* uppercase eyebrow labels    */
+  --letter-spacing-wider:  0.08em;   /* eyebrow mono labels         */
+
+  --font-family-sans:    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono:    "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+  --font-family-display: var(--font-family-sans);  /* same family, different deployment */
+
+  /* ----------------------------------------------------------
+     Border radius
+     ---------------------------------------------------------- */
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-full: 9999px;
+
+  /* ----------------------------------------------------------
+     Border width
+     ---------------------------------------------------------- */
+  --border-width-1: 1px;
+  --border-width-2: 2px;
+
+  /* ----------------------------------------------------------
+     Motion variables (aesthetic: calm / no page-load animation)
+     ---------------------------------------------------------- */
+  --motion-duration-instant: 100ms;
+  --motion-duration-short:   150ms;
+  --motion-duration-normal:  200ms;
+  --motion-duration-medium:  300ms;
+  --easing-standard:    cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-decelerate:  cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ----------------------------------------------------------
+   TIER 2 — Semantic tokens (dark mode = default)
+   ---------------------------------------------------------- */
+
+:root,
+[data-theme="dark"] {
+  /* Surfaces — Material elevation overlay model */
+  --color-surface-base:     var(--color-navy-950);   /* page bg              */
+  --color-surface-raised:   var(--color-navy-800);   /* cards                */
+  --color-surface-overlay:  var(--color-navy-700);   /* modals               */
+  --color-surface-elevated: var(--color-navy-600);   /* popovers             */
+
+  /* Text — contrast validated on --color-surface-base (#0F1729) */
+  --color-text-primary:   var(--color-neutral-50);   /* 14.4:1               */
+  --color-text-secondary: var(--color-neutral-200);  /* 9.1:1                */
+  --color-text-muted:     var(--color-neutral-400);  /* 4.6:1 — AA body      */
+  --color-text-inverse:   var(--color-neutral-900);  /* on light surfaces    */
+
+  /* Borders */
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Interactive (action) */
+  --color-action-primary:         var(--color-blue-400);   /* CTA, links       */
+  --color-action-primary-hover:   var(--color-blue-300);
+  --color-action-primary-pressed: var(--color-blue-500);
+
+  /* Generic feedback (state, NOT identity) */
+  --color-feedback-success-fg: var(--color-green-400);
+  --color-feedback-success-bg: rgba(16, 185, 129, 0.12);   /* green-500 alpha  */
+  --color-feedback-warning-fg: var(--color-amber-400);
+  --color-feedback-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-feedback-error-fg:   var(--color-red-400);
+  --color-feedback-error-bg:   rgba(239, 68, 68, 0.15);
+  --color-feedback-info-fg:    var(--color-blue-400);
+  --color-feedback-info-bg:    rgba(59, 130, 246, 0.12);
+}
+
+/* Trust-domain semantic tokens (identity, NOT state — see ADR-007)
+   Distinct hues so trust-strip badges have a recognizable visual signature
+   in Camille's Confluence screenshots across Q1 vs Q3 comparisons.        */
+:root,
+[data-theme="dark"] {
+  /* PR2 will wire .trust-badge--{sbom,multi-arch,trivy} to these tokens */
+  /* SBOM (Sigstore-attested) — teal hue (Sigstore brand-adjacent) */
+  --color-trust-sbom-fg:     var(--color-teal-400);      /* #2DD4BF             */
+  --color-trust-sbom-bg:     rgba(20, 184, 166, 0.15);   /* teal-500 alpha      */
+  --color-trust-sbom-border: rgba(45, 212, 191, 0.40);
+
+  /* Trivy — three states (clean / has CRITICAL / scan failed) */
+  --color-trust-trivy-clean-fg:    var(--color-green-400);
+  --color-trust-trivy-clean-bg:    var(--color-feedback-success-bg);
+  --color-trust-trivy-warn-fg:     var(--color-amber-400);
+  --color-trust-trivy-warn-bg:     var(--color-feedback-warning-bg);
+  --color-trust-trivy-critical-fg: var(--color-red-400);
+  --color-trust-trivy-critical-bg: var(--color-feedback-error-bg);
+
+  /* Multi-arch (architectural identity, violet-toned) */
+  --color-trust-multiarch-fg:     var(--color-violet-400);
+  --color-trust-multiarch-bg:     rgba(139, 92, 246, 0.12);
+  --color-trust-multiarch-border: rgba(167, 139, 250, 0.32);
+
+  /* Verify CTA (high-attention cyan — distinct from primary action blue)
+     #22D3EE on #0F1729 → 7.4:1 (AAA)                                     */
+  --color-trust-verify-fg:       var(--color-cyan-400);
+  --color-trust-verify-bg:       transparent;
+  --color-trust-verify-border:   rgba(34, 211, 238, 0.50);
+  --color-trust-verify-hover-bg: rgba(34, 211, 238, 0.10);
+}
+
+/* Spacing semantic aliases */
+:root {
+  --space-inset-card-md:    var(--space-md);                         /* 16px */
+  --space-inset-card-lg:    var(--space-lg);                         /* 24px */
+  --space-inset-section:    var(--space-xl);                         /* 32px */
+  --space-inset-squish-md:  var(--space-sm) var(--space-md);         /* 8px 16px */
+  --space-inset-stretch-md: 12px var(--space-md);                    /* 12px 16px */
+
+  --space-stack-tight:   var(--space-sm);   /* 8px — related items   */
+  --space-stack-normal:  var(--space-md);   /* 16px — form groups    */
+  --space-stack-section: var(--space-xl);   /* 32px — major blocks   */
+
+  --space-inline-icon-text: var(--space-sm);  /* 8px — icon + label  */
+  --space-inline-pill-gap:  6px;              /* between pills        */
+  --space-inline-nav:       var(--space-lg);  /* 24px — nav items    */
+}
+
+/* Typography semantic aliases */
+:root {
+  --text-display:    var(--font-size-display) / var(--line-height-tight) var(--font-family-sans);
+  --text-h1:         var(--font-size-h1) / var(--line-height-tight) var(--font-family-sans);
+  --text-h2:         var(--font-size-h2) / var(--line-height-tight) var(--font-family-sans);
+  --text-h3:         var(--font-size-h3) / var(--line-height-tight) var(--font-family-sans);
+  --text-subheading: var(--font-size-subheading) / var(--line-height-normal) var(--font-family-sans);
+  --text-body:       var(--font-size-body) / var(--line-height-normal) var(--font-family-sans);
+  --text-body-sm:    var(--font-size-body-sm) / var(--line-height-normal) var(--font-family-sans);
+  --text-caption:    var(--font-size-caption) / var(--line-height-normal) var(--font-family-sans);
+  --text-code:       var(--font-size-body-sm) / var(--line-height-normal) var(--font-family-mono);
+}
+
+/* ----------------------------------------------------------
+   Light-mode prep (NOT shipped — no toggle UI in PR1)
+   Tokens exist so future PR can ship toggle in ~5 LOC of JS.
+   ---------------------------------------------------------- */
+
+[data-theme="light"] {
+  --color-surface-base:     #FFFFFF;
+  --color-surface-raised:   #F9FAFB;
+  --color-surface-overlay:  #F3F4F6;
+  --color-surface-elevated: #E5E7EB;
+
+  --color-text-primary:   var(--color-neutral-900);
+  --color-text-secondary: #374151;
+  --color-text-muted:     #6B7280;
+
+  --color-border-subtle: rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.16);
+
+  --color-action-primary:         var(--color-blue-600);
+  --color-action-primary-hover:   var(--color-blue-700);
+  --color-action-primary-pressed: var(--color-blue-500);
+
+  /* trust-domain fg overrides — all upgraded to 700-level for WCAG AA on white */
+  --color-trust-sbom-fg:           var(--color-teal-700);    /* #0F766E — 5.47:1 on white (was teal-500 2.49:1 FAIL) */
+  --color-trust-trivy-clean-fg:    var(--color-green-700);   /* resolved via feedback-success-fg; explicit for clarity */
+  --color-trust-trivy-warn-fg:     var(--color-amber-700);   /* #B45309 — 5.02:1 on white (was amber-400 1.67:1 FAIL) */
+  --color-trust-trivy-critical-fg: var(--color-red-700);     /* #B91C1C — 6.47:1 on white (was red-600 4.83:1 OK, now more consistent) */
+  --color-trust-multiarch-fg:      var(--color-violet-700);  /* #6D28D9 — 7.10:1 on white (was violet-500 4.23:1 FAIL) */
+  --color-trust-verify-fg:         var(--color-cyan-700);    /* #0E7490 — 5.36:1 on white (unchanged, already AA) */
+
+  /* feedback fg overrides — all upgraded to 700-level for WCAG AA on white */
+  --color-feedback-success-fg: var(--color-green-700);   /* #047857 — 5.48:1 on white */
+  --color-feedback-warning-fg: var(--color-amber-700);   /* #B45309 — 5.02:1 on white (was amber-400 1.67:1 FAIL) */
+  --color-feedback-error-fg:   var(--color-red-700);     /* #B91C1C — 6.47:1 on white (was red-400 2.77:1 FAIL) */
+  --color-feedback-info-fg:    var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white (was blue-400 2.54:1 FAIL) */
+  --color-feedback-success-bg: rgba(4, 120, 87, 0.10);  /* green-700 alpha — tinted on white surfaces */
+}
+
+/* ----------------------------------------------------------
+   Utility classes (Tier 2 consumers — typography patterns)
+   ---------------------------------------------------------- */
+
+/* Eyebrow: JetBrains Mono per Gate 3 typographic signature */
+.eyebrow {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--letter-spacing-wider);  /* 0.08em */
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-normal);
+  margin: 0;
+}
+
+/* Trust-badge text: JetBrains Mono medium, uppercase */
+.trust-badge-text {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--letter-spacing-wide);   /* 0.05em */
+  text-transform: uppercase;
+}
+
+/* Body text utilities */
+.body-sm {
+  font: var(--text-body-sm);
+}
+
+.caption {
+  font: var(--text-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+}
+
+/* Headline Inter display tweaks (Gate 4 — ss01/cv11 features) */
+h1,
+h2,
+.hero-title {
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+}
+
+/* Global focus-visible ring — accessibility baseline */
+:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* ----------------------------------------------------------
+   Reduced motion (WCAG 2.1 §2.3.3 — Animation from Interactions)
+   ---------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration:  0.01ms !important;
+    transition-delay:     0ms    !important;  /* prevents fill-mode from hiding content */
+    animation-duration:   0.01ms !important;
+    animation-delay:      0ms    !important;  /* clears staggered-reveal inline delays  */
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,44 +1,214 @@
-/* Shared theme — imported by both dashboard.css and container-detail.css */
+/* Shared theme — loaded by all layouts (dashboard.html, container-detail.html, blog.html, post.html).
+   Phase C PR1: Refactored to thin deprecated-alias layer. All primitive + semantic token
+   declarations live in tokens.css (loaded first). This file only bridges the old
+   --accent-* / --text-* / --glass-* names for the 49 selectors that still reference them.
+   Remove in PR4 after all consumers are migrated to --color-* tokens. */
+
+/* ==========================================================
+   DEPRECATED alias layer — remove in PR4 tech-debt sweep
+   ========================================================== */
 
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.1);
-  --glass-border: rgba(255, 255, 255, 0.2);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-  --glass-blur: blur(12px);
-  --text-primary: #ffffff;
-  --text-secondary: rgba(255, 255, 255, 0.7);
-  --text-muted: rgba(255, 255, 255, 0.5);
-  --accent-green: #10b981;
-  --accent-yellow: #f59e0b;
-  --accent-blue: #3b82f6;
-  --accent-purple: #8b5cf6;
-  --accent-pink: #ec4899;
+  /* Accent aliases → semantic primitives from tokens.css */
+  --accent-green:  var(--color-green-500);   /* was: #10b981 */
+  --accent-yellow: var(--color-amber-500);   /* was: #f59e0b */
+  --accent-blue:   var(--color-blue-500);    /* was: #3b82f6 */
+  --accent-purple: var(--color-violet-500);  /* was: #8b5cf6 */
+  --accent-pink:   var(--color-pink-400);    /* #EC4899 */
+
+  /* Text aliases → semantic tokens from tokens.css.
+     M3 fix: --text-secondary/muted now resolve to contrast-validated values:
+     --color-text-secondary: #C7CCD4 (9.1:1 on navy-950)
+     --color-text-muted:     #8A93A0 (4.6:1 on navy-950)
+     Both were previously rgba(255,255,255,0.7/0.5), failing WCAG AA. */
+  --text:           var(--color-text-primary);  /* bare alias — blog.css nav selectors */
+  --text-primary:   var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted:     var(--color-text-muted);
+
+  /* Container-detail page aliases (moved from container-detail.css :root — P3 fix).
+     Keeps all deprecated aliases in one place for PR4 sweep. */
+  --detail-text-primary:   var(--color-text-primary);    /* #F4F5F7 — 14.4:1 on navy-950 */
+  --detail-text-secondary: var(--color-text-secondary);  /* #C7CCD4 — 9.1:1 on navy-950  */
+  --detail-text-muted:     var(--color-text-muted);      /* #8A93A0 — 4.6:1 on navy-950  */
+
+  /* Glass surface tokens — composition primitives, keep flat */
+  --glass-bg:     rgba(255, 255, 255, 0.10);
+  --glass-border: rgba(255, 255, 255, 0.20);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+  --glass-blur:   blur(12px);
+
+  /* Legacy gradient stop names — now point at navy primitives */
   --gradient-1: #667eea;
   --gradient-2: #764ba2;
   --gradient-3: #f093fb;
   --gradient-4: #f5576c;
-  --bg-gradient-1: #1a1a2e;
-  --bg-gradient-2: #16213e;
-  --bg-gradient-3: #0f3460;
+  --bg-gradient-1: var(--color-navy-900);
+  --bg-gradient-2: var(--color-navy-900);
+  --bg-gradient-3: var(--color-navy-700);
 }
 
-/* Light theme — WCAG 2.2 compliant (4.5:1 minimum contrast for normal text) */
+/* Light theme — overrides both deprecated aliases and tokens.css light-mode-prep */
 [data-theme="light"] {
-  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-bg:     rgba(255, 255, 255, 0.85);
   --glass-border: rgba(0, 0, 0, 0.15);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-muted: #4b5563;
-  --accent-green: #047857;
-  --accent-yellow: #b45309;
-  --accent-blue: #1d4ed8;
-  --accent-purple: #6d28d9;
-  --accent-pink: #be185d;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+
+  /* Deprecated accent aliases — light equivalents (reference 700-level primitives) */
+  --accent-green:  var(--color-green-700);   /* #047857 — 5.48:1 on white */
+  --accent-yellow: var(--color-amber-700);   /* #B45309 — 5.02:1 on white */
+  --accent-blue:   var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white */
+  --accent-purple: var(--color-violet-700);  /* #6D28D9 — 7.10:1 on white */
+  --accent-pink:   var(--color-pink-700);    /* #BE185D — 5.88:1 on white */
+
   --bg-gradient-1: #e0e7ff;
   --bg-gradient-2: #ddd6fe;
   --bg-gradient-3: #c7d2fe;
+
+  /* Text aliases re-declared for light mode */
+  --text-primary:   var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted:     var(--color-text-muted);
+
+  /* Container-detail page aliases — light overrides */
+  --detail-text-primary:   #111827;  /* near-black on white — 18:1 */
+  --detail-text-secondary: #374151;
+  --detail-text-muted:     #4b5563;
 }
+
+/* ==========================================================
+   Shared layout primitives (loaded by all layouts via theme.css)
+   ========================================================== */
+
+/* C1 fix: margin-inline: auto centers content at all viewport widths including 1440px+.
+   max-width 1280px matches Phase C layout spec. Lives here (not dashboard.css) because
+   container-detail.html also needs centering and does not load dashboard.css. */
+.container {
+  max-width: 1280px;
+  margin-inline: auto;
+  padding-inline: var(--space-md);  /* 16px */
+  padding-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  position: relative;
+  z-index: 1;
+}
+
+/* ==========================================================
+   Shared component: trust strip + trust badges
+   (moved from blog.css — container-detail.html does not load blog.css
+    but renders .trust-strip / .trust-badge--verify markup)
+   ========================================================== */
+
+.trust-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.25rem 0;
+}
+
+/* Trust badge — chip style, slightly more prominent than .tag-pill */
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+  transition: background 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+
+.trust-badge i { font-size: 0.9em; }
+
+/* SBOM — green tint (matches status-pill-ok family) */
+.trust-badge--sbom {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+.trust-badge--sbom:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+/* Multi-arch — blue/info tint */
+.trust-badge--multi-arch {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--accent-blue);
+}
+.trust-badge--multi-arch:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+/* Deps — neutral/info tint */
+.trust-badge--deps {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+.trust-badge--deps:hover {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+/* Verify CTA — M2 fix: --color-trust-verify-fg (#22D3EE → 7.4:1 on navy-950)
+   was: color: var(--text-muted) → rgba(255,255,255,0.5) → ~2.1:1 (failed AA) */
+.trust-badge--verify {
+  background: var(--color-trust-verify-bg);
+  border-color: var(--color-trust-verify-border);
+  color: var(--color-trust-verify-fg);
+}
+.trust-badge--verify:hover {
+  background: var(--color-trust-verify-hover-bg);
+  border-color: var(--color-trust-verify-border);
+}
+.trust-badge--verify:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* Trivy scan — default green (0 CRITICAL) */
+.trust-badge--trivy {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+.trust-badge--trivy:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.trust-badge--trivy[data-severity="critical"] {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+.trust-badge--trivy[data-severity="critical"]:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.trust-badge--trivy[data-severity="high"] {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: var(--accent-yellow);
+}
+.trust-badge--trivy[data-severity="high"]:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.48);
+}
+/* medium / low / info: inherit .trust-badge--trivy (green) */
+
+/* ==========================================================
+   Global resets and base styles
+   ========================================================== */
 
 * {
   margin: 0;
@@ -47,21 +217,33 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-family-sans);
   min-height: 100vh;
-  background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 50%, var(--bg-gradient-3) 100%);
-  color: var(--text-primary);
+  /* 3% noise overlay + navy gradient (refined-authoritative-proof-forward aesthetic) */
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.03'/></svg>"),
+    linear-gradient(135deg, var(--color-navy-950) 0%, var(--color-navy-900) 50%, var(--color-navy-700) 100%);
+  background-attachment: fixed;
+  background-size: 200px 200px, 100% 100%;
+  color: var(--color-text-primary);
   overflow-x: hidden;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition: background var(--motion-duration-normal) var(--easing-standard),
+              color      var(--motion-duration-normal) var(--easing-standard);
+}
+
+[data-theme="light"] body {
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.03'/></svg>"),
+    linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 50%, var(--bg-gradient-3) 100%);
+  background-attachment: fixed;
+  background-size: 200px 200px, 100% 100%;
 }
 
 /* Animated gradient background */
 .bg-animated {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
   z-index: -1;
   overflow: hidden;
 }
@@ -75,15 +257,6 @@ body {
   z-index: -1;
 }
 
-/* Layout */
-.container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 2rem;
-  position: relative;
-  z-index: 1;
-}
-
 /* Header */
 .header {
   display: flex;
@@ -94,32 +267,29 @@ body {
   gap: 1rem;
 }
 
-.header-title {
-  display: flex;
-  flex-direction: column;
-}
+.header-title { display: flex; flex-direction: column; }
 
 .header-pretitle {
-  font-size: 0.75rem;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-muted);
+  letter-spacing: var(--letter-spacing-wider);
+  color: var(--color-text-muted);
   margin-bottom: 0.25rem;
 }
 
 .header-main {
   font-size: 2rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
+  font-weight: var(--font-weight-bold);
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+  background: linear-gradient(135deg, var(--color-neutral-50) 0%, rgba(255,255,255,0.7) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-.header-actions {
-  display: flex;
-  gap: 0.75rem;
-}
+.header-actions { display: flex; gap: 0.75rem; }
 
 /* Theme toggle — min 44px for WCAG 2.5.8 touch target */
 .theme-toggle {
@@ -128,32 +298,19 @@ body {
   justify-content: center;
   width: 44px;
   height: 44px;
-  border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--glass-bg);
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background var(--motion-duration-short) var(--easing-standard);
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
 }
 
-.theme-toggle:hover {
-  background: rgba(255, 255, 255, 0.2);
-  transform: scale(1.05);
-}
-
-.theme-toggle i {
-  font-size: 1.25rem;
-}
-
-[data-theme="light"] .theme-toggle {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-[data-theme="light"] .theme-toggle:hover {
-  background: rgba(0, 0, 0, 0.1);
-}
+.theme-toggle:hover { background: rgba(255, 255, 255, 0.2); transform: scale(1.05); }
+.theme-toggle i { font-size: 1.25rem; }
+[data-theme="light"] .theme-toggle { background: rgba(0, 0, 0, 0.05); }
+[data-theme="light"] .theme-toggle:hover { background: rgba(0, 0, 0, 0.1); }
 
 [data-theme="light"] .header-main {
   background: linear-gradient(135deg, #1f2937 0%, rgba(31, 41, 55, 0.7) 100%);
@@ -184,15 +341,18 @@ body {
   gap: 0.5rem;
   padding: 0.625rem 1.25rem;
   font-size: 0.875rem;
-  font-weight: 500;
-  border-radius: 10px;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   text-decoration: none;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background   var(--motion-duration-normal) var(--easing-standard),
+    transform    var(--motion-duration-normal) var(--easing-standard),
+    box-shadow   var(--motion-duration-normal) var(--easing-standard);
 }
 
 .btn:hover {
@@ -206,21 +366,14 @@ body {
   border: none;
 }
 
-[data-theme="light"] .btn-primary {
-  color: #ffffff;
-}
-
-[data-theme="light"] .btn-primary:hover {
-  color: #ffffff;
-}
+[data-theme="light"] .btn-primary { color: #ffffff; }
+[data-theme="light"] .btn-primary:hover { color: #ffffff; }
 
 /* Accessibility */
 .sr-only {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
@@ -232,14 +385,14 @@ body {
   top: -100px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent-blue);
+  background: var(--color-action-primary);
   color: white;
   padding: 0.75rem 1.5rem;
   border-radius: 0 0 8px 8px;
   text-decoration: none;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   z-index: 9999;
-  transition: top 0.2s ease;
+  transition: top var(--motion-duration-short) var(--easing-standard);
 }
 
 .skip-link:focus {
@@ -252,15 +405,13 @@ body {
 .footer {
   text-align: center;
   padding: 2rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
 }
 
 .footer a {
-  color: var(--accent-blue);
+  color: var(--color-action-primary);
   text-decoration: none;
 }
 
-.footer a:hover {
-  text-decoration: underline;
-}
+.footer a:hover { text-decoration: underline; }

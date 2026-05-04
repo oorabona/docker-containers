@@ -1,5 +1,15 @@
     /* Dashboard-specific styles — shared theme in theme.css */
 
+    /* C1 centering: .container base rule lives in theme.css (shared layout primitive).
+       Dashboard-specific responsive overrides at @media breakpoints live below. */
+
+    /* .dashboard-hero-title: dashboard-specific heading class not covered by the
+       global h1,h2,.hero-title rule in tokens.css — keep only this extension. */
+    .dashboard-hero-title {
+      font-feature-settings: "ss01", "cv11";
+      font-optical-sizing: auto;
+    }
+
     .bg-animated::before {
       content: '';
       position: absolute;
@@ -522,10 +532,11 @@
     }
 
     .card-meta-label {
-      color: var(--text-muted);
-      font-size: 0.6875rem;
+      /* M3 fix: --color-text-secondary (#C7CCD4) → 9.1:1 on navy-950 — was rgba(255,255,255,0.5) */
+      color: var(--color-text-secondary);
+      font-size: var(--font-size-caption);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: var(--letter-spacing-wide);
     }
 
     .card-meta-value {
