@@ -1,7 +1,8 @@
 /* Blog & post styles — editorial layer on top of dashboard.css */
-/* Status pill + dashboard-hero relocated to dashboard.css (PR5:
-   not blog-thematic; dashboard.html and container-detail.html
-   are the only consumers, both load dashboard.css). */
+/* Status pill + dashboard-hero relocated to dashboard.css: not
+   blog-thematic, dashboard-owned. Only dashboard.html renders
+   `.status-pill` / `.dashboard-hero` and it is the only consumer
+   that loads dashboard.css. */
 
 /* ============================================================
    Blog hero
