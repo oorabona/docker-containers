@@ -1177,6 +1177,7 @@ jobs:
             .build-lineage/*.changelog.json
             .build-lineage/*.history.json
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 1
           overwrite: true
 
