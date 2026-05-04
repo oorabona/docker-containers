@@ -43,8 +43,9 @@
   /* --- Trust-domain accents (NEW — distinct identity) --- */
   --color-teal-400: #2DD4BF;   /* SBOM/Sigstore — teal hue       */
   --color-teal-500: #14B8A6;
-  --color-cyan-400: #22D3EE;   /* Verify CTA — bright high-attention */
+  --color-cyan-400: #22D3EE;   /* Verify CTA dark — 7.4:1 on navy-950         */
   --color-cyan-500: #06B6D4;
+  --color-cyan-700: #0E7490;   /* Verify CTA light — ~7:1 on #FFFFFF (WCAG AA) */
   --color-violet-400: #A78BFA; /* multi-arch — architectural     */
   --color-violet-500: #8B5CF6; /* preserve current --accent-purple */
 
@@ -244,11 +245,11 @@
   --color-action-primary-hover:   var(--color-blue-700);
   --color-action-primary-pressed: var(--color-blue-500);
 
-  /* trust-domain — slightly darker for light bg contrast */
+  /* trust-domain — light bg contrast (P2 fix: cyan-700 #0E7490 → ~7:1 on white, was cyan-500 #06B6D4 → 2.4:1) */
   --color-trust-sbom-fg:           var(--color-teal-500);
   --color-trust-trivy-critical-fg: var(--color-red-600);
   --color-trust-multiarch-fg:      var(--color-violet-500);
-  --color-trust-verify-fg:         var(--color-cyan-500);
+  --color-trust-verify-fg:         var(--color-cyan-700);  /* #0E7490 — 7.04:1 on #FFFFFF (WCAG AA+) */
 }
 
 /* ----------------------------------------------------------

@@ -65,6 +65,136 @@
 }
 
 /* ==========================================================
+   Shared layout primitives (loaded by all layouts via theme.css)
+   ========================================================== */
+
+/* C1 fix: margin-inline: auto centers content at all viewport widths including 1440px+.
+   max-width 1280px matches Phase C layout spec. Lives here (not dashboard.css) because
+   container-detail.html also needs centering and does not load dashboard.css. */
+.container {
+  max-width: 1280px;
+  margin-inline: auto;
+  padding-inline: var(--space-md);  /* 16px */
+  padding-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  position: relative;
+  z-index: 1;
+}
+
+/* ==========================================================
+   Shared component: trust strip + trust badges
+   (moved from blog.css — container-detail.html does not load blog.css
+    but renders .trust-strip / .trust-badge--verify markup)
+   ========================================================== */
+
+.trust-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.25rem 0;
+}
+
+/* Trust badge — chip style, slightly more prominent than .tag-pill */
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+  transition: background 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+
+.trust-badge i { font-size: 0.9em; }
+
+/* SBOM — green tint (matches status-pill-ok family) */
+.trust-badge--sbom {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+.trust-badge--sbom:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+/* Multi-arch — blue/info tint */
+.trust-badge--multi-arch {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--accent-blue);
+}
+.trust-badge--multi-arch:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+/* Deps — neutral/info tint */
+.trust-badge--deps {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+.trust-badge--deps:hover {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+/* Verify CTA — M2 fix: --color-trust-verify-fg (#22D3EE → 7.4:1 on navy-950)
+   was: color: var(--text-muted) → rgba(255,255,255,0.5) → ~2.1:1 (failed AA) */
+.trust-badge--verify {
+  background: var(--color-trust-verify-bg);
+  border-color: var(--color-trust-verify-border);
+  color: var(--color-trust-verify-fg);
+}
+.trust-badge--verify:hover {
+  background: var(--color-trust-verify-hover-bg);
+  border-color: var(--color-trust-verify-border);
+}
+.trust-badge--verify:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* Trivy scan — default green (0 CRITICAL) */
+.trust-badge--trivy {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-green);
+}
+.trust-badge--trivy:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.trust-badge--trivy[data-severity="critical"] {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+.trust-badge--trivy[data-severity="critical"]:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.trust-badge--trivy[data-severity="high"] {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: var(--accent-yellow);
+}
+.trust-badge--trivy[data-severity="high"]:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.48);
+}
+/* medium / low / info: inherit .trust-badge--trivy (green) */
+
+/* ==========================================================
    Global resets and base styles
    ========================================================== */
 
