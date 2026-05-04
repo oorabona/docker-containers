@@ -22,6 +22,13 @@
 
       this.addEventListener('click', this._clickHandler);
       this.addEventListener('keydown', this._keydownHandler);
+
+      // Fix #1: dispatch phase-b-variant-changed for the initial active tab so
+      // <trust-strip>, <security-scan>, and Provenance are correctly initialized
+      // on multi-version pages where the first [aria-selected="true"] tab is the
+      // data source (not the hidden synthetic .variant-tag.selected button).
+      // Defer to next microtask so container-detail.js listeners are registered first.
+      Promise.resolve().then(() => this._dispatchInitialVariant());
     }
 
     disconnectedCallback() {
@@ -164,6 +171,49 @@
       var groups = Array.from(this.querySelectorAll('[role="tablist"]'));
       var idx = groups.indexOf(tablist);
       return groups[idx + direction] || null;
+    }
+
+    /* Fix #1: fire phase-b-variant-changed for the initial active tab so
+       Provenance, <trust-strip>, and <security-scan> bootstrap correctly on
+       multi-version pages (where container-detail.js may only have the hidden
+       synthetic .variant-tag.selected to work from). */
+    _dispatchInitialVariant() {
+      // Find the first [aria-selected="true"] tab in the component
+      var initialTab = this.querySelector('[role="tab"][aria-selected="true"]');
+      if (!initialTab) return;
+      var variantData = {
+        tag: initialTab.dataset.tag || '',
+        attestation_url: initialTab.dataset.attestationUrl || '',
+        trivy_summary: null,
+        multi_arch_platforms: [],
+        size_amd64: initialTab.dataset.sizeAmd64 || '',
+        size_arm64: initialTab.dataset.sizeArm64 || ''
+      };
+      try {
+        if (initialTab.dataset.trivySummary) {
+          variantData.trivy_summary = JSON.parse(initialTab.dataset.trivySummary);
+        }
+      } catch (_) { /* swallow */ }
+      try {
+        if (initialTab.dataset.multiArchPlatforms) {
+          variantData.multi_arch_platforms = JSON.parse(initialTab.dataset.multiArchPlatforms);
+        }
+      } catch (_) { /* swallow */ }
+      document.dispatchEvent(new CustomEvent('phase-b-variant-changed', {
+        detail: variantData,
+        bubbles: false
+      }));
+
+      // P0-N1 fix: also dispatch version-tabs-changed (bubbles on host) so
+      // container-detail.js:version-tabs-changed listener calls selectVariant(),
+      // which populates SBOM/changelog/history/dep-health/lineage/pull-command.
+      // Both consumers are idempotent: phase-b-variant-changed listeners only
+      // update DOM text/visibility; selectVariant() is guarded by dataset reads
+      // that are stable across calls. No double-flash risk.
+      this.dispatchEvent(new CustomEvent('version-tabs-changed', {
+        detail: variantData,
+        bubbles: true
+      }));
     }
   }
 

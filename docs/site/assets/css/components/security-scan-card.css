@@ -1,6 +1,22 @@
 /* security-scan-card.css — chrome wrapper around <security-scan> component
    Applies trust-domain identity tokens to severity display (NOT generic feedback colors).
-   Depends on: tokens.css. Does NOT modify the internals of <security-scan> — it wraps only. */
+   Depends on: tokens.css. Does NOT modify the internals of <security-scan> — it wraps only.
+   Also carries the shared .trust-badge typography rule (Fix #6): dashboard.css defines it too,
+   but container-detail.html does NOT load dashboard.css. This file is loaded by BOTH layouts
+   (via default.html → <link component CSS>), making it the safe home for the shared rule. */
+
+/* -----------------------------------------------------------------------
+   Shared trust-badge typography — JetBrains Mono, medium, uppercase
+   (identical to the rule in dashboard.css; kept in sync by design)
+   ----------------------------------------------------------------------- */
+.trust-badge {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);   /* 12px */
+  font-weight: var(--font-weight-medium); /* 500 */
+  letter-spacing: var(--letter-spacing-wide); /* 0.05em */
+  text-transform: uppercase;
+  line-height: 1;
+}
 
 /* -----------------------------------------------------------------------
    Card surface
@@ -41,24 +57,25 @@
 /* -----------------------------------------------------------------------
    Severity count cells — override <security-scan> generic feedback colors
    with trust-domain identity tokens per spec (identity-not-state principle).
-   These selectors mirror the DOM that security-scan.js renders.
+   Fix #5: selectors now match the DOM that security-scan.js actually renders.
+   security-scan.js toggles class "nonzero" on the count <span> AND its
+   parent <div> when the count > 0. It does NOT set data-severity or
+   data-has-critical attributes on the <security-scan> element.
    ----------------------------------------------------------------------- */
 
-/* Clean / no CRITICAL: teal-green identity */
-.security-scan-card .security-section[data-severity="info"] .count,
-.security-scan-card .security-section .count[data-scan-count="critical"][data-value="0"],
-.security-scan-card security-scan:not([data-has-critical]) .count {
+/* Default: clean / zero counts — teal-green identity */
+.security-scan-card .count {
   color: var(--color-trust-trivy-clean-fg);
 }
 
-/* Has HIGH but not CRITICAL: amber warning */
-.security-scan-card security-scan[data-severity="high"] .count {
-  color: var(--color-trust-trivy-warn-fg);
+/* Critical count cell > 0 — red identity (nth-child(1) = Critical column) */
+.security-scan-card .severity-grid > div:nth-child(1).nonzero .count {
+  color: var(--color-trust-trivy-critical-fg);
 }
 
-/* Has CRITICAL: red identity */
-.security-scan-card security-scan[data-severity="critical"] .count {
-  color: var(--color-trust-trivy-critical-fg);
+/* High count cell > 0 — amber warning (nth-child(2) = High column) */
+.security-scan-card .severity-grid > div:nth-child(2).nonzero .count {
+  color: var(--color-trust-trivy-warn-fg);
 }
 
 /* Scan-date label — muted timestamp */

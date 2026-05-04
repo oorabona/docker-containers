@@ -57,7 +57,8 @@
       const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      el.textContent = '🛡 Trivy: ' + critical + ' CRITICAL · scanned ' + date;
+      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("TRIVY: N CRITICAL · SCANNED")
+      el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL · SCANNED ' + date;
       el.style.display = '';
     }
 
@@ -68,7 +69,8 @@
         el.style.display = 'none';
         return;
       }
-      el.textContent = '🏗 ' + platforms.join(' + ');
+      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64")
+      el.textContent = '🏗 ' + platforms.map(function(p) { return p.toUpperCase(); }).join(' + ');
       el.style.display = '';
     }
   }

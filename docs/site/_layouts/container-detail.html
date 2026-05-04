@@ -196,61 +196,63 @@
         </trust-strip>
 
         <!-- Provenance section — Camille's primary screenshot target (Phase C PR2) -->
-        {%- assign prov_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
-        {%- assign prov_empty_count = 0 -%}
-        {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-        {%- unless prov_variant.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-        {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-        {%- if prov_empty_count < 3 -%}
-        <section class="provenance" aria-labelledby="provenance-heading">
+        {%- comment -%}
+          Fix #2: render one <section class="provenance"> per variant with data-variant-tag.
+          JS (container-detail.js phase-b-variant-changed listener) shows/hides by matching tag.
+          First variant is visible; others start hidden.
+          For no-variant containers, fall through to the single-variant render below.
+        {%- endcomment -%}
+        {%- if page.versions -%}
+          {%- comment -%}
+            P0-N2 fix: heading lifted OUT of the per-variant loop.
+            Placed once above the section stack so aria-labelledby="provenance-heading"
+            resolves correctly for every variant section regardless of which is visible.
+            (Hidden sections have display:none — their heading would be skipped by AT.)
+          {%- endcomment -%}
           <header class="provenance-header">
             <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
             <h2 id="provenance-heading">Provenance</h2>
           </header>
+          {%- assign _prov_first = true -%}
+          {%- for _prov_version in page.versions -%}
+            {%- for _prov_var in _prov_version.variants -%}
+              {%- assign prov_empty_count = 0 -%}
+              {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- if prov_empty_count < 3 -%}
+        <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
           <dl class="evidence-list">
             {%- if page.last_commit_short or site.github.build_revision -%}
             <div class="evidence-row">
               <dt>Build commit</dt>
-              <dd>
-                <code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code>
-              </dd>
+              <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
             </div>
             {%- endif -%}
-
-            {%- if prov_variant.build_digest and prov_variant.build_digest != "unknown" -%}
+            {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
             <div class="evidence-row">
               <dt>Manifest digest (amd64)</dt>
               <dd>
-                <code class="hash hash-long">{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}</code>
-                <button class="copy-btn" type="button"
-                        aria-label="Copy manifest digest"
-                        data-copy="{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}">⧉</button>
+                <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
-
-            {%- if prov_variant.manifest_digest_arm64 -%}
+            {%- if _prov_var.manifest_digest_arm64 -%}
             <div class="evidence-row">
               <dt>Manifest digest (arm64)</dt>
               <dd>
-                <code class="hash hash-long">{{ prov_variant.manifest_digest_arm64 }}</code>
-                <button class="copy-btn" type="button"
-                        aria-label="Copy arm64 manifest digest"
-                        data-copy="{{ prov_variant.manifest_digest_arm64 }}">⧉</button>
+                <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
-
-            {%- if prov_variant.attestation_url -%}
+            {%- if _prov_var.attestation_url -%}
             <div class="evidence-row">
               <dt>SBOM attestation</dt>
               <dd>
-                <a href="{{ prov_variant.attestation_url }}" rel="noopener" target="_blank">
-                  {%- if prov_variant.attestation_id -%}
-                    <code class="hash">{{ prov_variant.attestation_id | slice: 0, 12 }}…</code>
-                  {%- else -%}
-                    View on Sigstore
-                  {%- endif -%}
+                <a href="{{ _prov_var.attestation_url }}" rel="noopener" target="_blank">
+                  {%- if _prov_var.attestation_id -%}<code class="hash">{{ _prov_var.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
                 </a>
               </dd>
             </div>
@@ -260,7 +262,184 @@
               <dd class="evidence-empty">awaiting next build</dd>
             </div>
             {%- endif -%}
-
+            {%- if _prov_var.trivy_summary.last_scan -%}
+            <div class="evidence-row">
+              <dt>Trivy last scan</dt>
+              <dd>{{ _prov_var.trivy_summary.last_scan | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+            </div>
+            {%- else -%}
+            <div class="evidence-row">
+              <dt>Trivy last scan</dt>
+              <dd class="evidence-empty">awaiting next build</dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.base_image and _prov_var.base_image != "unknown" -%}
+            <div class="evidence-row">
+              <dt>Base image</dt>
+              <dd><code class="hash">{{ _prov_var.base_image }}</code></dd>
+            </div>
+            {%- endif -%}
+            <div class="evidence-row">
+              <dt>Verify</dt>
+              <dd class="provenance-verify-cmd">
+                <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
+                   title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">Verification guide →</a>
+              </dd>
+            </div>
+          </dl>
+          <footer class="provenance-footer">
+            <a href="{{ '/verify-images/' | relative_url }}" class="trust-badge trust-badge--verify"
+               title="Reproduce these checks yourself — verification guide">
+              🔍 REPRODUCE THESE CHECKS LOCALLY
+            </a>
+          </footer>
+        </section>
+              {%- endif -%}
+              {%- assign _prov_first = false -%}
+            {%- endfor -%}
+          {%- endfor -%}
+        {%- elsif page.variants -%}
+          {%- comment -%}P0-N2 fix: heading lifted out — same rationale as page.versions branch above.{%- endcomment -%}
+          <header class="provenance-header">
+            <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
+            <h2 id="provenance-heading">Provenance</h2>
+          </header>
+          {%- assign _prov_first = true -%}
+          {%- for _prov_var in page.variants -%}
+            {%- assign prov_empty_count = 0 -%}
+            {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- if prov_empty_count < 3 -%}
+        <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
+          <dl class="evidence-list">
+            {%- if page.last_commit_short or site.github.build_revision -%}
+            <div class="evidence-row">
+              <dt>Build commit</dt>
+              <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
+            <div class="evidence-row">
+              <dt>Manifest digest (amd64)</dt>
+              <dd>
+                <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
+              </dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.manifest_digest_arm64 -%}
+            <div class="evidence-row">
+              <dt>Manifest digest (arm64)</dt>
+              <dd>
+                <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
+              </dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.attestation_url -%}
+            <div class="evidence-row">
+              <dt>SBOM attestation</dt>
+              <dd>
+                <a href="{{ _prov_var.attestation_url }}" rel="noopener" target="_blank">
+                  {%- if _prov_var.attestation_id -%}<code class="hash">{{ _prov_var.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
+                </a>
+              </dd>
+            </div>
+            {%- else -%}
+            <div class="evidence-row">
+              <dt>SBOM attestation</dt>
+              <dd class="evidence-empty">awaiting next build</dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.trivy_summary.last_scan -%}
+            <div class="evidence-row">
+              <dt>Trivy last scan</dt>
+              <dd>{{ _prov_var.trivy_summary.last_scan | date: "%Y-%m-%d %H:%M UTC" }}</dd>
+            </div>
+            {%- else -%}
+            <div class="evidence-row">
+              <dt>Trivy last scan</dt>
+              <dd class="evidence-empty">awaiting next build</dd>
+            </div>
+            {%- endif -%}
+            {%- if _prov_var.base_image and _prov_var.base_image != "unknown" -%}
+            <div class="evidence-row">
+              <dt>Base image</dt>
+              <dd><code class="hash">{{ _prov_var.base_image }}</code></dd>
+            </div>
+            {%- endif -%}
+            <div class="evidence-row">
+              <dt>Verify</dt>
+              <dd class="provenance-verify-cmd">
+                <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
+                   title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">Verification guide →</a>
+              </dd>
+            </div>
+          </dl>
+          <footer class="provenance-footer">
+            <a href="{{ '/verify-images/' | relative_url }}" class="trust-badge trust-badge--verify"
+               title="Reproduce these checks yourself — verification guide">
+              🔍 REPRODUCE THESE CHECKS LOCALLY
+            </a>
+          </footer>
+        </section>
+            {%- endif -%}
+            {%- assign _prov_first = false -%}
+          {%- endfor -%}
+        {%- else -%}
+          {%- comment -%} No-variant container: single Provenance block (no variant switching) {%- endcomment -%}
+          {%- assign prov_variant = page -%}
+          {%- assign prov_empty_count = 0 -%}
+          {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+          {%- unless prov_variant.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+          {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+          {%- if prov_empty_count < 3 -%}
+        <section class="provenance" aria-labelledby="provenance-heading">
+          <header class="provenance-header">
+            <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
+            <h2 id="provenance-heading">Provenance</h2>
+          </header>
+          <dl class="evidence-list">
+            {%- if page.last_commit_short or site.github.build_revision -%}
+            <div class="evidence-row">
+              <dt>Build commit</dt>
+              <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
+            </div>
+            {%- endif -%}
+            {%- if prov_variant.build_digest and prov_variant.build_digest != "unknown" -%}
+            <div class="evidence-row">
+              <dt>Manifest digest (amd64)</dt>
+              <dd>
+                <code class="hash hash-long">{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy manifest digest" data-copy="{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}">⧉</button>
+              </dd>
+            </div>
+            {%- endif -%}
+            {%- if prov_variant.manifest_digest_arm64 -%}
+            <div class="evidence-row">
+              <dt>Manifest digest (arm64)</dt>
+              <dd>
+                <code class="hash hash-long">{{ prov_variant.manifest_digest_arm64 }}</code>
+                <button class="copy-btn" type="button" aria-label="Copy arm64 manifest digest" data-copy="{{ prov_variant.manifest_digest_arm64 }}">⧉</button>
+              </dd>
+            </div>
+            {%- endif -%}
+            {%- if prov_variant.attestation_url -%}
+            <div class="evidence-row">
+              <dt>SBOM attestation</dt>
+              <dd>
+                <a href="{{ prov_variant.attestation_url }}" rel="noopener" target="_blank">
+                  {%- if prov_variant.attestation_id -%}<code class="hash">{{ prov_variant.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
+                </a>
+              </dd>
+            </div>
+            {%- else -%}
+            <div class="evidence-row">
+              <dt>SBOM attestation</dt>
+              <dd class="evidence-empty">awaiting next build</dd>
+            </div>
+            {%- endif -%}
             {%- if prov_variant.trivy_summary.last_scan -%}
             <div class="evidence-row">
               <dt>Trivy last scan</dt>
@@ -272,21 +451,17 @@
               <dd class="evidence-empty">awaiting next build</dd>
             </div>
             {%- endif -%}
-
             {%- if prov_variant.base_image and prov_variant.base_image != "unknown" -%}
             <div class="evidence-row">
               <dt>Base image</dt>
               <dd><code class="hash">{{ prov_variant.base_image }}</code></dd>
             </div>
             {%- endif -%}
-
             <div class="evidence-row">
-              <dt>Verify command</dt>
+              <dt>Verify</dt>
               <dd class="provenance-verify-cmd">
-                <code>./verify-images.sh {{ page.name }}:{{ prov_variant.tag | default: page.current_version }}</code>
-                <button class="copy-btn" type="button"
-                        aria-label="Copy verify command"
-                        data-copy="./verify-images.sh {{ page.name }}:{{ prov_variant.tag | default: page.current_version }}">⧉</button>
+                <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
+                   title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">Verification guide →</a>
               </dd>
             </div>
           </dl>
@@ -297,6 +472,7 @@
             </a>
           </footer>
         </section>
+          {%- endif -%}
         {%- endif -%}
 
         <!-- Variants — replaced by <version-tabs> custom element (Phase C PR2, M4 closure) -->
@@ -638,12 +814,20 @@
               (advisory mode — Trivy runs <code>continue-on-error</code> in CI; we surface findings, we do not block builds on them).
             </p>
 
+            {%- comment -%}
+              P1-N3 fix: emit .nonzero server-side where count > 0 (mirrors security-scan.js:46-47
+              span.classList.toggle('nonzero', value > 0) + parentElement.classList.toggle).
+              Eliminates FOUC where CSS paints critical=5 in clean teal before JS adds .nonzero.
+              JS _update() remains idempotent — toggling an already-set class is a no-op.
+            {%- endcomment -%}
             <div class="severity-grid">
-              <div><span class="count" data-scan-count="critical">{{ sec_variant.trivy_summary.counts.critical }}</span><span class="label">Critical</span></div>
-              <div><span class="count" data-scan-count="high">{{ sec_variant.trivy_summary.counts.high }}</span><span class="label">High</span></div>
-              <div><span class="count" data-scan-count="medium">{{ sec_variant.trivy_summary.counts.medium }}</span><span class="label">Medium</span></div>
-              <div><span class="count" data-scan-count="low">{{ sec_variant.trivy_summary.counts.low }}</span><span class="label">Low</span></div>
-              <div><span class="count" data-scan-count="info">{{ sec_variant.trivy_summary.counts.info }}</span><span class="label">Info</span></div>
+              {%- assign _crit = sec_variant.trivy_summary.counts.critical | default: 0 -%}
+              {%- assign _high = sec_variant.trivy_summary.counts.high | default: 0 -%}
+              <div{% if _crit > 0 %} class="nonzero"{% endif %}><span class="count{% if _crit > 0 %} nonzero{% endif %}" data-scan-count="critical">{{ _crit }}</span><span class="label">Critical</span></div>
+              <div{% if _high > 0 %} class="nonzero"{% endif %}><span class="count{% if _high > 0 %} nonzero{% endif %}" data-scan-count="high">{{ _high }}</span><span class="label">High</span></div>
+              <div><span class="count" data-scan-count="medium">{{ sec_variant.trivy_summary.counts.medium | default: 0 }}</span><span class="label">Medium</span></div>
+              <div><span class="count" data-scan-count="low">{{ sec_variant.trivy_summary.counts.low | default: 0 }}</span><span class="label">Low</span></div>
+              <div><span class="count" data-scan-count="info">{{ sec_variant.trivy_summary.counts.info | default: 0 }}</span><span class="label">Info</span></div>
             </div>
 
             {%- if sec_variant.trivy_summary.counts.critical == 0 and sec_variant.trivy_summary.counts.high == 0 -%}

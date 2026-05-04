@@ -129,6 +129,15 @@ version-tabs {
     display: none;
   }
 
+  /* Fix #7: label must NOT take width:100% inside a nowrap scroller — it would
+     consume the entire viewport width and push the first tab off-screen.
+     Use flex: 0 0 auto so the label sits inline before the tabs and scrolls
+     with them (option b — simplest, no markup change required). */
+  .version-tabs-group-label {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
   .version-tab {
     scroll-snap-align: start;
     flex-shrink: 0;

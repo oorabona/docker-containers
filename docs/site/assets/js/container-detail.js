@@ -63,11 +63,17 @@
       if (section) {
         section.querySelectorAll('.variant-tag').forEach(function(t) {
           t.classList.remove('selected');
-          t.setAttribute('aria-pressed', 'false');
+          // Fix #10: [role="tab"] uses aria-selected (managed by version-tabs.js), not aria-pressed
+          if (t.getAttribute('role') !== 'tab') {
+            t.setAttribute('aria-pressed', 'false');
+          }
         });
       }
       el.classList.add('selected');
-      el.setAttribute('aria-pressed', 'true');
+      // Fix #10: only set aria-pressed on non-tab elements
+      if (el.getAttribute('role') !== 'tab') {
+        el.setAttribute('aria-pressed', 'true');
+      }
 
       var tag = el.dataset.tag || '';
       var sizeAmd64 = el.dataset.sizeAmd64 || '---';
@@ -709,6 +715,37 @@
         wrap.appendChild(table);
       }
     }
+
+    // Fix #2: update Provenance section on variant change (show/hide per-variant blocks)
+    document.addEventListener('phase-b-variant-changed', function(e) {
+      var tag = e.detail && e.detail.tag ? e.detail.tag : '';
+      // Show the matching provenance section; hide all others
+      var provSections = document.querySelectorAll('.provenance[data-variant-tag]');
+      if (provSections.length > 0) {
+        provSections.forEach(function(s) {
+          s.style.display = s.dataset.variantTag === tag ? '' : 'none';
+        });
+      }
+    });
+
+    // Fix #3: update security-scan-card chrome (header h3 date + card visibility) on variant change
+    document.addEventListener('phase-b-variant-changed', function(e) {
+      var detail = e.detail;
+      if (!detail) return;
+      var card = document.querySelector('.security-scan-card');
+      if (!card) return;
+      if (detail.trivy_summary && detail.trivy_summary.last_scan) {
+        card.style.display = '';
+        var header = card.querySelector('.security-scan-card-header h3');
+        if (header) {
+          var dateStr = (detail.trivy_summary.last_scan || '').slice(0, 10);
+          header.textContent = 'Trivy · last scan ' + dateStr;
+        }
+      } else {
+        // Variant has no Trivy data — hide the entire card
+        card.style.display = 'none';
+      }
+    });
 
     // <version-tabs> emits 'version-tabs-changed' when user activates a tab.
     // selectVariant() reads all data-* from the activated <button.variant-tag>
