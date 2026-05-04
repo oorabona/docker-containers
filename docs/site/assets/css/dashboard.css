@@ -10,6 +10,18 @@
       font-optical-sizing: auto;
     }
 
+    /* .trust-badge — JetBrains Mono medium 500, uppercase, letter-spacing 0.05em
+       (Gate 4 typography pushback: mono-confident signature on trust strip badges).
+       KEEP existing .trust-badge--* color tokens — this adds only the type treatment. */
+    .trust-badge {
+      font-family: var(--font-family-mono);
+      font-size: var(--font-size-caption);   /* 12px */
+      font-weight: var(--font-weight-medium); /* 500 */
+      letter-spacing: var(--letter-spacing-wide); /* 0.05em */
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
     .bg-animated::before {
       content: '';
       position: absolute;

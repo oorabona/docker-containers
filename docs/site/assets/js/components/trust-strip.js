@@ -57,7 +57,8 @@
       const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      el.textContent = '🛡 Trivy: ' + critical + ' CRITICAL · scanned ' + date;
+      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("TRIVY: N CRITICAL · SCANNED")
+      el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL · SCANNED ' + date;
       el.style.display = '';
     }
 
@@ -68,7 +69,12 @@
         el.style.display = 'none';
         return;
       }
-      el.textContent = '🏗 ' + platforms.join(' + ');
+      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64").
+      // Defensively strip "os/" prefix (e.g. "linux/amd64" → "amd64") before uppercasing.
+      el.textContent = '🏗 ' + platforms.map(function(p) {
+        var arch = p.includes('/') ? p.split('/').pop() : p;
+        return arch.toUpperCase();
+      }).join(' + ');
       el.style.display = '';
     }
   }

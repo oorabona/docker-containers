@@ -1,0 +1,156 @@
+/* security-scan-card.css — chrome wrapper around <security-scan> component
+   Applies trust-domain identity tokens to severity display (NOT generic feedback colors).
+   Depends on: tokens.css. Does NOT modify the internals of <security-scan> — it wraps only.
+   Also carries the shared .trust-badge typography rule (Fix #6): dashboard.css defines it too,
+   but container-detail.html does NOT load dashboard.css. This file is loaded by BOTH layouts
+   (via default.html → <link component CSS>), making it the safe home for the shared rule. */
+
+/* -----------------------------------------------------------------------
+   Shared trust-badge typography — JetBrains Mono, medium, uppercase
+   (identical to the rule in dashboard.css; kept in sync by design)
+   Specificity note: "body .trust-badge" (0,1,1) beats theme.css ".trust-badge" (0,1,0)
+   which loads AFTER this file in default.html / container-detail.html. Same for dashboard.css
+   which loads AFTER theme.css so the plain rule there already wins on dashboard pages.
+   ----------------------------------------------------------------------- */
+body .trust-badge {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);   /* 12px */
+  font-weight: var(--font-weight-medium); /* 500 */
+  letter-spacing: var(--letter-spacing-wide); /* 0.05em */
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* -----------------------------------------------------------------------
+   Card surface
+   ----------------------------------------------------------------------- */
+.security-scan-card {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-inset-section);  /* 32px */
+  margin-block: var(--space-xl);
+}
+
+/* -----------------------------------------------------------------------
+   Card header
+   ----------------------------------------------------------------------- */
+.security-scan-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-tight);  /* 8px */
+  margin-bottom: var(--space-md);
+}
+
+.security-scan-card-header .eyebrow {
+  /* .eyebrow already defined in tokens.css — JetBrains Mono uppercase */
+  margin: 0;
+}
+
+.security-scan-card-header h3 {
+  font: var(--text-h3);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+  /* Gate 4 headline tweaks */
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+}
+
+/* -----------------------------------------------------------------------
+   Severity count cells — override <security-scan> generic feedback colors
+   with trust-domain identity tokens per spec (identity-not-state principle).
+   Fix #5: selectors now match the DOM that security-scan.js actually renders.
+   security-scan.js toggles class "nonzero" on the count <span> AND its
+   parent <div> when the count > 0. It does NOT set data-severity or
+   data-has-critical attributes on the <security-scan> element.
+   ----------------------------------------------------------------------- */
+
+/* Default: clean / zero counts — teal-green identity */
+.security-scan-card .count {
+  color: var(--color-trust-trivy-clean-fg);
+}
+
+/* Critical count cell > 0 — red identity (nth-child(1) = Critical column) */
+.security-scan-card .severity-grid > div:nth-child(1).nonzero .count {
+  color: var(--color-trust-trivy-critical-fg);
+}
+
+/* High count cell > 0 — amber warning (nth-child(2) = High column) */
+.security-scan-card .severity-grid > div:nth-child(2).nonzero .count {
+  color: var(--color-trust-trivy-warn-fg);
+}
+
+/* Scan-date label — muted timestamp */
+.security-scan-card [data-scan="last-scan"] {
+  color: var(--color-text-muted);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-body-sm);
+}
+
+/* Top-advisories list — mono rule IDs, dense spacing */
+.security-scan-card .top-advisories {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-sm) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.security-scan-card .top-advisories li {
+  font-size: var(--font-size-body-sm);
+  color: var(--color-text-secondary);
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--color-border-subtle);
+}
+
+.security-scan-card .top-advisories li strong {
+  font-family: var(--font-family-mono);
+  color: var(--color-trust-trivy-critical-fg);
+}
+
+/* -----------------------------------------------------------------------
+   Card footer — verify CTA
+   ----------------------------------------------------------------------- */
+.security-scan-card-footer {
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* -----------------------------------------------------------------------
+   Failed-scan variant
+   ----------------------------------------------------------------------- */
+.security-scan-card--failed {
+  border-color: var(--color-trust-trivy-warn-fg);
+}
+
+.security-scan-card--failed .security-scan-card-header h3 {
+  color: var(--color-trust-trivy-warn-fg);
+}
+
+.security-scan-card--failed-msg {
+  font-size: var(--font-size-body-sm);
+  color: var(--color-trust-trivy-warn-fg);
+  margin-block: var(--space-sm);
+}
+
+/* -----------------------------------------------------------------------
+   Stale scan (>30 days) — badge override applied by JS
+   ----------------------------------------------------------------------- */
+.security-scan-card[data-scan-stale="true"] .scan-date-badge {
+  color: var(--color-trust-trivy-warn-fg);
+}
+
+/* -----------------------------------------------------------------------
+   Mobile
+   ----------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .security-scan-card {
+    padding: var(--space-md);
+  }
+}

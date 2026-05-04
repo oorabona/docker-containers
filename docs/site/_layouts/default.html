@@ -16,6 +16,10 @@
 
   <!-- tokens.css MUST load first — defines CSS custom properties that all other sheets reference -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
+  <!-- Component CSS — load after tokens, before theme so theme can override if needed -->
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/version-tabs.css">
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/security-scan-card.css">
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/provenance.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
 </head>
 <body>

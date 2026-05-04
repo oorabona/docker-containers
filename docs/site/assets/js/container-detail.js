@@ -63,11 +63,17 @@
       if (section) {
         section.querySelectorAll('.variant-tag').forEach(function(t) {
           t.classList.remove('selected');
-          t.setAttribute('aria-pressed', 'false');
+          // Fix #10: [role="tab"] uses aria-selected (managed by version-tabs.js), not aria-pressed
+          if (t.getAttribute('role') !== 'tab') {
+            t.setAttribute('aria-pressed', 'false');
+          }
         });
       }
       el.classList.add('selected');
-      el.setAttribute('aria-pressed', 'true');
+      // Fix #10: only set aria-pressed on non-tab elements
+      if (el.getAttribute('role') !== 'tab') {
+        el.setAttribute('aria-pressed', 'true');
+      }
 
       var tag = el.dataset.tag || '';
       var sizeAmd64 = el.dataset.sizeAmd64 || '---';
@@ -108,6 +114,7 @@
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
       var variantData = {
+        tag: tag,
         attestation_url: el.dataset.attestationUrl || '',
         trivy_summary: null,
         multi_arch_platforms: []
@@ -710,10 +717,78 @@
       }
     }
 
+    // Fix #2: update Provenance section on variant change (show/hide per-variant blocks)
+    document.addEventListener('phase-b-variant-changed', function(e) {
+      var tag = e.detail && e.detail.tag ? e.detail.tag : '';
+      // Show the matching provenance section; hide all others
+      var provSections = document.querySelectorAll('.provenance[data-variant-tag]');
+      if (provSections.length > 0) {
+        provSections.forEach(function(s) {
+          s.style.display = s.dataset.variantTag === tag ? '' : 'none';
+        });
+      }
+    });
+
+    // Fix #3: update security-scan-card chrome (header h3 date + card visibility) on variant change
+    // M-N4: also update the clean-scan message (.scan-clean-msg) reactively.
+    document.addEventListener('phase-b-variant-changed', function(e) {
+      var detail = e.detail;
+      if (!detail) return;
+      var card = document.querySelector('.security-scan-card');
+      if (!card) return;
+      if (detail.trivy_summary && detail.trivy_summary.last_scan) {
+        card.style.display = '';
+        var header = card.querySelector('.security-scan-card-header h3');
+        if (header) {
+          var dateStr = (detail.trivy_summary.last_scan || '').slice(0, 10);
+          header.textContent = 'Trivy · last scan ' + dateStr;
+        }
+        // Update the clean-scan message: show iff critical + high == 0
+        var cleanMsg = card.querySelector('.scan-clean-msg');
+        if (cleanMsg) {
+          var counts = (detail.trivy_summary && detail.trivy_summary.counts) || {};
+          var critical = counts.critical || 0;
+          var high = counts.high || 0;
+          var scanDate = (detail.trivy_summary.last_scan || '').slice(0, 10);
+          if (critical === 0 && high === 0) {
+            cleanMsg.textContent = 'No CRITICAL alerts at last scan (' + scanDate + ').';
+            cleanMsg.style.display = '';
+          } else {
+            cleanMsg.style.display = 'none';
+          }
+        }
+      } else {
+        // Variant has no Trivy data — hide the entire card
+        card.style.display = 'none';
+      }
+    });
+
+    // <version-tabs> emits 'version-tabs-changed' when user activates a tab.
+    // selectVariant() reads all data-* from the activated <button.variant-tag>
+    // and dispatches `phase-b-variant-changed` for <trust-strip>/<security-scan>.
+    document.addEventListener('version-tabs-changed', function(e) {
+      // Find the activated button by tag value — it carries all data-* the page needs
+      var activatedTab = document.querySelector(
+        '.variant-tag[data-tag="' + (e.detail && e.detail.tag ? e.detail.tag : '') + '"]'
+      );
+      if (activatedTab) selectVariant(activatedTab);
+    });
+
     // Event delegation
     document.addEventListener('click', function(e) {
+      // M-N2: fallback — if version-tabs.js failed to register the custom element,
+      // we still handle tab clicks here so variant switching remains operative.
+      // If <version-tabs> is registered AND the click is inside it, defer to
+      // the 'version-tabs-changed' listener above (which calls selectVariant).
       var tag = e.target.closest('.variant-tag');
-      if (tag) selectVariant(tag);
+      if (tag) {
+        var insideVersionTabs = e.target.closest('version-tabs');
+        var versionTabsDefined = typeof customElements !== 'undefined' &&
+                                 customElements.get('version-tabs');
+        if (!insideVersionTabs || !versionTabsDefined) {
+          selectVariant(tag);
+        }
+      }
 
       var chip = e.target.closest('.sbom-type-chip-clickable');
       if (chip) togglePackagePanel(chip.dataset.type);
@@ -725,6 +800,37 @@
         copyDetailPullCommand();
       }
 
+      // Provenance section copy buttons — .copy-btn[data-copy] pattern
+      var copyBtn = e.target.closest('.copy-btn[data-copy]');
+      if (copyBtn) {
+        var textToCopy = copyBtn.dataset.copy || '';
+        var liveRegion = document.getElementById('status-live');
+        function showProvCopied() {
+          // M-N8: do NOT use aria-pressed on one-shot copy actions (aria-pressed is for
+          // toggle buttons only). The live region provides the announcement instead.
+          copyBtn.textContent = '✓';
+          copyBtn.setAttribute('aria-label', 'Copied');
+          if (liveRegion) liveRegion.textContent = 'Copied';
+          setTimeout(function () {
+            copyBtn.textContent = '⧉';
+            copyBtn.setAttribute('aria-label', copyBtn.dataset.ariaLabel || 'Copy to clipboard');
+            if (liveRegion) liveRegion.textContent = '';
+          }, 2000);
+        }
+        navigator.clipboard.writeText(textToCopy).then(showProvCopied).catch(function () {
+          // Fallback for Safari/older browsers
+          var ta = document.createElement('textarea');
+          ta.value = textToCopy;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showProvCopied();
+        });
+      }
+
       if (e.target.closest('.theme-toggle')) {
         ThemeManager.toggleTheme();
       }
@@ -734,8 +840,9 @@
       if (e.key === 'Enter' || e.key === ' ') {
         var chip = e.target.closest('.sbom-type-chip-clickable');
         if (chip) { e.preventDefault(); togglePackagePanel(chip.dataset.type); return; }
+        // Skip .variant-tag keydown inside <version-tabs> — handled by version-tabs.js
         var tag = e.target.closest('.variant-tag');
-        if (tag) { e.preventDefault(); selectVariant(tag); }
+        if (tag && !e.target.closest('version-tabs')) { e.preventDefault(); selectVariant(tag); }
       }
     });
 
