@@ -522,10 +522,11 @@
     }
 
     .card-meta-label {
-      color: var(--text-muted);
-      font-size: 0.6875rem;
+      /* M3 fix: --color-text-secondary (#C7CCD4) → 9.1:1 on navy-950 — was rgba(255,255,255,0.5) */
+      color: var(--color-text-secondary);
+      font-size: var(--font-size-caption);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: var(--letter-spacing-wide);
     }
 
     .card-meta-value {

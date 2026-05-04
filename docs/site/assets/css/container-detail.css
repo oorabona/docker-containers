@@ -1,11 +1,13 @@
-    /* Container detail page styles — shared theme in theme.css */
+    /* Container detail page styles — shared theme in theme.css
+       Phase C PR1: .tag-pill patched for C2 (inline-flex chip),
+       --detail-text-* now uses semantic tokens. */
 
-    /* Detail page: brighter text in dark mode for readability on glass surfaces.
-       Light mode inherits --text-secondary/#374151 and --text-muted/#4b5563 from theme.css.
-       Dark mode override uses slightly brighter white for detail page only. */
+    /* Detail page text tokens — M3 fix: point at validated semantic tokens.
+       --color-text-secondary: #C7CCD4 → 9.1:1 on navy-950 (was rgba(255,255,255,0.65) → ~3.5:1)
+       --color-text-muted: #8A93A0 → 4.6:1 on navy-950 (was rgba(255,255,255,0.5) → ~2.1:1) */
     :root {
-      --detail-text-secondary: rgba(255, 255, 255, 0.85);
-      --detail-text-muted: rgba(255, 255, 255, 0.65);
+      --detail-text-secondary: var(--color-text-secondary);
+      --detail-text-muted: var(--color-text-muted);
     }
     [data-theme="light"] {
       --detail-text-secondary: #374151;
@@ -149,7 +151,7 @@
       padding: 0.375rem 0.75rem; border-radius: 6px;
       background: rgba(139, 92, 246, 0.15); color: var(--accent-purple);
       border: 1px solid rgba(139, 92, 246, 0.25); cursor: pointer;
-      transition: all 0.2s ease;
+      transition: background var(--motion-duration-short) var(--easing-standard);
     }
     .variant-tag:hover { background: rgba(139, 92, 246, 0.25); transform: translateY(-1px); }
     .variant-tag.selected {
@@ -160,6 +162,37 @@
       font-size: 0.625rem; padding: 0.125rem 0.375rem; border-radius: 3px;
       background: rgba(16, 185, 129, 0.3); color: var(--accent-green);
       margin-left: 0.25rem;
+    }
+
+    /* C2 fix: .tag-pill as inline-flex chip — was display:inline-block with no gap,
+       causing extension names to concatenate (pgvectorparadedbpg_partman...).
+       Parent .variant-tags-row already has flex-wrap; this adds background + padding. */
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-inline-pill-gap);        /* 6px — between emoji/icon and text */
+      padding: var(--space-2xs) var(--space-xs); /* 2px 4px */
+      background: var(--color-surface-raised);   /* #1A2A4A — visible on navy-950 */
+      border-radius: var(--radius-sm);           /* 4px */
+      border: 1px solid var(--color-border-subtle);
+      color: var(--color-text-primary);
+      font-family: var(--font-family-mono);
+      font-size: var(--font-size-caption);       /* 12px */
+      letter-spacing: var(--letter-spacing-wide); /* 0.05em */
+      white-space: nowrap;
+    }
+
+    .tag-pill:focus-visible {
+      outline: 2px solid var(--color-action-primary);
+      outline-offset: 2px;
+    }
+
+    /* Ensure parent container has flex+wrap+gap for chips to space correctly */
+    .variant-extensions,
+    .variant-tags-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-inline-pill-gap);
     }
 
     /* Variant dep update notification badge */

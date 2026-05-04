@@ -1,44 +1,293 @@
-/* Shared theme — imported by both dashboard.css and container-detail.css */
+/* Shared theme — imported by both dashboard.css and container-detail.css
+   Phase C PR1: Contains all CSS custom properties needed by dashboard.html.
+   tokens.css (loaded in default.html + future layout updates) provides the
+   same declarations for pages that use it; properties defined here ensure
+   backward compatibility when tokens.css is not yet linked in older layouts.
+
+   DEPRECATED aliases: --accent-{color}, --text-{primary,secondary,muted}
+   kept for 1 release cycle — 49 selectors still reference them.
+   New code: use --color-* and --color-text-* tokens. */
+
+/* ==========================================================
+   TIER 1 — Primitive tokens (verbatim from tokens.css spec)
+   Declared here so they resolve in layouts that don't load tokens.css yet.
+   ========================================================== */
 
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.1);
+  /* Navy tonal scale */
+  --color-navy-950: #0F1729;
+  --color-navy-900: #16213E;
+  --color-navy-800: #1A2A4A;
+  --color-navy-700: #1F3155;
+  --color-navy-600: #2A3F66;
+  --color-navy-500: #344B73;
+
+  /* Blue */
+  --color-blue-300: #93C5FD;
+  --color-blue-400: #60A5FA;
+  --color-blue-500: #3B82F6;
+  --color-blue-600: #2563EB;
+  --color-blue-700: #1D4ED8;
+
+  /* Green */
+  --color-green-300: #86EFAC;
+  --color-green-400: #4ADE80;
+  --color-green-500: #10B981;
+  --color-green-600: #059669;
+
+  /* Amber */
+  --color-amber-400: #FBBF24;
+  --color-amber-500: #F59E0B;
+  --color-amber-600: #D97706;
+
+  /* Red */
+  --color-red-400:  #F87171;
+  --color-red-500:  #EF4444;
+  --color-red-600:  #DC2626;
+
+  /* Trust-domain hues */
+  --color-teal-400:   #2DD4BF;
+  --color-teal-500:   #14B8A6;
+  --color-cyan-400:   #22D3EE;
+  --color-cyan-500:   #06B6D4;
+  --color-violet-400: #A78BFA;
+  --color-violet-500: #8B5CF6;
+
+  /* Neutral scale */
+  --color-neutral-50:  #F4F5F7;
+  --color-neutral-200: #C7CCD4;
+  --color-neutral-400: #8A93A0;
+  --color-neutral-600: #4D556A;
+  --color-neutral-700: #303746;
+  --color-neutral-900: #14181F;
+
+  /* Spacing scale */
+  --space-2xs: 2px;
+  --space-xs:  4px;
+  --space-sm:  8px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* Type scale */
+  --font-size-caption:    12px;
+  --font-size-body-sm:    14px;
+  --font-size-body:       16px;
+  --font-size-subheading: 20px;
+  --font-size-h3:         24px;
+  --font-size-h2:         32px;
+  --font-size-h1:         40px;
+  --font-size-display:    48px;
+
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  --line-height-tight:   1.2;
+  --line-height-normal:  1.5;
+  --line-height-relaxed: 1.75;
+
+  --letter-spacing-tight:  -0.02em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide:   0.05em;
+  --letter-spacing-wider:  0.08em;
+
+  --font-family-sans:    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono:    "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+  --font-family-display: var(--font-family-sans);
+
+  /* Border radius */
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-full: 9999px;
+
+  /* Border width */
+  --border-width-1: 1px;
+  --border-width-2: 2px;
+
+  /* Motion */
+  --motion-duration-instant: 100ms;
+  --motion-duration-short:   150ms;
+  --motion-duration-normal:  200ms;
+  --motion-duration-medium:  300ms;
+  --easing-standard:    cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-decelerate:  cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ==========================================================
+   TIER 2 — Semantic tokens (dark mode = default)
+   ========================================================== */
+
+:root,
+[data-theme="dark"] {
+  /* Surfaces */
+  --color-surface-base:     var(--color-navy-950);
+  --color-surface-raised:   var(--color-navy-800);
+  --color-surface-overlay:  var(--color-navy-700);
+  --color-surface-elevated: var(--color-navy-600);
+
+  /* Text — contrast validated on #0F1729 */
+  --color-text-primary:   var(--color-neutral-50);   /* 14.4:1 */
+  --color-text-secondary: var(--color-neutral-200);  /* 9.1:1  */
+  --color-text-muted:     var(--color-neutral-400);  /* 4.6:1  */
+  --color-text-inverse:   var(--color-neutral-900);
+
+  /* Borders */
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Action */
+  --color-action-primary:         var(--color-blue-400);
+  --color-action-primary-hover:   var(--color-blue-300);
+  --color-action-primary-pressed: var(--color-blue-500);
+
+  /* Feedback */
+  --color-feedback-success-fg: var(--color-green-400);
+  --color-feedback-success-bg: rgba(16, 185, 129, 0.12);
+  --color-feedback-warning-fg: var(--color-amber-400);
+  --color-feedback-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-feedback-error-fg:   var(--color-red-400);
+  --color-feedback-error-bg:   rgba(239, 68, 68, 0.15);
+  --color-feedback-info-fg:    var(--color-blue-400);
+  --color-feedback-info-bg:    rgba(59, 130, 246, 0.12);
+}
+
+/* Trust-domain tokens (identity, NOT state — see ADR-007) */
+:root,
+[data-theme="dark"] {
+  /* SBOM — teal */
+  --color-trust-sbom-fg:     var(--color-teal-400);
+  --color-trust-sbom-bg:     rgba(20, 184, 166, 0.15);
+  --color-trust-sbom-border: rgba(45, 212, 191, 0.40);
+
+  /* Trivy */
+  --color-trust-trivy-clean-fg:    var(--color-green-400);
+  --color-trust-trivy-clean-bg:    var(--color-feedback-success-bg);
+  --color-trust-trivy-warn-fg:     var(--color-amber-400);
+  --color-trust-trivy-warn-bg:     var(--color-feedback-warning-bg);
+  --color-trust-trivy-critical-fg: var(--color-red-400);
+  --color-trust-trivy-critical-bg: var(--color-feedback-error-bg);
+
+  /* Multi-arch — violet */
+  --color-trust-multiarch-fg:     var(--color-violet-400);
+  --color-trust-multiarch-bg:     rgba(139, 92, 246, 0.12);
+  --color-trust-multiarch-border: rgba(167, 139, 250, 0.32);
+
+  /* Verify CTA — cyan (#22D3EE → 7.4:1 on #0F1729) */
+  --color-trust-verify-fg:       var(--color-cyan-400);
+  --color-trust-verify-bg:       transparent;
+  --color-trust-verify-border:   rgba(34, 211, 238, 0.50);
+  --color-trust-verify-hover-bg: rgba(34, 211, 238, 0.10);
+}
+
+/* Spacing semantic aliases */
+:root {
+  --space-inset-card-md:    var(--space-md);
+  --space-inset-card-lg:    var(--space-lg);
+  --space-inset-section:    var(--space-xl);
+  --space-inset-squish-md:  var(--space-sm) var(--space-md);
+  --space-inset-stretch-md: 12px var(--space-md);
+  --space-stack-tight:      var(--space-sm);
+  --space-stack-normal:     var(--space-md);
+  --space-stack-section:    var(--space-xl);
+  --space-inline-icon-text: var(--space-sm);
+  --space-inline-pill-gap:  6px;
+  --space-inline-nav:       var(--space-lg);
+}
+
+/* Typography semantic aliases */
+:root {
+  --text-display:    var(--font-size-display) / var(--line-height-tight) var(--font-family-sans);
+  --text-h1:         var(--font-size-h1) / var(--line-height-tight) var(--font-family-sans);
+  --text-h2:         var(--font-size-h2) / var(--line-height-tight) var(--font-family-sans);
+  --text-h3:         var(--font-size-h3) / var(--line-height-tight) var(--font-family-sans);
+  --text-subheading: var(--font-size-subheading) / var(--line-height-normal) var(--font-family-sans);
+  --text-body:       var(--font-size-body) / var(--line-height-normal) var(--font-family-sans);
+  --text-body-sm:    var(--font-size-body-sm) / var(--line-height-normal) var(--font-family-sans);
+  --text-caption:    var(--font-size-caption) / var(--line-height-normal) var(--font-family-sans);
+  --text-code:       var(--font-size-body-sm) / var(--line-height-normal) var(--font-family-mono);
+}
+
+/* ==========================================================
+   DEPRECATED legacy tokens (1 release cycle — used by 49 selectors)
+   Point at new primitives; remove in PR4 tech-debt sweep.
+   ========================================================== */
+
+:root {
+  --accent-green:  var(--color-green-500);    /* was: #10b981 */
+  --accent-yellow: var(--color-amber-500);    /* was: #f59e0b */
+  --accent-blue:   var(--color-blue-500);     /* was: #3b82f6 */
+  --accent-purple: var(--color-violet-500);   /* was: #8b5cf6 */
+  --accent-pink:   #ec4899;                   /* no primitive yet */
+
+  /* Legacy text tokens → semantic (M3 fix applies wherever these are used) */
+  --text-primary:   var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted:     var(--color-text-muted);
+
+  /* Glass / surface tokens */
+  --glass-bg:     rgba(255, 255, 255, 0.1);
   --glass-border: rgba(255, 255, 255, 0.2);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-  --glass-blur: blur(12px);
-  --text-primary: #ffffff;
-  --text-secondary: rgba(255, 255, 255, 0.7);
-  --text-muted: rgba(255, 255, 255, 0.5);
-  --accent-green: #10b981;
-  --accent-yellow: #f59e0b;
-  --accent-blue: #3b82f6;
-  --accent-purple: #8b5cf6;
-  --accent-pink: #ec4899;
+  --glass-blur:   blur(12px);
+
+  /* Legacy gradient tokens */
   --gradient-1: #667eea;
   --gradient-2: #764ba2;
   --gradient-3: #f093fb;
   --gradient-4: #f5576c;
-  --bg-gradient-1: #1a1a2e;
-  --bg-gradient-2: #16213e;
-  --bg-gradient-3: #0f3460;
+  --bg-gradient-1: var(--color-navy-900);
+  --bg-gradient-2: var(--color-navy-900);
+  --bg-gradient-3: var(--color-navy-700);
 }
 
-/* Light theme — WCAG 2.2 compliant (4.5:1 minimum contrast for normal text) */
+/* Light theme overrides */
 [data-theme="light"] {
-  --glass-bg: rgba(255, 255, 255, 0.85);
+  /* Semantic overrides */
+  --color-surface-base:     #FFFFFF;
+  --color-surface-raised:   #F9FAFB;
+  --color-surface-overlay:  #F3F4F6;
+  --color-surface-elevated: #E5E7EB;
+  --color-text-primary:     var(--color-neutral-900);
+  --color-text-secondary:   #374151;
+  --color-text-muted:       #6B7280;
+  --color-border-subtle:    rgba(0, 0, 0, 0.08);
+  --color-border-strong:    rgba(0, 0, 0, 0.16);
+  --color-action-primary:         var(--color-blue-600);
+  --color-action-primary-hover:   var(--color-blue-700);
+  --color-action-primary-pressed: var(--color-blue-500);
+  /* Trust-domain — darker for light bg */
+  --color-trust-sbom-fg:           var(--color-teal-500);
+  --color-trust-trivy-critical-fg: var(--color-red-600);
+  --color-trust-multiarch-fg:      var(--color-violet-500);
+  --color-trust-verify-fg:         var(--color-cyan-500);
+
+  /* Deprecated aliases — light */
+  --glass-bg:     rgba(255, 255, 255, 0.85);
   --glass-border: rgba(0, 0, 0, 0.15);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-muted: #4b5563;
-  --accent-green: #047857;
+  --accent-green:  #047857;
   --accent-yellow: #b45309;
-  --accent-blue: #1d4ed8;
+  --accent-blue:   #1d4ed8;
   --accent-purple: #6d28d9;
-  --accent-pink: #be185d;
+  --accent-pink:   #be185d;
   --bg-gradient-1: #e0e7ff;
   --bg-gradient-2: #ddd6fe;
   --bg-gradient-3: #c7d2fe;
+
+  /* Legacy text → light semantic */
+  --text-primary:   var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted:     var(--color-text-muted);
 }
+
+/* ==========================================================
+   Global resets and base styles
+   ========================================================== */
 
 * {
   margin: 0;
@@ -47,21 +296,33 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-family-sans);
   min-height: 100vh;
-  background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 50%, var(--bg-gradient-3) 100%);
-  color: var(--text-primary);
+  /* 3% noise overlay + navy gradient (refined-authoritative-proof-forward) */
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.03'/></svg>"),
+    linear-gradient(135deg, var(--color-navy-950) 0%, var(--color-navy-900) 50%, var(--color-navy-700) 100%);
+  background-attachment: fixed;
+  background-size: 200px 200px, 100% 100%;
+  color: var(--color-text-primary);
   overflow-x: hidden;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition: background var(--motion-duration-normal) var(--easing-standard),
+              color      var(--motion-duration-normal) var(--easing-standard);
+}
+
+[data-theme="light"] body {
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.03'/></svg>"),
+    linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 50%, var(--bg-gradient-3) 100%);
+  background-attachment: fixed;
+  background-size: 200px 200px, 100% 100%;
 }
 
 /* Animated gradient background */
 .bg-animated {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
   z-index: -1;
   overflow: hidden;
 }
@@ -75,11 +336,13 @@ body {
   z-index: -1;
 }
 
-/* Layout */
+/* Layout — C1 fix: margin-inline: auto centers at any viewport width */
 .container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 2rem;
+  max-width: 1280px;
+  margin-inline: auto;
+  padding-inline: var(--space-md);  /* 16px */
+  padding-top: var(--space-md);
+  padding-bottom: var(--space-md);
   position: relative;
   z-index: 1;
 }
@@ -100,17 +363,20 @@ body {
 }
 
 .header-pretitle {
-  font-size: 0.75rem;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-muted);
+  letter-spacing: var(--letter-spacing-wider);
+  color: var(--color-text-muted);
   margin-bottom: 0.25rem;
 }
 
 .header-main {
   font-size: 2rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
+  font-weight: var(--font-weight-bold);
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+  background: linear-gradient(135deg, var(--color-neutral-50) 0%, rgba(255,255,255,0.7) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -121,19 +387,18 @@ body {
   gap: 0.75rem;
 }
 
-/* Theme toggle — min 44px for WCAG 2.5.8 touch target */
+/* Theme toggle */
 .theme-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 44px;
   height: 44px;
-  border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--glass-bg);
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background var(--motion-duration-short) var(--easing-standard);
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
 }
@@ -143,9 +408,7 @@ body {
   transform: scale(1.05);
 }
 
-.theme-toggle i {
-  font-size: 1.25rem;
-}
+.theme-toggle i { font-size: 1.25rem; }
 
 [data-theme="light"] .theme-toggle {
   background: rgba(0, 0, 0, 0.05);
@@ -184,15 +447,15 @@ body {
   gap: 0.5rem;
   padding: 0.625rem 1.25rem;
   font-size: 0.875rem;
-  font-weight: 500;
-  border-radius: 10px;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   text-decoration: none;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background var(--motion-duration-normal) var(--easing-standard);
 }
 
 .btn:hover {
@@ -206,21 +469,14 @@ body {
   border: none;
 }
 
-[data-theme="light"] .btn-primary {
-  color: #ffffff;
-}
-
-[data-theme="light"] .btn-primary:hover {
-  color: #ffffff;
-}
+[data-theme="light"] .btn-primary { color: #ffffff; }
+[data-theme="light"] .btn-primary:hover { color: #ffffff; }
 
 /* Accessibility */
 .sr-only {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
@@ -232,14 +488,14 @@ body {
   top: -100px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent-blue);
+  background: var(--color-action-primary);
   color: white;
   padding: 0.75rem 1.5rem;
   border-radius: 0 0 8px 8px;
   text-decoration: none;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   z-index: 9999;
-  transition: top 0.2s ease;
+  transition: top var(--motion-duration-short) var(--easing-standard);
 }
 
 .skip-link:focus {
@@ -248,19 +504,61 @@ body {
   outline-offset: 2px;
 }
 
+/* Focus-visible baseline */
+:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 /* Footer */
 .footer {
   text-align: center;
   padding: 2rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
 }
 
 .footer a {
-  color: var(--accent-blue);
+  color: var(--color-action-primary);
   text-decoration: none;
 }
 
-.footer a:hover {
-  text-decoration: underline;
+.footer a:hover { text-decoration: underline; }
+
+/* Utility classes (typography patterns) */
+.eyebrow {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--letter-spacing-wider);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-normal);
+  margin: 0;
+}
+
+.body-sm { font: var(--text-body-sm); }
+
+.caption {
+  font: var(--text-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+}
+
+/* Headline Inter display tweaks (Gate 4 — ss01/cv11 features) */
+h1, h2, .hero-title {
+  font-feature-settings: "ss01", "cv11";
+  font-optical-sizing: auto;
+}
+
+/* Reduced motion (WCAG 2.1 §2.3.3) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

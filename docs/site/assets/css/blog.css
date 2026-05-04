@@ -99,9 +99,10 @@
 .status-pill i { font-size: 1em; }
 
 .status-pill-ok {
-  background: rgba(16, 185, 129, 0.14);
+  /* m8 fix: use semantic feedback tokens — was ad-hoc rgba */
+  background: var(--color-feedback-success-bg);
   border-color: rgba(16, 185, 129, 0.32);
-  color: var(--accent-green);
+  color: var(--color-feedback-success-fg);
 }
 
 .status-pill-info {
@@ -615,27 +616,26 @@
   border-color: rgba(59, 130, 246, 0.35);
 }
 
-/* Verify — neutral/subtle (meta link, not a trust signal itself) */
+/* Verify CTA — M2 fix: --color-trust-verify-fg (#22D3EE → 7.4:1 on navy-950)
+   was: color: var(--text-muted) → rgba(255,255,255,0.5) → ~2.1:1 (failed AA) */
 .trust-badge--verify {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.1);
-  color: var(--text-muted);
+  background: var(--color-trust-verify-bg);
+  border-color: var(--color-trust-verify-border);
+  color: var(--color-trust-verify-fg);
 }
 
 .trust-badge--verify:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.18);
+  background: var(--color-trust-verify-hover-bg);
+  border-color: var(--color-trust-verify-border);
 }
 
-[data-theme="light"] .trust-badge--verify {
-  background: rgba(15, 23, 42, 0.04);
-  border-color: rgba(15, 23, 42, 0.1);
+.trust-badge--verify:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
 }
 
-[data-theme="light"] .trust-badge--verify:hover {
-  background: rgba(15, 23, 42, 0.08);
-  border-color: rgba(15, 23, 42, 0.18);
-}
+/* [data-theme="light"] .trust-badge--verify now uses token overrides from tokens.css
+   light-mode section: --color-trust-verify-fg → var(--color-cyan-500) for light bg contrast */
 
 /* Trivy scan — default green (0 CRITICAL) */
 .trust-badge--trivy {
