@@ -201,7 +201,7 @@ jobs:
 
           mkdir -p .build-lineage
 
-          # Window: last 24h, last 30 runs on master.
+          # Window: last 24h, last 100 runs on master.
           cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
           # Note: do NOT filter on --status=success at the API level — auto-build runs
           # with PARTIAL failures (some matrix legs failed, others succeeded) still
