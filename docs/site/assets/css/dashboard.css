@@ -1,5 +1,24 @@
     /* Dashboard-specific styles — shared theme in theme.css */
 
+    /* C1 fix: margin-inline: auto centers content at all viewport widths including 1440px+.
+       max-width reduced from 1400px → 1280px to match Phase C layout spec.
+       Was: margin: 0 auto with no explicit max-width centering correction. */
+    .container {
+      max-width: 1280px;
+      margin-inline: auto;
+      padding-inline: var(--space-md);  /* 16px */
+      padding-top: var(--space-md);
+      padding-bottom: var(--space-md);
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Headline Inter display tweaks (Gate 4 — ss01/cv11 typographic features) */
+    h1, h2, .hero-title, .dashboard-hero-title {
+      font-feature-settings: "ss01", "cv11";
+      font-optical-sizing: auto;
+    }
+
     .bg-animated::before {
       content: '';
       position: absolute;
