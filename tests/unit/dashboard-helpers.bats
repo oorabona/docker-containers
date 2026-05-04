@@ -248,7 +248,7 @@ EOF
     build_trivy_category()           { echo "myapp:1.2.3"; }
     get_attestation_id()             { echo "att-id-xyz"; }
     get_attestation_url()            { echo "https://example.com/att/att-id-xyz"; }
-    get_trivy_summary()              { echo '{"last_scan":"2026-05-04","critical":0,"high":1}'; }
+    get_trivy_summary()              { echo '{"last_scan":"2026-05-04T12:00:00Z","counts":{"critical":0,"high":0,"medium":2,"low":5,"info":0},"top_advisories":[]}'; }
     generate_container_page()        { :; }
     fetch_recent_activity()          { echo "[]"; }
     calculate_build_success_rate()   { echo "5:5:100"; }
@@ -271,6 +271,9 @@ EOF
     [[ "$yml_content" == *"trivy_summary"* ]]
     [[ "$yml_content" == *"att-id-xyz"* ]]
     [[ "$yml_content" == *"last_scan"* ]]
+    # Validate production schema: counts sub-object must be present (not flat critical/high at top level).
+    # yq -P serialises {"counts":{"critical":0,...}} as "counts:\n  critical: 0" in YAML.
+    [[ "$yml_content" == *"counts:"* ]]
 
     rm -f "$TRIVY_CACHE_FILE"
 }

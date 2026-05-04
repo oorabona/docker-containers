@@ -90,7 +90,9 @@ jobs:
 
           mkdir -p .trivy-scan-history
 
-          # Window: last 24h, last 30 runs on master.
+          # Window: last 24h, last 100 runs on master.
+          # --limit is applied API-side BEFORE the jq date filter; use 100 to avoid
+          # truncating runs still inside the 24h window on busy days with retries.
           cutoff=$(date -u -d '24 hours ago' --iso-8601=seconds)
           # Note: do NOT filter on --status=success at the API level — auto-build runs
           # with PARTIAL failures (some matrix legs failed, others succeeded) still
@@ -99,7 +101,7 @@ jobs:
           if ! runs=$(gh run list \
               --workflow=auto-build.yaml \
               --branch=master \
-              --limit 30 \
+              --limit 100 \
               --json databaseId,createdAt,conclusion \
               --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
               2>/tmp/gh-stderr-trivy.txt); then
@@ -208,7 +210,7 @@ jobs:
           if ! run_ids=$(gh run list \
               --workflow=auto-build.yaml \
               --branch=master \
-              --limit 30 \
+              --limit 100 \
               --json databaseId,createdAt,conclusion \
               --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
               2>/tmp/gh-stderr-sbom.txt); then
