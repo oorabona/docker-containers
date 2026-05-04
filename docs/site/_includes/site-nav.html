@@ -9,7 +9,7 @@
       <a href="{{ site.baseurl }}/blog/" class="site-nav-link{% if include.active == 'blog' %} active{% endif %}">Blog</a>
     </nav>
     <div class="site-nav-actions">
-      <button class="theme-toggle" aria-label="Toggle light/dark theme">
+      <button type="button" class="theme-toggle" aria-label="Toggle light/dark theme">
         <i class="ti ti-moon" aria-hidden="true"></i>
       </button>
       <a href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer" aria-label="View repository on GitHub (opens in new tab)">
