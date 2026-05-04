@@ -35,20 +35,24 @@
   --color-amber-400: #FBBF24;
   --color-amber-500: #F59E0B;  /* preserve current --accent-yellow */
   --color-amber-600: #D97706;
+  --color-amber-700: #B45309;  /* foreground on light — 5.02:1 on #FFFFFF (WCAG AA) */
 
   /* --- Red (status: critical / Trivy CRITICAL) --- */
   --color-red-400: #F87171;    /* foreground on dark — lighter for contrast */
   --color-red-500: #EF4444;
   --color-red-600: #DC2626;
+  --color-red-700: #B91C1C;    /* foreground on light — 6.47:1 on #FFFFFF (WCAG AA) */
 
   /* --- Trust-domain accents (NEW — distinct identity) --- */
   --color-teal-400: #2DD4BF;   /* SBOM/Sigstore — teal hue       */
   --color-teal-500: #14B8A6;
-  --color-cyan-400: #22D3EE;   /* Verify CTA dark — 7.4:1 on navy-950         */
+  --color-teal-700: #0F766E;   /* SBOM on light — 5.47:1 on #FFFFFF (WCAG AA)  */
+  --color-cyan-400: #22D3EE;   /* Verify CTA dark — 7.4:1 on navy-950          */
   --color-cyan-500: #06B6D4;
-  --color-cyan-700: #0E7490;   /* Verify CTA light — ~7:1 on #FFFFFF (WCAG AA) */
+  --color-cyan-700: #0E7490;   /* Verify CTA light — 5.36:1 on #FFFFFF (WCAG AA) */
   --color-violet-400: #A78BFA; /* multi-arch — architectural     */
   --color-violet-500: #8B5CF6; /* preserve current --accent-purple */
+  --color-violet-700: #6D28D9; /* multi-arch on light — 7.10:1 on #FFFFFF (WCAG AAA) */
 
   /* --- Neutral scale (text, borders) --- */
   --color-neutral-50:  #F4F5F7;  /* off-white — body text on dark  */
@@ -247,15 +251,20 @@
   --color-action-primary-hover:   var(--color-blue-700);
   --color-action-primary-pressed: var(--color-blue-500);
 
-  /* trust-domain — light bg contrast (P2 fix: cyan-700 #0E7490 → ~7:1 on white, was cyan-500 #06B6D4 → 2.4:1) */
-  --color-trust-sbom-fg:           var(--color-teal-500);
-  --color-trust-trivy-critical-fg: var(--color-red-600);
-  --color-trust-multiarch-fg:      var(--color-violet-500);
-  --color-trust-verify-fg:         var(--color-cyan-700);  /* #0E7490 — 5.36:1 on #FFFFFF (WCAG AA) */
+  /* trust-domain fg overrides — all upgraded to 700-level for WCAG AA on white */
+  --color-trust-sbom-fg:           var(--color-teal-700);    /* #0F766E — 5.47:1 on white (was teal-500 2.49:1 FAIL) */
+  --color-trust-trivy-clean-fg:    var(--color-green-700);   /* resolved via feedback-success-fg; explicit for clarity */
+  --color-trust-trivy-warn-fg:     var(--color-amber-700);   /* #B45309 — 5.02:1 on white (was amber-400 1.67:1 FAIL) */
+  --color-trust-trivy-critical-fg: var(--color-red-700);     /* #B91C1C — 6.47:1 on white (was red-600 4.83:1 OK, now more consistent) */
+  --color-trust-multiarch-fg:      var(--color-violet-700);  /* #6D28D9 — 7.10:1 on white (was violet-500 4.23:1 FAIL) */
+  --color-trust-verify-fg:         var(--color-cyan-700);    /* #0E7490 — 5.36:1 on white (unchanged, already AA) */
 
-  /* feedback — P1 fix: green-400 (#4ADE80) is 1.74:1 on white; green-700 (#047857) = 5.4:1 (WCAG AA) */
-  --color-feedback-success-fg: var(--color-green-700);
-  --color-feedback-success-bg: rgba(4, 120, 87, 0.10);  /* green-700 alpha for light surfaces */
+  /* feedback fg overrides — all upgraded to 700-level for WCAG AA on white */
+  --color-feedback-success-fg: var(--color-green-700);   /* #047857 — 5.48:1 on white */
+  --color-feedback-warning-fg: var(--color-amber-700);   /* #B45309 — 5.02:1 on white (was amber-400 1.67:1 FAIL) */
+  --color-feedback-error-fg:   var(--color-red-700);     /* #B91C1C — 6.47:1 on white (was red-400 2.77:1 FAIL) */
+  --color-feedback-info-fg:    var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white (was blue-400 2.54:1 FAIL) */
+  --color-feedback-success-bg: rgba(4, 120, 87, 0.10);  /* green-700 alpha — tinted on white surfaces */
 }
 
 /* ----------------------------------------------------------
