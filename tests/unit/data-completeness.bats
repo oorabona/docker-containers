@@ -50,7 +50,7 @@ setup() {
     [ "$status" -eq 0 ]
     # Both sentinels should fire
     [[ "$output" == *"No versions found for lonely"* ]]
-    [[ "$output" == *"Version 0 of phantom has no variants"* ]]
+    [[ "$output" == *"Version v0 of phantom has no variants"* ]]
     # Healthy container should NOT trigger any warning
     ! [[ "$output" == *"Missing"*"healthy"* ]]
     ! [[ "$output" == *"No versions"*"healthy"* ]]
@@ -87,4 +87,23 @@ setup() {
     [ "$status" -eq 2 ]
     [[ "$output" == *"::error"* ]]
     [[ "$output" == *"expected top-level YAML sequence"* ]]
+}
+
+@test "verify-dashboard-data: single-version container with empty variants[] flags <no-variants>" {
+    FIXTURE_SINGLE_EMPTY="$PROJECT_ROOT/tests/fixtures/containers-single-version-empty.yml"
+    run "$VERIFY_SCRIPT" "$FIXTURE_SINGLE_EMPTY"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container ghost (single-version) has no variants"* ]]
+    ! [[ "$output" == *"Missing"*"real"* ]]
+}
+
+@test "verify-dashboard-data: has_variants:false fixture handles top-level fields" {
+    FIXTURE_NO_VARIANTS="$PROJECT_ROOT/tests/fixtures/containers-no-variants.yml"
+    run "$VERIFY_SCRIPT" "$FIXTURE_NO_VARIANTS"
+    [ "$status" -eq 0 ]
+    ! [[ "$output" == *"Missing"*"standalone"* ]]
+    [[ "$output" == *"Missing attestation_url for incomplete"* ]]
+    [[ "$output" == *"Missing trivy_summary for incomplete"* ]]
+    [[ "$output" == *"Missing sbom_summary for incomplete"* ]]
+    [[ "$output" == *"top-level fields"* ]]
 }

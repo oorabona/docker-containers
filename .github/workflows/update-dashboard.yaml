@@ -248,6 +248,26 @@ jobs:
               fi
             fi
             rm -f "$stderr_file"
+
+            # Also download build-lineage-* artifacts for this run (separate from sbom-*).
+            # Lineage files contain oci_subject_digest needed for attestation lookup.
+            # They are subject to the same cache race as SBOMs: a fresh SBOM with a
+            # stale lineage causes attestation_url to point at the wrong digest.
+            stderr_file=$(mktemp)
+            if gh run download "$run_id" \
+                --pattern 'build-lineage-*' \
+                --dir "$staging/$run_id-lineage" 2>"$stderr_file"; then
+              :
+            else
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # No lineage artifact for this run, normal cache miss.
+              else
+                echo "::warning::gh run download (lineage) failed for run $run_id. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
+            fi
+            rm -f "$stderr_file"
           done
 
           if [[ "$download_failures" -gt 0 ]]; then
@@ -286,19 +306,39 @@ jobs:
             fi
 
             cp -- "$src" "$target"
-            # Derived files (.changelog.json, .history.json) are computed against the
-            # PREVIOUS .sbom.json baseline. Replacing the SBOM invalidates them — the
-            # next BUILD of this container (which runs auto-build's cache-lineage job)
-            # will regenerate them from the new baseline. Containers that never rebuild
-            # will keep showing empty "Recent Changes" — preferred over stale wrong data.
+            # .changelog.json is computed against the PREVIOUS .sbom.json baseline.
+            # Replacing the SBOM invalidates it. Next BUILD's cache-lineage will
+            # regenerate it. In the interim, show no "Recent Changes" rather than
+            # stale wrong data.
+            #
+            # .history.json is a MONOTONIC log — each row was correct at write time.
+            # Do NOT delete it: container-detail.js hides the entire Provenance
+            # section when missing, which would hurt containers that don't rebuild
+            # often more than the (small) inaccuracy of the latest history row.
             container_tag="${fname%.sbom.json}"
-            rm -f ".build-lineage/${container_tag}.changelog.json" \
-                  ".build-lineage/${container_tag}.history.json"
+            rm -f ".build-lineage/${container_tag}.changelog.json"
             merged=$((merged + 1))
           done < <(find "$staging" -name '*.sbom.json' -print0)
 
+          # Merge lineage files (mtime-based since they have no content timestamp).
+          # Exclude .sbom.json, .changelog.json, .history.json — only bare
+          # {container}-{tag}.json lineage files (which carry oci_subject_digest).
+          merged_lineage=0
+          while IFS= read -r -d '' src; do
+            fname=$(basename "$src")
+            target=".build-lineage/$fname"
+            if [[ ! -f "$target" ]] || [[ "$src" -nt "$target" ]]; then
+              cp -- "$src" "$target"
+              merged_lineage=$((merged_lineage + 1))
+            fi
+          done < <(find "$staging" -name '*.json' \
+            -not -name '*.sbom.json' \
+            -not -name '*.changelog.json' \
+            -not -name '*.history.json' \
+            -print0)
+
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
-          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged file(s); total SBOM entries: $total"
+          echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s); total SBOM entries: $total"
 
       - name: Snapshot pull/star counts (idempotent per day)
         run: |

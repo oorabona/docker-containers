@@ -75,16 +75,34 @@ fi
 # - Containers with zero versions AND zero top-level variants emit field="<no-versions>".
 # - Multi-version path (has .versions[]): v_idx is the numeric version index.
 # - Single-version path (top-level .variants[], no .versions): v_idx is "single".
+# - has_variants:false path: v_idx is "no-variants"; fields are at container level.
 # - Each (container, version, variant, missing-field) tuple emits one row.
 # - Empty/null/{}/[] all count as missing.
 gaps_tsv=$(jq -r '
   .[] | .name as $c |
-  if (.versions // []) | length > 0 then
+  if (.has_variants != null and .has_variants == false) then
+    # Container-level fields (generate-dashboard.sh non-variant path)
+    {
+      attestation_url: (.attestation_url // null),
+      trivy_summary: (.trivy_summary // null),
+      sbom_summary: (.sbom_summary // null),
+      multi_arch_platforms: (.multi_arch_platforms // null)
+    } | to_entries[] |
+    select(
+      .value == null or
+      .value == "" or
+      (.value | type == "object" and length == 0) or
+      (.value | type == "array" and length == 0)
+    ) |
+    "\($c)\tno-variants\t-\t-\t\(.key)"
+  elif (.versions // []) | length > 0 then
     # Multi-version path (current standard schema)
     (.versions // []) | to_entries[] |
-    .key as $v | (.value.variants // []) as $variants |
+    .key as $v | .value as $version_obj |
+    ($version_obj.tag // $version_obj.base_tag // "v\($v)") as $vtag |
+    ($version_obj.variants // []) as $variants |
     if ($variants | length) == 0 then
-      "\($c)\t\($v)\t-\t-\t<no-variants>"
+      "\($c)\t\($v)\t-\t\($vtag)\t<no-variants>"
     else
       $variants | to_entries[] |
       .key as $i | .value as $variant |
@@ -147,15 +165,24 @@ while IFS=$'\t' read -r c v i tag field; do
       if [[ "$v" == "single" ]]; then
         echo "::warning file=$YAML::Container $c (single-version) has no variants — trust-strip data cannot render"
       else
-        echo "::warning file=$YAML::Version $v of $c has no variants — trust-strip data cannot render"
+        # $tag holds the version tag extracted by jq (e.g. "1.0-alpine", "v0" fallback).
+        # Using the tag rather than the numeric index makes the message actionable
+        # without cross-referencing containers.yml.
+        echo "::warning file=$YAML::Version $tag of $c has no variants — trust-strip data cannot render (versions[$v])"
       fi
       ;;
     *)
-      if [[ "$v" == "single" ]]; then
-        echo "::warning file=$YAML::Missing $field for $c variant $tag (single-version, variants[$i])"
-      else
-        echo "::warning file=$YAML::Missing $field for $c variant $tag (versions[$v].variants[$i])"
-      fi
+      case "$v" in
+        "no-variants")
+          echo "::warning file=$YAML::Missing $field for $c (top-level fields, no variants)"
+          ;;
+        "single")
+          echo "::warning file=$YAML::Missing $field for $c variant $tag (single-version, variants[$i])"
+          ;;
+        *)
+          echo "::warning file=$YAML::Missing $field for $c variant $tag (versions[$v].variants[$i])"
+          ;;
+      esac
       ;;
   esac
   gaps=$((gaps + 1))
