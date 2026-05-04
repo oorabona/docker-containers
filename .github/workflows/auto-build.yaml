@@ -1139,8 +1139,13 @@ jobs:
                 || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
             fi
 
-            # Replace cached SBOM with new one
-            cp "$sbom_file" "$cached_sbom"
+            # Replace cached SBOM with new one (only if compare succeeded —
+            # failed compare may indicate corrupted source; preserve last known-good).
+            if [[ "$compare_ok" == "true" ]]; then
+              cp "$sbom_file" "$cached_sbom"
+            else
+              echo "::warning::Preserving previous cached SBOM for $container_tag (current compare failed — source may be corrupted)"
+            fi
 
             echo "::endgroup::"
           done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)

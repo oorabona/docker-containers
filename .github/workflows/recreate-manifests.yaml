@@ -216,6 +216,7 @@ jobs:
           fi
 
           sbom_count=0
+          sbom_failed=0
           while IFS= read -r -d '' sbom_file; do
             sbom_count=$((sbom_count + 1))
             basename_file=$(basename "$sbom_file")
@@ -225,26 +226,39 @@ jobs:
 
             # Compare with previously cached SBOM (if exists)
             cached_sbom=".build-lineage/${basename_file}"
+            compare_ok=true
             if [[ -f "$cached_sbom" ]]; then
-              compare_sboms "$sbom_file" "$cached_sbom" \
-                ".build-lineage/${container_tag}.changelog.json" || true
+              if ! compare_sboms "$sbom_file" "$cached_sbom" \
+                    ".build-lineage/${container_tag}.changelog.json"; then
+                echo "::warning::SBOM comparison failed for $container_tag — skipping build history append to avoid recording stale changelog"
+                sbom_failed=$((sbom_failed + 1))
+                compare_ok=false
+              fi
             else
               echo "No previous SBOM for $container_tag — first build"
             fi
 
-            # Extract summary and append to build history
-            summary=$(extract_sbom_summary "$sbom_file")
-            lineage_file=".build-lineage/${container_tag}.json"
-            append_build_history "$lineage_file" "$summary" \
-              ".build-lineage/${container_tag}.history.json" || true
+            # Extract summary and append to build history (only if compare succeeded or no prior SBOM)
+            if [[ "$compare_ok" == "true" ]]; then
+              summary=$(extract_sbom_summary "$sbom_file")
+              lineage_file=".build-lineage/${container_tag}.json"
+              append_build_history "$lineage_file" "$summary" \
+                ".build-lineage/${container_tag}.history.json" \
+                || { echo "::warning::Build history append failed for $container_tag"; sbom_failed=$((sbom_failed + 1)); }
+            fi
 
-            # Replace cached SBOM with new one
-            cp "$sbom_file" "$cached_sbom"
+            # Replace cached SBOM with new one (only if compare succeeded —
+            # failed compare may indicate corrupted source; preserve last known-good).
+            if [[ "$compare_ok" == "true" ]]; then
+              cp "$sbom_file" "$cached_sbom"
+            else
+              echo "::warning::Preserving previous cached SBOM for $container_tag (current compare failed — source may be corrupted)"
+            fi
 
             echo "::endgroup::"
           done < <(find .build-lineage-sbom-artifacts -name '*.sbom.json' -print0)
 
-          echo "Processed $sbom_count SBOM(s)"
+          echo "::notice::Processed $sbom_count SBOM(s); $sbom_failed processing error(s)"
 
       - name: Save updated lineage cache
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5

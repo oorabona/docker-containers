@@ -96,13 +96,19 @@ jobs:
           # with PARTIAL failures (some matrix legs failed, others succeeded) still
           # produce valid scan-history artifacts via the cache-lineage job which runs
           # on success-OR-failure. Include both conclusions; exclude cancelled / in-progress.
-          runs=$(gh run list \
-            --workflow=auto-build.yaml \
-            --branch=master \
-            --limit 30 \
-            --json databaseId,createdAt,conclusion \
-            --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
-            2>/dev/null || true)
+          if ! runs=$(gh run list \
+              --workflow=auto-build.yaml \
+              --branch=master \
+              --limit 30 \
+              --json databaseId,createdAt,conclusion \
+              --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
+              2>/tmp/gh-stderr-trivy.txt); then
+            echo "::warning::gh run list failed — Trivy scan history hydration skipped, may indicate transient GitHub API issue. stderr:" >&2
+            cat /tmp/gh-stderr-trivy.txt >&2 || true
+            rm -f /tmp/gh-stderr-trivy.txt
+            exit 0
+          fi
+          rm -f /tmp/gh-stderr-trivy.txt
 
           if [[ -z "$runs" ]]; then
             echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only."
@@ -182,13 +188,19 @@ jobs:
           # with PARTIAL failures (some matrix legs failed, others succeeded) still
           # produce valid sbom-* artifacts via the build job that succeeded for that leg.
           # Include both conclusions; exclude cancelled / in-progress.
-          run_ids=$(gh run list \
-            --workflow=auto-build.yaml \
-            --branch=master \
-            --limit 30 \
-            --json databaseId,createdAt,conclusion \
-            --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
-            2>/dev/null || true)
+          if ! run_ids=$(gh run list \
+              --workflow=auto-build.yaml \
+              --branch=master \
+              --limit 30 \
+              --json databaseId,createdAt,conclusion \
+              --jq "[.[] | select(.createdAt >= \"$cutoff\" and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[].databaseId" \
+              2>/tmp/gh-stderr-sbom.txt); then
+            echo "::warning::gh run list failed — SBOM hydration skipped, may indicate transient GitHub API issue. stderr:" >&2
+            cat /tmp/gh-stderr-sbom.txt >&2 || true
+            rm -f /tmp/gh-stderr-sbom.txt
+            exit 0
+          fi
+          rm -f /tmp/gh-stderr-sbom.txt
 
           if [[ -z "$run_ids" ]]; then
             echo "::notice::No recent completed auto-build runs (success or failure) in the last 24h; relying on cache only for SBOM data."
