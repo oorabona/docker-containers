@@ -252,6 +252,13 @@ jobs:
             fi
 
             cp -- "$src" "$target"
+            # Derived files (.changelog.json, .history.json) are computed against the
+            # PREVIOUS .sbom.json baseline. Replacing the SBOM invalidates them — the
+            # next cache-lineage run will regenerate them from the new baseline.
+            # In the interim, show no "Recent Changes" rather than stale wrong data.
+            container_tag="${fname%.sbom.json}"
+            rm -f ".build-lineage/${container_tag}.changelog.json" \
+                  ".build-lineage/${container_tag}.history.json"
             merged=$((merged + 1))
           done < <(find "$staging" -name '*.sbom.json' -print0)
 

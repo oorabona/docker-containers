@@ -55,3 +55,16 @@ setup() {
     ! [[ "$output" == *"Missing"*"healthy"* ]]
     ! [[ "$output" == *"No versions"*"healthy"* ]]
 }
+
+@test "verify-dashboard-data: single-version fixture detects top-level variants" {
+    FIXTURE_SINGLE="$PROJECT_ROOT/tests/fixtures/containers-single-version.yml"
+    run "$VERIFY_SCRIPT" "$FIXTURE_SINGLE"
+    [ "$status" -eq 0 ]
+    # 'simple' is fully populated → no warning for it
+    ! [[ "$output" == *"Missing"*"simple"* ]]
+    # 'partial' is missing attestation_url and trivy_summary → warnings expected
+    [[ "$output" == *"Missing attestation_url for partial"* ]]
+    [[ "$output" == *"Missing trivy_summary for partial"* ]]
+    # Warnings must indicate the single-version path (not versions[N].variants[N])
+    [[ "$output" == *"single-version"* ]]
+}
