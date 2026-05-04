@@ -695,9 +695,6 @@
     }
     @media (max-width: 768px) {
       .container { padding: 1rem; }
-      .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
-      .header-main { font-size: 1.5rem; }
-      .header-actions { width: 100%; justify-content: flex-start; }
       .detail-header { flex-direction: column; align-items: flex-start; }
       .detail-title h1 { font-size: 1.5rem; }
       .detail-actions { width: 100%; flex-wrap: wrap; }
@@ -724,7 +721,6 @@
     }
     @media (max-width: 480px) {
       .container { padding: 0.75rem; }
-      .header-main { font-size: 1.25rem; }
       .detail-title h1 { font-size: 1.25rem; }
       .detail-badge { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
       .detail-pull-row { flex-direction: column; align-items: flex-start; gap: 0.5rem; }

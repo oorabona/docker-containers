@@ -903,21 +903,6 @@
         padding: 1rem;
       }
 
-      .header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 1rem;
-      }
-
-      .header-main {
-        font-size: 1.5rem;
-      }
-
-      .header-actions {
-        width: 100%;
-        justify-content: flex-start;
-      }
-
       .stats-grid {
         grid-template-columns: repeat(2, 1fr);
       }
@@ -964,14 +949,6 @@
     @media (max-width: 480px) {
       .container {
         padding: 0.75rem;
-      }
-
-      .header-main {
-        font-size: 1.25rem;
-      }
-
-      .header-pretitle {
-        font-size: 0.7rem;
       }
 
       .stats-grid {
