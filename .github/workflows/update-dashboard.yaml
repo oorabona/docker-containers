@@ -322,22 +322,31 @@ jobs:
             merged=$((merged + 1))
           done < <(find "$staging" -name '*.sbom.json' -print0)
 
-          # Merge lineage files (mtime-based since they have no content timestamp).
+          # Merge lineage files: iterate run_ids in the order gh run list returned
+          # them (newest first). First seen per filename wins — this is correct
+          # because a newer run's lineage always supersedes an older run's, and
+          # we want the freshest oci_subject_digest regardless of when artifacts
+          # were extracted (extraction mtime is meaningless as a build-order proxy).
           # Exclude .sbom.json, .changelog.json, .history.json — only bare
           # {container}-{tag}.json lineage files (which carry oci_subject_digest).
+          declare -A lineage_seen=()
           merged_lineage=0
-          while IFS= read -r -d '' src; do
-            fname=$(basename "$src")
-            target=".build-lineage/$fname"
-            if [[ ! -f "$target" ]] || [[ "$src" -nt "$target" ]]; then
-              cp -- "$src" "$target"
+          for run_id in $run_ids; do
+            staging_run_dir="$staging/$run_id-lineage"
+            [[ -d "$staging_run_dir" ]] || continue
+            while IFS= read -r -d '' src; do
+              fname=$(basename "$src")
+              # Skip if a newer run already provided this lineage file this session
+              [[ -n "${lineage_seen[$fname]:-}" ]] && continue
+              cp -- "$src" ".build-lineage/$fname"
+              lineage_seen[$fname]=1
               merged_lineage=$((merged_lineage + 1))
-            fi
-          done < <(find "$staging" -name '*.json' \
-            -not -name '*.sbom.json' \
-            -not -name '*.changelog.json' \
-            -not -name '*.history.json' \
-            -print0)
+            done < <(find "$staging_run_dir" -name '*.json' \
+              -not -name '*.sbom.json' \
+              -not -name '*.changelog.json' \
+              -not -name '*.history.json' \
+              -print0)
+          done
 
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
           echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s); total SBOM entries: $total"
