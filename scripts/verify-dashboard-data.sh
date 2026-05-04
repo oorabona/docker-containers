@@ -103,25 +103,29 @@ gaps_tsv=$(jq -r '
       ) |
       "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
     end
-  elif (.variants // []) | length > 0 then
-    # Single-version path: top-level .variants[] with no .versions wrapper.
+  elif (.variants != null and (.variants | type == "array")) then
+    # Single-version path: top-level .variants key exists (even if empty) with no .versions wrapper.
     # generate-dashboard.sh emits this schema for containers without a version matrix.
-    (.variants // []) | to_entries[] |
-    .key as $i | .value as $variant |
-    ($variant.tag // "unknown") as $tag |
-    {
-      attestation_url: ($variant.attestation_url // null),
-      trivy_summary: ($variant.trivy_summary // null),
-      sbom_summary: ($variant.sbom_summary // null),
-      multi_arch_platforms: ($variant.multi_arch_platforms // null)
-    } | to_entries[] |
-    select(
-      .value == null or
-      .value == "" or
-      (.value | type == "object" and length == 0) or
-      (.value | type == "array" and length == 0)
-    ) |
-    "\($c)\tsingle\t\($i)\t\($tag)\t\(.key)"
+    if (.variants | length) == 0 then
+      "\($c)\tsingle\t-\t-\t<no-variants>"
+    else
+      (.variants // []) | to_entries[] |
+      .key as $i | .value as $variant |
+      ($variant.tag // "unknown") as $tag |
+      {
+        attestation_url: ($variant.attestation_url // null),
+        trivy_summary: ($variant.trivy_summary // null),
+        sbom_summary: ($variant.sbom_summary // null),
+        multi_arch_platforms: ($variant.multi_arch_platforms // null)
+      } | to_entries[] |
+      select(
+        .value == null or
+        .value == "" or
+        (.value | type == "object" and length == 0) or
+        (.value | type == "array" and length == 0)
+      ) |
+      "\($c)\tsingle\t\($i)\t\($tag)\t\(.key)"
+    end
   else
     "\($c)\t-\t-\t-\t<no-versions>"
   end
@@ -140,7 +144,11 @@ while IFS=$'\t' read -r c v i tag field; do
       echo "::warning file=$YAML::No versions found for $c"
       ;;
     "<no-variants>")
-      echo "::warning file=$YAML::Version $v of $c has no variants — trust-strip data cannot render"
+      if [[ "$v" == "single" ]]; then
+        echo "::warning file=$YAML::Container $c (single-version) has no variants — trust-strip data cannot render"
+      else
+        echo "::warning file=$YAML::Version $v of $c has no variants — trust-strip data cannot render"
+      fi
       ;;
     *)
       if [[ "$v" == "single" ]]; then

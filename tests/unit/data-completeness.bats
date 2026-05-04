@@ -68,3 +68,23 @@ setup() {
     # Warnings must indicate the single-version path (not versions[N].variants[N])
     [[ "$output" == *"single-version"* ]]
 }
+
+@test "verify-dashboard-data: malformed YAML exits 2 with ::error::" {
+    tmpfile=$(mktemp --suffix=.yml)
+    printf 'foo: [unclosed array\nbar: {malformed\n' > "$tmpfile"
+    run "$VERIFY_SCRIPT" "$tmpfile"
+    rm -f "$tmpfile"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error"* ]]
+    [[ "$output" == *"yq failed to parse"* ]]
+}
+
+@test "verify-dashboard-data: non-array root YAML exits 2 with ::error::" {
+    tmpfile=$(mktemp --suffix=.yml)
+    printf '42\n' > "$tmpfile"
+    run "$VERIFY_SCRIPT" "$tmpfile"
+    rm -f "$tmpfile"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error"* ]]
+    [[ "$output" == *"expected top-level YAML sequence"* ]]
+}

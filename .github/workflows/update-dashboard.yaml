@@ -120,13 +120,30 @@ jobs:
           trap 'rm -rf "$staging"' EXIT
 
           downloaded=0
+          download_failures=0
           for run_id in $runs; do
+            stderr_file=$(mktemp)
             if gh run download "$run_id" \
                 --pattern 'trivy-scan-history-*' \
-                --dir "$staging/$run_id" 2>/dev/null; then
+                --dir "$staging/$run_id" 2>"$stderr_file"; then
               downloaded=$((downloaded + 1))
+            else
+              # gh run download exits non-zero on either real API error OR no matching artifact.
+              # Differentiate by inspecting stderr — "no artifacts match" is informational; anything else is a real failure worth surfacing.
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no trivy-scan-history-* artifact, normal cache miss.
+              else
+                echo "::warning::gh run download failed for run $run_id — may indicate transient API issue. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
             fi
+            rm -f "$stderr_file"
           done
+
+          if [[ "$download_failures" -gt 0 ]]; then
+            echo "::warning::$download_failures gh run download call(s) failed; Trivy scan history hydration may be incomplete"
+          fi
 
           if [[ "$downloaded" -eq 0 ]]; then
             echo "::notice::No trivy-scan-history artifacts available across $run_count recent run(s); relying on cache only."
@@ -212,13 +229,30 @@ jobs:
           trap 'rm -rf "$staging"' EXIT
 
           downloaded=0
+          download_failures=0
           for run_id in $run_ids; do
+            stderr_file=$(mktemp)
             if gh run download "$run_id" \
                 --pattern 'sbom-*' \
-                --dir "$staging/$run_id" 2>/dev/null; then
+                --dir "$staging/$run_id" 2>"$stderr_file"; then
               downloaded=$((downloaded + 1))
+            else
+              # gh run download exits non-zero on either real API error OR no matching artifact.
+              # Differentiate by inspecting stderr — "no artifacts match" is informational; anything else is a real failure worth surfacing.
+              if grep -qi "no artifact" "$stderr_file" 2>/dev/null; then
+                : # Expected: this run had no sbom-* artifact, normal cache miss.
+              else
+                echo "::warning::gh run download failed for run $run_id — may indicate transient API issue. stderr:" >&2
+                cat "$stderr_file" >&2
+                download_failures=$((download_failures + 1))
+              fi
             fi
+            rm -f "$stderr_file"
           done
+
+          if [[ "$download_failures" -gt 0 ]]; then
+            echo "::warning::$download_failures gh run download call(s) failed; SBOM hydration may be incomplete"
+          fi
 
           if [[ "$downloaded" -eq 0 ]]; then
             echo "::notice::No sbom-* artifacts available across $run_count recent run(s); relying on cache only."
@@ -254,8 +288,9 @@ jobs:
             cp -- "$src" "$target"
             # Derived files (.changelog.json, .history.json) are computed against the
             # PREVIOUS .sbom.json baseline. Replacing the SBOM invalidates them — the
-            # next cache-lineage run will regenerate them from the new baseline.
-            # In the interim, show no "Recent Changes" rather than stale wrong data.
+            # next BUILD of this container (which runs auto-build's cache-lineage job)
+            # will regenerate them from the new baseline. Containers that never rebuild
+            # will keep showing empty "Recent Changes" — preferred over stale wrong data.
             container_tag="${fname%.sbom.json}"
             rm -f ".build-lineage/${container_tag}.changelog.json" \
                   ".build-lineage/${container_tag}.history.json"
