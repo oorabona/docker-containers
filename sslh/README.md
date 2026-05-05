@@ -9,14 +9,12 @@
 
 ## Why this image
 
-- 🎯 **~2 MB** — `FROM scratch`, no OS, no shell, no package manager
-- 🔒 **Static binaries** — zero shared library CVEs to track
-- 🏗️ **Multi-arch** — amd64 / arm64 / arm/v7
-- ⚡ **3 flavors** — `sslh-ev` (default, libev), `sslh-select`, `sslh-fork`
-- 🤖 **Auto-updated** — CI tracks [yrutschle/sslh](https://github.com/yrutschle/sslh) releases
-- 📦 **SBOM + attestation** — every image ships with a Sigstore-signed SPDX
-
-> 💡 **Used it? Drop a ⭐ on [github.com/oorabona/docker-containers](https://github.com/oorabona/docker-containers)** — it's the only feedback signal Docker Hub doesn't give us.
+- **~2 MB** — `FROM scratch`, no OS, no shell, no package manager
+- **Static binaries** — zero shared library CVEs to track
+- **Multi-arch** — amd64 / arm64 / arm/v7
+- **3 flavors** — `sslh-ev` (default, libev), `sslh-select`, `sslh-fork`
+- **Auto-updated** — CI tracks [yrutschle/sslh](https://github.com/yrutschle/sslh) releases
+- **SBOM + attestation** — every image ships with a Sigstore-signed SPDX
 
 ## Platforms
 - **amd64** - x86_64 systems

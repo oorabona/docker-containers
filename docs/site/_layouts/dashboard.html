@@ -71,7 +71,10 @@
         <span class="dashboard-hero-accent">built and signed every day.</span>
       </h1>
       <p class="dashboard-hero-subtitle">
-        Every image ships with an SBOM and a cosign signature you can verify yourself, with continuous Trivy scanning across the catalog.
+        A curated fleet of Docker container images published to GHCR and Docker Hub, each built with automated upstream version monitoring, signed SBOM attestation via Sigstore, and an advisory Trivy CVE scan. Every detail page surfaces the build commit, manifest digest, and verifiable attestation so operators can audit provenance without leaving the dashboard.
+      </p>
+      <p class="dashboard-hero-detail">
+        This is not a replacement for Docker Official Images. It is a focused set of images where the maintenance load and the verification surface justify the engineering — PostgreSQL with 10 extensions in 7 flavors, hardened OpenVPN, multi-distro web-shell, self-hosted GitHub Actions runners, and a small supporting set. Maintained by <a href="{{ '/about/' | relative_url }}" class="dashboard-hero-link">Olivier Orabona</a>.
       </p>
     </section>
 
