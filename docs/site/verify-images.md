@@ -80,3 +80,28 @@ cd docker-containers
 ```
 
 BuildKit must be enabled (`DOCKER_BUILDKIT=1` or Docker 23+). The `./make` entry point accepts the same arguments as the CI pipeline. See each container's `README.md` and the top-level `docs/` directory for full build documentation, including multi-variant matrix builds, extension layers, and SBOM generation.
+
+## Frequently asked questions
+
+### Why does the dashboard show "Trivy scan results are advisory"?
+
+Trivy runs as `continue-on-error` in CI. The build does not fail when CVEs are detected; it surfaces the count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate.
+
+### What does the SBOM badge state mean?
+
+The badge has two states. **ATTESTED** means both `attestation_url` and `attestation_id` are present in the published lineage record — the SBOM has been signed via Sigstore and is verifiable with cosign. **PENDING** covers all other cases (no attestation yet, or partial data) and indicates the image will be re-attested on the next successful build.
+
+### How is the SBOM signed?
+
+Each successful build runs `anchore/sbom-action` to generate an SPDX JSON SBOM, then `actions/attest-sbom` signs it via Sigstore (keyless, OIDC-based) and uploads the attestation to GHCR. You can verify with `gh attestation verify oci://ghcr.io/oorabona/<image>:<tag> --owner oorabona`.
+
+### Can I trust a container that shows "📋 SBOM PENDING"?
+
+It is not a security flag. PENDING means the build pipeline has not yet re-run since the image was published, or the attestation pipeline encountered a transient failure that will be retried. Pull by digest from a previous attested build if you need verifiable SBOM provenance immediately.
+
+### How fresh are the Trivy scan dates shown on the dashboard?
+
+The "SCANNED YYYY-MM-DD" timestamp on each Trivy badge reflects the most recent successful Trivy run for the corresponding image variant. Scans run on every build; if a container has not been rebuilt for an extended period, the date will reflect that staleness.
+
+{% include jsonld-howto-verify.html %}
+{% include jsonld-faq.html %}

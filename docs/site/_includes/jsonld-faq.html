@@ -1,0 +1,62 @@
+{% comment %}
+  jsonld-faq.html — JSON-LD FAQPage schema for the verify-images guide.
+  Include from verify-images.md body (after the FAQ section markdown).
+  Q&A text must mirror the "Frequently asked questions" section in verify-images.md — update both together.
+
+  NOTE on Google FAQ rich results: Google restricted FAQPage rich results in 2023
+  (limited to authoritative government/health sites). Submitting FAQPage does not
+  guarantee a Google rich snippet. The schema remains valuable for AI citation
+  extraction (ChatGPT search, Perplexity, Bing Copilot, Google AI Overviews) even
+  when Google does not render it as a visual rich result in SERPs.
+
+  SECURITY: <script type="application/ld+json"> is a data block (not executable JS).
+  CSP script-src does NOT apply to data blocks per CSP Level 3 / Chrome 96+.
+{% endcomment %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Why does the dashboard show Trivy scan results are advisory?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Trivy runs as continue-on-error in CI. The build does not fail when CVEs are detected; it surfaces the count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What does the SBOM badge state mean?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The badge has two states. ATTESTED means both attestation_url and attestation_id are present in the published lineage record — the SBOM has been signed via Sigstore and is verifiable with cosign. PENDING covers all other cases (no attestation yet, or partial data) and indicates the image will be re-attested on the next successful build."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is the SBOM signed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Each successful build runs anchore/sbom-action to generate an SPDX JSON SBOM, then actions/attest-sbom signs it via Sigstore (keyless, OIDC-based) and uploads the attestation to GHCR. You can verify with: gh attestation verify oci://ghcr.io/oorabona/<image>:<tag> --owner oorabona"
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I trust a container that shows SBOM PENDING?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It is not a security flag. PENDING means the build pipeline has not yet re-run since the image was published, or the attestation pipeline encountered a transient failure that will be retried. Pull by digest from a previous attested build if you need verifiable SBOM provenance immediately."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How fresh are the Trivy scan dates shown on the dashboard?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The SCANNED YYYY-MM-DD timestamp on each Trivy badge reflects the most recent successful Trivy run for the corresponding image variant. Scans run on every build; if a container has not been rebuilt for an extended period, the date will reflect that staleness."
+      }
+    }
+  ]
+}
+</script>
