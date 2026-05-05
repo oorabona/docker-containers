@@ -14,6 +14,10 @@
 # Build artifacts
 *.log
 
+# Working memory / private notes (never tracked)
+*.local.md
+docs/audit/
+
 # Dashboard statistics (dynamically generated)
 .dashboard-stats
 
