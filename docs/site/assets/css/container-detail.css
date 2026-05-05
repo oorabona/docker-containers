@@ -1,5 +1,6 @@
     /* Container detail page styles — shared theme in theme.css
-       Phase C PR1: .tag-pill patched for C2 (inline-flex chip),
+       Phase C PR: 4-zone progressive disclosure layout.
+       .tag-pill patched for C2 (inline-flex chip),
        --detail-text-* now uses semantic tokens. */
 
     /* --detail-text-* aliases declared in theme.css deprecated alias block (P3 fix).
@@ -25,8 +26,165 @@
     /* F7: .shape-1/2/3 render statically — will-change removed (no animation, no cost) */
     /* orbit1/orbit2/orbit3 keyframes removed: no consumers after F7 */
 
-    /* Detail page styles */
+    /* ============================================================
+       4-ZONE LAYOUT (Phase C PR)
+       ============================================================ */
+
+    /* Page wrapper */
     .container-detail-page { min-height: 400px; }
+
+    /* Zone base — vertical rhythm between zones */
+    .detail-zone {
+      padding: 1.75rem 0;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    .detail-zone:last-child {
+      border-bottom: none;
+    }
+
+    /* Zone eyebrow heading — mono, uppercase, muted — shared across all zones */
+    .zone-eyebrow {
+      font-family: var(--font-family-mono);
+      font-size: 0.6875rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin: 0 0 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    /* Zone 1 — identity: no zone-eyebrow visible (header zone, no h2 shown) */
+    .detail-zone--identity {
+      padding-top: 0;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    /* Zone 2 — trust posture: teal dot before eyebrow */
+    .detail-zone--trust .zone-eyebrow {
+      color: var(--color-trust-verify-fg, #22D3EE);
+    }
+    .detail-zone--trust .zone-eyebrow::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    /* ============================================================
+       DISCLOSURE PATTERN (Zone 3 — Explore)
+       ============================================================ */
+
+    .detail-zone--explore .disclosure {
+      border: 1px solid var(--glass-border);
+      border-radius: 10px;
+      background: var(--glass-bg, rgba(30, 30, 60, 0.4));
+      overflow: hidden;
+      margin-bottom: 0.5rem;
+      transition: border-color 150ms ease;
+    }
+    .detail-zone--explore .disclosure[open] {
+      border-color: var(--accent-blue, #60a5fa);
+    }
+
+    .detail-zone--explore .disclosure > summary {
+      list-style: none;
+      display: grid;
+      grid-template-columns: 1fr auto 24px;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.85rem 1.1rem;
+      cursor: pointer;
+      min-height: 44px; /* WCAG 2.2 §2.5.8 touch target */
+      transition: background 100ms ease;
+      user-select: none;
+    }
+    .detail-zone--explore .disclosure > summary::-webkit-details-marker { display: none; }
+    .detail-zone--explore .disclosure > summary::marker { display: none; }
+    .detail-zone--explore .disclosure > summary:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .detail-zone--explore .disclosure > summary:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: -2px;
+    }
+
+    /* Summary cells */
+    .disclosure__title {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .disclosure__metric {
+      font-family: var(--font-family-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .disclosure__chevron {
+      color: var(--text-muted);
+      font-size: 1rem;
+      min-width: 24px;
+      min-height: 24px; /* WCAG 2.2 §2.5.8 — icon touch target */
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 150ms ease;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .disclosure__chevron { transition: none; }
+    }
+    .detail-zone--explore .disclosure[open] > summary .disclosure__chevron {
+      transform: rotate(90deg);
+    }
+
+    /* Body content inside open disclosure */
+    .disclosure__body {
+      padding: 0.5rem 1.25rem 1.25rem;
+      border-top: 1px solid var(--glass-border);
+    }
+
+    /* Reset bottom margin on sections nested inside disclosure bodies.
+       Inner section headings (h3) are intentionally visible — they appear below
+       the disclosure summary chevron row and provide in-context labels for
+       JS-populated content (sbom, changelog, history, dep-health). */
+    .disclosure__body .sbom-section,
+    .disclosure__body .changelog-section,
+    .disclosure__body .history-section,
+    .disclosure__body .dep-health-section,
+    .disclosure__body .lineage-section,
+    .disclosure__body .variants-section {
+      margin-bottom: 0;
+    }
+
+    /* Hide disclosure when its JS-managed inner section is empty (display:none set at runtime).
+       container-detail.js sets section.style.display='none' when SBOM/changelog/history
+       data is unavailable for the active variant. Without this rule, users see an expandable
+       summary that opens to reveal an empty body — regression vs the pre-disclosure layout.
+       Both spacing variants of inline style are matched (browser serialization varies). */
+    .detail-zone--explore details:has(> .disclosure__body > #sbom-section[style*="display: none"]),
+    .detail-zone--explore details:has(> .disclosure__body > #sbom-section[style*="display:none"]),
+    .detail-zone--explore details:has(> .disclosure__body > #changelog-section[style*="display: none"]),
+    .detail-zone--explore details:has(> .disclosure__body > #changelog-section[style*="display:none"]),
+    .detail-zone--explore details:has(> .disclosure__body > #history-section[style*="display: none"]),
+    .detail-zone--explore details:has(> .disclosure__body > #history-section[style*="display:none"]) {
+      display: none;
+    }
+
+    /* On mobile: hide the metric column, keep title + chevron */
+    @media (max-width: 720px) {
+      .detail-zone--explore .disclosure > summary {
+        grid-template-columns: 1fr 24px;
+      }
+      .disclosure__metric { display: none; }
+    }
+
+    /* ============================================================
+       BACK LINK
+       ============================================================ */
 
     .back-link {
       display: inline-flex; align-items: center; gap: 0.5rem;
@@ -34,6 +192,10 @@
       font-size: 0.875rem; transition: color 0.2s ease;
     }
     .back-link:hover { color: var(--text-primary); }
+
+    /* ============================================================
+       ZONE 1 — IDENTITY
+       ============================================================ */
 
     .detail-header {
       display: flex; justify-content: space-between; align-items: flex-start;
@@ -60,7 +222,11 @@
     }
     .meta-card-value { font-size: 1.125rem; font-weight: 600; }
 
-    .lineage-section { padding: 1.5rem; margin-bottom: 2rem; }
+    /* ============================================================
+       LINEAGE (inside disclosure body)
+       ============================================================ */
+
+    .lineage-section { padding: 1.5rem; margin-bottom: 0; }
     .lineage-header {
       display: flex; align-items: center; gap: 0.5rem;
       font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem; color: var(--text-primary);
@@ -94,13 +260,11 @@
       color: var(--detail-text-muted);
     }
 
-    /* Variants */
-    .variants-section { padding: 1.5rem; margin-bottom: 2rem; }
-    .variants-header {
-      display: flex; align-items: center; gap: 0.75rem;
-      margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
-    }
-    .variants-header h2 { margin: 0; font-size: 1.25rem; }
+    /* ============================================================
+       VARIANTS (inside disclosure body)
+       ============================================================ */
+
+    .variants-section { padding: 1.5rem; margin-bottom: 0; }
     .variants-content { display: flex; flex-direction: column; gap: 1.5rem; }
     .version-group { display: flex; flex-direction: column; gap: 0.75rem; }
     .version-title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--detail-text-secondary); }
@@ -194,13 +358,16 @@
     [data-theme="light"] .variant-tag.selected { background: rgba(59, 130, 246, 0.15); border-color: #3b82f6; color: #1e40af; }
     [data-theme="light"] .detail-badge { background: rgba(16, 185, 129, 0.15); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
 
-    /* README */
+    /* ============================================================
+       README (Zone 4 — Documentation)
+       ============================================================ */
+
     .readme-section { padding: 2rem; }
     .readme-header {
       display: flex; align-items: center; gap: 0.75rem;
       margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
-    .readme-header h2 { margin: 0; font-size: 1.25rem; }
+    .readme-header h3 { margin: 0; font-size: 1.25rem; }
     .readme-content { color: var(--text-secondary); line-height: 1.7; }
     .readme-content h1, .readme-content h2, .readme-content h3, .readme-content h4 {
       color: var(--text-primary); margin-top: 1.5em; margin-bottom: 0.75em;
@@ -234,13 +401,16 @@
     .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
     .table-wrapper table { margin: 0; }
 
-    /* SBOM / Package Summary */
-    .sbom-section { padding: 1.5rem; margin-bottom: 2rem; }
+    /* ============================================================
+       SBOM / Package Summary (inside disclosure body)
+       ============================================================ */
+
+    .sbom-section { padding: 1.5rem; margin-bottom: 0; }
     .sbom-header {
       display: flex; align-items: center; gap: 0.75rem;
       margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
-    .sbom-header h2 { margin: 0; font-size: 1.25rem; }
+    .sbom-header h3 { margin: 0; font-size: 1.25rem; }
     .sbom-total-badge {
       font-size: 0.75rem; font-weight: 600; padding: 0.25rem 0.625rem;
       border-radius: 999px; margin-left: auto;
@@ -321,13 +491,16 @@
       flex-shrink: 0; font-size: 0.6875rem;
     }
 
-    /* Changelog */
-    .changelog-section { padding: 1.5rem; margin-bottom: 2rem; }
+    /* ============================================================
+       CHANGELOG (inside disclosure body)
+       ============================================================ */
+
+    .changelog-section { padding: 1.5rem; margin-bottom: 0; }
     .changelog-header {
       display: flex; align-items: center; gap: 0.75rem;
       margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
-    .changelog-header h2 { margin: 0; font-size: 1.25rem; }
+    .changelog-header h3 { margin: 0; font-size: 1.25rem; }
     .changelog-summary-badge {
       font-size: 0.6875rem; font-weight: 600; padding: 0.25rem 0.625rem;
       border-radius: 999px; margin-left: auto;
@@ -360,13 +533,16 @@
     }
     .changelog-version-new { color: #34d399; }
 
-    /* Build History */
-    .history-section { padding: 1.5rem; margin-bottom: 2rem; }
+    /* ============================================================
+       BUILD HISTORY (inside disclosure body)
+       ============================================================ */
+
+    .history-section { padding: 1.5rem; margin-bottom: 0; }
     .history-header {
       display: flex; align-items: center; gap: 0.75rem;
       margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
-    .history-header h2 { margin: 0; font-size: 1.25rem; }
+    .history-header h3 { margin: 0; font-size: 1.25rem; }
     .history-chart-wrap { height: 220px; margin-bottom: 1.25rem; }
     .history-table-wrap { overflow-x: auto; }
     .history-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
@@ -408,13 +584,16 @@
     [data-theme="light"] .changelog-table tbody tr:nth-child(even),
     [data-theme="light"] .history-table tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
 
-    /* Dependency Health */
-    .dep-health-section { padding: 1.5rem; margin-bottom: 2rem; }
+    /* ============================================================
+       DEPENDENCY HEALTH (inside disclosure body)
+       ============================================================ */
+
+    .dep-health-section { padding: 1.5rem; margin-bottom: 0; }
     .dep-health-header {
       display: flex; align-items: center; gap: 0.75rem;
       margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--glass-border);
     }
-    .dep-health-header h2 { margin: 0; font-size: 1.25rem; }
+    .dep-health-header h3 { margin: 0; font-size: 1.25rem; }
     .dep-summary-badge {
       font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
       padding: 0.25rem 0.625rem; border-radius: 999px; margin-left: auto;
@@ -553,7 +732,18 @@
       color: var(--text-primary);
     }
 
-    /* Pull command section */
+    /* Light theme: disclosure overrides */
+    [data-theme="light"] .detail-zone--explore .disclosure {
+      background: rgba(255, 255, 255, 0.6);
+    }
+    [data-theme="light"] .detail-zone--explore .disclosure > summary:hover {
+      background: rgba(0, 0, 0, 0.03);
+    }
+
+    /* ============================================================
+       PULL COMMAND SECTION
+       ============================================================ */
+
     .detail-pull-section {
       padding: 1rem 1.25rem;
       margin-bottom: 2rem;
@@ -657,13 +847,19 @@
       background: rgba(0, 0, 0, 0.08);
     }
 
-    /* Focus visible */
+    /* ============================================================
+       FOCUS VISIBLE
+       ============================================================ */
+
     .variant-tag:focus-visible, .back-link:focus-visible, .btn:focus-visible, .theme-toggle:focus-visible,
     .detail-registry-btn:focus-visible, .detail-copy-btn:focus-visible {
       outline: 2px solid var(--accent-blue); outline-offset: 2px;
     }
 
-    /* Responsive */
+    /* ============================================================
+       RESPONSIVE
+       ============================================================ */
+
     @media (max-width: 1024px) {
       .detail-meta { grid-template-columns: repeat(2, 1fr); }
     }
@@ -702,8 +898,9 @@
       .meta-card { padding: 1rem; }
       .meta-card-value { font-size: 1rem; word-break: break-all; }
     }
+
     /* ============================================================
-       Orphan p-elements — PR5 Phase C closure
+       ORPHAN P-ELEMENTS — PR5 Phase C closure
        ============================================================ */
 
     /* Explanatory meta note below the Variant Comparison heading (postgres only) */

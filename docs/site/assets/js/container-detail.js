@@ -58,7 +58,17 @@
     }
 
     // Variant selection
+    // Tracks the last fully-processed variant tag to make selectVariant() idempotent.
+    // Guards the init race where container-detail.js (line ~854) and version-tabs.js
+    // _dispatchInitialVariant() both trigger selectVariant() for the same default
+    // variant on page load.
+    var _lastSelectedTag = null;
     function selectVariant(el) {
+      if (!el) return;
+      var _tag = el.dataset.tag || el.dataset.variantTag || '';
+      if (_tag && _tag === _lastSelectedTag) return;
+      _lastSelectedTag = _tag;
+
       var section = el.closest('.variants-section');
       if (section) {
         section.querySelectorAll('.variant-tag').forEach(function(t) {
@@ -182,19 +192,14 @@
       var grid = document.querySelector('.lineage-grid');
       if (!grid) return;
 
-      // Find existing build_arg items (not digest/base_image)
+      // Clear existing build_arg items before rebuilding — idempotent by design.
+      // Previously used exit-animation + setTimeout(remove, 250) which caused
+      // duplicate items when called twice in rapid succession (double-init race).
       var existingArgs = grid.querySelectorAll('.lineage-item[data-build-arg]');
-
-      // Exit animation on old items
-      existingArgs.forEach(function(item) { item.classList.add('lineage-exit'); });
-
-      // After exit animation, replace with new items
-      setTimeout(function() {
-        existingArgs.forEach(function(item) { item.remove(); });
-        args.forEach(function(arg, i) {
-          grid.appendChild(createLineageItem(arg.name, arg.value, i));
-        });
-      }, 250);
+      existingArgs.forEach(function(item) { item.remove(); });
+      args.forEach(function(arg, i) {
+        grid.appendChild(createLineageItem(arg.name, arg.value, i));
+      });
     }
 
     // --- Dependency Health: variant-aware filtering ---
