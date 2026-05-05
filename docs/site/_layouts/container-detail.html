@@ -975,6 +975,7 @@
 
                 <div class="dep-health-summary">
                   <div class="dep-health-bar">
+                    {%- if dm.total and dm.total > 0 -%}
                     <div class="dep-bar-label">{{ dm.monitored }}/{{ dm.total }} dependencies monitored</div>
                     {% assign pct = dm.monitored | times: 100 | divided_by: dm.total %}
                     {% assign pct_unmon = 100 | minus: pct %}
@@ -982,6 +983,9 @@
                       <div class="dep-bar-fill" style="flex: {{ pct }}"></div>
                       {% if pct_unmon > 0 %}<div class="dep-bar-unmonitored" style="flex: {{ pct_unmon }}"></div>{% endif %}
                     </div>
+                    {%- else -%}
+                    <span class="dep-monitor-empty">No dependencies tracked</span>
+                    {%- endif -%}
                   </div>
                 </div>
 
