@@ -157,15 +157,29 @@
              >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
           {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
-            {%- assign sev = "info" -%}
-            {%- if default_variant.trivy_summary.counts.critical > 0 -%}{%- assign sev = "critical" -%}
-            {%- elsif default_variant.trivy_summary.counts.high > 0 -%}{%- assign sev = "high" -%}
+            {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
+            {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
+            {%- if trivy_critical > 0 -%}
+              {%- assign trivy_sev = "critical" -%}
+              {%- assign trivy_count = trivy_critical -%}
+              {%- assign trivy_aria_label = "CRITICAL" -%}
+            {%- elsif trivy_high > 0 -%}
+              {%- assign trivy_sev = "high" -%}
+              {%- assign trivy_count = trivy_high -%}
+              {%- assign trivy_aria_label = "HIGH" -%}
+            {%- else -%}
+              {%- assign trivy_sev = "info" -%}
+              {%- assign trivy_count = 0 -%}
+              {%- assign trivy_aria_label = "critical / high" -%}
             {%- endif -%}
+            {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
+            {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} CVE(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
             <a class="trust-badge trust-badge--trivy"
                data-trust="trivy"
-               data-severity="{{ sev }}"
+               data-severity="{{ trivy_sev }}"
                href="#security"
-               title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+               aria-label="{{ trivy_full_label | escape }}"
+               title="{{ trivy_full_label | escape }}">🛡 TRIVY: {{ trivy_count }} {{ trivy_aria_label }} (advisory) · SCANNED {{ trivy_scan_date }}</a>
           {%- else -%}
             <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
             <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="#security"></a>
