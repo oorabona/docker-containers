@@ -21,7 +21,7 @@
       var code = wrap.querySelector('pre code');
       if (code) {
         var clone = code.cloneNode(true);
-        clone.querySelectorAll('.prompt').forEach(function (p) { p.remove(); });
+        clone.querySelectorAll('.prompt, .comment').forEach(function (p) { p.remove(); });
         text = clone.textContent.trim();
       }
     }
@@ -106,6 +106,9 @@
 
   function applyView(view, push) {
     var v = (view === 'walkthrough') ? 'walkthrough' : 'reference';
+    // Capture BEFORE mutating dataset.view so the guard below reflects the
+    // previous state, not the one we are about to set.
+    var alreadyActive = layout && layout.dataset.view === v;
 
     // Expose active view on the grid so CSS can hide the Reference-only TOC
     if (layout) layout.setAttribute('data-view', v);
@@ -126,7 +129,10 @@
       }
     });
 
-    if (push) {
+    // Short-circuit pushState when the requested view is already active.
+    // Repeated clicks on the active tab must not add identical entries to the
+    // back stack. Visual state updates above are idempotent so they still run.
+    if (push && !alreadyActive) {
       var url = new URL(window.location.href);
       if (v === 'reference') {
         url.searchParams.delete('view');
