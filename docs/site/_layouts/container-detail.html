@@ -65,15 +65,22 @@
               <span class="detail-badge">{{ page.current_version }}</span>
             </div>
             <div class="detail-actions">
-              <a href="https://github.com/oorabona/docker-containers/tree/master/{{ page.name }}"
+              {%- assign _repo_url = site.github.repository_url | default: '' -%}
+              {%- if _repo_url == '' -%}
+                {%- assign _user = site.github_username | default: site.github.owner_name -%}
+                {%- assign _name = site.repository | default: site.github.repository_name -%}
+                {%- assign _repo_url = 'https://github.com/' | append: _user | append: '/' | append: _name -%}
+              {%- endif -%}
+              {%- assign _branch = site.github.default_branch | default: 'master' -%}
+              <a href="{{ _repo_url }}/tree/{{ _branch }}/{{ page.name }}"
                  class="btn" target="_blank" rel="noopener" aria-label="View source code on GitHub">
                 <i class="ti ti-brand-github" aria-hidden="true"></i> Source
               </a>
-              <a href="https://ghcr.io/oorabona/{{ page.name }}"
+              <a href="https://ghcr.io/{{ page.github_username }}/{{ page.name }}"
                  class="btn" target="_blank" rel="noopener" aria-label="View package on GitHub Container Registry">
                 <i class="ti ti-package" aria-hidden="true"></i> GHCR
               </a>
-              <a href="https://hub.docker.com/r/oorabona/{{ page.name }}"
+              <a href="https://hub.docker.com/r/{{ page.dockerhub_username }}/{{ page.name }}"
                  class="btn" target="_blank" rel="noopener" aria-label="View image on Docker Hub">
                 <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
               </a>
@@ -267,11 +274,13 @@
               </div>
               {%- endif -%}
               {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
+              {%- assign _show_manifest_amd64 = false -%}
+              {%- if _prov_var.manifest_digest_amd64 != blank -%}{%- assign _show_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>Manifest digest (amd64)</dt>
+                <dt>{% if _show_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
                 <dd>
-                  <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -328,7 +337,7 @@
               <div class="evidence-row">
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
-                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner oorabona' -%}
+                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/' | append: page.github_username | append: '/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner ' | append: page.github_username -%}
                   <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
                   <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                   <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
@@ -369,11 +378,13 @@
               </div>
               {%- endif -%}
               {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
+              {%- assign _show_manifest_amd64 = false -%}
+              {%- if _prov_var.manifest_digest_amd64 != blank -%}{%- assign _show_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>Manifest digest (amd64)</dt>
+                <dt>{% if _show_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
                 <dd>
-                  <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -430,7 +441,7 @@
               <div class="evidence-row">
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
-                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner oorabona' -%}
+                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/' | append: page.github_username | append: '/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner ' | append: page.github_username -%}
                   <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
                   <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                   <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
@@ -469,11 +480,13 @@
               </div>
               {%- endif -%}
               {%- if prov_variant.build_digest and prov_variant.build_digest != "unknown" -%}
+              {%- assign _show_prov_manifest_amd64 = false -%}
+              {%- if prov_variant.manifest_digest_amd64 != blank -%}{%- assign _show_prov_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>Manifest digest (amd64)</dt>
+                <dt>{% if _show_prov_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
                 <dd>
-                  <code class="hash hash-long">{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{% if _show_prov_manifest_amd64 %}{{ prov_variant.manifest_digest_amd64 }}{% else %}{{ prov_variant.build_digest }}{% endif %}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_prov_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_prov_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_prov_manifest_amd64 %}{{ prov_variant.manifest_digest_amd64 }}{% else %}{{ prov_variant.build_digest }}{% endif %}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -531,7 +544,7 @@
                 <dt>Verify</dt>
                 <dd class="provenance-verify-cmd">
                   {%- assign _prov_tag = prov_variant.tag | default: page.current_version -%}
-                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_tag | append: ' --owner oorabona' -%}
+                  {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/' | append: page.github_username | append: '/' | append: page.name | append: ':' | append: _prov_tag | append: ' --owner ' | append: page.github_username -%}
                   <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
                   <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                   <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
@@ -611,18 +624,71 @@
 
           <!-- Variants — replaced by <version-tabs> custom element -->
           {% if page.has_variants %}
-          {%- comment -%} Compute metric counts for summary line {%- endcomment -%}
+          {%- comment -%} Compute metric counts for summary line, excluding synthetic empty-name variants {%- endcomment -%}
           {%- assign _variants_count = 0 -%}
           {%- assign _versions_count = 0 -%}
           {%- if page.versions -%}
             {%- assign _versions_count = page.versions.size -%}
             {%- for _v in page.versions -%}
-              {%- assign _variants_count = _variants_count | plus: _v.variants.size -%}
+              {%- assign _selectable = _v.variants | where_exp: "v", "v.name and v.name != ''" -%}
+              {%- assign _variants_count = _variants_count | plus: _selectable.size -%}
             {%- endfor -%}
           {%- elsif page.variants -%}
-            {%- assign _variants_count = page.variants.size -%}
+            {%- assign _selectable = page.variants | where_exp: "v", "v.name and v.name != ''" -%}
+            {%- assign _variants_count = _selectable.size -%}
             {%- assign _versions_count = 1 -%}
           {%- endif -%}
+          {%- comment -%}
+            Synthetic data-carrier — ALWAYS rendered (outside the _variants_count guard).
+            Versions-only containers (ansible, debian, jekyll, openresty, openvpn, php,
+            sslh, vector, wordpress) have _variants_count == 0, so the <details> disclosure
+            below never renders for them.  The JS contract requires at least one
+            .variant-tag.selected button in the DOM; these hidden buttons satisfy that
+            contract without appearing in the visible UI.
+            For multi-variant containers (postgres, etc.) every variant has a non-empty
+            name, so this loop emits nothing — the selectable buttons in the disclosure
+            below are the sole .variant-tag.selected elements.
+          {%- endcomment -%}
+          {%- if page.versions -%}
+            {%- assign _has_synthetics = false -%}
+            {%- for _sv in page.versions -%}
+              {%- for _svv in _sv.variants -%}
+                {%- if _svv.name == "" or _svv.name == nil -%}{%- assign _has_synthetics = true -%}{%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {%- if _has_synthetics -%}
+            <div class="variant-data-carriers" hidden aria-hidden="true">
+              {%- for _sv in page.versions -%}
+                {%- for _svv in _sv.variants -%}
+                  {%- if _svv.name == "" or _svv.name == nil -%}
+                  <button type="button"
+                          class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                          data-tag="{{ _svv.tag }}"
+                          data-size-amd64="{{ _svv.size_amd64 | default: '' }}"
+                          data-size-arm64="{{ _svv.size_arm64 | default: '' }}"
+                          data-build-digest="{{ _svv.build_digest | default: '' }}"
+                          data-base-image="{{ _svv.base_image | default: '' }}"
+                          {%- if _svv.build_args %} data-build-args='[{% for arg in _svv.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif -%}
+                          {%- if _svv.sbom_summary %} data-sbom-summary='{{ _svv.sbom_summary | jsonify }}'{% endif -%}
+                          {%- if _svv.sbom_packages %} data-sbom-packages='{{ _svv.sbom_packages | jsonify }}'{% endif -%}
+                          {%- if _svv.changelog %} data-changelog='{{ _svv.changelog | jsonify }}'{% endif -%}
+                          {%- if _svv.build_history %} data-build-history='{{ _svv.build_history | jsonify }}'{% endif -%}
+                          {%- if _svv.attestation_url %} data-attestation-url="{{ _svv.attestation_url }}"{% endif -%}
+                          {%- if _svv.attestation_id %} data-attestation-id="{{ _svv.attestation_id }}"{% endif -%}
+                          {%- if _svv.trivy_summary %} data-trivy-summary='{{ _svv.trivy_summary | jsonify | escape }}'{% endif -%}
+                          {%- if _svv.multi_arch_platforms %} data-multi-arch-platforms='{{ _svv.multi_arch_platforms | jsonify | escape }}'{% endif -%}
+                          aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                          aria-hidden="true"
+                          tabindex="-1"></button>
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+            </div>
+            {%- endif -%}
+          {%- endif -%}
+
+          {%- comment -%} Visible disclosure — only rendered when there are SELECTABLE (non-synthetic) variants {%- endcomment -%}
+          {%- if _variants_count > 0 -%}
           <details class="disclosure">
             <summary>
               <span class="disclosure__title">Available variants</span>
@@ -635,40 +701,35 @@
                   {% if page.versions %}
                     <version-tabs class="version-tabs" data-active-tag="{{ default_variant.tag }}">
                       {% for version in page.versions %}
+                      {%- assign _selectable_v = version.variants | where_exp: "v", "v.name and v.name != ''" -%}
+                      {%- if _selectable_v.size > 0 -%}
                       <div class="version-tabs-group" role="tablist" aria-label="Variants for version {{ version.base_tag | default: version.tag }}">
                         <p class="eyebrow version-tabs-group-label">{{ version.base_tag | default: version.tag }}</p>
-                        {% for variant in version.variants %}
-                          {%- comment -%}
-                            Versions-only containers carry a synthesized empty-name variant.
-                            Keep hidden (synthetic) buttons as data carriers — container-detail.js
-                            reads SBOM/changelog/build-history from .variant-tag.selected.
-                          {%- endcomment -%}
-                          {%- assign synthetic = false -%}
-                          {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
+                        {%- for variant in _selectable_v -%}
                           <button type="button"
-                                  class="version-tab{% if forloop.first and forloop.parentloop.first %} version-tab--selected{% endif %}{% if synthetic %} variant-tag selected{% else %} variant-tag{% endif %}"
+                                  class="version-tab{% if forloop.first and forloop.parentloop.first %} version-tab--selected{% endif %} variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
                                   role="tab"
                                   data-tag="{{ variant.tag }}"
                                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                                   data-build-digest="{{ variant.build_digest | default: '' }}"
                                   data-base-image="{{ variant.base_image | default: '' }}"
-                                  {% if variant.build_args %}data-build-args='[{% for arg in variant.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif %}
-                                  {% if variant.sbom_summary %}data-sbom-summary='{{ variant.sbom_summary | jsonify }}'{% endif %}
-                                  {% if variant.sbom_packages %}data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif %}
-                                  {% if variant.changelog %}data-changelog='{{ variant.changelog | jsonify }}'{% endif %}
-                                  {% if variant.build_history %}data-build-history='{{ variant.build_history | jsonify }}'{% endif %}
+                                  {%- if variant.build_args %} data-build-args='[{% for arg in variant.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif -%}
+                                  {%- if variant.sbom_summary %} data-sbom-summary='{{ variant.sbom_summary | jsonify }}'{% endif -%}
+                                  {%- if variant.sbom_packages %} data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif -%}
+                                  {%- if variant.changelog %} data-changelog='{{ variant.changelog | jsonify }}'{% endif -%}
+                                  {%- if variant.build_history %} data-build-history='{{ variant.build_history | jsonify }}'{% endif -%}
                                   {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                                   {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
                                   {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
                                   {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                                   aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
-                                  {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
                                   title="{{ variant.when_to_use | default: variant.description | escape }}">
-                            {%- if synthetic -%}{{ variant.name }}{%- else -%}{{ variant.name }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}{%- endif -%}
+                            {{ variant.name }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                           </button>
-                        {% endfor %}
+                        {%- endfor -%}
                       </div>
+                      {%- endif -%}
                       {% endfor %}
                     </version-tabs>
                   {% elsif page.variants %}
@@ -698,6 +759,7 @@
               </div>
             </div>
           </details>
+          {%- endif -%}
           {% endif %}
 
           <!-- Postgres variant comparison table (postgres only) -->
@@ -1003,7 +1065,7 @@
                 {% endif %}
 
                 <div class="dep-health-footer">
-                  <a href="https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml"
+                  <a href="{{ _repo_url }}/actions/workflows/upstream-monitor.yaml"
                      class="dep-workflow-link" target="_blank" rel="noopener">
                     <i class="ti ti-refresh" aria-hidden="true"></i> Upstream Monitor Workflow
                   </a>
