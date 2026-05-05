@@ -6,6 +6,16 @@
 
 A minimal Debian container with customizable version support. This container provides a clean Debian base image with version flexibility for various use cases.
 
+## Why this image
+
+A small, opinionated Debian base built `FROM debian:trixie` (Debian 13) with the additions a downstream container usually needs anyway: configurable locales, a passwordless sudo non-root user, `aptitude`, and `ca-certificates` — all installed in a single layer with the apt cache cleaned up.
+
+- **Single tracked release.** `variants.yaml` ships only the `trixie` track, kept current via the daily upstream-monitor workflow. No fan-out across stable / oldstable; pin to `trixie` and let the rebuild pipeline carry the patch updates.
+- **Non-root user out of the box.** A `debian` user is created with passwordless sudo so containers using this base can run as a non-root identity without paving the user-creation boilerplate themselves.
+- **Configurable locales.** `LOCALES` build arg installs the requested locale set and sets `LANG`/`LANGUAGE`/`LC_ALL` from the first entry, so downstream images can land a non-default locale without re-running `localedef`.
+- **As-a-base-image role.** `web-shell`'s Debian distro variant derives from this image (see `web-shell/generate-dockerfile.sh`). Other fleet containers use upstream Debian / Ubuntu directly; the role here is the curated "fleet-internal Debian base" rather than a universal base layer.
+- **Multiple architectures.** Published for `linux/amd64` and `linux/arm64` via a multi-arch manifest. Downstream `FROM` statements pick the correct platform automatically.
+
 ## Features
 
 - **Multi-Architecture Support**: Available for amd64 and arm64 architectures

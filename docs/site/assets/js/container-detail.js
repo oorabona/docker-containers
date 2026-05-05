@@ -801,8 +801,10 @@
         copyDetailPullCommand();
       }
 
-      // Provenance section copy buttons — .copy-btn[data-copy] pattern
-      var copyBtn = e.target.closest('.copy-btn[data-copy]');
+      // Provenance section copy buttons — emit class is .provenance-copy-btn
+      // (renamed from .copy-btn to avoid colliding with dashboard.css's
+      // pull-command .copy-btn rule when both stylesheets share a layout).
+      var copyBtn = e.target.closest('.provenance-copy-btn[data-copy]');
       if (copyBtn) {
         var textToCopy = copyBtn.dataset.copy || '';
         var liveRegion = document.getElementById('status-live');

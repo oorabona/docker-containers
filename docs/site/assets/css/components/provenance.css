@@ -101,7 +101,7 @@
 /* -----------------------------------------------------------------------
    Inline copy button (⧉ icon)
    ----------------------------------------------------------------------- */
-.copy-btn {
+.provenance-copy-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -117,21 +117,17 @@
               border-color var(--motion-duration-short) var(--easing-standard);
 }
 
-.copy-btn:hover {
+.provenance-copy-btn:hover {
   color: var(--color-action-primary);
   border-color: var(--color-action-primary);
 }
 
-.copy-btn:focus-visible {
+.provenance-copy-btn:focus-visible {
   outline: 2px solid var(--color-action-primary);
   outline-offset: 2px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .copy-btn {
-    transition: none;
-  }
-}
+/* prefers-reduced-motion: canonical block in tokens.css — no duplicate here */
 
 /* -----------------------------------------------------------------------
    Empty / awaiting row state
@@ -191,7 +187,7 @@
   }
 
   /* Enlarge copy buttons to 32×32 touch target on mobile */
-  .copy-btn {
+  .provenance-copy-btn {
     width: 32px;
     height: 32px;
   }
