@@ -63,20 +63,32 @@
       const counts = summary.counts || {};
       const critical = counts.critical || 0;
       const high = counts.high || 0;
-      const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
+      // Pick the count + label of the active severity so the number on the
+      // badge always matches the badge colour. info-level (no CRIT, no HIGH)
+      // surfaces "0" so the chip stays a positive signal rather than blank.
+      let sev, displayCount, compactLabel, ariaSeverity;
+      if (critical > 0) {
+        sev = 'critical'; displayCount = critical; compactLabel = 'CRIT'; ariaSeverity = 'CRITICAL';
+      } else if (high > 0) {
+        sev = 'high';     displayCount = high;     compactLabel = 'HIGH'; ariaSeverity = 'HIGH';
+      } else {
+        sev = 'info';     displayCount = 0;        compactLabel = '';     ariaSeverity = 'critical / high';
+      }
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
+      const fullLabel = displayCount + ' ' + ariaSeverity + ' CVE(s) · scanned ' + date + ' · advisory mode (does not block builds)';
       // Compact label on dashboard cards (narrow width); full label on the
-      // detail-page badge. Mirrors the Liquid initial render so a variant
-      // change does not visually swap to a longer string mid-flight.
+      // detail-page badge. Both surfaces duplicate the full label into
+      // aria-label so screen-reader / touch users get the same context as
+      // hover-tooltip users.
       const isCardSurface = !!this.closest('.container-card');
       if (isCardSurface) {
-        el.textContent = '🛡 TRIVY: ' + critical;
-        el.title = critical + ' CRITICAL CVE(s) · scanned ' + date + ' · advisory mode (does not block builds)';
+        el.textContent = '🛡 TRIVY: ' + displayCount + (compactLabel ? ' ' + compactLabel : '');
       } else {
-        el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
-        el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
+        el.textContent = '🛡 TRIVY: ' + displayCount + ' ' + ariaSeverity + ' (advisory) · SCANNED ' + date;
       }
+      el.title = fullLabel;
+      el.setAttribute('aria-label', fullLabel);
       el.style.display = '';
       el.removeAttribute('aria-hidden');
     }

@@ -97,21 +97,40 @@
        >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
     {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
-      {%- assign sev = "info" -%}
-      {%- if default_variant.trivy_summary.counts.critical > 0 -%}{%- assign sev = "critical" -%}
-      {%- elsif default_variant.trivy_summary.counts.high > 0 -%}{%- assign sev = "high" -%}
-      {%- endif -%}
       {%- comment -%}
-        Card surface: compact label (icon + count). Full context — severity, scan date,
-        advisory mode caveat — lives in the title tooltip and on the detail page badge,
-        avoiding overflow at narrow card widths. trust-strip.js mirrors this compact
-        format on variant-change events when the parent is a container card.
+        Compact card label tracks the active severity bucket: emit the count
+        of the most severe non-zero level so the number on the badge always
+        matches the badge colour. Full context (label + scan date + advisory
+        caveat) is duplicated into both `title` (hover) and `aria-label`
+        (screen reader / touch focus); the badge link itself targets the
+        detail-page security section so touch users land on the full surface.
       {%- endcomment -%}
+      {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
+      {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
+      {%- if trivy_critical > 0 -%}
+        {%- assign trivy_sev = "critical" -%}
+        {%- assign trivy_count = trivy_critical -%}
+        {%- assign trivy_label = "CRIT" -%}
+        {%- assign trivy_aria_label = "CRITICAL" -%}
+      {%- elsif trivy_high > 0 -%}
+        {%- assign trivy_sev = "high" -%}
+        {%- assign trivy_count = trivy_high -%}
+        {%- assign trivy_label = "HIGH" -%}
+        {%- assign trivy_aria_label = "HIGH" -%}
+      {%- else -%}
+        {%- assign trivy_sev = "info" -%}
+        {%- assign trivy_count = 0 -%}
+        {%- assign trivy_label = "" -%}
+        {%- assign trivy_aria_label = "critical / high" -%}
+      {%- endif -%}
+      {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
+      {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} CVE(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
       <a class="trust-badge trust-badge--trivy"
          data-trust="trivy"
-         data-severity="{{ sev }}"
+         data-severity="{{ trivy_sev }}"
          href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
-         title="{{ default_variant.trivy_summary.counts.critical }} CRITICAL CVE(s) · scanned {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }} · advisory mode (does not block builds)">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }}</a>
+         aria-label="{{ trivy_full_label | escape }}"
+         title="{{ trivy_full_label | escape }}">🛡 TRIVY: {{ trivy_count }}{% if trivy_label %} {{ trivy_label }}{% endif %}</a>
     {%- else -%}
       <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
       <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"></a>
