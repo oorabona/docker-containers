@@ -630,11 +630,11 @@
           {%- if page.versions -%}
             {%- assign _versions_count = page.versions.size -%}
             {%- for _v in page.versions -%}
-              {%- assign _selectable = _v.variants | where_exp: "v", "v.name and v.name != ''" -%}
+              {%- assign _selectable = _v.variants | where_exp: "v", "v.name != ''" -%}
               {%- assign _variants_count = _variants_count | plus: _selectable.size -%}
             {%- endfor -%}
           {%- elsif page.variants -%}
-            {%- assign _selectable = page.variants | where_exp: "v", "v.name and v.name != ''" -%}
+            {%- assign _selectable = page.variants | where_exp: "v", "v.name != ''" -%}
             {%- assign _variants_count = _selectable.size -%}
             {%- assign _versions_count = 1 -%}
           {%- endif -%}
@@ -701,7 +701,7 @@
                   {% if page.versions %}
                     <version-tabs class="version-tabs" data-active-tag="{{ default_variant.tag }}">
                       {% for version in page.versions %}
-                      {%- assign _selectable_v = version.variants | where_exp: "v", "v.name and v.name != ''" -%}
+                      {%- assign _selectable_v = version.variants | where_exp: "v", "v.name != ''" -%}
                       {%- if _selectable_v.size > 0 -%}
                       <div class="version-tabs-group" role="tablist" aria-label="Variants for version {{ version.base_tag | default: version.tag }}">
                         <p class="eyebrow version-tabs-group-label">{{ version.base_tag | default: version.tag }}</p>
