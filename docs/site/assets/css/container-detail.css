@@ -22,28 +22,8 @@
       75% { transform: translate(1%, -1%) rotate(1.5deg) scale(1.02); }
     }
 
-    .shape { will-change: transform, opacity; }
-    .shape-1 { animation: orbit1 14s ease-in-out infinite; }
-    .shape-2 { animation: orbit2 18s ease-in-out infinite; }
-    .shape-3 { animation: orbit3 22s ease-in-out infinite; }
-
-    @keyframes orbit1 {
-      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
-      25% { transform: translate(-40px, 30px) scale(1.15); opacity: 0.55; }
-      50% { transform: translate(20px, -20px) scale(0.9); opacity: 0.35; }
-      75% { transform: translate(-15px, -25px) scale(1.08); opacity: 0.5; }
-    }
-    @keyframes orbit2 {
-      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.4; }
-      30% { transform: translate(35px, -25px) scale(1.2); opacity: 0.55; }
-      60% { transform: translate(-30px, 15px) scale(0.85); opacity: 0.3; }
-    }
-    @keyframes orbit3 {
-      0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
-      20% { transform: translate(25px, 20px) scale(1.1); opacity: 0.5; }
-      50% { transform: translate(-20px, -30px) scale(0.92); opacity: 0.35; }
-      80% { transform: translate(10px, -15px) scale(1.18); opacity: 0.55; }
-    }
+    /* F7: .shape-1/2/3 render statically — will-change removed (no animation, no cost) */
+    /* orbit1/orbit2/orbit3 keyframes removed: no consumers after F7 */
 
     /* Detail page styles */
     .container-detail-page { min-height: 400px; }
@@ -62,7 +42,7 @@
     .detail-title { display: flex; align-items: center; gap: 1rem; }
     .detail-title h1 { font-size: 2rem; font-weight: 700; margin: 0; }
     .detail-badge {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.875rem;
+      font-family: var(--font-family-mono); font-size: 0.875rem;
       padding: 0.375rem 0.875rem; border-radius: 8px;
       background: rgba(16, 185, 129, 0.2); color: #34d399;
       border: 1px solid rgba(16, 185, 129, 0.3);
@@ -104,7 +84,7 @@
     }
     .lineage-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--detail-text-muted); }
     .lineage-value {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem;
+      font-family: var(--font-family-mono); font-size: 0.8125rem;
       color: var(--detail-text-secondary); word-break: break-all;
     }
     .lineage-builtin { opacity: 0.55; }
@@ -126,7 +106,7 @@
     .version-title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--detail-text-secondary); }
     .variant-tags-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
     .variant-tag {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+      font-family: var(--font-family-mono); font-size: 0.75rem;
       padding: 0.375rem 0.75rem; border-radius: 6px;
       background: rgba(139, 92, 246, 0.15); color: var(--accent-purple);
       border: 1px solid rgba(139, 92, 246, 0.25); cursor: pointer;
@@ -231,7 +211,7 @@
     .readme-content h4 { font-size: 1.125rem; }
     .readme-content p { margin-bottom: 1em; }
     .readme-content code {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.875em;
+      font-family: var(--font-family-mono); font-size: 0.875em;
       padding: 0.2em 0.4em; background: rgba(0, 0, 0, 0.3); border-radius: 4px; color: #f472b6;
     }
     .readme-content pre {
@@ -274,7 +254,7 @@
       font-size: 0.75rem; padding: 0.375rem 0.75rem; border-radius: 6px;
       background: rgba(139, 92, 246, 0.12); color: var(--accent-purple);
       border: 1px solid rgba(139, 92, 246, 0.2);
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       transition: all 0.2s ease;
     }
     .sbom-type-chip-clickable {
@@ -328,7 +308,7 @@
       display: flex; justify-content: space-between; align-items: baseline;
       padding: 0.25rem 0.5rem; border-radius: 4px;
       font-size: 0.75rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
     }
     .sbom-package-item:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
     .sbom-pkg-name {
@@ -372,10 +352,10 @@
     .changelog-type-removed { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
     .changelog-type-updated { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
     .changelog-pkg-name {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8125rem;
+      font-family: var(--font-family-mono); font-size: 0.8125rem;
     }
     .changelog-version {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+      font-family: var(--font-family-mono); font-size: 0.75rem;
       color: var(--detail-text-muted);
     }
     .changelog-version-new { color: #34d399; }
@@ -400,14 +380,14 @@
     .history-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
     .history-date { font-size: 0.75rem; color: var(--detail-text-muted); }
     .history-version {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+      font-family: var(--font-family-mono); font-size: 0.75rem;
     }
     .history-changes {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.6875rem;
+      font-family: var(--font-family-mono); font-size: 0.6875rem;
       color: var(--detail-text-muted);
     }
     .history-duration {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem;
+      font-family: var(--font-family-mono); font-size: 0.75rem;
       color: var(--detail-text-muted);
     }
 
@@ -476,7 +456,7 @@
     .dep-update-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
     .dep-name a { color: var(--accent-blue); text-decoration: none; }
     .dep-name a:hover { text-decoration: underline; }
-    .dep-version { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; }
+    .dep-version { font-family: var(--font-family-mono); font-size: 0.75rem; }
     .dep-version-current { color: var(--detail-text-muted); }
     .dep-version-latest { color: #34d399; font-weight: 500; }
 
@@ -508,7 +488,7 @@
       border: 1px solid rgba(16, 185, 129, 0.15);
     }
     .dep-uptodate-version {
-      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.6875rem;
+      font-family: var(--font-family-mono); font-size: 0.6875rem;
       color: var(--detail-text-muted); margin-left: 0.25rem;
     }
 
@@ -633,7 +613,7 @@
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       font-size: 0.8125rem;
       color: var(--detail-text-secondary);
     }
@@ -642,8 +622,8 @@
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
-      min-width: 40px;
-      min-height: 40px;
+      min-width: 44px;
+      min-height: 44px; /* F8: 40→44px (WCAG 2.5.8 touch target, matches .copy-btn) */
       color: var(--text-secondary);
       cursor: pointer;
       transition: all 0.2s ease;
