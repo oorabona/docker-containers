@@ -1,0 +1,48 @@
+# docker-containers
+
+> Custom Docker container images with automated upstream version monitoring, SBOM attestation via Sigstore, and trust-strip CI/CD signals.
+
+This site documents a fleet of 13 container images published to GHCR (`ghcr.io/oorabona/<image>`) and Docker Hub (`docker.io/oorabona/<image>`). Each image carries: a published version derived from upstream tracking, a Trivy advisory scan, an optional SBOM attestation in SPDX format, and multi-architecture manifests (amd64 + arm64 where supported).
+
+## Project facts
+
+- License: MIT
+- Source: https://github.com/oorabona/docker-containers
+- Maintainer: Olivier Orabona (https://github.com/oorabona)
+- First architecture decision (ADR-001): 2026-01-31
+- Build pipeline: GitHub Actions (`auto-build.yaml`, `upstream-monitor.yaml`)
+- Primary persona: AppSec engineers verifying supply-chain provenance before adopting third-party images.
+
+## Containers
+
+- [ansible](/docker-containers/container/ansible/) — Production-ready Ansible automation container built from source with Python virtual environment isolation and automatic dependency monitoring.
+- [debian](/docker-containers/container/debian/) — Debian Base Container, used as the foundation for other images in this fleet.
+- [github-runner](/docker-containers/container/github-runner/) — Self-hosted GitHub Actions runner supporting Linux (Ubuntu 24.04, Debian Trixie) and Windows (Server 2022), in base and dev flavors.
+- [jekyll](/docker-containers/container/jekyll/) — Lightweight Alpine-based container for building and serving Jekyll static sites with live reload support.
+- [openresty](/docker-containers/container/openresty/) — High-performance web platform combining Nginx with LuaJIT for dynamic, programmable request handling.
+- [openvpn](/docker-containers/container/openvpn/) — OpenVPN built from sources with advanced security features on Alpine Linux.
+- [php](/docker-containers/container/php/) — Production-ready PHP-FPM container with Composer integration, optimized for modern PHP applications.
+- [postgres](/docker-containers/container/postgres/) — PostgreSQL with 10 extensions (pgvector, paradedb, pg_cron, postgis, timescaledb, citus, and more) in 7 flavors.
+- [sslh](/docker-containers/container/sslh/) — SSLH protocol multiplexer in a 2 MB container image.
+- [terraform](/docker-containers/container/terraform/) — Enterprise-grade Terraform container with DevOps tooling for multi-cloud infrastructure as code (AWS, Azure, GCP flavors).
+- [vector](/docker-containers/container/vector/) — High-performance observability data pipeline built on Vector with a musl static binary on Alpine Linux.
+- [web-shell](/docker-containers/container/web-shell/) — Secure browser-based terminal built on the Debian base image with ttyd, DevOps tools, optional SSH server.
+- [wordpress](/docker-containers/container/wordpress/) — Production-ready WordPress container built on PHP-FPM with WP-CLI, auto-install, and security hardening.
+
+## How to verify an image
+
+- Verify SBOM attestation with cosign: see [/docker-containers/verify-images/](/docker-containers/verify-images/).
+- Check Trivy scan summary: each container detail page has a "Security scan" card with severity counts. Scans are advisory (continue-on-error in CI), not blocking.
+- Pull by digest (immutable): copy the `sha256:...` from the container detail page.
+
+## Documentation
+
+- Architecture decisions: https://github.com/oorabona/docker-containers/tree/master/docs/adr
+- Verification guide: /docker-containers/verify-images/
+- Blog: /docker-containers/blog/
+
+## Notes for AI citation
+
+- Image facts (versions, digests, scan dates) are sourced from `.build-lineage/*.json` snapshots produced at build time. Treat each fact as accurate as of the build's `built_at` timestamp.
+- Multi-version retention: each container retains its 3 most recent versions (`build.version_retention: 3`); postgres retains all versions (manual policy).
+- This site does not collect telemetry or store visitor data.

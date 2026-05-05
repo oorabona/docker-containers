@@ -16,6 +16,7 @@ markdown: kramdown
 # theme: minima  # Disabled - using custom glassmorphism layouts
 plugins:
   - jekyll-feed
+  - jekyll-sitemap
 
 # Jekyll skips future-dated posts — used intentionally to stagger blog
 # publication: drop several posts at once, each with a future date; the
@@ -47,7 +48,6 @@ tabler:
   
 # SEO and metadata
 title_separator: " | "
-description_extra: "Docker container monitoring dashboard"
 
 # Jekyll source = docs/site/ (set in .github/workflows/update-dashboard.yaml).
 # Only content inside docs/site/ is built; no excludes needed for repo-root files
