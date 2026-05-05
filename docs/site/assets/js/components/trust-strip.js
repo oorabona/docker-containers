@@ -36,18 +36,19 @@
     _updateSbom(url, id) {
       const el = this.querySelector('[data-trust="sbom"]');
       if (!el) return;
+      const isCardSurface = !!this.closest('.container-card');
       if (url && id) {
         el.setAttribute('href', url);
-        el.textContent = '📋 SBOM ATTESTED';
         el.title = "View Sigstore attestation for this image's SBOM";
         el.style.display = '';
         el.classList.remove('is-pending');
+        el.textContent = isCardSurface ? '📋 SBOM' : '📋 SBOM ATTESTED';
       } else {
         el.style.display = '';
         el.removeAttribute('href');
-        el.textContent = '📋 SBOM PENDING';
         el.classList.add('is-pending');
         el.title = 'SBOM attestation not yet generated. Will populate on next successful build with cosign attestation.';
+        el.textContent = isCardSurface ? '📋 SBOM' : '📋 SBOM PENDING';
       }
     }
 
@@ -83,7 +84,7 @@
       // hover-tooltip users.
       const isCardSurface = !!this.closest('.container-card');
       if (isCardSurface) {
-        el.textContent = '🛡 TRIVY: ' + displayCount + (compactLabel ? ' ' + compactLabel : '');
+        el.textContent = '🛡 ' + displayCount + (compactLabel ? ' ' + compactLabel : '');
       } else {
         el.textContent = '🛡 TRIVY: ' + displayCount + ' ' + ariaSeverity + ' (advisory) · SCANNED ' + date;
       }
@@ -102,12 +103,19 @@
         el.setAttribute('aria-hidden', 'true');
         return;
       }
-      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64").
+      // Card surface: compact count format (e.g. "🏗 ×2") — matches Liquid card output.
+      // Detail surface: full format (e.g. "🏗 AMD64 + ARM64").
       // Defensively strip "os/" prefix (e.g. "linux/amd64" → "amd64") before uppercasing.
-      el.textContent = '🏗 ' + platforms.map(function(p) {
+      const isCardSurface = !!this.closest('.container-card');
+      const archNames = platforms.map(function(p) {
         var arch = p.includes('/') ? p.split('/').pop() : p;
         return arch.toUpperCase();
-      }).join(' + ');
+      });
+      el.textContent = isCardSurface
+        ? '🏗 ×' + platforms.length
+        : '🏗 ' + archNames.join(' + ');
+      el.title = 'Multi-arch manifest: ' + platforms.join(', ');
+      el.setAttribute('aria-label', 'Multi-arch: ' + archNames.join(', '));
       el.style.display = '';
       el.removeAttribute('aria-hidden');
     }
