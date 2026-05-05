@@ -5,9 +5,9 @@
 # sub-path. The robots.txt protocol (RFC 9309) requires the file at the
 # host root (https://oorabona.github.io/robots.txt) to be honored by
 # search engines. This sub-path file is therefore policy documentation,
-# not crawler-enforced directives. Sitemap discovery is provided by
-# Search Console submission and the auto-included <sitemap> reference
-# in the served XML.
+# not crawler-enforced directives. Sitemap discovery still works via
+# Search Console submission and via the explicit `Sitemap:` line below
+# (honored by the crawlers that do fetch this file even at sub-paths).
 #
 # Project policy: this is open-source documentation. All content is
 # intended for indexing and citation, including by AI crawlers.
