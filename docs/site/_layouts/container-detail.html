@@ -139,23 +139,16 @@
         <!-- Trust Strip -->
         {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
         <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: page.current_version }}">
-          {%- comment -%} SBOM badge — 3-state: attested (both url+id), partial/pending (one only), missing (none, hidden) {%- endcomment -%}
-          <a class="trust-badge trust-badge--sbom"
+          <a class="trust-badge trust-badge--sbom{% unless default_variant.attestation_url and default_variant.attestation_id %} is-pending{% endunless %}"
              data-trust="sbom"
              {% if default_variant.attestation_url and default_variant.attestation_id %}
                href="{{ default_variant.attestation_url }}"
-               data-sbom-state="attested"
                title="View Sigstore attestation for this image's SBOM"
-             {% elsif default_variant.attestation_url or default_variant.attestation_id %}
-               {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% endif %}
-               data-sbom-state="partial"
-               title="SBOM attestation incomplete — awaiting next build"
              {% else %}
-               data-sbom-state="missing"
-               style="display: none"
+               title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
              {% endif %}
              rel="noopener"
-             >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% elsif default_variant.attestation_url or default_variant.attestation_id %}📋 SBOM PENDING{% endif %}</a>
+             >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
           {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
             {%- assign sev = "info" -%}
@@ -166,7 +159,7 @@
                data-trust="trivy"
                data-severity="{{ sev }}"
                href="#security"
-               title="Click to see scan details on this page">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+               title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
           {%- else -%}
             <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" href="#"></a>
           {%- endif -%}
@@ -196,6 +189,9 @@
 
         <!-- Provenance section — Camille's primary screenshot target (Phase C PR2) -->
         {%- comment -%}
+          Provenance fixes (PR-A 2026-05-05):
+          • F1: guard `_prov_var.base_image contains "${"` before rendering — pipeline may emit unexpanded shell vars.
+          • F4: only append "— last attempted YYYY-MM-DD" when `last_build_iso` is present; never assert "Never built" (factually wrong: many variants have build_digest but no last_build_iso field exposed in containers.yml yet).
           Fix #2: render one <section class="provenance"> per variant with data-variant-tag.
           JS (container-detail.js phase-b-variant-changed listener) shows/hides by matching tag.
           First variant is visible; others start hidden.
@@ -258,7 +254,8 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>SBOM attestation</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if _prov_var.trivy_summary.last_scan -%}
@@ -269,14 +266,22 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>Trivy last scan</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if _prov_var.base_image and _prov_var.base_image != "unknown" -%}
+              {%- if _prov_var.base_image contains "${" -%}
+            <div class="evidence-row">
+              <dt>Base image</dt>
+              <dd class="evidence-empty">not available</dd>
+            </div>
+              {%- else -%}
             <div class="evidence-row">
               <dt>Base image</dt>
               <dd><code class="hash">{{ _prov_var.base_image }}</code></dd>
             </div>
+              {%- endif -%}
             {%- endif -%}
             <div class="evidence-row">
               <dt>Verify</dt>
@@ -351,7 +356,8 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>SBOM attestation</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if _prov_var.trivy_summary.last_scan -%}
@@ -362,14 +368,22 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>Trivy last scan</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if _prov_var.last_build_iso %} — last attempted {{ _prov_var.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if _prov_var.base_image and _prov_var.base_image != "unknown" -%}
+              {%- if _prov_var.base_image contains "${" -%}
+            <div class="evidence-row">
+              <dt>Base image</dt>
+              <dd class="evidence-empty">not available</dd>
+            </div>
+              {%- else -%}
             <div class="evidence-row">
               <dt>Base image</dt>
               <dd><code class="hash">{{ _prov_var.base_image }}</code></dd>
             </div>
+              {%- endif -%}
             {%- endif -%}
             <div class="evidence-row">
               <dt>Verify</dt>
@@ -442,7 +456,8 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>SBOM attestation</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if prov_variant.last_build_iso %} — last attempted {{ prov_variant.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if prov_variant.trivy_summary.last_scan -%}
@@ -453,14 +468,22 @@
             {%- else -%}
             <div class="evidence-row">
               <dt>Trivy last scan</dt>
-              <dd class="evidence-empty">awaiting next build</dd>
+
+              <dd class="evidence-empty">awaiting next build{%- if prov_variant.last_build_iso %} — last attempted {{ prov_variant.last_build_iso | date: "%Y-%m-%d" }}{%- endif -%}</dd>
             </div>
             {%- endif -%}
             {%- if prov_variant.base_image and prov_variant.base_image != "unknown" -%}
+              {%- if prov_variant.base_image contains "${" -%}
+            <div class="evidence-row">
+              <dt>Base image</dt>
+              <dd class="evidence-empty">not available</dd>
+            </div>
+              {%- else -%}
             <div class="evidence-row">
               <dt>Base image</dt>
               <dd><code class="hash">{{ prov_variant.base_image }}</code></dd>
             </div>
+              {%- endif -%}
             {%- endif -%}
             <div class="evidence-row">
               <dt>Verify</dt>

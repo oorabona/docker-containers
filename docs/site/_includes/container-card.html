@@ -85,24 +85,16 @@
   {%- endcomment -%}
   {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
   <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: include.current_version }}">
-    {%- comment -%} SBOM badge — Liquid renders initial state, web component updates on variant change {%- endcomment -%}
-    {%- comment -%} SBOM badge — 3-state: attested (both url+id), partial/pending (one only), missing (none, hidden) {%- endcomment -%}
-    <a class="trust-badge trust-badge--sbom"
+      <a class="trust-badge trust-badge--sbom{% unless default_variant.attestation_url and default_variant.attestation_id %} is-pending{% endunless %}"
        data-trust="sbom"
        {% if default_variant.attestation_url and default_variant.attestation_id %}
          href="{{ default_variant.attestation_url }}"
-         data-sbom-state="attested"
          title="View Sigstore attestation for this image's SBOM"
-       {% elsif default_variant.attestation_url or default_variant.attestation_id %}
-         {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% endif %}
-         data-sbom-state="partial"
-         title="SBOM attestation incomplete — awaiting next build"
        {% else %}
-         data-sbom-state="missing"
-         style="display: none"
+         title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
        {% endif %}
        rel="noopener"
-       >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% elsif default_variant.attestation_url or default_variant.attestation_id %}📋 SBOM PENDING{% endif %}</a>
+       >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
     {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
       {%- assign sev = "info" -%}
@@ -113,7 +105,7 @@
          data-trust="trivy"
          data-severity="{{ sev }}"
          href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
-         title="Click to see scan details on this container's detail page">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+         title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
     {%- else -%}
       <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" href="#"></a>
     {%- endif -%}
