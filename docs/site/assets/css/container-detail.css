@@ -11,12 +11,8 @@
       color: #374151;
     }
 
+    /* Detail-specific animated background overrides — sizes/gradients from theme.css */
     .bg-animated::before {
-      content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
-      background:
-        radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
-        radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.2) 0%, transparent 50%),
-        radial-gradient(circle at 40% 40%, rgba(59, 130, 246, 0.2) 0%, transparent 40%);
       animation: drift 25s ease-in-out infinite;
     }
     @keyframes drift {
@@ -27,18 +23,10 @@
     }
 
     .shape { will-change: transform, opacity; }
-    .shape-1 {
-      width: 400px; height: 400px; background: var(--gradient-1); top: 10%; right: 10%;
-      animation: orbit1 14s ease-in-out infinite;
-    }
-    .shape-2 {
-      width: 300px; height: 300px; background: var(--gradient-3); bottom: 20%; left: 5%;
-      animation: orbit2 18s ease-in-out infinite;
-    }
-    .shape-3 {
-      width: 250px; height: 250px; background: var(--gradient-2); top: 50%; left: 50%;
-      animation: orbit3 22s ease-in-out infinite;
-    }
+    .shape-1 { animation: orbit1 14s ease-in-out infinite; }
+    .shape-2 { animation: orbit2 18s ease-in-out infinite; }
+    .shape-3 { animation: orbit3 22s ease-in-out infinite; }
+
     @keyframes orbit1 {
       0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
       25% { transform: translate(-40px, 30px) scale(1.15); opacity: 0.55; }

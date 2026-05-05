@@ -62,6 +62,7 @@
       var variantData = {
         tag: tab.dataset.tag || '',
         attestation_url: tab.dataset.attestationUrl || '',
+        attestation_id: tab.dataset.attestationId || '',
         trivy_summary: null,
         multi_arch_platforms: [],
         size_amd64: tab.dataset.sizeAmd64 || '',
@@ -203,6 +204,7 @@
       var variantData = {
         tag: initialTab.dataset.tag || '',
         attestation_url: initialTab.dataset.attestationUrl || '',
+        attestation_id: initialTab.dataset.attestationId || '',
         trivy_summary: null,
         multi_arch_platforms: [],
         size_amd64: initialTab.dataset.sizeAmd64 || '',

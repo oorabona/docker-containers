@@ -165,6 +165,7 @@
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
       var variantData = {
         attestation_url: element.dataset.attestationUrl || '',
+        attestation_id: element.dataset.attestationId || '',
         trivy_summary: null,
         multi_arch_platforms: []
       };
