@@ -12,19 +12,10 @@
       color: #374151;
     }
 
-    /* Detail-specific animated background overrides — sizes/gradients from theme.css */
-    .bg-animated::before {
-      animation: drift 25s ease-in-out infinite;
-    }
-    @keyframes drift {
-      0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
-      25% { transform: translate(3%, -2%) rotate(2deg) scale(1.05); }
-      50% { transform: translate(-2%, 3%) rotate(-1deg) scale(0.95); }
-      75% { transform: translate(1%, -1%) rotate(1.5deg) scale(1.02); }
-    }
-
-    /* F7: .shape-1/2/3 render statically — will-change removed (no animation, no cost) */
-    /* orbit1/orbit2/orbit3 keyframes removed: no consumers after F7 */
+    /* Detail-page background — flat navy per Phase C. Aurora gradient + drift
+       animation removed alongside the cross-layout `.bg-animated`. The empty
+       `<div class="bg-animated">` hook stays in the layout for future
+       (spec-noted) decoration without a markup change. */
 
     /* ============================================================
        4-ZONE LAYOUT (Phase C PR)

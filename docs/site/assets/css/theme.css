@@ -254,74 +254,13 @@ body {
   background-size: 200px 200px, 100% 100%;
 }
 
-/* Animated gradient background */
-.bg-animated {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  z-index: -1;
-  overflow: hidden;
-}
-
-/* Floating shapes base */
-.shape {
-  position: fixed;
-  border-radius: 50%;
-  filter: blur(60px);
-  opacity: 0.5;
-  z-index: -1;
-}
-
-/* === Animated background chrome (cross-layout) === */
-/* Used by blog, post, and dashboard layouts. Container-detail overrides
-   .bg-animated::before and .shape-* animations with drift/orbit keyframes. */
-
-.bg-animated::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background:
-    radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
-    radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.2) 0%, transparent 50%),
-    radial-gradient(circle at 40% 40%, rgba(59, 130, 246, 0.2) 0%, transparent 40%);
-  animation: float 20s ease-in-out infinite;
-}
-
-@keyframes float {
-  0%, 100% { transform: translate(0, 0) rotate(0deg); }
-  33% { transform: translate(2%, 2%) rotate(1deg); }
-  66% { transform: translate(-1%, 1%) rotate(-1deg); }
-}
-
-.shape-1 {
-  width: 400px;
-  height: 400px;
-  background: var(--gradient-1);
-  top: 10%;
-  right: 10%;
-  /* F7: no page-load animation — calm-static-render (design gate: no pulse) */
-}
-
-.shape-2 {
-  width: 300px;
-  height: 300px;
-  background: var(--gradient-3);
-  bottom: 20%;
-  left: 5%;
-  /* F7: no page-load animation */
-}
-
-.shape-3 {
-  width: 250px;
-  height: 250px;
-  background: var(--gradient-2);
-  top: 50%;
-  left: 50%;
-  /* F7: no page-load animation */
-}
+/* Background chrome — Phase C calls for a flat navy backdrop (with the
+   token-driven body gradient) rather than the legacy aurora. The
+   `.bg-animated` and `.shape-*` divs remain in the layouts as
+   non-rendering hooks so future decoration (e.g. the spec-noted "3%
+   noise overlay") can attach without a markup change. */
+.bg-animated,
+.shape { display: none; }
 
 /* Theme toggle — 32px keeps the navbar compact while staying above the
    WCAG 2.5.8 AA minimum touch target of 24x24 (44x44 is the AAA target,
