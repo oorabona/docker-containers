@@ -1,0 +1,45 @@
+# robots.txt — docker-containers project policy statement
+#
+# NOTE ON ENFORCEMENT: GitHub Pages serves this file at
+# https://oorabona.github.io/docker-containers/robots.txt — a project
+# sub-path. The robots.txt protocol (RFC 9309) requires the file at the
+# host root (https://oorabona.github.io/robots.txt) to be honored by
+# search engines. This sub-path file is therefore policy documentation,
+# not crawler-enforced directives. Sitemap discovery is provided by
+# Search Console submission and the auto-included <sitemap> reference
+# in the served XML.
+#
+# Project policy: this is open-source documentation. All content is
+# intended for indexing and citation, including by AI crawlers.
+
+User-agent: *
+Allow: /
+
+# AI / LLM crawlers — explicitly allowed (not blocked).
+# Documented for transparency: anyone can use this site for training,
+# retrieval, or citation. Source code: https://github.com/oorabona/docker-containers
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+Sitemap: https://oorabona.github.io/docker-containers/sitemap.xml

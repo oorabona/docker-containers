@@ -1,0 +1,33 @@
+{% comment %}
+  seo-meta.html — Consolidated SEO head block (description, canonical, OG, Twitter Card).
+  Include this from every layout's <head> AFTER <title>.
+  Reads: page.seo_title, page.title, page.name, page.description, page.tagline, page.excerpt,
+         page.og_image, page.image, include.og_image_fallback, page.layout, page.url,
+         site.title, site.description, site.url, site.baseurl.
+  Parameters:
+    og_image_fallback — caller-supplied last-resort OG image path (e.g. slug-based PNG for posts).
+                        Only emitted when page.og_image and page.image are both absent.
+{% endcomment %}
+
+{% assign _seo_title = page.seo_title | default: page.title | default: page.name | default: site.title %}
+{% assign _seo_desc = page.description | default: page.tagline | default: page.excerpt %}
+{% if _seo_desc == nil or _seo_desc == "" %}
+  {% assign _seo_desc = site.description %}
+{% endif %}
+{% assign _seo_url = page.url | absolute_url %}
+{% assign _seo_image = page.og_image | default: page.image | default: include.og_image_fallback %}
+
+<meta name="description" content="{{ _seo_desc | strip_html | normalize_whitespace | truncate: 160 | escape }}">
+<link rel="canonical" href="{{ _seo_url }}">
+
+<meta property="og:title" content="{{ _seo_title | escape }}">
+<meta property="og:description" content="{{ _seo_desc | strip_html | normalize_whitespace | truncate: 160 | escape }}">
+<meta property="og:url" content="{{ _seo_url }}">
+<meta property="og:type" content="{% if page.layout == 'post' %}article{% else %}website{% endif %}">
+{% if _seo_image %}<meta property="og:image" content="{{ _seo_image | absolute_url }}">{% endif %}
+<meta property="og:site_name" content="{{ site.title | escape }}">
+
+<meta name="twitter:card" content="{% if _seo_image %}summary_large_image{% else %}summary{% endif %}">
+<meta name="twitter:title" content="{{ _seo_title | escape }}">
+<meta name="twitter:description" content="{{ _seo_desc | strip_html | normalize_whitespace | truncate: 160 | escape }}">
+{% if _seo_image %}<meta name="twitter:image" content="{{ _seo_image | absolute_url }}">{% endif %}
