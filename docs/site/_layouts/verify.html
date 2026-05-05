@@ -10,30 +10,28 @@ layout: page
 <div class="verify-page">
 
   {%- comment -%} Tab switcher — sticky under site-nav {%- endcomment -%}
-  <nav class="verify-tabs" role="tablist" aria-label="Verification documentation views">
-    <button id="tab-reference" role="tab" aria-selected="true" aria-controls="view-reference"
-            data-view="reference" tabindex="0">Reference</button>
-    <button id="tab-walkthrough" role="tab" aria-selected="false" aria-controls="view-walkthrough"
-            data-view="walkthrough" tabindex="0">Walkthrough</button>
+  <nav class="verify-tabs" aria-label="Verification documentation views">
+    <button id="tab-reference" type="button" data-view="reference">Reference</button>
+    <button id="tab-walkthrough" type="button" data-view="walkthrough">Walkthrough</button>
   </nav>
 
   <div class="verify-layout">
 
-    <main class="verify-main">
+    <div class="verify-main">
 
       {%- comment -%} Reference panel — receives the page body via {{ content }} {%- endcomment -%}
-      <section id="view-reference" role="tabpanel" data-view="reference"
-               aria-labelledby="tab-reference">
+      <section id="view-reference" data-view="reference">
         {{ content }}
       </section>
 
       {%- comment -%} Walkthrough panel — 4 numbered steps + FAQ {%- endcomment -%}
-      <section id="view-walkthrough" role="tabpanel" data-view="walkthrough"
-               aria-labelledby="tab-walkthrough" hidden>
+      {%- comment -%} No hidden attr server-side: progressive enhancement — JS adds role="tabpanel",
+          aria-labelledby, and [hidden] on init. With JS off, both panels are visible. {%- endcomment -%}
+      <section id="view-walkthrough" data-view="walkthrough">
         {% include components/verify-walkthrough.html %}
       </section>
 
-    </main>
+    </div>
 
     {%- comment -%} Sticky right-side TOC (Reference view only; collapses < 1024px) {%- endcomment -%}
     <aside class="verify-toc-sticky" aria-label="Reference sections">

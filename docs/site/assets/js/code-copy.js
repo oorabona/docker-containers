@@ -78,12 +78,31 @@
   }
 
   // ----- Tab toggle (Reference / Walkthrough) --------------------------------
+  // Progressive enhancement: server HTML renders plain buttons + both panels visible.
+  // JS upgrades to a full WAI-ARIA 1.2 tablist on load so AT users get proper
+  // semantics only when the interaction is actually functional.
 
-  var tabs = document.querySelectorAll('.verify-tabs button[role="tab"]');
-  var panels = document.querySelectorAll('.verify-page [role="tabpanel"]');
+  var tabNav = document.querySelector('.verify-tabs');
+  var tabs = document.querySelectorAll('.verify-tabs button[data-view]');
+  var panels = document.querySelectorAll('.verify-page section[data-view]');
   var layout = document.querySelector('.verify-layout');
 
   if (!tabs.length) return; // not on the verify page — stop here
+
+  // --- ARIA upgrade: inject tablist/tab/tabpanel roles now that JS is active ---
+  if (tabNav) tabNav.setAttribute('role', 'tablist');
+
+  tabs.forEach(function (tab) {
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', 'view-' + tab.dataset.view);
+    // aria-selected and tabindex are set by applyView() below
+  });
+
+  panels.forEach(function (panel) {
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', 'tab-' + panel.dataset.view);
+  });
+  // --- end ARIA upgrade ---
 
   function applyView(view, push) {
     var v = (view === 'walkthrough') ? 'walkthrough' : 'reference';
@@ -95,6 +114,8 @@
       var active = tab.dataset.view === v;
       tab.setAttribute('aria-selected', active ? 'true' : 'false');
       tab.tabIndex = active ? 0 : -1;
+      // Class-based hook for CSS active styling (complements aria-selected)
+      tab.classList.toggle('is-active', active);
     });
 
     panels.forEach(function (panel) {
@@ -156,8 +177,8 @@
   });
 
   // Apply correct initial view (and roving tabindex) on page load.
-  // applyView() always sets tabindex=0 on the active tab and -1 on others,
-  // correcting the no-JS fallback where both buttons have tabindex="0".
+  // applyView() sets tabindex=0 on active tab, -1 on others, hides the inactive
+  // panel, and sets aria-selected — all semantics that require JS to be functional.
   var init = new URLSearchParams(window.location.search).get('view');
   applyView(init === 'walkthrough' ? 'walkthrough' : 'reference', false);
 })();
