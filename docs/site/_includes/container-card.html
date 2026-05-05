@@ -1,280 +1,232 @@
-<!-- Enhanced Container Status Card - Glassmorphism Style -->
-<article class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
-     data-container="{{ include.name }}"
-     data-github-username="{{ include.github_username }}"
-     data-dockerhub-username="{{ include.dockerhub_username }}"
-     aria-label="{{ include.name }} container - {{ include.status_text | default: 'Unknown status' }}">
-  <div class="card-header-row">
-    <div class="card-name">{{ include.name }}</div>
-    <span class="card-badge{% if include.status_color == 'warning' %} warning{% endif %}">
-      {{ include.current_version | default: 'unknown' }}
-    </span>
-  </div>
+<!-- Container row card — details/summary expand pattern (D1 refactor) -->
+{%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
+<details class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
+         data-container="{{ include.name }}"
+         data-github-username="{{ include.github_username }}"
+         data-dockerhub-username="{{ include.dockerhub_username }}"
+         aria-label="{{ include.name }} container - {{ include.status_text | default: 'Unknown status' }}">
 
-  <div class="card-status">
-    {% if include.build_status == 'success' %}
-      <i class="ti ti-circle-check" style="color: var(--accent-green);" aria-hidden="true"></i>
-    {% elsif include.build_status == 'warning' %}
-      <i class="ti ti-alert-triangle" style="color: var(--accent-yellow);" aria-hidden="true"></i>
-    {% elsif include.build_status == 'failed' %}
-      <i class="ti ti-circle-x" style="color: var(--accent-pink);" aria-hidden="true"></i>
-    {% else %}
-      <i class="ti ti-loader" style="color: var(--accent-yellow);" aria-hidden="true"></i>
-    {% endif %}
-    {{ include.status_text | default: 'Unknown' }}
-  </div>
+  <summary class="row-summary">
+    <!-- Icon -->
+    <div class="row-icon" aria-hidden="true">
+      <i class="ti ti-package"></i>
+    </div>
 
-  {% if include.latest_version %}
-  <div class="card-meta">
-    <div class="card-meta-item">
-      <span class="card-meta-label">Latest</span>
-      <span class="card-meta-value">{{ include.latest_version }}</span>
+    <!-- Name + version -->
+    <div class="row-id">
+      <div class="row-id-name">{{ include.name }}</div>
+      <div class="row-id-version{% if include.status_color == 'warning' %} warn{% endif %}">{{ include.current_version | default: default_variant.tag | default: 'unknown' }}</div>
     </div>
-    <div class="card-meta-item">
-      <span class="card-meta-label">Pulls</span>
-      <span class="card-meta-value">
-        <i class="ti ti-download" style="font-size: 0.75rem;" aria-hidden="true"></i>
-        {{ include.pull_count_formatted | default: "0" }}
-      </span>
-    </div>
-    <div class="card-meta-item">
-      <span class="card-meta-label">Stars</span>
-      <span class="card-meta-value">
-        <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);" aria-hidden="true"></i>
-        {{ include.star_count | default: 0 }}
-      </span>
-    </div>
-    {% if include.size_amd64 or include.size_arm64 %}
-    <div class="card-meta-item">
-      <span class="card-meta-label">Size (amd64)</span>
-      <span class="card-meta-value" data-meta="size-amd64">{{ include.size_amd64 | default: "—" }}</span>
-    </div>
-    <div class="card-meta-item">
-      <span class="card-meta-label">Size (arm64)</span>
-      <span class="card-meta-value" data-meta="size-arm64">{{ include.size_arm64 | default: "—" }}</span>
-    </div>
-    {% endif %}
-    {% if include.build_digest and include.build_digest != "unknown" and include.build_digest != "per-variant" %}
-    <div class="card-meta-item">
-      <span class="card-meta-label">Build</span>
-      <span class="card-meta-value card-lineage-digest" title="Build digest: {{ include.build_digest }}">
-        <i class="ti ti-fingerprint" style="font-size: 0.75rem;" aria-hidden="true"></i>
-        {{ include.build_digest | truncate: 12, "" }}
-      </span>
-    </div>
-    {% elsif include.build_digest == "per-variant" %}
-    <div class="card-meta-item">
-      <span class="card-meta-label">Build</span>
-      <span class="card-meta-value card-lineage-digest" title="Per-variant build digests available">
-        <i class="ti ti-fingerprint" style="font-size: 0.75rem;" aria-hidden="true"></i>
-        per-variant
-      </span>
-    </div>
-    {% endif %}
-  </div>
-  {% endif %}
 
-  {% if include.description %}
-  <div class="card-description">{{ include.description | truncate: 120 }}</div>
-  {% endif %}
-
-  {%- comment -%}
-    Trust strip: surfaces SBOM attestation, Trivy scan summary, multi-arch, deps tracking, verify guide.
-    <trust-strip> custom element — CSP-clean, no Alpine. Liquid renders initial state; web component
-    updates child [data-trust] badges on `phase-b-variant-changed` events (never innerHTML).
-  {%- endcomment -%}
-  {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
-  <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: include.current_version }}">
+    <!-- Trust-strip badges -->
+    {%- comment -%}
+      Trust strip: surfaces SBOM attestation, Trivy scan summary, multi-arch.
+      <trust-strip> custom element — CSP-clean, no Alpine. Liquid renders initial state;
+      web component updates child [data-trust] badges on `phase-b-variant-changed` events.
+    {%- endcomment -%}
+    <trust-strip class="trust-strip row-trust" data-current-variant="{{ default_variant.tag | default: include.current_version }}">
       <a class="trust-badge trust-badge--sbom{% unless default_variant.attestation_url and default_variant.attestation_id %} is-pending{% endunless %}"
-       data-trust="sbom"
-       {% if default_variant.attestation_url and default_variant.attestation_id %}
-         href="{{ default_variant.attestation_url }}"
-         title="View Sigstore attestation for this image's SBOM"
-       {% else %}
-         title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
-       {% endif %}
-       rel="noopener"
-       >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
+         data-trust="sbom"
+         {% if default_variant.attestation_url and default_variant.attestation_id %}
+           href="{{ default_variant.attestation_url }}"
+           title="View Sigstore attestation for this image's SBOM"
+         {% else %}
+           title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
+         {% endif %}
+         rel="noopener"
+         >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM{% else %}📋 SBOM{% endif %}</a>
 
-    {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
-      {%- comment -%}
-        Compact card label tracks the active severity bucket: emit the count
-        of the most severe non-zero level so the number on the badge always
-        matches the badge colour. Full context (label + scan date + advisory
-        caveat) is duplicated into both `title` (hover) and `aria-label`
-        (screen reader / touch focus); the badge link itself targets the
-        detail-page security section so touch users land on the full surface.
-      {%- endcomment -%}
-      {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
-      {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
-      {%- if trivy_critical > 0 -%}
-        {%- assign trivy_sev = "critical" -%}
-        {%- assign trivy_count = trivy_critical -%}
-        {%- assign trivy_label = "CRIT" -%}
-        {%- assign trivy_aria_label = "CRITICAL" -%}
-      {%- elsif trivy_high > 0 -%}
-        {%- assign trivy_sev = "high" -%}
-        {%- assign trivy_count = trivy_high -%}
-        {%- assign trivy_label = "HIGH" -%}
-        {%- assign trivy_aria_label = "HIGH" -%}
+      {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
+        {%- comment -%}
+          Compact card label tracks the active severity bucket: emit the count
+          of the most severe non-zero level so the number on the badge always
+          matches the badge colour. Full context (label + scan date + advisory
+          caveat) is duplicated into both `title` (hover) and `aria-label`
+          (screen reader / touch focus); the badge link itself targets the
+          detail-page security section so touch users land on the full surface.
+        {%- endcomment -%}
+        {%- assign trivy_critical = default_variant.trivy_summary.counts.critical | plus: 0 -%}
+        {%- assign trivy_high     = default_variant.trivy_summary.counts.high     | plus: 0 -%}
+        {%- if trivy_critical > 0 -%}
+          {%- assign trivy_sev = "critical" -%}
+          {%- assign trivy_count = trivy_critical -%}
+          {%- assign trivy_label = "CRIT" -%}
+          {%- assign trivy_aria_label = "CRITICAL" -%}
+        {%- elsif trivy_high > 0 -%}
+          {%- assign trivy_sev = "high" -%}
+          {%- assign trivy_count = trivy_high -%}
+          {%- assign trivy_label = "HIGH" -%}
+          {%- assign trivy_aria_label = "HIGH" -%}
+        {%- else -%}
+          {%- assign trivy_sev = "info" -%}
+          {%- assign trivy_count = 0 -%}
+          {%- assign trivy_label = "" -%}
+          {%- assign trivy_aria_label = "critical / high" -%}
+        {%- endif -%}
+        {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
+        {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} CVE(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
+        <a class="trust-badge trust-badge--trivy"
+           data-trust="trivy"
+           data-severity="{{ trivy_sev }}"
+           href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
+           aria-label="{{ trivy_full_label | escape }}"
+           title="{{ trivy_full_label | escape }}">🛡 {{ trivy_count }}{% if trivy_label %} {{ trivy_label }}{% endif %}</a>
       {%- else -%}
-        {%- assign trivy_sev = "info" -%}
-        {%- assign trivy_count = 0 -%}
-        {%- assign trivy_label = "" -%}
-        {%- assign trivy_aria_label = "critical / high" -%}
+        <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+        <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"></a>
       {%- endif -%}
-      {%- assign trivy_scan_date = default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" -%}
-      {%- capture trivy_full_label -%}{{ trivy_count }} {{ trivy_aria_label }} CVE(s) · scanned {{ trivy_scan_date }} · advisory mode (does not block builds){%- endcapture -%}
-      <a class="trust-badge trust-badge--trivy"
-         data-trust="trivy"
-         data-severity="{{ trivy_sev }}"
-         href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
-         aria-label="{{ trivy_full_label | escape }}"
-         title="{{ trivy_full_label | escape }}">🛡 TRIVY: {{ trivy_count }}{% if trivy_label %} {{ trivy_label }}{% endif %}</a>
-    {%- else -%}
-      <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
-      <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"></a>
-    {%- endif -%}
 
-    {%- if default_variant.multi_arch_platforms -%}
-      <a class="trust-badge trust-badge--multi-arch"
-         data-trust="multi-arch"
-         href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}"
-         rel="noopener"
-         title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " | upcase }}</a>
-    {%- else -%}
-      <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
-      <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}" rel="noopener"></a>
-    {%- endif -%}
+      {%- if default_variant.multi_arch_platforms -%}
+        <a class="trust-badge trust-badge--multi-arch"
+           data-trust="multi-arch"
+           href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}"
+           rel="noopener"
+           title="View this image's multi-arch manifest on GHCR">🏗 ×{{ default_variant.multi_arch_platforms | size }}</a>
+      {%- else -%}
+        <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+        <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}" rel="noopener"></a>
+      {%- endif -%}
+    </trust-strip>
 
-    {%- if include.dependency_monitoring.enabled -%}
-      <a class="trust-badge trust-badge--deps"
-         href="{{ include.upstream_monitor_url }}"
-         rel="noopener"
-         title="View the daily upstream-monitor workflow runs">
-        🔗 {{ include.dependency_monitoring.monitored }}/{{ include.dependency_monitoring.total }} deps tracked daily
-      </a>
-    {%- endif -%}
-    <a class="trust-badge trust-badge--verify"
-       href="{{ '/verify-images/' | relative_url }}"
-       title="Reproduce these checks yourself — verification guide">🔍 REPRODUCE THESE CHECKS LOCALLY</a>
-  </trust-strip>
-
-  <!-- Variants Section (for multi-image containers) -->
-  {% if include.versions or include.variants %}
-  <div class="variants-section">
-    <div class="variants-header">
-      <i class="ti ti-versions" aria-hidden="true"></i>
-      <span>Available variants</span>
+    <!-- Pull count + size stats -->
+    <div class="row-stats">
+      <span><i class="ti ti-download" aria-hidden="true"></i>{{ include.pull_count_formatted | default: "—" }}</span>
+      <span><i class="ti ti-cube" aria-hidden="true"></i><span data-meta="size-amd64">{{ include.size_amd64 | default: "—" }}</span></span>
     </div>
-    {% if include.versions %}
-      <!-- Multi-version structure: group by version -->
-      {% for version in include.versions %}
-      <div class="version-group">
-        <div class="version-label">{{ version.base_tag | default: version.tag }}</div>
-        <div class="variant-tags">
-          {% for variant in version.variants %}
-            {%- comment -%}
-              Versions-only containers synthesize a single variant with empty
-              `name` (the version itself IS the canonical build). Render the
-              tag with `display:none` so it stays invisible (the version-label
-              identifies the build) while preserving its data-* attributes
-              and `.selected` class — the trust-strip JS and detail-page
-              container-detail.js both initialize from .variant-tag.selected
-              and would lose data for the canonical build if the element were
-              skipped entirely.
-            {%- endcomment -%}
-            {%- assign synthetic = false -%}
-            {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
-            <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
-                  {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
-                  title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
-                  data-tag="{{ variant.tag }}"
-                  data-size-amd64="{{ variant.size_amd64 | default: '' }}"
-                  data-size-arm64="{{ variant.size_arm64 | default: '' }}"
-                  {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}
-                  {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif %}
-                  {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif %}
-                  {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif %}
-                  role="button"
-                  tabindex="0"
-                  aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
-                  aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
-              :{{ variant.name }}
-              {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
-            </span>
-          {% endfor %}
+
+    <!-- Spacer + toggle chevron -->
+    <span class="row-toggle-spacer" aria-hidden="true"></span>
+    <i class="ti ti-chevron-right row-toggle" aria-hidden="true"></i>
+  </summary>
+
+  <!-- Expanded body -->
+  <div class="row-body">
+
+    <!-- About -->
+    {% if include.description %}
+    <section>
+      <h3>About</h3>
+      <p class="card-description">{{ include.description }}</p>
+    </section>
+    {% endif %}
+
+    <!-- Pull command -->
+    {% if include.ghcr_image and include.dockerhub_image %}
+    <section>
+      <h3>Pull command</h3>
+      <div class="pull-section"
+           data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
+           data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
+           data-default-tag="{% if include.versions[0].variants[0] %}{{ include.versions[0].variants[0].tag }}{% elsif include.variants[0] %}{{ include.variants[0].tag }}{% else %}{{ include.current_version }}{% endif %}">
+        <div class="pull-input-group">
+          <input type="text"
+                 class="pull-input"
+                 id="pull-{{ include.name }}"
+                 value="docker pull {{ include.ghcr_image }}"
+                 readonly
+                 aria-label="Docker pull command for {{ include.name }}">
+          <button class="copy-btn" type="button"
+                  aria-label="Copy pull command to clipboard">
+            <i class="ti ti-copy" aria-hidden="true"></i>
+          </button>
         </div>
       </div>
-      {% endfor %}
-    {% else %}
-      <!-- Single-version structure -->
-      <div class="variant-tags">
-        {% for variant in include.variants %}
-          <span class="variant-tag{% if forloop.first %} selected{% endif %}"
-                title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
-                data-tag="{{ variant.tag }}"
-                data-size-amd64="{{ variant.size_amd64 | default: '' }}"
-                data-size-arm64="{{ variant.size_arm64 | default: '' }}"
-                {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}
-                {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif %}
-                {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif %}
-                {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif %}
-                role="button"
-                tabindex="0"
-                aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
-                aria-label="Select variant {{ variant.tag }}{% if variant.is_default %} (default){% endif %}">
-            :{{ variant.tag }}
-            {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
-          </span>
-        {% endfor %}
-      </div>
+    </section>
     {% endif %}
-  </div>
-  {% endif %}
 
-  <!-- Docker Pull Command Section -->
-  {% if include.ghcr_image and include.dockerhub_image %}
-  <div class="pull-section"
-       data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
-       data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
-       data-default-tag="{% if include.versions[0].variants[0] %}{{ include.versions[0].variants[0].tag }}{% elsif include.variants[0] %}{{ include.variants[0].tag }}{% else %}{{ include.current_version }}{% endif %}">
-    <div class="pull-header">
-      <i class="ti ti-brand-docker" aria-hidden="true"></i>
-      <span>Pull command</span>
-    </div>
-    <div class="pull-input-group">
-      <input type="text"
-             class="pull-input"
-             id="pull-{{ include.name }}"
-             value="docker pull {{ include.ghcr_image }}"
-             readonly
-             aria-label="Docker pull command for {{ include.name }}">
-      <button class="copy-btn" type="button"
-              aria-label="Copy pull command to clipboard">
-        <i class="ti ti-copy" aria-hidden="true"></i>
-      </button>
-    </div>
-  </div>
-  {% endif %}
+    <!-- Variants -->
+    {% if include.versions or include.variants %}
+    <section class="row-body-variants">
+      <div class="variants-section">
+        <div class="variants-header">
+          <i class="ti ti-versions" aria-hidden="true"></i>
+          <span>Available variants</span>
+        </div>
+        {% if include.versions %}
+          <!-- Multi-version structure: group by version -->
+          {% for version in include.versions %}
+          <div class="version-group">
+            <div class="version-label">{{ version.base_tag | default: version.tag }}</div>
+            <div class="variant-tags">
+              {% for variant in version.variants %}
+                {%- comment -%}
+                  Versions-only containers synthesize a single variant with empty
+                  `name` (the version itself IS the canonical build). Render the
+                  tag with `display:none` so it stays invisible (the version-label
+                  identifies the build) while preserving its data-* attributes
+                  and `.selected` class — the trust-strip JS and detail-page
+                  container-detail.js both initialize from .variant-tag.selected
+                  and would lose data for the canonical build if the element were
+                  skipped entirely.
+                {%- endcomment -%}
+                {%- assign synthetic = false -%}
+                {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
+                <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
+                      {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
+                      title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
+                      data-tag="{{ variant.tag }}"
+                      data-size-amd64="{{ variant.size_amd64 | default: '' }}"
+                      data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                      {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}
+                      {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif %}
+                      {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif %}
+                      {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif %}
+                      role="button"
+                      tabindex="0"
+                      aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
+                      aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
+                  :{{ variant.name }}
+                  {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
+                </span>
+              {% endfor %}
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <!-- Single-version structure -->
+          <div class="variant-tags">
+            {% for variant in include.variants %}
+              <span class="variant-tag{% if forloop.first %} selected{% endif %}"
+                    title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
+                    data-tag="{{ variant.tag }}"
+                    data-size-amd64="{{ variant.size_amd64 | default: '' }}"
+                    data-size-arm64="{{ variant.size_arm64 | default: '' }}"
+                    {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif %}
+                    {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif %}
+                    {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif %}
+                    {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif %}
+                    role="button"
+                    tabindex="0"
+                    aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
+                    aria-label="Select variant {{ variant.tag }}{% if variant.is_default %} (default){% endif %}">
+                :{{ variant.tag }}
+                {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
+              </span>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
 
-  <!-- Quick Links -->
-  <nav class="card-links" aria-label="Container links">
-    <a href="{{ '/container/' | append: include.name | append: '/' | relative_url }}"
-       class="card-link" title="View Details">
-      <i class="ti ti-info-circle" aria-hidden="true"></i> Details
-    </a>
-    <a href="https://github.com/{{ include.github_username }}/docker-containers/tree/master/{{ include.name }}"
-       class="card-link" target="_blank" rel="noopener noreferrer" title="View Source (opens in new tab)">
-      <i class="ti ti-folder" aria-hidden="true"></i> Source
-    </a>
-    <a href="https://ghcr.io/{{ include.github_username }}/{{ include.name }}"
-       class="card-link" target="_blank" rel="noopener noreferrer" title="GHCR Package (opens in new tab)">
-      <i class="ti ti-package" aria-hidden="true"></i> GHCR
-    </a>
-    <a href="https://hub.docker.com/r/{{ include.dockerhub_username }}/{{ include.name }}"
-       class="card-link" target="_blank" rel="noopener noreferrer" title="Docker Hub (opens in new tab)">
-      <i class="ti ti-brand-docker" aria-hidden="true"></i> Hub
-    </a>
-  </nav>
-</article>
+    <!-- Footer links -->
+    <div class="body-footer">
+      <a href="{{ '/container/' | append: include.name | append: '/' | relative_url }}">
+        <i class="ti ti-eye" aria-hidden="true"></i> Detail page
+      </a>
+      <a href="{{ '/verify-images/' | relative_url }}">
+        <i class="ti ti-shield" aria-hidden="true"></i> Verify image
+      </a>
+      <a href="https://github.com/{{ include.github_username }}/docker-containers/tree/master/{{ include.name }}"
+         target="_blank" rel="noopener noreferrer">
+        <i class="ti ti-brand-github" aria-hidden="true"></i> Source
+      </a>
+      {%- if include.dependency_monitoring.enabled -%}
+      <a href="{{ include.upstream_monitor_url }}" rel="noopener" title="View the daily upstream-monitor workflow runs">
+        🔗 {{ include.dependency_monitoring.monitored }}/{{ include.dependency_monitoring.total }} deps tracked
+      </a>
+      {%- endif -%}
+    </div>
+
+  </div>
+</details>
