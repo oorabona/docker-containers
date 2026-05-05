@@ -165,8 +165,8 @@
                href="#security"
                title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
           {%- else -%}
-            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. -->
-            <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="#"></a>
+            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+            <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="#security"></a>
           {%- endif -%}
 
           {%- if default_variant.multi_arch_platforms -%}
@@ -176,8 +176,8 @@
                rel="noopener"
                title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " | upcase }}</a>
           {%- else -%}
-            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. -->
-            <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="#"></a>
+            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+            <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}" rel="noopener"></a>
           {%- endif -%}
 
           {%- if page.dependency_monitoring.enabled -%}
