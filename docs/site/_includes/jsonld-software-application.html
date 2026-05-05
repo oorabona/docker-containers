@@ -1,0 +1,38 @@
+{% comment %}
+  jsonld-software-application.html — JSON-LD SoftwareApplication schema for container detail pages.
+  Include from container-detail.html <head>, after seo-meta.html.
+  Reads: page.name, page.description, page.tagline, page.current_version, page.url,
+         page.github_username, page.pull_count,
+         site.github_username, site.title, site.url, site.baseurl.
+
+  SECURITY: <script type="application/ld+json"> is a data block (not executable JS).
+  CSP script-src does NOT apply to data blocks per CSP Level 3 / Chrome 96+.
+  No CSP change is required.
+{% endcomment %}
+{%- assign _pulls = page.pull_count | plus: 0 -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": {{ page.name | jsonify }},
+  "description": {{ page.description | default: page.tagline | default: site.description | strip_html | normalize_whitespace | truncate: 250 | jsonify }},
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux",
+  "softwareVersion": {{ page.current_version | jsonify }},
+  "url": {{ page.url | absolute_url | jsonify }},
+  "downloadUrl": "https://github.com/{{ page.github_username | default: 'oorabona' }}/docker-containers/pkgs/container/{{ page.name }}",
+  "license": {{ page.github_username | default: site.github_username | prepend: "https://github.com/" | append: "/docker-containers/blob/master/LICENSE" | jsonify }},
+  "publisher": {
+    "@type": "Organization",
+    "name": {{ site.title | jsonify }},
+    "url": {{ site.baseurl | prepend: site.url | jsonify }}
+  }{% if _pulls > 0 %},
+  "interactionStatistic": [
+    {
+      "@type": "InteractionCounter",
+      "interactionType": {"@type": "DownloadAction"},
+      "userInteractionCount": {{ _pulls }}
+    }
+  ]{% endif %}
+}
+</script>

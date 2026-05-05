@@ -1,0 +1,61 @@
+{% comment %}
+  jsonld-howto-verify.html — JSON-LD HowTo schema for the verify-images guide.
+  Include from verify-images.md body (Jekyll processes Liquid in markdown by default).
+  Steps mirror the actual sections in verify-images.md — update both files together.
+
+  SECURITY: <script type="application/ld+json"> is a data block (not executable JS).
+  CSP script-src does NOT apply to data blocks per CSP Level 3 / Chrome 96+.
+{% endcomment %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Verify Container Image SBOM and Scan Provenance",
+  "description": "Step-by-step verification of SBOM attestation, Trivy scan results, multi-arch manifests, and dependency monitoring for docker-containers images.",
+  "totalTime": "PT15M",
+  "url": {{ page.url | absolute_url | jsonify }},
+  "supply": [
+    {"@type": "HowToSupply", "name": "Image name and tag from the dashboard detail page"},
+    {"@type": "HowToSupply", "name": "Network access to GitHub Container Registry (ghcr.io)"},
+    {"@type": "HowToSupply", "name": "Authenticated GitHub session (gh auth login)"}
+  ],
+  "tool": [
+    {"@type": "HowToTool", "name": "gh (GitHub CLI)"},
+    {"@type": "HowToTool", "name": "cosign (Sigstore CLI, optional)"},
+    {"@type": "HowToTool", "name": "docker (for manifest inspection)"},
+    {"@type": "HowToTool", "name": "Trivy (Aqua Security CLI, optional)"}
+  ],
+  "step": [
+    {
+      "@type": "HowToStep",
+      "position": 1,
+      "name": "Verify the SBOM attestation",
+      "text": "Run: gh attestation verify oci://ghcr.io/oorabona/<container>:<tag> --owner oorabona. The SBOM badge on each container detail page opens the public attestation viewer directly — no login required. The viewer shows the SBOM payload, Sigstore bundle, and signing certificate chain."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 2,
+      "name": "Read Trivy scan results",
+      "text": "Query findings via: gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category}'. Filter to a specific variant by matching the category field (e.g. container-postgres-18-alpine-linux/amd64). Trivy runs in advisory mode — findings are surfaced but do not block builds."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 3,
+      "name": "Inspect multi-arch manifests",
+      "text": "Run: docker manifest inspect ghcr.io/oorabona/<container>:<tag>. Each entry in the manifests array shows platform.architecture. Multi-arch images list both amd64 and arm64; single-arch images list one. The architecture badge on each card reflects this inspection at build time."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 4,
+      "name": "Audit dependency monitoring",
+      "text": "Review workflow run history at https://github.com/oorabona/docker-containers/actions/workflows/upstream-monitor.yaml. Each container's config.yaml declares dependency_sources. When a new upstream version is available, the workflow opens an automatic pull request with the version bump."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 5,
+      "name": "Reproduce the build locally",
+      "text": "Clone the repo and run: ./make build <container> [version]. BuildKit must be enabled (DOCKER_BUILDKIT=1 or Docker 23+). The ./make entry point accepts the same arguments as the CI pipeline. (the build itself runs 5-30 minutes depending on container; the command above starts it.)"
+    }
+  ]
+}
+</script>
