@@ -66,8 +66,17 @@
       const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
-      el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
+      // Compact label on dashboard cards (narrow width); full label on the
+      // detail-page badge. Mirrors the Liquid initial render so a variant
+      // change does not visually swap to a longer string mid-flight.
+      const isCardSurface = !!this.closest('.container-card');
+      if (isCardSurface) {
+        el.textContent = '🛡 TRIVY: ' + critical;
+        el.title = critical + ' CRITICAL CVE(s) · scanned ' + date + ' · advisory mode (does not block builds)';
+      } else {
+        el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
+        el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
+      }
       el.style.display = '';
       el.removeAttribute('aria-hidden');
     }

@@ -101,11 +101,17 @@
       {%- if default_variant.trivy_summary.counts.critical > 0 -%}{%- assign sev = "critical" -%}
       {%- elsif default_variant.trivy_summary.counts.high > 0 -%}{%- assign sev = "high" -%}
       {%- endif -%}
+      {%- comment -%}
+        Card surface: compact label (icon + count). Full context — severity, scan date,
+        advisory mode caveat — lives in the title tooltip and on the detail page badge,
+        avoiding overflow at narrow card widths. trust-strip.js mirrors this compact
+        format on variant-change events when the parent is a container card.
+      {%- endcomment -%}
       <a class="trust-badge trust-badge--trivy"
          data-trust="trivy"
          data-severity="{{ sev }}"
          href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"
-         title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
+         title="{{ default_variant.trivy_summary.counts.critical }} CRITICAL CVE(s) · scanned {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }} · advisory mode (does not block builds)">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }}</a>
     {%- else -%}
       <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
       <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="{{ '/container/' | append: include.name | append: '/' | relative_url }}#security"></a>
