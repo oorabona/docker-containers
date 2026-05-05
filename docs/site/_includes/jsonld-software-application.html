@@ -22,6 +22,11 @@
   "url": {{ page.url | absolute_url | jsonify }},
   "downloadUrl": "https://github.com/{{ page.github_username | default: 'oorabona' }}/docker-containers/pkgs/container/{{ page.name }}",
   "license": {{ page.github_username | default: site.github_username | prepend: "https://github.com/" | append: "/docker-containers/blob/master/LICENSE" | jsonify }},
+  "author": {
+    "@type": "Person",
+    "name": {{ site.author.name | default: "Olivier Orabona" | jsonify }},
+    "url": {{ site.author.url | default: "https://github.com/oorabona" | jsonify }}
+  },
   "publisher": {
     "@type": "Organization",
     "name": {{ site.title | jsonify }},

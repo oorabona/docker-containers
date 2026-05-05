@@ -30,6 +30,11 @@ show_excerpts: true
 header_pages:
   - index.md
 
+# Author / maintainer identity
+author:
+  name: Olivier Orabona
+  url: https://github.com/oorabona
+
 # Footer
 github_username: oorabona
 
