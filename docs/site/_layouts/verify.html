@@ -1,0 +1,54 @@
+---
+layout: page
+---
+{%- comment -%}
+  verify.html — chains layout: page, wraps content in tab + sticky-TOC structure.
+  Reference view is the default (no-JS fallback = Reference, tabs visible but inert).
+  Walkthrough view is toggled by code-copy.js reading ?view=walkthrough.
+{%- endcomment -%}
+
+<div class="verify-page">
+
+  {%- comment -%} Tab switcher — sticky under site-nav {%- endcomment -%}
+  <nav class="verify-tabs" aria-label="Verification documentation views">
+    <button id="tab-reference" type="button" data-view="reference">Reference</button>
+    <button id="tab-walkthrough" type="button" data-view="walkthrough">Walkthrough</button>
+  </nav>
+
+  <div class="verify-layout">
+
+    <div class="verify-main">
+
+      {%- comment -%} Reference panel — receives the page body via {{ content }} {%- endcomment -%}
+      <section id="view-reference" data-view="reference">
+        {{ content }}
+      </section>
+
+      {%- comment -%} Walkthrough panel — 4 numbered steps + FAQ {%- endcomment -%}
+      {%- comment -%} No hidden attr server-side: progressive enhancement — JS adds role="tabpanel",
+          aria-labelledby, and [hidden] on init. With JS off, both panels are visible. {%- endcomment -%}
+      <section id="view-walkthrough" data-view="walkthrough">
+        {% include components/verify-walkthrough.html %}
+      </section>
+
+    </div>
+
+    {%- comment -%} Sticky right-side TOC (Reference view only; collapses < 1024px) {%- endcomment -%}
+    <aside class="verify-toc-sticky" aria-label="Reference sections">
+      <h4 class="verify-toc-sticky__heading">On this page</h4>
+      <ul class="verify-toc-sticky__list">
+        <li><a href="#why-this-page-exists">Why this page</a></li>
+        <li><a href="#verifying-the-sbom-attestation">SBOM attestation</a></li>
+        <li><a href="#reading-trivy-scan-results">Trivy scan results</a></li>
+        <li><a href="#inspecting-multi-arch-manifests">Multi-arch manifests</a></li>
+        <li><a href="#auditing-dependency-monitoring">Dependency monitoring</a></li>
+        <li><a href="#reproducing-builds-locally">Reproduce builds locally</a></li>
+        <li><a href="#frequently-asked-questions">FAQ</a></li>
+      </ul>
+    </aside>
+
+  </div>
+
+</div>
+
+<script src="{{ '/assets/js/code-copy.js' | relative_url }}" defer></script>

@@ -1,8 +1,9 @@
 ---
-layout: page
+layout: verify
 title: How we verify images
 description: Reproduce every trust signal yourself — SBOM, Trivy, multi-arch, dependency monitoring.
 permalink: /verify-images/
+nav_active: verify
 ---
 
 ## Why this page exists
@@ -13,9 +14,13 @@ The trust badges on each container card link here so anyone can replicate every 
 
 Each container's SBOM is signed via Sigstore using `actions/attest-sbom`. The attestation is anchored to the image digest and recorded in the GitHub attestations API, which is publicly accessible without authentication. To verify locally using the GitHub CLI:
 
-```bash
-gh attestation verify oci://ghcr.io/oorabona/<container>:<tag> --owner oorabona
-```
+<div class="code-block" data-copy="gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="prompt">$</span> gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona</code></pre>
+</div>
 
 The SBOM badge in each container card opens the public attestation viewer directly in your browser — no login required. For example, a direct URL looks like `https://github.com/oorabona/docker-containers/attestations/<id>`. The viewer shows the SBOM payload, the Sigstore bundle, and the signing certificate chain.
 
@@ -25,19 +30,27 @@ The SBOM badge in each container card opens the public attestation viewer direct
 
 Trivy scans run on every build in advisory mode: findings do not block the build, but they are surfaced. Results are uploaded to GitHub via `github/codeql-action/upload-sarif`, which populates the Code Scanning API. Note that the Security tab UI in GitHub requires authentication even for public repos — that is why each container's detail page embeds the scan summary directly. To query findings programmatically with any authenticated GitHub session (`gh auth login` is enough; no special scope is required):
 
-```bash
-gh api repos/oorabona/docker-containers/code-scanning/alerts \
+<div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts \
   --paginate \
-  -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'
-```
+  -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
+</div>
 
 To filter findings to a single container variant, match on the `category` field, which encodes the container name and platform:
 
-```bash
-# Replace the category value with the variant you want to inspect
-gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate \
-  -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'
-```
+<div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | select(.most_recent_instance.category == &quot;container-postgres-18-alpine-linux/amd64&quot;)'">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="comment"># Replace the category value with the variant you want to inspect</span>
+<span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate \
+  -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'</code></pre>
+</div>
 
 ### Why the dashboard only highlights CRITICAL counts
 
@@ -54,9 +67,13 @@ If you operate this catalog yourself and prefer a different threshold, the SARIF
 
 Multi-arch images publish a manifest list that references per-platform image manifests. To see which CPU architectures are present for any tag:
 
-```bash
-docker manifest inspect ghcr.io/oorabona/<container>:<tag>
-```
+<div class="code-block" data-copy="docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="prompt">$</span> docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;</code></pre>
+</div>
 
 Look at the `manifests` array in the output — each entry's `platform.architecture` field reveals the published architectures. Multi-arch images list both `amd64` and `arm64`; single-arch images list one. The architecture badge on each card reflects this inspection at build time.
 
@@ -73,11 +90,15 @@ Nothing in this pipeline is opaque: the `version.sh` script in each container di
 
 Every container build is driven by shell scripts with no opaque CI steps. To reproduce a build on your own machine:
 
-```bash
-git clone https://github.com/oorabona/docker-containers.git
-cd docker-containers
-./make build <container> [version]
-```
+<div class="code-block" data-copy="git clone https://github.com/oorabona/docker-containers.git&#10;cd docker-containers&#10;./make build &lt;container&gt; [version]">
+  <div class="code-block__header">
+    <span class="code-block__lang">bash</span>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
+  </div>
+  <pre><code><span class="prompt">$</span> git clone https://github.com/oorabona/docker-containers.git
+<span class="prompt">$</span> cd docker-containers
+<span class="prompt">$</span> ./make build &lt;container&gt; [version]</code></pre>
+</div>
 
 BuildKit must be enabled (`DOCKER_BUILDKIT=1` or Docker 23+). The `./make` entry point accepts the same arguments as the CI pipeline. See each container's `README.md` and the top-level `docs/` directory for full build documentation, including multi-variant matrix builds, extension layers, and SBOM generation.
 
@@ -95,7 +116,7 @@ The badge has two states. **ATTESTED** means both `attestation_url` and `attesta
 
 Each successful build runs `anchore/sbom-action` to generate an SPDX JSON SBOM, then `actions/attest-sbom` signs it via Sigstore (keyless, OIDC-based) and uploads the attestation to GHCR. You can verify with `gh attestation verify oci://ghcr.io/oorabona/<image>:<tag> --owner oorabona`.
 
-### Can I trust a container that shows "📋 SBOM PENDING"?
+### Can I trust a container that shows "SBOM PENDING"?
 
 It is not a security flag. PENDING means the build pipeline has not yet re-run since the image was published, or the attestation pipeline encountered a transient failure that will be retried. Pull by digest from a previous attested build if you need verifiable SBOM provenance immediately.
 
