@@ -467,7 +467,7 @@
     }
 
     .card-badge {
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       font-size: 0.75rem;
       padding: 0.25rem 0.625rem;
       border-radius: 6px;
@@ -530,7 +530,7 @@
 
     /* Build lineage digest in card */
     .card-lineage-digest {
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       font-size: 0.6875rem;
       opacity: 0.8;
     }
@@ -560,7 +560,7 @@
       display: inline-flex;
       align-items: center;
       gap: 0.25rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       font-size: 0.6875rem;
       padding: 0.5rem 0.625rem;
       min-height: 44px;
@@ -658,7 +658,7 @@
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--font-family-mono);
       font-size: 0.75rem;
       color: var(--text-secondary);
     }
@@ -985,21 +985,22 @@
     }
 
     .status-pill-info {
-      background: rgba(59, 130, 246, 0.14);
+      background: var(--color-feedback-info-bg);
       border-color: rgba(59, 130, 246, 0.32);
-      color: var(--accent-blue);
+      color: var(--color-feedback-info-fg);
     }
 
     .status-pill-warn {
-      background: rgba(245, 158, 11, 0.16);
+      background: var(--color-feedback-warning-bg);
       border-color: rgba(245, 158, 11, 0.34);
-      color: var(--accent-yellow);
+      color: var(--color-feedback-warning-fg);
     }
 
     .status-pill-err {
-      background: rgba(236, 72, 153, 0.14);
-      border-color: rgba(236, 72, 153, 0.32);
-      color: var(--accent-pink);
+      /* fully migrated to error tokens; no border token yet — darker alpha of error-bg */
+      background:   var(--color-feedback-error-bg);
+      border-color: rgba(239, 68, 68, 0.32);
+      color:        var(--color-feedback-error-fg);
     }
 
 /* ============================================================
@@ -1025,7 +1026,8 @@
     }
 
     .dashboard-hero-accent {
-      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      /* info-fg (blue-400) → verify-fg (violet-400): Phase C trust-domain palette */
+      background: linear-gradient(135deg, var(--color-feedback-info-fg), var(--color-trust-verify-fg));
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
