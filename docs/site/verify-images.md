@@ -17,7 +17,7 @@ Each container's SBOM is signed via Sigstore using `actions/attest-sbom`. The at
 <div class="code-block" data-copy="gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
-    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="prompt">$</span> gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona</code></pre>
 </div>
@@ -33,7 +33,7 @@ Trivy scans run on every build in advisory mode: findings do not block the build
 <div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
-    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts \
   --paginate \
@@ -45,7 +45,7 @@ To filter findings to a single container variant, match on the `category` field,
 <div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | select(.most_recent_instance.category == &quot;container-postgres-18-alpine-linux/amd64&quot;)'">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
-    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="prompt comment">#</span> Replace the category value with the variant you want to inspect
 <span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate \
@@ -70,7 +70,7 @@ Multi-arch images publish a manifest list that references per-platform image man
 <div class="code-block" data-copy="docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
-    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="prompt">$</span> docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;</code></pre>
 </div>
@@ -93,7 +93,7 @@ Every container build is driven by shell scripts with no opaque CI steps. To rep
 <div class="code-block" data-copy="git clone https://github.com/oorabona/docker-containers.git&#10;cd docker-containers&#10;./make build &lt;container&gt; [version]">
   <div class="code-block__header">
     <span class="code-block__lang">bash</span>
-    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+    <button class="code-block__copy" type="button" data-copy-button aria-label="Copy command"><i class="ti ti-copy" aria-hidden="true"></i><span class="copy-label">Copy</span></button>
   </div>
   <pre><code><span class="prompt">$</span> git clone https://github.com/oorabona/docker-containers.git
 <span class="prompt">$</span> cd docker-containers

@@ -120,18 +120,31 @@
     tab.addEventListener('click', function () { applyView(tab.dataset.view, true); });
   });
 
-  // Left/Right arrow keys navigate the tablist (ARIA 1.2 composite widget pattern)
+  // Keyboard nav: manual activation pattern (WAI-ARIA 1.2 §3.5 tablist, manual variant).
+  // Arrow/Home/End ONLY move focus + update roving tabindex. They do NOT activate the
+  // tab (no applyView, no pushState). Activation fires only via click or Enter/Space
+  // (which natively trigger the click handler on the focused button element).
+  function moveFocusToTab(target) {
+    Array.from(tabs).forEach(function (t) {
+      t.setAttribute('tabindex', t === target ? '0' : '-1');
+    });
+    target.focus();
+  }
+
   tabs.forEach(function (tab, i) {
     tab.addEventListener('keydown', function (e) {
-      var n = tabs.length;
-      var next = -1;
-      if (e.key === 'ArrowRight') next = (i + 1) % n;
-      else if (e.key === 'ArrowLeft') next = (i - 1 + n) % n;
-      if (next !== -1) {
-        tabs[next].focus();
-        applyView(tabs[next].dataset.view, true);
-        e.preventDefault();
+      var tabArr = Array.from(tabs);
+      var n = tabArr.length;
+      var next = null;
+      switch (e.key) {
+        case 'ArrowRight': next = tabArr[(i + 1) % n]; break;
+        case 'ArrowLeft':  next = tabArr[(i - 1 + n) % n]; break;
+        case 'Home':       next = tabArr[0]; break;
+        case 'End':        next = tabArr[n - 1]; break;
+        default: return; // let Enter/Space fall through to native click handler
       }
+      e.preventDefault();
+      moveFocusToTab(next);
     });
   });
 
@@ -142,6 +155,9 @@
     applyView(v, false);
   });
 
+  // Apply correct initial view (and roving tabindex) on page load.
+  // applyView() always sets tabindex=0 on the active tab and -1 on others,
+  // correcting the no-JS fallback where both buttons have tabindex="0".
   var init = new URLSearchParams(window.location.search).get('view');
-  if (init === 'walkthrough') applyView('walkthrough', false);
+  applyView(init === 'walkthrough' ? 'walkthrough' : 'reference', false);
 })();
