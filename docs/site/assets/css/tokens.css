@@ -344,7 +344,7 @@
   --color-severity-grid-border: rgba(255, 255, 255, 0.06);
 
   /* --- Nav chrome --- */
-  --color-nav-bg:               rgba(15, 23, 42, 0.55);     /* navy-950 alpha */
+  --color-nav-bg:               rgba(15, 23, 42, 0.85);     /* navy-950 alpha */
   --color-nav-border:           rgba(255, 255, 255, 0.08);
   --color-nav-link-hover-bg:    rgba(255, 255, 255, 0.04);
   --color-nav-link-active-bg:   rgba(139, 92, 246, 0.12);   /* violet tint */

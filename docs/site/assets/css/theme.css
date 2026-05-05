@@ -323,13 +323,15 @@ body {
   /* F7: no page-load animation */
 }
 
-/* Theme toggle — min 44px for WCAG 2.5.8 touch target */
+/* Theme toggle — 32px keeps the navbar compact while staying above the
+   WCAG 2.5.8 AA minimum touch target of 24x24 (44x44 is the AAA target,
+   reserved for primary action surfaces). */
 .theme-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-md);
   background: var(--glass-bg);
   color: var(--color-text-primary);
@@ -447,8 +449,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 50;
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   background: var(--color-nav-bg);
   border-bottom: 1px solid var(--color-nav-border);
 }
@@ -462,7 +464,7 @@ body {
 .site-nav-inner {
   max-width: 1280px; /* F9: 1100→1280px matches .container (no --layout-max-width token yet; TODO PR4 extract) */
   margin: 0 auto;
-  padding: 0.85rem 1.25rem;
+  padding: 0.85rem 1.5rem;
   display: flex;
   align-items: center;
   gap: 1.5rem;
