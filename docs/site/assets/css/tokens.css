@@ -201,6 +201,164 @@
   --color-trust-verify-bg:       transparent;
   --color-trust-verify-border:   rgba(34, 211, 238, 0.50);
   --color-trust-verify-hover-bg: rgba(34, 211, 238, 0.10);
+
+  /* Trust-badge hover states (bg + border intensify on hover) */
+  --color-trust-sbom-bg-hover:        rgba(20, 184, 166, 0.25);   /* teal-500 alpha ×1.67 */
+  --color-trust-sbom-border-hover:    rgba(45, 212, 191, 0.55);
+  --color-trust-multiarch-bg-hover:   rgba(139, 92, 246, 0.22);   /* violet-500 alpha ×1.83 */
+  --color-trust-multiarch-border-hover: rgba(167, 139, 250, 0.50);
+
+  /* Deps badge (info/neutral — blue hue) */
+  --color-trust-deps-fg:          var(--color-blue-400);
+  --color-trust-deps-bg:          rgba(59, 130, 246, 0.08);   /* blue-500 alpha low */
+  --color-trust-deps-border:      rgba(59, 130, 246, 0.20);
+  --color-trust-deps-bg-hover:    rgba(59, 130, 246, 0.15);
+  --color-trust-deps-border-hover: rgba(59, 130, 246, 0.35);
+
+  /* Trivy badge border + hover (clean / warn / critical states) */
+  --color-trust-trivy-clean-border:        rgba(16, 185, 129, 0.28);   /* green-500 alpha */
+  --color-trust-trivy-clean-bg-hover:      rgba(16, 185, 129, 0.20);
+  --color-trust-trivy-clean-border-hover:  rgba(16, 185, 129, 0.45);
+  --color-trust-trivy-critical-bg:         rgba(239, 68, 68, 0.14);    /* red-500 alpha */
+  --color-trust-trivy-critical-border:     rgba(239, 68, 68, 0.35);
+  --color-trust-trivy-critical-bg-hover:   rgba(239, 68, 68, 0.22);
+  --color-trust-trivy-critical-border-hover: rgba(239, 68, 68, 0.50);
+  --color-trust-trivy-warn-border:         rgba(245, 158, 11, 0.32);   /* amber-500 alpha */
+  --color-trust-trivy-warn-bg-hover:       rgba(245, 158, 11, 0.22);
+  --color-trust-trivy-warn-border-hover:   rgba(245, 158, 11, 0.48);
+}
+
+/* Component-level semantic tokens (Tier 2 — consumed by theme.css + container-detail.css)
+   Groups: variant-tag / sbom / changelog / dep-health / detail-badge / readme / nav / layout */
+:root,
+[data-theme="dark"] {
+  /* --- Variant tag chips (violet-toned, identity: current variants of a container) --- */
+  --color-variant-tag-bg:          rgba(139, 92, 246, 0.15);   /* violet-500 alpha  */
+  --color-variant-tag-border:      rgba(139, 92, 246, 0.25);
+  --color-variant-tag-fg:          var(--color-violet-400);    /* #A78BFA */
+  --color-variant-tag-bg-hover:    rgba(139, 92, 246, 0.25);
+  --color-variant-tag-selected-bg: rgba(139, 92, 246, 0.30);
+  --color-variant-tag-selected-shadow: rgba(139, 92, 246, 0.20);
+  /* default badge within variant-tag (green = "this is the default") */
+  --color-variant-badge-default-bg:  rgba(16, 185, 129, 0.30); /* green-500 alpha */
+  --color-variant-badge-default-fg:  var(--color-green-400);
+
+  /* --- SBOM total count badge (blue/info) --- */
+  --color-sbom-total-badge-fg:     var(--color-blue-400);      /* #60A5FA */
+  --color-sbom-total-badge-bg:     rgba(59, 130, 246, 0.20);
+  --color-sbom-total-badge-border: rgba(59, 130, 246, 0.30);
+
+  /* --- SBOM type chips (violet — same hue as variant-tag, different semantic role) --- */
+  --color-sbom-chip-fg:            var(--color-violet-400);
+  --color-sbom-chip-bg:            rgba(139, 92, 246, 0.12);
+  --color-sbom-chip-border:        rgba(139, 92, 246, 0.20);
+  --color-sbom-chip-bg-hover:      rgba(139, 92, 246, 0.25);
+  --color-sbom-chip-border-hover:  rgba(139, 92, 246, 0.40);
+  --color-sbom-chip-active-bg:     rgba(139, 92, 246, 0.30);
+  --color-sbom-chip-active-border: rgba(139, 92, 246, 0.50);
+  --color-sbom-chip-active-shadow: rgba(139, 92, 246, 0.20);
+
+  /* --- SBOM package panel + row stripe --- */
+  --color-sbom-panel-bg:           rgba(0, 0, 0, 0.15);
+  --color-sbom-item-stripe-bg:     rgba(255, 255, 255, 0.03);
+
+  /* --- Changelog summary badge (amber — "N changes in this version") --- */
+  --color-changelog-badge-fg:      var(--color-amber-400);     /* #FBBF24 */
+  --color-changelog-badge-bg:      rgba(245, 158, 11, 0.20);
+  --color-changelog-badge-border:  rgba(245, 158, 11, 0.30);
+
+  /* --- Changelog / dep-change type badges (state: added/updated/removed/major/minor/patch) --- */
+  --color-badge-added-fg:          var(--color-green-400);     /* #4ADE80 — dark fg */
+  --color-badge-added-bg:          rgba(16, 185, 129, 0.20);
+  --color-badge-added-border:      rgba(16, 185, 129, 0.30);
+  --color-badge-removed-fg:        var(--color-red-400);       /* #F87171 */
+  --color-badge-removed-bg:        rgba(239, 68, 68, 0.20);
+  --color-badge-removed-border:    rgba(239, 68, 68, 0.30);
+  --color-badge-updated-fg:        var(--color-blue-400);      /* #60A5FA */
+  --color-badge-updated-bg:        rgba(59, 130, 246, 0.20);
+  --color-badge-updated-border:    rgba(59, 130, 246, 0.30);
+  /* major = danger, minor = warn, patch = success */
+  --color-badge-major-fg:          var(--color-red-400);
+  --color-badge-major-bg:          rgba(239, 68, 68, 0.20);
+  --color-badge-major-border:      rgba(239, 68, 68, 0.30);
+  --color-badge-minor-fg:          var(--color-amber-400);
+  --color-badge-minor-bg:          rgba(245, 158, 11, 0.20);
+  --color-badge-minor-border:      rgba(245, 158, 11, 0.30);
+  --color-badge-patch-fg:          var(--color-green-400);
+  --color-badge-patch-bg:          rgba(16, 185, 129, 0.20);
+  --color-badge-patch-border:      rgba(16, 185, 129, 0.30);
+
+  /* --- Dep health summary badges (reuse feedback tints but named for the role) --- */
+  --color-dep-badge-ok-fg:          var(--color-green-400);
+  --color-dep-badge-ok-bg:          rgba(16, 185, 129, 0.20);
+  --color-dep-badge-ok-border:      rgba(16, 185, 129, 0.30);
+  --color-dep-badge-warning-fg:     var(--color-amber-400);
+  --color-dep-badge-warning-bg:     rgba(245, 158, 11, 0.20);
+  --color-dep-badge-warning-border: rgba(245, 158, 11, 0.30);
+  --color-dep-badge-neutral-fg:     rgba(255, 255, 255, 0.60); /* no primitive — structural muted */
+  --color-dep-badge-neutral-bg:     rgba(107, 114, 128, 0.20);
+  --color-dep-badge-neutral-border: rgba(107, 114, 128, 0.30);
+
+  /* --- Dep health bar (progress bar track + fill gradients) --- */
+  --color-dep-bar-track-bg:         rgba(255, 255, 255, 0.08);
+  --color-dep-bar-fill-start:        var(--color-green-400);  /* #4ADE80 */
+  --color-dep-bar-fill-end:          var(--color-green-500);  /* #10B981 */
+  --color-dep-bar-warn-start:        var(--color-amber-500);  /* #F59E0B */
+  --color-dep-bar-warn-end:          var(--color-amber-600);  /* #D97706 */
+
+  /* --- Dep version latest / up-to-date items --- */
+  --color-dep-version-latest-fg:    var(--color-green-400);   /* #4ADE80 */
+  --color-dep-uptodate-item-bg:     rgba(16, 185, 129, 0.08);
+  --color-dep-uptodate-item-border: rgba(16, 185, 129, 0.15);
+
+  /* --- Detail badge (zone-1 identity, green = "available") --- */
+  --color-detail-badge-fg:      var(--color-green-400);
+  --color-detail-badge-bg:      rgba(16, 185, 129, 0.20);
+  --color-detail-badge-border:  rgba(16, 185, 129, 0.30);
+
+  /* --- Readme inline code (pink accent on dark, distinguishes code from prose) --- */
+  --color-readme-code-bg:   rgba(0, 0, 0, 0.30);
+  --color-readme-code-fg:   #f472b6;               /* pink-400 — decorative only, no a11y claim */
+  --color-readme-pre-bg:    rgba(0, 0, 0, 0.30);
+
+  /* --- Lineage items (faint raised bg) --- */
+  --color-lineage-item-bg:   rgba(255, 255, 255, 0.05);
+
+  /* --- Table row stripe (subtle alternating row bg) --- */
+  --color-table-row-even-bg:  rgba(255, 255, 255, 0.02);
+  --color-table-row-odd-bg:   rgba(255, 255, 255, 0.03);   /* sbom-package-item */
+  --color-table-border:       rgba(255, 255, 255, 0.04);
+
+  /* --- Variant dep notification badge (amber, high-visibility — not for text) --- */
+  --color-variant-dep-badge-bg: rgba(245, 158, 11, 0.90);  /* opaque amber for floating notification dot */
+
+  /* --- Pull section toggle + input --- */
+  --color-registry-toggle-bg:  rgba(0, 0, 0, 0.20);
+  --color-pull-input-bg:       rgba(0, 0, 0, 0.20);
+  --color-copy-btn-bg:         rgba(255, 255, 255, 0.10);
+  --color-copy-btn-bg-hover:   rgba(255, 255, 255, 0.20);
+  --color-copy-btn-copied-bg:  rgba(16, 185, 129, 0.20);
+
+  /* --- Severity grid (security scan, 5-column) --- */
+  --color-severity-grid-bg:     rgba(255, 255, 255, 0.03);
+  --color-severity-grid-border: rgba(255, 255, 255, 0.06);
+
+  /* --- Nav chrome --- */
+  --color-nav-bg:               rgba(15, 23, 42, 0.55);     /* navy-950 alpha */
+  --color-nav-border:           rgba(255, 255, 255, 0.08);
+  --color-nav-link-hover-bg:    rgba(255, 255, 255, 0.04);
+  --color-nav-link-active-bg:   rgba(139, 92, 246, 0.12);   /* violet tint */
+
+  /* --- .btn:hover / generic glass-surface hover --- */
+  --color-btn-hover-bg:         rgba(255, 255, 255, 0.20);
+  --color-btn-hover-shadow:     rgba(0, 0, 0, 0.20);
+
+  /* --- Disclosure summary hover (explore zone) --- */
+  --color-disclosure-hover-bg:  rgba(255, 255, 255, 0.04);
+
+  /* --- page-content inline code (standalone pages, not readme) --- */
+  --color-page-code-bg:   rgba(255, 255, 255, 0.08);
+  --color-page-pre-bg:    rgba(0, 0, 0, 0.30);
 }
 
 /* Spacing semantic aliases */
@@ -269,6 +427,140 @@
   --color-feedback-error-fg:   var(--color-red-700);     /* #B91C1C — 6.47:1 on white (was red-400 2.77:1 FAIL) */
   --color-feedback-info-fg:    var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white (was blue-400 2.54:1 FAIL) */
   --color-feedback-success-bg: rgba(4, 120, 87, 0.10);  /* green-700 alpha — tinted on white surfaces */
+
+  /* Trust badge hover — same mechanism, slightly lower alpha for bright surfaces */
+  --color-trust-sbom-bg-hover:          rgba(15, 118, 110, 0.18);  /* teal-700 alpha */
+  --color-trust-sbom-border-hover:      rgba(15, 118, 110, 0.40);
+  --color-trust-multiarch-bg-hover:     rgba(109, 40, 217, 0.16);  /* violet-700 alpha */
+  --color-trust-multiarch-border-hover: rgba(109, 40, 217, 0.40);
+  --color-trust-deps-fg:                var(--color-blue-700);     /* #1D4ED8 — 6.70:1 on white */
+  --color-trust-deps-bg:                rgba(29, 78, 216, 0.08);
+  --color-trust-deps-border:            rgba(29, 78, 216, 0.20);
+  --color-trust-deps-bg-hover:          rgba(29, 78, 216, 0.14);
+  --color-trust-deps-border-hover:      rgba(29, 78, 216, 0.35);
+  --color-trust-trivy-clean-bg-hover:   rgba(4, 120, 87, 0.14);   /* green-700 alpha */
+  --color-trust-trivy-clean-border:     rgba(4, 120, 87, 0.28);
+  --color-trust-trivy-clean-border-hover: rgba(4, 120, 87, 0.45);
+  --color-trust-trivy-critical-bg:      rgba(185, 28, 28, 0.12);  /* red-700 alpha */
+  --color-trust-trivy-critical-border:  rgba(185, 28, 28, 0.35);
+  --color-trust-trivy-critical-bg-hover:  rgba(185, 28, 28, 0.20);
+  --color-trust-trivy-critical-border-hover: rgba(185, 28, 28, 0.50);
+  --color-trust-trivy-warn-border:      rgba(180, 83, 9, 0.32);   /* amber-700 alpha */
+  --color-trust-trivy-warn-bg-hover:    rgba(180, 83, 9, 0.18);
+  --color-trust-trivy-warn-border-hover: rgba(180, 83, 9, 0.48);
+
+  /* Component tokens — light overrides (WCAG AA verified on #FFFFFF) */
+
+  /* Variant tags: violet-700 on white — 7.10:1 (AAA) */
+  --color-variant-tag-fg:           var(--color-violet-700);   /* #6D28D9 — 7.10:1 on white */
+  --color-variant-tag-bg:           rgba(109, 40, 217, 0.10);
+  --color-variant-tag-border:       rgba(109, 40, 217, 0.25);
+  --color-variant-tag-bg-hover:     rgba(109, 40, 217, 0.18);
+  --color-variant-tag-selected-bg:  rgba(59, 130, 246, 0.14);  /* blue on light-selected */
+  --color-variant-tag-selected-shadow: rgba(59, 130, 246, 0.18);
+  --color-variant-badge-default-bg:  rgba(4, 120, 87, 0.14);   /* green-700 alpha on white */
+  --color-variant-badge-default-fg:  var(--color-green-700);
+
+  /* SBOM badges: violet-700 + blue-700 on white */
+  --color-sbom-total-badge-fg:       var(--color-blue-700);    /* #1D4ED8 — 6.70:1 on white */
+  --color-sbom-total-badge-bg:       rgba(29, 78, 216, 0.12);
+  --color-sbom-total-badge-border:   rgba(29, 78, 216, 0.30);
+  --color-sbom-chip-fg:              var(--color-violet-700);  /* #6D28D9 — 7.10:1 on white */
+  --color-sbom-chip-bg:              rgba(109, 40, 217, 0.08);
+  --color-sbom-chip-border:          rgba(109, 40, 217, 0.20);
+  --color-sbom-chip-bg-hover:        rgba(109, 40, 217, 0.15);
+  --color-sbom-chip-active-bg:       rgba(109, 40, 217, 0.18);
+  --color-sbom-chip-active-shadow:   rgba(109, 40, 217, 0.10);
+  --color-sbom-panel-bg:             rgba(0, 0, 0, 0.03);
+  --color-sbom-item-stripe-bg:       rgba(0, 0, 0, 0.03);
+
+  /* Changelog / dep-change badges on white */
+  --color-changelog-badge-fg:        var(--color-amber-700);  /* #B45309 — 5.02:1 on white */
+  --color-changelog-badge-bg:        rgba(180, 83, 9, 0.12);
+  --color-changelog-badge-border:    rgba(180, 83, 9, 0.30);
+  --color-badge-added-fg:            var(--color-green-700);  /* #047857 — 5.48:1 on white */
+  --color-badge-added-bg:            rgba(4, 120, 87, 0.10);
+  --color-badge-removed-fg:          var(--color-red-700);    /* #B91C1C — 6.47:1 on white */
+  --color-badge-removed-bg:          rgba(185, 28, 28, 0.10);
+  --color-badge-updated-fg:          var(--color-blue-700);   /* #1D4ED8 — 6.70:1 on white */
+  --color-badge-updated-bg:          rgba(29, 78, 216, 0.10);
+  --color-badge-major-fg:            var(--color-red-700);
+  --color-badge-major-bg:            rgba(185, 28, 28, 0.10);
+  --color-badge-minor-fg:            var(--color-amber-700);
+  --color-badge-minor-bg:            rgba(180, 83, 9, 0.10);
+  --color-badge-patch-fg:            var(--color-green-700);
+  --color-badge-patch-bg:            rgba(4, 120, 87, 0.10);
+
+  /* Dep health */
+  --color-dep-badge-ok-fg:           var(--color-green-700);
+  --color-dep-badge-ok-bg:           rgba(4, 120, 87, 0.12);
+  --color-dep-badge-warning-fg:      var(--color-amber-700);  /* #B45309 — 5.02:1; was #92400e (same value) */
+  --color-dep-badge-warning-bg:      rgba(180, 83, 9, 0.12);
+  --color-dep-badge-warning-border:  rgba(180, 83, 9, 0.30);
+  --color-dep-badge-neutral-fg:      #4b5563;                 /* neutral-700-level — 7.37:1 on white */
+  --color-dep-badge-neutral-bg:      rgba(107, 114, 128, 0.10);
+  --color-dep-badge-neutral-border:  rgba(107, 114, 128, 0.20);
+  --color-dep-bar-track-bg:          rgba(0, 0, 0, 0.06);
+  --color-dep-version-latest-fg:     var(--color-green-700);  /* was #047857 (same value, now token ref) */
+  --color-dep-uptodate-item-bg:      rgba(4, 120, 87, 0.06);
+  --color-variant-dep-badge-bg:      rgba(180, 83, 9, 0.90);  /* amber-700 alpha — opaque notification dot on light */
+
+  /* Detail badge */
+  --color-detail-badge-fg:           var(--color-green-700);  /* #047857 — 5.48:1 on white */
+  --color-detail-badge-bg:           rgba(4, 120, 87, 0.14);
+  --color-detail-badge-border:       rgba(4, 120, 87, 0.30);
+
+  /* Readme inline code (purple on light — 5.04:1 on white) */
+  --color-readme-code-bg:            rgba(0, 0, 0, 0.06);
+  --color-readme-code-fg:            #9333ea;                 /* violet-600 — 5.04:1 on white */
+  --color-readme-pre-bg:             #1e293b;                 /* fixed dark for readability of code */
+
+  /* Lineage items */
+  --color-lineage-item-bg:           rgba(0, 0, 0, 0.04);
+
+  /* Table */
+  --color-table-row-even-bg:         rgba(0, 0, 0, 0.02);
+  --color-table-row-odd-bg:          rgba(0, 0, 0, 0.03);
+  --color-table-border:              rgba(0, 0, 0, 0.06);
+
+  /* Pull section */
+  --color-registry-toggle-bg:        rgba(0, 0, 0, 0.06);
+  --color-pull-input-bg:             rgba(0, 0, 0, 0.04);
+  --color-copy-btn-bg:               rgba(0, 0, 0, 0.04);
+  --color-copy-btn-bg-hover:         rgba(0, 0, 0, 0.08);
+
+  /* Severity grid */
+  --color-severity-grid-bg:          rgba(15, 23, 42, 0.03);
+  --color-severity-grid-border:      rgba(15, 23, 42, 0.06);
+
+  /* Nav */
+  --color-nav-bg:                    rgba(255, 255, 255, 0.70);
+  --color-nav-border:                rgba(0, 0, 0, 0.06);
+  --color-nav-link-active-bg:        rgba(109, 40, 217, 0.10);  /* violet-700 alpha */
+
+  /* Disclosure */
+  --color-disclosure-hover-bg:       rgba(0, 0, 0, 0.03);
+
+  /* Page code */
+  --color-page-code-bg:              rgba(15, 23, 42, 0.06);
+  --color-page-pre-bg:               rgba(15, 23, 42, 0.05);
+
+  /* Nav link hover — dark-on-light (was white-on-white at rgba(255,255,255,0.04)) */
+  --color-nav-link-hover-bg:         rgba(0, 0, 0, 0.04);
+
+  /* .btn:hover — dark-on-light (was white-on-white at rgba(255,255,255,0.20)) */
+  --color-btn-hover-bg:              rgba(0, 0, 0, 0.10);
+
+  /* Trust badge resting bg/border — 700-level hue to match hover ladder (SENIOR-M1) */
+  --color-trust-sbom-bg:             rgba(15, 118, 110, 0.10);   /* teal-700 alpha */
+  --color-trust-sbom-border:         rgba(15, 118, 110, 0.28);
+  --color-trust-multiarch-bg:        rgba(109, 40, 217, 0.08);   /* violet-700 alpha */
+  --color-trust-multiarch-border:    rgba(109, 40, 217, 0.25);
+
+  /* Feedback bg siblings — symmetric coverage (SENIOR-M2) */
+  --color-feedback-warning-bg:       rgba(180, 83, 9, 0.10);     /* amber-700 alpha */
+  --color-feedback-error-bg:         rgba(185, 28, 28, 0.10);    /* red-700 alpha */
+  --color-feedback-info-bg:          rgba(29, 78, 216, 0.10);    /* blue-700 alpha */
 }
 
 /* ----------------------------------------------------------

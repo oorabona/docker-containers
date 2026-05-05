@@ -105,7 +105,7 @@
     .detail-zone--explore .disclosure > summary::-webkit-details-marker { display: none; }
     .detail-zone--explore .disclosure > summary::marker { display: none; }
     .detail-zone--explore .disclosure > summary:hover {
-      background: rgba(255, 255, 255, 0.04);
+      background: var(--color-disclosure-hover-bg);
     }
     .detail-zone--explore .disclosure > summary:focus-visible {
       outline: 2px solid var(--accent-blue);
@@ -206,8 +206,9 @@
     .detail-badge {
       font-family: var(--font-family-mono); font-size: 0.875rem;
       padding: 0.375rem 0.875rem; border-radius: 8px;
-      background: rgba(16, 185, 129, 0.2); color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      background: var(--color-detail-badge-bg);
+      color: var(--color-detail-badge-fg);
+      border: 1px solid var(--color-detail-badge-border);
     }
     .detail-actions { display: flex; gap: 0.75rem; }
 
@@ -234,7 +235,7 @@
     .lineage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0.75rem; }
     .lineage-item {
       display: flex; flex-direction: column; gap: 0.25rem;
-      padding: 0.75rem; border-radius: 6px; background: rgba(255, 255, 255, 0.05);
+      padding: 0.75rem; border-radius: 6px; background: var(--color-lineage-item-bg);
       animation: lineageItemIn 0.4s ease both;
       transition: opacity 0.25s ease, transform 0.25s ease;
     }
@@ -272,20 +273,20 @@
     .variant-tag {
       font-family: var(--font-family-mono); font-size: 0.75rem;
       padding: 0.375rem 0.75rem; border-radius: 6px;
-      background: rgba(139, 92, 246, 0.15); color: var(--accent-purple);
-      border: 1px solid rgba(139, 92, 246, 0.25); cursor: pointer;
+      background: var(--color-variant-tag-bg); color: var(--color-variant-tag-fg);
+      border: 1px solid var(--color-variant-tag-border); cursor: pointer;
       transition:
         background var(--motion-duration-short) var(--easing-standard),
         transform  var(--motion-duration-short) var(--easing-standard);
     }
-    .variant-tag:hover { background: rgba(139, 92, 246, 0.25); transform: translateY(-1px); }
+    .variant-tag:hover { background: var(--color-variant-tag-bg-hover); transform: translateY(-1px); }
     .variant-tag.selected {
-      background: rgba(139, 92, 246, 0.3); border-color: var(--accent-purple);
-      box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+      background: var(--color-variant-tag-selected-bg); border-color: var(--color-variant-tag-fg);
+      box-shadow: 0 0 0 2px var(--color-variant-tag-selected-shadow);
     }
     .variant-tag .badge-default {
       font-size: 0.625rem; padding: 0.125rem 0.375rem; border-radius: 3px;
-      background: rgba(16, 185, 129, 0.3); color: var(--accent-green);
+      background: var(--color-variant-badge-default-bg); color: var(--color-variant-badge-default-fg);
       margin-left: 0.25rem;
     }
 
@@ -336,7 +337,7 @@
       min-width: 16px; height: 16px; padding: 0 4px;
       border-radius: 999px; font-size: 0.5625rem; font-weight: 700;
       line-height: 16px; text-align: center;
-      background: rgba(245, 158, 11, 0.9); color: #fff;
+      background: var(--color-variant-dep-badge-bg); color: #fff;  /* white text on opaque amber — motivated constant */
       border: 2px solid var(--glass-bg, rgba(30, 30, 60, 0.6));
       font-family: 'Inter', system-ui, sans-serif;
       pointer-events: none; z-index: 1;
@@ -349,14 +350,17 @@
     }
 
     [data-theme="light"] .variant-dep-badge {
-      background: rgba(245, 158, 11, 0.95); color: #fff;
-      border-color: rgba(255, 255, 255, 0.9);
+      background: var(--color-variant-dep-badge-bg); color: #fff;  /* tokens.css light override: amber-700 */
+      border-color: rgba(255, 255, 255, 0.9);  /* white separator ring — motivated constant */
     }
 
-    [data-theme="light"] .variant-tag { background: rgba(139, 92, 246, 0.12); color: #5b21b6; border-color: rgba(139, 92, 246, 0.3); }
-    [data-theme="light"] .variant-tag:hover { background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.5); color: #4c1d95; }
-    [data-theme="light"] .variant-tag.selected { background: rgba(59, 130, 246, 0.15); border-color: #3b82f6; color: #1e40af; }
-    [data-theme="light"] .detail-badge { background: rgba(16, 185, 129, 0.15); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
+    /* [data-theme="light"] .variant-tag: tokens.css overrides --color-variant-tag-* for light mode — no rule needed here */
+    [data-theme="light"] .variant-tag.selected { border-color: var(--color-action-primary); }
+    [data-theme="light"] .detail-badge {
+      background: var(--color-detail-badge-bg);
+      color: var(--color-detail-badge-fg);
+      border-color: var(--color-detail-badge-border);
+    }
 
     /* ============================================================
        README (Zone 4 — Documentation)
@@ -379,10 +383,10 @@
     .readme-content p { margin-bottom: 1em; }
     .readme-content code {
       font-family: var(--font-family-mono); font-size: 0.875em;
-      padding: 0.2em 0.4em; background: rgba(0, 0, 0, 0.3); border-radius: 4px; color: #f472b6;
+      padding: 0.2em 0.4em; background: var(--color-readme-code-bg); border-radius: 4px; color: var(--color-readme-code-fg);
     }
     .readme-content pre {
-      background: rgba(0, 0, 0, 0.3); border-radius: 8px;
+      background: var(--color-readme-pre-bg); border-radius: 8px;
       padding: 1rem; overflow-x: auto; margin: 1em 0;
     }
     .readme-content pre code { background: none; padding: 0; color: var(--text-secondary); }
@@ -396,7 +400,7 @@
     }
     .readme-content table { width: 100%; border-collapse: collapse; margin: 1em 0; }
     .readme-content th, .readme-content td { padding: 0.75rem; border: 1px solid var(--glass-border); text-align: left; }
-    .readme-content th { background: rgba(255, 255, 255, 0.05); font-weight: 600; }
+    .readme-content th { background: var(--color-table-row-odd-bg); font-weight: 600; }
     .readme-content img { max-width: 100%; border-radius: 8px; }
     .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
     .table-wrapper table { margin: 0; }
@@ -414,16 +418,17 @@
     .sbom-total-badge {
       font-size: 0.75rem; font-weight: 600; padding: 0.25rem 0.625rem;
       border-radius: 999px; margin-left: auto;
-      background: rgba(59, 130, 246, 0.2); color: #60a5fa;
-      border: 1px solid rgba(59, 130, 246, 0.3);
+      background: var(--color-sbom-total-badge-bg);
+      color: var(--color-sbom-total-badge-fg);
+      border: 1px solid var(--color-sbom-total-badge-border);
     }
     .sbom-breakdown {
       display: flex; flex-wrap: wrap; gap: 0.5rem;
     }
     .sbom-type-chip {
       font-size: 0.75rem; padding: 0.375rem 0.75rem; border-radius: 6px;
-      background: rgba(139, 92, 246, 0.12); color: var(--accent-purple);
-      border: 1px solid rgba(139, 92, 246, 0.2);
+      background: var(--color-sbom-chip-bg); color: var(--color-sbom-chip-fg);
+      border: 1px solid var(--color-sbom-chip-border);
       font-family: var(--font-family-mono);
       transition: all 0.2s ease;
     }
@@ -431,14 +436,14 @@
       cursor: pointer; user-select: none;
     }
     .sbom-type-chip-clickable:hover {
-      background: rgba(139, 92, 246, 0.25);
-      border-color: rgba(139, 92, 246, 0.4);
+      background: var(--color-sbom-chip-bg-hover);
+      border-color: var(--color-sbom-chip-border-hover);
       transform: translateY(-1px);
     }
     .sbom-type-chip-active {
-      background: rgba(139, 92, 246, 0.3);
-      border-color: rgba(139, 92, 246, 0.5);
-      box-shadow: 0 0 8px rgba(139, 92, 246, 0.2);
+      background: var(--color-sbom-chip-active-bg);
+      border-color: var(--color-sbom-chip-active-border);
+      box-shadow: 0 0 8px var(--color-sbom-chip-active-shadow);
     }
     .sbom-type-count {
       font-weight: 600; margin-left: 0.25rem;
@@ -447,7 +452,7 @@
     /* Package drill-down panel */
     .sbom-package-panel {
       margin-top: 1rem; padding: 1rem;
-      background: rgba(0, 0, 0, 0.15);
+      background: var(--color-sbom-panel-bg);
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       animation: sbomPanelIn 0.25s ease;
@@ -480,7 +485,7 @@
       font-size: 0.75rem;
       font-family: var(--font-family-mono);
     }
-    .sbom-package-item:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+    .sbom-package-item:nth-child(odd) { background: var(--color-sbom-item-stripe-bg); }
     .sbom-pkg-name {
       color: var(--detail-text-primary);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -504,8 +509,9 @@
     .changelog-summary-badge {
       font-size: 0.6875rem; font-weight: 600; padding: 0.25rem 0.625rem;
       border-radius: 999px; margin-left: auto;
-      background: rgba(245, 158, 11, 0.2); color: #fbbf24;
-      border: 1px solid rgba(245, 158, 11, 0.3);
+      background: var(--color-changelog-badge-bg);
+      color: var(--color-changelog-badge-fg);
+      border: 1px solid var(--color-changelog-badge-border);
     }
     .changelog-table-wrap { overflow-x: auto; }
     .changelog-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
@@ -514,16 +520,16 @@
       letter-spacing: 0.05em; color: var(--detail-text-muted); padding: 0.5rem 0.75rem;
       border-bottom: 1px solid var(--glass-border);
     }
-    .changelog-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .changelog-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--color-table-border); }
     .changelog-table tbody tr { animation: lineageItemIn 0.4s ease both; }
-    .changelog-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+    .changelog-table tbody tr:nth-child(even) { background: var(--color-table-row-even-bg); }
     .changelog-type-badge {
       font-size: 0.625rem; font-weight: 600; text-transform: uppercase;
       padding: 0.125rem 0.5rem; border-radius: 999px;
     }
-    .changelog-type-added { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .changelog-type-removed { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .changelog-type-updated { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .changelog-type-added   { background: var(--color-badge-added-bg);   color: var(--color-badge-added-fg);   border: 1px solid var(--color-badge-added-border); }
+    .changelog-type-removed { background: var(--color-badge-removed-bg); color: var(--color-badge-removed-fg); border: 1px solid var(--color-badge-removed-border); }
+    .changelog-type-updated { background: var(--color-badge-updated-bg); color: var(--color-badge-updated-fg); border: 1px solid var(--color-badge-updated-border); }
     .changelog-pkg-name {
       font-family: var(--font-family-mono); font-size: 0.8125rem;
     }
@@ -531,7 +537,7 @@
       font-family: var(--font-family-mono); font-size: 0.75rem;
       color: var(--detail-text-muted);
     }
-    .changelog-version-new { color: #34d399; }
+    .changelog-version-new { color: var(--color-badge-added-fg); }
 
     /* ============================================================
        BUILD HISTORY (inside disclosure body)
@@ -551,9 +557,9 @@
       letter-spacing: 0.05em; color: var(--detail-text-muted); padding: 0.5rem 0.75rem;
       border-bottom: 1px solid var(--glass-border);
     }
-    .history-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .history-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--color-table-border); }
     .history-table tbody tr { animation: lineageItemIn 0.4s ease both; }
-    .history-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+    .history-table tbody tr:nth-child(even) { background: var(--color-table-row-even-bg); }
     .history-date { font-size: 0.75rem; color: var(--detail-text-muted); }
     .history-version {
       font-family: var(--font-family-mono); font-size: 0.75rem;
@@ -567,22 +573,8 @@
       color: var(--detail-text-muted);
     }
 
-    /* Light theme: SBOM section overrides */
-    [data-theme="light"] .sbom-total-badge { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.3); }
-    [data-theme="light"] .sbom-type-chip { background: rgba(139, 92, 246, 0.08); color: #5b21b6; border-color: rgba(139, 92, 246, 0.2); }
-    [data-theme="light"] .sbom-type-chip-clickable:hover { background: rgba(139, 92, 246, 0.15); }
-    [data-theme="light"] .sbom-type-chip-active { background: rgba(139, 92, 246, 0.2); box-shadow: 0 0 8px rgba(139, 92, 246, 0.1); }
-    [data-theme="light"] .sbom-package-panel { background: rgba(0, 0, 0, 0.03); }
-    [data-theme="light"] .sbom-package-item:nth-child(odd) { background: rgba(0, 0, 0, 0.03); }
-    [data-theme="light"] .changelog-summary-badge { background: rgba(245, 158, 11, 0.12); color: #92400e; border-color: rgba(245, 158, 11, 0.3); }
-    [data-theme="light"] .changelog-type-added { background: rgba(16, 185, 129, 0.1); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
-    [data-theme="light"] .changelog-type-removed { background: rgba(239, 68, 68, 0.1); color: #b91c1c; border-color: rgba(239, 68, 68, 0.3); }
-    [data-theme="light"] .changelog-type-updated { background: rgba(59, 130, 246, 0.1); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.3); }
-    [data-theme="light"] .changelog-version-new { color: #047857; }
-    [data-theme="light"] .changelog-table td,
-    [data-theme="light"] .history-table td { border-bottom-color: rgba(0, 0, 0, 0.06); }
-    [data-theme="light"] .changelog-table tbody tr:nth-child(even),
-    [data-theme="light"] .history-table tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
+    /* Light theme: SBOM section — tokens.css overrides all --color-sbom-* for light mode — no rules needed here */
+    /* Light theme: changelog/history — tokens.css overrides --color-badge-added, --color-badge-removed, --color-badge-updated, --color-changelog-X, --color-table-X for light mode — no rules needed here */
 
     /* ============================================================
        DEPENDENCY HEALTH (inside disclosure body)
@@ -598,27 +590,27 @@
       font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
       padding: 0.25rem 0.625rem; border-radius: 999px; margin-left: auto;
     }
-    .dep-badge-ok { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .dep-badge-warning { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .dep-badge-neutral { background: rgba(107, 114, 128, 0.2); color: rgba(255,255,255,0.6); border: 1px solid rgba(107, 114, 128, 0.3); }
+    .dep-badge-ok      { background: var(--color-dep-badge-ok-bg);      color: var(--color-dep-badge-ok-fg);      border: 1px solid var(--color-dep-badge-ok-border); }
+    .dep-badge-warning { background: var(--color-dep-badge-warning-bg); color: var(--color-dep-badge-warning-fg); border: 1px solid var(--color-dep-badge-warning-border); }
+    .dep-badge-neutral { background: var(--color-dep-badge-neutral-bg); color: var(--color-dep-badge-neutral-fg); border: 1px solid var(--color-dep-badge-neutral-border); }
 
     .dep-health-summary { margin-bottom: 1.25rem; }
     .dep-health-bar { display: flex; flex-direction: column; gap: 0.5rem; }
     .dep-bar-label { font-size: 0.75rem; color: var(--detail-text-muted); }
     .dep-bar-track {
-      height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08);
+      height: 6px; border-radius: 3px; background: var(--color-dep-bar-track-bg);
       overflow: hidden; display: flex;
     }
     .dep-bar-fill {
       height: 100%;
-      background: linear-gradient(90deg, #34d399, #10b981);
+      background: linear-gradient(90deg, var(--color-dep-bar-fill-start), var(--color-dep-bar-fill-end));
       border-radius: 3px 0 0 3px;
       transition: flex 0.4s ease;
     }
     .dep-bar-fill:only-child { border-radius: 3px; }
     .dep-bar-unmonitored {
       height: 100%;
-      background: linear-gradient(90deg, #f59e0b, #d97706);
+      background: linear-gradient(90deg, var(--color-dep-bar-warn-start), var(--color-dep-bar-warn-end));
       border-radius: 0 3px 3px 0;
       transition: flex 0.4s ease;
     }
@@ -630,22 +622,22 @@
       letter-spacing: 0.05em; color: var(--detail-text-muted); padding: 0.5rem 0.75rem;
       border-bottom: 1px solid var(--glass-border);
     }
-    .dep-update-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .dep-update-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--color-table-border); }
     .dep-update-row { animation: lineageItemIn 0.4s ease both; }
-    .dep-update-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+    .dep-update-table tbody tr:nth-child(even) { background: var(--color-table-row-even-bg); }
     .dep-name a { color: var(--accent-blue); text-decoration: none; }
     .dep-name a:hover { text-decoration: underline; }
     .dep-version { font-family: var(--font-family-mono); font-size: 0.75rem; }
     .dep-version-current { color: var(--detail-text-muted); }
-    .dep-version-latest { color: #34d399; font-weight: 500; }
+    .dep-version-latest { color: var(--color-dep-version-latest-fg); font-weight: 500; }
 
     .dep-change-badge {
       font-size: 0.625rem; font-weight: 600; text-transform: uppercase;
       padding: 0.125rem 0.5rem; border-radius: 999px;
     }
-    .dep-change-major { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .dep-change-minor { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .dep-change-patch { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .dep-change-major { background: var(--color-badge-major-bg); color: var(--color-badge-major-fg); border: 1px solid var(--color-badge-major-border); }
+    .dep-change-minor { background: var(--color-badge-minor-bg); color: var(--color-badge-minor-fg); border: 1px solid var(--color-badge-minor-border); }
+    .dep-change-patch { background: var(--color-badge-patch-bg); color: var(--color-badge-patch-fg); border: 1px solid var(--color-badge-patch-border); }
 
     .dep-uptodate-details { margin-bottom: 1rem; }
     .dep-uptodate-summary {
@@ -663,8 +655,8 @@
     .dep-uptodate-list { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.75rem 0 0.25rem 0; }
     .dep-uptodate-item {
       font-size: 0.75rem; padding: 0.25rem 0.625rem; border-radius: 6px;
-      background: rgba(16, 185, 129, 0.08); color: var(--detail-text-secondary);
-      border: 1px solid rgba(16, 185, 129, 0.15);
+      background: var(--color-dep-uptodate-item-bg); color: var(--detail-text-secondary);
+      border: 1px solid var(--color-dep-uptodate-item-border);
     }
     .dep-uptodate-version {
       font-family: var(--font-family-mono); font-size: 0.6875rem;
@@ -678,7 +670,7 @@
     .dep-disabled-label { color: var(--detail-text-muted); font-style: italic; }
     .dep-disabled-item {
       padding: 0.125rem 0.5rem; border-radius: 4px;
-      background: rgba(107, 114, 128, 0.1); color: var(--detail-text-muted);
+      background: var(--color-dep-badge-neutral-bg); color: var(--detail-text-muted);
       font-style: italic; font-size: 0.6875rem; cursor: help;
     }
 
@@ -692,35 +684,16 @@
     }
     .dep-workflow-link:hover { color: var(--accent-blue); }
 
-    /* Light theme: dependency health overrides */
-    [data-theme="light"] .dep-badge-ok { background: rgba(16, 185, 129, 0.12); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
-    [data-theme="light"] .dep-badge-warning { background: rgba(245, 158, 11, 0.12); color: #92400e; border-color: rgba(245, 158, 11, 0.3); }
-    [data-theme="light"] .dep-badge-neutral { background: rgba(107, 114, 128, 0.1); color: #4b5563; border-color: rgba(107, 114, 128, 0.2); }
-    [data-theme="light"] .dep-bar-track { background: rgba(0, 0, 0, 0.06); }
-    [data-theme="light"] .dep-update-table td { border-bottom-color: rgba(0, 0, 0, 0.06); }
-    [data-theme="light"] .dep-update-table tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
-    [data-theme="light"] .dep-version-latest { color: #047857; }
-    [data-theme="light"] .dep-change-major { background: rgba(239, 68, 68, 0.1); color: #b91c1c; border-color: rgba(239, 68, 68, 0.3); }
-    [data-theme="light"] .dep-change-minor { background: rgba(245, 158, 11, 0.1); color: #92400e; border-color: rgba(245, 158, 11, 0.3); }
-    [data-theme="light"] .dep-change-patch { background: rgba(16, 185, 129, 0.1); color: #047857; border-color: rgba(16, 185, 129, 0.3); }
-    [data-theme="light"] .dep-uptodate-item { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.15); }
+    /* Light theme: dependency health — tokens.css overrides all --color-dep-X and --color-badge-X tokens for light mode — no rules needed here */
 
-    /* Light theme: lineage & readme overrides for WCAG 2.2 AA contrast */
-    [data-theme="light"] .lineage-item {
-      background: rgba(0, 0, 0, 0.04);
-    }
-    [data-theme="light"] .readme-content code {
-      background: rgba(0, 0, 0, 0.06);
-      color: #9333ea;
-    }
-    [data-theme="light"] .readme-content pre {
-      background: #1e293b;
-    }
+    /* Light theme: lineage item — tokens.css overrides --color-lineage-item-bg for light mode — no rule needed here */
+    /* Light theme: readme overrides for WCAG 2.2 AA contrast */
+    /* [data-theme="light"] readme code/pre: tokens.css overrides --color-readme-code-bg/fg and --color-readme-pre-bg — no rules needed here */
     [data-theme="light"] .readme-content pre code {
-      color: #e2e8f0;
+      color: #e2e8f0;  /* fixed: light code on dark pre bg — intentional contrast reversal */
     }
     [data-theme="light"] .readme-content th {
-      background: rgba(0, 0, 0, 0.04);
+      background: var(--color-lineage-item-bg);  /* reuses same subtle raised surface */
     }
     [data-theme="light"] .readme-content blockquote {
       color: var(--detail-text-muted);
@@ -732,13 +705,11 @@
       color: var(--text-primary);
     }
 
-    /* Light theme: disclosure overrides */
+    /* Light theme: disclosure surface — semi-transparent white panel (glassmorphism on light bg) */
     [data-theme="light"] .detail-zone--explore .disclosure {
-      background: rgba(255, 255, 255, 0.6);
+      background: var(--glass-bg);
     }
-    [data-theme="light"] .detail-zone--explore .disclosure > summary:hover {
-      background: rgba(0, 0, 0, 0.03);
-    }
+    /* [data-theme="light"] disclosure hover — tokens.css overrides --color-disclosure-hover-bg for light mode — no rule needed here */
 
     /* ============================================================
        PULL COMMAND SECTION
@@ -764,7 +735,7 @@
     }
     .detail-registry-toggle {
       display: flex;
-      background: rgba(0, 0, 0, 0.2);
+      background: var(--color-registry-toggle-bg);
       border-radius: 6px;
       padding: 0.1875rem;
     }
@@ -799,7 +770,7 @@
     }
     .detail-pull-input {
       flex: 1;
-      background: rgba(0, 0, 0, 0.2);
+      background: var(--color-pull-input-bg);
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
@@ -808,7 +779,7 @@
       color: var(--detail-text-secondary);
     }
     .detail-copy-btn {
-      background: rgba(255, 255, 255, 0.1);
+      background: var(--color-copy-btn-bg);
       border: 1px solid var(--glass-border);
       border-radius: 8px;
       padding: 0.5rem 0.75rem;
@@ -822,29 +793,17 @@
       justify-content: center;
     }
     .detail-copy-btn:hover {
-      background: rgba(255, 255, 255, 0.2);
+      background: var(--color-copy-btn-bg-hover);
       color: var(--text-primary);
     }
     .detail-copy-btn.copied {
-      background: rgba(16, 185, 129, 0.2);
+      background: var(--color-copy-btn-copied-bg);
       border-color: var(--accent-green);
       color: var(--accent-green);
     }
-    /* Light theme overrides for pull section */
-    [data-theme="light"] .detail-registry-toggle {
-      background: rgba(0, 0, 0, 0.06);
-    }
+    /* Light theme: pull section — tokens.css overrides --color-registry-toggle-bg/--color-pull-input-bg/--color-copy-btn-* for light mode — no rules needed here */
     [data-theme="light"] .detail-registry-btn.active {
-      color: #ffffff;
-    }
-    [data-theme="light"] .detail-pull-input {
-      background: rgba(0, 0, 0, 0.04);
-    }
-    [data-theme="light"] .detail-copy-btn {
-      background: rgba(0, 0, 0, 0.04);
-    }
-    [data-theme="light"] .detail-copy-btn:hover {
-      background: rgba(0, 0, 0, 0.08);
+      color: #ffffff;  /* white text on gradient-colored active button — motivated constant */
     }
 
     /* ============================================================
