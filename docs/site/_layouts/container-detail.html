@@ -52,7 +52,7 @@
 
         <!-- Back link -->
         <a href="{{ '/' | relative_url }}" class="back-link">
-          <i class="ti ti-arrow-left"></i> Back to Dashboard
+          <i class="ti ti-arrow-left" aria-hidden="true"></i> Back to Dashboard
         </a>
 
         {%- comment -%} Zone 1 — Identity (always visible) {%- endcomment -%}
@@ -668,7 +668,7 @@
                           data-size-arm64="{{ _svv.size_arm64 | default: '' }}"
                           data-build-digest="{{ _svv.build_digest | default: '' }}"
                           data-base-image="{{ _svv.base_image | default: '' }}"
-                          {%- if _svv.build_args %} data-build-args='[{% for arg in _svv.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif -%}
+                          {%- if _svv.build_args %} data-build-args="{{ _svv.build_args | jsonify | escape }}"{% endif -%}
                           {%- if _svv.sbom_summary %} data-sbom-summary='{{ _svv.sbom_summary | jsonify }}'{% endif -%}
                           {%- if _svv.sbom_packages %} data-sbom-packages='{{ _svv.sbom_packages | jsonify }}'{% endif -%}
                           {%- if _svv.changelog %} data-changelog='{{ _svv.changelog | jsonify }}'{% endif -%}
@@ -714,7 +714,7 @@
                                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
                                   data-build-digest="{{ variant.build_digest | default: '' }}"
                                   data-base-image="{{ variant.base_image | default: '' }}"
-                                  {%- if variant.build_args %} data-build-args='[{% for arg in variant.build_args %}{"name":"{{ arg.name }}","value":"{{ arg.value }}"}{% unless forloop.last %},{% endunless %}{% endfor %}]'{% endif -%}
+                                  {%- if variant.build_args %} data-build-args="{{ variant.build_args | jsonify | escape }}"{% endif -%}
                                   {%- if variant.sbom_summary %} data-sbom-summary='{{ variant.sbom_summary | jsonify }}'{% endif -%}
                                   {%- if variant.sbom_packages %} data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif -%}
                                   {%- if variant.changelog %} data-changelog='{{ variant.changelog | jsonify }}'{% endif -%}
@@ -806,7 +806,19 @@
           <details class="disclosure">
             <summary>
               <span class="disclosure__title">Build lineage</span>
-              <span class="disclosure__metric">{{ page.build_digest | slice: 0, 7 }}</span>
+              {%- comment -%}
+                page.build_digest may be "per-variant" (sentinel set by generate-dashboard.sh for
+                multi-variant containers where digest varies per variant). In that case we fall back
+                to the default variant's digest for the initial static render. JS selectVariant()
+                will update the lineage-value field on variant switch; this <summary> metric is
+                Liquid-only and intentionally stays fixed at the default variant's value.
+              {%- endcomment -%}
+              {%- if page.build_digest != "per-variant" and page.build_digest != blank -%}
+                {%- assign _initial_digest = page.build_digest | slice: 0, 7 -%}
+              {%- elsif default_variant.build_digest and default_variant.build_digest != blank and default_variant.build_digest != "unknown" -%}
+                {%- assign _initial_digest = default_variant.build_digest | slice: 0, 7 -%}
+              {%- endif -%}
+              <span class="disclosure__metric">{{ _initial_digest | default: 'n/a' }}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
             </summary>
             <div class="disclosure__body">
@@ -1083,7 +1095,7 @@
           <!-- README (rendered at build time by kramdown) -->
           <div class="readme-section glass">
             <div class="readme-header">
-              <i class="ti ti-file-text"></i>
+              <i class="ti ti-file-text" aria-hidden="true"></i>
               <h3>README</h3>
             </div>
             <div class="readme-content">
