@@ -50,46 +50,34 @@
       color: #ffffff;
     }
 
-    /* Light theme: Variant tags - WCAG 2.1 AA compliant */
-    [data-theme="light"] .variant-tag {
-      background: rgba(139, 92, 246, 0.12);
-      color: #5b21b6;
-      border-color: rgba(139, 92, 246, 0.3);
-    }
-
-    [data-theme="light"] .variant-tag:hover {
-      background: rgba(139, 92, 246, 0.2);
-      border-color: rgba(139, 92, 246, 0.5);
-      color: #4c1d95;
-    }
-
+    /* Light theme: Variant tags — tokens.css overrides --color-variant-tag-* for light mode; sibling selectors use token refs */
     [data-theme="light"] .variant-tag.selected {
-      background: rgba(59, 130, 246, 0.15);
-      border-color: #3b82f6;
-      color: #1e40af;
+      background: rgba(109, 40, 217, 0.10);       /* violet-700 alpha — matches variant-tag-bg family */
+      color: var(--color-violet-700);             /* violet-700 fg — 7.10:1 on white (AAA) */
+      border-color: rgba(109, 40, 217, 0.45);     /* violet-700 alpha — consistent with sbom-chip-border-hover level */
     }
 
     [data-theme="light"] .variant-tag .badge {
-      background: rgba(59, 130, 246, 0.2);
-      color: #1d4ed8;
+      background: var(--color-feedback-info-bg);
+      color: var(--color-feedback-info-fg);
     }
 
     [data-theme="light"] .variant-tag .badge-primary {
-      background: rgba(16, 185, 129, 0.2);
-      color: #047857;
+      background: var(--color-variant-badge-default-bg);
+      color: var(--color-variant-badge-default-fg);
     }
 
     /* Light theme: Card badges - WCAG 2.1 AA compliant */
     [data-theme="light"] .card-badge {
-      background: rgba(16, 185, 129, 0.15);
-      color: #047857;
-      border-color: rgba(16, 185, 129, 0.3);
+      background: var(--color-detail-badge-bg);
+      color: var(--color-detail-badge-fg);
+      border-color: var(--color-detail-badge-border);
     }
 
     [data-theme="light"] .card-badge.warning {
-      background: rgba(180, 83, 9, 0.15);
-      color: #92400e;
-      border-color: rgba(180, 83, 9, 0.3);
+      background: var(--color-dep-badge-warning-bg);
+      color: var(--color-dep-badge-warning-fg);
+      border-color: var(--color-dep-badge-warning-border);
     }
 
     /* Light theme: Card links */
@@ -116,16 +104,16 @@
       background: rgba(0, 0, 0, 0.06);
     }
     [data-theme="light"] .activity-icon.success {
-      background: rgba(4, 120, 87, 0.12);
-      color: #047857;
+      background: var(--color-dep-badge-ok-bg);
+      color: var(--color-dep-badge-ok-fg);
     }
     [data-theme="light"] .activity-icon.failure {
-      background: rgba(190, 24, 93, 0.12);
-      color: #be185d;
+      background: rgba(190, 24, 93, 0.12);  /* pink-700 alpha — no semantic token yet; kept as motivated literal */
+      color: var(--color-pink-700);
     }
     [data-theme="light"] .activity-icon.pending {
-      background: rgba(180, 83, 9, 0.12);
-      color: #b45309;
+      background: var(--color-dep-badge-warning-bg);
+      color: var(--color-dep-badge-warning-fg);
     }
     [data-theme="light"] .activity-link:hover {
       background: rgba(0, 0, 0, 0.04);
@@ -143,10 +131,10 @@
       background: rgba(59, 130, 246, 0.15);
     }
     [data-theme="light"] .registry-toggle {
-      background: rgba(0, 0, 0, 0.06);
+      background: var(--color-registry-toggle-bg);
     }
     [data-theme="light"] .pull-input {
-      background: rgba(0, 0, 0, 0.04);
+      background: var(--color-pull-input-bg);
     }
     [data-theme="light"] .pull-select {
       background: rgba(255, 255, 255, 0.8);
@@ -156,10 +144,10 @@
       color: #111827;
     }
     [data-theme="light"] .copy-btn {
-      background: rgba(0, 0, 0, 0.04);
+      background: var(--color-copy-btn-bg);
     }
     [data-theme="light"] .copy-btn:hover {
-      background: rgba(0, 0, 0, 0.08);
+      background: var(--color-copy-btn-bg-hover);
     }
 
     /* Controls bar */
