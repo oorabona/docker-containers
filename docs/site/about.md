@@ -39,7 +39,7 @@ This project does not aim to replace Docker Official Images for general use — 
 
 ## License
 
-All container images and the build system are released under the [MIT License](https://github.com/oorabona/docker-containers/blob/master/LICENSE). SBOM attestations and the published Sigstore signatures are not licensed material — they are evidence of the build provenance.
+All container images and the build system are released under the [MIT License](https://github.com/oorabona/docker-containers/blob/{{ site.github.default_branch | default: 'master' }}/LICENSE). SBOM attestations and the published Sigstore signatures are not licensed material — they are evidence of the build provenance.
 
 ## Contact
 

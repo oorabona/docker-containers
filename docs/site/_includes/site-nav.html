@@ -5,8 +5,9 @@
       <span>Docker Containers</span>
     </a>
     <nav class="site-nav-links">
-      <a href="{{ site.baseurl }}/" class="site-nav-link{% if include.active == 'dashboard' %} active{% endif %}">Dashboard</a>
-      <a href="{{ site.baseurl }}/blog/" class="site-nav-link{% if include.active == 'blog' %} active{% endif %}">Blog</a>
+      <a href="{{ '/' | relative_url }}" class="site-nav-link{% if include.active == 'dashboard' %} active{% endif %}">Dashboard</a>
+      <a href="{{ '/verify-images/' | relative_url }}" class="site-nav-link{% if include.active == 'verify' %} active{% endif %}">Verify</a>
+      <a href="{{ '/blog/' | relative_url }}" class="site-nav-link{% if include.active == 'blog' %} active{% endif %}">Blog</a>
       <a href="{{ '/about/' | relative_url }}" class="site-nav-link{% if include.active == 'about' %} active{% endif %}">About</a>
     </nav>
     <div class="site-nav-actions">
