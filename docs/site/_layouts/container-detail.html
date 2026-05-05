@@ -73,15 +73,15 @@
               {%- endif -%}
               {%- assign _branch = site.github.default_branch | default: 'master' -%}
               <a href="{{ _repo_url }}/tree/{{ _branch }}/{{ page.name }}"
-                 class="btn" target="_blank" rel="noopener" aria-label="View source code on GitHub">
+                 class="btn" target="_blank" rel="noopener noreferrer" aria-label="View source code on GitHub">
                 <i class="ti ti-brand-github" aria-hidden="true"></i> Source
               </a>
               <a href="https://ghcr.io/{{ page.github_username }}/{{ page.name }}"
-                 class="btn" target="_blank" rel="noopener" aria-label="View package on GitHub Container Registry">
+                 class="btn" target="_blank" rel="noopener noreferrer" aria-label="View package on GitHub Container Registry">
                 <i class="ti ti-package" aria-hidden="true"></i> GHCR
               </a>
               <a href="https://hub.docker.com/r/{{ page.dockerhub_username }}/{{ page.name }}"
-                 class="btn" target="_blank" rel="noopener" aria-label="View image on Docker Hub">
+                 class="btn" target="_blank" rel="noopener noreferrer" aria-label="View image on Docker Hub">
                 <i class="ti ti-brand-docker" aria-hidden="true"></i> Docker Hub
               </a>
             </div>
@@ -174,7 +174,7 @@
                {% else %}
                  title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
                {% endif %}
-               rel="noopener"
+               rel="noopener noreferrer"
                >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% else %}📋 SBOM PENDING{% endif %}</a>
 
             {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
@@ -210,17 +210,17 @@
               <a class="trust-badge trust-badge--multi-arch"
                  data-trust="multi-arch"
                  href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}"
-                 rel="noopener"
+                 rel="noopener noreferrer"
                  title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " | upcase }}</a>
             {%- else -%}
               <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
-              <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}" rel="noopener"></a>
+              <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}" rel="noopener noreferrer"></a>
             {%- endif -%}
 
             {%- if page.dependency_monitoring.enabled -%}
               <a class="trust-badge trust-badge--deps"
                  href="{{ page.upstream_monitor_url }}"
-                 rel="noopener"
+                 rel="noopener noreferrer"
                  title="View the daily upstream-monitor workflow runs">
                 🔗 {{ page.dependency_monitoring.monitored }}/{{ page.dependency_monitoring.total }} deps tracked daily
               </a>
@@ -297,7 +297,7 @@
               <div class="evidence-row">
                 <dt>SBOM attestation</dt>
                 <dd>
-                  <a href="{{ _prov_var.attestation_url }}" rel="noopener" target="_blank">
+                  <a href="{{ _prov_var.attestation_url }}" rel="noopener noreferrer" target="_blank">
                     {%- if _prov_var.attestation_id -%}<code class="hash">{{ _prov_var.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
                   </a>
                 </dd>
@@ -352,8 +352,8 @@
               </a>
             </footer>
           </section>
-                {%- endif -%}
                 {%- assign _prov_first = false -%}
+                {%- endif -%}
               {%- endfor -%}
             {%- endfor -%}
           {%- elsif page.variants -%}
@@ -401,7 +401,7 @@
               <div class="evidence-row">
                 <dt>SBOM attestation</dt>
                 <dd>
-                  <a href="{{ _prov_var.attestation_url }}" rel="noopener" target="_blank">
+                  <a href="{{ _prov_var.attestation_url }}" rel="noopener noreferrer" target="_blank">
                     {%- if _prov_var.attestation_id -%}<code class="hash">{{ _prov_var.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
                   </a>
                 </dd>
@@ -456,8 +456,8 @@
               </a>
             </footer>
           </section>
-              {%- endif -%}
               {%- assign _prov_first = false -%}
+              {%- endif -%}
             {%- endfor -%}
           {%- else -%}
             {%- comment -%} No-variant container: single Provenance block (no variant switching) {%- endcomment -%}
@@ -503,7 +503,7 @@
               <div class="evidence-row">
                 <dt>SBOM attestation</dt>
                 <dd>
-                  <a href="{{ prov_variant.attestation_url }}" rel="noopener" target="_blank">
+                  <a href="{{ prov_variant.attestation_url }}" rel="noopener noreferrer" target="_blank">
                     {%- if prov_variant.attestation_id -%}<code class="hash">{{ prov_variant.attestation_id | slice: 0, 12 }}…</code>{%- else -%}View on Sigstore{%- endif -%}
                   </a>
                 </dd>
@@ -815,8 +815,10 @@
               {%- endcomment -%}
               {%- if page.build_digest != "per-variant" and page.build_digest != blank -%}
                 {%- assign _initial_digest = page.build_digest | slice: 0, 7 -%}
+                {%- assign _body_digest = page.build_digest -%}
               {%- elsif default_variant.build_digest and default_variant.build_digest != blank and default_variant.build_digest != "unknown" -%}
                 {%- assign _initial_digest = default_variant.build_digest | slice: 0, 7 -%}
+                {%- assign _body_digest = default_variant.build_digest -%}
               {%- endif -%}
               <span class="disclosure__metric">{{ _initial_digest | default: 'n/a' }}</span>
               <i class="ti ti-chevron-right disclosure__chevron" aria-hidden="true"></i>
@@ -829,7 +831,7 @@
                 <div class="lineage-grid">
                   <div class="lineage-item" data-lineage="build-digest">
                     <span class="lineage-label">Build Digest</span>
-                    <span class="lineage-value">{{ page.build_digest }}</span>
+                    <span class="lineage-value">{{ _body_digest | default: 'n/a' }}</span>
                   </div>
                   {% if page.base_image and page.base_image != "unknown" %}
                   <div class="lineage-item" data-lineage="base-image">
@@ -999,7 +1001,7 @@
                       <tr class="dep-update-row" data-dep-name="{{ upd.name }}" style="animation-delay: {{ forloop.index0 | times: 0.06 }}s">
                         <td class="dep-name">
                           {% if upd.source_url and upd.source_url != "" %}
-                            <a href="{{ upd.source_url }}" target="_blank" rel="noopener">{{ upd.name }}</a>
+                            <a href="{{ upd.source_url }}" target="_blank" rel="noopener noreferrer">{{ upd.name }}</a>
                           {% else %}
                             {{ upd.name }}
                           {% endif %}
@@ -1078,7 +1080,7 @@
 
                 <div class="dep-health-footer">
                   <a href="{{ _repo_url }}/actions/workflows/upstream-monitor.yaml"
-                     class="dep-workflow-link" target="_blank" rel="noopener">
+                     class="dep-workflow-link" target="_blank" rel="noopener noreferrer">
                     <i class="ti ti-refresh" aria-hidden="true"></i> Upstream Monitor Workflow
                   </a>
                 </div>
