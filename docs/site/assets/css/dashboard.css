@@ -52,7 +52,9 @@
 
     /* Light theme: Variant tags — tokens.css overrides --color-variant-tag-* for light mode; sibling selectors use token refs */
     [data-theme="light"] .variant-tag.selected {
-      border-color: var(--color-action-primary);
+      background: rgba(109, 40, 217, 0.10);       /* violet-700 alpha — matches variant-tag-bg family */
+      color: var(--color-violet-700);             /* violet-700 fg — 7.10:1 on white (AAA) */
+      border-color: rgba(109, 40, 217, 0.45);     /* violet-700 alpha — consistent with sbom-chip-border-hover level */
     }
 
     [data-theme="light"] .variant-tag .badge {

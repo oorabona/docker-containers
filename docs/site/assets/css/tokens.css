@@ -469,7 +469,9 @@
   --color-sbom-chip-bg:              rgba(109, 40, 217, 0.08);
   --color-sbom-chip-border:          rgba(109, 40, 217, 0.20);
   --color-sbom-chip-bg-hover:        rgba(109, 40, 217, 0.15);
+  --color-sbom-chip-border-hover:    rgba(109, 40, 217, 0.45);  /* violet-700 alpha — visible on white, matches 700-level fg */
   --color-sbom-chip-active-bg:       rgba(109, 40, 217, 0.18);
+  --color-sbom-chip-active-border:   rgba(109, 40, 217, 0.55);  /* violet-700 alpha — slightly stronger than border-hover */
   --color-sbom-chip-active-shadow:   rgba(109, 40, 217, 0.10);
   --color-sbom-panel-bg:             rgba(0, 0, 0, 0.03);
   --color-sbom-item-stripe-bg:       rgba(0, 0, 0, 0.03);
@@ -480,20 +482,27 @@
   --color-changelog-badge-border:    rgba(180, 83, 9, 0.30);
   --color-badge-added-fg:            var(--color-green-700);  /* #047857 — 5.48:1 on white */
   --color-badge-added-bg:            rgba(4, 120, 87, 0.10);
+  --color-badge-added-border:        rgba(4, 120, 87, 0.30);   /* green-700 alpha */
   --color-badge-removed-fg:          var(--color-red-700);    /* #B91C1C — 6.47:1 on white */
   --color-badge-removed-bg:          rgba(185, 28, 28, 0.10);
+  --color-badge-removed-border:      rgba(185, 28, 28, 0.30);  /* red-700 alpha */
   --color-badge-updated-fg:          var(--color-blue-700);   /* #1D4ED8 — 6.70:1 on white */
   --color-badge-updated-bg:          rgba(29, 78, 216, 0.10);
+  --color-badge-updated-border:      rgba(29, 78, 216, 0.30);  /* blue-700 alpha */
   --color-badge-major-fg:            var(--color-red-700);
   --color-badge-major-bg:            rgba(185, 28, 28, 0.10);
+  --color-badge-major-border:        rgba(185, 28, 28, 0.30);  /* red-700 alpha */
   --color-badge-minor-fg:            var(--color-amber-700);
   --color-badge-minor-bg:            rgba(180, 83, 9, 0.10);
+  --color-badge-minor-border:        rgba(180, 83, 9, 0.30);   /* amber-700 alpha */
   --color-badge-patch-fg:            var(--color-green-700);
   --color-badge-patch-bg:            rgba(4, 120, 87, 0.10);
+  --color-badge-patch-border:        rgba(4, 120, 87, 0.30);   /* green-700 alpha */
 
   /* Dep health */
   --color-dep-badge-ok-fg:           var(--color-green-700);
   --color-dep-badge-ok-bg:           rgba(4, 120, 87, 0.12);
+  --color-dep-badge-ok-border:       rgba(4, 120, 87, 0.30);   /* green-700 alpha */
   --color-dep-badge-warning-fg:      var(--color-amber-700);  /* #B45309 — 5.02:1; was #92400e (same value) */
   --color-dep-badge-warning-bg:      rgba(180, 83, 9, 0.12);
   --color-dep-badge-warning-border:  rgba(180, 83, 9, 0.30);
