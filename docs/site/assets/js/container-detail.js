@@ -116,6 +116,7 @@
       var variantData = {
         tag: tag,
         attestation_url: el.dataset.attestationUrl || '',
+        attestation_id: el.dataset.attestationId || '',
         trivy_summary: null,
         multi_arch_platforms: []
       };

@@ -139,11 +139,23 @@
         <!-- Trust Strip -->
         {%- assign default_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
         <trust-strip class="trust-strip" data-current-variant="{{ default_variant.tag | default: page.current_version }}">
+          {%- comment -%} SBOM badge — 3-state: attested (both url+id), partial/pending (one only), missing (none, hidden) {%- endcomment -%}
           <a class="trust-badge trust-badge--sbom"
              data-trust="sbom"
-             {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% else %}href="" style="display: none"{% endif %}
+             {% if default_variant.attestation_url and default_variant.attestation_id %}
+               href="{{ default_variant.attestation_url }}"
+               data-sbom-state="attested"
+               title="View Sigstore attestation for this image's SBOM"
+             {% elsif default_variant.attestation_url or default_variant.attestation_id %}
+               {% if default_variant.attestation_url %}href="{{ default_variant.attestation_url }}"{% endif %}
+               data-sbom-state="partial"
+               title="SBOM attestation incomplete — awaiting next build"
+             {% else %}
+               data-sbom-state="missing"
+               style="display: none"
+             {% endif %}
              rel="noopener"
-             title="View Sigstore attestation for this image's SBOM">📋 SBOM ATTESTED</a>
+             >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM ATTESTED{% elsif default_variant.attestation_url or default_variant.attestation_id %}📋 SBOM PENDING{% endif %}</a>
 
           {%- if default_variant.trivy_summary and default_variant.trivy_summary.last_scan -%}
             {%- assign sev = "info" -%}

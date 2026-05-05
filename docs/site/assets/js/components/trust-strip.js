@@ -28,19 +28,39 @@
 
     _update(variant) {
       if (!variant) return;
-      this._updateSbom(variant.attestation_url);
+      this._updateSbom(variant.attestation_url, variant.attestation_id);
       this._updateTrivy(variant.trivy_summary);
       this._updateMultiArch(variant.multi_arch_platforms);
     }
 
-    _updateSbom(url) {
+    // 3-state SBOM badge: attested (url+id), partial/pending (one only), missing (neither).
+    _updateSbom(url, id) {
       const el = this.querySelector('[data-trust="sbom"]');
       if (!el) return;
-      if (url) {
+      if (url && id) {
+        // Fully attested
         el.setAttribute('href', url);
+        el.textContent = '📋 SBOM ATTESTED';
+        el.dataset.sbomState = 'attested';
+        el.title = "View Sigstore attestation for this image's SBOM";
+        el.style.display = '';
+      } else if (url || id) {
+        // Partial — attestation data incomplete, awaiting next build
+        if (url) {
+          el.setAttribute('href', url);
+        } else {
+          el.removeAttribute('href');
+        }
+        el.textContent = '📋 SBOM PENDING';
+        el.dataset.sbomState = 'partial';
+        el.title = 'SBOM attestation incomplete — awaiting next build';
         el.style.display = '';
       } else {
+        // Missing — hide badge, blank text for parity with Liquid (no misleading label if display override)
         el.style.display = 'none';
+        el.removeAttribute('href');
+        el.textContent = '';
+        el.dataset.sbomState = 'missing';
       }
     }
 

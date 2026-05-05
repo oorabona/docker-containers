@@ -14,7 +14,7 @@
   <!-- tokens.css MUST load before theme.css — defines variables theme.css references -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/theme.css">
-  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/dashboard.css">
+  {%- comment -%} dashboard.css not loaded here: audit (PR6) confirmed zero dashboard-* class usage on blog pages. blog.css is the only blog-thematic stylesheet needed. {%- endcomment -%}
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/blog.css">
 </head>
 <body>
