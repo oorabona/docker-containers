@@ -187,15 +187,21 @@
              title="Reproduce these checks yourself — verification guide">🔍 REPRODUCE THESE CHECKS LOCALLY</a>
         </trust-strip>
 
-        <!-- Provenance section — Camille's primary screenshot target (Phase C PR2) -->
         {%- comment -%}
-          Provenance fixes (PR-A 2026-05-05):
-          • F1: guard `_prov_var.base_image contains "${"` before rendering — pipeline may emit unexpanded shell vars.
-          • F4: only append "— last attempted YYYY-MM-DD" when `last_build_iso` is present; never assert "Never built" (factually wrong: many variants have build_digest but no last_build_iso field exposed in containers.yml yet).
-          Fix #2: render one <section class="provenance"> per variant with data-variant-tag.
-          JS (container-detail.js phase-b-variant-changed listener) shows/hides by matching tag.
-          First variant is visible; others start hidden.
-          For no-variant containers, fall through to the single-variant render below.
+          Render one <section class="provenance"> per variant with
+          data-variant-tag; container-detail.js (phase-b-variant-changed)
+          shows/hides by matching tag. First variant visible, others
+          hidden. No-variant containers fall through to the single-render
+          branch below.
+
+          Two truthfulness guards live inside each branch:
+          - "Base image" row: skip raw output when value still contains
+            "${...}" — the build pipeline can emit unexpanded shell
+            placeholders into the lineage record. Render "not available".
+          - "awaiting next build" rows: only append a date suffix when
+            last_build_iso is present. Never assert "Never built" — many
+            variants carry a real build_digest while last_build_iso is
+            still absent from containers.yml.
         {%- endcomment -%}
         {%- if page.versions -%}
           {%- comment -%}

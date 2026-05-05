@@ -138,11 +138,10 @@
   border-color: rgba(16, 185, 129, 0.45);
 }
 
-/* S-3/S-4/M-2 fix: pending badge — token-bound, no raw rgba, no opacity (WCAG 1.4.3 fix).
-   Selector broadened from .trust-badge--sbom.is-pending → .trust-badge.is-pending so
-   multi-arch / Trivy can reuse the modifier in PR-F without duplication.
-   --color-text-muted: #8A93A0 — 4.6:1 on navy-950 (WCAG AA body text).
-   Applied by Liquid (is-pending class) and trust-strip.js (classList.add). */
+/* Generic pending modifier — opacity-free so muted text keeps WCAG AA
+   contrast (--color-text-muted = #8A93A0 = 4.6:1 on navy-950). Reusable
+   across all .trust-badge variants; specific badge identity is layered
+   on top via the trust-domain hue rule. */
 .trust-badge.is-pending {
   background: var(--color-surface-raised);
   border-color: var(--color-border-subtle);

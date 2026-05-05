@@ -33,26 +33,19 @@
       this._updateMultiArch(variant.multi_arch_platforms);
     }
 
-    // M-1 fix: 2-state SBOM badge (drop N/A / partial middle state — both resolve to PENDING).
-    // attested (url AND id) → styled chip with link, text "📋 SBOM ATTESTED".
-    // else → muted is-pending chip, text "📋 SBOM PENDING", no href.
     _updateSbom(url, id) {
       const el = this.querySelector('[data-trust="sbom"]');
       if (!el) return;
       if (url && id) {
-        // Attested — both url and id present
         el.setAttribute('href', url);
         el.textContent = '📋 SBOM ATTESTED';
-        el.dataset.sbomState = 'attested';
         el.title = "View Sigstore attestation for this image's SBOM";
         el.style.display = '';
         el.classList.remove('is-pending');
       } else {
-        // Pending — attestation not yet generated or incomplete
         el.style.display = '';
         el.removeAttribute('href');
         el.textContent = '📋 SBOM PENDING';
-        el.dataset.sbomState = 'pending';
         el.classList.add('is-pending');
         el.title = 'SBOM attestation not yet generated. Will populate on next successful build with cosign attestation.';
       }
@@ -71,7 +64,6 @@
       const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      // S-1 fix: "(advisory)" qualifier and tooltip match Liquid initial state in container-card.html.
       el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
       el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
       el.style.display = '';
