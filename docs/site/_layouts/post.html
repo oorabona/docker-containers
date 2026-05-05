@@ -43,18 +43,18 @@
           <p class="post-lede">{{ page.description }}</p>
         {% endif %}
         <div class="post-meta">
-          <span class="blog-card-meta-item">
+          <span class="post-meta-item">
             <i class="ti ti-calendar" aria-hidden="true"></i>
             {{ page.date | date: "%b %-d, %Y" }}
           </span>
           {% assign words = content | number_of_words %}
           {% assign read_minutes = words | divided_by: 200 | plus: 1 %}
-          <span class="blog-card-meta-item">
+          <span class="post-meta-item">
             <i class="ti ti-clock" aria-hidden="true"></i>
             {{ read_minutes }} min read
           </span>
-          {% if page.tags %}
-            <span class="blog-card-tags">
+          {% if page.tags and page.tags.size > 0 %}
+            <span class="post-meta-tags">
               {% for tag in page.tags %}
                 <span class="tag-pill">{{ tag }}</span>
               {% endfor %}
