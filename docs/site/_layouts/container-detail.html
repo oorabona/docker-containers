@@ -37,7 +37,11 @@
 
   <div class="container">
     <main id="main-content" role="main">
-      <h1 class="sr-only">{{ page.name }} — container details</h1>
+      {%- comment -%}
+        Heading hierarchy (WCAG 2.4.6): single visible h1 = container name (replaces sr-only h1 + duplicate h2).
+        Section headings use h2. The sr-only h1 is removed; this h1 is the visible page title.
+        CSS .detail-title h1 already targets this level for 2rem/700 styling.
+      {%- endcomment -%}
       <div class="container-detail-page">
 
         <!-- Back link -->
@@ -48,7 +52,7 @@
         <!-- Header -->
         <div class="detail-header">
           <div class="detail-title">
-            <h2>{{ page.name }}</h2>
+            <h1>{{ page.name }}</h1>
             <span class="detail-badge">{{ page.current_version }}</span>
           </div>
           <div class="detail-actions">
@@ -162,7 +166,8 @@
                href="#security"
                title="Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.">🛡 TRIVY: {{ default_variant.trivy_summary.counts.critical }} CRITICAL (advisory) · SCANNED {{ default_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</a>
           {%- else -%}
-            <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" href="#"></a>
+            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+            <a class="trust-badge trust-badge--trivy" data-trust="trivy" style="display: none" aria-hidden="true" href="#security"></a>
           {%- endif -%}
 
           {%- if default_variant.multi_arch_platforms -%}
@@ -172,7 +177,8 @@
                rel="noopener"
                title="View this image's multi-arch manifest on GHCR">🏗 {{ default_variant.multi_arch_platforms | join: " + " | upcase }}</a>
           {%- else -%}
-            <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" href="#"></a>
+            <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
+            <a class="trust-badge trust-badge--multi-arch" data-trust="multi-arch" style="display: none" aria-hidden="true" href="https://github.com/{{ site.github_username | default: site.github.owner_name }}/{{ site.repository | default: site.github.repository_name }}/pkgs/container/{{ page.name }}" rel="noopener"></a>
           {%- endif -%}
 
           {%- if page.dependency_monitoring.enabled -%}

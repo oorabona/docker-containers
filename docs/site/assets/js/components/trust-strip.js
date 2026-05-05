@@ -55,7 +55,9 @@
       const el = this.querySelector('[data-trust="trivy"]');
       if (!el) return;
       if (!summary || !summary.last_scan) {
+        // WCAG 4.1.2: anchor with display:none must be removed from the AT tree.
         el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
         return;
       }
       const counts = summary.counts || {};
@@ -67,13 +69,16 @@
       el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
       el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
       el.style.display = '';
+      el.removeAttribute('aria-hidden');
     }
 
     _updateMultiArch(platforms) {
       const el = this.querySelector('[data-trust="multi-arch"]');
       if (!el) return;
       if (!platforms || platforms.length === 0) {
+        // WCAG 4.1.2: anchor with display:none must be removed from the AT tree.
         el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
         return;
       }
       // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("AMD64 + ARM64").
@@ -83,6 +88,7 @@
         return arch.toUpperCase();
       }).join(' + ');
       el.style.display = '';
+      el.removeAttribute('aria-hidden');
     }
   }
 

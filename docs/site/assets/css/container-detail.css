@@ -608,7 +608,13 @@
       border-radius: 4px;
       cursor: pointer;
       transition: all 0.2s ease;
-      min-height: 28px;
+      /* 44px minimum touch target (WCAG 2.5.8). Explicit flex centering keeps
+         the label visually balanced when the box height exceeds the content
+         box, including in browsers without native button vertical-centering. */
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
     .detail-registry-btn:hover {
       color: var(--text-primary);
