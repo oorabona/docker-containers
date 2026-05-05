@@ -1,0 +1,56 @@
+---
+layout: page
+---
+{%- comment -%}
+  verify.html — chains layout: page, wraps content in tab + sticky-TOC structure.
+  Reference view is the default (no-JS fallback = Reference, tabs visible but inert).
+  Walkthrough view is toggled by code-copy.js reading ?view=walkthrough.
+{%- endcomment -%}
+
+<div class="verify-page">
+
+  {%- comment -%} Tab switcher — sticky under site-nav {%- endcomment -%}
+  <nav class="verify-tabs" role="tablist" aria-label="Verification documentation views">
+    <button id="tab-reference" role="tab" aria-selected="true" aria-controls="view-reference"
+            data-view="reference" tabindex="0">Reference</button>
+    <button id="tab-walkthrough" role="tab" aria-selected="false" aria-controls="view-walkthrough"
+            data-view="walkthrough" tabindex="-1">Walkthrough</button>
+  </nav>
+
+  <div class="verify-layout">
+
+    <main class="verify-main">
+
+      {%- comment -%} Reference panel — receives the page body via {{ content }} {%- endcomment -%}
+      <section id="view-reference" role="tabpanel" data-view="reference"
+               aria-labelledby="tab-reference">
+        {{ content }}
+      </section>
+
+      {%- comment -%} Walkthrough panel — 4 numbered steps + FAQ {%- endcomment -%}
+      <section id="view-walkthrough" role="tabpanel" data-view="walkthrough"
+               aria-labelledby="tab-walkthrough" hidden>
+        {% include components/verify-walkthrough.html %}
+      </section>
+
+    </main>
+
+    {%- comment -%} Sticky right-side TOC (Reference view only; collapses < 1024px) {%- endcomment -%}
+    <aside class="verify-toc-sticky" aria-label="Reference sections">
+      <h4 class="verify-toc-sticky__heading">On this page</h4>
+      <ul class="verify-toc-sticky__list">
+        <li><a href="#why-this-page-exists">Why this page</a></li>
+        <li><a href="#verifying-the-sbom-attestation">SBOM attestation</a></li>
+        <li><a href="#reading-trivy-scan-results">Trivy scan results</a></li>
+        <li><a href="#inspecting-multi-arch-manifests">Multi-arch manifests</a></li>
+        <li><a href="#auditing-dependency-monitoring">Dependency monitoring</a></li>
+        <li><a href="#reproducing-builds-locally">Reproduce builds locally</a></li>
+        <li><a href="#frequently-asked-questions">FAQ</a></li>
+      </ul>
+    </aside>
+
+  </div>
+
+</div>
+
+<script src="{{ '/assets/js/code-copy.js' | relative_url }}" defer></script>

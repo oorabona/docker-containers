@@ -743,6 +743,11 @@ body {
   font-size: 1rem;
 }
 
+/* Verify page needs wider content area to accommodate 2-column grid (main + 220px TOC + 3rem gap) */
+.page-content:has(.verify-page) {
+  max-width: 1100px;
+}
+
 .page-content article h1 {
   font-size: clamp(1.85rem, 4.5vw, 2.5rem);
   line-height: 1.15;
@@ -797,3 +802,488 @@ body {
     padding: 5rem 1rem 2rem;
   }
 }
+
+/* ===== Verify page ===== */
+/* All selectors scoped under .verify-page to prevent cascade bleed.
+   Tokens referenced are from tokens.css (loaded first). */
+
+/* ----- Page container ----- */
+
+.verify-page {
+  width: 100%;
+}
+
+/* ----- Tab switcher ----- */
+
+.verify-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0.75rem 0 0;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.verify-tabs button {
+  font-family: var(--font-family-mono);
+  font-size: 0.8rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--letter-spacing-wide);
+  text-transform: uppercase;
+  padding: 0.45rem 1rem;
+  border: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--motion-duration-short) var(--easing-standard),
+              background var(--motion-duration-short) var(--easing-standard);
+  position: relative;
+  bottom: -1px;
+}
+
+.verify-tabs button:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+}
+
+.verify-tabs button[aria-selected="true"] {
+  color: var(--color-trust-verify-fg);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-bottom-color: var(--color-surface-raised);
+}
+
+.verify-tabs button:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* ----- Grid layout: main + sticky TOC ----- */
+
+.verify-layout {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 3rem;
+  align-items: start;
+}
+
+/* ----- Reference main content ----- */
+
+.verify-main {
+  min-width: 0; /* prevent grid overflow */
+}
+
+/* Section headings: mono eyebrow style (design spec Phase C) */
+/* Scoped to Reference panel only (id specificity 0,2,1 beats .page-content article h2 at 0,1,2).
+   :not(.verify-step__title) prevents bleed into Walkthrough step card headings. */
+#view-reference h2:not(.verify-step__title) {
+  font-family: var(--font-family-mono);
+  font-size: 0.78rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 2.75rem 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  scroll-margin-top: 80px;
+}
+
+/* Explicit reset: walkthrough step titles must NOT inherit the mono-eyebrow style */
+.verify-step__title {
+  font-family: inherit;
+  font-size: 1.2rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--color-text-primary);
+  border-bottom: none;
+  margin: 0 0 0.5rem;
+  padding-bottom: 0;
+}
+
+/* Trust-domain hue overrides: SBOM = teal, multi-arch section = violet */
+#view-reference h2#verifying-the-sbom-attestation,
+#view-reference h2[id*="sbom"] {
+  color: var(--color-trust-sbom-fg);
+}
+
+#view-reference h2#inspecting-multi-arch-manifests,
+#view-reference h2[id*="multi-arch"] {
+  color: var(--color-trust-multiarch-fg);
+}
+
+.verify-main h3 {
+  font-size: 1.05rem;
+  font-weight: var(--font-weight-semibold);
+  margin: 1.75rem 0 0.5rem;
+  scroll-margin-top: 80px;
+  color: var(--color-text-primary);
+}
+
+.verify-main p {
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+  margin: 0 0 1rem;
+  max-width: 65ch;
+}
+
+.verify-main p strong,
+.verify-main p code {
+  color: var(--color-text-primary);
+}
+
+.verify-main ul,
+.verify-main ol {
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+  padding-left: 1.4rem;
+  margin: 0 0 1rem;
+  max-width: 65ch;
+}
+
+.verify-main p code,
+.verify-main ul code,
+.verify-main li code {
+  font-family: var(--font-family-mono);
+  font-size: 0.85em;
+  background: var(--color-surface-raised);
+  padding: 0.1em 0.4em;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+
+/* ----- Terminal chrome (.code-block) ----- */
+
+.code-block {
+  margin: 1rem 0 1.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised);
+  overflow: hidden;
+}
+
+.code-block__header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0.85rem;
+  background: var(--color-surface-overlay);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-family: var(--font-family-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.code-block__lang {
+  flex: 1;
+}
+
+.code-block__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.65rem;
+  min-height: 24px;
+  min-width: 24px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  transition: color var(--motion-duration-instant) var(--easing-standard),
+              border-color var(--motion-duration-instant) var(--easing-standard);
+}
+
+.code-block__copy:hover {
+  color: var(--color-action-primary);
+  border-color: var(--color-action-primary);
+}
+
+.code-block__copy.is-copied {
+  color: var(--color-feedback-success-fg);
+  border-color: var(--color-feedback-success-fg);
+}
+
+.code-block__copy i {
+  font-size: 0.85rem;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 1rem 0.85rem;
+  font-family: var(--font-family-mono);
+  font-size: 0.825rem;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+  overflow-x: auto;
+  background: transparent;
+}
+
+.code-block pre code {
+  display: block;
+}
+
+/* Shell prompt — green, excluded from copy via JS */
+.code-block .prompt {
+  color: var(--color-feedback-success-fg);
+  user-select: none;
+}
+
+/* Inline comment spans within code blocks — replaces style="color: var(--color-text-muted)" */
+.code-block .comment {
+  color: var(--color-text-muted);
+}
+
+/* ----- Sticky TOC (right sidebar) ----- */
+
+.verify-toc-sticky {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  padding-top: 0.25rem;
+}
+
+/* Walkthrough view: TOC anchors are Reference-only — hide the sidebar and collapse to 1-col */
+.verify-layout[data-view="walkthrough"] .verify-toc-sticky {
+  display: none;
+}
+
+.verify-layout[data-view="walkthrough"] {
+  grid-template-columns: 1fr;
+}
+
+.verify-toc-sticky__heading {
+  font-family: var(--font-family-mono);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 0.85rem;
+}
+
+.verify-toc-sticky__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.verify-toc-sticky__list a {
+  display: block;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: color var(--motion-duration-instant) var(--easing-standard),
+              border-color var(--motion-duration-instant) var(--easing-standard);
+}
+
+.verify-toc-sticky__list a:hover {
+  color: var(--color-text-primary);
+  border-left-color: var(--color-text-muted);
+}
+
+/* ----- Walkthrough view ----- */
+
+.verify-walkthrough {
+  padding-bottom: 3rem;
+}
+
+.verify-walkthrough__hero {
+  padding: 1.5rem 0 1rem;
+}
+
+.verify-walkthrough__eyebrow {
+  display: inline-block;
+  font-family: var(--font-family-mono);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-trust-verify-fg);
+  margin-bottom: 0.75rem;
+}
+
+.verify-walkthrough__lead {
+  font-size: 1rem;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  max-width: 60ch;
+}
+
+/* Step list */
+.verify-step-list {
+  list-style: none;
+  padding: 0;
+  margin: 2rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.verify-step {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 1.5rem;
+  padding: 1.5rem 1.75rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+}
+
+.verify-step__num {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-overlay);
+  color: var(--color-trust-verify-fg);
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-weight-semibold);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.verify-step__title {
+  font-size: 1.2rem;
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 0.5rem;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
+
+.verify-step__summary {
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0 0 1rem;
+  max-width: 65ch;
+}
+
+.verify-step__body p:not(.verify-step__summary) {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  margin: 0.85rem 0 0;
+  max-width: 65ch;
+}
+
+.verify-step__body p code,
+.verify-step__body li code {
+  font-family: var(--font-family-mono);
+  font-size: 0.85em;
+  background: var(--color-surface-overlay);
+  padding: 0.1em 0.4em;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+
+/* FAQ accordion */
+.verify-faq {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.verify-faq__heading {
+  font-family: var(--font-family-mono);
+  font-size: 0.78rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 1rem;
+}
+
+.verify-faq__item {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.verify-faq__item summary {
+  padding: 0.95rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-weight: var(--font-weight-medium);
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.verify-faq__item summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Chevron via CSS mask — no inline SVG needed */
+.verify-faq__item summary::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--color-text-muted);
+  -webkit-mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat center / contain;
+  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat center / contain;
+  transition: transform var(--motion-duration-normal) var(--easing-standard);
+}
+
+.verify-faq__item[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.verify-faq__item p {
+  padding: 0 0 1rem;
+  margin: 0;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  font-size: 0.9rem;
+  max-width: 65ch;
+}
+
+.verify-faq__item p code {
+  font-family: var(--font-family-mono);
+  font-size: 0.85em;
+  background: var(--color-surface-raised);
+  padding: 0.1em 0.4em;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+}
+
+/* ----- Responsive: collapse TOC below 1024px ----- */
+
+@media (max-width: 1024px) {
+  .verify-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .verify-toc-sticky {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .verify-step {
+    grid-template-columns: 1fr;
+    padding: 1.25rem;
+  }
+
+  .verify-step__num {
+    margin-bottom: 0.25rem;
+  }
+}
+
+/* ===== End verify page ===== */

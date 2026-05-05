@@ -1,0 +1,120 @@
+{%- comment -%}
+  verify-walkthrough.html — four-step guided walkthrough for the verify page.
+  Rendered in the Walkthrough tabpanel. Uses the same .code-block convention
+  as the Reference view so copy buttons work with the same JS handler.
+{%- endcomment -%}
+
+<div class="verify-walkthrough">
+
+  <header class="verify-walkthrough__hero">
+    <span class="verify-walkthrough__eyebrow">Verification walkthrough</span>
+    <p class="verify-walkthrough__lead">Four steps that take you from a published image digest to a verified SBOM, scanned CVE inventory, and locally-rebuilt container.</p>
+  </header>
+
+  <ol class="verify-step-list" aria-label="Verification steps">
+
+    <li class="verify-step">
+      <div class="verify-step__num" aria-hidden="true">1</div>
+      <div class="verify-step__body">
+        <h2 class="verify-step__title">Verify the SBOM attestation</h2>
+        <p class="verify-step__summary">Each SBOM is signed via Sigstore (<code>actions/attest-sbom</code>) and anchored to the image digest. The attestation lives in GitHub's public attestations API — no auth needed.</p>
+        <div class="code-block" data-copy="gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona">
+          <div class="code-block__header">
+            <span class="code-block__lang">bash</span>
+            <button class="code-block__copy" type="button" data-copy-button
+                    aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code><span class="prompt">$</span> gh attestation verify oci://ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt; --owner oorabona</code></pre>
+        </div>
+        <p>The SBOM badge on each container card opens the public attestation viewer in your browser — SBOM payload, Sigstore bundle, and signing certificate chain visible without login.</p>
+      </div>
+    </li>
+
+    <li class="verify-step">
+      <div class="verify-step__num" aria-hidden="true">2</div>
+      <div class="verify-step__body">
+        <h2 class="verify-step__title">Read the Trivy scan results</h2>
+        <p class="verify-step__summary">Trivy scans run on every build in advisory mode. Results land in GitHub's Code Scanning API and are queryable with any authenticated <code>gh</code> session — no special scope required.</p>
+        <div class="code-block" data-copy="gh api repos/oorabona/docker-containers/code-scanning/alerts --paginate -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'">
+          <div class="code-block__header">
+            <span class="code-block__lang">bash</span>
+            <button class="code-block__copy" type="button" data-copy-button
+                    aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code><span class="prompt">$</span> gh api repos/oorabona/docker-containers/code-scanning/alerts \
+  --paginate \
+  -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
+        </div>
+        <p>To filter to a single variant, match on the <code>category</code> field — it encodes the container name and platform (e.g. <code>container-postgres-18-alpine-linux/amd64</code>). The dashboard surfaces only CRITICAL counts; everything else is accessible through the API call above.</p>
+      </div>
+    </li>
+
+    <li class="verify-step">
+      <div class="verify-step__num" aria-hidden="true">3</div>
+      <div class="verify-step__body">
+        <h2 class="verify-step__title">Inspect the multi-arch manifest</h2>
+        <p class="verify-step__summary">Multi-arch images publish a manifest list referencing per-platform image manifests. To see the published architectures of any tag:</p>
+        <div class="code-block" data-copy="docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;">
+          <div class="code-block__header">
+            <span class="code-block__lang">bash</span>
+            <button class="code-block__copy" type="button" data-copy-button
+                    aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code><span class="prompt">$</span> docker manifest inspect ghcr.io/oorabona/&lt;container&gt;:&lt;tag&gt;</code></pre>
+        </div>
+        <p>Look at the <code>manifests</code> array — each entry's <code>platform.architecture</code> reveals the published architectures. The architecture badge on each container card reflects this inspection at build time.</p>
+      </div>
+    </li>
+
+    <li class="verify-step">
+      <div class="verify-step__num" aria-hidden="true">4</div>
+      <div class="verify-step__body">
+        <h2 class="verify-step__title">Reproduce the build locally</h2>
+        <p class="verify-step__summary">Every container is built by shell scripts with no opaque CI steps. Clone the repo and run the same entry point the pipeline uses:</p>
+        <div class="code-block" data-copy="git clone https://github.com/oorabona/docker-containers.git&#10;cd docker-containers&#10;./make build &lt;container&gt; [version]">
+          <div class="code-block__header">
+            <span class="code-block__lang">bash</span>
+            <button class="code-block__copy" type="button" data-copy-button
+                    aria-label="Copy command"><i class="ti ti-copy"></i><span class="copy-label">Copy</span></button>
+          </div>
+          <pre><code><span class="prompt">$</span> git clone https://github.com/oorabona/docker-containers.git
+<span class="prompt">$</span> cd docker-containers
+<span class="prompt">$</span> ./make build &lt;container&gt; [version]</code></pre>
+        </div>
+        <p>BuildKit must be enabled (<code>DOCKER_BUILDKIT=1</code> or Docker 23+). Compare the resulting digest against the dashboard's published digest to confirm reproducibility.</p>
+      </div>
+    </li>
+
+  </ol>
+
+  <section class="verify-faq" aria-labelledby="faq-heading">
+    <h2 id="faq-heading" class="verify-faq__heading">Frequently asked questions</h2>
+
+    <details class="verify-faq__item">
+      <summary>Why does the dashboard show "Trivy scan results are advisory"?</summary>
+      <p>Trivy runs as <code>continue-on-error</code> in CI. The build does not fail when CVEs are detected; it surfaces the count for the operator to triage. Use the count as input to your image-acceptance policy, not as a blocking gate.</p>
+    </details>
+
+    <details class="verify-faq__item">
+      <summary>What does the SBOM badge state mean?</summary>
+      <p><strong>ATTESTED</strong> means both <code>attestation_url</code> and <code>attestation_id</code> are present in the published lineage record — the SBOM has been signed via Sigstore and is verifiable. <strong>PENDING</strong> covers all other cases and indicates the image will be re-attested on the next successful build.</p>
+    </details>
+
+    <details class="verify-faq__item">
+      <summary>How is the SBOM signed?</summary>
+      <p>Each successful build runs <code>anchore/sbom-action</code> to generate an SPDX JSON SBOM, then <code>actions/attest-sbom</code> signs it via Sigstore (keyless, OIDC-based) and uploads the attestation to GHCR. Verify with <code>gh attestation verify oci://ghcr.io/oorabona/&lt;image&gt;:&lt;tag&gt; --owner oorabona</code>.</p>
+    </details>
+
+    <details class="verify-faq__item">
+      <summary>Can I trust a container that shows "SBOM PENDING"?</summary>
+      <p>It is not a security flag. PENDING means the build pipeline has not yet re-run since the image was published, or the attestation pipeline hit a transient failure that will be retried. Pull by digest from a previous attested build if you need verifiable SBOM provenance immediately.</p>
+    </details>
+
+    <details class="verify-faq__item">
+      <summary>How fresh are the Trivy scan dates shown on the dashboard?</summary>
+      <p>The "SCANNED YYYY-MM-DD" timestamp on each Trivy badge reflects the most recent successful Trivy run for the corresponding image variant. Scans run on every build; if a container has not been rebuilt for an extended period, the date will reflect that staleness.</p>
+    </details>
+
+  </section>
+
+</div>
