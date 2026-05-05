@@ -6,6 +6,16 @@
 
 High-performance observability data pipeline for collecting, transforming, and routing logs, metrics, and events. Built on [Vector](https://vector.dev/) with a pre-built musl static binary on Alpine Linux.
 
+## Why this image
+
+This image packages [Vector](https://vector.dev/) as a minimal, production-hardened container suited for vendor-free observability pipelines.
+
+- **Minimal attack surface.** Built on Alpine Linux using the upstream musl-linked static Vector binary from GitHub Releases. The binary is self-contained — it does not depend on glibc or a shell interpreter at runtime, even though Alpine still ships `ash` for image-level operations.
+- **Multiple architectures.** Published for both `linux/amd64` and `linux/arm64`, tested on each arch in CI. Pulls the correct platform layer automatically on `docker pull`.
+- **Verifiable provenance.** Every build produces a Sigstore SBOM attestation (cosign) and a Trivy vulnerability scan. Digests are recorded in build lineage and surfaced on the dashboard.
+- **Automated upstream tracking.** The upstream-monitor workflow checks the Vector GitHub release feed daily and opens a PR when a new version is available, keeping the image current without manual intervention.
+- **Common sink/source coverage.** Supports Docker log collection, syslog, file tailing, Prometheus scrape, and OpenTelemetry out of the box. Pairs directly with the `oorabona/postgres:<version>-full-alpine` flavor (TimescaleDB + ParadeDB) for a complete vendor-free log/metrics store — see the PostgreSQL sink example below.
+
 ## Quick Start
 
 ```bash

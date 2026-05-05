@@ -82,7 +82,14 @@
         var statusColor = card.classList.contains('status-green') ? 'up-to-date' :
                          card.classList.contains('status-warning') ? 'update-available' :
                          'not-published';
-        var matchesSearch = currentSearch === '' || name.includes(currentSearch);
+        // F1: also match description text and variant tag names
+        var descEl = card.querySelector('.card-description');
+        var desc = descEl ? descEl.textContent.toLowerCase() : '';
+        var variantTexts = Array.from(card.querySelectorAll('.variant-tag'))
+          .map(function(t) { return t.dataset.tag ? t.dataset.tag.toLowerCase() : ''; })
+          .join(' ');
+        var searchable = name + ' ' + desc + ' ' + variantTexts;
+        var matchesSearch = currentSearch === '' || searchable.includes(currentSearch);
         var matchesStatus = currentStatus === 'all' || statusColor === currentStatus;
         var isVisible = matchesSearch && matchesStatus;
         card.style.display = isVisible ? '' : 'none';
@@ -140,12 +147,37 @@
       var card = element.closest('.container-card');
       var tag = element.dataset.tag;
 
-      card.querySelectorAll('.variant-tag').forEach(function(t) {
-        t.classList.remove('selected');
+      var variantTags = card.querySelectorAll('.variant-tag');
+      // The card's true default is the FIRST variant carrying the
+      // default badge — multi-version cards (e.g. postgres) repeat the
+      // badge on every version's base variant, so iterating every match
+      // and overwriting would point at the last version's default
+      // instead of the one the page initially selected.
+      var defaultVariantEl = null;
+      variantTags.forEach(function(t) {
+        if (!defaultVariantEl && t.querySelector('.badge-primary, .badge[aria-hidden]')) {
+          defaultVariantEl = t;
+        }
+        t.classList.remove('selected', 'is-reset-target');
         t.setAttribute('aria-pressed', 'false');
       });
       element.classList.add('selected');
       element.setAttribute('aria-pressed', 'true');
+      // When a non-default variant is selected, surface the default pill
+      // as a reset affordance (visual emphasis + tooltip swap).
+      if (defaultVariantEl && defaultVariantEl !== element) {
+        defaultVariantEl.classList.add('is-reset-target');
+        if (!defaultVariantEl.dataset.origTitle) {
+          defaultVariantEl.dataset.origTitle = defaultVariantEl.title || '';
+        }
+        defaultVariantEl.title = 'Reset to default variant';
+      } else if (defaultVariantEl) {
+        // default is now selected, restore title
+        if (defaultVariantEl.dataset.origTitle !== undefined) {
+          defaultVariantEl.title = defaultVariantEl.dataset.origTitle;
+          delete defaultVariantEl.dataset.origTitle;
+        }
+      }
 
       var pullSection = card.querySelector('.pull-section');
       var ghcrBase = pullSection ? pullSection.dataset.ghcrBase : '';
@@ -199,11 +231,37 @@
         }, 2000);
       }
 
-      navigator.clipboard.writeText(input.value).then(showCopied).catch(function() {
+      // Modern path: navigator.clipboard.writeText returns a Promise but
+      // can also throw synchronously when clipboard is undefined (insecure
+      // contexts, older browsers). Wrap to fall through to the legacy path.
+      var clipboardPromise = null;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          clipboardPromise = navigator.clipboard.writeText(input.value);
+        }
+      } catch (e) {
+        clipboardPromise = null;
+      }
+
+      function legacyCopy() {
         input.select();
-        document.execCommand('copy');
-        showCopied();
-      });
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        if (ok) {
+          showCopied();
+        } else {
+          console.warn('[dashboard] clipboard copy failed (execCommand returned false)');
+        }
+      }
+
+      if (clipboardPromise && typeof clipboardPromise.then === 'function') {
+        clipboardPromise.then(showCopied).catch(function(e) {
+          console.warn('[dashboard] navigator.clipboard.writeText failed; falling back', e);
+          legacyCopy();
+        });
+      } else {
+        legacyCopy();
+      }
     }
 
     // Event delegation (F-006: no inline onclick handlers)

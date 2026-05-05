@@ -163,7 +163,7 @@
             {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
             <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
                   {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
-                  title="{{ variant.description }} — Click to select"
+                  title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
                   data-tag="{{ variant.tag }}"
                   data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                   data-size-arm64="{{ variant.size_arm64 | default: '' }}"
@@ -187,7 +187,7 @@
       <div class="variant-tags">
         {% for variant in include.variants %}
           <span class="variant-tag{% if forloop.first %} selected{% endif %}"
-                title="{{ variant.description }} — Click to select"
+                title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
                 data-tag="{{ variant.tag }}"
                 data-size-amd64="{{ variant.size_amd64 | default: '' }}"
                 data-size-arm64="{{ variant.size_arm64 | default: '' }}"

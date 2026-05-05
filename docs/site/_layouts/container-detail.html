@@ -243,7 +243,7 @@
               <dt>Manifest digest (amd64)</dt>
               <dd>
                 <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -252,7 +252,7 @@
               <dt>Manifest digest (arm64)</dt>
               <dd>
                 <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -302,7 +302,7 @@
               <dd class="provenance-verify-cmd">
                 {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner oorabona' -%}
                 <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
-                <button type="button" class="copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
+                <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                 <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
                    title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
               </dd>
@@ -345,7 +345,7 @@
               <dt>Manifest digest (amd64)</dt>
               <dd>
                 <code class="hash hash-long">{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ _prov_var.manifest_digest_amd64 | default: _prov_var.build_digest }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -354,7 +354,7 @@
               <dt>Manifest digest (arm64)</dt>
               <dd>
                 <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -404,7 +404,7 @@
               <dd class="provenance-verify-cmd">
                 {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_var.tag | append: ' --owner oorabona' -%}
                 <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
-                <button type="button" class="copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
+                <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                 <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
                    title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
               </dd>
@@ -445,7 +445,7 @@
               <dt>Manifest digest (amd64)</dt>
               <dd>
                 <code class="hash hash-long">{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy manifest digest" aria-label="Copy manifest digest" data-copy="{{ prov_variant.manifest_digest_amd64 | default: prov_variant.build_digest }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -454,7 +454,7 @@
               <dt>Manifest digest (arm64)</dt>
               <dd>
                 <code class="hash hash-long">{{ prov_variant.manifest_digest_arm64 }}</code>
-                <button class="copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ prov_variant.manifest_digest_arm64 }}">⧉</button>
+                <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ prov_variant.manifest_digest_arm64 }}">⧉</button>
               </dd>
             </div>
             {%- endif -%}
@@ -505,7 +505,7 @@
                 {%- assign _prov_tag = prov_variant.tag | default: page.current_version -%}
                 {%- assign _verify_cmd = 'gh attestation verify oci://ghcr.io/oorabona/' | append: page.name | append: ':' | append: _prov_tag | append: ' --owner oorabona' -%}
                 <code class="hash provenance-cmd">{{ _verify_cmd }}</code>
-                <button type="button" class="copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
+                <button type="button" class="provenance-copy-btn" data-copy="{{ _verify_cmd }}" data-aria-label="Copy verify command" aria-label="Copy verify command">⧉</button>
                 <a href="{{ '/verify-images/' | relative_url }}" class="provenance-verify-link"
                    title="Verification guide — step-by-step commands to reproduce SBOM, Trivy, and cosign checks">guide →</a>
               </dd>
@@ -561,7 +561,7 @@
                             {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                             aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
                             {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
-                            title="{{ variant.description }}">
+                            title="{{ variant.when_to_use | default: variant.description | escape }}">
                       {%- if synthetic -%}{{ variant.name }}{%- else -%}{{ variant.name }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}{%- endif -%}
                     </button>
                   {% endfor %}
@@ -584,7 +584,7 @@
                             {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
                             {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
                             aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
-                            title="{{ variant.description }}">
+                            title="{{ variant.when_to_use | default: variant.description | escape }}">
                       {{ variant.tag }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
                     </button>
                   {% endfor %}

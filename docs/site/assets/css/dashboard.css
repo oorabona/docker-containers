@@ -593,6 +593,21 @@
       color: #bfdbfe;
     }
 
+    /* Default pill indicated as a clickable reset target while a
+       non-default variant is the active selection. dashboard.js toggles
+       the modifier; the rule lives here because dashboard.css is the
+       only stylesheet loaded on the dashboard page. */
+    .variant-tag.is-reset-target {
+      border-style: dashed;
+      border-color: rgba(96, 165, 250, 0.7);
+      opacity: 0.85;
+    }
+    .variant-tag.is-reset-target::after {
+      content: ' ↺';
+      font-size: 0.7em;
+      opacity: 0.8;
+    }
+
     .variant-tag:hover {
       background: rgba(139, 92, 246, 0.35);
       border-color: rgba(167, 139, 250, 0.6);
