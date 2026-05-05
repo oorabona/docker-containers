@@ -33,34 +33,21 @@
       this._updateMultiArch(variant.multi_arch_platforms);
     }
 
-    // 3-state SBOM badge: attested (url+id), partial/pending (one only), missing (neither).
     _updateSbom(url, id) {
       const el = this.querySelector('[data-trust="sbom"]');
       if (!el) return;
       if (url && id) {
-        // Fully attested
         el.setAttribute('href', url);
         el.textContent = '📋 SBOM ATTESTED';
-        el.dataset.sbomState = 'attested';
         el.title = "View Sigstore attestation for this image's SBOM";
         el.style.display = '';
-      } else if (url || id) {
-        // Partial — attestation data incomplete, awaiting next build
-        if (url) {
-          el.setAttribute('href', url);
-        } else {
-          el.removeAttribute('href');
-        }
-        el.textContent = '📋 SBOM PENDING';
-        el.dataset.sbomState = 'partial';
-        el.title = 'SBOM attestation incomplete — awaiting next build';
-        el.style.display = '';
+        el.classList.remove('is-pending');
       } else {
-        // Missing — hide badge, blank text for parity with Liquid (no misleading label if display override)
-        el.style.display = 'none';
+        el.style.display = '';
         el.removeAttribute('href');
-        el.textContent = '';
-        el.dataset.sbomState = 'missing';
+        el.textContent = '📋 SBOM PENDING';
+        el.classList.add('is-pending');
+        el.title = 'SBOM attestation not yet generated. Will populate on next successful build with cosign attestation.';
       }
     }
 
@@ -77,8 +64,8 @@
       const sev = critical > 0 ? 'critical' : (high > 0 ? 'high' : 'info');
       el.setAttribute('data-severity', sev);
       const date = (summary.last_scan || '').slice(0, 10);
-      // Fix #8/#9: brand-voice uppercase — matches Liquid initial state ("TRIVY: N CRITICAL · SCANNED")
-      el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL · SCANNED ' + date;
+      el.textContent = '🛡 TRIVY: ' + critical + ' CRITICAL (advisory) · SCANNED ' + date;
+      el.title = 'Trivy scan results are advisory; severity counts indicate detected CVEs but do not block builds.';
       el.style.display = '';
     }
 
