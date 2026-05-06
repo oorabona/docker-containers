@@ -17,9 +17,13 @@ extensions:
 builtin_extensions: []
 
 # shared_preload_libraries (inherited from base)
-# pg_cron requires shared_preload; paradedb does NOT (PG17+)
+# pg_cron is a scheduled-job background worker.
+# pg_search (ParadeDB) requires shared_preload_libraries since 0.23.x: the
+# extension uses a background worker for the BM25 search engine and the
+# CREATE EXTENSION call fails at initdb time without it.
 shared_preload_libraries:
   - pg_cron
+  - pg_search
 
 # License notice: paradedb (pg_search) is AGPL-3.0 licensed.
 # Ensure compliance with AGPL terms when distributing this flavor.

@@ -275,6 +275,13 @@ RUN PRELOAD=""; \
     if [ -f /usr/local/lib/postgresql/pg_cron.so ]; then \
         PRELOAD="${PRELOAD:+$PRELOAD,}pg_cron"; \
     fi; \
+    # pg_search if present — ParadeDB 0.23.x added a background worker
+    # requirement, so the extension must be in shared_preload_libraries BEFORE
+    # Postgres starts; without it `CREATE EXTENSION pg_search` raises
+    # "pg_search must be loaded via shared_preload_libraries" during initdb.
+    if [ -f /usr/local/lib/postgresql/pg_search.so ]; then \
+        PRELOAD="${PRELOAD:+$PRELOAD,}pg_search"; \
+    fi; \
     # Save for reference
     echo "$PRELOAD" > /etc/postgresql-preload.conf; \
     # Modify postgresql.conf.sample so initdb creates config with preload libraries
