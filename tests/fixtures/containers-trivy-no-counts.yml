@@ -1,0 +1,27 @@
+# Fixture: trivy_summary present with last_scan set but counts field missing.
+# Used by: data-completeness.bats "missing counts in trivy_summary is flagged"
+# Expected: verify-dashboard-data.sh flags the variant, exits non-zero under STRICT=1.
+- name: myapp
+  versions:
+    - version: "1.0"
+      variants:
+        - name: base
+          tag: 1.0-base
+          description: "Base image"
+          is_default: true
+          size_amd64: "100MB"
+          size_arm64: "98MB"
+          build_digest: "sha256:aabb1122ccdd3344"
+          base_image: "alpine:3.19"
+          attestation_id: "99999"
+          attestation_url: "https://github.com/oorabona/docker-containers/attestations/99999"
+          multi_arch_platforms:
+            - linux/amd64
+            - linux/arm64
+          sbom_summary:
+            total_packages: 50
+            ecosystem_breakdown:
+              alpine: 50
+          # trivy_summary has last_scan but no counts — smoke gate must flag this.
+          trivy_summary:
+            last_scan: "2026-05-01T10:00:00Z"

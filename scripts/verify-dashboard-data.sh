@@ -93,7 +93,13 @@ gaps_tsv=$(jq -r '
       .value == "" or
       (.value | type == "object" and length == 0) or
       (.value | type == "array" and length == 0) or
-      (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
+      # Require last_scan + counts object + counts.critical as number (sentinel for
+      # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
+      (.key == "trivy_summary" and (.value | type == "object") and (
+        (.value.last_scan // null) == null or
+        (.value.counts // null | type) != "object" or
+        ((.value.counts.critical // null | type) != "number")
+      ))
     ) |
     "\($c)\tno-variants\t-\t-\t\(.key)"
   elif (.versions // []) | length > 0 then
@@ -119,7 +125,13 @@ gaps_tsv=$(jq -r '
         .value == "" or
         (.value | type == "object" and length == 0) or
         (.value | type == "array" and length == 0) or
-        (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
+        # Require last_scan + counts object + counts.critical as number (sentinel for
+        # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
+        (.key == "trivy_summary" and (.value | type == "object") and (
+          (.value.last_scan // null) == null or
+          (.value.counts // null | type) != "object" or
+          ((.value.counts.critical // null | type) != "number")
+        ))
       ) |
       "\($c)\t\($v)\t\($i)\t\($tag)\t\(.key)"
     end
@@ -143,7 +155,13 @@ gaps_tsv=$(jq -r '
         .value == "" or
         (.value | type == "object" and length == 0) or
         (.value | type == "array" and length == 0) or
-        (.key == "trivy_summary" and (.value | type == "object") and (.value.last_scan // null) == null)
+        # Require last_scan + counts object + counts.critical as number (sentinel for
+        # standard severity keys critical/high/medium/low/info; avoids partial badge renders).
+        (.key == "trivy_summary" and (.value | type == "object") and (
+          (.value.last_scan // null) == null or
+          (.value.counts // null | type) != "object" or
+          ((.value.counts.critical // null | type) != "number")
+        ))
       ) |
       "\($c)\tsingle\t\($i)\t\($tag)\t\(.key)"
     end

@@ -69,6 +69,52 @@ setup() {
     [[ "$output" == *"single-version"* ]]
 }
 
+@test "verify-dashboard-data: missing counts in trivy_summary is flagged" {
+    FIXTURE_NO_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-counts.yml"
+    run "$VERIFY_SCRIPT" "$FIXTURE_NO_COUNTS"
+    # Advisory mode: exits 0 but must warn
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning"* ]]
+    # Must mention trivy_summary and the affected container
+    [[ "$output" == *"trivy_summary"* ]]
+    [[ "$output" == *"myapp"* ]]
+}
+
+@test "verify-dashboard-data STRICT=1: missing counts in trivy_summary exits 1" {
+    FIXTURE_NO_COUNTS="$PROJECT_ROOT/tests/fixtures/containers-trivy-no-counts.yml"
+    STRICT=1 run "$VERIFY_SCRIPT" "$FIXTURE_NO_COUNTS"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"trivy_summary"* ]]
+}
+
+@test "verify-dashboard-data: trivy_summary with last_scan + empty counts object is flagged" {
+    tmpfile=$(mktemp --suffix=.yml)
+    cat > "$tmpfile" <<'EOF'
+- name: scanonly
+  versions:
+    - version: "2.0"
+      variants:
+        - name: base
+          tag: 2.0-base
+          is_default: true
+          build_digest: "sha256:abcdef"
+          attestation_url: "https://example.com/att/1"
+          multi_arch_platforms:
+            - linux/amd64
+          sbom_summary:
+            total_packages: 10
+          trivy_summary:
+            last_scan: "2026-05-01T10:00:00Z"
+            counts: {}
+EOF
+    run "$VERIFY_SCRIPT" "$tmpfile"
+    rm -f "$tmpfile"
+    # counts: {} lacks counts.critical — must be flagged
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::warning"* ]]
+    [[ "$output" == *"trivy_summary"* ]]
+}
+
 @test "verify-dashboard-data: malformed YAML exits 2 with ::error::" {
     tmpfile=$(mktemp --suffix=.yml)
     printf 'foo: [unclosed array\nbar: {malformed\n' > "$tmpfile"
