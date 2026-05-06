@@ -23,6 +23,11 @@
 
     disconnectedCallback() {
       if (this._observer) { this._observer.disconnect(); }
+      // F5: clean up nav resize tracking
+      if (this._navResizeObserver) { this._navResizeObserver.disconnect(); }
+      if (this._resizeHandler) { window.removeEventListener('resize', this._resizeHandler); }
+      // F7: remove version-tabs-changed listener to prevent leak on DOM re-attach
+      if (this._versionTabsHandler) { document.removeEventListener('version-tabs-changed', this._versionTabsHandler); }
     }
 
     // -------------------------------------------------------
@@ -30,8 +35,11 @@
     // -------------------------------------------------------
 
     _parseData() {
+      // F3: Liquid uses | escape (HTML-entity encoding). Browsers auto-decode attribute
+      // values, so attr arrives as raw JSON. decodeURIComponent is wrong here — it throws
+      // URIError on any bare % in tag names or URLs. Drop it entirely.
       var parse = function (attr, fallback) {
-        try { return JSON.parse(decodeURIComponent(attr || '')); }
+        try { return JSON.parse(attr || ''); }
         catch (e) { return fallback; }
       };
 
@@ -169,6 +177,7 @@
     }
 
     // Build a labelled pill group (radiogroup)
+    // F4: roving tabindex — only the active pill has tabindex=0, others -1.
     _makePillGroup(labelText, items, valueKey, selected, pillClass, groupClass) {
       var wrap = document.createElement('div');
       wrap.className = 'vab-pill-group ' + groupClass;
@@ -186,12 +195,15 @@
 
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
+        var isActive = item[valueKey] === selected;
         var pill = document.createElement('button');
         pill.type = 'button';
-        pill.className = pillClass + (item[valueKey] === selected ? ' vab-pill--active' : '');
+        pill.className = pillClass + (isActive ? ' vab-pill--active' : '');
         pill.setAttribute('role', 'radio');
-        pill.setAttribute('aria-checked', item[valueKey] === selected ? 'true' : 'false');
+        pill.setAttribute('aria-checked', isActive ? 'true' : 'false');
         pill.setAttribute('data-value', item[valueKey]);
+        // F4: roving tabindex — only the selected pill is in the tab sequence
+        pill.tabIndex = isActive ? 0 : -1;
         pill.textContent = item.label || item[valueKey];
         row.appendChild(pill);
       }
@@ -342,12 +354,15 @@
       this._dispatchVariantChanged();
     }
 
+    // F4: also update roving tabindex when active pill changes
     _updatePillActive(pillClass, value) {
       var pills = this.querySelectorAll('.' + pillClass);
       for (var i = 0; i < pills.length; i++) {
         var active = pills[i].dataset.value === value;
         pills[i].classList.toggle('vab-pill--active', active);
         pills[i].setAttribute('aria-checked', active ? 'true' : 'false');
+        // F4: keep roving tabindex invariant
+        pills[i].tabIndex = active ? 0 : -1;
       }
     }
 
@@ -409,37 +424,70 @@
       document.dispatchEvent(new CustomEvent('phase-b-variant-changed', {
         bubbles: true, detail: detail
       }));
+
+      // F1: also drive container-detail.js which listens to version-tabs-changed
+      // to update SBOM, changelog, lineage, history, dep-health, etc.
+      // Tag detail.source so our own version-tabs-changed listener can skip it
+      // and prevent A<->B ping-pong.
+      var versionTabsEvent = new CustomEvent('version-tabs-changed', {
+        bubbles: true,
+        detail: { variant: v, tag: detail.tag, source: 'variant-action-bar' }
+      });
+      document.body.dispatchEvent(versionTabsEvent);
     }
 
-    // Two-way sync: if legacy version-tabs fires, update our pills + commands
-    _listenLegacyEvents() {
-      var self = this;
-      document.addEventListener('version-tabs-changed', function (e) {
-        var newTag = e.detail && e.detail.tag;
-        if (!newTag) { return; }
-        var found = null;
-        var variants = self._variants;
-        for (var i = 0; i < variants.length; i++) {
-          if (variants[i].tag === newTag) { found = variants[i]; break; }
-        }
-        if (!found) { return; }
-        self._currentVariant = found;
-        if (found.version) {
-          self._selectedVersion = found.version;
-          self._updatePillActive('vab-version-pill', found.version);
-        }
-        if (found.flavor) {
-          self._selectedFlavor = found.flavor;
-          self._updatePillActive('vab-flavor-pill', found.flavor);
-        }
-        self._updateCommands();
-        self._updateSignals();
-      });
+    // Two-way sync: if legacy version-tabs fires, update our pills + commands.
+    // F1 re-entry guard: skip events that originated from this component.
+    // F7: extracted as named method so disconnectedCallback can removeEventListener.
+    _onVersionTabsChanged(e) {
+      // F1: ignore events we dispatched ourselves — prevents A<->B ping-pong
+      if (e.detail && e.detail.source === 'variant-action-bar') { return; }
+
+      var newTag = e.detail && e.detail.tag;
+      if (!newTag) { return; }
+      var found = null;
+      var variants = this._variants;
+      for (var i = 0; i < variants.length; i++) {
+        if (variants[i].tag === newTag) { found = variants[i]; break; }
+      }
+      if (!found) { return; }
+      this._currentVariant = found;
+      if (found.version) {
+        this._selectedVersion = found.version;
+        this._updatePillActive('vab-version-pill', found.version);
+      }
+      if (found.flavor) {
+        this._selectedFlavor = found.flavor;
+        this._updatePillActive('vab-flavor-pill', found.flavor);
+      }
+      this._updateCommands();
+      this._updateSignals();
     }
 
     // -------------------------------------------------------
     // Sticky / collapse
     // -------------------------------------------------------
+
+    _refreshNavHeight() {
+      var navEl = document.querySelector('.site-nav');
+      var navH = navEl ? Math.round(navEl.getBoundingClientRect().height) : 60;
+      this.style.setProperty('--vab-nav-height', navH + 'px');
+      this._setupStickyObserver(navH);
+    }
+
+    _setupStickyObserver(navH) {
+      if (this._observer) { this._observer.disconnect(); }
+      var self = this;
+      this._observer = new IntersectionObserver(function (entries) {
+        var collapsed = !entries[0].isIntersecting;
+        self._setCollapsed(collapsed);
+      }, {
+        root: null,
+        rootMargin: '-' + navH + 'px 0px 0px 0px',
+        threshold: 0
+      });
+      if (this._sentinelEl) { this._observer.observe(this._sentinelEl); }
+    }
 
     _initSticky() {
       if (!('IntersectionObserver' in window)) { return; }
@@ -449,16 +497,26 @@
       var navH = navEl ? Math.round(navEl.getBoundingClientRect().height) : 60;
       this.style.setProperty('--vab-nav-height', navH + 'px');
 
-      this._observer = new IntersectionObserver(function (entries) {
-        var collapsed = !entries[0].isIntersecting;
-        self._setCollapsed(collapsed);
-      }, {
-        root: null,
-        rootMargin: '-' + navH + 'px 0px 0px 0px',
-        threshold: 0
-      });
+      this._setupStickyObserver(navH);
 
-      this._observer.observe(this._sentinelEl);
+      // F5: keep nav height fresh on resize/orientation change so rootMargin
+      // stays correct across breakpoints.
+      if (typeof ResizeObserver !== 'undefined' && navEl) {
+        this._navResizeObserver = new ResizeObserver(function (entries) {
+          var height = entries[0].contentRect.height;
+          self.style.setProperty('--vab-nav-height', height + 'px');
+          self._setupStickyObserver(Math.round(height));
+        });
+        this._navResizeObserver.observe(navEl);
+      } else {
+        // Fallback: debounced resize listener for browsers without ResizeObserver
+        var resizeTimer;
+        this._resizeHandler = function () {
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(function () { self._refreshNavHeight(); }, 100);
+        };
+        window.addEventListener('resize', this._resizeHandler);
+      }
     }
 
     _setCollapsed(collapsed) {
@@ -515,7 +573,30 @@
         if (toggleBtn) { self._onToggleClick(); return; }
       });
 
-      this._listenLegacyEvents();
+      // F4: keyboard navigation for radiogroup pills (WAI-ARIA APG roving tabindex).
+      // ArrowLeft/Right move focus+selection; Home/End jump to first/last.
+      this.addEventListener('keydown', function (e) {
+        var pill = e.target.closest('.vab-version-pill, .vab-flavor-pill');
+        if (!pill) { return; }
+        var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+        if (keys.indexOf(e.key) === -1) { return; }
+        e.preventDefault();
+        var group = pill.parentElement;
+        var pills = Array.prototype.slice.call(group.querySelectorAll('button'));
+        var idx = pills.indexOf(pill);
+        var next;
+        if (e.key === 'ArrowLeft')       { next = (idx - 1 + pills.length) % pills.length; }
+        else if (e.key === 'ArrowRight') { next = (idx + 1) % pills.length; }
+        else if (e.key === 'Home')       { next = 0; }
+        else                             { next = pills.length - 1; }
+        pills[next].focus();
+        pills[next].click();
+      });
+
+      // F7: store bound handler reference so disconnectedCallback can remove it cleanly.
+      // F1: _onVersionTabsChanged has the re-entry guard (source === 'variant-action-bar').
+      this._versionTabsHandler = this._onVersionTabsChanged.bind(this);
+      document.addEventListener('version-tabs-changed', this._versionTabsHandler);
     }
   }
 

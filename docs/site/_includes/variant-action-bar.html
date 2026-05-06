@@ -32,33 +32,43 @@
 {%- endif -%}
 
 {%- comment -%} Determine unique versions for version pills {%- endcomment -%}
-{%- assign _vab_ver_arr = "" -%}
-{%- if page.versions and page.versions.size > 1 -%}
+{%- comment -%}
+  Use {% capture %} so each field gets its own | jsonify call, producing
+  literal JSON the browser can parse. A chained `| append: ... | jsonify`
+  encodes the whole accumulator string each iteration, yielding deeply-
+  nested-escaped output that fails JSON.parse.
+{%- endcomment -%}
+{%- capture _vab_ver_arr -%}
+{%- if page.versions and page.versions.size > 1 -%}[
   {%- for _vv in page.versions -%}
-    {%- assign _vab_ver_arr = _vab_ver_arr | append: '{"tag":' | append: _vv.base_tag | default: _vv.tag | jsonify | append: ',"label":' | append: _vv.base_tag | default: _vv.tag | jsonify | append: '}' -%}
-    {%- unless forloop.last -%}{%- assign _vab_ver_arr = _vab_ver_arr | append: "," -%}{%- endunless -%}
+    {%- unless forloop.first -%},{%- endunless -%}
+    {"tag":{{ _vv.base_tag | default: _vv.tag | jsonify }},"label":{{ _vv.base_tag | default: _vv.tag | jsonify }}}
   {%- endfor -%}
-{%- endif -%}
+]{%- else -%}[]{%- endif -%}
+{%- endcapture -%}
 
 {%- comment -%} Determine unique flavors for flavor pills {%- endcomment -%}
-{%- assign _vab_fla_arr = "" -%}
+{%- assign _has_flavors = false -%}
 {%- if page.versions and page.versions.size > 0 -%}
   {%- assign _first_ver = page.versions[0] -%}
-  {%- assign _has_flavors = false -%}
   {%- for _fv in _first_ver.variants -%}
     {%- if _fv.name and _fv.name != "" -%}
       {%- assign _has_flavors = true -%}
     {%- endif -%}
   {%- endfor -%}
-  {%- if _has_flavors -%}
-    {%- for _fv in _first_ver.variants -%}
-      {%- if _fv.name and _fv.name != "" -%}
-        {%- assign _vab_fla_arr = _vab_fla_arr | append: '{"name":' | append: _fv.name | jsonify | append: ',"label":' | append: _fv.name | jsonify | append: '}' -%}
-        {%- unless forloop.last -%}{%- assign _vab_fla_arr = _vab_fla_arr | append: "," -%}{%- endunless -%}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- endif -%}
 {%- endif -%}
+{%- capture _vab_fla_arr -%}
+{%- if _has_flavors -%}[
+  {%- assign _fla_first = true -%}
+  {%- for _fv in _first_ver.variants -%}
+    {%- if _fv.name and _fv.name != "" -%}
+      {%- unless _fla_first -%},{%- endunless -%}
+      {%- assign _fla_first = false -%}
+      {"name":{{ _fv.name | jsonify }},"label":{{ _fv.name | jsonify }}}
+    {%- endif -%}
+  {%- endfor -%}
+]{%- else -%}[]{%- endif -%}
+{%- endcapture -%}
 
 {%- comment -%} Build flat variant objects array for JS consumption {%- endcomment -%}
 {%- capture _vab_variants_json -%}[
@@ -97,16 +107,40 @@
     data-default-tag="{{ page.current_version | escape }}"
     data-default-version="{{ _vab_default_version | escape }}"
     data-default-flavor="{{ _vab_default_flavor | escape }}"
-    data-versions="{{ '[' | append: _vab_ver_arr | append: ']' | escape }}"
-    data-flavors="{{ '[' | append: _vab_fla_arr | append: ']' | escape }}"
+    data-versions="{{ _vab_ver_arr | strip | escape }}"
+    data-flavors="{{ _vab_fla_arr | strip | escape }}"
     data-variants="{{ _vab_variants_json | strip | escape }}"
     data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
   ></variant-action-bar>
 
   <noscript>
     <div class="vab-noscript">
-      <p class="vab-noscript-label">Pull command:</p>
-      <code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }}</code>
+      <p class="vab-noscript-label">JavaScript is disabled — showing default variant.</p>
+      <pre><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }}</code></pre>
+      <pre><code>cosign verify ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }} \
+  --certificate-identity-regexp=https://github.com/{{ page.github_username | escape }} \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com</code></pre>
+      {%- if page.versions or page.variants -%}
+      <details>
+        <summary>All variants</summary>
+        <table>
+          <thead><tr><th>Tag</th><th>Pull command</th></tr></thead>
+          <tbody>
+            {%- if page.versions -%}
+              {%- for _ns_ver in page.versions -%}
+                {%- for _ns_v in _ns_ver.variants -%}
+                  <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+                {%- endfor -%}
+              {%- endfor -%}
+            {%- elsif page.variants -%}
+              {%- for _ns_v in page.variants -%}
+                <tr><td><code>{{ _ns_v.tag | escape }}</code></td><td><code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ _ns_v.tag | escape }}</code></td></tr>
+              {%- endfor -%}
+            {%- endif -%}
+          </tbody>
+        </table>
+      </details>
+      {%- endif -%}
     </div>
   </noscript>
 </section>

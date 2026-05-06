@@ -740,9 +740,18 @@
             {%- endif -%}
           {%- endif -%}
 
-          {%- comment -%} Visible disclosure — only rendered when there are SELECTABLE (non-synthetic) variants {%- endcomment -%}
+          {%- comment -%}
+            Hidden DOM container holding the canonical <version-tabs> elements.
+            User-facing variant selection lives in <variant-action-bar> + the
+            "Available variants" flat table above. The buttons here remain in
+            the DOM as the source-of-truth for selectVariant() in
+            container-detail.js — `version-tabs-changed` dispatches from the
+            action bar target these `.variant-tag[data-tag=...]` elements.
+            `hidden` prevents user-visible duplication while keeping DOM
+            accessible to JS.
+          {%- endcomment -%}
           {%- if _variants_count > 0 -%}
-          <details class="disclosure">
+          <details class="disclosure" hidden>
             <summary>
               <span class="disclosure__title">Available variants</span>
               <span class="disclosure__metric">{{ _variants_count }} variant{% if _variants_count != 1 %}s{% endif %}{% if _versions_count > 1 %} · {{ _versions_count }} versions{% endif %}</span>
