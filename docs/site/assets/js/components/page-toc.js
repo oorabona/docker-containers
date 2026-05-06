@@ -295,7 +295,9 @@
       // Auto-open any <details> at-or-ancestor of target so content is visible before scroll.
       var node = target;
       while (node) {
-        if (node.tagName === 'DETAILS') node.open = true;
+        if (node.tagName === 'DETAILS') {
+          node.open = true;
+        }
         node = node.parentElement;
       }
 
