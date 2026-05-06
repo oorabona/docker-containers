@@ -267,22 +267,11 @@
               </div>
               {%- endif -%}
               {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
-              {%- assign _show_manifest_amd64 = false -%}
-              {%- if _prov_var.manifest_digest_amd64 != blank -%}{%- assign _show_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>{% if _show_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
+                <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}">⧉</button>
-                </dd>
-              </div>
-              {%- endif -%}
-              {%- if _prov_var.manifest_digest_arm64 -%}
-              <div class="evidence-row">
-                <dt>Manifest digest (arm64)</dt>
-                <dd>
-                  <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
+                  <code class="hash hash-long">{{ _prov_var.build_digest }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_var.build_digest }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -371,22 +360,11 @@
               </div>
               {%- endif -%}
               {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
-              {%- assign _show_manifest_amd64 = false -%}
-              {%- if _prov_var.manifest_digest_amd64 != blank -%}{%- assign _show_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>{% if _show_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
+                <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_manifest_amd64 %}{{ _prov_var.manifest_digest_amd64 }}{% else %}{{ _prov_var.build_digest }}{% endif %}">⧉</button>
-                </dd>
-              </div>
-              {%- endif -%}
-              {%- if _prov_var.manifest_digest_arm64 -%}
-              <div class="evidence-row">
-                <dt>Manifest digest (arm64)</dt>
-                <dd>
-                  <code class="hash hash-long">{{ _prov_var.manifest_digest_arm64 }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_var.manifest_digest_arm64 }}">⧉</button>
+                  <code class="hash hash-long">{{ _prov_var.build_digest }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_var.build_digest }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -473,22 +451,11 @@
               </div>
               {%- endif -%}
               {%- if prov_variant.build_digest and prov_variant.build_digest != "unknown" -%}
-              {%- assign _show_prov_manifest_amd64 = false -%}
-              {%- if prov_variant.manifest_digest_amd64 != blank -%}{%- assign _show_prov_manifest_amd64 = true -%}{%- endif -%}
               <div class="evidence-row">
-                <dt>{% if _show_prov_manifest_amd64 %}Manifest digest (amd64){% else %}Build digest{% endif %}</dt>
+                <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{% if _show_prov_manifest_amd64 %}{{ prov_variant.manifest_digest_amd64 }}{% else %}{{ prov_variant.build_digest }}{% endif %}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy {% if _show_prov_manifest_amd64 %}manifest{% else %}build{% endif %} digest" aria-label="Copy {% if _show_prov_manifest_amd64 %}manifest{% else %}build{% endif %} digest" data-copy="{% if _show_prov_manifest_amd64 %}{{ prov_variant.manifest_digest_amd64 }}{% else %}{{ prov_variant.build_digest }}{% endif %}">⧉</button>
-                </dd>
-              </div>
-              {%- endif -%}
-              {%- if prov_variant.manifest_digest_arm64 -%}
-              <div class="evidence-row">
-                <dt>Manifest digest (arm64)</dt>
-                <dd>
-                  <code class="hash hash-long">{{ prov_variant.manifest_digest_arm64 }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ prov_variant.manifest_digest_arm64 }}">⧉</button>
+                  <code class="hash hash-long">{{ prov_variant.build_digest }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ prov_variant.build_digest }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
