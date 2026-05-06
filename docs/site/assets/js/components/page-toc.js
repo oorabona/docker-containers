@@ -292,6 +292,13 @@
       var target = document.getElementById(id);
       if (!target) { return; }
 
+      // Auto-open any <details> at-or-ancestor of target so content is visible before scroll.
+      var node = target;
+      while (node) {
+        if (node.tagName === 'DETAILS') node.open = true;
+        node = node.parentElement;
+      }
+
       var offset = this._computeOffset();
       var top = target.getBoundingClientRect().top + window.scrollY - offset;
 
