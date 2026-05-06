@@ -55,15 +55,21 @@ get_attestation_id() {
         return 1
     }
 
+    # The Attestations API response objects expose only {bundle, bundle_url,
+    # initiator, repository_id} — no top-level .id and no .created_at field.
+    # The numeric attestation ID is encoded in bundle_url, which looks like:
+    #   https://<storage>/attestations/<repo_id>/YYYY/MM/DD/<id>.json.sn?...
+    # The user-facing viewer URL is github.com/<owner>/<repo>/attestations/<id>,
+    # so we extract the trailing /<id>.json.sn segment.
     local id
     id=$(echo "$response" | \
-        jq -r '.attestations | sort_by(.created_at) | reverse | .[0].id // empty' \
-        2>/dev/null)
+        jq -r '.attestations[0].bundle_url // empty' 2>/dev/null \
+        | grep -oE '/[0-9]+\.json\.sn' | head -1 | grep -oE '[0-9]+')
 
     if [[ -z "$id" ]]; then
         # No attestation found for this digest — expected for builds with SBOM step skipped
         [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
-            echo "[debug] attestation API returned no records for digest=$digest (response had empty attestations array)" >&2
+            echo "[debug] attestation API returned no records for digest=$digest (no parseable bundle_url)" >&2
         _ATTESTATION_CACHE["$digest"]="__MISS__"
         return 1
     fi
