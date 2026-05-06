@@ -31,11 +31,13 @@ builtin_extensions:
   - adminpack
 
 # shared_preload_libraries
+# pg_search (ParadeDB) added since 0.23.x — bg worker requirement.
 shared_preload_libraries:
   - pg_qualstats
   - citus
   - timescaledb
   - pg_cron
+  - pg_search
 
 # Image tags to publish
 tags:
