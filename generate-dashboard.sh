@@ -406,6 +406,12 @@ variant_deps_for_flavor() {
         return 0
     fi
 
+    # Postgres MUST have a flavor; empty/null flavor returns [] (not container-wide).
+    if [[ "$container" == "postgres" && ( -z "$flavor" || "$flavor" == "null" ) ]]; then
+        echo "[]"
+        return 0
+    fi
+
     # Collect monitored dep names from dependency_sources
     local monitored_names
     monitored_names=$(yq -r '

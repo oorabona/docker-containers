@@ -250,6 +250,12 @@
             emptyMsg.style.display = '';
             barLabel2.style.display = 'none';
           }
+          // Update badge to reflect no-extension state
+          var emptyBadge = data.section.querySelector('.dep-summary-badge');
+          if (emptyBadge) {
+            emptyBadge.textContent = 'no extensions';
+            emptyBadge.className = 'dep-summary-badge dep-badge-neutral';
+          }
           // Hide bar and lists — nothing to show
           var barFill2 = data.section.querySelector('.dep-bar-fill');
           var barUnmon2 = data.section.querySelector('.dep-bar-unmonitored');
@@ -372,15 +378,25 @@
       var data = getDepData();
       if (!data || data.updates.length === 0) return 0;
 
-      var buildArgsAttr = variantEl.dataset.buildArgs;
-      if (!buildArgsAttr) return 0;
-
-      var argNames = {};
+      // Prefer data-variant-deps (authoritative per-flavor list) over build-args
+      var variantDepsList = null;
       try {
-        JSON.parse(buildArgsAttr).forEach(function(a) { argNames[a.name] = true; });
-      } catch (e) { return 0; }
+        var vdAttr = variantEl.dataset.variantDeps;
+        if (vdAttr !== undefined) variantDepsList = JSON.parse(vdAttr);
+      } catch (e) { variantDepsList = null; }
 
-      return data.updates.filter(function(u) { return argNames[u.name]; }).length;
+      var nameSet = {};
+      if (variantDepsList !== null) {
+        variantDepsList.forEach(function(n) { nameSet[n] = true; });
+      } else {
+        var buildArgsAttr = variantEl.dataset.buildArgs;
+        if (!buildArgsAttr) return 0;
+        try {
+          JSON.parse(buildArgsAttr).forEach(function(a) { nameSet[a.name] = true; });
+        } catch (e) { return 0; }
+      }
+
+      return data.updates.filter(function(u) { return nameSet[u.name]; }).length;
     }
 
     // Add notification badges to variant buttons showing outdated dep count

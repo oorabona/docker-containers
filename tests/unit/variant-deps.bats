@@ -117,3 +117,31 @@ teardown() {
     result=$(variant_deps_for_flavor "nonexistent-container-xyz" "base")
     [ "$result" = "[]" ]
 }
+
+@test "postgres unknown flavor returns []" {
+    result=$(variant_deps_for_flavor "postgres" "totally-fake-flavor-xyz")
+    [ "$result" = "[]" ]
+}
+
+@test "postgres empty flavor returns []" {
+    result=$(variant_deps_for_flavor "postgres" "")
+    [ "$result" = "[]" ]
+}
+
+@test "postgres 'null' flavor returns []" {
+    result=$(variant_deps_for_flavor "postgres" "null")
+    [ "$result" = "[]" ]
+}
+
+@test "container without dependency_sources returns []" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/no-deps"
+    printf 'name: no-deps\n' > "$tmpdir/no-deps/config.yaml"
+    local saved_script_dir="$SCRIPT_DIR"
+    SCRIPT_DIR="$tmpdir"
+    result=$(variant_deps_for_flavor "no-deps" "")
+    SCRIPT_DIR="$saved_script_dir"
+    rm -rf "$tmpdir"
+    [ "$result" = "[]" ]
+}
