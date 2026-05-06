@@ -2,60 +2,7 @@
     'use strict';
 
     // Theme managed by shared theme.js (window.ThemeManager namespace)
-
-    // Registry management for pull command
-    var currentRegistry = localStorage.getItem('preferredRegistry') || 'ghcr';
-
-    function updatePullCommand(tag) {
-      var pullSection = document.getElementById('detail-pull');
-      var input = document.getElementById('detail-pull-cmd');
-      if (!pullSection || !input) return;
-
-      var base = currentRegistry === 'ghcr'
-        ? pullSection.dataset.ghcrBase
-        : pullSection.dataset.dockerhubBase;
-      var effectiveTag = tag || pullSection.dataset.defaultTag;
-      input.value = 'docker pull ' + base + ':' + effectiveTag;
-    }
-
-    function setDetailRegistry(registry) {
-      currentRegistry = registry;
-      localStorage.setItem('preferredRegistry', registry);
-
-      document.querySelectorAll('.detail-registry-btn').forEach(function(btn) {
-        var isActive = btn.dataset.registry === registry;
-        btn.classList.toggle('active', isActive);
-        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
-      });
-
-      // Get current variant tag
-      var selected = document.querySelector('.variant-tag.selected');
-      var tag = selected ? selected.dataset.tag : null;
-      updatePullCommand(tag);
-    }
-
-    function copyDetailPullCommand() {
-      var input = document.getElementById('detail-pull-cmd');
-      var button = document.getElementById('detail-copy-btn');
-      if (!input || !button) return;
-
-      var icon = button.querySelector('i');
-
-      function showCopied() {
-        if (icon) icon.className = 'ti ti-check';
-        button.classList.add('copied');
-        setTimeout(function() {
-          if (icon) icon.className = 'ti ti-copy';
-          button.classList.remove('copied');
-        }, 2000);
-      }
-
-      navigator.clipboard.writeText(input.value).then(showCopied).catch(function() {
-        input.select();
-        document.execCommand('copy');
-        showCopied();
-      });
-    }
+    // Pull command / registry toggle removed PR1 — handled by <variant-action-bar> component.
 
     // Variant selection
     // Tracks the last fully-processed variant tag to make selectVariant() idempotent.
@@ -86,16 +33,8 @@
       }
 
       var tag = el.dataset.tag || '';
-      var sizeAmd64 = el.dataset.sizeAmd64 || '---';
-      var sizeArm64 = el.dataset.sizeArm64 || '---';
-
-      var tagEl = document.querySelector('[data-meta="current-tag"]');
-      var amdEl = document.querySelector('[data-meta="size-amd64"]');
-      var armEl = document.querySelector('[data-meta="size-arm64"]');
-
-      if (tagEl) tagEl.textContent = tag;
-      if (amdEl) amdEl.textContent = sizeAmd64;
-      if (armEl) armEl.textContent = sizeArm64;
+      // data-meta="current-tag/size-amd64/size-arm64" elements removed PR1
+      // (replaced by variant-action-bar signals strip)
 
       // Update lineage build_digest and base_image
       var buildDigest = el.dataset.buildDigest || '';
@@ -123,8 +62,7 @@
       updateChangelogSection(el);
       updateHistorySection(el);
 
-      // Update pull command with selected variant tag
-      updatePullCommand(tag);
+      // Pull command update handled by <variant-action-bar> via phase-b-variant-changed (PR1)
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section
       var variantData = {
@@ -865,12 +803,7 @@
       var chip = e.target.closest('.sbom-type-chip-clickable');
       if (chip) togglePackagePanel(chip.dataset.type);
 
-      var regBtn = e.target.closest('.detail-registry-btn');
-      if (regBtn) setDetailRegistry(regBtn.dataset.registry);
-
-      if (e.target.closest('#detail-copy-btn') || e.target.closest('.detail-copy-btn')) {
-        copyDetailPullCommand();
-      }
+      // .detail-registry-btn / #detail-copy-btn handlers removed PR1 — handled by <variant-action-bar>
 
       // Provenance section copy buttons — emit class is .provenance-copy-btn
       // (renamed from .copy-btn to avoid colliding with dashboard.css's
@@ -935,12 +868,5 @@
       }
     }
 
-    // Initialize registry toggle from localStorage preference
-    setDetailRegistry(currentRegistry);
-
-    // Auto-select pull input text on click
-    var pullInput = document.getElementById('detail-pull-cmd');
-    if (pullInput) {
-      pullInput.addEventListener('click', function() { this.select(); });
-    }
+    // Registry toggle + pull input init removed PR1 — handled by <variant-action-bar>
   })();

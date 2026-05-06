@@ -1,0 +1,391 @@
+/* ==========================================================
+   variant-action-bar.css — Variant selector + command card
+   Phase C PR1. Theme-aware via existing CSS custom properties.
+   Motion spec: 100–200ms, respect prefers-reduced-motion.
+   ========================================================== */
+
+/* ----------------------------------------------------------
+   Host element
+   ---------------------------------------------------------- */
+
+variant-action-bar {
+  display: block;
+  position: relative;  /* sentinel is positioned relative to this */
+  /* CSS variable set by JS after measuring site-nav height */
+  --vab-nav-height: 60px;
+}
+
+/* Sentinel: 1px invisible div that triggers the IntersectionObserver */
+.vab-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+/* ----------------------------------------------------------
+   Card — default (full, inline)
+   ---------------------------------------------------------- */
+
+.vab-card {
+  background: var(--color-surface-raised, var(--color-navy-800, #1A2A4A));
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-md, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
+  transition: box-shadow var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vab-card { transition: none; }
+}
+
+/* ----------------------------------------------------------
+   Sticky + collapse state
+   ---------------------------------------------------------- */
+
+/* When the sentinel scrolls out of view, the host gets [data-collapsed] */
+[data-collapsed] .vab-card {
+  position: fixed;
+  top: var(--vab-nav-height, 60px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  border-radius: 0;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  padding: var(--space-xs, 4px) var(--space-md, 16px);
+  /* Collapsed: show only signals row + toggle button, hide selectors + commands */
+}
+
+[data-collapsed] .vab-row--selectors,
+[data-collapsed] .vab-row--commands {
+  display: none;
+}
+
+/* When user clicks toggle while collapsed, re-show everything */
+[data-collapsed] .vab-card[data-user-expanded="true"] .vab-row--selectors,
+[data-collapsed] .vab-card[data-user-expanded="true"] .vab-row--commands {
+  display: flex;
+}
+
+/* Show the toggle button only when collapsed */
+.vab-toggle { display: none; }
+[data-collapsed] .vab-toggle { display: inline-flex; }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-collapsed] .vab-card { transition: none; }
+}
+
+/* ----------------------------------------------------------
+   Rows
+   ---------------------------------------------------------- */
+
+.vab-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md, 16px);
+  flex-wrap: wrap;
+}
+
+.vab-row--signals {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm, 8px);
+}
+
+.vab-row--commands {
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
+}
+
+@media (min-width: 640px) {
+  .vab-row--commands { flex-direction: row; }
+}
+
+/* ----------------------------------------------------------
+   Pill groups (version + flavor selectors)
+   ---------------------------------------------------------- */
+
+.vab-pill-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+}
+
+.vab-pill-label {
+  font-size: var(--font-size-caption, 12px);
+  font-family: var(--font-family-mono, monospace);
+  font-weight: var(--font-weight-semibold, 600);
+  letter-spacing: var(--letter-spacing-wider, 0.08em);
+  text-transform: uppercase;
+  color: var(--color-text-muted, #8A93A0);
+}
+
+.vab-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-inline-pill-gap, 6px);
+}
+
+/* Base pill style */
+.vab-version-pill,
+.vab-flavor-pill {
+  padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  border-radius: var(--radius-full, 9999px);
+  border: 1px solid var(--color-variant-tag-border, rgba(139,92,246,0.25));
+  background: var(--color-variant-tag-bg, rgba(139,92,246,0.15));
+  color: var(--color-variant-tag-fg, var(--color-violet-400, #A78BFA));
+  font-size: var(--font-size-body-sm, 14px);
+  font-weight: var(--font-weight-medium, 500);
+  font-family: var(--font-family-sans, sans-serif);
+  cursor: pointer;
+  transition:
+    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    border-color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    box-shadow var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+  /* WCAG 2.5.8 minimum touch target */
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.vab-version-pill:hover,
+.vab-flavor-pill:hover {
+  background: var(--color-variant-tag-bg-hover, rgba(139,92,246,0.25));
+  border-color: rgba(167,139,250,0.45);
+}
+
+/* Active / selected pill (uses violet trust hue per Phase C spec) */
+.vab-version-pill.vab-pill--active,
+.vab-flavor-pill.vab-pill--active {
+  background: var(--color-variant-tag-selected-bg, rgba(139,92,246,0.30));
+  border-color: var(--color-violet-400, #A78BFA);
+  color: var(--color-violet-400, #A78BFA);
+  box-shadow: 0 0 0 2px var(--color-variant-tag-selected-shadow, rgba(139,92,246,0.20));
+}
+
+/* Focus rings — WCAG 2.2 AA (3px outline, 2px offset) */
+.vab-version-pill:focus-visible,
+.vab-flavor-pill:focus-visible {
+  outline: 3px solid var(--color-violet-400, #A78BFA);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vab-version-pill,
+  .vab-flavor-pill { transition: none; }
+}
+
+/* ----------------------------------------------------------
+   Command blocks
+   ---------------------------------------------------------- */
+
+.vab-command-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+  flex: 1;
+  min-width: 0; /* allow shrink in flex row */
+}
+
+.vab-command-label {
+  font-size: var(--font-size-caption, 12px);
+  font-family: var(--font-family-mono, monospace);
+  font-weight: var(--font-weight-semibold, 600);
+  letter-spacing: var(--letter-spacing-wider, 0.08em);
+  text-transform: uppercase;
+  color: var(--color-text-muted, #8A93A0);
+  margin: 0;
+}
+
+.vab-command-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  background: rgba(0,0,0,0.20);
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  border-radius: var(--radius-md, 8px);
+  padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  overflow: hidden;
+}
+
+.vab-command-code {
+  flex: 1;
+  font-family: var(--font-family-mono, monospace);
+  font-size: 0.8125rem; /* 13px — matches existing .detail-pull-input */
+  color: var(--color-text-secondary, #C7CCD4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  display: block;
+}
+
+.vab-copy-btn {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.10);
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  border-radius: var(--radius-md, 8px);
+  padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  min-width: 36px;
+  min-height: 36px; /* WCAG 2.5.8 */
+  color: var(--color-text-secondary, #C7CCD4);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  transition:
+    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+}
+
+.vab-copy-btn:hover {
+  background: rgba(255,255,255,0.20);
+  color: var(--color-text-primary, #F4F5F7);
+}
+
+.vab-copy-btn.vab-copy-btn--copied {
+  background: var(--color-feedback-success-bg, rgba(16,185,129,0.12));
+  border-color: var(--color-green-400, #4ADE80);
+  color: var(--color-green-400, #4ADE80);
+}
+
+.vab-copy-btn:focus-visible {
+  outline: 3px solid var(--color-action-primary, #60A5FA);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vab-copy-btn { transition: none; }
+}
+
+/* ----------------------------------------------------------
+   Signals strip
+   ---------------------------------------------------------- */
+
+.vab-signals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  font-size: var(--font-size-body-sm, 14px);
+}
+
+.vab-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+}
+
+.vab-signal-label {
+  font-size: var(--font-size-caption, 12px);
+  font-family: var(--font-family-mono, monospace);
+  font-weight: var(--font-weight-semibold, 600);
+  letter-spacing: var(--letter-spacing-wider, 0.08em);
+  text-transform: uppercase;
+  color: var(--color-text-muted, #8A93A0);
+}
+
+.vab-signal-value {
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--color-text-primary, #F4F5F7);
+}
+
+/* Status-specific coloring */
+.vab-signal--status[data-status="ok"] .vab-signal-value {
+  color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+}
+
+.vab-signal--status[data-status="pending"] .vab-signal-value {
+  color: var(--color-feedback-warning-fg, var(--color-amber-400, #FBBF24));
+}
+
+.vab-signal-sep {
+  color: var(--color-text-muted, #8A93A0);
+  padding: 0 2px;
+  user-select: none;
+}
+
+/* ----------------------------------------------------------
+   Collapse toggle button
+   ---------------------------------------------------------- */
+
+.vab-toggle {
+  align-self: flex-start;
+  padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  background: rgba(255,255,255,0.06);
+  color: var(--color-text-muted, #8A93A0);
+  font-size: var(--font-size-caption, 12px);
+  font-family: var(--font-family-mono, monospace);
+  font-weight: var(--font-weight-medium, 500);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  min-height: 32px;
+  transition:
+    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+}
+
+.vab-toggle:hover {
+  background: rgba(255,255,255,0.12);
+  color: var(--color-text-primary, #F4F5F7);
+}
+
+.vab-toggle:focus-visible {
+  outline: 3px solid var(--color-action-primary, #60A5FA);
+  outline-offset: 2px;
+}
+
+.vab-toggle-icon { font-size: 0.875rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vab-toggle { transition: none; }
+}
+
+/* ----------------------------------------------------------
+   Light theme overrides
+   ---------------------------------------------------------- */
+
+[data-theme="light"] .vab-card {
+  background: #FFFFFF;
+  border-color: rgba(0,0,0,0.10);
+}
+
+[data-theme="light"] [data-collapsed] .vab-card {
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+[data-theme="light"] .vab-copy-btn.vab-copy-btn--copied {
+  color: #047857; /* green-700 on light — 5.4:1 (WCAG AA) */
+}
+
+/* ----------------------------------------------------------
+   Mobile — single column
+   ---------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  .vab-row--selectors { flex-direction: column; gap: var(--space-sm, 8px); }
+  .vab-row--commands { flex-direction: column; }
+  .vab-command-code { font-size: 0.75rem; }
+
+  [data-collapsed] .vab-card {
+    padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  }
+}

@@ -1,0 +1,112 @@
+{%- comment -%}
+  variant-action-bar.html — Include for the <variant-action-bar> custom element.
+
+  Passes all variant data as data-attributes so variant-action-bar.js can
+  render pills + commands + signals strip without Liquid at runtime.
+
+  Data model expected on page.*:
+    page.name            — container slug
+    page.github_username — registry owner
+    page.current_version — default tag
+    page.versions[]      — array of { tag, base_tag, variants[] } (multi-version containers)
+    page.variants[]      — flat array of variants (single-version containers)
+
+  The JS component tolerates missing versions/variants gracefully (single-image
+  containers will show only the pull + verify commands and a signals strip).
+{%- endcomment -%}
+
+{%- comment -%}
+  Build a flat variants list from page.versions (postgres-style) OR page.variants
+  (single-version) OR empty array (no variants at all).
+  Each entry: { tag, version, flavor, name, size_amd64, size_arm64, build_digest,
+                attestation_url, attestation_id, trivy_summary, multi_arch_platforms }
+{%- endcomment -%}
+
+{%- assign _vab_variants = "" -%}
+{%- if page.versions -%}
+  {%- for _vab_ver in page.versions -%}
+    {%- for _vab_v in _vab_ver.variants -%}
+      {%- assign _vab_variants = _vab_variants | append: _vab_v.tag | append: "||" -%}
+    {%- endfor -%}
+  {%- endfor -%}
+{%- endif -%}
+
+{%- comment -%} Determine unique versions for version pills {%- endcomment -%}
+{%- assign _vab_ver_arr = "" -%}
+{%- if page.versions and page.versions.size > 1 -%}
+  {%- for _vv in page.versions -%}
+    {%- assign _vab_ver_arr = _vab_ver_arr | append: '{"tag":' | append: _vv.base_tag | default: _vv.tag | jsonify | append: ',"label":' | append: _vv.base_tag | default: _vv.tag | jsonify | append: '}' -%}
+    {%- unless forloop.last -%}{%- assign _vab_ver_arr = _vab_ver_arr | append: "," -%}{%- endunless -%}
+  {%- endfor -%}
+{%- endif -%}
+
+{%- comment -%} Determine unique flavors for flavor pills {%- endcomment -%}
+{%- assign _vab_fla_arr = "" -%}
+{%- if page.versions and page.versions.size > 0 -%}
+  {%- assign _first_ver = page.versions[0] -%}
+  {%- assign _has_flavors = false -%}
+  {%- for _fv in _first_ver.variants -%}
+    {%- if _fv.name and _fv.name != "" -%}
+      {%- assign _has_flavors = true -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- if _has_flavors -%}
+    {%- for _fv in _first_ver.variants -%}
+      {%- if _fv.name and _fv.name != "" -%}
+        {%- assign _vab_fla_arr = _vab_fla_arr | append: '{"name":' | append: _fv.name | jsonify | append: ',"label":' | append: _fv.name | jsonify | append: '}' -%}
+        {%- unless forloop.last -%}{%- assign _vab_fla_arr = _vab_fla_arr | append: "," -%}{%- endunless -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endif -%}
+
+{%- comment -%} Build flat variant objects array for JS consumption {%- endcomment -%}
+{%- capture _vab_variants_json -%}[
+{%- if page.versions -%}
+  {%- assign _vab_first_row = true -%}
+  {%- for _vab_ver in page.versions -%}
+    {%- for _vab_v in _vab_ver.variants -%}
+      {%- unless _vab_first_row -%},{%- endunless -%}
+      {%- assign _vab_first_row = false -%}
+      {"tag":{{ _vab_v.tag | jsonify }},"version":{{ _vab_ver.base_tag | default: _vab_ver.tag | jsonify }},"flavor":{{ _vab_v.name | default: "" | jsonify }},"name":{{ _vab_v.name | default: "" | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+    {%- endfor -%}
+  {%- endfor -%}
+{%- elsif page.variants -%}
+  {%- for _vab_v in page.variants -%}
+    {%- unless forloop.first -%},{%- endunless -%}
+    {"tag":{{ _vab_v.tag | jsonify }},"version":"","flavor":{{ _vab_v.tag | jsonify }},"name":{{ _vab_v.tag | jsonify }},"size_amd64":{{ _vab_v.size_amd64 | default: "" | jsonify }},"size_arm64":{{ _vab_v.size_arm64 | default: "" | jsonify }},"build_digest":{{ _vab_v.build_digest | default: "" | jsonify }},"attestation_url":{{ _vab_v.attestation_url | default: "" | jsonify }},"attestation_id":{{ _vab_v.attestation_id | default: "" | jsonify }}{%- if _vab_v.trivy_summary -%},"trivy_summary":{{ _vab_v.trivy_summary | jsonify }}{%- else -%},"trivy_summary":null{%- endif -%}{%- if _vab_v.multi_arch_platforms -%},"multi_arch_platforms":{{ _vab_v.multi_arch_platforms | jsonify }}{%- else -%},"multi_arch_platforms":[]{%- endif -%}}
+  {%- endfor -%}
+{%- else -%}
+  {"tag":{{ page.current_version | jsonify }},"version":"","flavor":"","name":"","size_amd64":{{ page.size_amd64 | default: "" | jsonify }},"size_arm64":{{ page.size_arm64 | default: "" | jsonify }},"build_digest":{{ page.build_digest | default: "" | jsonify }},"attestation_url":"","attestation_id":"","trivy_summary":null,"multi_arch_platforms":[]}
+{%- endif -%}
+]
+{%- endcapture -%}
+
+{%- assign _vab_default_version = "" -%}
+{%- assign _vab_default_flavor = "" -%}
+{%- if page.versions and page.versions.size > 0 -%}
+  {%- assign _vab_default_version = page.versions[0].base_tag | default: page.versions[0].tag -%}
+  {%- if page.versions[0].variants[0].name -%}
+    {%- assign _vab_default_flavor = page.versions[0].variants[0].name -%}
+  {%- endif -%}
+{%- endif -%}
+
+<section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
+  <variant-action-bar
+    data-container="{{ page.name | escape }}"
+    data-default-tag="{{ page.current_version | escape }}"
+    data-default-version="{{ _vab_default_version | escape }}"
+    data-default-flavor="{{ _vab_default_flavor | escape }}"
+    data-versions="{{ '[' | append: _vab_ver_arr | append: ']' | escape }}"
+    data-flavors="{{ '[' | append: _vab_fla_arr | append: ']' | escape }}"
+    data-variants="{{ _vab_variants_json | strip | escape }}"
+    data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
+  ></variant-action-bar>
+
+  <noscript>
+    <div class="vab-noscript">
+      <p class="vab-noscript-label">Pull command:</p>
+      <code>docker pull ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}:{{ page.current_version | escape }}</code>
+    </div>
+  </noscript>
+</section>
