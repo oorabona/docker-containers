@@ -570,7 +570,7 @@
               <p class="eyebrow">Security scan results</p>
               <h3>Trivy · last scan {{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</h3>
             </header>
-            <security-scan id="security" class="security-section glass" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
+            <security-scan id="security" class="security-section" data-current-variant="{{ sec_variant.tag | default: page.current_version }}">
               <p class="scan-meta">
                 Last scan: <time data-scan="last-scan">{{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</time>
                 (advisory mode — Trivy runs <code>continue-on-error</code> in CI; we surface findings, we do not block builds on them).
