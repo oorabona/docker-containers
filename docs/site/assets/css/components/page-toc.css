@@ -1,0 +1,429 @@
+/* ==========================================================
+   page-toc.css — Sticky right-side Table of Contents sidebar
+   Used exclusively by: container-detail layout.
+   Dark-mode default; light-mode via [data-theme="light"].
+   WCAG 2.2 AA: 3px focus ring, 4.6:1 min contrast on --detail-text-muted.
+   ========================================================== */
+
+/* ----------------------------------------------------------
+   Custom element host — no visual output itself
+   ---------------------------------------------------------- */
+
+page-toc {
+  display: contents; /* let children participate in layout */
+}
+
+/* ----------------------------------------------------------
+   Desktop aside — fixed right-side panel (>=1280px)
+   ---------------------------------------------------------- */
+
+.page-toc {
+  position: fixed;
+  top: calc(var(--page-toc-nav-offset, 72px) + 1rem);
+  right: 24px;
+  width: 220px;
+  max-height: calc(100vh - var(--page-toc-nav-offset, 72px) - 2rem);
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Subtle scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong, rgba(255,255,255,0.16)) transparent;
+
+  /* Elevation — elevated surface above content */
+  z-index: 40; /* below site-nav (50) but above page content */
+
+  /* Visual treatment */
+  background: var(--color-surface-raised, #1A2A4A);
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-md, 16px) 0;
+}
+
+.page-toc::-webkit-scrollbar {
+  width: 4px;
+}
+
+.page-toc::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.page-toc::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong, rgba(255,255,255,0.16));
+  border-radius: var(--radius-full, 9999px);
+}
+
+/* ----------------------------------------------------------
+   Eyebrow label — "ON THIS PAGE" (JetBrains Mono, uppercase)
+   ---------------------------------------------------------- */
+
+.page-toc-eyebrow {
+  font-family: var(--font-family-mono, "JetBrains Mono", monospace);
+  font-size: var(--font-size-caption, 12px);
+  font-weight: var(--font-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wider, 0.08em);
+  color: var(--detail-text-muted, var(--color-text-muted, #8A93A0));
+  margin: 0 0 var(--space-sm, 8px) 0;
+  padding: 0 var(--space-md, 16px);
+  line-height: var(--line-height-tight, 1.2);
+}
+
+/* ----------------------------------------------------------
+   Link list
+   ---------------------------------------------------------- */
+
+.page-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.page-toc li {
+  margin: 0;
+  padding: 0;
+}
+
+.page-toc a {
+  display: block;
+  font-family: var(--font-family-sans, "Inter", sans-serif);
+  font-size: var(--font-size-body-sm, 14px);
+  font-weight: var(--font-weight-regular, 400);
+  color: var(--detail-text-muted, var(--color-text-muted, #8A93A0));
+  text-decoration: none;
+  padding: 5px var(--space-md, 16px);
+  padding-left: calc(var(--space-md, 16px) - 3px); /* offset for border-left */
+  border-left: 3px solid transparent;
+  line-height: var(--line-height-normal, 1.5);
+  transition:
+    color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    border-left-color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    font-weight var(--motion-duration-instant, 100ms);
+}
+
+.page-toc a:hover,
+.page-toc a:focus {
+  color: var(--color-text-primary, #F4F5F7);
+  border-left-color: var(--color-border-strong, rgba(255,255,255,0.16));
+  outline: none;
+}
+
+/* WCAG 2.2 AA focus ring */
+.page-toc a:focus-visible {
+  outline: 3px solid var(--color-violet-400, #A78BFA);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Active state — violet accent (architectural trust-domain hue) */
+.page-toc a[data-active] {
+  color: var(--color-violet-400, #A78BFA);
+  font-weight: var(--font-weight-semibold, 600);
+  border-left-color: var(--color-violet-400, #A78BFA);
+}
+
+/* ----------------------------------------------------------
+   Light-mode overrides
+   ---------------------------------------------------------- */
+
+[data-theme="light"] .page-toc {
+  background: #FFFFFF;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .page-toc a {
+  color: var(--color-neutral-600, #4D556A);
+}
+
+[data-theme="light"] .page-toc a:hover,
+[data-theme="light"] .page-toc a:focus {
+  color: var(--color-neutral-900, #14181F);
+}
+
+[data-theme="light"] .page-toc a[data-active] {
+  color: var(--color-violet-700, #6D28D9);
+  border-left-color: var(--color-violet-700, #6D28D9);
+}
+
+/* ----------------------------------------------------------
+   Mobile: hide desktop aside, show floating trigger
+   ---------------------------------------------------------- */
+
+@media (max-width: 1279px) {
+
+  .page-toc {
+    display: none;
+  }
+
+  .page-toc-mobile-trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs, 4px);
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 45;
+
+    font-family: var(--font-family-mono, "JetBrains Mono", monospace);
+    font-size: var(--font-size-body-sm, 14px);
+    font-weight: var(--font-weight-medium, 500);
+    letter-spacing: 0.03em;
+    color: var(--color-text-primary, #F4F5F7);
+
+    background: var(--color-violet-500, #8B5CF6);
+    border: none;
+    border-radius: var(--radius-full, 9999px);
+    padding: 10px 18px;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(139, 92, 246, 0.4), 0 2px 8px rgba(0,0,0,0.3);
+
+    transition:
+      transform var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+      box-shadow var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+  }
+
+  .page-toc-mobile-trigger:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.5), 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  .page-toc-mobile-trigger:focus-visible {
+    outline: 3px solid var(--color-violet-400, #A78BFA);
+    outline-offset: 2px;
+  }
+
+  /* Drawer — off-screen by default */
+  .page-toc-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(320px, 85vw);
+    z-index: 55;
+
+    background: var(--color-surface-overlay, #1F3155);
+    border-left: 1px solid var(--color-border-strong, rgba(255,255,255,0.16));
+    padding: var(--space-lg, 24px) 0;
+    overflow-y: auto;
+
+    transform: translateX(100%);
+    transition: transform var(--motion-duration-normal, 200ms) var(--easing-decelerate, cubic-bezier(0, 0, 0.2, 1));
+  }
+
+  .page-toc-drawer[data-open] {
+    transform: translateX(0);
+  }
+
+  .page-toc-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-md, 16px) var(--space-sm, 8px);
+    border-bottom: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+    margin-bottom: var(--space-sm, 8px);
+  }
+
+  .page-toc-drawer-header .page-toc-eyebrow {
+    padding: 0;
+    margin: 0;
+  }
+
+  .page-toc-drawer-close {
+    background: none;
+    border: none;
+    color: var(--detail-text-muted, var(--color-text-muted, #8A93A0));
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm, 4px);
+    transition: color var(--motion-duration-short, 150ms);
+  }
+
+  .page-toc-drawer-close:hover {
+    color: var(--color-text-primary, #F4F5F7);
+  }
+
+  .page-toc-drawer-close:focus-visible {
+    outline: 3px solid var(--color-violet-400, #A78BFA);
+    outline-offset: 2px;
+  }
+
+  /* Drawer link list — same metrics as desktop */
+  .page-toc-drawer ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .page-toc-drawer li {
+    margin: 0;
+    padding: 0;
+  }
+
+  .page-toc-drawer a {
+    display: block;
+    font-family: var(--font-family-sans, "Inter", sans-serif);
+    font-size: var(--font-size-body, 16px);
+    font-weight: var(--font-weight-regular, 400);
+    color: var(--color-text-secondary, #C7CCD4);
+    text-decoration: none;
+    padding: 10px var(--space-md, 16px);
+    padding-left: calc(var(--space-md, 16px) - 3px);
+    border-left: 3px solid transparent;
+    transition:
+      color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+      border-left-color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+  }
+
+  .page-toc-drawer a:hover,
+  .page-toc-drawer a:focus {
+    color: var(--color-text-primary, #F4F5F7);
+    border-left-color: var(--color-border-strong, rgba(255,255,255,0.16));
+    outline: none;
+  }
+
+  .page-toc-drawer a:focus-visible {
+    outline: 3px solid var(--color-violet-400, #A78BFA);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  .page-toc-drawer a[data-active] {
+    color: var(--color-violet-400, #A78BFA);
+    font-weight: var(--font-weight-semibold, 600);
+    border-left-color: var(--color-violet-400, #A78BFA);
+  }
+
+  /* Backdrop overlay */
+  .page-toc-drawer-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-duration-normal, 200ms) var(--easing-standard, ease);
+  }
+
+  .page-toc-drawer-overlay[data-open] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Light mode — drawer */
+  [data-theme="light"] .page-toc-drawer {
+    background: #FFFFFF;
+    border-left-color: rgba(0, 0, 0, 0.12);
+  }
+
+  [data-theme="light"] .page-toc-drawer a {
+    color: var(--color-neutral-600, #4D556A);
+  }
+
+  [data-theme="light"] .page-toc-drawer a:hover,
+  [data-theme="light"] .page-toc-drawer a:focus {
+    color: var(--color-neutral-900, #14181F);
+  }
+
+  [data-theme="light"] .page-toc-drawer a[data-active] {
+    color: var(--color-violet-700, #6D28D9);
+    border-left-color: var(--color-violet-700, #6D28D9);
+  }
+
+  [data-theme="light"] .page-toc-mobile-trigger {
+    box-shadow: 0 4px 16px rgba(109, 40, 217, 0.3), 0 2px 8px rgba(0,0,0,0.15);
+  }
+}
+
+/* ----------------------------------------------------------
+   Desktop: hide mobile-only elements
+   ---------------------------------------------------------- */
+
+@media (min-width: 1280px) {
+
+  .page-toc-mobile-trigger {
+    display: none;
+  }
+
+  .page-toc-drawer {
+    display: none;
+  }
+
+  .page-toc-drawer-overlay {
+    display: none;
+  }
+}
+
+/* ----------------------------------------------------------
+   Noscript fallback — plain <nav> when JS is disabled
+   ---------------------------------------------------------- */
+
+.page-toc-noscript {
+  position: fixed;
+  top: calc(var(--page-toc-nav-offset, 72px) + 1rem);
+  right: 24px;
+  width: 220px;
+  background: var(--color-surface-raised, #1A2A4A);
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-md, 16px) 0;
+  z-index: 40;
+}
+
+.page-toc-noscript .page-toc-eyebrow {
+  font-family: var(--font-family-mono, "JetBrains Mono", monospace);
+  font-size: var(--font-size-caption, 12px);
+  font-weight: var(--font-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wider, 0.08em);
+  color: var(--detail-text-muted, var(--color-text-muted, #8A93A0));
+  margin: 0 0 var(--space-sm, 8px) 0;
+  padding: 0 var(--space-md, 16px);
+}
+
+.page-toc-noscript ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.page-toc-noscript a {
+  display: block;
+  font-family: var(--font-family-sans, "Inter", sans-serif);
+  font-size: var(--font-size-body-sm, 14px);
+  color: var(--detail-text-muted, var(--color-text-muted, #8A93A0));
+  text-decoration: none;
+  padding: 5px var(--space-md, 16px);
+  padding-left: calc(var(--space-md, 16px) - 3px);
+  border-left: 3px solid transparent;
+  transition: color var(--motion-duration-short, 150ms);
+}
+
+.page-toc-noscript a:hover,
+.page-toc-noscript a:focus-visible {
+  color: var(--color-text-primary, #F4F5F7);
+  outline: 3px solid var(--color-violet-400, #A78BFA);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (max-width: 1279px) {
+  .page-toc-noscript {
+    display: none; /* On mobile without JS, no fallback TOC (not critical) */
+  }
+}
+
+/* ----------------------------------------------------------
+   prefers-reduced-motion: disable all transitions
+   ---------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .page-toc a,
+  .page-toc-drawer,
+  .page-toc-drawer a,
+  .page-toc-drawer-overlay,
+  .page-toc-mobile-trigger {
+    transition: none;
+  }
+}
