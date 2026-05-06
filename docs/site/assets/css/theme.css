@@ -701,16 +701,18 @@ body {
   font-size: 1.45rem;
   font-weight: 700;
   letter-spacing: -0.015em;
-  margin-top: 2.25rem;
+  margin-top: 3rem;
+  margin-bottom: 1rem;
   scroll-margin-top: 80px;
 }
 
 .page-content code {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.9em;
+  font-size: 0.875em;
   background: var(--color-page-code-bg);
-  padding: 0.15em 0.4em;
+  padding: 0.2em 0.45em;
   border-radius: 4px;
+  font-weight: 500;
 }
 
 [data-theme="light"] .page-content code {
@@ -742,6 +744,81 @@ body {
   .page-content {
     padding: 5rem 1rem 2rem;
   }
+}
+
+/* ===== page-content article — additive polish (About + generic static pages) =====
+   Scoped to `article` to avoid cascade bleed into .verify-page which uses
+   .verify-main selectors at higher specificity for its own list/table overrides. */
+
+/* ----- Paragraph + section heading spacing ----- */
+
+.page-content article p {
+  margin: 0 0 1.25rem;
+}
+
+.page-content article h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+/* ----- List alignment + item spacing ----- */
+
+.page-content article ul,
+.page-content article ol {
+  padding-left: 1.5rem;       /* bullets sit within the column indent */
+  margin: 0.75rem 0 1.25rem;  /* breathing room above and below */
+}
+
+.page-content article li {
+  margin-bottom: 0.5rem;
+  line-height: 1.65;
+}
+
+.page-content article li::marker {
+  color: var(--color-text-muted); /* muted so bullet doesn't fight body type */
+}
+
+/* ----- Comparison table ----- */
+
+.page-content article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0 2rem;
+  font-size: 0.95rem;
+  background: var(--color-surface-raised);
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+}
+
+.page-content article thead {
+  background: var(--color-surface-overlay);
+}
+
+.page-content article th,
+.page-content article td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.page-content article th {
+  font-weight: 600;
+  font-size: 0.825rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.page-content article tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.page-content article tbody tr:hover {
+  background: var(--color-disclosure-hover-bg);
 }
 
 /* ===== Verify page ===== */
