@@ -681,6 +681,7 @@
                           {%- if _svv.attestation_id %} data-attestation-id="{{ _svv.attestation_id }}"{% endif -%}
                           {%- if _svv.trivy_summary %} data-trivy-summary='{{ _svv.trivy_summary | jsonify | escape }}'{% endif -%}
                           {%- if _svv.multi_arch_platforms %} data-multi-arch-platforms='{{ _svv.multi_arch_platforms | jsonify | escape }}'{% endif -%}
+                          data-variant-deps='{{ _svv.variant_deps | default: [] | jsonify }}'
                           aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
                           aria-hidden="true"
                           tabindex="-1"></button>
@@ -727,6 +728,7 @@
                                   {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
                                   {%- if variant.trivy_summary %} data-trivy-summary='{{ variant.trivy_summary | jsonify | escape }}'{% endif -%}
                                   {%- if variant.multi_arch_platforms %} data-multi-arch-platforms='{{ variant.multi_arch_platforms | jsonify | escape }}'{% endif -%}
+                                  data-variant-deps='{{ variant.variant_deps | default: [] | jsonify }}'
                                   aria-selected="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
                                   title="{{ variant.when_to_use | default: variant.description | escape }}">
                             {{ variant.name }}{% if variant.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}{% if variant.build_digest == "unknown" %} <i class="ti ti-alert-triangle" style="color: var(--accent-yellow); font-size: 0.7rem;" title="Build not yet available" aria-label="Warning: build not yet available"></i>{% endif %}
