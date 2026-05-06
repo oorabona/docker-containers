@@ -48,18 +48,29 @@
       this._imageBaseDockerHub = this.dataset.imageBaseDockerhub || this.dataset.imageBase || '';
       this._defaultTag = this.dataset.defaultTag || '';
 
-      // Registry options (default: GHCR + Docker Hub)
-      var defaultRegistries = [
-        { id: 'ghcr', label: 'GHCR', host: 'ghcr.io/' },
-        { id: 'dockerhub', label: 'Docker Hub', host: '' }
-      ];
+      // Registry options. We only synthesize the GHCR + Docker Hub default pair
+      // when the page actually provides a Docker Hub image base — otherwise
+      // selecting "Docker Hub" would silently fall back to the GHCR base. Pages
+      // without `data-image-base-dockerhub` get GHCR-only (no pill group rendered).
+      var hasDockerHubBase = !!this.dataset.imageBaseDockerhub;
+      var defaultRegistries = hasDockerHubBase
+        ? [
+            { id: 'ghcr', label: 'GHCR', host: 'ghcr.io/' },
+            { id: 'dockerhub', label: 'Docker Hub', host: '' }
+          ]
+        : [{ id: 'ghcr', label: 'GHCR', host: 'ghcr.io/' }];
       this._registries = parse(this.dataset.registries, defaultRegistries);
       if (!this._registries || !this._registries.length) {
         this._registries = defaultRegistries;
       }
+      // Default registry: explicit attribute → first registry → 'ghcr'.
+      // Validate that the requested default exists in _registries; otherwise
+      // fall back to the first available so the radiogroup always has an active
+      // pill (avoids all-tabIndex=-1 keyboard-trap state).
       var defaultFromAttr = (this.dataset.defaultRegistry || '').trim();
-      this._selectedRegistry = defaultFromAttr
-        || (this._registries.length > 0 ? this._registries[0].id : 'ghcr');
+      var firstId = this._registries.length > 0 ? this._registries[0].id : 'ghcr';
+      var validDefault = defaultFromAttr && this._registries.some(function (r) { return r.id === defaultFromAttr; });
+      this._selectedRegistry = validDefault ? defaultFromAttr : firstId;
 
       // versions: array of version-group objects with .tag + .variants[]
       this._versions = parse(this.dataset.versions, []);
