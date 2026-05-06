@@ -1149,8 +1149,9 @@ generate_data() {
             # that logic here using current_version as the tag.
             local subject_digest="" attestation_id="" attestation_url=""
             local trivy_category trivy_summary
-            local lineage_file="$SCRIPT_DIR/.build-lineage/${container}-${current_version}.json"
-            if [[ -f "$lineage_file" ]]; then
+            local lineage_file
+            lineage_file=$(resolve_variant_lineage_file "$container" "$current_version" 2>/dev/null || echo "")
+            if [[ -n "$lineage_file" && -f "$lineage_file" ]]; then
                 subject_digest=$(jq -r '.oci_subject_digest // empty' "$lineage_file" 2>/dev/null || true)
                 if [[ -z "$subject_digest" ]]; then
                     subject_digest=$(jq -r '.build_digest // ""' "$lineage_file" 2>/dev/null || true)

@@ -277,3 +277,101 @@ EOF
 
     rm -f "$TRIVY_CACHE_FILE"
 }
+
+# ===================================================================
+# .history.json merge logic — jq union+dedup+truncate
+# Tests for the update-dashboard.yaml jq pipeline that merges *.history.json
+# files across multiple lineage-derived-${run_id} artifacts.
+# The expression under test:
+#   jq -s 'add | unique_by((.built_at // "") + "/" + (.build_digest // ""))
+#          | sort_by(.built_at) | reverse | .[:10]'
+# ===================================================================
+
+# Helper: the exact jq expression from the workflow merge block
+_history_merge_jq() {
+    jq -s 'add | unique_by((.built_at // "") + "/" + (.build_digest // "")) | sort_by(.built_at) | reverse | .[:10]' "$@"
+}
+
+@test "history merge: two files with distinct rows produces merged output with both rows" {
+    tmp1=$(mktemp --suffix=.json)
+    tmp2=$(mktemp --suffix=.json)
+    cat > "$tmp1" <<'EOF'
+[{"built_at":"2026-05-01T10:00:00Z","build_digest":"sha256:aaa","version":"1.0"}]
+EOF
+    cat > "$tmp2" <<'EOF'
+[{"built_at":"2026-05-02T10:00:00Z","build_digest":"sha256:bbb","version":"1.1"}]
+EOF
+
+    result=$(_history_merge_jq "$tmp1" "$tmp2")
+    rm -f "$tmp1" "$tmp2"
+
+    count=$(echo "$result" | jq 'length')
+    [ "$count" -eq 2 ]
+    echo "$result" | jq -e 'any(.[]; .build_digest == "sha256:aaa")' > /dev/null
+    echo "$result" | jq -e 'any(.[]; .build_digest == "sha256:bbb")' > /dev/null
+}
+
+@test "history merge: two files with identical row produces single row (dedup)" {
+    tmp1=$(mktemp --suffix=.json)
+    tmp2=$(mktemp --suffix=.json)
+    row='[{"built_at":"2026-05-01T10:00:00Z","build_digest":"sha256:aaa","version":"1.0"}]'
+    echo "$row" > "$tmp1"
+    echo "$row" > "$tmp2"
+
+    result=$(_history_merge_jq "$tmp1" "$tmp2")
+    rm -f "$tmp1" "$tmp2"
+
+    count=$(echo "$result" | jq 'length')
+    [ "$count" -eq 1 ]
+}
+
+@test "history merge: output is sorted newest-first" {
+    tmp1=$(mktemp --suffix=.json)
+    tmp2=$(mktemp --suffix=.json)
+    cat > "$tmp1" <<'EOF'
+[{"built_at":"2026-05-01T10:00:00Z","build_digest":"sha256:older","version":"1.0"}]
+EOF
+    cat > "$tmp2" <<'EOF'
+[{"built_at":"2026-05-03T10:00:00Z","build_digest":"sha256:newer","version":"1.2"}]
+EOF
+
+    result=$(_history_merge_jq "$tmp1" "$tmp2")
+    rm -f "$tmp1" "$tmp2"
+
+    first_digest=$(echo "$result" | jq -r '.[0].build_digest')
+    [ "$first_digest" = "sha256:newer" ]
+}
+
+@test "history merge: post-merge truncation caps at 10 entries" {
+    # Build two files with 7 rows each — 5 shared (dedup to 1), net 9 unique + 5 shared=9 total
+    # More precisely: generate 14 distinct rows across two files to get 14 after dedup,
+    # then verify truncation keeps only 10.
+    tmp1=$(mktemp --suffix=.json)
+    tmp2=$(mktemp --suffix=.json)
+
+    # 8 rows in file 1
+    jq -n '[range(1;9) | {built_at: ("2026-05-0\(.)T10:00:00Z"), build_digest: ("sha256:file1_\(.)"), version: "1.0"}]' > "$tmp1"
+    # 8 rows in file 2 (all distinct built_at + digest)
+    jq -n '[range(1;9) | {built_at: ("2026-05-1\(.)T10:00:00Z"), build_digest: ("sha256:file2_\(.)"), version: "1.0"}]' > "$tmp2"
+
+    result=$(_history_merge_jq "$tmp1" "$tmp2")
+    rm -f "$tmp1" "$tmp2"
+
+    count=$(echo "$result" | jq 'length')
+    # 16 unique rows total, but capped at 10
+    [ "$count" -eq 10 ]
+}
+
+@test "history merge: null built_at rows dedup correctly (symmetric null-guard)" {
+    tmp1=$(mktemp --suffix=.json)
+    tmp2=$(mktemp --suffix=.json)
+    row='[{"built_at":null,"build_digest":"sha256:nullat","version":"1.0"}]'
+    echo "$row" > "$tmp1"
+    echo "$row" > "$tmp2"
+
+    result=$(_history_merge_jq "$tmp1" "$tmp2")
+    rm -f "$tmp1" "$tmp2"
+
+    count=$(echo "$result" | jq 'length')
+    [ "$count" -eq 1 ]
+}

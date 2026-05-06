@@ -406,6 +406,8 @@ jobs:
           # Merge derived files (.changelog.json, .history.json) — chronological
           # first-seen wins (newest run first). These don't have digest semantics:
           # the newest run's derived file is always the authoritative version.
+          # Exception: .history.json is append-only — union all source rows, dedup
+          # by (built_at + build_digest) so concurrent builds don't drop each other's rows.
           declare -A derived_seen=()
           merged_derived=0
           for run_id in $run_ids; do
@@ -413,8 +415,22 @@ jobs:
             [[ -d "$derived_dir" ]] || continue
             while IFS= read -r -d '' src; do
               fname=$(basename "$src")
+              dest=".build-lineage/$fname"
+              if [[ "$fname" == *.history.json ]]; then
+                # *.history.json is append-only — union rows from all runs, dedup by
+                # composite key (built_at + build_digest) to preserve concurrent rows.
+                # Post-merge truncation mirrors append_build_history producer cap (10 newest).
+                if [[ -f "$dest" ]]; then
+                  jq -s 'add | unique_by((.built_at // "") + "/" + (.build_digest // "")) | sort_by(.built_at) | reverse | .[:10]' \
+                    "$dest" "$src" > "$dest.tmp" && mv "$dest.tmp" "$dest" # match append_build_history producer cap
+                else
+                  cp -- "$src" "$dest"
+                fi
+                merged_derived=$((merged_derived + 1))
+                continue
+              fi
               [[ -n "${derived_seen[$fname]:-}" ]] && continue
-              cp -- "$src" ".build-lineage/$fname"
+              cp -- "$src" "$dest"
               derived_seen[$fname]=1
               merged_derived=$((merged_derived + 1))
             done < <(find "$derived_dir" -name '*.json' -print0)
