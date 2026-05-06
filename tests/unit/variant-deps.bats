@@ -145,3 +145,64 @@ teardown() {
     rm -rf "$tmpdir"
     [ "$result" = "[]" ]
 }
+
+# ---------------------------------------------------------------------------
+# Terraform: per-variant build_args intersection (regression guard for #399)
+# ---------------------------------------------------------------------------
+# NOTE: variant_deps_for_flavor itself returns ALL terraform monitored deps
+# (container-wide) — the per-variant filtering happens in collect_variant_json
+# via intersection with build_args_include. These tests validate the intersection
+# logic directly using build_args_include lists from terraform/variants.yaml.
+
+@test "terraform base build_args_include intersection excludes AWS_CLI_VERSION" {
+    # Simulate the intersection logic from collect_variant_json:
+    # variant_deps_for_flavor returns all monitored terraform deps.
+    # base variant's build_args_include omits AWS_CLI_VERSION and AZURE_CLI_VERSION.
+    local all_deps base_build_args result
+    all_deps=$(variant_deps_for_flavor "terraform" "base")
+    # base variant includes: TFLINT TRIVY TERRAGRUNT TERRAFORM_DOCS INFRACOST GITHUB_CLI
+    base_build_args='[
+        {"name":"TFLINT_VERSION"},{"name":"TRIVY_VERSION"},
+        {"name":"TERRAGRUNT_VERSION"},{"name":"TERRAFORM_DOCS_VERSION"},
+        {"name":"INFRACOST_VERSION"},{"name":"GITHUB_CLI_VERSION"}
+    ]'
+    local ba_names
+    ba_names=$(echo "$base_build_args" | jq '[.[] | .name]')
+    result=$(jq -n \
+        --argjson vd "$all_deps" \
+        --argjson ba "$ba_names" \
+        '$vd | map(select(. as $n | $ba | index($n) != null))')
+    # Must NOT contain AWS_CLI_VERSION
+    [ "$(echo "$result" | jq 'index("AWS_CLI_VERSION")')" = "null" ]
+    # Must NOT contain AZURE_CLI_VERSION
+    [ "$(echo "$result" | jq 'index("AZURE_CLI_VERSION")')" = "null" ]
+    # Must be non-empty (base has 6 monitored deps)
+    [ "$(echo "$result" | jq 'length')" = "6" ]
+}
+
+@test "terraform full build_args_include intersection includes AWS_CLI_VERSION and AZURE_CLI_VERSION" {
+    # full variant includes everything: base + AWS + Azure + GCP (GCP has monitor:false)
+    local all_deps full_build_args result
+    all_deps=$(variant_deps_for_flavor "terraform" "full")
+    # full variant's build_args_include has AWS_CLI_VERSION and AZURE_CLI_VERSION
+    # GCP_CLI_VERSION has monitor:false so it won't appear in all_deps
+    full_build_args='[
+        {"name":"TFLINT_VERSION"},{"name":"TRIVY_VERSION"},
+        {"name":"TERRAGRUNT_VERSION"},{"name":"TERRAFORM_DOCS_VERSION"},
+        {"name":"INFRACOST_VERSION"},{"name":"GITHUB_CLI_VERSION"},
+        {"name":"AWS_CLI_VERSION"},{"name":"AZURE_CLI_VERSION"},
+        {"name":"GCP_CLI_VERSION"}
+    ]'
+    local ba_names
+    ba_names=$(echo "$full_build_args" | jq '[.[] | .name]')
+    result=$(jq -n \
+        --argjson vd "$all_deps" \
+        --argjson ba "$ba_names" \
+        '$vd | map(select(. as $n | $ba | index($n) != null))')
+    # full must contain AWS_CLI_VERSION
+    [ "$(echo "$result" | jq 'index("AWS_CLI_VERSION") != null')" = "true" ]
+    # full must contain AZURE_CLI_VERSION
+    [ "$(echo "$result" | jq 'index("AZURE_CLI_VERSION") != null')" = "true" ]
+    # base (6 deps) vs full (8 deps) — full has 2 more
+    [ "$(echo "$result" | jq 'length')" = "8" ]
+}

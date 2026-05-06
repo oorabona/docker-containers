@@ -566,11 +566,26 @@ collect_variant_json() {
     fi
 
     # Variant-level monitored dependency names.
-    # For postgres: intersection of flavor extensions with container-wide monitored deps.
-    # For all others: container-wide monitored dep names (same for every variant).
+    # For postgres: intersection of flavor extensions with container-wide monitored deps
+    #   (done inside variant_deps_for_flavor).
+    # For all others: intersect container-wide monitored dep names with THIS variant's
+    #   build_args names so that per-variant build_args_include filters take effect
+    #   (e.g. terraform base vs full have different cloud CLI sets).
+    # Postgres is excluded from the build_args intersection because its build_args
+    #   only carry BASE_IMAGE — not extension names — so the intersection would
+    #   zero out the legitimate flavor-based list.
     local variant_deps_json
     variant_deps_json=$(variant_deps_for_flavor "$container" "$flavor")
     [[ -z "$variant_deps_json" ]] && variant_deps_json="[]"
+    if [[ "$container" != "postgres" ]]; then
+        local _ba_names_json
+        _ba_names_json=$(echo "$build_args_json" | jq '[.[] | .name]' 2>/dev/null) || _ba_names_json="[]"
+        [[ -z "$_ba_names_json" ]] && _ba_names_json="[]"
+        variant_deps_json=$(jq -n \
+            --argjson vd "$variant_deps_json" \
+            --argjson ba "$_ba_names_json" \
+            '$vd | map(select(. as $n | $ba | index($n) != null))')
+    fi
 
     # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
     # (SBOM packages can be very large for containers with many dependencies)
