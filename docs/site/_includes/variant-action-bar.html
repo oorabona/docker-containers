@@ -33,9 +33,10 @@
 
 {%- comment -%} Determine unique versions for version pills {%- endcomment -%}
 {%- comment -%}
-  F2 fix: the old append|jsonify chain was malformed — jsonify applied to the
-  whole accumulator string, not to individual values. Use capture so each field
-  gets its own | jsonify call, producing literal JSON the browser can parse.
+  Use {% capture %} so each field gets its own | jsonify call, producing
+  literal JSON the browser can parse. A chained `| append: ... | jsonify`
+  encodes the whole accumulator string each iteration, yielding deeply-
+  nested-escaped output that fails JSON.parse.
 {%- endcomment -%}
 {%- capture _vab_ver_arr -%}
 {%- if page.versions and page.versions.size > 1 -%}[
