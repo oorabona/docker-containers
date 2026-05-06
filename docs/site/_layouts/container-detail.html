@@ -218,12 +218,16 @@
             {%- endif -%}
 
             {%- if page.dependency_monitoring.enabled -%}
+              {%- assign _hero_dep_disabled = page.dependency_monitoring.disabled | default: 0 -%}
+              {%- assign _hero_dep_trackable = page.dependency_monitoring.total | default: 0 | minus: _hero_dep_disabled -%}
+              {%- if _hero_dep_trackable > 0 -%}
               <a class="trust-badge trust-badge--deps"
                  href="{{ page.upstream_monitor_url }}"
                  rel="noopener noreferrer"
                  title="View the daily upstream-monitor workflow runs">
-                🔗 {{ page.dependency_monitoring.monitored }}/{{ page.dependency_monitoring.total }} deps tracked daily
+                🔗 {{ page.dependency_monitoring.monitored }}/{{ _hero_dep_trackable }} deps tracked daily
               </a>
+              {%- endif -%}
             {%- endif -%}
             <a class="trust-badge trust-badge--verify"
                href="{{ '/verify-images/' | relative_url }}"
@@ -951,6 +955,9 @@
           {%- else -%}
             {%- assign _dep_metric = dm.monitored | append: " monitored" -%}
           {%- endif -%}
+          {%- assign _dep_disabled_count = dm.disabled | default: 0 -%}
+          {%- assign _dep_trackable = dm.total | default: 0 | minus: _dep_disabled_count -%}
+          {%- if _dep_trackable > 0 -%}
           <details class="disclosure">
             <summary>
               <span class="disclosure__title">Dependency health</span>
@@ -960,7 +967,7 @@
             <div class="disclosure__body">
               <section class="dep-health-section glass" aria-label="Dependency health monitoring"
                        data-dep-updates='{% if container_updates %}{{ container_updates.updates | jsonify }}{% else %}[]{% endif %}'
-                       data-dep-all='{{ dm.deps | jsonify }}'>
+                       data-dep-all='{% assign trackable_deps = dm.deps | where: "status", "monitored" %}{{ trackable_deps | jsonify }}'>
                 <div class="dep-health-header">
                   <i class="ti ti-heartbeat" aria-hidden="true"></i>
                   <h3>Dependency Health</h3>
@@ -975,17 +982,13 @@
 
                 <div class="dep-health-summary">
                   <div class="dep-health-bar">
-                    {%- if dm.total and dm.total > 0 -%}
-                    <div class="dep-bar-label">{{ dm.monitored }}/{{ dm.total }} dependencies monitored</div>
-                    {% assign pct = dm.monitored | times: 100 | divided_by: dm.total %}
+                    <div class="dep-bar-label">{{ dm.monitored }}/{{ _dep_trackable }} dependencies monitored</div>
+                    {% assign pct = dm.monitored | times: 100 | divided_by: _dep_trackable %}
                     {% assign pct_unmon = 100 | minus: pct %}
                     <div class="dep-bar-track">
                       <div class="dep-bar-fill" style="flex: {{ pct }}"></div>
                       {% if pct_unmon > 0 %}<div class="dep-bar-unmonitored" style="flex: {{ pct_unmon }}"></div>{% endif %}
                     </div>
-                    {%- else -%}
-                    <span class="dep-monitor-empty">No dependencies tracked</span>
-                    {%- endif -%}
                   </div>
                 </div>
 
@@ -1023,7 +1026,6 @@
                 {% endif %}
 
                 {% assign up_to_date_deps = "" %}
-                {% assign disabled_deps = "" %}
                 {% for dep in dm.deps %}
                   {% if dep.status == "monitored" %}
                     {% assign has_update = false %}
@@ -1041,12 +1043,6 @@
                         {% assign up_to_date_deps = up_to_date_deps | append: "||" | append: dep.name %}
                       {% endif %}
                     {% endunless %}
-                  {% elsif dep.status == "disabled" %}
-                    {% if disabled_deps == "" %}
-                      {% assign disabled_deps = dep.name | append: "::" | append: dep.reason %}
-                    {% else %}
-                      {% assign disabled_deps = disabled_deps | append: "||" | append: dep.name | append: "::" | append: dep.reason %}
-                    {% endif %}
                   {% endif %}
                 {% endfor %}
 
@@ -1071,17 +1067,6 @@
                 </details>
                 {% endif %}
 
-                {% if disabled_deps != "" %}
-                <div class="dep-disabled-list">
-                  <span class="dep-disabled-label">Unmonitored:</span>
-                  {% assign disabled_arr = disabled_deps | split: "||" %}
-                  {% for item in disabled_arr %}
-                    {% assign parts = item | split: "::" %}
-                    <span class="dep-disabled-item" data-dep-name="{{ parts[0] }}" title="{{ parts[1] }}">{{ parts[0] }}</span>
-                  {% endfor %}
-                </div>
-                {% endif %}
-
                 <div class="dep-health-footer">
                   <a href="{{ _repo_url }}/actions/workflows/upstream-monitor.yaml"
                      class="dep-workflow-link" target="_blank" rel="noopener noreferrer">
@@ -1091,6 +1076,7 @@
               </section>
             </div>
           </details>
+          {%- endif -%}
           {% endif %}
 
         </section>{%- comment -%} /Zone 3 — Explore {%- endcomment -%}
