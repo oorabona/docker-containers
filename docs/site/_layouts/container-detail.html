@@ -20,6 +20,7 @@
   <!-- tokens.css MUST load before theme.css — defines variables theme.css references -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
   <!-- Component CSS — load after tokens, before theme -->
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/variant-action-bar.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/version-tabs.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/security-scan-card.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/provenance.css">
@@ -87,68 +88,7 @@
             </div>
           </div>
 
-          <!-- Pull command -->
-          <div class="detail-pull-section glass"
-               id="detail-pull"
-               data-ghcr-base="ghcr.io/{{ page.github_username }}/{{ page.name }}"
-               data-dockerhub-base="docker.io/{{ page.dockerhub_username }}/{{ page.name }}"
-               data-default-tag="{{ page.current_version }}">
-            <div class="detail-pull-row">
-              <div class="detail-pull-label">
-                <i class="ti ti-terminal-2" aria-hidden="true"></i>
-                <span>Pull</span>
-              </div>
-              <div class="detail-registry-toggle" role="radiogroup" aria-label="Container registry">
-                <button class="detail-registry-btn active" data-registry="ghcr"
-                        role="radio" aria-checked="true" type="button">GHCR</button>
-                <button class="detail-registry-btn" data-registry="dockerhub"
-                        role="radio" aria-checked="false" type="button">Docker Hub</button>
-              </div>
-            </div>
-            <div class="detail-pull-input-group">
-              <input type="text"
-                     class="detail-pull-input"
-                     id="detail-pull-cmd"
-                     value="docker pull ghcr.io/{{ page.github_username }}/{{ page.name }}:{{ page.current_version }}"
-                     readonly
-                     aria-label="Docker pull command">
-              <button class="detail-copy-btn" type="button" id="detail-copy-btn"
-                      aria-label="Copy pull command to clipboard">
-                <i class="ti ti-copy" aria-hidden="true"></i>
-              </button>
-            </div>
-          </div>
-
-          <!-- Meta cards -->
-          <div class="detail-meta" id="detail-meta">
-            <div class="meta-card glass">
-              <div class="meta-card-label">Status</div>
-              <div class="meta-card-value">{{ page.status_text }}</div>
-            </div>
-            <div class="meta-card glass">
-              <div class="meta-card-label">Current Tag</div>
-              <div class="meta-card-value" data-meta="current-tag">{{ page.current_version }}</div>
-            </div>
-            <div class="meta-card glass">
-              <div class="meta-card-label">Docker Hub Pulls</div>
-              <div class="meta-card-value">{{ page.pull_count_formatted | default: "0" }}</div>
-            </div>
-            <div class="meta-card glass">
-              <div class="meta-card-label">Stars</div>
-              <div class="meta-card-value">
-                <i class="ti ti-star" style="font-size: 0.75rem; color: var(--accent-yellow);" aria-hidden="true"></i>
-                {{ page.star_count | default: 0 }}
-              </div>
-            </div>
-            <div class="meta-card glass">
-              <div class="meta-card-label">Size (amd64)</div>
-              <div class="meta-card-value" data-meta="size-amd64">{{ page.size_amd64 | default: "---" }}</div>
-            </div>
-            <div class="meta-card glass">
-              <div class="meta-card-label">Size (arm64)</div>
-              <div class="meta-card-value" data-meta="size-arm64">{{ page.size_arm64 | default: "---" }}</div>
-            </div>
-          </div>
+          {%- comment -%} Pull command + meta-cards removed PR1 — replaced by &lt;variant-action-bar&gt; below {%- endcomment -%}
 
           <!-- Value Proposition -->
           {%- if page.value_proposition and page.value_proposition != "" -%}
@@ -157,10 +97,13 @@
           </section>
           {%- endif -%}
 
+          {%- comment -%} Variant action bar — replaces static pull command + meta-cards {%- endcomment -%}
+          {% include variant-action-bar.html %}
+
         </header>{%- comment -%} /Zone 1 — Identity {%- endcomment -%}
 
         {%- comment -%} Zone 2 — Trust posture (always visible) {%- endcomment -%}
-        <section class="detail-zone detail-zone--trust" aria-label="Trust posture">
+        <section id="trust-posture" class="detail-zone detail-zone--trust" aria-label="Trust posture">
           <h2 class="zone-eyebrow">Trust posture</h2>
 
           <!-- Trust Strip -->
@@ -234,6 +177,42 @@
                title="Reproduce these checks yourself — verification guide">🔍 REPRODUCE THESE CHECKS LOCALLY</a>
           </trust-strip>
 
+          {%- comment -%} Stats strip — inline pull/star/variant counts below trust badges {%- endcomment -%}
+          {%- comment -%} Compute variant + version counts for the stats strip {%- endcomment -%}
+          {%- assign _stats_variants = 0 -%}
+          {%- assign _stats_versions = 0 -%}
+          {%- if page.versions -%}
+            {%- assign _stats_versions = page.versions.size -%}
+            {%- for _sv in page.versions -%}
+              {%- assign _sv_sel = _sv.variants | where_exp: "v", "v.name != ''" -%}
+              {%- assign _stats_variants = _stats_variants | plus: _sv_sel.size -%}
+            {%- endfor -%}
+          {%- elsif page.variants -%}
+            {%- assign _sv_sel2 = page.variants | where_exp: "v", "v.name != ''" -%}
+            {%- assign _stats_variants = _sv_sel2.size -%}
+            {%- assign _stats_versions = 1 -%}
+          {%- endif -%}
+          <section id="container-stats" class="stats-strip" aria-label="Container statistics">
+            {%- if page.pull_count_formatted or page.pull_count -%}
+            <div class="stat">
+              <span class="eyebrow">PULLS</span>
+              <span class="value">{{ page.pull_count_formatted | default: page.pull_count | default: "0" }}</span>
+            </div>
+            {%- endif -%}
+            {%- if page.star_count -%}
+            <div class="stat">
+              <span class="eyebrow">STARS</span>
+              <span class="value">{{ page.star_count | default: 0 }}</span>
+            </div>
+            {%- endif -%}
+            {%- if _stats_variants > 0 -%}
+            <div class="stat">
+              <span class="eyebrow">COVERAGE</span>
+              <span class="value">{{ _stats_variants }} variant{% if _stats_variants != 1 %}s{% endif %}{% if _stats_versions > 1 %} · {{ _stats_versions }} versions{% endif %} · amd64+arm64</span>
+            </div>
+            {%- endif -%}
+          </section>
+
           {%- comment -%}
             Render one <section class="provenance"> per variant with
             data-variant-tag; container-detail.js (phase-b-variant-changed)
@@ -257,7 +236,7 @@
               resolves correctly for every variant section regardless of which is visible.
               (Hidden sections have display:none — their heading would be skipped by AT.)
             {%- endcomment -%}
-            <header class="provenance-header">
+            <header id="provenance" class="provenance-header">
               <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
               <h3 id="provenance-heading">Provenance</h3>
             </header>
@@ -362,7 +341,7 @@
             {%- endfor -%}
           {%- elsif page.variants -%}
             {%- comment -%}P0-N2 fix: heading lifted out — same rationale as page.versions branch above.{%- endcomment -%}
-            <header class="provenance-header">
+            <header id="provenance" class="provenance-header">
               <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
               <h3 id="provenance-heading">Provenance</h3>
             </header>
@@ -569,7 +548,7 @@
           <!-- Security Scan Summary (Zone 2 — always visible trust surface) -->
           {%- assign sec_variant = page.versions[0].variants[0] | default: page.variants[0] | default: page -%}
           {%- if sec_variant.trivy_summary and sec_variant.trivy_summary.last_scan -%}
-          <div class="security-scan-card">
+          <div id="security-scan" class="security-scan-card">
             <header class="security-scan-card-header">
               <p class="eyebrow">Security scan results</p>
               <h3>Trivy · last scan {{ sec_variant.trivy_summary.last_scan | date: "%Y-%m-%d" }}</h3>
@@ -625,6 +604,75 @@
         {%- comment -%} Zone 3 — Explore (progressive disclosure, native <details>) {%- endcomment -%}
         <section class="detail-zone detail-zone--explore" aria-label="Explore">
           <h2 class="zone-eyebrow">Explore</h2>
+
+          {%- comment -%} All-variants flat table (always visible, not inside a disclosure) {%- endcomment -%}
+          {%- assign _avt_count = 0 -%}
+          {%- if page.versions -%}
+            {%- for _avt_v in page.versions -%}
+              {%- assign _avt_sel = _avt_v.variants | where_exp: "v", "v.name != ''" -%}
+              {%- assign _avt_count = _avt_count | plus: _avt_sel.size -%}
+            {%- endfor -%}
+          {%- elsif page.variants -%}
+            {%- assign _avt_count = page.variants.size -%}
+          {%- endif -%}
+          {%- if _avt_count > 0 -%}
+          <section id="all-variants" class="all-variants-flat" aria-label="All available variants">
+            <h3 class="all-variants-heading">Available variants</h3>
+            <div class="all-variants-table-wrap">
+              <table class="all-variants-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Tag</th>
+                    {%- if page.versions and page.versions[0].variants[0].extensions -%}<th scope="col">Extensions</th>{%- endif -%}
+                    <th scope="col">Size (amd64)</th>
+                    <th scope="col">Build status</th>
+                    {%- if page.versions and page.versions.size > 1 -%}<th scope="col">Version</th>{%- endif -%}
+                  </tr>
+                </thead>
+                <tbody>
+                  {%- if page.versions -%}
+                    {%- for _avt_ver in page.versions -%}
+                      {%- assign _avt_sel2 = _avt_ver.variants | where_exp: "v", "v.name != ''" -%}
+                      {%- for _avt_var in _avt_sel2 -%}
+                  <tr>
+                    <td><code>{{ _avt_var.tag | escape }}</code>{% if _avt_var.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}</td>
+                    {%- if page.versions[0].variants[0].extensions -%}
+                    <td>
+                      {%- for ext in _avt_var.extensions -%}<span class="tag-pill">{{ ext | escape }}</span>{%- endfor -%}
+                    </td>
+                    {%- endif -%}
+                    <td>{{ _avt_var.size_amd64 | default: "—" | escape }}</td>
+                    <td>
+                      {%- if _avt_var.build_digest and _avt_var.build_digest != "unknown" -%}
+                        <span class="avt-status avt-status--ok">OK</span>
+                      {%- else -%}
+                        <span class="avt-status avt-status--pending">PENDING</span>
+                      {%- endif -%}
+                    </td>
+                    {%- if page.versions.size > 1 -%}<td>{{ _avt_ver.base_tag | default: _avt_ver.tag | escape }}</td>{%- endif -%}
+                  </tr>
+                      {%- endfor -%}
+                    {%- endfor -%}
+                  {%- elsif page.variants -%}
+                    {%- for _avt_var in page.variants -%}
+                  <tr>
+                    <td><code>{{ _avt_var.tag | escape }}</code>{% if _avt_var.is_default %} <span class="version-tab-default-badge">default</span>{% endif %}</td>
+                    <td>{{ _avt_var.size_amd64 | default: "—" | escape }}</td>
+                    <td>
+                      {%- if _avt_var.build_digest and _avt_var.build_digest != "unknown" -%}
+                        <span class="avt-status avt-status--ok">OK</span>
+                      {%- else -%}
+                        <span class="avt-status avt-status--pending">PENDING</span>
+                      {%- endif -%}
+                    </td>
+                  </tr>
+                    {%- endfor -%}
+                  {%- endif -%}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          {%- endif -%}
 
           <!-- Variants — replaced by <version-tabs> custom element -->
           {% if page.has_variants %}
@@ -880,7 +928,7 @@
           {% endunless %}
 
           <!-- Package Summary (from SBOM) -->
-          <details class="disclosure">
+          <details id="dep-health" class="disclosure">
             <summary>
               <span class="disclosure__title">Package summary</span>
               <span class="disclosure__metric">n/a — runtime parsed</span>
@@ -919,7 +967,7 @@
           </details>
 
           <!-- Build History (from SBOM history) -->
-          <details class="disclosure">
+          <details id="build-history" class="disclosure">
             <summary>
               <span class="disclosure__title">Build history</span>
               <span class="disclosure__metric">n/a — runtime fetched</span>
@@ -1087,7 +1135,7 @@
         <section class="detail-zone detail-zone--docs">
           <h2 class="zone-eyebrow">Documentation</h2>
           <!-- README (rendered at build time by kramdown) -->
-          <div class="readme-section glass">
+          <div id="readme" class="readme-section glass">
             <div class="readme-header">
               <i class="ti ti-file-text" aria-hidden="true"></i>
               <h3>README</h3>
@@ -1107,6 +1155,7 @@
   </div>
 
   <!-- Vanilla web components — CSP-clean, no eval -->
+  <script defer src="{{ '/assets/js/components/variant-action-bar.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/trust-strip.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/security-scan.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/version-tabs.js' | relative_url }}"></script>
