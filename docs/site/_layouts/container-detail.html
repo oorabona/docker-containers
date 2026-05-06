@@ -266,12 +266,13 @@
                 <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
               </div>
               {%- endif -%}
-              {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
+              {%- if _prov_var.build_digest != blank and _prov_var.build_digest != "unknown" -%}
+              {%- assign _prov_bd = _prov_var.build_digest | strip -%}
               <div class="evidence-row">
                 <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{{ _prov_var.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_var.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{{ _prov_bd }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_bd }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -359,12 +360,13 @@
                 <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
               </div>
               {%- endif -%}
-              {%- if _prov_var.build_digest and _prov_var.build_digest != "unknown" -%}
+              {%- if _prov_var.build_digest != blank and _prov_var.build_digest != "unknown" -%}
+              {%- assign _prov_bd = _prov_var.build_digest | strip -%}
               <div class="evidence-row">
                 <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{{ _prov_var.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_var.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{{ _prov_bd }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_bd }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -450,12 +452,13 @@
                 <dd><code class="hash">{{ page.last_commit_short | default: site.github.build_revision | slice: 0, 7 }}</code></dd>
               </div>
               {%- endif -%}
-              {%- if prov_variant.build_digest and prov_variant.build_digest != "unknown" -%}
+              {%- if prov_variant.build_digest != blank and prov_variant.build_digest != "unknown" -%}
+              {%- assign _pv_bd = prov_variant.build_digest | strip -%}
               <div class="evidence-row">
                 <dt>Build digest</dt>
                 <dd>
-                  <code class="hash hash-long">{{ prov_variant.build_digest }}</code>
-                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ prov_variant.build_digest }}">⧉</button>
+                  <code class="hash hash-long">{{ _pv_bd }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _pv_bd }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
