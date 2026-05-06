@@ -112,7 +112,11 @@
 
       // Update dep health section for selected variant
       var argNames = buildArgs.map(function(a) { return a.name; });
-      updateDepHealth(argNames);
+      var variantDepsList = null;
+      try {
+        if (el.dataset.variantDeps) variantDepsList = JSON.parse(el.dataset.variantDeps);
+      } catch (e) { /* swallow — fall back to argNames intersection */ }
+      updateDepHealth(argNames, variantDepsList);
 
       // Update SBOM sections for selected variant
       updateSbomSection(el);
@@ -223,16 +227,68 @@
     }
 
     // Filter dep health section to show only deps relevant to the selected variant
-    function updateDepHealth(variantArgNames) {
+    function updateDepHealth(variantArgNames, variantDepsList) {
       var data = getDepData();
       if (!data) return;
 
-      // Build a Set of arg names for this variant
-      var argSet = {};
-      variantArgNames.forEach(function(n) { argSet[n] = true; });
+      // If variantDepsList is provided (from data-variant-deps), it is the
+      // authoritative list of monitored extension names for this variant.
+      // When the list is empty (e.g. postgres base flavor), show a dedicated
+      // empty-state message instead of the bar.
+      if (variantDepsList !== null && variantDepsList !== undefined) {
+        if (variantDepsList.length === 0) {
+          // Empty-state: no trackable extensions in this flavor
+          var barLabel2 = data.section.querySelector('.dep-bar-label');
+          if (barLabel2) {
+            var emptyMsg = data.section.querySelector('.dep-monitor-empty');
+            if (!emptyMsg) {
+              emptyMsg = document.createElement('span');
+              emptyMsg.className = 'dep-monitor-empty';
+              emptyMsg.textContent = 'No tracked extensions in this flavor';
+              barLabel2.parentNode.insertBefore(emptyMsg, barLabel2);
+            }
+            emptyMsg.style.display = '';
+            barLabel2.style.display = 'none';
+          }
+          // Update badge to reflect no-extension state
+          var emptyBadge = data.section.querySelector('.dep-summary-badge');
+          if (emptyBadge) {
+            emptyBadge.textContent = 'no extensions';
+            emptyBadge.className = 'dep-summary-badge dep-badge-neutral';
+          }
+          // Hide bar and lists — nothing to show
+          var barFill2 = data.section.querySelector('.dep-bar-fill');
+          var barUnmon2 = data.section.querySelector('.dep-bar-unmonitored');
+          if (barFill2) barFill2.style.flex = 0;
+          if (barUnmon2) barUnmon2.style.display = 'none';
+          var tableWrap2 = data.section.querySelector('.dep-update-table-wrap');
+          if (tableWrap2) tableWrap2.style.display = 'none';
+          var uptodateDetails2 = data.section.querySelector('.dep-uptodate-details');
+          if (uptodateDetails2) uptodateDetails2.style.display = 'none';
+          var disabledList2 = data.section.querySelector('.dep-disabled-list');
+          if (disabledList2) disabledList2.style.display = 'none';
+          return;
+        }
 
-      // Filter deps: monitored deps whose name is in variant's build_args,
-      // plus disabled deps whose name is in variant's build_args
+        // Non-empty variantDepsList: restore label visibility if previously hidden
+        var barLabelRestore = data.section.querySelector('.dep-bar-label');
+        var emptyMsgRestore = data.section.querySelector('.dep-monitor-empty');
+        if (emptyMsgRestore) emptyMsgRestore.style.display = 'none';
+        if (barLabelRestore) barLabelRestore.style.display = '';
+      }
+
+      // Build a Set of arg names for this variant.
+      // When variantDepsList is provided, use it as the primary filter.
+      // Otherwise fall back to the build_args name intersection (legacy path).
+      var argSet = {};
+      if (variantDepsList !== null && variantDepsList !== undefined) {
+        variantDepsList.forEach(function(n) { argSet[n] = true; });
+      } else {
+        variantArgNames.forEach(function(n) { argSet[n] = true; });
+      }
+
+      // Filter deps: monitored deps whose name is in variant's dep list,
+      // plus disabled deps whose name is in variant's dep list
       var relevantDeps = data.allDeps.filter(function(d) { return argSet[d.name]; });
       var relevantMonitored = relevantDeps.filter(function(d) { return d.status === 'monitored'; });
       var relevantUpdates = data.updates.filter(function(u) { return argSet[u.name]; });
@@ -322,15 +378,25 @@
       var data = getDepData();
       if (!data || data.updates.length === 0) return 0;
 
-      var buildArgsAttr = variantEl.dataset.buildArgs;
-      if (!buildArgsAttr) return 0;
-
-      var argNames = {};
+      // Prefer data-variant-deps (authoritative per-flavor list) over build-args
+      var variantDepsList = null;
       try {
-        JSON.parse(buildArgsAttr).forEach(function(a) { argNames[a.name] = true; });
-      } catch (e) { return 0; }
+        var vdAttr = variantEl.dataset.variantDeps;
+        if (vdAttr !== undefined) variantDepsList = JSON.parse(vdAttr);
+      } catch (e) { variantDepsList = null; }
 
-      return data.updates.filter(function(u) { return argNames[u.name]; }).length;
+      var nameSet = {};
+      if (variantDepsList !== null) {
+        variantDepsList.forEach(function(n) { nameSet[n] = true; });
+      } else {
+        var buildArgsAttr = variantEl.dataset.buildArgs;
+        if (!buildArgsAttr) return 0;
+        try {
+          JSON.parse(buildArgsAttr).forEach(function(a) { nameSet[a.name] = true; });
+        } catch (e) { return 0; }
+      }
+
+      return data.updates.filter(function(u) { return nameSet[u.name]; }).length;
     }
 
     // Add notification badges to variant buttons showing outdated dep count

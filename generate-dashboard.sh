@@ -383,6 +383,71 @@ get_build_history() {
     fi
 }
 
+# Return the JSON array of monitored dependency names for a given container+flavor.
+#
+# For postgres (which has per-flavor extension lists):
+#   - Reads the flavor's extension list from postgres/flavors/<flavor>.yaml
+#   - Intersects with dependency_sources that have monitor != false
+#   - Returns [] for base flavor (no extensions) or unknown flavors
+#
+# For all other containers (no flavor concept):
+#   - Returns all dependency_sources names where monitor != false
+#   - The "flavor" argument is ignored for non-postgres containers
+#
+# Usage: variant_deps_for_flavor <container> <flavor>
+# Output: JSON array of dep names, e.g. ["pgvector","pg_cron"]
+variant_deps_for_flavor() {
+    local container="$1"
+    local flavor="${2:-}"
+    local dep_config="${SCRIPT_DIR:-.}/${container}/config.yaml"
+
+    if [[ ! -f "$dep_config" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Postgres MUST have a flavor; empty/null flavor returns [] (not container-wide).
+    if [[ "$container" == "postgres" && ( -z "$flavor" || "$flavor" == "null" ) ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Collect monitored dep names from dependency_sources
+    local monitored_names
+    monitored_names=$(yq -r '
+        .dependency_sources // {} | to_entries[] |
+        select(.value.monitor != false) |
+        .key' "$dep_config" 2>/dev/null) || true
+
+    if [[ -z "$monitored_names" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # For postgres with a known flavor: intersect monitored names with flavor extensions
+    if [[ "$container" == "postgres" && -n "$flavor" && "$flavor" != "null" ]]; then
+        local flavor_exts
+        flavor_exts=$(get_flavor_extensions_yaml "$flavor")
+
+        # If flavor has no extensions, return empty (base flavor)
+        if [[ "$flavor_exts" == "[]" || -z "$flavor_exts" ]]; then
+            echo "[]"
+            return 0
+        fi
+
+        # Intersect: keep only monitored names that appear in flavor_exts
+        echo "$monitored_names" | \
+            jq -Rs 'split("\n") | map(select(length > 0))' | \
+            jq --argjson exts "$flavor_exts" \
+               '[.[] | select(. as $n | $exts | index($n) != null)]'
+        return 0
+    fi
+
+    # Non-postgres (or postgres with no flavor): return all monitored dep names
+    echo "$monitored_names" | \
+        jq -Rs 'split("\n") | map(select(length > 0))'
+}
+
 # Build a single variant entry as JSON
 # Handles sizes, lineage, and build_args in one place (no duplication)
 collect_variant_json() {
@@ -500,6 +565,28 @@ collect_variant_json() {
         fi
     fi
 
+    # Variant-level monitored dependency names.
+    # For postgres: intersection of flavor extensions with container-wide monitored deps
+    #   (done inside variant_deps_for_flavor).
+    # For all others: intersect container-wide monitored dep names with THIS variant's
+    #   build_args names so that per-variant build_args_include filters take effect
+    #   (e.g. terraform base vs full have different cloud CLI sets).
+    # Postgres is excluded from the build_args intersection because its build_args
+    #   only carry BASE_IMAGE — not extension names — so the intersection would
+    #   zero out the legitimate flavor-based list.
+    local variant_deps_json
+    variant_deps_json=$(variant_deps_for_flavor "$container" "$flavor")
+    [[ -z "$variant_deps_json" ]] && variant_deps_json="[]"
+    if [[ "$container" != "postgres" ]]; then
+        local _ba_names_json
+        _ba_names_json=$(echo "$build_args_json" | jq '[.[] | .name]' 2>/dev/null) || _ba_names_json="[]"
+        [[ -z "$_ba_names_json" ]] && _ba_names_json="[]"
+        variant_deps_json=$(jq -n \
+            --argjson vd "$variant_deps_json" \
+            --argjson ba "$_ba_names_json" \
+            '$vd | map(select(. as $n | $ba | index($n) != null))')
+    fi
+
     # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
     # (SBOM packages can be very large for containers with many dependencies)
     printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
@@ -518,6 +605,7 @@ collect_variant_json() {
         --arg attestation_url "$attestation_url" \
         --argjson extensions "$extensions_json" \
         --arg when_to_use "$when_to_use" \
+        --argjson variant_deps "$variant_deps_json" \
         '
         .[0] as $lineage |
         .[1] as $build_args |
@@ -532,7 +620,8 @@ collect_variant_json() {
             is_default: $is_default,
             size_amd64: $size_amd64, size_arm64: $size_arm64,
             build_digest: $lineage.build_digest,
-            base_image: $lineage.base_image
+            base_image: $lineage.base_image,
+            variant_deps: $variant_deps
         }
         + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)

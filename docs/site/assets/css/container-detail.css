@@ -588,6 +588,7 @@
     .dep-health-summary { margin-bottom: 1.25rem; }
     .dep-health-bar { display: flex; flex-direction: column; gap: 0.5rem; }
     .dep-bar-label { font-size: 0.75rem; color: var(--detail-text-muted); }
+    .dep-monitor-empty { font-size: 0.75rem; color: var(--detail-text-muted); font-style: italic; }
     .dep-bar-track {
       height: 6px; border-radius: 3px; background: var(--color-dep-bar-track-bg);
       overflow: hidden; display: flex;
