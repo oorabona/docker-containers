@@ -52,9 +52,11 @@ body .trust-badge {
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;
-  /* Gate 4 headline tweaks */
-  font-feature-settings: "ss01", "cv11";
-  font-optical-sizing: auto;
+  /* Gate 4 headline tweaks: ss01/cv11 + optical-sizing produced a visible
+     double-stroke artefact on this 24px Inter 600 line in Chromium-based
+     browsers — the combined feature settings forced the renderer into a
+     fallback path that doubled the glyph outline. Removed; the rest of the
+     spec (Inter SemiBold, tight line-height) is still applied via --text-h3. */
 }
 
 /* -----------------------------------------------------------------------
