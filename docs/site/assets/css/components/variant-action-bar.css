@@ -128,7 +128,8 @@ variant-action-bar {
 
 /* Base pill style */
 .vab-version-pill,
-.vab-flavor-pill {
+.vab-flavor-pill,
+.vab-registry-pill {
   padding: var(--space-xs, 4px) var(--space-sm, 8px);
   border-radius: var(--radius-full, 9999px);
   border: 1px solid var(--color-variant-tag-border, rgba(139,92,246,0.25));
@@ -149,14 +150,16 @@ variant-action-bar {
 }
 
 .vab-version-pill:hover,
-.vab-flavor-pill:hover {
+.vab-flavor-pill:hover,
+.vab-registry-pill:hover {
   background: var(--color-variant-tag-bg-hover, rgba(139,92,246,0.25));
   border-color: rgba(167,139,250,0.45);
 }
 
 /* Active / selected pill (uses violet trust hue per Phase C spec) */
 .vab-version-pill.vab-pill--active,
-.vab-flavor-pill.vab-pill--active {
+.vab-flavor-pill.vab-pill--active,
+.vab-registry-pill.vab-pill--active {
   background: var(--color-variant-tag-selected-bg, rgba(139,92,246,0.30));
   border-color: var(--color-violet-400, #A78BFA);
   color: var(--color-violet-400, #A78BFA);
@@ -165,14 +168,16 @@ variant-action-bar {
 
 /* Focus rings — WCAG 2.2 AA (3px outline, 2px offset) */
 .vab-version-pill:focus-visible,
-.vab-flavor-pill:focus-visible {
+.vab-flavor-pill:focus-visible,
+.vab-registry-pill:focus-visible {
   outline: 3px solid var(--color-violet-400, #A78BFA);
   outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .vab-version-pill,
-  .vab-flavor-pill { transition: none; }
+  .vab-flavor-pill,
+  .vab-registry-pill { transition: none; }
 }
 
 /* ----------------------------------------------------------

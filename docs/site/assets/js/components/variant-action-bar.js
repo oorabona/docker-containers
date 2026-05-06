@@ -57,7 +57,9 @@
       if (!this._registries || !this._registries.length) {
         this._registries = defaultRegistries;
       }
-      this._selectedRegistry = 'ghcr';
+      var defaultFromAttr = (this.dataset.defaultRegistry || '').trim();
+      this._selectedRegistry = defaultFromAttr
+        || (this._registries.length > 0 ? this._registries[0].id : 'ghcr');
 
       // versions: array of version-group objects with .tag + .variants[]
       this._versions = parse(this.dataset.versions, []);
@@ -320,6 +322,8 @@
           if (!existingNote) {
             var note = document.createElement('small');
             note.className = 'vab-verify-note';
+            note.setAttribute('role', 'status');
+            note.setAttribute('aria-live', 'polite');
             note.textContent = 'Verified via GHCR · attestation source';
             verifyBlock.appendChild(note);
           }
