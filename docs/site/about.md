@@ -6,7 +6,7 @@ nav_active: about
 description: docker-containers is maintained by Olivier Orabona — context, project goals, and how to reach the maintainer.
 ---
 
-`docker-containers` is a personal infrastructure project that publishes a fleet of 13 custom Docker container images to GitHub Container Registry (GHCR) and Docker Hub. Each image is built with automated upstream version monitoring, signed SBOM attestation via Sigstore, and an advisory Trivy CVE scan.
+`docker-containers` is a personal infrastructure project that publishes a fleet of 13 custom Docker container images to GitHub Container Registry (GHCR) and Docker Hub. Each image is built with automated upstream version monitoring, signed SBOM attestation via Sigstore, an advisory Trivy CVE scan, and — uncommon for a personal catalog — **published as a multi-architecture manifest (amd64 + arm64) wherever the upstream supports it**.
 
 ## Maintainer
 
@@ -21,7 +21,7 @@ Each image is treated as a verifiable artifact. The detail page for any containe
 - The exact build commit and manifest digest
 - A Sigstore attestation for the SPDX-format SBOM (when available)
 - An advisory Trivy CVE scan summary
-- The multi-architecture manifest list
+- A multi-architecture manifest list (amd64 + arm64) — see the variant page for per-arch digests
 
 The verification guide at [/verify-images/]({{ '/verify-images/' | relative_url }}) walks through reproducing those checks with `cosign`, `gh`, and `Trivy`.
 
@@ -32,6 +32,7 @@ The verification guide at [/verify-images/]({{ '/verify-images/' | relative_url 
 | Upstream tracking | Manual, irregular | Automated daily upstream-monitor workflow with auto-PRs |
 | SBOM attestation | Not standard | SPDX JSON, Sigstore-signed, attached to each push |
 | Trivy advisory | Not standard | Surfaced on every container detail page (advisory, not blocking) |
+| Multi-arch coverage | amd64-only on most personal forks | amd64 + arm64 on every image where the upstream and dependencies support it |
 | Multi-distro | Limited | Linux base + Alpine + Ubuntu + Rocky / Trixie variants where supported |
 | Extension matrices | Per-image upstream choice | Flavor-based (e.g. PostgreSQL: vector / analytics / timeseries / spatial / distributed / full) |
 
