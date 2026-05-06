@@ -20,7 +20,7 @@
   <!-- tokens.css MUST load before theme.css — defines variables theme.css references -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
   <!-- Component CSS — load after tokens, before theme -->
-  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/page-toc.css">
+  <!-- page-toc.css disabled pending issue #405 -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/variant-action-bar.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/version-tabs.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/security-scan-card.css">
@@ -103,24 +103,14 @@
 
         </header>{%- comment -%} /Zone 1 — Identity {%- endcomment -%}
 
-        {%- comment -%} Page TOC sidebar — sticky right-side navigation (desktop) + drawer (mobile) {%- endcomment -%}
-        <page-toc data-anchors='[
-          {"id":"variants-pull","label":"Variant &amp; Pull"},
-          {"id":"all-variants","label":"All variants"},
-          {"id":"trust-posture","label":"Trust posture"},
-          {"id":"container-stats","label":"Stats"},
-          {"id":"provenance","label":"Provenance"},
-          {"id":"build-history","label":"Build history"},
-          {"id":"dep-health","label":"Dep health"},
-          {"id":"security-scan","label":"Security scan"},
-          {"id":"readme","label":"README"},
-          {"id":"extensions-reference","label":"Extensions"}
-        ]'>
-          {%- comment -%} noscript fallback — plain nav for JS-disabled browsers {%- endcomment -%}
-          <noscript>
-            {% include page-toc.html %}
-          </noscript>
-        </page-toc>
+        {%- comment -%}
+          page-toc disabled pending fix — see issue #405.
+          Click offset and scroll-active-highlight bugs make navigation worse than no TOC.
+          Component files preserved in repo (assets/js/components/page-toc.js,
+          assets/css/components/page-toc.css, _includes/page-toc.html) ready to
+          re-enable once the IntersectionObserver + smooth-scroll offset are
+          corrected.
+        {%- endcomment -%}
 
         {%- comment -%} Zone 2 — Trust posture (always visible) {%- endcomment -%}
         <section id="trust-posture" class="detail-zone detail-zone--trust" aria-label="Trust posture">
@@ -1184,7 +1174,7 @@
   </div>
 
   <!-- Vanilla web components — CSP-clean, no eval -->
-  <script defer src="{{ '/assets/js/components/page-toc.js' | relative_url }}"></script>
+  <!-- page-toc.js disabled pending issue #405 -->
   <script defer src="{{ '/assets/js/components/variant-action-bar.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/trust-strip.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/security-scan.js' | relative_url }}"></script>
