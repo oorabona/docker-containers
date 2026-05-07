@@ -55,13 +55,31 @@
       var hasDockerHubBase = !!this.dataset.imageBaseDockerhub;
       var defaultRegistries = hasDockerHubBase
         ? [
-            { id: 'ghcr', label: 'GHCR', host: 'ghcr.io/' },
-            { id: 'dockerhub', label: 'Docker Hub', host: '' }
+            { id: 'ghcr', label: 'GHCR' },
+            { id: 'dockerhub', label: 'Docker Hub' }
           ]
-        : [{ id: 'ghcr', label: 'GHCR', host: 'ghcr.io/' }];
+        : [{ id: 'ghcr', label: 'GHCR' }];
       this._registries = parse(this.dataset.registries, defaultRegistries);
       if (!this._registries || !this._registries.length) {
         this._registries = defaultRegistries;
+      }
+      // Cross-validate: keep only registries whose pull-base is actually
+      // implemented in _updateCommands (today: 'ghcr' + 'dockerhub'). Drop any
+      // unknown ids — rendering a "quay" pill that silently falls back to a
+      // GHCR pull command is worse than not showing it at all. Also drop
+      // 'dockerhub' when data-image-base-dockerhub is missing (same reason).
+      var SUPPORTED_REGISTRY_IDS = { ghcr: true, dockerhub: true };
+      this._registries = this._registries.filter(function (r) {
+        if (!SUPPORTED_REGISTRY_IDS[r.id]) return false;
+        if (r.id === 'dockerhub') return hasDockerHubBase;
+        return true;
+      });
+      // Guarantee GHCR is always available — every container ships there and
+      // the pull-base path is always wired. Without this, a misconfigured
+      // data-registries (e.g. only "dockerhub" with no DH base) could leave
+      // the registry list empty and orphan _selectedRegistry below.
+      if (!this._registries.some(function (r) { return r.id === 'ghcr'; })) {
+        this._registries.unshift({ id: 'ghcr', label: 'GHCR' });
       }
       // Default registry: explicit attribute → first registry → 'ghcr'.
       // Validate that the requested default exists in _registries; otherwise
