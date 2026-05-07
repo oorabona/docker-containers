@@ -23,7 +23,6 @@ on:
 
   # Also trigger on pushes to master (for Jekyll site/doc updates).
   # NOTE: No overlap with auto-build.yaml push paths (container files).
-  # Container builds invoke this workflow via workflow_call instead.
   push:
     branches: ["master"]
     paths:
@@ -34,6 +33,19 @@ on:
       - "generate-dashboard.sh"
       - ".github/workflows/update-dashboard.yaml"
 
+  # Fires once after each Auto Build & Push completion on master.
+  # Combined with `concurrency.cancel-in-progress: true` below, a batch of
+  # parallel auto-builds collapses to a single dashboard deploy: each new
+  # auto-build completion supersedes any in-flight update-dashboard run,
+  # so only the LAST one in the batch actually deploys.
+  # The build/deploy `if:` clauses below add per-event filters so that
+  # PR-triggered Auto Build runs (smoke builds, no GHCR push) do not
+  # cause a stale-data Pages redeploy that could cancel a real one.
+  workflow_run:
+    workflows: ["Auto Build & Push"]
+    types: [completed]
+    branches: [master]
+
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   actions: read           # gh run list/download (#352 hydration step)
@@ -43,15 +55,29 @@ permissions:
   pages: write
   security-events: read   # gh api code-scanning/alerts for trust-strip trivy_summary
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+# Allow only one concurrent deployment. With cancel-in-progress: true, a batch of parallel
+# auto-build completions collapses to a single dashboard deploy — each successive workflow_run
+# event supersedes any in-flight run so only the last one in the batch actually deploys.
+# Side effect for `workflow_call` callers (`upstream-monitor`, `recreate-manifests`):
+# their dashboard step may be terminated mid-flight by a later auto-build completion.
+# Acceptable by design — the later run redeploys with fresher data.
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   # Build job with integrated dashboard generation
   build:
+    # workflow_run path:
+    #   - skip failed/cancelled auto-build runs (regenerating from a broken build = waste)
+    #   - skip pull_request-event runs (PR smoke builds don't push to GHCR; would publish stale data)
+    #   - skip non-master head branch (defense-in-depth; the trigger filters branches: [master] already)
+    # Other triggers (push, schedule, workflow_call, workflow_dispatch) pass through unconditionally.
+    if: |
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -595,9 +621,22 @@ jobs:
     needs: build
     # Only deploy if:
     # 1. Triggered by push to master branch, OR
-    # 2. Manually dispatched from workflow_dispatch, OR  
-    # 3. Called from workflow_call but NOT from a pull request context
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_call' && github.ref == 'refs/heads/master')
+    # 2. Manually dispatched from workflow_dispatch, OR
+    # 3. Daily schedule cron (so a 7am cron always reaches Pages and isn't
+    #    just a build-and-discard — otherwise it could cancel a real deploy
+    #    via the shared `pages` concurrency group), OR
+    # 4. Called from workflow_call but NOT from a pull request context, OR
+    # 5. Triggered by a successful Auto Build & Push completion on master,
+    #    excluding PR-triggered upstream runs (smoke builds, stale data risk)
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_call' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_branch == 'master')
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
