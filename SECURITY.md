@@ -21,14 +21,17 @@ Unless related to the current implementation of these containers, please forward
 
 ### Vulnerability Scanning
 
-All container builds are automatically scanned for CVE vulnerabilities using Trivy:
+All container builds are automatically scanned for CVE vulnerabilities using Trivy.
 
-| Severity | Default Behavior |
-|----------|------------------|
-| CRITICAL | ❌ Blocks push |
-| HIGH | ⚠️ Warning (configurable) |
-| MEDIUM | ℹ️ Logged |
-| LOW | ℹ️ Logged |
+Trivy runs in advisory mode (`continue-on-error: true`) — no severity blocks builds or pushes. All findings are surfaced for transparency.
+
+| Severity | Behavior |
+|----------|----------|
+| CRITICAL | Surfaced on dashboard with red emphasis; reported in GitHub Security tab |
+| HIGH     | Surfaced on dashboard with warning emphasis; reported in GitHub Security tab |
+| MEDIUM   | Surfaced on dashboard (advisory context); reported in GitHub Security tab |
+| LOW      | Surfaced on dashboard (advisory context); reported in GitHub Security tab |
+| UNKNOWN  | Bucketed into INFO column on the 5-cell dashboard grid |
 
 **Features:**
 - Scans OS packages and application dependencies
@@ -42,8 +45,8 @@ All container builds are automatically scanned for CVE vulnerabilities using Tri
 - uses: ./.github/actions/build-container
   with:
     container: mycontainer
-    scan_vulnerabilities: 'true'  # Enable/disable scanning
-    vulnerability_severity: 'CRITICAL'  # Minimum severity to fail
+    scan_vulnerabilities: 'true'                                  # Enable/disable scanning
+    vulnerability_severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'    # Severities surfaced (advisory)
 ```
 
 ### CI/CD Security

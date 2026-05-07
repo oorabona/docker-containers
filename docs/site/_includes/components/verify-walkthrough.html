@@ -45,7 +45,7 @@
   --paginate \
   -q '.[] | {rule_id: .rule.id, severity: .rule.severity, category: .most_recent_instance.category, package: .most_recent_instance.location.path}'</code></pre>
         </div>
-        <p>To filter to a single variant, match on the <code>category</code> field — it encodes the container name and platform (e.g. <code>container-postgres-18-alpine-linux/amd64</code>). The dashboard surfaces only CRITICAL counts; everything else is accessible through the API call above.</p>
+        <p>To filter to a single variant, match on the <code>category</code> field — it encodes the container name and platform (e.g. <code>container-postgres-18-alpine-linux/amd64</code>). The dashboard surfaces all scanned severities (CRITICAL through INFO); CRITICAL and HIGH are visually emphasised, the rest render as advisory context. Trivy <code>UNKNOWN</code> findings (severity unclassified upstream) are bucketed into the INFO column.</p>
       </div>
     </li>
 

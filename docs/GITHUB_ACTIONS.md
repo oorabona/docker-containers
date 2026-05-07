@@ -337,7 +337,7 @@ Builds a specific container using the universal `make` script with enhanced erro
 - `force_rebuild`: Force rebuild even if up-to-date
 - `dockerhub_username`, `dockerhub_token`, `github_token`: Registry credentials
 - `scan_vulnerabilities`: Enable Trivy security scanning (default: `true`)
-- `vulnerability_severity`: Minimum severity to fail build - `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (default: `CRITICAL`)
+- `vulnerability_severity`: Comma-separated severities surfaced in SARIF + dashboard. Default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`. **Advisory only** — Trivy runs `continue-on-error: true`; build is never blocked on findings.
 
 **Key Features:**
 - Delegates to universal `make` script with `--bare` mode
@@ -348,10 +348,10 @@ Builds a specific container using the universal `make` script with enhanced erro
 - Build status reporting
 
 **Security Scanning:**
-- Scans for OS and library vulnerabilities after build
-- Blocks push on CRITICAL vulnerabilities by default
-- Generates SARIF reports for GitHub Security integration
-- PR builds show results without blocking
+- Scans for OS and library vulnerabilities after build (all severities: UNKNOWN → CRITICAL)
+- Advisory only — `continue-on-error: true` is permanent policy; no severity level blocks the build
+- Generates SARIF reports for GitHub Security integration (full severity breakdown)
+- Per-severity counts written to `.trivy-scan-history/` for dashboard display
 
 **Build Caching (Registry-based):**
 - Uses GHCR as persistent cache backend (`ghcr.io/<owner>/<container>:buildcache`)

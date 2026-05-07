@@ -168,23 +168,48 @@ get_trivy_summary() {
     # "Cannot index array with string 'last_scan'", silently blanking the
     # entire variant entry in containers.yml. Force the empty form on any
     # type mismatch.
-    # Side-channel takes precedence over API when present. The Code Scanning
-    # API indexes SARIF uploads asynchronously and can lag the in-pipeline
-    # scan by minutes; the side-channel was written by THIS very pipeline run
-    # and is therefore the authoritative source of truth for "what did this
-    # scan produce". When the side-channel exists we synthesize the entire
-    # summary from `_TRIVY_EMPTY` and overlay side-channel fields, so any stale
-    # API data (e.g. old open advisories that the latest scan no longer flags)
-    # is dropped. The SARIF upload is CRITICAL-only by policy (see
-    # `/verify-images/`), so `alert_count` IS the critical count by definition;
-    # high/medium/low/info stay zero and top_advisories stays empty.
+    # Option C overlay model (see ADR-008): the Code Scanning API indexes SARIF
+    # uploads asynchronously and can lag the in-pipeline scan by minutes; the
+    # side-channel was written by THIS very pipeline run and is authoritative for
+    # "what did this scan produce". When the side-channel exists we overlay its
+    # fields onto the API result (base), so the dashboard shows THIS pipeline's
+    # fresh counts while preserving top_advisories from the API. The API result
+    # is the base when it is a valid object; _TRIVY_EMPTY is the fallback.
+    # New scan-history files (Option C, post-ADR-008) carry a `counts` object
+    # covering all severities; legacy files carry only `alert_count` (= critical
+    # count by old CRITICAL-only policy). Back-compat: absence of `counts` in
+    # the side-channel triggers the legacy path which sets only counts.critical.
     if [[ -n "$sc_last_scan" ]]; then
-        local sc_alert_count
+        local base
+        if [[ -n "$result" ]] && echo "$result" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            base="$result"
+        else
+            base="$_TRIVY_EMPTY"
+        fi
+
+        local sc_counts sc_alert_count
+        sc_counts=$(jq -c '.counts // empty' "$sc_file" 2>/dev/null || true)
         sc_alert_count=$(jq -r '.alert_count // 0' "$sc_file" 2>/dev/null || echo 0)
-        echo "$_TRIVY_EMPTY" | jq \
-            --arg ls "$sc_last_scan" \
-            --argjson ac "$sc_alert_count" \
-            '.last_scan = $ls | .counts.critical = $ac'
+
+        if [[ -n "$sc_counts" ]]; then
+            # New format (Option C): partial-overlay merge onto base.
+            # (.counts + $sc) merges objects: keys present in $sc override the
+            # corresponding keys in base; keys absent from $sc are preserved from
+            # base (API). Today's writer always emits all 5 keys, so partial
+            # overlay is forward-compat for future writers that may emit subsets
+            # (e.g. only counts.critical). Side-channel is authoritative only for
+            # the keys it supplies; remaining keys fall back to the API result.
+            echo "$base" | jq \
+                --arg ls "$sc_last_scan" \
+                --argjson sc "$sc_counts" \
+                '.last_scan = $ls | .counts = (.counts + $sc)'
+        else
+            # Legacy format (pre-Option-C): only alert_count = critical count.
+            echo "$base" | jq \
+                --arg ls "$sc_last_scan" \
+                --argjson ac "$sc_alert_count" \
+                '.last_scan = $ls | .counts.critical = $ac'
+        fi
         return 0
     fi
 
@@ -288,6 +313,132 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     else
         echo "FAIL test-2: expected counts.critical=3, got: $critical2"
         echo "Full result: $result2"
+        exit 1
+    fi
+
+    # Test 3: side-channel with new Option C shape (counts object), API map empty.
+    # Expected: all five severity counts propagated from side-channel.
+    printf '{"last_scan":"2026-05-07T09:00:00Z","alert_count":11,"status":"dirty","counts":{"critical":5,"high":3,"medium":2,"low":1,"info":0},"scanned_severities":["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"]}\n' \
+        > "$_test_dir/.trivy-scan-history/container-allsev-3.0-linux-amd64.json"
+
+    pushd "$_test_dir" > /dev/null
+
+    _TRIVY_ALERTS_CACHE="[]"
+    _TRIVY_SUMMARY_MAP="{}"
+
+    result3=$(get_trivy_summary "container-container-allsev-3.0-linux/amd64")
+
+    popd > /dev/null
+
+    critical3=$(echo "$result3" | jq -r '.counts.critical')
+    high3=$(echo "$result3" | jq -r '.counts.high')
+    medium3=$(echo "$result3" | jq -r '.counts.medium')
+    low3=$(echo "$result3" | jq -r '.counts.low')
+
+    if [[ "$critical3" == "5" && "$high3" == "3" && "$medium3" == "2" && "$low3" == "1" ]]; then
+        echo "PASS test-3: all severity counts propagated (critical=$critical3 high=$high3 medium=$medium3 low=$low3)"
+    else
+        echo "FAIL test-3: expected critical=5 high=3 medium=2 low=1, got: critical=$critical3 high=$high3 medium=$medium3 low=$low3"
+        echo "Full result: $result3"
+        exit 1
+    fi
+
+    # Test 4: API map has counts for category X; side-channel for X has new-format counts.
+    # Side-channel is authoritative for ALL severities (full-object replace of .counts).
+    # Expected: side-channel counts win entirely; last_scan from side-channel (fresh).
+    mkdir -p "$_test_dir/.trivy-scan-history"
+    printf '{"last_scan":"2026-05-07T10:00:00Z","alert_count":1,"status":"dirty","counts":{"critical":1,"high":0,"medium":0,"low":0,"info":0},"scanned_severities":["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"]}\n' \
+        > "$_test_dir/.trivy-scan-history/container-apiovrl-4.0-linux-amd64.json"
+
+    pushd "$_test_dir" > /dev/null
+
+    _TRIVY_ALERTS_CACHE="[]"
+    # Inject API result for category X (simulates pre-existing Code Scanning data)
+    _TRIVY_SUMMARY_MAP=$(jq -nc '{
+        "container-container-apiovrl-4.0-linux/amd64": {
+            "last_scan": "2026-05-06T08:00:00Z",
+            "counts": {"critical": 0, "high": 4, "medium": 2, "low": 0, "info": 0},
+            "top_advisories": [{"rule_id":"CVE-2025-0001","severity":"high","title":"test","package_name":"libfoo"}]
+        }
+    }')
+
+    result4=$(get_trivy_summary "container-container-apiovrl-4.0-linux/amd64")
+
+    popd > /dev/null
+
+    critical4=$(echo "$result4" | jq -r '.counts.critical')
+    high4=$(echo "$result4" | jq -r '.counts.high')
+    last_scan4=$(echo "$result4" | jq -r '.last_scan')
+
+    if [[ "$critical4" == "1" && "$high4" == "0" && "$last_scan4" == "2026-05-07T10:00:00Z" ]]; then
+        echo "PASS test-4: side-channel counts override API entirely (critical=$critical4 high=$high4 last_scan=$last_scan4)"
+    else
+        echo "FAIL test-4: expected critical=1 high=0 last_scan=2026-05-07T10:00:00Z"
+        echo "  got: critical=$critical4 high=$high4 last_scan=$last_scan4"
+        echo "Full result: $result4"
+        exit 1
+    fi
+
+    # Test 5: no side-channel file for category Y, but API map has counts for Y.
+    # Expected: API counts surface unchanged.
+    pushd "$_test_dir" > /dev/null
+
+    _TRIVY_ALERTS_CACHE="[]"
+    _TRIVY_SUMMARY_MAP=$(jq -nc '{
+        "container-container-apionly-5.0-linux/amd64": {
+            "last_scan": "2026-05-07T07:00:00Z",
+            "counts": {"critical": 0, "high": 2, "medium": 3, "low": 1, "info": 0},
+            "top_advisories": []
+        }
+    }')
+
+    result5=$(get_trivy_summary "container-container-apionly-5.0-linux/amd64")
+
+    popd > /dev/null
+
+    high5=$(echo "$result5" | jq -r '.counts.high')
+    medium5=$(echo "$result5" | jq -r '.counts.medium')
+
+    if [[ "$high5" == "2" && "$medium5" == "3" ]]; then
+        echo "PASS test-5: API-only category returns API counts unchanged (high=$high5 medium=$medium5)"
+    else
+        echo "FAIL test-5: expected high=2 medium=3 from API, got: high=$high5 medium=$medium5"
+        echo "Full result: $result5"
+        exit 1
+    fi
+
+    # Test 6: partial side-channel counts (only critical) — API high/medium MUST be preserved.
+    # Locks the partial-overlay merge contract: keys absent from side-channel are kept from API.
+    mkdir -p "$_test_dir/.trivy-scan-history"
+    printf '{"last_scan":"2026-05-07T12:00:00Z","alert_count":1,"status":"dirty","counts":{"critical":1}}\n' \
+        > "$_test_dir/.trivy-scan-history/container-partial-6.0-linux-amd64.json"
+
+    pushd "$_test_dir" > /dev/null
+
+    _TRIVY_ALERTS_CACHE="[]"
+    _TRIVY_SUMMARY_MAP=$(jq -nc '{
+        "container-container-partial-6.0-linux/amd64": {
+            "last_scan": "2026-05-06T08:00:00Z",
+            "counts": {"critical": 0, "high": 4, "medium": 2, "low": 0, "info": 0},
+            "top_advisories": []
+        }
+    }')
+
+    result6=$(get_trivy_summary "container-container-partial-6.0-linux/amd64")
+
+    popd > /dev/null
+
+    critical6=$(echo "$result6" | jq -r '.counts.critical')
+    high6=$(echo "$result6" | jq -r '.counts.high')
+    medium6=$(echo "$result6" | jq -r '.counts.medium')
+    last_scan6=$(echo "$result6" | jq -r '.last_scan')
+
+    if [[ "$critical6" == "1" && "$high6" == "4" && "$medium6" == "2" && "$last_scan6" == "2026-05-07T12:00:00Z" ]]; then
+        echo "PASS test-6: partial side-channel overlay (critical=$critical6 overridden; high=$high6 medium=$medium6 preserved from API; last_scan=$last_scan6)"
+    else
+        echo "FAIL test-6: expected critical=1 high=4 medium=2 last_scan=2026-05-07T12:00:00Z"
+        echo "  got: critical=$critical6 high=$high6 medium=$medium6 last_scan=$last_scan6"
+        echo "Full result: $result6"
         exit 1
     fi
 
