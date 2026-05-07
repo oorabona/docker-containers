@@ -52,16 +52,11 @@ To filter findings to a single container variant, match on the `category` field,
   -q '.[] | select(.most_recent_instance.category == "container-postgres-18-alpine-linux/amd64")'</code></pre>
 </div>
 
-### Why the dashboard only highlights CRITICAL counts
+### Per-severity breakdown
 
-Each container card's Trivy badge surfaces the count of **CRITICAL**-severity findings only. High, medium, low, and informational findings are still scanned, still uploaded to GitHub Code Scanning, and still queryable through the API command above — they are intentionally not promoted to the dashboard headline.
+Each container's detail page surfaces all scanned severities (CRITICAL → INFO). CRITICAL gets the strongest visual emphasis (red ring); HIGH gets a warning emphasis. MEDIUM, LOW, and INFO render as advisory context with neutral styling. All findings, including non-blocking ones, are uploaded to GitHub Code Scanning under category `container-<name>-<tag>-<platform>`; query the full advisory list via the `gh api` command above.
 
-Two reasons for this choice:
-
-- **Signal vs noise.** A solo-maintained container catalog routinely carries dozens of low/medium advisories that originate in upstream base images and that the maintainer cannot fix directly. Showing the full count on the dashboard would normalize a constantly red badge and erode the meaning of "go look at this image's security posture." CRITICAL is the cut-off where downstream consumers should pause and verify before pulling.
-- **Defense in depth, not single source of truth.** GitHub's Security tab (and the `gh api` query above) remains the authoritative full-detail view for anyone running their own risk assessment. The dashboard is a glanceable surface, not a replacement for the Code Scanning UI.
-
-If you operate this catalog yourself and prefer a different threshold, the SARIF severity filter lives in `.github/actions/build-container/action.yaml` (search for the `trivy-action` step) and the dashboard summary aggregation in `helpers/trivy-utils.sh`. Both are plain code; widening the threshold is a one-line change in each file plus a fresh dashboard regeneration.
+The scan policy runs all severities (`UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) in advisory mode — full scan chosen for transparency over alert-list cleanliness. `continue-on-error: true` is permanent policy — no severity level blocks the build. The severity parameter lives in `.github/actions/build-container/action.yaml` (`vulnerability_severity` input, default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`) and can be narrowed per-call if alert volume becomes operationally noisy.
 
 ## Inspecting multi-arch manifests
 

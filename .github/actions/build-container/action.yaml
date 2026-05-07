@@ -54,9 +54,9 @@ inputs:
     required: false
     default: 'true'
   vulnerability_severity:
-    description: Minimum severity to report (advisory only, does not block builds)
+    description: 'Severities surfaced in SARIF + dashboard (advisory). Build is never blocked — Trivy runs continue-on-error.'
     required: false
-    default: 'CRITICAL'
+    default: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
   use_base_cache:
     description: 'Use GHCR base image cache (skip on PRs where cache-base-images is not run)'
     required: false
@@ -452,7 +452,7 @@ runs:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'table'
         exit-code: '0'
-        severity: '${{ inputs.vulnerability_severity }},CRITICAL'
+        severity: '${{ inputs.vulnerability_severity }}'
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
@@ -467,7 +467,7 @@ runs:
         image-ref: 'ghcr.io/${{ steps.check-build.outputs.image_name }}:${{ steps.check-build.outputs.current_tag }}'
         format: 'sarif'
         output: 'trivy-results.sarif'
-        severity: 'CRITICAL'
+        severity: '${{ inputs.vulnerability_severity }}'
         ignore-unfixed: true
         vuln-type: 'os,library'
         cache-dir: ~/.cache/trivy
@@ -477,6 +477,8 @@ runs:
     - name: Write Trivy scan history
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.trivy-sarif.outcome == 'success' }}
       shell: bash
+      env:
+        VULNERABILITY_SEVERITY: ${{ inputs.vulnerability_severity }}
       run: |
         container="${{ inputs.container }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
@@ -490,18 +492,48 @@ runs:
         last_scan="$(date -Iseconds)"
         alert_count=0
         status="clean"
+        counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
 
-        # Parse SARIF if it exists to count actual findings
+        # Parse SARIF to count findings per severity (Option C: full breakdown)
         if [[ -f trivy-results.sarif ]]; then
+          # Build a rule_id → severity (lowercase) map from tool.driver.rules
+          severities_json=$(jq -c '
+            [.runs[].tool.driver.rules // [] | .[] |
+              {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
+                map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
+                first // "info")}]
+            | add // {}
+          ' trivy-results.sarif 2>/dev/null || echo "{}")
+
+          # Count results by severity via the rule→severity map
+          counts_json=$(jq -c --argjson sev_map "$severities_json" '
+            reduce ([.runs[].results // [] | .[]][] | (.ruleId? // "")) as $rid
+              ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
+                ($sev_map[$rid] // "info") as $s
+                | if .[$s] != null then .[$s] += 1 else . end)
+          ' trivy-results.sarif 2>/dev/null || echo '{"critical":0,"high":0,"medium":0,"low":0,"info":0}')
+
           alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo 0)
           if [[ "$alert_count" -gt 0 ]]; then
             status="dirty"
           fi
         fi
 
+        # Build scanned_severities as a JSON array from the comma-separated input.
+        # Use `jq -n` with --arg (null input + bound variable) instead of `jq -R` over
+        # a piped string: an empty $VULNERABILITY_SEVERITY produces zero records on
+        # stdin so `jq -R` emits nothing, leaving --argjson with invalid JSON below.
+        scanned_severities_json=$(jq -nc --arg s "$VULNERABILITY_SEVERITY" \
+          'if $s == "" then [] else $s | split(",") | map(ascii_upcase | gsub("^\\s+|\\s+$"; "")) end')
+
         scan_file=".trivy-scan-history/${container}-${current_tag}-${platform_safe}.json"
-        printf '{"last_scan":"%s","alert_count":%s,"status":"%s","scanned_severity":"CRITICAL"}\n' \
-          "$last_scan" "$alert_count" "$status" > "$scan_file"
+        jq -nc \
+          --arg ls "$last_scan" \
+          --argjson ac "$alert_count" \
+          --arg st "$status" \
+          --argjson c "$counts_json" \
+          --argjson ss "$scanned_severities_json" \
+          '{last_scan:$ls,alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}' > "$scan_file"
         echo "::notice::Wrote Trivy scan history to $scan_file (alert_count=$alert_count, status=$status)"
 
     - name: Upload SARIF to GitHub Security
