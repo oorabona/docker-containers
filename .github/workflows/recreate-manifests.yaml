@@ -26,8 +26,10 @@ permissions:
   actions: read     # Required for #352 hydration step in update-dashboard reusable workflow
   contents: read
   packages: write
-  pages: write      # Required when generate_sboms triggers dashboard update
-  id-token: write   # Required when generate_sboms triggers dashboard update
+  pages: write          # Required when generate_sboms triggers dashboard update
+  id-token: write       # Required when generate_sboms triggers dashboard update
+  attestations: read    # Required by update-dashboard reusable workflow (trust-strip attestation_url)
+  security-events: read # Required by update-dashboard reusable workflow (trust-strip trivy_summary)
 
 jobs:
   detect-containers:

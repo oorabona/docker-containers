@@ -20,8 +20,10 @@ permissions:
   pull-requests: write # Create and merge PRs
   actions: write       # Trigger auto-build and update-dashboard workflows
   packages: write      # Push base images to GHCR (refresh-base-image-cache job)
-  pages: write         # Inherited by update-dashboard reusable workflow (deploy to Pages)
-  id-token: write      # Inherited by update-dashboard reusable workflow (OIDC for Pages)
+  pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
+  id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
+  attestations: read   # Required by update-dashboard reusable workflow (trust-strip attestation_url)
+  security-events: read # Required by update-dashboard reusable workflow (trust-strip trivy_summary)
 
 jobs:
   check-upstream-versions:
