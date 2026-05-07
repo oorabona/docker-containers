@@ -483,18 +483,42 @@ variant-action-bar {
   outline-offset: 2px;
 }
 
+/* Success / failure flashes carry a non-colour cue (border weight/style) so
+   the state is perceivable without colour — WCAG 1.4.1. The aria-label is
+   also swapped briefly for screen readers (handled in JS). */
+/* Success and failure share padding compensation for their +1px border so
+   the row doesn't jump on activation. They differ in border style/colour
+   to be distinguishable without relying on colour alone (WCAG 1.4.1). */
 [data-collapsed] .vab-sticky-cmd--copied {
   background: rgba(74, 222, 128, 0.10);
-  border-color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+  border: 2px solid var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
   color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+  padding: 3px 9px;
 }
 
-/* Mobile (≤767px): keep visible but reduce padding/font-size for tightness */
+[data-collapsed] .vab-sticky-cmd--failed {
+  background: rgba(239, 68, 68, 0.10);
+  border: 2px dashed var(--color-feedback-error-fg, var(--color-red-400, #F87171));
+  color: var(--color-feedback-error-fg, var(--color-red-400, #F87171));
+  padding: 3px 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-collapsed] .vab-sticky-cmd { transition: none; }
+}
+
+/* Mobile (≤767px): keep visible but reduce padding/font-size for tightness.
+   --copied/--failed reuse the mobile padding with a -1px compensation that
+   matches the +1px border, so the row keeps its height across activation. */
 @media (max-width: 767px) {
   [data-collapsed] .vab-sticky-cmd {
     margin: 0 var(--space-xs, 4px);
     padding: 3px 6px;
     font-size: 11px;
+  }
+  [data-collapsed] .vab-sticky-cmd--copied,
+  [data-collapsed] .vab-sticky-cmd--failed {
+    padding: 2px 5px;
   }
 }
 
@@ -503,13 +527,6 @@ variant-action-bar {
    command and the user can scroll up to see the full pull line. */
 @media (max-width: 419px) {
   [data-collapsed] .vab-sticky-cmd { display: none; }
-}
-
-/* Failure flash mirrors the success flash colour in red for clipboard rejection. */
-[data-collapsed] .vab-sticky-cmd--failed {
-  background: rgba(239, 68, 68, 0.10);
-  border-color: var(--color-feedback-error-fg, var(--color-red-400, #F87171));
-  color: var(--color-feedback-error-fg, var(--color-red-400, #F87171));
 }
 
 /* ----------------------------------------------------------
