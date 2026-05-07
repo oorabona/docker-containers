@@ -582,12 +582,17 @@
         return isNaN(d.getTime()) ? '?' : d.toISOString().slice(5, 10);
       });
       var pkgData = sorted.map(function(b) { return b.packages_total || null; });
-      var durData = sorted.map(function(b) { return b.duration_seconds || null; });
-      var hasDuration = durData.some(function(v) { return v !== null; });
+      var containerData = sorted.map(function(b) { return b.duration_seconds || null; });
+      var extData = sorted.map(function(b) { return b.extensions_build_seconds != null ? b.extensions_build_seconds : null; });
+      var hasContainer = containerData.some(function(v) { return v !== null; });
+      var hasExt = extData.some(function(v) { return v !== null; });
 
       var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
       var gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
       var textColor = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)';
+
+      // Convert seconds → minutes for Y1 axis display
+      var toMin = function(v) { return v != null ? +(v / 60).toFixed(1) : null; };
 
       var datasets = [{
         label: 'Packages',
@@ -601,18 +606,31 @@
         pointHoverRadius: 5
       }];
 
-      if (hasDuration) {
+      if (hasContainer) {
         datasets.push({
-          label: 'Build (min)',
-          data: durData.map(function(v) { return v != null ? +(v / 60).toFixed(1) : null; }),
+          label: 'Container build (min)',
+          data: containerData.map(toMin),
           borderColor: '#f59e0b',
-          backgroundColor: 'rgba(245,158,11,0.1)',
-          fill: false,
+          backgroundColor: 'rgba(245,158,11,0.25)',
+          fill: 'origin',
           tension: 0.3,
           yAxisID: 'y1',
-          pointRadius: 3,
-          pointHoverRadius: 5,
-          borderDash: [4, 2]
+          pointRadius: 2,
+          pointHoverRadius: 4
+        });
+      }
+
+      if (hasExt) {
+        datasets.push({
+          label: 'Extensions build (min)',
+          data: extData.map(toMin),
+          borderColor: '#a855f7',
+          backgroundColor: 'rgba(168,85,247,0.25)',
+          fill: hasContainer ? '-1' : 'origin',
+          tension: 0.3,
+          yAxisID: 'y1',
+          pointRadius: 2,
+          pointHoverRadius: 4
         });
       }
 
@@ -625,12 +643,14 @@
           ticks: { color: textColor, font: { size: 10 } }
         }
       };
-      if (hasDuration) {
+      if (hasContainer || hasExt) {
         scales.y1 = {
           position: 'right',
           title: { display: true, text: 'Build (min)', color: textColor, font: { size: 10 } },
           grid: { drawOnChartArea: false },
-          ticks: { color: textColor, font: { size: 10 } }
+          ticks: { color: textColor, font: { size: 10 } },
+          stacked: true,
+          beginAtZero: true
         };
       }
 

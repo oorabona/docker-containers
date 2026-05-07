@@ -14,6 +14,8 @@ source "$PROJECT_ROOT/helpers/build-cache-utils.sh"
 source "$PROJECT_ROOT/helpers/build-args-utils.sh"
 source "$PROJECT_ROOT/helpers/template-utils.sh"
 source "$PROJECT_ROOT/helpers/extension-utils.sh"
+# shellcheck source=../helpers/extension-duration-utils.sh
+[[ -f "$PROJECT_ROOT/helpers/extension-duration-utils.sh" ]] && source "$PROJECT_ROOT/helpers/extension-duration-utils.sh"
 
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
@@ -162,6 +164,7 @@ _resolve_base_image() {
 _emit_build_lineage() {
     local container="$1" version="$2" tag="$3" flavor="$4" dockerfile="$5"
     local platforms="$6" runtime_info="$7" dockerhub_image="$8" ghcr_image="$9"
+    local extensions_build_seconds="${10:-null}"
 
     local lineage_dir="${PROJECT_ROOT:-.}/.build-lineage"
     mkdir -p "$lineage_dir"
@@ -191,6 +194,7 @@ _emit_build_lineage() {
   "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",
   "duration_seconds": ${_BUILD_DURATION_SECONDS:-null},
+  "extensions_build_seconds": ${extensions_build_seconds},
   "github_actions": ${GITHUB_ACTIONS:-false},
   "images": {
     "dockerhub": "$dockerhub_image:$tag",
@@ -395,9 +399,17 @@ build_container() {
     fi
 
     _BUILD_DURATION_SECONDS=$(( SECONDS - _build_start ))
+
+    # Sum extension build times for this flavor (only for containers with extensions/)
+    local _ext_seconds="null"
+    if [[ -d "$PROJECT_ROOT/$container/extensions" ]]; then
+        _ext_seconds=$(sum_flavor_extension_durations "$container" "${flavor:-}" "$_MAJOR_VERSION" 2>/dev/null || echo "null")
+        [[ -z "${_ext_seconds:-}" ]] && _ext_seconds="null"
+    fi
+
     if [[ "${DRY_RUN:-false}" != "true" ]]; then
         _emit_build_lineage "$container" "$version" "$tag" "$flavor" "$dockerfile" \
-            "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image"
+            "$_PLATFORMS" "$_RUNTIME_INFO" "$dockerhub_image" "$ghcr_image" "$_ext_seconds"
     else
         log_info "[DRY-RUN] Would write lineage: .build-lineage/${container}-${tag}.json"
     fi

@@ -347,6 +347,8 @@ build_tag_push_extensions() {
         echo ""
         log_info "Processing: $ext"
 
+        local _ext_start=$SECONDS
+
         if ! build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
             log_error "$ext build failed"
             failed+=("$ext")
@@ -365,10 +367,31 @@ build_tag_push_extensions() {
             else
                 log_error "$ext push failed"
                 failed+=("$ext")
+                continue
             fi
         else
             log_success "$ext built and tagged locally"
         fi
+
+        # Write per-extension lineage file (only on successful build+tag+push)
+        local _ext_duration=$(( SECONDS - _ext_start ))
+        local _ext_version
+        _ext_version=$(ext_config "$ext" "version" "$config_file")
+        local _ext_image
+        _ext_image=$(ext_image_name "$ext" "$_ext_version" "$major_ver")
+        local _ver_safe="${_ext_version//[^a-zA-Z0-9.-]/_}"
+        local _ext_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
+        mkdir -p "${ROOT_DIR}/.build-lineage"
+        jq -nc \
+            --arg ext "$ext" \
+            --arg version "$_ext_version" \
+            --arg pg_major "$major_ver" \
+            --arg image "$_ext_image" \
+            --argjson duration "$_ext_duration" \
+            --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
+            > "$_ext_lineage_file"
+        log_info "Extension lineage: $_ext_lineage_file (${_ext_duration}s)"
     done
 
     echo ""
