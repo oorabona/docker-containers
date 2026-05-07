@@ -39,7 +39,7 @@ on:
         type: string
         default: ''
       scope_extensions:
-        description: 'Comma-separated extensions to rebuild (e.g., "citus"). Empty = all.'
+        description: 'Comma-separated extensions to consider for build (skipped when image already exists in registry; pass `force` rebuild mode to override). Empty = all.'
         required: false
         type: string
         default: ''
@@ -128,7 +128,7 @@ on:
         type: string
         default: ''
       scope_extensions:
-        description: 'Comma-separated extensions to rebuild (e.g., "citus"). Empty = all.'
+        description: 'Comma-separated extensions to consider for build (skipped when image already exists in registry; pass `force` rebuild mode to override). Empty = all.'
         required: false
         type: string
         default: ''
@@ -247,9 +247,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
+          REBUILD: ${{ env.REBUILD_MODE }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
+
+          # Wire effective rebuild modes through to build-extensions.sh, so the
+          # documented override in scope_extensions actually bypasses the
+          # registry-skip path.
+          force_arg=()
+          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" ]]; then
+            force_arg=(--force)
+          fi
 
           # Parse versions map (passed via env to prevent expression injection)
           IFS='|' read -ra ENTRIES <<< "$VERSIONS_MAP"
@@ -276,11 +285,11 @@ jobs:
                 IFS=',' read -ra EXT_LIST <<< "$SCOPE_EXTENSIONS"
                 for ext in "${EXT_LIST[@]}"; do
                   [[ -z "$ext" ]] && continue
-                  ./scripts/build-extensions.sh "$container" --major-version "$major_version" --extension "$ext"
+                  ./scripts/build-extensions.sh "$container" --major-version "$major_version" --extension "$ext" "${force_arg[@]}"
                 done
               else
                 echo "🔧 Building all extensions for $container v$major_version..."
-                ./scripts/build-extensions.sh "$container" --major-version "$major_version"
+                ./scripts/build-extensions.sh "$container" --major-version "$major_version" "${force_arg[@]}"
               fi
             done
           done
