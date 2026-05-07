@@ -524,7 +524,7 @@ runs:
         # a piped string: an empty $VULNERABILITY_SEVERITY produces zero records on
         # stdin so `jq -R` emits nothing, leaving --argjson with invalid JSON below.
         scanned_severities_json=$(jq -nc --arg s "$VULNERABILITY_SEVERITY" \
-          'if $s == "" then [] else $s | split(",") | map(ascii_upcase | gsub("^\\s+|\\s+$"; "")) end')
+          'if $s == "" then [] else $s | split(",") | map(ascii_upcase | gsub("^\\s+|\\s+$"; "")) | map(select(. != "")) end')
 
         scan_file=".trivy-scan-history/${container}-${current_tag}-${platform_safe}.json"
         jq -nc \

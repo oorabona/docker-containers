@@ -25,7 +25,9 @@ the UI told the truth about the other.
 Adopt **Option C**: scan all severities, upload all severities to SARIF, surface all severities
 in the dashboard. CRITICAL remains the primary **actionable** threshold — it gets the strongest visual
 emphasis (red ring, `.nonzero` class). HIGH also receives a warning emphasis. MEDIUM,
-LOW, and INFO render as advisory context with neutral styling.
+LOW, and INFO render as advisory context with neutral styling. (Trivy `UNKNOWN` advisories are bucketed
+into INFO — Trivy SARIF lacks an UNKNOWN field in the 5-cell grid contract; we keep the grid stable
+rather than adding a 6th column for upstream-unclassified entries.)
 
 Blocking semantics are **unchanged**: `continue-on-error: true` on Trivy steps is permanent
 policy; no severity level blocks the build or the push. This is not a change to build policy —
