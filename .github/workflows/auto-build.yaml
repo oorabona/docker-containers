@@ -150,11 +150,10 @@ on:
 # prevented (e.g. two postgres merges serialize, cancelling stale runs).
 
 permissions:
-  actions: read          # Required for #352 hydration step in update-dashboard reusable workflow
+  actions: read          # Required for #352 hydration step (gh run list/download in cache-lineage)
   contents: read         # Checkout only — no git push or PR creation
   packages: write        # Push container images to GHCR
-  pages: write           # Required by update-dashboard reusable workflow (deploy to Pages)
-  id-token: write        # OIDC for Pages deployment + SBOM attestation (Sigstore)
+  id-token: write        # OIDC for SBOM attestation (Sigstore)
   attestations: write    # GitHub SBOM attestations (actions/attest-sbom)
   security-events: write # Upload Trivy SARIF to GitHub Security (codeql-action/upload-sarif)
   issues: write          # summary job creates a build-failure issue when builds fail
@@ -1242,19 +1241,7 @@ jobs:
           path: .trivy-scan-history
           key: trivy-scan-history-${{ github.run_id }}
 
-  update-dashboard:
-    needs: [detect-containers, build-and-push, create-manifest, cache-lineage]
-    # Update dashboard after builds (even partial failures) on master
-    # Dashboard will show warnings for failed/missing builds
-    if: |
-      always() &&
-      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
-      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
-      (needs.cache-lineage.result == 'success' || needs.cache-lineage.result == 'skipped') &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/master'
-    uses: ./.github/workflows/update-dashboard.yaml
-    with:
-      trigger_reason: "Post-build dashboard update"
-    secrets: inherit
 # Permissions are required for updating version files, committing changes, and publishing packages during the auto-build process.
+# Dashboard updates from this workflow are decoupled: update-dashboard.yaml listens via
+# workflow_run trigger instead of being called here. Other workflows
+# (upstream-monitor, recreate-manifests) still invoke it via workflow_call.
