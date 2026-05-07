@@ -215,12 +215,20 @@ jobs:
       group: build-extensions-${{ github.ref }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Headroom for paradedb's pgrx Rust compile (~1h45 cold) plus a second
+    # extension rebuilding in the same run. Pre-fix #416, this regularly
+    # cancelled at 120; with skip-as-existing the job is fast unless an
+    # extension version actually bumps. Defensive step-level timeouts on
+    # the network-bound prerequisite steps keep their failure modes from
+    # eroding the compile budget.
+    timeout-minutes: 180
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        timeout-minutes: 5
 
       - name: Install yq
+        timeout-minutes: 5
         run: |
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
           echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
@@ -228,15 +236,18 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        timeout-minutes: 10
 
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
+        timeout-minutes: 5
         with:
           ghcr_username: ${{ github.actor }}
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get versions requiring extensions
         id: ext-versions
+        timeout-minutes: 5
         run: |
           chmod +x scripts/list-extension-versions.sh
           scripts/list-extension-versions.sh
