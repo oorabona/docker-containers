@@ -438,6 +438,98 @@ variant-action-bar {
 }
 
 /* ----------------------------------------------------------
+   Sticky-mode pull command display (center of bandeau)
+   ---------------------------------------------------------- */
+
+/* Hidden by default; only visible when host is collapsed */
+.vab-sticky-cmd { display: none; }
+
+[data-collapsed] .vab-sticky-cmd {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;          /* CRITICAL — without this, flex item refuses to shrink */
+  max-width: 100%;
+  margin: 0 var(--space-md, 16px);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-surface-elevated, rgba(255,255,255,0.04));
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.06));
+  font-family: var(--font-family-mono, monospace);
+  font-size: var(--font-size-caption, 12px);
+  color: var(--color-text-primary, #F4F5F7);
+  cursor: pointer;
+  transition: background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+              border-color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+  /* Left-side ellipsis: rtl direction reverses truncation point.
+     unicode-bidi: plaintext makes the BiDi algorithm treat the Latin text as
+     LTR inside the RTL container, so glyphs render correctly but the overflow
+     truncation happens on the left (prefix), not the right (suffix). */
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-collapsed] .vab-sticky-cmd:hover {
+  background: var(--color-surface-overlay, rgba(255,255,255,0.07));
+  border-color: var(--color-text-muted, #8A93A0);
+}
+
+[data-collapsed] .vab-sticky-cmd:focus-visible {
+  outline: 2px solid var(--color-focus-ring, var(--color-violet-400, #A78BFA));
+  outline-offset: 2px;
+}
+
+/* Success / failure flashes carry a non-colour cue (border weight/style) so
+   the state is perceivable without colour — WCAG 1.4.1. The aria-label is
+   also swapped briefly for screen readers (handled in JS). */
+/* Success and failure share padding compensation for their +1px border so
+   the row doesn't jump on activation. They differ in border style/colour
+   to be distinguishable without relying on colour alone (WCAG 1.4.1). */
+[data-collapsed] .vab-sticky-cmd--copied {
+  background: rgba(74, 222, 128, 0.10);
+  border: 2px solid var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+  color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+  padding: 3px 9px;
+}
+
+[data-collapsed] .vab-sticky-cmd--failed {
+  background: rgba(239, 68, 68, 0.10);
+  border: 2px dashed var(--color-feedback-error-fg, var(--color-red-400, #F87171));
+  color: var(--color-feedback-error-fg, var(--color-red-400, #F87171));
+  padding: 3px 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-collapsed] .vab-sticky-cmd { transition: none; }
+}
+
+/* Mobile (≤767px): keep visible but reduce padding/font-size for tightness.
+   --copied/--failed reuse the mobile padding with a -1px compensation that
+   matches the +1px border, so the row keeps its height across activation. */
+@media (max-width: 767px) {
+  [data-collapsed] .vab-sticky-cmd {
+    margin: 0 var(--space-xs, 4px);
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+  [data-collapsed] .vab-sticky-cmd--copied,
+  [data-collapsed] .vab-sticky-cmd--failed {
+    padding: 2px 5px;
+  }
+}
+
+/* Below 420px the sticky command shrinks to a near-empty ellipsis blob with
+   no useful info — hide it entirely. The ⧉ button still copies the same
+   command and the user can scroll up to see the full pull line. */
+@media (max-width: 419px) {
+  [data-collapsed] .vab-sticky-cmd { display: none; }
+}
+
+/* ----------------------------------------------------------
    Light theme overrides
    ---------------------------------------------------------- */
 

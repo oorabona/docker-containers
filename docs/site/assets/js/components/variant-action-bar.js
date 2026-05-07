@@ -34,6 +34,11 @@
         this.removeEventListener('keydown', this._onKeydown);
         this._listenersAttached = false;
       }
+      // Cancel any in-flight flash timer so it can't fire on a detached node.
+      if (this._stickyFlashTimer) {
+        clearTimeout(this._stickyFlashTimer);
+        this._stickyFlashTimer = null;
+      }
     }
 
     // -------------------------------------------------------
@@ -205,6 +210,8 @@
       var row3 = document.createElement('div');
       row3.className = 'vab-row vab-row--signals';
       row3.appendChild(this._makeSignalsStrip());
+      row3.appendChild(this._makeStickyCommand());     // center: pull command in collapsed bandeau
+      row3.appendChild(this._makeStickyStatus());      // SR-only live region for copy result
       row3.appendChild(this._makeCollapsedActions());
       card.appendChild(row3);
 
@@ -373,6 +380,92 @@
       return wrap;
     }
 
+
+    // Build the sticky pull-command element shown in the center of the collapsed bandeau.
+    // It is a <button> so keyboard focus and click handling are native.
+    // Text is populated (and kept in sync) by _updateStickyCommand().
+    _makeStickyCommand() {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'vab-sticky-cmd';
+      btn.setAttribute('data-vab-sticky-cmd', '');
+      // aria-label keeps a stable identity ("Copy <registry> pull command"),
+      // dynamic via _updateStickyCommand. Status feedback ("Copied" /
+      // "Copy failed") is announced through a dedicated live region built
+      // by _makeStickyStatus — putting status text on the button's own
+      // aria-label is unreliable across screen readers.
+      btn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+      // Text is set by _updateStickyCommand() after _updateCommands() runs
+      btn.textContent = '';
+      return btn;
+    }
+
+    // SR-only live region announcing copy result. role=status + aria-live
+    // make the textContent change auto-announce, which is the canonical
+    // pattern (more reliable than aria-label mutation on the button).
+    _makeStickyStatus() {
+      var span = document.createElement('span');
+      span.className = 'sr-only';
+      span.setAttribute('data-vab-sticky-status', '');
+      span.setAttribute('role', 'status');
+      span.setAttribute('aria-live', 'polite');
+      return span;
+    }
+
+    // Keep the sticky command text and aria-label in sync with the current pull command.
+    // Called at the end of _updateCommands() so every state change propagates here.
+    _updateStickyCommand() {
+      var stickyEl = this.querySelector('[data-vab-sticky-cmd]');
+      if (!stickyEl) { return; }
+      var pullEl = this.querySelector('[data-vab-cmd="pull"]');
+      if (pullEl) { stickyEl.textContent = pullEl.textContent; }
+      stickyEl.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+    }
+
+    // Copy handler for the collapsed sticky command button.
+    // - Success: green solid border flash + aria-label "Copied"
+    // - Failure: red dashed border flash + aria-label "Copy failed"
+    // Both states carry a non-colour cue (border weight/style) plus an SR
+    // announcement, so the result is perceivable without colour (WCAG 1.4.1).
+    // The pending timer lives on `this` (not `btn`) so disconnectedCallback
+    // can cancel it — preventing async firing on a detached node.
+    _onStickyCommandClick(btn) {
+      var cmd = btn.textContent;
+      if (!cmd) { return; }
+      var self = this;
+      var statusEl = self.querySelector('[data-vab-sticky-status]');
+      var clearFlash = function () {
+        btn.classList.remove('vab-sticky-cmd--copied');
+        btn.classList.remove('vab-sticky-cmd--failed');
+        if (statusEl) { statusEl.textContent = ''; }
+      };
+      var scheduleClear = function () {
+        if (self._stickyFlashTimer) { clearTimeout(self._stickyFlashTimer); }
+        self._stickyFlashTimer = setTimeout(function () {
+          clearFlash();
+          self._stickyFlashTimer = null;
+        }, 1500);
+      };
+      this._writeToClipboard(cmd).then(function () {
+        // Bail if the host was removed from the DOM while the clipboard
+        // promise was in flight — avoids scheduling a timeout against a
+        // detached node.
+        if (!self.isConnected) { return; }
+        clearFlash();
+        btn.classList.add('vab-sticky-cmd--copied');
+        if (statusEl) { statusEl.textContent = 'Copied'; }
+        scheduleClear();
+      }).catch(function () {
+        if (!self.isConnected) { return; }
+        clearFlash();
+        btn.classList.add('vab-sticky-cmd--failed');
+        if (statusEl) { statusEl.textContent = 'Copy failed'; }
+        scheduleClear();
+      });
+    }
+
+
+
     // Sync collapsed-actions buttons (aria-pressed) to current _selectedRegistry.
     // Called after any registry change and on initial render (via _updateCommands).
     _updateCollapsedActionsState() {
@@ -432,6 +525,8 @@
 
       // Keep collapsed-actions mini toggle in sync
       this._updateCollapsedActionsState();
+      // Sync sticky pull command text in collapsed bandeau
+      this._updateStickyCommand();
     }
 
     _extractOwner(base) {
@@ -735,6 +830,10 @@
       // Collapsed-mode mini copy button
       var miniCopy = e.target.closest('[data-vab-mini-copy]');
       if (miniCopy) { this._onMiniCopyClick(); return; }
+
+      // Collapsed-mode sticky command — click to copy
+      var stickyCmd = e.target.closest('[data-vab-sticky-cmd]');
+      if (stickyCmd) { this._onStickyCommandClick(stickyCmd); return; }
     }
 
     // M-B: delegated keydown handler — stored as bound ref so it can be removed on disconnect
