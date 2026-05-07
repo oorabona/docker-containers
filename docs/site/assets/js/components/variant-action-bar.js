@@ -342,7 +342,9 @@
           btn.className = 'vab-registry-mini';
           btn.setAttribute('data-vab-mini-registry', reg.id);
           btn.setAttribute('aria-pressed', reg.id === this._selectedRegistry ? 'true' : 'false');
-          // Short labels: GHCR stays as-is; Docker Hub → DH
+          // Visible text is shortened to fit the sticky bar; aria-label keeps
+          // the full registry name accessible to screen readers.
+          btn.setAttribute('aria-label', 'Pull from ' + reg.label);
           btn.textContent = reg.id === 'dockerhub' ? 'DH' : reg.label;
           wrap.appendChild(btn);
         }
