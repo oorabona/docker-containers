@@ -113,7 +113,7 @@
     data-flavors="{{ _vab_fla_arr | strip | escape }}"
     data-variants="{{ _vab_variants_json | strip | escape }}"
     data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
-    data-image-base-dockerhub="{{ page.github_username | escape }}/{{ page.name | escape }}"
+    data-image-base-dockerhub="{{ page.dockerhub_username | default: page.github_username | escape }}/{{ page.name | escape }}"
     data-registries='{{ _vab_registries | escape }}'
   ></variant-action-bar>
 
