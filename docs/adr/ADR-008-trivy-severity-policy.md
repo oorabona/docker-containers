@@ -16,7 +16,7 @@ in ADR-007 (Phase C trust-strip identity) to serve persona Camille (AppSec engin
 persona, screenshots the trust-strip into Confluence to justify org-wide image adoption).
 
 The structural mismatch: the CRITICAL-only pipeline made the 4 non-critical cells permanently
-zero. The docs (`docs/site/verify-images.md:55-64`, `docs/GITHUB_ACTIONS.md:340`) stated the
+zero. The docs (`docs/site/verify-images.md` and `docs/GITHUB_ACTIONS.md`) stated the
 CRITICAL-only policy explicitly, but the UI implied full-severity coverage. Neither the docs nor
 the UI told the truth about the other.
 
