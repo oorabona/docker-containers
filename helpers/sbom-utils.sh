@@ -207,12 +207,13 @@ append_build_history() {
     mkdir -p "$output_dir"
 
     # Extract metadata from lineage file
-    local built_at version build_digest duration_seconds
+    local built_at version build_digest duration_seconds extensions_build_seconds
     if [[ -f "$lineage_file" ]]; then
         built_at=$(jq -r '.built_at // empty' "$lineage_file" 2>/dev/null || echo "")
         version=$(jq -r '.version // empty' "$lineage_file" 2>/dev/null || echo "")
         build_digest=$(jq -r '.build_digest // empty' "$lineage_file" 2>/dev/null || echo "")
         duration_seconds=$(jq '.duration_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
+        extensions_build_seconds=$(jq '.extensions_build_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
     fi
 
     # Fallback for missing fields
@@ -220,6 +221,7 @@ append_build_history() {
     [[ -z "${version:-}" ]] && version="unknown"
     [[ -z "${build_digest:-}" ]] && build_digest="unknown"
     [[ -z "${duration_seconds:-}" ]] && duration_seconds="null"
+    [[ -z "${extensions_build_seconds:-}" ]] && extensions_build_seconds="null"
 
     # Extract totals from summary
     local packages_total
@@ -254,6 +256,7 @@ append_build_history() {
         --argjson packages_by_type "$packages_by_type" \
         --arg changes_summary "$changes_summary" \
         --argjson duration "$duration_seconds" \
+        --argjson ext_duration "$extensions_build_seconds" \
         --argjson max "$max_entries" \
     '
         [{
@@ -263,7 +266,8 @@ append_build_history() {
             packages_total: $packages_total,
             packages_by_type: $packages_by_type,
             changes_summary: $changes_summary,
-            duration_seconds: $duration
+            duration_seconds: $duration,
+            extensions_build_seconds: $ext_duration
         }] + $history |
         .[:$max]
     ' > "$history_file"

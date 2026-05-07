@@ -305,6 +305,18 @@ jobs:
             done
           done
 
+      - name: Upload extension lineage files
+        if: always() && hashFiles('.build-lineage/ext-*.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/ext-*.json
+          retention-days: 1
+          if-no-files-found: ignore
+          # `.build-lineage/` is a dot-prefixed directory; v4 of upload-artifact
+          # silently skips files inside hidden directories unless this is set.
+          include-hidden-files: true
+
   # Cache Docker Hub base images to GHCR to avoid rate limits during builds
   cache-base-images:
     name: Cache base images
@@ -463,6 +475,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Download extension lineage (postgres only)
+        if: matrix.build.container == 'postgres'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+        continue-on-error: true
 
       # yq is pre-installed on ubuntu-latest. On Windows we download the binary
       # directly (no Chocolatey — avoids flaky 503s). Action mikefarah/yq is
