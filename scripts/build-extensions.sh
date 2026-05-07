@@ -384,6 +384,42 @@ build_tag_push_extensions() {
     fi
 }
 
+# Decide whether a given extension needs (re)building.
+# Honors LOCAL_ONLY (image inspect), FORCE, and registry presence.
+# Logs the skip reason itself so callers can stay terse.
+# Returns 0 to build, 1 to skip.
+_should_build_extension() {
+    local ext="$1" config_file="$2" major_ver="$3" container_dir="$4"
+    local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
+
+    if [[ ! -f "$dockerfile" ]]; then
+        log_warning "$ext: no Dockerfile (skipped)"
+        return 1
+    fi
+
+    local version image
+    version=$(ext_config "$ext" "version" "$config_file")
+    image=$(ext_image_name "$ext" "$version" "$major_ver")
+
+    if [[ "$LOCAL_ONLY" == "true" ]]; then
+        if [[ "$FORCE" != "true" ]] && docker image inspect "$image" &>/dev/null; then
+            log_success "$ext $version already exists locally"
+            return 1
+        fi
+        return 0
+    fi
+
+    if [[ "$FORCE" == "true" ]]; then
+        return 0
+    fi
+
+    if image_exists_in_registry "$image" 2>/dev/null; then
+        log_success "$ext $version already exists in registry"
+        return 1
+    fi
+
+    return 0
+}
 
 main() {
     parse_args "$@"
@@ -419,38 +455,29 @@ main() {
     local extensions_to_build=()
 
     if [[ -n "$EXTENSION" ]]; then
-        extensions_to_build=("$EXTENSION")
+        # Strict typo check: explicit --extension must have a real Dockerfile
+        local _explicit_dockerfile="$container_dir/extensions/build/${EXTENSION}.Dockerfile"
+        if [[ ! -f "$_explicit_dockerfile" ]]; then
+            log_error "Extension '$EXTENSION': no Dockerfile at $_explicit_dockerfile"
+            exit 1
+        fi
+        if _should_build_extension "$EXTENSION" "$config_file" "$major_ver" "$container_dir"; then
+            extensions_to_build=("$EXTENSION")
+        fi
     else
         while IFS= read -r ext; do
-            local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
-
-            if [[ ! -f "$dockerfile" ]]; then
-                log_warning "$ext: no Dockerfile (skipped)"
-                continue
-            fi
-
-            local version image
-            version=$(ext_config "$ext" "version" "$config_file")
-            image=$(ext_image_name "$ext" "$version" "$major_ver")
-
-            if [[ "$LOCAL_ONLY" == "true" ]]; then
-                if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
-                    log_success "$ext $version already exists locally"
-                else
-                    extensions_to_build+=("$ext")
-                fi
-            elif [[ "$FORCE" == "true" ]]; then
+            if _should_build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
                 extensions_to_build+=("$ext")
-            elif ! image_exists_in_registry "$image" 2>/dev/null; then
-                extensions_to_build+=("$ext")
-            else
-                log_success "$ext $version already exists in registry"
             fi
         done < <(list_extensions_by_priority "$config_file" "$major_ver")
     fi
 
     if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
-        log_success "All extensions are up to date"
+        if [[ -n "$EXTENSION" ]]; then
+            log_success "$EXTENSION already up to date"
+        else
+            log_success "All extensions are up to date"
+        fi
         exit 0
     fi
 
@@ -463,4 +490,7 @@ main() {
     build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "$do_push" "${extensions_to_build[@]}"
 }
 
-main "$@"
+# Only run main when executed directly, not when sourced (e.g. by unit tests)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
