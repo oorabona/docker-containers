@@ -101,6 +101,8 @@
   {%- endif -%}
 {%- endif -%}
 
+{%- capture _vab_registries -%}[{"id":"ghcr","label":"GHCR"},{"id":"dockerhub","label":"Docker Hub"}]{%- endcapture -%}
+
 <section id="variants-pull" class="vab-section" aria-label="Variant selector and pull commands">
   <variant-action-bar
     data-container="{{ page.name | escape }}"
@@ -111,6 +113,8 @@
     data-flavors="{{ _vab_fla_arr | strip | escape }}"
     data-variants="{{ _vab_variants_json | strip | escape }}"
     data-image-base="ghcr.io/{{ page.github_username | escape }}/{{ page.name | escape }}"
+    data-image-base-dockerhub="{{ page.dockerhub_username | default: page.github_username | escape }}/{{ page.name | escape }}"
+    data-registries='{{ _vab_registries | escape }}'
   ></variant-action-bar>
 
   <noscript>

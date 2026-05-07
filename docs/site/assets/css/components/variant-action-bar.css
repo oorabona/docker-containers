@@ -69,15 +69,7 @@ variant-action-bar {
   display: none;
 }
 
-/* When user clicks toggle while collapsed, re-show everything */
-[data-collapsed] .vab-card[data-user-expanded="true"] .vab-row--selectors,
-[data-collapsed] .vab-card[data-user-expanded="true"] .vab-row--commands {
-  display: flex;
-}
-
-/* Show the toggle button only when collapsed */
-.vab-toggle { display: none; }
-[data-collapsed] .vab-toggle { display: inline-flex; }
+/* (toggle removed — scrolling back up re-expands via IntersectionObserver) */
 
 @media (prefers-reduced-motion: reduce) {
   [data-collapsed] .vab-card { transition: none; }
@@ -136,7 +128,8 @@ variant-action-bar {
 
 /* Base pill style */
 .vab-version-pill,
-.vab-flavor-pill {
+.vab-flavor-pill,
+.vab-registry-pill {
   padding: var(--space-xs, 4px) var(--space-sm, 8px);
   border-radius: var(--radius-full, 9999px);
   border: 1px solid var(--color-variant-tag-border, rgba(139,92,246,0.25));
@@ -157,14 +150,16 @@ variant-action-bar {
 }
 
 .vab-version-pill:hover,
-.vab-flavor-pill:hover {
+.vab-flavor-pill:hover,
+.vab-registry-pill:hover {
   background: var(--color-variant-tag-bg-hover, rgba(139,92,246,0.25));
   border-color: rgba(167,139,250,0.45);
 }
 
 /* Active / selected pill (uses violet trust hue per Phase C spec) */
 .vab-version-pill.vab-pill--active,
-.vab-flavor-pill.vab-pill--active {
+.vab-flavor-pill.vab-pill--active,
+.vab-registry-pill.vab-pill--active {
   background: var(--color-variant-tag-selected-bg, rgba(139,92,246,0.30));
   border-color: var(--color-violet-400, #A78BFA);
   color: var(--color-violet-400, #A78BFA);
@@ -173,14 +168,16 @@ variant-action-bar {
 
 /* Focus rings — WCAG 2.2 AA (3px outline, 2px offset) */
 .vab-version-pill:focus-visible,
-.vab-flavor-pill:focus-visible {
+.vab-flavor-pill:focus-visible,
+.vab-registry-pill:focus-visible {
   outline: 3px solid var(--color-violet-400, #A78BFA);
   outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .vab-version-pill,
-  .vab-flavor-pill { transition: none; }
+  .vab-flavor-pill,
+  .vab-registry-pill { transition: none; }
 }
 
 /* ----------------------------------------------------------
@@ -318,43 +315,15 @@ variant-action-bar {
 }
 
 /* ----------------------------------------------------------
-   Collapse toggle button
+   Verify note (shown when registry is not GHCR)
    ---------------------------------------------------------- */
 
-.vab-toggle {
-  align-self: flex-start;
-  padding: var(--space-xs, 4px) var(--space-sm, 8px);
-  border-radius: var(--radius-md, 8px);
-  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
-  background: rgba(255,255,255,0.06);
+.vab-verify-note {
+  font-size: 0.75rem;
   color: var(--color-text-muted, #8A93A0);
-  font-size: var(--font-size-caption, 12px);
-  font-family: var(--font-family-mono, monospace);
-  font-weight: var(--font-weight-medium, 500);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs, 4px);
-  min-height: 32px;
-  transition:
-    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
-    color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
-}
-
-.vab-toggle:hover {
-  background: rgba(255,255,255,0.12);
-  color: var(--color-text-primary, #F4F5F7);
-}
-
-.vab-toggle:focus-visible {
-  outline: 3px solid var(--color-action-primary, #60A5FA);
-  outline-offset: 2px;
-}
-
-.vab-toggle-icon { font-size: 0.875rem; }
-
-@media (prefers-reduced-motion: reduce) {
-  .vab-toggle { transition: none; }
+  font-style: italic;
+  display: block;
+  margin-top: 4px;
 }
 
 /* ----------------------------------------------------------
