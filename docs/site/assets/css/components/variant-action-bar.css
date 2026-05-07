@@ -69,6 +69,23 @@ variant-action-bar {
   display: none;
 }
 
+/* Collapsed signals row: spread signals left, actions right — no wrapping */
+[data-collapsed] .vab-row--signals {
+  justify-content: space-between;
+  flex-wrap: nowrap;
+}
+
+/* Prevent AMD64/ARM64 from wrapping to a second clipped line */
+[data-collapsed] .vab-signals {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+[data-collapsed] .vab-signal-value,
+[data-collapsed] .vab-signal-label {
+  white-space: nowrap;
+}
+
 /* (toggle removed — scrolling back up re-expands via IntersectionObserver) */
 
 @media (prefers-reduced-motion: reduce) {
@@ -327,6 +344,100 @@ variant-action-bar {
 }
 
 /* ----------------------------------------------------------
+   Collapsed-mode actions group (registry mini-toggle + mini copy button)
+   Hidden in expanded mode via display:none; revealed only when [data-collapsed].
+   ---------------------------------------------------------- */
+
+.vab-collapsed-actions {
+  display: none;
+}
+
+[data-collapsed] .vab-collapsed-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  flex-shrink: 0;
+}
+
+/* Mini registry toggle pills */
+.vab-collapsed-actions .vab-registry-mini {
+  font-size: var(--font-size-caption, 12px);
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 9999px);
+  border: 1px solid var(--color-variant-tag-border, rgba(139,92,246,0.25));
+  background: transparent;
+  color: var(--color-text-muted, #8A93A0);
+  cursor: pointer;
+  font-family: var(--font-family-mono, monospace);
+  letter-spacing: var(--letter-spacing-wider, 0.04em);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-medium, 500);
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  transition:
+    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    border-color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+}
+
+.vab-collapsed-actions .vab-registry-mini[aria-pressed="true"] {
+  background: var(--color-variant-tag-bg, rgba(139,92,246,0.15));
+  color: var(--color-variant-tag-fg, var(--color-violet-400, #A78BFA));
+  border-color: var(--color-variant-tag-fg, var(--color-violet-400, #A78BFA));
+}
+
+.vab-collapsed-actions .vab-registry-mini:hover {
+  border-color: var(--color-variant-tag-fg, var(--color-violet-400, #A78BFA));
+  color: var(--color-variant-tag-fg, var(--color-violet-400, #A78BFA));
+}
+
+.vab-collapsed-actions .vab-registry-mini:focus-visible {
+  outline: 3px solid var(--color-violet-400, #A78BFA);
+  outline-offset: 2px;
+}
+
+/* Compact copy button */
+.vab-collapsed-actions .vab-copy-mini {
+  background: transparent;
+  border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
+  color: var(--color-text-primary, #F4F5F7);
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: var(--font-size-caption, 12px);
+  font-family: var(--font-family-mono, monospace);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  transition:
+    background var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    border-color var(--motion-duration-short, 150ms) var(--easing-standard, ease),
+    color var(--motion-duration-short, 150ms) var(--easing-standard, ease);
+}
+
+.vab-collapsed-actions .vab-copy-mini:hover {
+  background: var(--color-surface-elevated, rgba(255,255,255,0.05));
+  border-color: var(--color-text-muted, #8A93A0);
+}
+
+.vab-collapsed-actions .vab-copy-mini.vab-copy-mini--copied {
+  color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+  border-color: var(--color-feedback-success-fg, var(--color-green-400, #4ADE80));
+}
+
+.vab-collapsed-actions .vab-copy-mini:focus-visible {
+  outline: 3px solid var(--color-action-primary, #60A5FA);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vab-collapsed-actions .vab-registry-mini,
+  .vab-collapsed-actions .vab-copy-mini { transition: none; }
+}
+
+/* ----------------------------------------------------------
    Light theme overrides
    ---------------------------------------------------------- */
 
@@ -357,4 +468,9 @@ variant-action-bar {
   [data-collapsed] .vab-card {
     padding: var(--space-xs, 4px) var(--space-sm, 8px);
   }
+
+  [data-collapsed] .vab-row--signals { gap: var(--space-sm, 8px); }
+  [data-collapsed] .vab-collapsed-actions { gap: 3px; }
+  [data-collapsed] .vab-collapsed-actions .vab-registry-mini { padding: 2px 6px; font-size: 11px; }
+  [data-collapsed] .vab-collapsed-actions .vab-copy-mini { padding: 4px 6px; }
 }

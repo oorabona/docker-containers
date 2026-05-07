@@ -28,6 +28,12 @@
       if (this._resizeHandler) { window.removeEventListener('resize', this._resizeHandler); }
       // F7: remove version-tabs-changed listener to prevent leak on DOM re-attach
       if (this._versionTabsHandler) { document.removeEventListener('version-tabs-changed', this._versionTabsHandler); }
+      // M-B: remove delegated listeners; reset guard so _attachListeners works on next connectedCallback
+      if (this._listenersAttached) {
+        this.removeEventListener('click', this._onClick);
+        this.removeEventListener('keydown', this._onKeydown);
+        this._listenersAttached = false;
+      }
     }
 
     // -------------------------------------------------------
@@ -199,6 +205,7 @@
       var row3 = document.createElement('div');
       row3.className = 'vab-row vab-row--signals';
       row3.appendChild(this._makeSignalsStrip());
+      row3.appendChild(this._makeCollapsedActions());
       card.appendChild(row3);
 
       // Store refs
@@ -319,6 +326,66 @@
       return strip;
     }
 
+
+    // Build the collapsed-state actions group (registry mini-toggle + mini copy button).
+    // Hidden via CSS in expanded mode; shown only when [data-collapsed] is set on the host.
+    _makeCollapsedActions() {
+      var wrap = document.createElement('div');
+      wrap.className = 'vab-collapsed-actions';
+
+      // Only render registry toggle when there are multiple registries
+      if (this._registries && this._registries.length > 1) {
+        for (var i = 0; i < this._registries.length; i++) {
+          var reg = this._registries[i];
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'vab-registry-mini';
+          btn.setAttribute('data-vab-mini-registry', reg.id);
+          btn.setAttribute('aria-pressed', reg.id === this._selectedRegistry ? 'true' : 'false');
+          // Short labels: GHCR stays as-is; Docker Hub → DH
+          btn.textContent = reg.id === 'dockerhub' ? 'DH' : reg.label;
+          wrap.appendChild(btn);
+        }
+      }
+
+      // Compact pull-command copy button
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'vab-copy-mini';
+      copyBtn.setAttribute('data-vab-mini-copy', 'pull');
+      // S-4: dynamic label set here; _updateCollapsedActionsState keeps it in sync
+      copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry));
+      // S-2: explicit classes so _onMiniCopyClick can use stable selectors
+      var icon = document.createElement('span');
+      icon.className = 'vab-copy-mini__icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = '⧉'; // ⧉
+      copyBtn.appendChild(icon);
+      var label = document.createElement('span');
+      // S-3: no leading space — gap is handled by CSS gap:4px on the parent
+      label.className = 'vab-copy-mini__label';
+      label.textContent = 'pull';
+      copyBtn.appendChild(label);
+      wrap.appendChild(copyBtn);
+
+      return wrap;
+    }
+
+    // Sync collapsed-actions buttons (aria-pressed) to current _selectedRegistry.
+    // Called after any registry change and on initial render (via _updateCommands).
+    _updateCollapsedActionsState() {
+      var miniBtns = this.querySelectorAll('[data-vab-mini-registry]');
+      for (var i = 0; i < miniBtns.length; i++) {
+        var active = miniBtns[i].getAttribute('data-vab-mini-registry') === this._selectedRegistry;
+        miniBtns[i].setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
+      // S-4: update mini copy button aria-label to reflect current registry
+      var copyBtn = this.querySelector('[data-vab-mini-copy]');
+      if (copyBtn) { copyBtn.setAttribute('aria-label', this._buildCopyAriaLabel(this._selectedRegistry)); }
+    }
+
+
+
     // -------------------------------------------------------
     // Update content when variant changes
     // -------------------------------------------------------
@@ -360,6 +427,9 @@
           if (existingNote) { verifyBlock.removeChild(existingNote); }
         }
       }
+
+      // Keep collapsed-actions mini toggle in sync
+      this._updateCollapsedActionsState();
     }
 
     _extractOwner(base) {
@@ -433,6 +503,33 @@
     // Copy to clipboard
     // -------------------------------------------------------
 
+    // S-4: builds the dynamic aria-label for the mini copy button.
+    _buildCopyAriaLabel(reg) {
+      var name = reg === 'dockerhub' ? 'Docker Hub' : 'GHCR';
+      return 'Copy ' + name + ' pull command';
+    }
+
+    // M-A: single clipboard helper — resolves only on success, rejects on failure.
+    // Callers must NOT call showCopied in .catch().
+    _writeToClipboard(text) {
+      if (window.isSecureContext && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        return navigator.clipboard.writeText(text);
+      }
+      return new Promise(function (resolve, reject) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        if (ok) { resolve(); } else { reject(new Error('execCommand(copy) failed')); }
+      });
+    }
+
     _onCopyClick(type) {
       var codeEl = this.querySelector('[data-vab-cmd="' + type + '"]');
       if (!codeEl) { return; }
@@ -440,6 +537,7 @@
       var btnEl = this.querySelector('[data-vab-copy="' + type + '"]');
       var iconEl = btnEl && btnEl.querySelector('.vab-copy-icon');
 
+      // M-A: confirmation only on success — .catch swallows silently
       var showCopied = function () {
         if (iconEl) { iconEl.textContent = '✓'; } // ✓
         if (btnEl) { btnEl.classList.add('vab-copy-btn--copied'); }
@@ -449,20 +547,40 @@
         }, 2000);
       };
 
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(text).then(showCopied).catch(showCopied);
-      } else {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try { document.execCommand('copy'); } catch (e) {}
-        document.body.removeChild(ta);
-        showCopied();
-      }
+      this._writeToClipboard(text).then(showCopied).catch(function () { /* copy failed — do not confirm */ });
     }
+
+
+    // Copy handler for the collapsed mini copy button.
+    // Reads the current pull command text (already set by _updateCommands)
+    // and writes it to clipboard, mirroring the expanded _onCopyClick pattern.
+    _onMiniCopyClick() {
+      var codeEl = this.querySelector('[data-vab-cmd="pull"]');
+      if (!codeEl) { return; }
+      var text = codeEl.textContent || '';
+
+      // S-2: stable class selectors (not fragile attribute-presence selectors)
+      var miniBtn = this.querySelector('[data-vab-mini-copy]');
+      var iconEl = miniBtn && miniBtn.querySelector('.vab-copy-mini__icon');
+      var labelEl = miniBtn && miniBtn.querySelector('.vab-copy-mini__label');
+
+      // M-A: confirmation only on success — .catch swallows silently
+      var showCopied = function () {
+        if (iconEl) { iconEl.textContent = '✓'; }
+        // S-3: no leading space — gap handled by CSS gap:4px on parent
+        if (labelEl) { labelEl.textContent = 'copied'; }
+        if (miniBtn) { miniBtn.classList.add('vab-copy-mini--copied'); }
+        setTimeout(function () {
+          if (iconEl) { iconEl.textContent = '⧉'; }
+          if (labelEl) { labelEl.textContent = 'pull'; }
+          if (miniBtn) { miniBtn.classList.remove('vab-copy-mini--copied'); }
+        }, 2000);
+      };
+
+      this._writeToClipboard(text).then(showCopied).catch(function () { /* copy failed — do not confirm */ });
+    }
+
+
 
     // -------------------------------------------------------
     // Custom event dispatch (new + legacy bridge)
@@ -594,47 +712,66 @@
     // Delegated event listeners
     // -------------------------------------------------------
 
+    // M-B: delegated click handler — stored as bound ref so it can be removed on disconnect
+    _onClick(e) {
+      var rPill = e.target.closest('.vab-registry-pill');
+      if (rPill) { this._onRegistryPillClick(rPill.dataset.value); return; }
+
+      var vPill = e.target.closest('.vab-version-pill');
+      if (vPill) { this._onVersionPillClick(vPill.dataset.value); return; }
+
+      var fPill = e.target.closest('.vab-flavor-pill');
+      if (fPill) { this._onFlavorPillClick(fPill.dataset.value); return; }
+
+      var copyBtn = e.target.closest('.vab-copy-btn');
+      if (copyBtn) { this._onCopyClick(copyBtn.getAttribute('data-vab-copy')); return; }
+
+      // Collapsed-mode mini registry toggle
+      var miniReg = e.target.closest('[data-vab-mini-registry]');
+      if (miniReg) { this._onRegistryPillClick(miniReg.getAttribute('data-vab-mini-registry')); return; }
+
+      // Collapsed-mode mini copy button
+      var miniCopy = e.target.closest('[data-vab-mini-copy]');
+      if (miniCopy) { this._onMiniCopyClick(); return; }
+    }
+
+    // M-B: delegated keydown handler — stored as bound ref so it can be removed on disconnect
+    // F4: keyboard navigation for radiogroup pills (WAI-ARIA APG roving tabindex).
+    // ArrowLeft/Right move focus+selection; Home/End jump to first/last.
+    _onKeydown(e) {
+      var pill = e.target.closest('.vab-registry-pill, .vab-version-pill, .vab-flavor-pill');
+      if (!pill) { return; }
+      var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+      if (keys.indexOf(e.key) === -1) { return; }
+      e.preventDefault();
+      var group = pill.parentElement;
+      var pills = Array.prototype.slice.call(group.querySelectorAll('button'));
+      var idx = pills.indexOf(pill);
+      var next;
+      if (e.key === 'ArrowLeft')       { next = (idx - 1 + pills.length) % pills.length; }
+      else if (e.key === 'ArrowRight') { next = (idx + 1) % pills.length; }
+      else if (e.key === 'Home')       { next = 0; }
+      else                             { next = pills.length - 1; }
+      pills[next].focus();
+      pills[next].click();
+    }
+
     _attachListeners() {
-      var self = this;
+      // M-B: idempotent guard — prevents listener accumulation on DOM re-attach
+      if (this._listenersAttached) { return; }
 
-      this.addEventListener('click', function (e) {
-        var rPill = e.target.closest('.vab-registry-pill');
-        if (rPill) { self._onRegistryPillClick(rPill.dataset.value); return; }
-
-        var vPill = e.target.closest('.vab-version-pill');
-        if (vPill) { self._onVersionPillClick(vPill.dataset.value); return; }
-
-        var fPill = e.target.closest('.vab-flavor-pill');
-        if (fPill) { self._onFlavorPillClick(fPill.dataset.value); return; }
-
-        var copyBtn = e.target.closest('.vab-copy-btn');
-        if (copyBtn) { self._onCopyClick(copyBtn.getAttribute('data-vab-copy')); return; }
-      });
-
-      // F4: keyboard navigation for radiogroup pills (WAI-ARIA APG roving tabindex).
-      // ArrowLeft/Right move focus+selection; Home/End jump to first/last.
-      this.addEventListener('keydown', function (e) {
-        var pill = e.target.closest('.vab-registry-pill, .vab-version-pill, .vab-flavor-pill');
-        if (!pill) { return; }
-        var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
-        if (keys.indexOf(e.key) === -1) { return; }
-        e.preventDefault();
-        var group = pill.parentElement;
-        var pills = Array.prototype.slice.call(group.querySelectorAll('button'));
-        var idx = pills.indexOf(pill);
-        var next;
-        if (e.key === 'ArrowLeft')       { next = (idx - 1 + pills.length) % pills.length; }
-        else if (e.key === 'ArrowRight') { next = (idx + 1) % pills.length; }
-        else if (e.key === 'Home')       { next = 0; }
-        else                             { next = pills.length - 1; }
-        pills[next].focus();
-        pills[next].click();
-      });
+      // Bind once so removeEventListener in disconnectedCallback matches the same ref
+      this._onClick = this._onClick.bind(this);
+      this._onKeydown = this._onKeydown.bind(this);
+      this.addEventListener('click', this._onClick);
+      this.addEventListener('keydown', this._onKeydown);
 
       // F7: store bound handler reference so disconnectedCallback can remove it cleanly.
       // F1: _onVersionTabsChanged has the re-entry guard (source === 'variant-action-bar').
       this._versionTabsHandler = this._onVersionTabsChanged.bind(this);
       document.addEventListener('version-tabs-changed', this._versionTabsHandler);
+
+      this._listenersAttached = true;
     }
   }
 
