@@ -634,6 +634,7 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_call' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_branch == 'master')
     steps:

@@ -150,7 +150,7 @@ on:
 # prevented (e.g. two postgres merges serialize, cancelling stale runs).
 
 permissions:
-  actions: read          # Required for #352 hydration step (gh run list/download in cache-lineage)
+  actions: read          # Required by actions/download-artifact and actions/cache (artifact + cache restore steps below)
   contents: read         # Checkout only — no git push or PR creation
   packages: write        # Push container images to GHCR
   id-token: write        # OIDC for SBOM attestation (Sigstore)
