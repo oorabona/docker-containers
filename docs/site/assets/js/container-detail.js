@@ -621,9 +621,15 @@
       }
 
       if (hasExt) {
+        // Null entries (history rows from before extensions_build_seconds was
+        // recorded) are mapped to 0 instead of null for the chart data so the
+        // fill polygon stays continuous: Chart.js cannot fill from a single
+        // isolated non-null point with `spanGaps:false` + `fill:'-1'`. The
+        // visual lie ("0 contribution that build" vs. "we didn't measure")
+        // resolves itself once a few rebuilds populate the new field.
         datasets.push({
           label: 'Extensions build (min)',
-          data: extData.map(toMin),
+          data: extData.map(function (v) { return toMin(v) || 0; }),
           borderColor: '#a855f7',
           backgroundColor: 'rgba(168,85,247,0.25)',
           fill: hasContainer ? '-1' : 'origin',
