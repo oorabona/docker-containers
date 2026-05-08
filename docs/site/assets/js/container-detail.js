@@ -629,7 +629,7 @@
         // resolves itself once a few rebuilds populate the new field.
         datasets.push({
           label: 'Extensions build (min)',
-          data: extData.map(function (v) { return v != null ? +(v / 60).toFixed(1) : 0; }),
+          data: extData.map(function (v) { return toMin(v) || 0; }),
           borderColor: '#a855f7',
           backgroundColor: 'rgba(168,85,247,0.25)',
           fill: hasContainer ? '-1' : 'origin',
