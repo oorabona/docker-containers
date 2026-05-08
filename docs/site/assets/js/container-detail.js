@@ -708,7 +708,10 @@
 
       var history;
       try { history = JSON.parse(attr); } catch(e) { section.style.display = 'none'; return; }
-      if (!history || history.length === 0) { section.style.display = 'none'; return; }
+      // Defensive: if the data-build-history attribute carries a non-array
+      // payload (Liquid template misuse, future schema drift), bail out
+      // instead of crashing on `history.slice()` later.
+      if (!Array.isArray(history) || history.length === 0) { section.style.display = 'none'; return; }
 
       section.style.display = '';
 
