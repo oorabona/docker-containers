@@ -43,8 +43,10 @@ sum_flavor_extension_durations() {
     ext_list=$(get_flavor_extensions "$config_file" "$flavor" "$pg_major" 2>/dev/null || true)
 
     if [[ -z "$ext_list" ]]; then
-        # Flavor has no extensions (e.g. "base" flavor with no entries)
-        echo "null"
+        # Flavor exists but has no compiled extensions → genuinely zero contribution
+        # this build (vs. "null" which signals "container has no extensions concept
+        # at all" — handled by the missing config_file branch above).
+        echo "0"
         return 0
     fi
 

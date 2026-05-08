@@ -5,7 +5,7 @@
 # 6-case truth table:
 #   1. flavor with 3 extensions, all 3 lineage files present → sum of durations
 #   2. flavor with 3 extensions, 2 lineage files present (1 skipped) → sum of 2
-#   3. flavor with 0 extensions (e.g. "base" flavor with no entries) → "null"
+#   3. flavor with 0 extensions (e.g. "base" flavor with no entries) → 0
 #   4. flavor with 3 extensions, 0 lineage files (all skipped) → 0
 #   5. config.yaml missing → "null"
 #   6. ext_config returns empty version (version unset) → skipped, no error
@@ -165,13 +165,13 @@ _write_ext_lineage() {
     [ "$output" -eq 300 ]
 }
 
-# Case 3: "base" flavor has no extensions → "null"
-@test "3: flavor=base with no extensions → null" {
+# Case 3: "base" flavor has no extensions → 0 (flavor exists, just no compiled extensions)
+@test "3: flavor=base with no extensions → 0" {
     _mock_flavor_base_empty
 
     run sum_flavor_extension_durations "postgres" "base" "$MAJOR_VER"
     [ "$status" -eq 0 ]
-    [ "$output" = "null" ]
+    [ "$output" -eq 0 ]
 }
 
 # Case 4: all 3 lineage files absent (all extensions cached/skipped) → 0

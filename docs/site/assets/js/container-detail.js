@@ -566,7 +566,7 @@
       return m + 'm' + (s > 0 ? s + 's' : '');
     }
 
-    function renderHistoryChart(history) {
+    function renderHistoryChart(history, variantTag) {
       var chartWrap = document.getElementById('history-chart-wrap');
       var canvas = document.getElementById('history-trend-chart');
       if (!chartWrap || !canvas || typeof Chart === 'undefined') return;
@@ -585,7 +585,17 @@
       var containerData = sorted.map(function(b) { return b.duration_seconds || null; });
       var extData = sorted.map(function(b) { return b.extensions_build_seconds != null ? b.extensions_build_seconds : null; });
       var hasContainer = containerData.some(function(v) { return v !== null; });
-      var hasExt = extData.some(function(v) { return v !== null; });
+      // hasExt: dataset is rendered when ANY history row carries the
+      // extensions_build_seconds field (postgres-style containers). Containers
+      // without extensions/config.yaml omit the field entirely.
+      var hasExt = sorted.some(function(b) { return Object.prototype.hasOwnProperty.call(b, 'extensions_build_seconds'); });
+      // hasPositiveExt: at least one row has a non-zero extension cost. Drives
+      // both the dataset's fill mode AND the y1 `stacked` flag so a flavor
+      // with zero compiled extensions (postgres-base) renders the Extensions
+      // line at y=0 instead of being absorbed into the Container stack.
+      var hasPositiveExt = hasExt && sorted.some(function (b) {
+        return b.extensions_build_seconds != null && b.extensions_build_seconds > 0;
+      });
 
       var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
       var gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
@@ -622,17 +632,18 @@
 
       if (hasExt) {
         // Null entries (history rows from before extensions_build_seconds was
-        // recorded) are mapped to 0 instead of null for the chart data so the
-        // fill polygon stays continuous: Chart.js cannot fill from a single
-        // isolated non-null point with `spanGaps:false` + `fill:'-1'`. The
-        // visual lie ("0 contribution that build" vs. "we didn't measure")
-        // resolves itself once a few rebuilds populate the new field.
+        // recorded) are mapped to 0 for the chart so the fill polygon stays
+        // continuous (Chart.js cannot fill from a single isolated non-null
+        // point with `spanGaps:false` + `fill:'-1'`). When ALL values are 0
+        // (postgres-base etc.) the fill is dropped AND the y1 axis is
+        // un-stacked so the line renders at y=0 along the X axis instead of
+        // being painted along the Container value.
         datasets.push({
           label: 'Extensions build (min)',
           data: extData.map(function (v) { return toMin(v) || 0; }),
           borderColor: '#a855f7',
           backgroundColor: 'rgba(168,85,247,0.25)',
-          fill: hasContainer ? '-1' : 'origin',
+          fill: hasPositiveExt ? (hasContainer ? '-1' : 'origin') : false,
           tension: 0.3,
           yAxisID: 'y1',
           pointRadius: 2,
@@ -655,7 +666,11 @@
           title: { display: true, text: 'Build (min)', color: textColor, font: { size: 10 } },
           grid: { drawOnChartArea: false },
           ticks: { color: textColor, font: { size: 10 } },
-          stacked: true,
+          // Stack only when Extensions has positive values — otherwise an
+          // all-zero Extensions dataset would be drawn ON TOP of Container's
+          // line (Chart.js stacks values, not just fills), making the "0" cue
+          // invisible. Un-stacked, the line settles at y=0.
+          stacked: hasPositiveExt,
           beginAtZero: true
         };
       }
@@ -669,6 +684,14 @@
           maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
           plugins: {
+            title: variantTag ? {
+              display: true,
+              text: 'Build history — ' + variantTag,
+              color: textColor,
+              font: { size: 12, weight: '500' },
+              align: 'start',
+              padding: { bottom: 8 }
+            } : { display: false },
             legend: { labels: { color: textColor, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle' } }
           },
           scales: scales
@@ -689,8 +712,14 @@
 
       section.style.display = '';
 
-      // Render trend chart
-      renderHistoryChart(history);
+      // Render trend chart — title shows "container:tag" so the user always
+      // knows which variant the chart reflects (default landing page may be
+      // a flavor without extensions data, hence the explicit identifier).
+      var rawTag = (variantEl && variantEl.dataset && variantEl.dataset.tag) || '';
+      var vab = document.querySelector('variant-action-bar');
+      var containerName = (vab && vab.dataset && vab.dataset.container) || '';
+      var variantTag = rawTag ? (containerName ? containerName + ':' + rawTag : rawTag) : '';
+      renderHistoryChart(history, variantTag);
 
       // Render table
       var wrap = document.getElementById('history-table-wrap');
