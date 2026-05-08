@@ -194,7 +194,6 @@ _emit_build_lineage() {
   "base_image_digest": "${_BASE_DIGEST:-unresolved}",
   "built_at": "$build_ts",
   "duration_seconds": ${_BUILD_DURATION_SECONDS:-null},
-  "extensions_build_seconds": ${extensions_build_seconds},
   "github_actions": ${GITHUB_ACTIONS:-false},
   "images": {
     "dockerhub": "$dockerhub_image:$tag",
@@ -203,6 +202,24 @@ _emit_build_lineage() {
   "build_args": $build_args_data
 }
 LINEAGE_EOF
+
+    # Conditionally merge extensions_build_seconds when the caller actually
+    # measured it. The field's PRESENCE (not its value) is the signal that
+    # downstream consumers (sbom-utils.sh::append_build_history, the dashboard
+    # frontend) use to detect "container has extensions concept". Containers
+    # without extensions/config.yaml pass the literal string "null" as the
+    # 10th arg — for those we omit the field entirely so the signal stays
+    # honest.
+    if [[ "$extensions_build_seconds" != "null" ]]; then
+        local _lineage_tmp="${lineage_file}.tmp"
+        if jq --argjson ext "$extensions_build_seconds" \
+            '. + {extensions_build_seconds: $ext}' "$lineage_file" > "$_lineage_tmp" 2>/dev/null; then
+            mv "$_lineage_tmp" "$lineage_file"
+        else
+            rm -f "$_lineage_tmp"
+            log_warning "Failed to merge extensions_build_seconds=$extensions_build_seconds into $lineage_file"
+        fi
+    fi
     log_info "Build lineage: $lineage_file"
 }
 

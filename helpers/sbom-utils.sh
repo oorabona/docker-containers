@@ -207,12 +207,19 @@ append_build_history() {
     mkdir -p "$output_dir"
 
     # Extract metadata from lineage file
-    local built_at version build_digest duration_seconds extensions_build_seconds
+    local built_at version build_digest duration_seconds extensions_build_seconds extensions_present
+    extensions_present="false"
     if [[ -f "$lineage_file" ]]; then
         built_at=$(jq -r '.built_at // empty' "$lineage_file" 2>/dev/null || echo "")
         version=$(jq -r '.version // empty' "$lineage_file" 2>/dev/null || echo "")
         build_digest=$(jq -r '.build_digest // empty' "$lineage_file" 2>/dev/null || echo "")
         duration_seconds=$(jq '.duration_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
+        # Only emit extensions_build_seconds when the source lineage actually
+        # carries it. Containers without `extensions/config.yaml` (terraform,
+        # ansible, …) don't write the field, and we must not synthesise a
+        # null entry — the dashboard frontend keys "container has extensions
+        # concept" off field presence (Object.hasOwnProperty), not value.
+        extensions_present=$(jq 'has("extensions_build_seconds")' "$lineage_file" 2>/dev/null || echo "false")
         extensions_build_seconds=$(jq '.extensions_build_seconds // null' "$lineage_file" 2>/dev/null || echo "null")
     fi
 
@@ -246,7 +253,10 @@ append_build_history() {
         changes_summary="+${added} -${removed} ~${updated}"
     fi
 
-    # Create new entry and prepend to history, keeping max_entries
+    # Create new entry and prepend to history, keeping max_entries.
+    # extensions_build_seconds is conditionally added only when the source
+    # lineage carried it — preserves the "container has no extensions concept"
+    # signal for non-postgres containers.
     jq -n \
         --argjson history "$existing_history" \
         --arg built_at "$built_at" \
@@ -256,19 +266,19 @@ append_build_history() {
         --argjson packages_by_type "$packages_by_type" \
         --arg changes_summary "$changes_summary" \
         --argjson duration "$duration_seconds" \
+        --argjson ext_present "$extensions_present" \
         --argjson ext_duration "$extensions_build_seconds" \
         --argjson max "$max_entries" \
     '
-        [{
+        [({
             built_at: $built_at,
             version: $version,
             build_digest: $build_digest,
             packages_total: $packages_total,
             packages_by_type: $packages_by_type,
             changes_summary: $changes_summary,
-            duration_seconds: $duration,
-            extensions_build_seconds: $ext_duration
-        }] + $history |
+            duration_seconds: $duration
+        } + (if $ext_present then {extensions_build_seconds: $ext_duration} else {} end))] + $history |
         .[:$max]
     ' > "$history_file"
 
