@@ -658,6 +658,14 @@ body {
   }
 }
 
+@media (max-width: 480px) {
+  /* Hide "Repository" label at 375px — icon remains as affordance */
+  .site-nav-actions .btn .btn-label { display: none; }
+  /* Shrink button padding and inner gap to prevent overflow */
+  .site-nav-actions .btn { padding: 0.4rem 0.55rem; }
+  .site-nav-inner { gap: 0.5rem; }
+}
+
 /* Animated background shapes — suppress on tablet/phone (cross-layout) */
 @media (max-width: 768px) {
   .shape {
