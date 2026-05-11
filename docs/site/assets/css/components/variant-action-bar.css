@@ -111,6 +111,7 @@ variant-action-bar {
 
 .vab-row--commands {
   flex-direction: column;
+  align-items: stretch; /* cross-axis fill so command blocks don't content-size in column mode */
   gap: var(--space-sm, 8px);
 }
 
@@ -207,6 +208,7 @@ variant-action-bar {
   gap: var(--space-xs, 4px);
   flex: 1;
   min-width: 0; /* allow shrink in flex row */
+  max-width: 100%; /* belt-and-suspenders: prevent intrinsic content from blowing out cross-axis in column mode */
 }
 
 .vab-command-label {
@@ -228,6 +230,8 @@ variant-action-bar {
   border-radius: var(--radius-md, 8px);
   padding: var(--space-xs, 4px) var(--space-sm, 8px);
   overflow: hidden;
+  min-width: 0; /* allow flex children to shrink below intrinsic content width */
+  max-width: 100%;
 }
 
 .vab-command-code {
