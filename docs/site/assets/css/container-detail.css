@@ -522,6 +522,17 @@
     .readme-content img { max-width: 100%; border-radius: 8px; }
     .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
     .table-wrapper table { margin: 0; }
+    /* Kramdown emits bare <table> without a wrapper; make it its own scroll container on mobile
+       so wide tables (extensions, dependencies, etc.) don't push the page wider than the viewport.
+       Breakpoint aligned with the file's existing mobile responsive section (max-width: 768px). */
+    @media (max-width: 768px) {
+      .readme-content table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+    }
 
     /* ============================================================
        SBOM / Package Summary (inside disclosure body)
