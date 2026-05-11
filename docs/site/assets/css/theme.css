@@ -231,6 +231,17 @@
   box-sizing: border-box;
 }
 
+/* Root overflow guard: setting overflow on <html> is what actually prevents the
+   viewport from scrolling horizontally (relying on body→viewport propagation can
+   silently fail under certain layout combinations). Pairs with the per-element
+   scroll containers (`.readme-content pre`, `.all-variants-table-wrap`,
+   `.readme-content table` on mobile) so wide content scrolls internally instead.
+   `hidden` is the Safari <16 fallback; `clip` is preferred where supported. */
+html {
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
 body {
   font-family: var(--font-family-sans);
   min-height: 100vh;
@@ -242,6 +253,7 @@ body {
   background-size: 200px 200px, 100% 100%;
   color: var(--color-text-primary);
   overflow-x: hidden;
+  overflow-x: clip;
   transition: background var(--motion-duration-normal) var(--easing-standard),
               color      var(--motion-duration-normal) var(--easing-standard);
 }
