@@ -252,11 +252,14 @@
     }
     .all-variants-table-wrap {
       overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      max-width: 100%;
       border-radius: var(--radius-md, 8px);
       border: 1px solid var(--color-border-subtle, rgba(255,255,255,0.08));
     }
     .all-variants-table {
-      width: 100%;
+      width: max-content;
+      min-width: 100%;
       border-collapse: collapse;
       font-size: var(--font-size-body-sm, 14px);
     }
