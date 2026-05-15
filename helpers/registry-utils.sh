@@ -103,10 +103,7 @@ ghcr_get_multi_arch_digests() {
     local tag="$2"    # e.g. "18-alpine"
 
     local token
-    token=$(ghcr_get_token "$image" 2>/dev/null) || {
-        echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
-        return 0
-    }
+    token=$(ghcr_get_token "$image" 2>/dev/null)
 
     if [[ -z "$token" ]]; then
         echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
@@ -117,7 +114,7 @@ ghcr_get_multi_arch_digests() {
     # The Docker-Content-Digest header is the digest of the fetched object
     # (the index, when Accept includes the index media type).
     local response headers body index_digest
-    response=$(curl -sS -D - --max-time 15 \
+    response=$(curl -sS -D - --connect-timeout 5 --max-time 10 \
         -H "Authorization: Bearer $token" \
         -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
         "https://ghcr.io/v2/${image}/manifests/${tag}" 2>/dev/null || true)
