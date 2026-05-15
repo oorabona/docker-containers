@@ -29,7 +29,8 @@ _compute_tag_args() {
 
     # Version-specific tag (e.g., 18.2-alpine alongside rolling 18-alpine)
     # Enables dashboard version tracking via registry pattern matching
-    if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" ]]; then
+    # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
+    if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]]; then
         local rest="${TAG#$VERSION}"
         local full_numeric
         full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
@@ -39,6 +40,21 @@ _compute_tag_args() {
                 tag_args="$tag_args -t $target_image:$full_tag"
                 echo "::notice::Adding version-specific tag: $full_tag" >&2
             fi
+        fi
+    fi
+
+    # Major-version rolling tag (e.g., 18-alpine-vector derived from TAG=18.3-alpine-vector).
+    # Triggers when VERSION matches a clean numeric pattern (X.Y or X.Y.Z).
+    # This protects against future divergence if the matrix ever produces a TAG in
+    # full-version form (the inverse of the FULL_VERSION-derived block above).
+    # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
+    if [[ "${VERSION:-}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && "$TAG" == "$VERSION"* ]]; then
+        local major="${VERSION%%.*}"
+        local rest_from_tag="${TAG#"$VERSION"}"
+        local rolling_tag="${major}${rest_from_tag}"
+        if [[ "$rolling_tag" != "$TAG" ]]; then
+            tag_args="$tag_args -t $target_image:$rolling_tag"
+            echo "::notice::Adding major-version rolling tag: $rolling_tag" >&2
         fi
     fi
 
@@ -56,6 +72,47 @@ _compute_tag_args() {
     echo "$tag_args"
 }
 
+# Compute ONLY the version-specific (most precise) tag argument.
+# Used by fallback paths to avoid polluting rolling/latest tags with single-arch manifests.
+#
+# Logic mirrors the FULL_VERSION-derived block of `_compute_tag_args`:
+#   - If FULL_VERSION provides a numeric prefix more specific than TAG → use the
+#     derived full_tag (e.g., 18.3-alpine-vector when TAG=18-alpine-vector).
+#   - Else → TAG itself IS the version-specific form (terraform case).
+#
+# Args: $1 = target image (e.g., ghcr.io/owner/container)
+# Output: a single `-t target:tag` argument string (no rolling/latest aliases)
+_compute_version_specific_tag_args() {
+    local target_image="$1"
+
+    # Path A: derive version-specific from FULL_VERSION
+    #   e.g., 18.3-alpine-vector from TAG=18-alpine-vector + FULL_VERSION=18.3-alpine
+    # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
+    if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]]; then
+        local rest="${TAG#"$VERSION"}"
+        local full_numeric
+        full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+        if [[ -n "$full_numeric" ]]; then
+            local full_tag="${full_numeric}${rest}"
+            if [[ "$full_tag" != "$TAG" ]]; then
+                echo "-t $target_image:$full_tag"
+                return 0
+            fi
+        fi
+    fi
+
+    # Path B: VERSION is a single major integer → TAG IS the rolling form.
+    # No precise anchor can be derived without FULL_VERSION; refuse so the caller
+    # skips the single-arch fallback and avoids polluting the rolling tag (P2 fix).
+    if [[ "${VERSION:-}" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+
+    # Path C: TAG itself is version-specific (e.g., terraform-style VERSION=1.15.3-alpine)
+    echo "-t $target_image:$TAG"
+    return 0
+}
+
 # Create multi-arch manifest with automatic fallback to single platform
 # Args:
 #   $1 = target image base (e.g., ghcr.io/owner/container)
@@ -66,8 +123,9 @@ create_registry_manifest() {
     local source_image="$2"
     local fail_on_error="${3:-true}"
 
-    local tag_args
+    local tag_args version_specific_tag_args
     tag_args=$(_compute_tag_args "$target_image")
+    version_specific_tag_args=$(_compute_version_specific_tag_args "$target_image" 2>/dev/null) || true
 
     # Try multi-arch manifest first (amd64 + arm64)
     local err_output
@@ -79,21 +137,29 @@ create_registry_manifest() {
     fi
     echo "::warning::Multi-arch attempt failed: $err_output"
 
-    # Fallback to single platform (amd64)
-    if err_output=$($DOCKER buildx imagetools create $tag_args \
-        "$source_image:$TAG-amd64" 2>&1); then
-        echo "::warning::Manifest created with amd64 only for $target_image:$TAG (arm64 not available)"
-        return 0
+    # Fallback amd64-only — skip if no safe version-specific anchor (P2 fix)
+    if [[ -n "$version_specific_tag_args" ]]; then
+        if err_output=$($DOCKER buildx imagetools create $version_specific_tag_args \
+            "$source_image:$TAG-amd64" 2>&1); then
+            echo "::warning::Manifest created with amd64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
+            return 0
+        fi
+        echo "::warning::amd64-only attempt failed: $err_output"
+    else
+        echo "::warning::Skipping amd64-only fallback for $target_image:$TAG (no version-specific anchor — would pollute rolling tag)"
     fi
-    echo "::warning::amd64-only attempt failed: $err_output"
 
-    # Fallback to single platform (arm64)
-    if err_output=$($DOCKER buildx imagetools create $tag_args \
-        "$source_image:$TAG-arm64" 2>&1); then
-        echo "::warning::Manifest created with arm64 only for $target_image:$TAG (amd64 not available)"
-        return 0
+    # Fallback arm64-only — skip if no safe version-specific anchor (P2 fix)
+    if [[ -n "$version_specific_tag_args" ]]; then
+        if err_output=$($DOCKER buildx imagetools create $version_specific_tag_args \
+            "$source_image:$TAG-arm64" 2>&1); then
+            echo "::warning::Manifest created with arm64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
+            return 0
+        fi
+        echo "::warning::arm64-only attempt failed: $err_output"
+    else
+        echo "::warning::Skipping arm64-only fallback for $target_image:$TAG (no version-specific anchor — would pollute rolling tag)"
     fi
-    echo "::warning::arm64-only attempt failed: $err_output"
 
     # All attempts failed
     if [[ "$fail_on_error" == "true" ]]; then
