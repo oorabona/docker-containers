@@ -896,7 +896,7 @@ calculate_build_success_rate() {
     thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
 
     local build_runs_json
-    build_runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 30)
+    build_runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 30 || true)
 
     if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
         local run_ids
@@ -904,7 +904,7 @@ calculate_build_success_rate() {
 
         for run_id in $run_ids; do
             local jobs_json
-            jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 10)
+            jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=50" 10 || true)
 
             if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
                 local run_build_total run_build_success
@@ -932,8 +932,11 @@ populate_container_build_status_cache() {
     log_info "Fetching per-container build status from GitHub Actions..."
 
     # Get the most recent completed auto-build run
+    # `|| true` shields against transient GitHub API failures (502/rate-limit/network).
+    # The defensive `[[ -z "$runs_json" ]] || ...` check below handles empty output gracefully;
+    # without `|| true`, `set -e` propagates the non-zero exit and kills the script silently.
     local runs_json
-    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=5&status=completed" 15)
+    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=5&status=completed" 15 || true)
 
     if [[ -z "$runs_json" ]] || ! echo "$runs_json" | jq -e '.workflow_runs[0]' >/dev/null 2>&1; then
         log_warning "Could not fetch workflow runs, using lineage-based status"
@@ -952,7 +955,7 @@ populate_container_build_status_cache() {
 
     # Get all jobs from this run
     local jobs_json
-    jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=100" 20)
+    jobs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs/$run_id/jobs?per_page=100" 20 || true)
 
     if [[ -z "$jobs_json" ]] || ! echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
         CONTAINER_BUILD_STATUS_CACHE="{}"
@@ -1010,7 +1013,7 @@ get_container_build_status() {
 # Output: YAML fragment for recent_activity
 fetch_recent_activity() {
     local runs_json activity_yaml=""
-    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed")
+    runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/runs?per_page=5&status=completed" || true)
 
     if [[ -n "$runs_json" ]] && echo "$runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
         activity_yaml="recent_activity:"
