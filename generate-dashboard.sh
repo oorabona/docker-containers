@@ -554,6 +554,19 @@ collect_variant_json() {
         [[ -n "$arch_list" && "$arch_list" != "[]" ]] && multi_arch_platforms_json="$arch_list"
     fi
 
+    # Multi-arch digests: index digest + per-platform (amd64, arm64) manifest digests.
+    # Fetched from the GHCR registry v2 API at dashboard-generation time.
+    # Returns all-null JSON on token/API failure — never exits non-zero.
+    local multi_arch_digests_json
+    multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+    if [[ "$current_version" != "no-published-version" ]]; then
+        multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+        [[ -z "$multi_arch_digests_json" ]] && \
+            multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+    fi
+    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+        echo "[debug] multi_arch_digests for $container-$variant_tag = ${multi_arch_digests_json:0:120}…" >&2
+
     # Postgres-specific: extensions and when_to_use from flavor file and variants.yaml
     local extensions_json="null" when_to_use=""
     if [[ "$container" == "postgres" && -n "$flavor" && "$flavor" != "null" ]]; then
@@ -589,11 +602,12 @@ collect_variant_json() {
 
     # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
     # (SBOM packages can be very large for containers with many dependencies)
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
         "$lineage_json" "$build_args_json" \
         "$sbom_summary" "$sbom_packages" \
         "$changelog" "$build_history" \
-        "$trivy_summary" "$multi_arch_platforms_json" | \
+        "$trivy_summary" "$multi_arch_platforms_json" \
+        "$multi_arch_digests_json" | \
     jq -s \
         --arg name "$variant_name" \
         --arg tag "$variant_tag" \
@@ -615,6 +629,7 @@ collect_variant_json() {
         .[5] as $build_history |
         .[6] as $trivy_summary |
         .[7] as $multi_arch_platforms |
+        .[8] as $multi_arch_digests |
         {
             name: $name, tag: $tag, description: $desc,
             is_default: $is_default,
@@ -624,6 +639,9 @@ collect_variant_json() {
             variant_deps: $variant_deps
         }
         + (if ($multi_arch_platforms | length) > 0 then {multi_arch_platforms: $multi_arch_platforms} else {} end)
+        + (if $multi_arch_digests.index_digest != null then {multi_arch_index_digest: $multi_arch_digests.index_digest} else {} end)
+        + (if $multi_arch_digests.manifest_digest_amd64 != null then {manifest_digest_amd64: $multi_arch_digests.manifest_digest_amd64} else {} end)
+        + (if $multi_arch_digests.manifest_digest_arm64 != null then {manifest_digest_arm64: $multi_arch_digests.manifest_digest_arm64} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
         + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
         + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)

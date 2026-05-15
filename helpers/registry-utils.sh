@@ -87,6 +87,75 @@ ghcr_get_manifest_sizes() {
     fi
 }
 
+# Get multi-arch index digest + per-platform manifest digests for a GHCR image.
+# Usage: ghcr_get_multi_arch_digests "<owner>/<image>" "<tag>"
+# Output (JSON to stdout):
+#   {
+#     "index_digest": "sha256:...",          // index manifest digest
+#     "manifest_digest_amd64": "sha256:...", // null if not present in index
+#     "manifest_digest_arm64": "sha256:..."  // null if not present in index
+#   }
+# For single-arch images (no .manifests array), emits:
+#   {"index_digest": "<digest>", "manifest_digest_amd64": null, "manifest_digest_arm64": null}
+# On API failure: emits all-null JSON. Never exits non-zero. Always emits valid JSON.
+ghcr_get_multi_arch_digests() {
+    local image="$1"  # e.g. "oorabona/postgres"
+    local tag="$2"    # e.g. "18-alpine"
+
+    local token
+    token=$(ghcr_get_token "$image" 2>/dev/null) || {
+        echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        return 0
+    }
+
+    if [[ -z "$token" ]]; then
+        echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        return 0
+    fi
+
+    # Fetch the manifest, capturing BOTH response headers AND body.
+    # The Docker-Content-Digest header is the digest of the fetched object
+    # (the index, when Accept includes the index media type).
+    local response headers body index_digest
+    response=$(curl -sS -D - --max-time 15 \
+        -H "Authorization: Bearer $token" \
+        -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+        "https://ghcr.io/v2/${image}/manifests/${tag}" 2>/dev/null || true)
+
+    if [[ -z "$response" ]]; then
+        echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        return 0
+    fi
+
+    # Split headers / body at the first blank line.
+    headers=$(printf '%s' "$response" | sed -n '1,/^\r\?$/p')
+    body=$(printf '%s' "$response" | sed -n '/^\r\?$/,$p' | sed '1d')
+
+    # Index digest from the Docker-Content-Digest header.
+    # || true guards against grep returning 1 (no match) under set -euo pipefail.
+    index_digest=$(printf '%s' "$headers" | grep -iE '^docker-content-digest:' 2>/dev/null | awk '{print $2}' | tr -d '\r' | head -1 || true)
+    [[ -z "$index_digest" ]] && index_digest="null"
+
+    # Per-arch manifest digests from the body (.manifests[].{platform.architecture, digest}).
+    # jq returns empty output (not "null") when the key is absent, so we test with [[ -z ]].
+    local amd64_digest arm64_digest
+    amd64_digest=$(printf '%s' "$body" | jq -r 'if .manifests then (.manifests[] | select(.platform.architecture == "amd64" and .platform.os == "linux") | .digest) else empty end' 2>/dev/null | head -1 || true)
+    arm64_digest=$(printf '%s' "$body" | jq -r 'if .manifests then (.manifests[] | select(.platform.architecture == "arm64" and .platform.os == "linux") | .digest) else empty end' 2>/dev/null | head -1 || true)
+    [[ -z "$amd64_digest" ]] && amd64_digest="null"
+    [[ -z "$arm64_digest" ]] && arm64_digest="null"
+
+    # Emit compact JSON. jq maps the sentinel "null" string → JSON null.
+    jq -nc \
+        --arg idx "$index_digest" \
+        --arg amd "$amd64_digest" \
+        --arg arm "$arm64_digest" \
+        '{
+            index_digest: (if $idx == "null" then null else $idx end),
+            manifest_digest_amd64: (if $amd == "null" then null else $amd end),
+            manifest_digest_arm64: (if $arm == "null" then null else $arm end)
+        }' 2>/dev/null || echo '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+}
+
 # --- Docker Hub ---
 
 # Get per-tag manifest sizes from Docker Hub
