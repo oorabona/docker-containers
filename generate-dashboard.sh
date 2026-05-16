@@ -600,6 +600,34 @@ collect_variant_json() {
             '$vd | map(select(. as $n | $ba | index($n) != null))')
     fi
 
+    # --- jq -s stream-shift guard (Option A) -------------------------------
+    # `jq -s` silently DROPS empty-string stream elements. If ANY of the 9
+    # values below is empty, the slurp array collapses and positional
+    # indices (.[0]..[8]) shift, corrupting the per-variant record (observed:
+    # terraform Provenance digest rows rendered empty — the multi_arch_digests
+    # object landed in the multi_arch_platforms slot). Normalize every input
+    # to its valid-JSON fallback so the stream always has exactly 9 elements.
+    # A fired guard is logged to stderr (rare = upstream producer broke).
+    _slurp_guard() {  # $1=slot name  $2=fallback ; operates on named var via $1
+        local _name="$1" _fallback="$2"
+        local _val="${!_name}"
+        if [[ -z "${_val//[[:space:]]/}" ]]; then
+            printf 'WARN: collect_variant_json slurp guard fired: empty %s for %s:%s — substituted fallback\n' \
+                "$_name" "$container" "$variant_tag" >&2
+            printf -v "$_name" '%s' "$_fallback"
+        fi
+    }
+    _slurp_guard lineage_json '{"build_digest":"unknown","base_image":"unknown","oci_subject_digest":""}'
+    _slurp_guard build_args_json '[]'
+    _slurp_guard sbom_summary '{}'
+    _slurp_guard sbom_packages '{}'
+    _slurp_guard changelog '{}'
+    _slurp_guard build_history '[]'
+    _slurp_guard trivy_summary '{}'
+    _slurp_guard multi_arch_platforms_json '[]'
+    _slurp_guard multi_arch_digests_json '{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+    # ----------------------------------------------------------------------
+
     # Assemble JSON — pipe large data via stdin to avoid ARG_MAX limits
     # (SBOM packages can be very large for containers with many dependencies)
     printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
