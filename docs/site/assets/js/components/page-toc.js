@@ -3,24 +3,15 @@
 // Vanilla custom element (light DOM). CSP-clean (no eval, no innerHTML).
 // Renders a sticky right-side TOC sidebar on desktop (>=1280px) and a
 // floating drawer-button on mobile (<1280px).
-// Active section tracking via IntersectionObserver.
+// Active section tracking via scroll + requestAnimationFrame (passive).
 // Smooth-scroll with prefers-reduced-motion support.
 
 (function () {
   'use strict';
 
-  // Approximate sticky nav height (px). Used as scroll offset.
+  // Fallback nav height (px) — used only when the nav element is not found.
   // Measured from .site-nav padding 0.85rem*2 + ~38px line-height ~ 64px total.
-  var NAV_HEIGHT = 64;
-
-  // Debounce helper for resize events.
-  function debounce(fn, ms) {
-    var t;
-    return function () {
-      clearTimeout(t);
-      t = setTimeout(fn, ms);
-    };
-  }
+  var NAV_HEIGHT_FALLBACK = 64;
 
   class PageToc extends HTMLElement {
 
@@ -30,10 +21,9 @@
 
     connectedCallback() {
       this._anchors = [];      // [{id, label}] filtered to sections present in DOM
-      this._sections = [];     // [Element] — observed section elements
+      this._sections = [];     // [Element] — section elements in DOM order
       this._links = [];        // [<a>] — TOC anchor elements (desktop)
       this._drawerLinks = [];  // [<a>] — TOC anchor elements (mobile drawer)
-      this._observer = null;
       this._activeId = null;
       this._isMobile = false;
       this._triggerBtn = null;
@@ -42,17 +32,27 @@
       this._mql = null;
       this._onMqlChange = null;
       this._onKeydown = null;
+      this._raf = null;        // pending requestAnimationFrame handle
+
+      // Corrective re-aim guards (P2-1)
+      this._clickSeq = 0;
+      this._clickRaf = null;   // pending click-defer rAF handle (cancelled on new click / disconnect)
+      this._reaimTimer = null;
+      this._reaimAborted = false;
+      this._reaimAbortListeners = null; // {wheel, touchstart, keydown} refs for cleanup
 
       this._parseAnchors();
       this._render();
-      this._setupObserver();
+      this._setupScrollHighlight();
       this._setupMobileQuery();
     }
 
     disconnectedCallback() {
-      if (this._observer) {
-        this._observer.disconnect();
-        this._observer = null;
+      window.removeEventListener('scroll', this._boundOnScroll);
+      window.removeEventListener('resize', this._boundOnScroll);
+      if (this._raf !== null) {
+        cancelAnimationFrame(this._raf);
+        this._raf = null;
       }
       if (this._mql && this._onMqlChange) {
         this._mql.removeEventListener('change', this._onMqlChange);
@@ -63,6 +63,16 @@
         document.removeEventListener('keydown', this._onKeydown);
         this._onKeydown = null;
       }
+      // Clean up pending click-defer rAF and corrective re-aim state.
+      if (this._clickRaf !== null) {
+        cancelAnimationFrame(this._clickRaf);
+        this._clickRaf = null;
+      }
+      if (this._reaimTimer !== null) {
+        clearTimeout(this._reaimTimer);
+        this._reaimTimer = null;
+      }
+      this._removeReaimAbortListeners();
     }
 
     // -------------------------------------------------------
@@ -212,54 +222,96 @@
     }
 
     // -------------------------------------------------------
-    // IntersectionObserver — active section tracking
+    // Live sticky offset — reads CURRENT rendered heights
     // -------------------------------------------------------
 
-    _setupObserver() {
-      if (!this._sections.length || typeof IntersectionObserver === 'undefined') { return; }
+    _stickyOffset() {
+      var navH = 0;
+      var barH = 0;
+
+      // header.site-nav — position: sticky (theme.css:400)
+      var nav = document.querySelector('header.site-nav');
+      if (nav) {
+        navH = nav.getBoundingClientRect().height || 0;
+      } else {
+        navH = NAV_HEIGHT_FALLBACK;
+      }
+
+      // variant-action-bar — when [data-collapsed], .vab-card gets position: fixed
+      // (variant-action-bar.css:53-54). Only count height when the card is actually
+      // occupying screen space (fixed or sticky).
+      var bar = document.querySelector('variant-action-bar');
+      if (bar) {
+        var card = bar.querySelector('.vab-card') || bar;
+        var cs = getComputedStyle(card);
+        if (cs.position === 'fixed' || cs.position === 'sticky') {
+          barH = card.getBoundingClientRect().height || 0;
+        }
+      }
+
+      return Math.round(navH + barH + 8);
+    }
+
+    // -------------------------------------------------------
+    // Active-section highlight via scroll + rAF (no IntersectionObserver)
+    // -------------------------------------------------------
+
+    _setupScrollHighlight() {
+      if (!this._sections.length) { return; }
 
       var self = this;
-      var intersections = {};
+      this._boundOnScroll = function () { self._onScroll(); };
 
-      this._observer = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-          intersections[entry.target.id] = entry.intersectionRatio;
-        });
+      window.addEventListener('scroll', this._boundOnScroll, { passive: true });
+      window.addEventListener('resize', this._boundOnScroll, { passive: true });
 
-        // Section with highest intersection ratio = active.
-        var bestId = null;
-        var bestRatio = 0;
-        self._sections.forEach(function (el) {
-          var ratio = intersections[el.id] || 0;
-          if (ratio > bestRatio) {
-            bestRatio = ratio;
-            bestId = el.id;
-          }
-        });
-
-        // If nothing meaningfully visible, keep previous active.
-        if (bestRatio < 0.05 && self._activeId) { return; }
-        if (bestId && bestId !== self._activeId) {
-          self._setActive(bestId);
-        }
-      }, {
-        rootMargin: '-' + self._computeOffset() + 'px 0px 0px 0px',
-        threshold: [0, 0.1, 0.5, 1.0]
-      });
-
-      this._sections.forEach(function (el) {
-        self._observer.observe(el);
+      // Prime the highlight after initial render (one rAF so layout is settled).
+      this._raf = requestAnimationFrame(function () {
+        self._raf = null;
+        self._updateActive();
       });
     }
 
-    _computeOffset() {
-      // Sticky nav + variant-action-bar (when collapsed/sticky).
-      var bar = document.querySelector('variant-action-bar');
-      var barH = 0;
-      if (bar) {
-        barH = bar.getBoundingClientRect().height || 0;
+    _onScroll() {
+      if (this._raf !== null) { return; } // already a frame pending — skip
+      var self = this;
+      this._raf = requestAnimationFrame(function () {
+        self._raf = null;
+        self._updateActive();
+      });
+    }
+
+    _updateActive() {
+      if (!this._sections.length) { return; }
+
+      // Probe line: just below the bottom edge of all sticky bands.
+      var line = this._stickyOffset() + 4;
+
+      // Last section whose top edge is at or above the probe line = active.
+      var activeEl = null;
+      for (var i = 0; i < this._sections.length; i++) {
+        var top = this._sections[i].getBoundingClientRect().top;
+        if (top <= line) {
+          activeEl = this._sections[i];
+        }
       }
-      return Math.round(NAV_HEIGHT + barH + 8);
+
+      // Scrolled to bottom — force last anchor active (short final sections
+      // may never cross the probe line on their own).
+      // P2-codex-nit: use scrollingElement (respects html { overflow-x: clip }).
+      var scrollEl = document.scrollingElement || document.documentElement;
+      if (scrollEl.scrollTop + window.innerHeight >= scrollEl.scrollHeight - 2) {
+        activeEl = this._sections[this._sections.length - 1];
+      }
+
+      // Nothing qualifies (above first section) — highlight first.
+      if (!activeEl) {
+        activeEl = this._sections[0];
+      }
+
+      if (activeEl.id !== this._activeId) {
+        this._setActive(activeEl.id);
+      }
     }
 
     _setActive(id) {
@@ -284,6 +336,34 @@
     }
 
     // -------------------------------------------------------
+    // P2-1 helpers: user-scroll-intent abort listeners
+    // -------------------------------------------------------
+
+    _addReaimAbortListeners(onAbort) {
+      // Keys that indicate the user is navigating with keyboard scroll intent.
+      var SCROLL_KEYS = { PageUp: 1, PageDown: 1, ArrowUp: 1, ArrowDown: 1, Home: 1, End: 1, ' ': 1 };
+
+      var wheelHandler = function () { onAbort(); };
+      var touchHandler = function () { onAbort(); };
+      var keyHandler   = function (e) { if (SCROLL_KEYS[e.key]) { onAbort(); } };
+
+      window.addEventListener('wheel',      wheelHandler, { once: true, passive: true });
+      window.addEventListener('touchstart', touchHandler, { once: true, passive: true });
+      window.addEventListener('keydown',    keyHandler,   { once: true, passive: true });
+
+      this._reaimAbortListeners = { wheel: wheelHandler, touch: touchHandler, key: keyHandler };
+    }
+
+    _removeReaimAbortListeners() {
+      if (!this._reaimAbortListeners) { return; }
+      var refs = this._reaimAbortListeners;
+      window.removeEventListener('wheel',      refs.wheel);
+      window.removeEventListener('touchstart', refs.touch);
+      window.removeEventListener('keydown',    refs.key);
+      this._reaimAbortListeners = null;
+    }
+
+    // -------------------------------------------------------
     // Smooth scroll on link click
     // -------------------------------------------------------
 
@@ -292,20 +372,74 @@
       var target = document.getElementById(id);
       if (!target) { return; }
 
-      // Auto-open any <details> at-or-ancestor of target so content is visible before scroll.
+      // Cancel any not-yet-fired click rAF from a prior click, then clear all
+      // in-flight re-aim state before computing anything for this new click.
+      if (this._clickRaf !== null) {
+        cancelAnimationFrame(this._clickRaf);
+        this._clickRaf = null;
+      }
+      if (this._reaimTimer !== null) {
+        clearTimeout(this._reaimTimer);
+        this._reaimTimer = null;
+      }
+      this._removeReaimAbortListeners();
+      this._reaimAborted = false;
+
+      // Monotonically-increasing click token — deferred callbacks check this to
+      // detect whether a newer click superseded them.
+      this._clickSeq = (this._clickSeq || 0) + 1;
+      var mySeq = this._clickSeq;  // captured BEFORE scheduling the rAF
+
+      // Auto-open any <details> at-or-ancestor of target so content is visible
+      // before scroll (preserves PR #404 auto-expand behavior).
       var node = target;
       while (node) {
-        if (node.tagName === 'DETAILS') {
+        if (node.tagName === 'DETAILS' && !node.open) {
           node.open = true;
         }
         node = node.parentElement;
       }
 
-      var offset = this._computeOffset();
-      var top = target.getBoundingClientRect().top + window.scrollY - offset;
-
+      var self = this;
       var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      window.scrollTo({ top: top, behavior: prefersReduced ? 'auto' : 'smooth' });
+
+      // Defer measurement to AFTER <details> open reflow (one rAF).
+      this._clickRaf = requestAnimationFrame(function () {
+        self._clickRaf = null;
+
+        // Bail before touching any state if a newer click superseded this one.
+        if (self._clickSeq !== mySeq) { return; }
+
+        var offset = self._stickyOffset();
+        var y = window.scrollY + target.getBoundingClientRect().top - offset;
+        // Always use 'auto' for reduced-motion (instant, no animation).
+        window.scrollTo({ top: y, behavior: prefersReduced ? 'auto' : 'smooth' });
+
+        // Install one-shot user-scroll-intent abort listeners.
+        self._addReaimAbortListeners(function () {
+          self._reaimAborted = true;
+          self._removeReaimAbortListeners();
+        });
+
+        // Corrective re-aim: after ~420ms the action-bar collapses (height shrinks)
+        // and the page has settled. Runs for BOTH motion modes:
+        //   - smooth: corrects residual offset from smooth-scroll + bar collapse
+        //   - reduced: instant initial scroll can still land under a newly-fixed bar
+        // The ONLY difference under reduced-motion is behavior:'auto' (always).
+        self._reaimTimer = setTimeout(function () {
+          self._reaimTimer = null;
+          self._removeReaimAbortListeners();
+
+          // Abort if user scrolled/clicked elsewhere during the wait (defense in depth).
+          if (self._reaimAborted || self._clickSeq !== mySeq) { return; }
+
+          var offset2 = self._stickyOffset();
+          var residual = target.getBoundingClientRect().top - offset2;
+          if (Math.abs(residual) > 6) {
+            window.scrollTo({ top: window.scrollY + residual, behavior: 'auto' });
+          }
+        }, 420);
+      });
 
       this._setActive(id);
     }

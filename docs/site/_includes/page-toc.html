@@ -2,21 +2,20 @@
   page-toc.html — noscript fallback nav for the <page-toc> custom element.
   Included inside <noscript> from container-detail layout.
   The outer <page-toc data-anchors='...'> element in the layout drives the
-  interactive sidebar (IntersectionObserver, mobile drawer) for JS-enabled browsers.
+  interactive sidebar (scroll+rAF active highlight, mobile drawer) for JS-enabled browsers.
   This file provides the static accessible fallback for JS-disabled browsers.
 {%- endcomment -%}
 <nav class="page-toc-noscript" aria-label="On this page">
   <h2 class="page-toc-eyebrow">On this page</h2>
   <ul>
-    <li><a href="#variants-pull">Variant &amp; Pull</a></li>
-    <li><a href="#all-variants">All variants</a></li>
     <li><a href="#trust-posture">Trust posture</a></li>
     <li><a href="#container-stats">Stats</a></li>
     <li><a href="#provenance">Provenance</a></li>
-    <li><a href="#build-history">Build history</a></li>
-    <li><a href="#dep-health">Dep health</a></li>
     <li><a href="#security-scan">Security scan</a></li>
+    <li><a href="#all-variants">Variants</a></li>
+    <li><a href="#dep-health">Package summary</a></li>
+    <li><a href="#build-history">Build history</a></li>
+    <li><a href="#dependency-health">Dependency health</a></li>
     <li><a href="#readme">README</a></li>
-    <li><a href="#extensions-reference">Extensions</a></li>
   </ul>
 </nav>
