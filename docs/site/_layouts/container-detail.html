@@ -20,7 +20,7 @@
   <!-- tokens.css MUST load before theme.css — defines variables theme.css references -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
   <!-- Component CSS — load after tokens, before theme -->
-  <!-- page-toc.css disabled pending issue #405 -->
+  <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/page-toc.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/variant-action-bar.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/version-tabs.css">
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/components/security-scan-card.css">
@@ -103,14 +103,20 @@
 
         </header>{%- comment -%} /Zone 1 — Identity {%- endcomment -%}
 
-        {%- comment -%}
-          page-toc disabled pending fix — see issue #405.
-          Click offset and scroll-active-highlight bugs make navigation worse than no TOC.
-          Component files preserved in repo (assets/js/components/page-toc.js,
-          assets/css/components/page-toc.css, _includes/page-toc.html) ready to
-          re-enable once the IntersectionObserver + smooth-scroll offset are
-          corrected.
-        {%- endcomment -%}
+        {%- comment -%} Right-side TOC sidebar — fixed position, >=1280px only (page-toc.css). {%- endcomment -%}
+        <page-toc data-anchors='[
+          {"id":"trust-posture","label":"Trust posture"},
+          {"id":"container-stats","label":"Stats"},
+          {"id":"provenance","label":"Provenance"},
+          {"id":"security-scan","label":"Security scan"},
+          {"id":"all-variants","label":"Variants"},
+          {"id":"dep-health","label":"Package summary"},
+          {"id":"build-history","label":"Build history"},
+          {"id":"dependency-health","label":"Dependency health"},
+          {"id":"readme","label":"README"}
+        ]'>
+          <noscript>{% include page-toc.html %}</noscript>
+        </page-toc>
 
         {%- comment -%} Zone 2 — Trust posture (always visible) {%- endcomment -%}
         <section id="trust-posture" class="detail-zone detail-zone--trust" aria-label="Trust posture">
@@ -1096,7 +1102,7 @@
           {%- assign _dep_disabled_count = dm.disabled | default: 0 -%}
           {%- assign _dep_trackable = dm.total | default: 0 | minus: _dep_disabled_count -%}
           {%- if _dep_trackable > 0 -%}
-          <details class="disclosure">
+          <details id="dependency-health" class="disclosure">
             <summary>
               <span class="disclosure__title">Dependency health</span>
               <span class="disclosure__metric">{{ _dep_metric }}</span>
@@ -1243,7 +1249,7 @@
   </div>
 
   <!-- Vanilla web components — CSP-clean, no eval -->
-  <!-- page-toc.js disabled pending issue #405 -->
+  <script defer src="{{ '/assets/js/components/page-toc.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/variant-action-bar.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/trust-strip.js' | relative_url }}"></script>
   <script defer src="{{ '/assets/js/components/security-scan.js' | relative_url }}"></script>
