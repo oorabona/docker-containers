@@ -257,7 +257,10 @@
                 {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
                 {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-                {%- if prov_empty_count < 3 -%}
+                {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+                {%- if prov_empty_count < 6 -%}
           <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
             <dl class="evidence-list">
               {%- if page.last_commit_short or site.github.build_revision -%}
@@ -273,6 +276,36 @@
                 <dd>
                   <code class="hash hash-long">{{ _prov_bd }}</code>
                   <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_bd }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.multi_arch_index_digest != blank -%}
+              {%- assign _prov_idx = _prov_var.multi_arch_index_digest | strip -%}
+              <div class="evidence-row">
+                <dt>Index digest</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_idx | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy index digest" aria-label="Copy index digest" data-copy="{{ _prov_idx | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.manifest_digest_amd64 != blank -%}
+              {%- assign _prov_amd = _prov_var.manifest_digest_amd64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (amd64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_amd | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy amd64 manifest digest" aria-label="Copy amd64 manifest digest" data-copy="{{ _prov_amd | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.manifest_digest_arm64 != blank -%}
+              {%- assign _prov_arm = _prov_var.manifest_digest_arm64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (arm64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_arm | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_arm | escape }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -351,7 +384,10 @@
               {%- unless _prov_var.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
               {%- unless _prov_var.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-              {%- if prov_empty_count < 3 -%}
+              {%- unless _prov_var.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- unless _prov_var.manifest_digest_arm64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+              {%- if prov_empty_count < 6 -%}
           <section class="provenance" data-variant-tag="{{ _prov_var.tag }}"{% unless _prov_first %} style="display:none"{% endunless %} aria-labelledby="provenance-heading">
             <dl class="evidence-list">
               {%- if page.last_commit_short or site.github.build_revision -%}
@@ -367,6 +403,36 @@
                 <dd>
                   <code class="hash hash-long">{{ _prov_bd }}</code>
                   <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _prov_bd }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.multi_arch_index_digest != blank -%}
+              {%- assign _prov_idx = _prov_var.multi_arch_index_digest | strip -%}
+              <div class="evidence-row">
+                <dt>Index digest</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_idx | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy index digest" aria-label="Copy index digest" data-copy="{{ _prov_idx | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.manifest_digest_amd64 != blank -%}
+              {%- assign _prov_amd = _prov_var.manifest_digest_amd64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (amd64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_amd | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy amd64 manifest digest" aria-label="Copy amd64 manifest digest" data-copy="{{ _prov_amd | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if _prov_var.manifest_digest_arm64 != blank -%}
+              {%- assign _prov_arm = _prov_var.manifest_digest_arm64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (arm64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _prov_arm | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _prov_arm | escape }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
@@ -439,7 +505,10 @@
             {%- unless prov_variant.attestation_url -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.trivy_summary -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
             {%- unless prov_variant.build_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
-            {%- if prov_empty_count < 3 -%}
+            {%- unless prov_variant.multi_arch_index_digest -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- unless prov_variant.manifest_digest_amd64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- unless prov_variant.manifest_digest_arm64 -%}{%- assign prov_empty_count = prov_empty_count | plus: 1 -%}{%- endunless -%}
+            {%- if prov_empty_count < 6 -%}
           <section class="provenance" aria-labelledby="provenance-heading">
             <header class="provenance-header">
               <p class="eyebrow">VERIFIABLE TRUST ARTIFACTS</p>
@@ -459,6 +528,36 @@
                 <dd>
                   <code class="hash hash-long">{{ _pv_bd }}</code>
                   <button class="provenance-copy-btn" type="button" data-aria-label="Copy build digest" aria-label="Copy build digest" data-copy="{{ _pv_bd }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if prov_variant.multi_arch_index_digest != blank -%}
+              {%- assign _pv_idx = prov_variant.multi_arch_index_digest | strip -%}
+              <div class="evidence-row">
+                <dt>Index digest</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _pv_idx | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy index digest" aria-label="Copy index digest" data-copy="{{ _pv_idx | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if prov_variant.manifest_digest_amd64 != blank -%}
+              {%- assign _pv_amd = prov_variant.manifest_digest_amd64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (amd64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _pv_amd | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy amd64 manifest digest" aria-label="Copy amd64 manifest digest" data-copy="{{ _pv_amd | escape }}">⧉</button>
+                </dd>
+              </div>
+              {%- endif -%}
+              {%- if prov_variant.manifest_digest_arm64 != blank -%}
+              {%- assign _pv_arm = prov_variant.manifest_digest_arm64 | strip -%}
+              <div class="evidence-row">
+                <dt>Manifest digest (arm64)</dt>
+                <dd>
+                  <code class="hash hash-long">{{ _pv_arm | escape }}</code>
+                  <button class="provenance-copy-btn" type="button" data-aria-label="Copy arm64 manifest digest" aria-label="Copy arm64 manifest digest" data-copy="{{ _pv_arm | escape }}">⧉</button>
                 </dd>
               </div>
               {%- endif -%}
