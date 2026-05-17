@@ -5,10 +5,10 @@
 | **Container** | `openresty` |
 | **Version Change** | `1.29.2.3-alpine` → `1.29.2.4-alpine` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-05-16T06:46:36Z |
+| **Rebuild Date** | 2026-05-17T06:56:55Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/25955336478) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/25984025751) |
 
 ## Build Status
 
