@@ -79,7 +79,7 @@ jobs:
        github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 90
     steps:
 
       - name: Checkout
