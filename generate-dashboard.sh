@@ -1115,6 +1115,89 @@ EOF
 generate_data() {
     log_info "Generating Jekyll data files..."
 
+    # --- Profiling instrumentation (DASHBOARD_PROFILE gate) ---
+    # Default OFF — zero behavior change when unset/empty.
+    # All telemetry goes to $PROF temp dir + stderr.  Stdout fidelity is
+    # preserved: shims pass through exit-code and stdout unchanged.
+    # Shims use `command curl/jq/yq` to avoid infinite recursion.
+    local _PROF_ENABLED=0
+    local PROF=""
+    if [[ -n "${DASHBOARD_PROFILE:-}" ]]; then
+        _PROF_ENABLED=1
+        PROF="${TMPDIR:-/tmp}/dash-prof-$$"
+        ( umask 077; mkdir -p "$PROF" ) 2>/dev/null || true
+
+        # --- curl shim ---
+        # Classifies by URL, records elapsed + class to $PROF/curl.log.
+        # Stdout/stderr/exit-code of the real curl are passed through unchanged.
+        # set -e safety: `command curl "$@" || _rc=$?` — the left side of ||
+        # is exempt from set -e abort; rc is captured regardless of success/failure.
+        # A stalled curl (exit 28, --max-time hit) records a ge9-bucket entry —
+        # that is the H2 (latency-bound) discriminator and MUST be recorded.
+        # Telemetry write guarded by [ -n "${PROF:-}" ] so an unset/empty PROF
+        # is a clean no-op rather than a set -u fatal expansion.
+        curl() {
+            local _t0 _t1 _rc _elapsed _class _url _arg
+            _rc=0
+            _t0=$(date +%s.%N 2>/dev/null || date +%s)
+            command curl "$@" || _rc=$?
+            _t1=$(date +%s.%N 2>/dev/null || date +%s)
+            # Classify by scanning args for the last https: URL
+            _url=""
+            for _arg in "$@"; do
+                case "$_arg" in https://*) _url="$_arg" ;; esac
+            done
+            case "$_url" in
+                */manifests/sha256:*) _class="perarch"  ;;
+                */manifests/*)        _class="indextag" ;;
+                */token*)             _class="token"    ;;
+                */blobs/*)            _class="blob"     ;;
+                *)                    _class="other"    ;;
+            esac
+            # Compute elapsed with awk (handles both fractional and integer timestamps)
+            _elapsed=$(awk "BEGIN{printf \"%.3f\", ${_t1} - ${_t0}}" 2>/dev/null || echo "0")
+            [ -n "${PROF:-}" ] && { printf '%s %s\n' "$_class" "$_elapsed" >> "$PROF/curl.log"; } 2>/dev/null || true
+            return $_rc
+        }
+
+        # --- jq shim (count only — no per-call date; thousands of calls) ---
+        # set -e safety: `command jq "$@" || _rc=$?` — non-zero exit (e.g. from
+        # `jq -e` boolean tests that return 1) is captured, not aborted.
+        # This ensures jq -e "false-path" calls are counted — critical for H3.
+        jq() {
+            local _rc=0
+            command jq "$@" || _rc=$?
+            [ -n "${PROF:-}" ] && { printf 'x' >> "$PROF/jq.count"; } 2>/dev/null || true
+            return $_rc
+        }
+
+        # --- yq shim (count only) ---
+        # set -e safety: same || _rc=$? idiom.
+        yq() {
+            local _rc=0
+            command yq "$@" || _rc=$?
+            [ -n "${PROF:-}" ] && { printf 'x' >> "$PROF/yq.count"; } 2>/dev/null || true
+            return $_rc
+        }
+
+        # NO export -f: registry-utils.sh is sourced into this same shell —
+        # function shadowing works without export.  NOT exporting intentionally
+        # prevents shim leakage into child version.sh processes: those run under
+        # their own set -euo pipefail and do not have $PROF exported, so a leaked
+        # shim would hit an unbound-variable abort on "$PROF/..." expansion.
+        # Child version.sh cost (~1 upstream curl/container) is captured by the
+        # per-container phase timer, not the curl/jq shims (which target the ~150
+        # manifest fetches inside registry-utils, all in-process).
+    else
+        # Disabled path: actively remove any shims left from a prior enabled call
+        # in the same shell, restoring the real binaries.  This makes the invariant
+        # literally true: disabled ⇒ no curl/jq/yq shell functions, zero overhead.
+        unset -f curl jq yq 2>/dev/null || true
+    fi
+
+    local _ts_start _ts_loop_start _ts_loop_end _ts_finalize_end
+    [[ "$_PROF_ENABLED" -eq 1 ]] && _ts_start=$(date +%s)
+
     cd "$SCRIPT_DIR"
 
     # Pre-populate build status cache (once, before the loop)
@@ -1127,7 +1210,12 @@ generate_data() {
     mkdir -p "$CONTAINERS_DIR"
     rm -f "$CONTAINERS_DIR"/*.md
 
+    [[ "$_PROF_ENABLED" -eq 1 ]] && _ts_loop_start=$(date +%s)
+
     for container in */; do
+        local _ts_iter_start=0
+        [[ "$_PROF_ENABLED" -eq 1 ]] && _ts_iter_start=$(date +%s)
+
         container=${container%/}
 
         is_skip_directory "$container" && continue
@@ -1350,7 +1438,17 @@ generate_data() {
 
         # Accumulate for containers.yml
         all_containers_json=$(printf '%s\n%s' "$all_containers_json" "$container_json" | jq -s '.[0] + [.[1]]')
+
+        # Per-container timing (profiling gate)
+        if [[ "$_PROF_ENABLED" -eq 1 ]]; then
+            local _ts_iter_end
+            _ts_iter_end=$(date +%s)
+            local _iter_elapsed=$(( _ts_iter_end - _ts_iter_start ))
+            { printf '%s %s\n' "$container" "$_iter_elapsed" >> "$PROF/containers.log"; } 2>/dev/null || true
+        fi
     done
+
+    [[ "$_PROF_ENABLED" -eq 1 ]] && _ts_loop_end=$(date +%s)
 
     # Write containers.yml from accumulated JSON
     {
@@ -1378,6 +1476,82 @@ generate_data() {
 
     log_info "Generated $DATA_FILE with $total containers"
     log_info "Stats: $up_to_date/$total up-to-date, $updates_available updates, build jobs success ${build_success_rate}% ($build_success/$build_total)"
+
+    # --- Profiling summary (emitted to stderr AFTER data file is written) ---
+    if [[ "$_PROF_ENABLED" -eq 1 ]]; then
+        _ts_finalize_end=$(date +%s)
+
+        # step_wall_s
+        local _step_wall=$(( _ts_finalize_end - _ts_start ))
+
+        # phase timings (integer seconds)
+        local _setup_s=$(( _ts_loop_start - _ts_start ))
+        local _loop_s=$(( _ts_loop_end - _ts_loop_start ))
+        local _finalize_s=$(( _ts_finalize_end - _ts_loop_end ))
+
+        # curl stats — parse $PROF/curl.log with awk (avoid jq/yq — they are shimmed)
+        local _curl_total_s=0 _curl_n=0
+        local _curl_perarch=0 _curl_indextag=0 _curl_token=0 _curl_blob=0 _curl_other=0
+        local _curl_lt1=0 _curl_b1_5=0 _curl_b5_9=0 _curl_ge9=0
+        if [[ -f "$PROF/curl.log" ]]; then
+            eval "$(awk '
+                BEGIN { n=0; tot=0; pa=0; it=0; tk=0; bl=0; ot=0; lt1=0; b15=0; b59=0; ge9=0 }
+                NF==2 {
+                    n++
+                    tot += $2
+                    if      ($1=="perarch")  pa++
+                    else if ($1=="indextag") it++
+                    else if ($1=="token")    tk++
+                    else if ($1=="blob")     bl++
+                    else                     ot++
+                    e=$2+0
+                    if      (e <  1) lt1++
+                    else if (e <  5) b15++
+                    else if (e <  9) b59++
+                    else             ge9++
+                }
+                END {
+                    printf "_curl_n=%d; _curl_total_s=%.3f; _curl_perarch=%d; _curl_indextag=%d; _curl_token=%d; _curl_blob=%d; _curl_other=%d; _curl_lt1=%d; _curl_b1_5=%d; _curl_b5_9=%d; _curl_ge9=%d\n",
+                        n, tot, pa, it, tk, bl, ot, lt1, b15, b59, ge9
+                }
+            ' "$PROF/curl.log" 2>/dev/null || echo ':')"
+        fi
+
+        # fork counts (wc -c on accumulation files)
+        local _jq_n=0 _yq_n=0
+        if [[ -f "$PROF/jq.count" ]]; then
+            _jq_n=$(wc -c < "$PROF/jq.count" 2>/dev/null || echo 0)
+        fi
+        if [[ -f "$PROF/yq.count" ]]; then
+            _yq_n=$(wc -c < "$PROF/yq.count" 2>/dev/null || echo 0)
+        fi
+
+        # top-5 slowest containers (awk sort by elapsed desc)
+        local _top_containers=""
+        if [[ -f "$PROF/containers.log" ]]; then
+            _top_containers=$(awk '{print $2, $1}' "$PROF/containers.log" 2>/dev/null | \
+                sort -rn | head -5 | awk '{printf "%s=%s ", $2, $1}' 2>/dev/null || echo "")
+            _top_containers="${_top_containers% }"
+        fi
+
+        # Emit PROFILE block to stderr (stable PROFILE prefix, greppable from gh run view --log)
+        {
+            printf 'PROFILE step_wall_s=%d\n'       "$_step_wall"
+            printf 'PROFILE curl calls=%d total_s=%.3f perarch=%d indextag=%d token=%d blob=%d other=%d\n' \
+                "$_curl_n" "$_curl_total_s" "$_curl_perarch" "$_curl_indextag" \
+                "$_curl_token" "$_curl_blob" "$_curl_other"
+            printf 'PROFILE curl_lat lt1=%d b1_5=%d b5_9=%d ge9=%d\n' \
+                "$_curl_lt1" "$_curl_b1_5" "$_curl_b5_9" "$_curl_ge9"
+            printf 'PROFILE forks jq_calls=%d yq_calls=%d\n' "$_jq_n" "$_yq_n"
+            printf 'PROFILE phase setup_s=%d loop_s=%d finalize_s=%d\n' \
+                "$_setup_s" "$_loop_s" "$_finalize_s"
+            printf 'PROFILE top_containers %s\n' "${_top_containers:-none}"
+            printf 'PROFILE END\n'
+        } >&2
+
+        # Clean up temp profiling dir
+        rm -rf "$PROF" 2>/dev/null || true
+    fi
 }
 
 # Only run when executed directly (not when sourced for testing)

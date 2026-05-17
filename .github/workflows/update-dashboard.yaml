@@ -79,8 +79,9 @@ jobs:
        github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -482,6 +483,7 @@ jobs:
       - name: Generate dashboard data
         env:
           GH_TOKEN: ${{ github.token }}
+          DASHBOARD_PROFILE: "1"
         run: |
           chmod +x generate-dashboard.sh
 
