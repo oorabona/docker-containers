@@ -8,11 +8,31 @@ setup() {
     ORIG_DIR="$PWD"
     cd "$TEST_DIR" || exit 1
 
+    # Save bats' EXIT trap before sourcing generate-dashboard.sh.
+    # generate-dashboard.sh sets its own EXIT trap at source-time (to clean
+    # TRIVY_CACHE_FILE); if we let it replace bats' trap, failing tests exit
+    # silently without writing their TAP "not ok" line.
+    local _saved_exit_trap
+    _saved_exit_trap=$(trap -p EXIT 2>/dev/null) || true
+
     # Source generate-dashboard.sh — the BASH_SOURCE guard prevents
     # generate_data from running when sourced, only functions are defined
     source "$ORIG_DIR/helpers/logging.sh" 2>/dev/null || true
     source "$ORIG_DIR/helpers/variant-utils.sh" 2>/dev/null || true
     source "$ORIG_DIR/generate-dashboard.sh" 2>/dev/null || true
+
+    # Capture the trivy cache file created by generate-dashboard.sh at source-time
+    # (TRIVY_CACHE_FILE=$(mktemp ...)).  teardown() must clean it explicitly because
+    # the EXIT trap that would have done so is about to be replaced.
+    _SOURCED_TRIVY_CACHE="${TRIVY_CACHE_FILE:-}"
+    export _SOURCED_TRIVY_CACHE
+
+    # Restore bats' EXIT trap, which generate-dashboard.sh just replaced.
+    if [[ -n "$_saved_exit_trap" ]]; then
+        eval "$_saved_exit_trap" 2>/dev/null || true
+    else
+        trap - EXIT 2>/dev/null || true
+    fi
 
     # Override SCRIPT_DIR AFTER sourcing — generate-dashboard.sh line 11
     # sets it to dirname "$0", we need it pointing to our test dir
@@ -21,6 +41,8 @@ setup() {
 
 teardown() {
     cd "$ORIG_DIR" || true
+    # Clean source-time trivy cache file (would orphan without this).
+    rm -f "${_SOURCED_TRIVY_CACHE:-}" 2>/dev/null || true
     rm -rf "$TEST_DIR"
 }
 
