@@ -283,20 +283,38 @@ ghcr_get_manifest_sizes() {
         # returns an invalid/non-JSON/error body, abort with return 1 and zero
         # stdout (all-or-nothing contract).  Only print the buffer when ALL
         # per-arch sub-manifests have been validated and sized successfully.
+        # Per-arch cache tier: keyed by immutable content digest → no TTL.
+        # Dedicated perarch/ subdir is provably disjoint from the flat idx-* files
+        # removed by _ghcr_invalidate_index (different directory depth; exact-path
+        # rm -f "${GHCR_CACHE_DIR}/idx-${k}.body" can never reach a subdir entry).
+        # Create cache root + subdir once before the loop (not per-iteration).
+        _ghcr_ensure_cachedir
+        ( umask 077; mkdir -p "${GHCR_CACHE_DIR}/perarch" ) 2>/dev/null || true
+        chmod 700 "${GHCR_CACHE_DIR}/perarch" 2>/dev/null || true
         local size_buffer=""
         while IFS=':' read -r arch digest_prefix digest_hash; do
             [[ -z "$arch" || -z "$digest_hash" ]] && continue
             [[ "$arch" == "unknown" ]] && continue
 
+            local pa_file pa_hit
+            pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
+            pa_hit=0
+
             local platform_manifest
-            platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
-                -H "Authorization: Bearer $token" \
-                -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
+            if [[ -s "$pa_file" ]]; then
+                platform_manifest="$(cat "$pa_file")"
+                pa_hit=1
+            else
+                platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
+                    -H "Authorization: Bearer $token" \
+                    -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                    "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
+            fi
 
             # Validate: body must be non-empty, parse as a JSON object, not an
             # .errors envelope, and carry size-bearing structure (config or layers).
             # An invalid body → abort the whole function (return 1, zero stdout).
+            # These gates also defensively re-validate cached bodies (free, no network).
             if [[ -z "$platform_manifest" ]]; then
                 return 1
             fi
@@ -308,6 +326,19 @@ ghcr_get_manifest_sizes() {
             fi
             if ! printf '%s' "$platform_manifest" | jq -e 'has("config") or has("layers")' >/dev/null 2>&1; then
                 return 1
+            fi
+            # Admission: only cache on MISS after all 4 gates pass (object, not-errors, has-config|layers).
+            # mktemp (not .tmp.$): $ is the parent PID inside $(...) command substitution, not unique
+            # per concurrent caller; mktemp is race-proof and natively mode 0600.
+            if [[ "$pa_hit" -eq 0 ]]; then
+                local pa_tmp
+                if pa_tmp=$(mktemp "${GHCR_CACHE_DIR}/perarch/.tmp.XXXXXX" 2>/dev/null); then
+                    if printf '%s' "$platform_manifest" > "$pa_tmp" 2>/dev/null && chmod 600 "$pa_tmp" 2>/dev/null; then
+                        mv -f "$pa_tmp" "$pa_file" 2>/dev/null || rm -f "$pa_tmp" 2>/dev/null || true
+                    else
+                        rm -f "$pa_tmp" 2>/dev/null || true
+                    fi
+                fi
             fi
 
             local total_size
