@@ -1,0 +1,510 @@
+name: GHCR Latency Probe (Diagnostic)
+
+# Diagnostic-only workflow: measures GHCR manifest-fetch latency from a
+# github-hosted ubuntu-latest runner.  Goal: prove/refute whether GHCR
+# throttles GitHub runner egress (dashboard-gen is ~4 min locally but ~67 min
+# in CI; same script + same GHCR fetches). Removable after the measurement.
+#
+# Refs #453
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: 'Target number of timed manifest fetches per mode per round (~50 recommended)'
+        required: false
+        default: '50'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    name: GHCR Manifest Latency Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Probe GHCR manifest-fetch latency
+        shell: bash
+        env:
+          SAMPLES: ${{ inputs.samples || '50' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # ----------------------------------------------------------------
+          # 0. Runner egress identity (best-effort, never fatal)
+          # ----------------------------------------------------------------
+          RUNNER_IP=""
+          RUNNER_ASN=""
+          RUNNER_IP=$(curl -s --connect-timeout 5 --max-time 10 \
+            "https://api.ipify.org" 2>/dev/null || true)
+          RUNNER_ASN=$(curl -s --connect-timeout 5 --max-time 10 \
+            "https://ipinfo.io/org" 2>/dev/null || true)
+
+          echo "Runner egress IP  : ${RUNNER_IP:-(unavailable)}"
+          echo "Runner egress ASN : ${RUNNER_ASN:-(unavailable)}"
+          echo ""
+
+          # ----------------------------------------------------------------
+          # 1. Image list — real tags from variants.yaml, mix big+small,
+          #    multi-arch and single-arch, across the full matrix.
+          #    Tags printed below for eyeball-staleness check.
+          # ----------------------------------------------------------------
+          # Format: "owner/image:tag"  (without ghcr.io/ prefix — mirrors
+          # the image_path convention in helpers/registry-utils.sh)
+          IMAGES=(
+            # multi-arch, multi-variant — large images
+            "oorabona/postgres:18-alpine"
+            "oorabona/postgres:17-vector-alpine"
+            "oorabona/postgres:16-full-alpine"
+            "oorabona/terraform:1.15.3-alpine"
+            "oorabona/terraform:1.15.3-alpine-base"
+            "oorabona/github-runner:2.334.0"
+            "oorabona/github-runner:2.334.0-debian-trixie"
+            "oorabona/web-shell:1.7.7"
+            "oorabona/web-shell:1.7.7-alpine"
+            # single-version containers — smaller
+            "oorabona/debian:trixie"
+            "oorabona/jekyll:4.4.1-alpine"
+            "oorabona/ansible:13.6.0-ubuntu"
+            "oorabona/vector:0.55.0-alpine"
+            "oorabona/php:8.5.6-fpm-alpine"
+          )
+
+          echo "Image list (${#IMAGES[@]} images — eyeball for staleness):"
+          for img in "${IMAGES[@]}"; do
+            echo "  ghcr.io/$img"
+          done
+          echo ""
+
+          # ----------------------------------------------------------------
+          # Fix 4: Validate 'samples' input — must be a positive integer
+          # in [1..500]; clamp to default (50) with a warning if invalid.
+          # ----------------------------------------------------------------
+          SAMPLES_RAW="${SAMPLES:-50}"
+          if [[ "$SAMPLES_RAW" =~ ^[0-9]+$ ]] && \
+             [[ "$SAMPLES_RAW" -ge 1 ]] && \
+             [[ "$SAMPLES_RAW" -le 500 ]]; then
+            SAMPLES_VAL="$SAMPLES_RAW"
+          else
+            echo "::warning::samples input '${SAMPLES_RAW}' is not a positive integer in [1..500]; clamping to default 50"
+            SAMPLES_VAL="50"
+          fi
+
+          # ----------------------------------------------------------------
+          # 2. GHCR pull tokens — per-image, EXACTLY mirrors registry-utils.sh
+          #    ghcr_get_token (lines 71-118):
+          #
+          # Authenticated path (registry-utils.sh lines 94-100):
+          #   owner=$(echo "$image_path" | cut -d'/' -f1)
+          #   curl --connect-timeout 5 --max-time 10
+          #     -u owner:gh_token
+          #     "https://ghcr.io/token?service=ghcr.io&scope=repository:<image_path>:pull"
+          #   | jq -r '.token // empty'
+          #
+          # Anonymous path (registry-utils.sh lines 104-107):
+          #   curl --connect-timeout 5 --max-time 10
+          #     "https://ghcr.io/token?scope=repository:<image_path>:pull"
+          #   | jq -r '.token // empty'
+          #
+          # Scope is per-image (repository:<owner>/<image>:pull), not a shared
+          # "containers" scope — one token per image_path per mode.
+          # Per-image tokens are cached in associative arrays to avoid
+          # re-requesting the same image_path across rounds (mirrors production
+          # cache behavior in ghcr_get_token).
+          # ----------------------------------------------------------------
+
+          # Exact Accept header union from registry-utils.sh _ghcr_fetch_index
+          ACCEPT_INDEX="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+          # Per-arch Accept from registry-utils.sh ghcr_get_manifest_sizes inner loop
+          ACCEPT_ARCH="application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+
+          # Per-image token caches (keyed by image_path = owner/image without :tag)
+          declare -A TOKEN_ANON_CACHE=()
+          declare -A TOKEN_AUTH_CACHE=()
+
+          # Acquire (or return cached) anon token for a given image_path.
+          # Mirrors registry-utils.sh ghcr_get_token anonymous branch.
+          # Stores result in TOKEN_ANON_CACHE[image_path]; caller reads it.
+          acquire_token_anon() {
+            local ip="$1"
+            if [[ -z "${TOKEN_ANON_CACHE[$ip]:-}" ]]; then
+              local t=""
+              t=$(curl -s --connect-timeout 5 --max-time 10 \
+                "https://ghcr.io/token?scope=repository:${ip}:pull" \
+                2>/dev/null | jq -r '.token // empty' 2>/dev/null || true)
+              TOKEN_ANON_CACHE["$ip"]="$t"
+              # Fix 1: mask immediately; never print value — only presence+length
+              if [[ -n "$t" ]]; then
+                echo "::add-mask::$t"
+                echo "  anon token for ${ip}: ${#t} chars"
+              else
+                echo "  anon token for ${ip}: MISSING"
+              fi
+            fi
+          }
+
+          # Acquire (or return cached) auth token for a given image_path.
+          # Mirrors registry-utils.sh ghcr_get_token authenticated branch.
+          # Uses GH_TOKEN (= github.token) as the credential.
+          acquire_token_auth() {
+            local ip="$1"
+            if [[ -z "${TOKEN_AUTH_CACHE[$ip]:-}" ]]; then
+              local t=""
+              if [[ -n "${GH_TOKEN:-}" ]]; then
+                local owner
+                owner=$(echo "$ip" | cut -d'/' -f1)
+                t=$(curl -s --connect-timeout 5 --max-time 10 \
+                  "https://ghcr.io/token?service=ghcr.io&scope=repository:${ip}:pull" \
+                  -u "${owner}:${GH_TOKEN}" 2>/dev/null | jq -r '.token // empty' 2>/dev/null || true)
+              fi
+              # Fix 1: mask immediately; never print value — only presence+length
+              if [[ -n "$t" ]]; then
+                echo "::add-mask::$t"
+                echo "  auth token for ${ip}: ${#t} chars"
+                TOKEN_AUTH_CACHE["$ip"]="$t"
+              else
+                echo "  auth token for ${ip}: MISSING — falling back to anonymous"
+                acquire_token_anon "$ip"
+                TOKEN_AUTH_CACHE["$ip"]="${TOKEN_ANON_CACHE[$ip]:-}"
+              fi
+            fi
+          }
+
+          echo "=== Token acquisition is per-image, on first use ==="
+          echo ""
+
+          # ----------------------------------------------------------------
+          # 3. Timing helper: probe_one
+          #    Args: token  image_path  tag_or_digest  accept_header
+          #          hdr_file  body_file
+          #    Stdout: STATUS ELAPSED_SEC CEILING_HIT(0|1)
+          #    Writes response headers to hdr_file, pure JSON body to body_file
+          #    (mirrors helpers/registry-utils.sh _ghcr_fetch_index file-based
+          #    idiom: -D <hdrs_file> -o <body_file>).  Files survive the
+          #    subshell so callers can cat body_file after < <(probe_one ...).
+          #    Robust: set+e around curl; failed fetch = DATA, not job failure
+          # ----------------------------------------------------------------
+          probe_one() {
+            local token="$1"
+            local image_path="$2"
+            local ref="$3"
+            local accept="$4"
+            local hdr_file="$5"
+            local body_file="$6"
+
+            local t_start t_end elapsed status ceiling_hit=0
+
+            t_start=$(date +%s.%N)
+
+            set +e
+            curl -sS -D "$hdr_file" -o "$body_file" \
+              --connect-timeout 5 --max-time 10 \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: ${accept}" \
+              "https://ghcr.io/v2/${image_path}/manifests/${ref}" 2>/dev/null
+            local curl_rc=$?
+            set -e
+
+            t_end=$(date +%s.%N)
+            elapsed=$(awk "BEGIN{printf \"%.3f\", ${t_end} - ${t_start}}")
+
+            if [[ "$curl_rc" -ne 0 ]]; then
+              status="curl_err_${curl_rc}"
+            else
+              status=$(grep -m1 -oE '^HTTP/[^ ]+ [0-9]+' "$hdr_file" 2>/dev/null | \
+                grep -oE '[0-9]+$' || true)
+              [[ -z "$status" ]] && status="000"
+            fi
+
+            ceiling_hit=$(awk "BEGIN{print (${elapsed} >= 9.5) ? 1 : 0}")
+
+            echo "${status} ${elapsed} ${ceiling_hit}"
+          }
+
+          # ----------------------------------------------------------------
+          # 4. Run probe: 2 modes x 2 rounds
+          #    Mode A = AUTH  (TOKEN_AUTH_CACHE[image_path])
+          #    Mode B = ANON  (TOKEN_ANON_CACHE[image_path])
+          #    Per image: (a) index fetch; (b) per-arch fetches if multi-arch
+          # ----------------------------------------------------------------
+          declare -a RESULTS=()
+          PROBE_INVALID=0
+
+          for mode in AUTH ANON; do
+            for round in 1 2; do
+              echo "=== Mode: ${mode}  Round: ${round} ==="
+              sample_count=0
+
+              for img in "${IMAGES[@]}"; do
+                [[ "$sample_count" -ge "$SAMPLES_VAL" ]] && break
+
+                image_path="${img%%:*}"
+                tag="${img##*:}"
+
+                # Acquire per-image token on first use (Fix 2).
+                if [[ "$mode" == "AUTH" ]]; then
+                  acquire_token_auth "$image_path"
+                  TOKEN="${TOKEN_AUTH_CACHE[$image_path]:-}"
+                else
+                  acquire_token_anon "$image_path"
+                  TOKEN="${TOKEN_ANON_CACHE[$image_path]:-}"
+                fi
+
+                # --- index fetch ---
+                # File-based handoff: files survive the subshell (mirrors
+                # helpers/registry-utils.sh _ghcr_fetch_index idiom).
+                IDX_HDR_FILE=$(mktemp)
+                IDX_BODY_FILE=$(mktemp)
+                read -r status elapsed ceiling_hit < <(
+                  probe_one "$TOKEN" "$image_path" "$tag" "$ACCEPT_INDEX" \
+                    "$IDX_HDR_FILE" "$IDX_BODY_FILE"
+                )
+                # Pure JSON body from the single timed fetch — subshell-safe.
+                index_body=$(cat "$IDX_BODY_FILE")
+                rm -f "$IDX_HDR_FILE" "$IDX_BODY_FILE"
+
+                RESULTS+=("${mode} ${round} ${img} idx ${status} ${elapsed} ${ceiling_hit}")
+                printf "  [%s%s] ghcr.io/%-44s  idx   status=%-12s elapsed=%ss%s\n" \
+                  "${mode:0:1}" "${round}" "${img}" "${status}" "${elapsed}" \
+                  "$([[ $ceiling_hit -eq 1 ]] && echo '  *** CEILING HIT ***' || true)"
+                sample_count=$((sample_count + 1))
+                [[ "$sample_count" -ge "$SAMPLES_VAL" ]] && break
+
+                # --- per-arch fetches for multi-arch index ---
+                # Parse digests from the already-fetched index_body (Fix 3):
+                # no second network call to the index endpoint.
+                if [[ "$status" == "200" ]]; then
+                  # Fix C: self-check — if index_body is empty or has no
+                  # .manifests[], per-arch measurement is invalid.  Emit a
+                  # loud ::warning:: and set PROBE_INVALID so the summary
+                  # cannot masquerade as a clean run.
+                  if [[ -z "${index_body:-}" ]]; then
+                    echo "::warning::per-arch discovery empty for ${img} — index_body is empty — measurement INVALID"
+                    PROBE_INVALID=1
+                  elif printf '%s' "${index_body}" | \
+                      jq -e 'has("manifests")' >/dev/null 2>&1; then
+                    arch_count=$(printf '%s' "${index_body}" | jq -r '
+                      .manifests[]?
+                      | select(
+                          (.platform.architecture == "amd64" or
+                           .platform.architecture == "arm64") and
+                          .platform.os == "linux"
+                        )
+                      | .digest' 2>/dev/null | wc -l || echo 0)
+                    if [[ "${arch_count}" -eq 0 ]]; then
+                      echo "::warning::per-arch discovery empty for ${img} — zero .manifests[] matched — measurement INVALID"
+                      PROBE_INVALID=1
+                    fi
+                  fi
+
+                  if printf '%s' "${index_body:-}" | \
+                      jq -e 'has("manifests")' >/dev/null 2>&1; then
+
+                    while IFS= read -r digest_ref; do
+                      [[ "$sample_count" -ge "$SAMPLES_VAL" ]] && break
+                      [[ -z "$digest_ref" ]] && continue
+
+                      ARCH_HDR_FILE=$(mktemp)
+                      ARCH_BODY_FILE=$(mktemp)
+                      read -r s_arch e_arch c_arch < <(
+                        probe_one "$TOKEN" "$image_path" "$digest_ref" "$ACCEPT_ARCH" \
+                          "$ARCH_HDR_FILE" "$ARCH_BODY_FILE"
+                      )
+                      rm -f "$ARCH_HDR_FILE" "$ARCH_BODY_FILE"
+                      short_ref="${digest_ref:0:19}.."
+                      RESULTS+=("${mode} ${round} ${img} arch:${short_ref} ${s_arch} ${e_arch} ${c_arch}")
+                      printf "  [%s%s] ghcr.io/%-44s  arch  status=%-12s elapsed=%ss%s\n" \
+                        "${mode:0:1}" "${round}" "${img}@${short_ref}" "${s_arch}" "${e_arch}" \
+                        "$([[ $c_arch -eq 1 ]] && echo '  *** CEILING HIT ***' || true)"
+                      sample_count=$((sample_count + 1))
+                    done < <(printf '%s' "${index_body:-}" | jq -r '
+                      .manifests[]?
+                      | select(
+                          (.platform.architecture == "amd64" or
+                           .platform.architecture == "arm64") and
+                          .platform.os == "linux"
+                        )
+                      | .digest' 2>/dev/null | head -4 || true)
+                  fi
+                fi
+              done
+
+              echo "  (round ${round} done: ${sample_count} fetches)"
+              echo ""
+            done
+          done
+
+          # ----------------------------------------------------------------
+          # 5. Statistics: awk per mode per round
+          # ----------------------------------------------------------------
+          echo "================================================================"
+          echo "  LATENCY SUMMARY"
+          echo "================================================================"
+
+          RESULTS_FILE=$(mktemp)
+          trap 'rm -f "$RESULTS_FILE"' EXIT
+          for row in "${RESULTS[@]}"; do
+            echo "$row" >> "$RESULTS_FILE"
+          done
+
+          STATS_BLOCK=""
+          for mode in AUTH ANON; do
+            for round in 1 2; do
+              stats=$(awk -v m="$mode" -v r="$round" '
+                $1==m && $2==r {
+                  count++
+                  elapsed = $6+0
+                  status  = $5
+                  ceiling = $7+0
+                  # Classify EXACTLY once — mutually exclusive buckets (Fix B):
+                  # curl_err* → curl-errors only; numeric HTTP → ok/429/403/other.
+                  if (status ~ /^curl_err/) {
+                    n_err++
+                  } else {
+                    # Numeric HTTP status — include in latency population
+                    n_numeric++
+                    times[n_numeric] = elapsed
+                    if (status=="200") {
+                      # ok — counted in numeric population above
+                    } else if (status=="429") {
+                      n_429++
+                    } else if (status=="403") {
+                      n_403++
+                    } else {
+                      n_other++
+                    }
+                  }
+                  if (ceiling)         n_ceiling++
+                }
+                END {
+                  if (count==0) { print "  No data"; exit }
+                  # insertion sort on numeric-only population
+                  for (i=2; i<=n_numeric; i++) {
+                    key=times[i]; j=i-1
+                    while (j>=1 && times[j]>key) { times[j+1]=times[j]; j-- }
+                    times[j+1]=key
+                  }
+                  # nearest-rank percentile (ceil(p/100 * N))
+                  if (n_numeric > 0) {
+                    med_idx = int((n_numeric * 50 + 99) / 100)
+                    p90_idx = int((n_numeric * 90 + 99) / 100)
+                    if (med_idx < 1) med_idx = 1
+                    if (med_idx > n_numeric) med_idx = n_numeric
+                    if (p90_idx < 1) p90_idx = 1
+                    if (p90_idx > n_numeric) p90_idx = n_numeric
+                    printf "  count=%d  min=%.3fs  median=%.3fs  p90=%.3fs  max=%.3fs\n", \
+                      count, times[1], times[med_idx], times[p90_idx], times[n_numeric]
+                  } else {
+                    printf "  count=%d  latencies=n/a (all curl errors)\n", count
+                  }
+                  printf "  ceiling(>=9.5s)=%d  429=%d  403=%d  other-non-200=%d  curl-errors=%d\n", \
+                    n_ceiling, n_429, n_403, n_other, n_err
+                }
+              ' "$RESULTS_FILE")
+
+              echo "--- Mode: ${mode}  Round: ${round} ---"
+              echo "$stats"
+              STATS_BLOCK="${STATS_BLOCK}--- Mode: ${mode}  Round: ${round} ---\n${stats}\n"
+              echo ""
+            done
+          done
+
+          # ----------------------------------------------------------------
+          # Fix C: Surface PROBE_INVALID prominently so an invalid run
+          # cannot masquerade as success.
+          # ----------------------------------------------------------------
+          if [[ "${PROBE_INVALID}" -ne 0 ]]; then
+            echo "================================================================"
+            echo "  *** PROBE INVALID — per-arch measurement incomplete ***"
+            echo "  One or more images had empty per-arch discovery (see ::warning:: above)."
+            echo "  Per-arch latencies for those images were NOT measured."
+            echo "  Do NOT treat this run as a complete diagnostic."
+            echo "================================================================"
+          fi
+
+          # ----------------------------------------------------------------
+          # 6. Full per-fetch table (step log)
+          # ----------------------------------------------------------------
+          echo "================================================================"
+          echo "  FULL PER-FETCH TABLE"
+          echo "================================================================"
+          printf "%-6s %-5s %-6s %-50s %-18s %-10s %-7s\n" \
+            "MODE" "ROUND" "FETCH" "IMAGE" "STATUS" "ELAPSED_S" "CEILING"
+          printf -- "%.0s-" {1..110}; echo
+          for row in "${RESULTS[@]}"; do
+            read -r r_mode r_round r_img r_fetch r_status r_elapsed r_ceiling <<< "$row"
+            printf "%-6s %-5s %-6s %-50s %-18s %-10s %-7s\n" \
+              "$r_mode" "$r_round" "$r_fetch" "$r_img" \
+              "$r_status" "$r_elapsed" \
+              "$([[ $r_ceiling -eq 1 ]] && echo 'YES ***' || echo 'no')"
+          done
+          echo ""
+
+          # ----------------------------------------------------------------
+          # 7. Write step summary
+          # ----------------------------------------------------------------
+          {
+            echo "# GHCR Latency Probe Results"
+            echo ""
+            echo "## Runner Identity"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Runner egress IP | \`${RUNNER_IP:-(unavailable)}\` |"
+            echo "| Runner egress ASN | \`${RUNNER_ASN:-(unavailable)}\` |"
+            echo ""
+            echo "## Token Acquisition"
+            echo ""
+            echo "| Token | Status |"
+            echo "|-------|--------|"
+            echo "| Anonymous | per-image (cached per image_path) |"
+            echo "| Authenticated | per-image (cached per image_path, falls back to anon) |"
+            echo ""
+            echo "## Image List (${#IMAGES[@]} images)"
+            echo ""
+            echo "| Image |"
+            echo "|-------|"
+            for img in "${IMAGES[@]}"; do
+              echo "| \`ghcr.io/$img\` |"
+            done
+            echo ""
+            echo "## Latency Statistics"
+            echo ""
+            echo "Target samples per mode per round: \`${SAMPLES_VAL}\`"
+            echo ""
+            printf '%b' "$STATS_BLOCK" | sed 's/^/> /'
+            echo ""
+            echo "## Full Per-Fetch Table"
+            echo ""
+            echo "| Mode | Round | Fetch | Image | Status | Elapsed (s) | Ceiling |"
+            echo "|------|-------|-------|-------|--------|-------------|---------|"
+            for row in "${RESULTS[@]}"; do
+              read -r r_mode r_round r_img r_fetch r_status r_elapsed r_ceiling <<< "$row"
+              echo "| ${r_mode} | ${r_round} | ${r_fetch} | \`${r_img}\` | ${r_status} | ${r_elapsed} | $([[ $r_ceiling -eq 1 ]] && echo '**YES**' || echo 'no') |"
+            done
+            echo ""
+            if [[ "${PROBE_INVALID}" -ne 0 ]]; then
+              echo ""
+              echo "## ⚠ PROBE INVALID — per-arch measurement incomplete"
+              echo ""
+              echo "> One or more images had empty per-arch discovery."
+              echo "> Per-arch latencies for those images were **NOT** measured."
+              echo "> Do NOT treat this run as a complete diagnostic."
+            fi
+            echo ""
+            echo "---"
+            echo "_Probe methodology: mirrors \`helpers/registry-utils.sh\` token-acquisition_"
+            echo "_(\`ghcr.io/token\` endpoint, per-image scope, anonymous fallback) and production curl flags_"
+            echo "_(\`--connect-timeout 5 --max-time 10\`, full OCI Accept-header union)._"
+            echo "_Refs #453_"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Summary written to GITHUB_STEP_SUMMARY."
