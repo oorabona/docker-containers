@@ -31,6 +31,12 @@ DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 
+# Maximum SBOM file size before skipping jq processing (25 MiB).
+# Largest real Linux SBOM observed: ~720 KB; this allows 35× headroom.
+# Windows variants (e.g. github-runner windows-ltsc2022-dev) can produce
+# multi-GB SBOMs that would stall the dashboard generation step in CI.
+readonly SBOM_MAX_BYTES=26214400
+
 # --- Lineage resolution helpers ---
 
 # Resolve the lineage JSON file for a container
@@ -336,7 +342,31 @@ get_sbom_summary() {
     local container="$1" tag="$2"
     local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
     if [[ -f "$sbom_file" ]]; then
-        extract_sbom_summary "$sbom_file"
+        local size
+        size=$(stat -c%s "$sbom_file" 2>/dev/null || echo 0)
+        if (( size > SBOM_MAX_BYTES )); then
+            echo "::warning::SBOM ${container}:${tag} is $((size/1048576))MB (> 25MB guard) — returning empty summary to avoid unbounded jq" >&2
+            echo "{}"
+            return
+        fi
+        local result
+        # shellcheck disable=SC2016  # $total/$ref are jq variables, not bash expansions
+        if ! result=$(timeout 60 jq '
+            .packages // [] |
+            length as $total |
+            [.[] |
+                (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
+                (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end)
+            ] |
+            group_by(.) |
+            map({key: .[0], value: length}) |
+            from_entries |
+            . + {total: $total}
+        ' "$sbom_file" 2>/dev/null); then
+            echo "::warning::SBOM jq for ${container}:${tag} timed out/failed — empty" >&2
+            result="{}"
+        fi
+        echo "$result"
     else
         echo "{}"
     fi
@@ -348,12 +378,24 @@ get_sbom_packages() {
     local container="$1" tag="$2"
     local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
     if [[ -f "$sbom_file" ]]; then
-        jq -r '
+        local size
+        size=$(stat -c%s "$sbom_file" 2>/dev/null || echo 0)
+        if (( size > SBOM_MAX_BYTES )); then
+            echo "::warning::SBOM ${container}:${tag} is $((size/1048576))MB (> 25MB guard) — returning empty packages to avoid unbounded jq" >&2
+            echo "{}"
+            return
+        fi
+        local result
+        if ! result=$(timeout 60 jq -r '
             [.packages[]? | {type: (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator | split("/")[0] | ltrimstr("pkg:")), name: .name, version: .versionInfo}]
             | group_by(.type)
             | map({key: .[0].type, value: [.[] | {n: .name, v: .version}]})
             | from_entries
-        ' "$sbom_file" 2>/dev/null || echo "{}"
+        ' "$sbom_file" 2>/dev/null); then
+            echo "::warning::SBOM jq for ${container}:${tag} timed out/failed — empty" >&2
+            result="{}"
+        fi
+        echo "$result"
     else
         echo "{}"
     fi

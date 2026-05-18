@@ -337,19 +337,39 @@ jobs:
           # so a freshly-downloaded stale SBOM could mask a cached fresh one. Reading the
           # actual SPDX creation timestamp makes the decision deterministic regardless of
           # when the artifact was retrieved.
+          # Threshold mirrors generate-dashboard.sh SBOM_MAX_BYTES (26214400 = 25 MiB).
+          # Both values must stay in sync: if generate-dashboard.sh changes its constant,
+          # update this literal to match, and vice versa.
+          readonly _SBOM_MAX_BYTES=26214400
           merged=0
           while IFS= read -r -d '' src; do
             fname=$(basename "$src")
             target=".build-lineage/$fname"
 
-            src_created=$(jq -r '.creationInfo.created // empty' "$src" 2>/dev/null || true)
+            # Size-guard: skip oversized SBOMs before running jq (defence-in-depth
+            # against multi-GB Windows images stalling the job at this hydration step,
+            # before generate-dashboard.sh's own SBOM_MAX_BYTES guard is reached).
+            src_size=$(stat -c%s "$src" 2>/dev/null || echo 0)
+            if (( src_size > _SBOM_MAX_BYTES )); then
+              echo "::warning::SBOM hydration: skipping $fname (${src_size} bytes exceeds 25MB guard); treating as no newer SBOM"
+              continue
+            fi
+
+            src_created=$(timeout 60 jq -r '.creationInfo.created // empty' "$src" 2>/dev/null || true)
             if [[ -z "$src_created" ]]; then
               # Source has no creationInfo.created — skip (don't overwrite cache with malformed SBOM).
               continue
             fi
 
             if [[ -f "$target" ]]; then
-              tgt_created=$(jq -r '.creationInfo.created // empty' "$target" 2>/dev/null || true)
+              # Size-guard for cached target before reading it with jq.
+              tgt_size=$(stat -c%s "$target" 2>/dev/null || echo 0)
+              if (( tgt_size > _SBOM_MAX_BYTES )); then
+                echo "::warning::SBOM hydration: cached $fname (${tgt_size} bytes) exceeds 25MB guard; treating as no existing timestamp, will overwrite"
+                tgt_created=""
+              else
+                tgt_created=$(timeout 60 jq -r '.creationInfo.created // empty' "$target" 2>/dev/null || true)
+              fi
               # ISO 8601 strings (e.g. 2026-02-22T00:46:38Z) compare correctly via bash
               # string `>` because the format is zero-padded fixed-width.
               # Tie (equal creation time) → keep cache, skip copy (no benefit + saves I/O).
