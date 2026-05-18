@@ -31,12 +31,6 @@ DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 
-# Maximum SBOM file size before skipping jq processing (25 MiB).
-# Largest real Linux SBOM observed: ~720 KB; this allows 35× headroom.
-# Windows variants (e.g. github-runner windows-ltsc2022-dev) can produce
-# multi-GB SBOMs that would stall the dashboard generation step in CI.
-readonly SBOM_MAX_BYTES=26214400
-
 # --- Lineage resolution helpers ---
 
 # Resolve the lineage JSON file for a container
@@ -342,13 +336,6 @@ get_sbom_summary() {
     local container="$1" tag="$2"
     local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
     if [[ -f "$sbom_file" ]]; then
-        local size
-        size=$(stat -c%s "$sbom_file" 2>/dev/null || echo 0)
-        if (( size > SBOM_MAX_BYTES )); then
-            echo "::warning::SBOM ${container}:${tag} is $((size/1048576))MB (> 25MB guard) — returning empty summary to avoid unbounded jq" >&2
-            echo "{}"
-            return
-        fi
         local result
         # shellcheck disable=SC2016  # $total/$ref are jq variables, not bash expansions
         if ! result=$(timeout 60 jq '
@@ -378,13 +365,6 @@ get_sbom_packages() {
     local container="$1" tag="$2"
     local sbom_file="$SCRIPT_DIR/.build-lineage/${container}-${tag}.sbom.json"
     if [[ -f "$sbom_file" ]]; then
-        local size
-        size=$(stat -c%s "$sbom_file" 2>/dev/null || echo 0)
-        if (( size > SBOM_MAX_BYTES )); then
-            echo "::warning::SBOM ${container}:${tag} is $((size/1048576))MB (> 25MB guard) — returning empty packages to avoid unbounded jq" >&2
-            echo "{}"
-            return
-        fi
         local result
         if ! result=$(timeout 60 jq -r '
             [.packages[]? | {type: (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator | split("/")[0] | ltrimstr("pkg:")), name: .name, version: .versionInfo}]

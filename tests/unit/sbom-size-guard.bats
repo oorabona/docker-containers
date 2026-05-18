@@ -2,36 +2,40 @@
 
 bats_require_minimum_version 1.5.0
 
-# Unit tests for SBOM size guard and jq timeout in generate-dashboard.sh
+# Unit tests for jq timeout backstop in generate-dashboard.sh (SBOM processing)
+#
+# Context: the 25 MiB size-cutoff guard was removed (issue #470). The original
+# CI stall was a transient GitHub-API condition, not unbounded jq. The 37 MB
+# github-runner SBOM processes in ~0.6s; the old guard silently dropped real
+# per-ecosystem provenance for windows-ltsc2022-dev. Only the `timeout 60 jq`
+# backstop remains as protection against truly pathological inputs.
 #
 # Covers:
 #   - get_sbom_summary: normal SBOM returns full parsed JSON (grouping + total)
-#   - get_sbom_summary: oversized VALID SBOM returns {} + ::warning:: (guard fires before jq)
-#   - get_sbom_summary: oversized guard fires fast (< 10s — jq not run unbounded)
+#   - get_sbom_summary: SBOM larger than 25 MiB is processed (not short-circuited to {})
 #   - get_sbom_summary: missing file returns {}
 #   - get_sbom_summary: shimmed-timeout partial-output returns {} (jq output discarded)
 #   - get_sbom_packages: normal SBOM returns parsed JSON with package names+versions
-#   - get_sbom_packages: oversized VALID SBOM returns {} + ::warning:: (guard fires before jq)
-#   - get_sbom_packages: oversized guard fires fast (< 10s — jq not run unbounded)
+#   - get_sbom_packages: SBOM larger than 25 MiB is processed (not short-circuited to {})
 #   - get_sbom_packages: missing file returns {}
 #   - get_sbom_packages: shimmed-timeout partial-output returns {} (jq output discarded)
 #
 # Mutation each test catches (Test Validity Gate):
-#   - "full shape" tests: breaking extract_sbom_summary jq grouping → "deb":2 disappears
-#     or removing the guard → {} returned instead of parsed; partial breakage visible
+#   - "full shape" tests: breaking get_sbom_summary jq grouping → "deb":2 disappears;
+#     asserting only .total would miss a regression that collapses grouping but keeps total
 #   - "package names+versions" tests: breaking jq .name/.versionInfo extraction → missing
-#     names/versions; test catches any field-name regression
-#   - "oversized guard" tests: removing SBOM_MAX_BYTES check → jq runs on 27MB VALID JSON
-#     (VALID so jq wouldn't fail fast), taking seconds and NOT returning {}
-#   - "guard fires fast" tests: same — the VALID oversized fixture makes jq slow if guard absent
+#     field; catches any field-name regression (e.g. .name→.pkgName)
+#   - "larger than 25 MiB processed" tests: re-introducing the old SBOM_MAX_BYTES size-cutoff
+#     would return {} for the large fixture instead of the real package summary
 #   - "missing file" tests: removing [[ -f ]] guard → error/non-zero instead of {}
 #   - "shimmed-timeout" tests: removing `if ! result=$(timeout 60 jq ...)` discard logic
 #     → partial stdout leaks into result instead of {} being returned
 
 # ---------------------------------------------------------------------------
-# Helper: generate a large VALID SPDX-ish JSON file exceeding SBOM_MAX_BYTES
-# (26214400 bytes = 25MB).  Uses a filler field so jq would process it
-# without error — proves the size guard (not jq parse failure) is what fires.
+# Helper: generate a large VALID SPDX-ish JSON file exceeding 25 MiB.
+# Used to verify that large SBOMs are now PROCESSED by jq (no size cutoff).
+# The file is valid JSON so jq succeeds — proves no regression to the old
+# size-cutoff guard (invalid JSON would make jq fail regardless of any guard).
 # ---------------------------------------------------------------------------
 _create_large_valid_sbom() {
     local path="$1"
@@ -197,39 +201,27 @@ teardown() {
     [ "$output" = "{}" ]
 }
 
-@test "get_sbom_summary: oversized VALID SBOM returns {} and emits ::warning:: to stderr" {
-    # Mutation caught: removing SBOM_MAX_BYTES check would run unbounded jq on a
-    # large VALID JSON; jq would succeed (not error-exit) and return parsed data
-    # instead of {}.  Using VALID JSON is critical — invalid JSON would make jq
-    # fail fast regardless of the guard, which is tautological.
-    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-huge.sbom.json"
+@test "get_sbom_summary: SBOM larger than 25 MiB is processed by jq (not short-circuited)" {
+    # Mutation caught: re-introducing the old SBOM_MAX_BYTES size-cutoff would return
+    # {} for this fixture instead of the real package summary. The fixture is VALID JSON
+    # so jq succeeds — proving jq ran (not a parse-failure fallback).
+    # The fixture contains 2 real deb packages + 50000 apk packages. If the size-cutoff
+    # were present, {} would be returned and deb/apk counts would be absent.
+    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-large.sbom.json"
     local size
-    size=$(stat -c%s "$TEST_DIR/.build-lineage/mycontainer-huge.sbom.json")
-    [ "$size" -gt 26214400 ]  # ensure fixture actually exceeds the guard
+    size=$(stat -c%s "$TEST_DIR/.build-lineage/mycontainer-large.sbom.json")
+    [ "$size" -gt 26214400 ]  # ensure fixture is actually > 25 MiB
 
-    run --separate-stderr get_sbom_summary "mycontainer" "huge"
+    run get_sbom_summary "mycontainer" "large"
     [ "$status" -eq 0 ]
-    [ "$output" = "{}" ]
-    # stderr must contain the ::warning:: annotation
-    echo "$stderr" | grep -q "::warning::"
-    echo "$stderr" | grep -q "25MB guard"
-}
-
-@test "get_sbom_summary: oversized VALID SBOM guard fires fast (well under 10s)" {
-    # Mutation caught: if the guard were absent, jq would process the large VALID
-    # JSON (50000+ packages) which takes measurable seconds; the guard returns
-    # in < 1s (just a stat + numeric comparison), so elapsed < 10s proves
-    # short-circuit happened before jq ran.
-    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-huge2.sbom.json"
-
-    start_ns=$(date +%s%N)
-    run --separate-stderr get_sbom_summary "mycontainer" "huge2"
-    end_ns=$(date +%s%N)
-
-    elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
-    # Must complete in under 10 seconds (generous; guard itself is < 100ms)
-    [ "$elapsed_ms" -lt 10000 ]
-    [ "$output" = "{}" ]
+    # Must NOT be empty — jq must have run and produced real package counts
+    [ "$output" != "{}" ]
+    # The fixture has 2 deb + 50000 apk packages; total must be 50002
+    total=$(echo "$output" | jq -r '.total // empty')
+    [ "$total" = "50002" ]
+    # Both ecosystem types must appear in the summary
+    echo "$output" | jq -e '.deb' > /dev/null
+    echo "$output" | jq -e '.apk' > /dev/null
 }
 
 @test "get_sbom_summary: shimmed-timeout partial-output returns {} (jq output discarded)" {
@@ -291,34 +283,27 @@ SHEOF
     [ "$output" = "{}" ]
 }
 
-@test "get_sbom_packages: oversized VALID SBOM returns {} and emits ::warning:: to stderr" {
-    # Mutation caught: removing SBOM_MAX_BYTES check would run unbounded jq on a
-    # large VALID JSON; jq would return parsed package data instead of {}.
-    # VALID JSON is critical — invalid JSON makes jq fail regardless of the guard.
-    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-huge3.sbom.json"
+@test "get_sbom_packages: SBOM larger than 25 MiB is processed by jq (not short-circuited)" {
+    # Mutation caught: re-introducing the old SBOM_MAX_BYTES size-cutoff would return
+    # {} for this large VALID fixture instead of real package data. The fixture is valid
+    # JSON — if {} were returned it proves the cutoff fired, not a jq parse failure.
+    # The fixture has 2 real deb packages + 50000 apk packages; if cutoff were present,
+    # neither "deb" nor "apk" keys would appear in the output.
+    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-large2.sbom.json"
     local size
-    size=$(stat -c%s "$TEST_DIR/.build-lineage/mycontainer-huge3.sbom.json")
-    [ "$size" -gt 26214400 ]
+    size=$(stat -c%s "$TEST_DIR/.build-lineage/mycontainer-large2.sbom.json")
+    [ "$size" -gt 26214400 ]  # ensure fixture is actually > 25 MiB
 
-    run --separate-stderr get_sbom_packages "mycontainer" "huge3"
+    run get_sbom_packages "mycontainer" "large2"
     [ "$status" -eq 0 ]
-    [ "$output" = "{}" ]
-    echo "$stderr" | grep -q "::warning::"
-    echo "$stderr" | grep -q "25MB guard"
-}
-
-@test "get_sbom_packages: oversized VALID SBOM guard fires fast (well under 10s)" {
-    # Mutation caught: without the guard, jq over a 27MB VALID file would process
-    # 50000+ packages (takes seconds); the guard must short-circuit in < 10s.
-    _create_large_valid_sbom "$TEST_DIR/.build-lineage/mycontainer-huge4.sbom.json"
-
-    start_ns=$(date +%s%N)
-    run --separate-stderr get_sbom_packages "mycontainer" "huge4"
-    end_ns=$(date +%s%N)
-
-    elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
-    [ "$elapsed_ms" -lt 10000 ]
-    [ "$output" = "{}" ]
+    # Must NOT be empty — jq must have run and extracted real package entries
+    [ "$output" != "{}" ]
+    # Both ecosystem types must be present
+    echo "$output" | jq -e '.deb' > /dev/null
+    echo "$output" | jq -e '.apk' > /dev/null
+    # deb array must have exactly 2 real entries (the 2 deb packages in the fixture)
+    deb_count=$(echo "$output" | jq '.deb | length')
+    [ "$deb_count" = "2" ]
 }
 
 @test "get_sbom_packages: shimmed-timeout partial-output returns {} (jq output discarded)" {
