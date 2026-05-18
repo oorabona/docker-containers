@@ -46,13 +46,13 @@ The hardening was not wasted, though, and the reason is the lesson. The final pr
 
 ## The actual cause: an unbounded jq over a 37 MB SBOM
 
-The real deploy is what proved the cause. `generate-dashboard.sh` runs `jq` over each container's SBOM to summarise package data for the dashboard. For the `github-runner` `*-windows-ltsc2022-dev` variants — a 9.4 GB development image — the SBOM measured 37 MB, and the `jq` invocation over it was unbounded: no size ceiling, no timeout. Processing those variants accounted for roughly 61 of the 67 minutes. The remaining containers, with normal-sized SBOMs, were not the problem and never had been.
+The real deploy is what proved the cause. `generate-dashboard.sh` runs `jq` over each container's SBOM to summarise package data for the dashboard. For the `github-runner` `*-windows-ltsc2022-dev` variants — a 9.4 GB development image — the SBOM measured 37 MB, and the `jq` invocation over it was unbounded: no size ceiling, no timeout. There were six such oversized variant SBOMs; the same unbounded `jq` ran once per variant, and those six runs together were roughly 61 of the 67 minutes. Everything else — the other containers, all with normal-sized SBOMs — was the remaining ~6 minutes, and was never the problem.
 
 This matches the shape of the metric from the start. The Windows-dev image grew over time; its SBOM grew with it; the unbounded `jq` got slower in proportion. Variable and rising, tracking a quantity that was getting bigger — exactly the signature the duration curve had shown before any of the five hypotheses were raised.
 
 ## The fix — and the sibling the first fix missed
 
-PR #464 (commit `2b83dfe`) bounded the operation rather than special-casing the one input that triggered it today. The core of it, in `get_sbom_summary`:
+The solution is one sentence: never let `jq` loose on an SBOM past a size ceiling — skip it above the ceiling, cap whatever still runs with a timeout, and apply that at every code path that runs it. PR #464 (commit `2b83dfe`) bounded the operation rather than special-casing the one input that triggered it today. The core of it, in `get_sbom_summary`:
 
 ```bash
 size=$(stat -c%s "$sbom_file" 2>/dev/null || echo 0)
@@ -71,13 +71,15 @@ The same guard went on `get_sbom_packages`, and a `timeout 120` — with the `sk
 
 Be precise about what this preserves and what it costs. For every SBOM under the 25 MiB ceiling the dashboard output is byte-for-byte unchanged — the normal path is untouched, and the `timeout 60` is only a second-order net for an under-ceiling file that is somehow still pathological to parse. For an SBOM over the ceiling the package summary for that variant becomes `{}`: the dashboard loses the per-ecosystem package breakdown for the oversized Windows-dev image, and the build log says so. That is graceful degradation of one pathological variant's detail, traded for a step that finishes in minutes instead of stalling for over an hour — not behaviour preservation. The honest framing is the tradeoff, not a claim that nothing was given up.
 
+Trace where the 57 minutes went. The guard returns `{}` for exactly the six oversized SBOMs that were the ~61 minutes; those six multi-minute `jq` parses simply no longer run. Nothing else in the step changed — the other containers were always ~6 minutes combined. An hour of work computing a package breakdown for a 9 GB image's dependency tree stopped happening, and the step that does everything else now finishes the whole job in about ten. The fix is not an optimisation of the slow operation; it is the slow operation no longer running.
+
 The part worth the most to another team is what happened in review, because it nearly did not get caught. The diff for #464 was three files. Two reviews scoped to that diff came back clean. A third review — mandatory, with repository-wide scope, directed to trace the data across the codebase rather than read the changed lines — found a *sibling*: a second, separate code path carrying the identical defect. `.github/workflows/update-dashboard.yaml` ran the *same* unbounded `jq` over the *same* SBOM files in its hydration step, *before* `generate-dashboard.sh` ever ran. Guarding only `generate-dashboard.sh` would have left the 67-minute stall in place one step upstream, and all three diff-scoped files would still have looked correct.
 
 This is one defect, not a statistic, and the honest lesson is about scope, not about which reviewer found it. A prompt scoped to a diff sees the diff; the upstream producer of the same data sat outside the diff and so outside every diff-scoped reviewer's field of view, however capable the reviewer. What the orthogonal gate bought was structural: it is the one review *required* to run with repository-wide scope and a different set of priors, so the broad question gets asked even when nobody remembers to ask it. The fix was extended to put the identical guard on the `update-dashboard.yaml` hydration `jq`, and the durable rule is the scope, not the model: any review that touches a data-processing step must trace that data's producers and consumers across files, not just inspect the changed lines.
 
 ## What it bought, on the real deploy
 
-The validation was the real post-merge deploy — `update-dashboard` run `26041557511`, which completed successfully. "Generate dashboard data" went from about 67 minutes to about 10: roughly 85%, roughly 57 minutes removed. The 25 MiB guard fired 6 times, on the real `github-runner` Windows-dev SBOM, exactly as designed. All 13 containers were processed, and the dashboard data for the normal containers was unchanged.
+The validation was the real post-merge deploy — `update-dashboard` run `26041557511`, which completed successfully. "Generate dashboard data" went from about 67 minutes to about 10: roughly 85%, roughly 57 minutes removed. The 25 MiB guard fired 6 times, on the real `github-runner` Windows-dev SBOMs, exactly as designed — those six skips are the ~57 minutes. All 13 containers were processed, and the dashboard data for the normal containers was unchanged.
 
 Two follow-ups closed the arc. The throwaway diagnostic workflows were removed (PR #465, commit `ec2cabe`). And the build `timeout-minutes` was deliberately left at 90 rather than tightened toward the new 10-minute reality: a legitimate cold run with every cache cold still needs headroom, and shrinking a safety margin to fit the happy path is how the next flaky-cancellation incident gets manufactured. The stall was the thing to remove, not the margin.
 
