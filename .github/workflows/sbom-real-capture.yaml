@@ -1,9 +1,10 @@
 name: sbom-real-capture (throwaway diagnostic)
 
-# THROWAWAY workflow_dispatch diagnostic. Fetches the REAL github-runner
-# windows-ltsc2022-dev SBOM artifact from a recent auto-build run (no image
-# rebuild) and measures the true UNBOUNDED cost of the two exact dashboard
-# jq filters on it, then exfiltrates the SBOM for offline analysis. Delete
+# THROWAWAY workflow_dispatch diagnostic. SBOM upload artifacts expire
+# (retention-days:1), so it REGENERATES the github-runner windows-dev SBOM
+# in-CI from the durable public GHCR image with the exact pipeline syft
+# command, then measures the true UNBOUNDED cost of the two exact dashboard
+# jq filters on it and exfiltrates the SBOM for offline analysis. Delete
 # after one run (cf. probes #462/#463 removed by #465).
 
 on:
@@ -17,12 +18,12 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  packages: read
 
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -36,7 +37,10 @@ jobs:
           echo "nproc: $(nproc)"
           free -m
 
-      - name: Locate and download the real SBOM artifact
+      - name: Install syft (pipeline-identical)
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Regenerate the real SBOM via syft (pipeline-identical)
         shell: bash
         run: |
           set -euo pipefail
@@ -45,34 +49,33 @@ jobs:
             echo "::error::invalid tag input (allowed charset A-Za-z0-9._-): ${tag_input}"
             exit 1
           fi
-          echo "Resolving SBOM artifact for github-runner tag: ${tag_input}"
+          # SBOM artifacts have retention-days:1 so the original is gone; the
+          # image is durable and public, so regenerate the SBOM with the EXACT
+          # pipeline command (helpers/sbom-utils.sh): syft registry:<ref>-amd64
+          # -o spdx-json. Same tool + same image digest => structurally the
+          # same SBOM the dashboard jq would have processed.
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin \
+            || echo "::warning::ghcr login failed; relying on anonymous pull (image is public)"
+          out="${PWD}/real.sbom.json"
+          primary="registry:ghcr.io/oorabona/github-runner:${tag_input}-amd64"
+          fallback="registry:ghcr.io/oorabona/github-runner:${tag_input}"
+          echo "Regenerating SBOM via syft for ${primary}"
           t0=$(date +%s.%N)
-          run_ids=$(gh run list --workflow=auto-build.yaml --branch=master --limit 100 \
-            --json databaseId,createdAt,conclusion \
-            --jq '[.[] | select(.conclusion=="success" or .conclusion=="failure")] | .[].databaseId')
-          mkdir -p ./sbomdl
-          found=""
-          for rid in $run_ids; do
-            if gh run download "$rid" --pattern "sbom-github-runner-${tag_input}" --dir ./sbomdl 2>/dev/null; then
-              found="$rid"; break
+          if ! timeout 1800 syft "${primary}" -o "spdx-json=${out}" --quiet; then
+            echo "::warning::syft failed/timed out on ${primary}; trying bare tag ${fallback}"
+            if ! timeout 1800 syft "${fallback}" -o "spdx-json=${out}" --quiet; then
+              echo "::error::syft failed for both ${primary} and ${fallback}"
+              exit 1
             fi
-          done
+          fi
           t1=$(date +%s.%N)
-          acq=$(echo "$t1 - $t0" | bc)
-          echo "ACQUISITION_SECONDS=${acq}"
-          if [ -z "$found" ]; then
-            echo "::error::no SBOM artifact found for ${tag_input} in last 100 auto-build runs"
+          acq=$(echo "${t1} - ${t0}" | bc)
+          if [ ! -s "${out}" ]; then
+            echo "::error::syft produced an empty SBOM"
             exit 1
           fi
-          mapfile -t sboms < <(find ./sbomdl -name '*.sbom.json')
-          if [ "${#sboms[@]}" -ne 1 ]; then
-            echo "::error::expected exactly one *.sbom.json, found ${#sboms[@]}"
-            printf '%s\n' "${sboms[@]:-}"
-            exit 1
-          fi
-          sbom="${sboms[0]}"
-          echo "Found SBOM (from run ${found}): ${sbom}"
-          echo "SBOM_FILE=${sbom}" >> "$GITHUB_ENV"
+          echo "ACQUISITION_SECONDS=${acq}  (syft generation time)"
+          echo "SBOM_FILE=${out}" >> "$GITHUB_ENV"
           echo "ACQUISITION_SECONDS=${acq}" >> "$GITHUB_ENV"
 
       - name: Real SBOM structural facts
@@ -159,7 +162,7 @@ jobs:
         with:
           name: real-windows-dev-sbom
           path: |
-            ${{ env.SBOM_FILE }}
+            real.sbom.json
             summary_time.txt
             packages_time.txt
           if-no-files-found: warn
