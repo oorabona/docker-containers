@@ -1,170 +1,151 @@
 name: sbom-real-capture (throwaway diagnostic)
 
-# THROWAWAY workflow_dispatch diagnostic. SBOM upload artifacts expire
-# (retention-days:1), so it REGENERATES the github-runner windows-dev SBOM
-# in-CI from the durable public GHCR image with the exact pipeline syft
-# command, then measures the true UNBOUNDED cost of the two exact dashboard
-# jq filters on it and exfiltrates the SBOM for offline analysis. Delete
-# after one run (cf. probes #462/#463 removed by #465).
+# THROWAWAY workflow_dispatch diagnostic. Runs the PRE-#464 (unbounded)
+# generate-dashboard.sh scoped to one container, in CI (faithful network /
+# runner), under a fork-free timestamped xtrace ($EPOCHREALTIME + set -x)
+# with a COLD GHCR cache (faithful to the non-persisted-cache condition of
+# the original ~67min runs), captures the full trace, and post-processes it
+# into a "slowest commands" table to identify EXACTLY which command consumed
+# the per-variant minutes. Delete after one run (cf. probes #462/#463).
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'github-runner windows-dev tag suffix (e.g. 2.334.0-windows-ltsc2022-dev)'
+      target_container:
+        description: 'container to scope generate-dashboard.sh to'
         required: false
-        default: '2.334.0-windows-ltsc2022-dev'
+        default: 'github-runner'
         type: string
 
+# Mirror the real update-dashboard.yaml job scopes so the old generator's
+# Attestations / Code-Scanning(Trivy) / Actions API calls do the SAME work
+# (not 403-collapse into fast fallbacks) — fidelity is the whole point.
 permissions:
   contents: read
   packages: read
+  actions: read
+  attestations: read
+  security-events: read
 
 jobs:
-  capture:
+  trace:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG_INPUT: ${{ github.event.inputs.tag }}
+      GITHUB_TOKEN: ${{ github.token }}
+      TARGET_CONTAINER: ${{ github.event.inputs.target_container }}
     steps:
-      - name: Environment
-        shell: bash
-        run: |
-          command -v /usr/bin/time >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y time)
-          echo "jq: $(jq --version)"
-          echo "nproc: $(nproc)"
-          free -m
+      - name: Checkout (full history — need 2b83dfe~1)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
-      - name: Install syft (pipeline-identical)
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-
-      - name: Regenerate the real SBOM via syft (pipeline-identical)
+      - name: Validate input + extract pre-#464 generate-dashboard.sh
         shell: bash
         run: |
           set -euo pipefail
-          tag_input="$TAG_INPUT"
-          if [[ ! "$tag_input" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::invalid tag input (allowed charset A-Za-z0-9._-): ${tag_input}"
-            exit 1
+          tc="$TARGET_CONTAINER"
+          if [[ ! "$tc" =~ ^[a-z0-9._-]+$ ]]; then
+            echo "::error::invalid target_container: ${tc}"; exit 1
           fi
-          # SBOM artifacts have retention-days:1 so the original is gone; the
-          # image is durable and public, so regenerate the SBOM with the EXACT
-          # pipeline command (helpers/sbom-utils.sh): syft registry:<ref>-amd64
-          # -o spdx-json. Same tool + same image digest => structurally the
-          # same SBOM the dashboard jq would have processed.
-          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin \
-            || echo "::warning::ghcr login failed; relying on anonymous pull (image is public)"
-          out="${PWD}/real.sbom.json"
-          primary="registry:ghcr.io/oorabona/github-runner:${tag_input}-amd64"
-          fallback="registry:ghcr.io/oorabona/github-runner:${tag_input}"
-          echo "Regenerating SBOM via syft for ${primary}"
-          t0=$(date +%s.%N)
-          if ! timeout 1800 syft "${primary}" -o "spdx-json=${out}" --quiet; then
-            echo "::warning::syft failed/timed out on ${primary}; trying bare tag ${fallback}"
-            if ! timeout 1800 syft "${fallback}" -o "spdx-json=${out}" --quiet; then
-              echo "::error::syft failed for both ${primary} and ${fallback}"
-              exit 1
-            fi
-          fi
-          t1=$(date +%s.%N)
-          acq=$(echo "${t1} - ${t0}" | bc)
-          if [ ! -s "${out}" ]; then
-            echo "::error::syft produced an empty SBOM"
-            exit 1
-          fi
-          echo "ACQUISITION_SECONDS=${acq}  (syft generation time)"
-          echo "SBOM_FILE=${out}" >> "$GITHUB_ENV"
-          echo "ACQUISITION_SECONDS=${acq}" >> "$GITHUB_ENV"
+          [ -d "$tc" ] || { echo "::error::container dir '$tc' not found"; exit 1; }
+          # the pre-#464 (unbounded) dashboard generator
+          git show 2b83dfe~1:generate-dashboard.sh > gd-pre464.sh
+          chmod +x gd-pre464.sh
+          wc -l gd-pre464.sh
+          # scope the `for container in */` loop to the single target
+          before=$(grep -nE '^[[:space:]]*for[[:space:]]+container[[:space:]]+in[[:space:]]+\*/' gd-pre464.sh || true)
+          echo "loop line before: ${before:-<none>}"
+          sed -i -E 's#(^[[:space:]]*for[[:space:]]+container[[:space:]]+in[[:space:]]+)\*/#\1${TARGET_CONTAINER:-*}/#' gd-pre464.sh
+          grep -nE 'for[[:space:]]+container[[:space:]]+in' gd-pre464.sh | head -3
+          grep -qE 'for[[:space:]]+container[[:space:]]+in[[:space:]]+\$\{TARGET_CONTAINER' gd-pre464.sh \
+            || { echo "::error::scoping sed did not apply — loop pattern changed"; exit 1; }
 
-      - name: Real SBOM structural facts
-        shell: bash
-        run: |
-          set -euo pipefail
-          sbom="${SBOM_FILE}"
-          bytes=$(stat -c%s "$sbom")
-          echo "SBOM_BYTES=${bytes}" | tee -a "$GITHUB_ENV"
-          echo "SBOM_MB=$(( bytes / 1048576 ))"
-          echo "PKG_COUNT=$(timeout 120 jq '.packages | length' "$sbom" 2>/dev/null || echo NA)"
-          echo "MAX_EXTREFS=$(timeout 120 jq '[.packages[]?.externalRefs // [] | length] | max // 0' "$sbom" 2>/dev/null || echo NA)"
-          echo "SUM_EXTREFS=$(timeout 120 jq '[.packages[]?.externalRefs // [] | length] | add // 0' "$sbom" 2>/dev/null || echo NA)"
-          echo "FILES_COUNT=$(timeout 120 jq '(.files // []) | length' "$sbom" 2>/dev/null || echo NA)"
-
-      - name: Write the two exact dashboard jq filters
-        shell: bash
-        run: |
-          cat > summary.jq <<'FILTER'
-          .packages // [] |
-          length as $total |
-          [.[] |
-              (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
-              (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end)
-          ] |
-          group_by(.) |
-          map({key: .[0], value: length}) |
-          from_entries |
-          . + {total: $total}
-          FILTER
-          cat > packages.jq <<'FILTER'
-          [.packages[]? | {type: (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator | split("/")[0] | ltrimstr("pkg:")), name: .name, version: .versionInfo}]
-          | group_by(.type)
-          | map({key: .[0].type, value: [.[] | {n: .name, v: .version}]})
-          | from_entries
-          FILTER
-          echo "filters written"
-
-      - name: Measure get_sbom_summary filter UNBOUNDED
+      - name: Run pre-#464 generator under timestamped xtrace (cold GHCR cache)
         shell: bash
         continue-on-error: true
         run: |
-          sbom="${SBOM_FILE}"
-          if /usr/bin/time -v timeout 1800 jq -f summary.jq "$sbom" > /dev/null 2> summary_time.txt; then
-            rc=0
-          else
-            rc=$?
-          fi
-          echo "SUMMARY_EXIT=$rc"
-          echo '--- get_sbom_summary /usr/bin/time -v ---'
-          cat summary_time.txt || true
+          set -uo pipefail
+          export GHCR_CACHE_DIR
+          GHCR_CACHE_DIR="$(mktemp -d)"   # fresh => cold, faithful to the slow-era condition
+          export TERM=dumb
+          # fork-free per-xtrace-line timestamp (bash 5 on ubuntu runners)
+          export PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE##*/}:${LINENO}: '
+          echo "EPOCHREALTIME sample: ${EPOCHREALTIME}"
+          echo "Tracing pre-#464 generate-dashboard.sh scoped to: ${TARGET_CONTAINER}"
+          start=${EPOCHREALTIME}
+          # 7200s anti-hang; the original per-variant stall was ~20min so a
+          # faithful scoped repro of github-runner (18 variants) may run long
+          # — that long runtime IS the signal we are capturing.
+          set -x
+          timeout 7200 bash -x ./gd-pre464.sh > gd-stdout.log 2> gd-trace.log || true
+          set +x
+          end=${EPOCHREALTIME}
+          echo "TOTAL_WALL_SECONDS=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", b-a}')"
+          echo "trace lines: $(wc -l < gd-trace.log)"
 
-      - name: Measure get_sbom_packages filter UNBOUNDED
-        shell: bash
-        continue-on-error: true
-        run: |
-          sbom="${SBOM_FILE}"
-          if /usr/bin/time -v timeout 1800 jq -f packages.jq "$sbom" > /dev/null 2> packages_time.txt; then
-            rc=0
-          else
-            rc=$?
-          fi
-          echo "PACKAGES_EXIT=$rc"
-          echo '--- get_sbom_packages /usr/bin/time -v ---'
-          cat packages_time.txt || true
-
-      - name: RESULT block
+      - name: Redact auth material from the trace (set -x expands tokens)
         shell: bash
         run: |
-          echo '================ SBOM-REAL-CAPTURE RESULT ================'
-          echo "tag_input         = ${TAG_INPUT}"
-          echo "ACQUISITION_SECONDS = ${ACQUISITION_SECONDS:-NA}"
-          echo "SBOM_BYTES        = ${SBOM_BYTES:-NA}  ( $(( ${SBOM_BYTES:-0} / 1048576 )) MB )"
-          echo '--- summary filter timing ---'
-          grep -E 'Elapsed \(wall|User time|System time|Percent of CPU|Maximum resident' summary_time.txt 2>/dev/null || echo 'no summary_time.txt (job step may have errored before measuring)'
-          echo '--- packages filter timing ---'
-          grep -E 'Elapsed \(wall|User time|System time|Percent of CPU|Maximum resident' packages_time.txt 2>/dev/null || echo 'no packages_time.txt'
-          echo 'NOTE: timeout exit 124 on either filter = it genuinely exceeded 1800s = unbounded (definitive).'
-          echo '========================================================='
+          set -uo pipefail
+          # bash -x prints commands with secrets expanded (Authorization:
+          # Bearer <tok>, curl -u owner:<tok>, gh token=...). The diagnostic
+          # only needs timestamps + command/URL, never the token — strip it
+          # before anything is analysed or uploaded.
+          redact() {
+            sed -E \
+              -e 's/([Bb]earer )[A-Za-z0-9._~+/=-]{8,}/\1<REDACTED>/g' \
+              -e 's/(-u [^ :]+:)[^ ]+/\1<REDACTED>/g' \
+              -e 's/(x-access-token:)[^@ ]+/\1<REDACTED>/g' \
+              -e 's/\b(gh[pousr]_)[A-Za-z0-9]{16,}/\1<REDACTED>/g' \
+              -e 's/((token|access_token|GH_TOKEN|GITHUB_TOKEN)=)[A-Za-z0-9._-]{8,}/\1<REDACTED>/g' \
+              -e 's/(Authorization: [A-Za-z]+ )[A-Za-z0-9._~+/=-]{8,}/\1<REDACTED>/g'
+          }
+          [ -f gd-trace.log ]  || : > gd-trace.log
+          [ -f gd-stdout.log ] || : > gd-stdout.log
+          redact < gd-trace.log  > gd-trace.san.log
+          redact < gd-stdout.log > gd-stdout.san.log
+          rm -f gd-trace.log gd-stdout.log
+          echo "redacted; sanitized lines: $(wc -l < gd-trace.san.log)"
 
-      - name: Upload the real SBOM + timings for offline analysis
+      - name: Analyse the trace — slowest commands
+        shell: bash
+        run: |
+          set -uo pipefail
+          T=gd-trace.san.log
+          [ -s "$T" ] || { echo "::error::empty trace"; exit 0; }
+          echo '================ TOP 50 SLOWEST COMMANDS (delta to next xtrace line) ================'
+          # xtrace line: '<+...> <epochrealtime> <file>:<line>: <command>'
+          # $1=one-or-more '+', $2=timestamp, $3=file:line:. mawk-compatible
+          # (no gawk 3-arg match): delta between consecutive timestamps is the
+          # wall time the preceding traced command consumed.
+          awk '$1 ~ /^\++$/ && $2 ~ /^[0-9]+\.[0-9]+$/ {
+                 ts=$2+0
+                 if (have) { d=ts-pts; if (d>0.3) printf "%9.2f  %s\n", d, pline }
+                 pts=ts; pline=$0; have=1
+               }' "$T" | sort -rn | head -50
+          echo '================ PER (file:line) CUMULATIVE (top 30) ================'
+          awk '$1 ~ /^\++$/ && $2 ~ /^[0-9]+\.[0-9]+$/ {
+                 ts=$2+0; loc=$3; sub(/:$/,"",loc)
+                 if (have) { d=ts-pts; if (d>0) cum[ploc]+=d }
+                 pts=ts; ploc=loc; have=1
+               }
+               END { for (k in cum) printf "%9.2f  %s\n", cum[k], k }' "$T" | sort -rn | head -30
+          echo '================ MARKERS (Processing / slurp guard / errors) with ts ================'
+          grep -aE 'Processing |slurp guard|::error::|::warning::|no-published-version' gd-stdout.san.log gd-trace.san.log 2>/dev/null | grep -avF $'\x1b[36;1m' | tail -40 || true
+          echo '================ TAIL of stdout ================'
+          tail -20 gd-stdout.san.log 2>/dev/null || true
+
+      - name: Upload full trace for offline analysis
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
-          name: real-windows-dev-sbom
+          name: dashboard-xtrace
           path: |
-            real.sbom.json
-            summary_time.txt
-            packages_time.txt
+            gd-trace.san.log
+            gd-stdout.san.log
+            gd-pre464.sh
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 3
