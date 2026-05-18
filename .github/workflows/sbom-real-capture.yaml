@@ -1,0 +1,167 @@
+name: sbom-real-capture (throwaway diagnostic)
+
+# THROWAWAY workflow_dispatch diagnostic. Fetches the REAL github-runner
+# windows-ltsc2022-dev SBOM artifact from a recent auto-build run (no image
+# rebuild) and measures the true UNBOUNDED cost of the two exact dashboard
+# jq filters on it, then exfiltrates the SBOM for offline analysis. Delete
+# after one run (cf. probes #462/#463 removed by #465).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'github-runner windows-dev tag suffix (e.g. 2.334.0-windows-ltsc2022-dev)'
+        required: false
+        default: '2.334.0-windows-ltsc2022-dev'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG_INPUT: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Environment
+        shell: bash
+        run: |
+          command -v /usr/bin/time >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y time)
+          echo "jq: $(jq --version)"
+          echo "nproc: $(nproc)"
+          free -m
+
+      - name: Locate and download the real SBOM artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_input="$TAG_INPUT"
+          if [[ ! "$tag_input" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::invalid tag input (allowed charset A-Za-z0-9._-): ${tag_input}"
+            exit 1
+          fi
+          echo "Resolving SBOM artifact for github-runner tag: ${tag_input}"
+          t0=$(date +%s.%N)
+          run_ids=$(gh run list --workflow=auto-build.yaml --branch=master --limit 100 \
+            --json databaseId,createdAt,conclusion \
+            --jq '[.[] | select(.conclusion=="success" or .conclusion=="failure")] | .[].databaseId')
+          mkdir -p ./sbomdl
+          found=""
+          for rid in $run_ids; do
+            if gh run download "$rid" --pattern "sbom-github-runner-${tag_input}" --dir ./sbomdl 2>/dev/null; then
+              found="$rid"; break
+            fi
+          done
+          t1=$(date +%s.%N)
+          acq=$(echo "$t1 - $t0" | bc)
+          echo "ACQUISITION_SECONDS=${acq}"
+          if [ -z "$found" ]; then
+            echo "::error::no SBOM artifact found for ${tag_input} in last 100 auto-build runs"
+            exit 1
+          fi
+          mapfile -t sboms < <(find ./sbomdl -name '*.sbom.json')
+          if [ "${#sboms[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one *.sbom.json, found ${#sboms[@]}"
+            printf '%s\n' "${sboms[@]:-}"
+            exit 1
+          fi
+          sbom="${sboms[0]}"
+          echo "Found SBOM (from run ${found}): ${sbom}"
+          echo "SBOM_FILE=${sbom}" >> "$GITHUB_ENV"
+          echo "ACQUISITION_SECONDS=${acq}" >> "$GITHUB_ENV"
+
+      - name: Real SBOM structural facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom="${SBOM_FILE}"
+          bytes=$(stat -c%s "$sbom")
+          echo "SBOM_BYTES=${bytes}" | tee -a "$GITHUB_ENV"
+          echo "SBOM_MB=$(( bytes / 1048576 ))"
+          echo "PKG_COUNT=$(timeout 120 jq '.packages | length' "$sbom" 2>/dev/null || echo NA)"
+          echo "MAX_EXTREFS=$(timeout 120 jq '[.packages[]?.externalRefs // [] | length] | max // 0' "$sbom" 2>/dev/null || echo NA)"
+          echo "SUM_EXTREFS=$(timeout 120 jq '[.packages[]?.externalRefs // [] | length] | add // 0' "$sbom" 2>/dev/null || echo NA)"
+          echo "FILES_COUNT=$(timeout 120 jq '(.files // []) | length' "$sbom" 2>/dev/null || echo NA)"
+
+      - name: Write the two exact dashboard jq filters
+        shell: bash
+        run: |
+          cat > summary.jq <<'FILTER'
+          .packages // [] |
+          length as $total |
+          [.[] |
+              (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref |
+              (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end)
+          ] |
+          group_by(.) |
+          map({key: .[0], value: length}) |
+          from_entries |
+          . + {total: $total}
+          FILTER
+          cat > packages.jq <<'FILTER'
+          [.packages[]? | {type: (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator | split("/")[0] | ltrimstr("pkg:")), name: .name, version: .versionInfo}]
+          | group_by(.type)
+          | map({key: .[0].type, value: [.[] | {n: .name, v: .version}]})
+          | from_entries
+          FILTER
+          echo "filters written"
+
+      - name: Measure get_sbom_summary filter UNBOUNDED
+        shell: bash
+        continue-on-error: true
+        run: |
+          sbom="${SBOM_FILE}"
+          if /usr/bin/time -v timeout 1800 jq -f summary.jq "$sbom" > /dev/null 2> summary_time.txt; then
+            rc=0
+          else
+            rc=$?
+          fi
+          echo "SUMMARY_EXIT=$rc"
+          echo '--- get_sbom_summary /usr/bin/time -v ---'
+          cat summary_time.txt || true
+
+      - name: Measure get_sbom_packages filter UNBOUNDED
+        shell: bash
+        continue-on-error: true
+        run: |
+          sbom="${SBOM_FILE}"
+          if /usr/bin/time -v timeout 1800 jq -f packages.jq "$sbom" > /dev/null 2> packages_time.txt; then
+            rc=0
+          else
+            rc=$?
+          fi
+          echo "PACKAGES_EXIT=$rc"
+          echo '--- get_sbom_packages /usr/bin/time -v ---'
+          cat packages_time.txt || true
+
+      - name: RESULT block
+        shell: bash
+        run: |
+          echo '================ SBOM-REAL-CAPTURE RESULT ================'
+          echo "tag_input         = ${TAG_INPUT}"
+          echo "ACQUISITION_SECONDS = ${ACQUISITION_SECONDS:-NA}"
+          echo "SBOM_BYTES        = ${SBOM_BYTES:-NA}  ( $(( ${SBOM_BYTES:-0} / 1048576 )) MB )"
+          echo '--- summary filter timing ---'
+          grep -E 'Elapsed \(wall|User time|System time|Percent of CPU|Maximum resident' summary_time.txt 2>/dev/null || echo 'no summary_time.txt (job step may have errored before measuring)'
+          echo '--- packages filter timing ---'
+          grep -E 'Elapsed \(wall|User time|System time|Percent of CPU|Maximum resident' packages_time.txt 2>/dev/null || echo 'no packages_time.txt'
+          echo 'NOTE: timeout exit 124 on either filter = it genuinely exceeded 1800s = unbounded (definitive).'
+          echo '========================================================='
+
+      - name: Upload the real SBOM + timings for offline analysis
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: real-windows-dev-sbom
+          path: |
+            ${{ env.SBOM_FILE }}
+            summary_time.txt
+            packages_time.txt
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 3
