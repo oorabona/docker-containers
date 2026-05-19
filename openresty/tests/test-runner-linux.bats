@@ -43,7 +43,7 @@ setup() {
     CONTAINER_NAME="openresty-bats-smoke-$$"
     PORT=18080
 
-    # Nginx config with a regex location that proves PCRE2 + JIT is functional.
+    # Nginx config with a regex location that proves PCRE2 regex matching is functional.
     # location ~ ^/re/(\d+)$  uses a PCRE2 pattern; if PCRE2 is absent nginx
     # either fails to start or falls back to PCRE1 (which this build does not
     # include), so the location would never match.
@@ -92,11 +92,14 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1 (AC-5 behavioral): PCRE2 regex + JIT functional at runtime
+# Test 1 (AC-5 behavioral): PCRE2 regex + capture group functional at runtime
 # Mutation caught: nginx built without PCRE2 => /re/42 is 404/500, not "m=42"
+# Note: this proves PCRE2 regex matching and capture works at runtime.
+#   JIT presence is structurally guaranteed by --enable-jit + --with-pcre-jit
+#   configure flags (see Dockerfile) and is not separately asserted here.
 # ---------------------------------------------------------------------------
 
-@test "GET /re/42 returns exactly 'm=42' (PCRE2 + JIT regex functional)" {
+@test "GET /re/42 returns exactly 'm=42' (PCRE2 regex + capture group functional at runtime)" {
     local body
     body=$(curl -sf "http://127.0.0.1:${PORT}/re/42")
     [ "$body" = "m=42" ]
@@ -108,29 +111,24 @@ teardown() {
 #                  libpcre1) => RUNPATH does not contain /usr/local/openresty/pcre2/lib
 # ---------------------------------------------------------------------------
 
-@test "nginx binary RUNPATH contains /usr/local/openresty/pcre2/lib" {
+@test "nginx binary resolves libpcre2-8.so from /usr/local/openresty/pcre2/lib" {
     # Find the nginx binary path inside the container
     local nginx_bin
     nginx_bin=$(docker exec "$CONTAINER_NAME" sh -c \
         'command -v nginx || echo /usr/local/openresty/nginx/sbin/nginx')
 
-    # readelf -d shows RPATH/RUNPATH entries
-    local runpath_output
-    runpath_output=$(docker exec "$CONTAINER_NAME" sh -c \
-        "readelf -d \"$nginx_bin\" 2>/dev/null || true")
+    # ldd is the discriminating oracle here.
+    # readelf/binutils is stripped from the runtime image (apk del .build-deps),
+    # so readelf is never present at runtime — ldd (from musl libc) is always available.
+    local ldd_output
+    ldd_output=$(docker exec "$CONTAINER_NAME" sh -c \
+        "ldd \"$nginx_bin\" 2>/dev/null || true")
 
-    # If readelf is unavailable, fall back to checking ldd for libpcre2-8.so
-    if [[ -z "$runpath_output" ]]; then
-        local ldd_output
-        ldd_output=$(docker exec "$CONTAINER_NAME" sh -c \
-            "ldd \"$nginx_bin\" 2>/dev/null || true")
-        echo "ldd output: $ldd_output"
-        [[ "$ldd_output" == *"libpcre2-8"* ]]
-        [[ "$ldd_output" == *"/usr/local/openresty/pcre2"* ]]
-    else
-        echo "readelf output: $runpath_output"
-        [[ "$runpath_output" == *"/usr/local/openresty/pcre2/lib"* ]]
-    fi
+    echo "ldd output: $ldd_output"
+    # PCRE2 linked: nginx must resolve libpcre2-8.so (not libpcre.so / PCRE1)
+    [[ "$ldd_output" == *"libpcre2-8"* ]]
+    # Correct rpath: resolved from the bundled pcre2 install, not a system path
+    [[ "$ldd_output" == *"/usr/local/openresty/pcre2"* ]]
 }
 
 # ---------------------------------------------------------------------------
