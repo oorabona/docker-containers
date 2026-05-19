@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+
+# Resolve the latest upstream git tag matching a filter regex, then extract
+# a normalized version string using a capture-group regex.
+#
+# Mirrors the CLI shape of helpers/latest-github-release so that the
+# type-switch in scripts/check-dependency-versions.sh stays uniform.
+#
+# Usage:
+#   latest-github-tag <owner/repo> \
+#       --tag-filter  REGEX            # tags that PASS into the candidate set
+#       --version-extract REGEX        # ONE capture group → normalized version
+#       [--include-prerelease]         # default: pre-releases excluded
+#
+# Output:  normalized version string on stdout (e.g. "3.5.6", "10.47")
+# Stderr:  diagnostics/progress (never captured by callers)
+# Exit 0:  success
+# Exit 1:  no matching tag / API error / empty result / extract fail (fail-closed)
+#
+# Pre-release exclusion default regex: -rc|-alpha|-beta|-dev|-pre
+# Override by passing --include-prerelease.
+#
+# Pagination: uses gh api --paginate (requires GITHUB_TOKEN or gh auth login).
+# Fallback: git ls-remote --tags (no auth required).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/logging.sh"
+
+# GitHub API base URL (supports GitHub Enterprise via GITHUB_API_URL)
+GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
+
+# Default pre-release exclusion regex (case-insensitive match on tag name)
+PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+
+# Named constant for documentation / override
+STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
+
+_gh_api_tags() {
+    local repo="$1"
+    # Use gh cli with paginate if available; fall back to curl
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        gh api --paginate "repos/${repo}/tags" --jq '.[].name' 2>/dev/null
+    else
+        # Curl fallback — fetches up to 100 tags per page (page 1 only without auth)
+        local url="${GITHUB_API_URL}/repos/${repo}/tags?per_page=100"
+        local curl_args=(-fsSL --connect-timeout 10 --max-time 30
+            -H "Accept: application/vnd.github+json")
+        if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+        fi
+        curl "${curl_args[@]}" "$url" | jq -r '.[].name' 2>/dev/null
+    fi
+}
+
+latest-github-tag() {
+    local repo=""
+    local tag_filter=""
+    local version_extract=""
+    local include_prerelease=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag-filter)
+                tag_filter="$2"
+                shift 2
+                ;;
+            --version-extract)
+                version_extract="$2"
+                shift 2
+                ;;
+            --include-prerelease)
+                include_prerelease=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1" >&2
+                log_error "Usage: latest-github-tag <owner/repo> --tag-filter REGEX --version-extract REGEX" >&2
+                return 1
+                ;;
+            *)
+                if [[ -z "$repo" ]]; then
+                    repo="$1"
+                else
+                    log_error "Unexpected argument: $1" >&2
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Validate required args
+    if [[ -z "$repo" ]]; then
+        log_error "Usage: latest-github-tag <owner/repo> --tag-filter REGEX --version-extract REGEX" >&2
+        return 1
+    fi
+    if [[ -z "$tag_filter" ]]; then
+        log_error "latest-github-tag: --tag-filter is required" >&2
+        return 1
+    fi
+    if [[ -z "$version_extract" ]]; then
+        log_error "latest-github-tag: --version-extract is required" >&2
+        return 1
+    fi
+
+    # Fetch all tag names
+    log_info "Fetching tags for ${repo}..." >&2
+    local all_tags
+    all_tags=$(_gh_api_tags "$repo" 2>/dev/null) || {
+        log_error "Failed to fetch tags for ${repo}" >&2
+        return 1
+    }
+
+    if [[ -z "$all_tags" ]]; then
+        log_error "No tags returned for ${repo}" >&2
+        return 1
+    fi
+
+    # 1. Apply tag_filter (anchored ERE via grep -E)
+    local filtered_tags
+    filtered_tags=$(echo "$all_tags" | grep -E "$tag_filter" || true)
+
+    if [[ -z "$filtered_tags" ]]; then
+        log_error "No tags match tag_filter '${tag_filter}' for ${repo}" >&2
+        return 1
+    fi
+
+    # 2. Exclude pre-releases (unless overridden)
+    if [[ "$include_prerelease" != "true" ]]; then
+        local no_prerelease
+        no_prerelease=$(echo "$filtered_tags" | grep -v -i -E -- "$PRERELEASE_EXCLUDE_REGEX" || true)
+        if [[ -z "$no_prerelease" ]]; then
+            log_error "All matching tags for ${repo} are pre-releases — none passed exclusion filter" >&2
+            return 1
+        fi
+        filtered_tags="$no_prerelease"
+    fi
+
+    # 3. Extract versions using version_extract (capture group 1)
+    #    Build a sortable list: <extracted_version> <raw_tag>
+    local versions_with_tags=""
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        # Use bash regex match to extract capture group 1
+        if [[ "$tag" =~ $version_extract ]]; then
+            local extracted="${BASH_REMATCH[1]}"
+            if [[ -n "$extracted" ]]; then
+                versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
+            else
+                log_info "version_extract '${version_extract}' matched '${tag}' but capture group 1 is empty — skipping" >&2
+            fi
+        else
+            log_info "version_extract '${version_extract}' did not match tag '${tag}' — skipping" >&2
+        fi
+    done <<< "$filtered_tags"
+
+    if [[ -z "$versions_with_tags" ]]; then
+        log_error "version_extract '${version_extract}' produced no results for ${repo}" >&2
+        return 1
+    fi
+
+    # 4. Sort semver-style: sort by each dot-separated numeric component
+    #    Use sort -t. -k1,1n -k2,2n -k3,3n on the version part (first field)
+    local best_version
+    best_version=$(echo "$versions_with_tags" | \
+        sort -t' ' -k1,1 --version-sort | \
+        tail -1 | \
+        awk '{print $1}')
+
+    if [[ -z "$best_version" ]]; then
+        log_error "Failed to determine best version for ${repo}" >&2
+        return 1
+    fi
+
+    # 5. Validate: must start with a digit
+    if [[ ! "$best_version" =~ ^[0-9] ]]; then
+        log_error "Extracted version '${best_version}' does not start with a digit — aborting" >&2
+        return 1
+    fi
+
+    echo "$best_version"
+    return 0
+}
+
+# Entrypoint when script is run directly
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-github-tag "$@"
+fi

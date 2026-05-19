@@ -19,15 +19,19 @@ build_args:
 dependency_sources:
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   COMPOSER_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   COMPOSER_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: composer/composer
     strip_v: false
   APCU_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: krakjoe/apcu
     strip_v: true

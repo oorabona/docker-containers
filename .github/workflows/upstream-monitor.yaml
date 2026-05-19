@@ -53,9 +53,76 @@ jobs:
             echo "Containers to update: ${{ steps.check.outputs.containers_with_updates }}"
           fi
 
+  # Source liveness check (T7/T11): for every dependency_sources entry with a
+  # liveness_url:, HTTP HEAD the URL. Non-2xx → ::warning:: + non-zero exit.
+  # This step is intentionally SEPARATE so its failure does not cascade to
+  # downstream PR-fanout jobs (non-cascading failure design, AC-12/AC-16).
+  # BOUNDED: --max-time + --retry (AC-14).
+  check-source-liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
+        with:
+          cmd: yq --version
+
+      - name: Check source liveness (HEAD each liveness_url)
+        id: liveness
+        shell: bash
+        run: |
+          # Named constants (AC-14)
+          LIVENESS_MAX_TIME=30
+          LIVENESS_RETRY=2
+
+          failed=0
+          checked=0
+
+          for config in */config.yaml; do
+            container=$(dirname "$config")
+            if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
+              continue
+            fi
+
+            dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$config")
+            while IFS= read -r dep; do
+              [[ -z "$dep" ]] && continue
+              url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+              [[ -z "$url" || "$url" == "null" ]] && continue
+
+              checked=$((checked + 1))
+              http_code=$(curl -sI \
+                --max-time "$LIVENESS_MAX_TIME" \
+                --retry "$LIVENESS_RETRY" \
+                --retry-delay 3 \
+                -o /dev/null \
+                -w "%{http_code}" \
+                "$url" 2>/dev/null || echo "000")
+
+              if [[ "$http_code" =~ ^2 ]]; then
+                echo "  live: ${container}/${dep}: HTTP ${http_code}"
+              else
+                echo "::warning::liveness-check: ${container}/${dep} returned HTTP ${http_code} — artifact may be unavailable (url=${url})"
+                echo "  dead: ${container}/${dep}: HTTP ${http_code} (FAIL)"
+                failed=$((failed + 1))
+              fi
+            done <<< "$dep_names"
+          done
+
+          echo "Liveness check: ${checked} URLs checked, ${failed} failed"
+          if [[ "$failed" -gt 0 ]]; then
+            echo "::error::${failed} liveness check(s) failed — see ::warning:: annotations above"
+            exit 1
+          fi
+
   create-update-prs:
-    needs: check-upstream-versions
-    if: needs.check-upstream-versions.outputs.update_count > 0
+    needs: [check-upstream-versions, check-source-liveness]
+    # if: always() ensures liveness failure does not skip PR creation (AC-12/AC-16/T11)
+    if: always() && needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -608,11 +675,23 @@ jobs:
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
             # Other containers: update config.yaml build_args
+            # T12/AC-15: Coupled-atomic check — if an entry has updates_with:, both
+            # keys must be updated in the same commit or the PR is refused.
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating ${CONTAINER} build_arg $name to $latest"
               yq -i ".build_args.${name} = \"$latest\"" "${CONTAINER}/config.yaml"
+
+              # Coupled-atomic guard: if this dep has a sibling that MUST update with it,
+              # refuse the auto-PR (we cannot recompute digests here without the tarball).
+              # The refusal is surfaced as a ::warning:: so the maintainer acts.
+              updates_with=$(yq -r ".dependency_sources.${name}.updates_with // \"\"" "${CONTAINER}/config.yaml" 2>/dev/null || true)
+              if [[ -n "$updates_with" && "$updates_with" != "null" ]]; then
+                echo "::warning::deps(${CONTAINER}): ${name} has updates_with=${updates_with} — atomic update required. Auto-PR refused for this dependency; manual atomic bump required (recompute ${updates_with} alongside ${name})."
+                echo "::error::Coupled-atomic refuse: ${name} requires ${updates_with} to be updated in the same commit. Auto-PR cannot recompute the coupled value. Aborting — manual migration required."
+                exit 1
+              fi
             done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 

@@ -13,8 +13,10 @@ build_args:
 dependency_sources:
   OS_IMAGE_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   OS_IMAGE_TAG:
     monitor: false
+    lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
 value_proposition: Multi-arch (amd64 + arm64) static FROM scratch build, ~2.3 MB. SBOM-attested via Sigstore, signed git tags.

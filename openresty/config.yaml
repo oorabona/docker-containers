@@ -18,37 +18,59 @@ build_args:
   NGX_PROXY_CONNECT_VERSION: "0.0.7"
   RESTY_J: "4"
 # Maps build_arg names to their upstream source for monitoring
-# All build_args with pinned versions MUST have an entry here:
-# - monitored deps: type + source info
-# - frozen/excluded deps: monitor: false with reason
+# All build_args with pinned versions MUST have an entry here.
+# lifecycle: tracked | stable-pin | eol-migrate | untracked
 dependency_sources:
   RESTY_IMAGE_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   RESTY_IMAGE_TAG:
     monitor: false
+    lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
   RESTY_OPENSSL_VERSION:
     monitor: false
-    reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned — tracked-source monitoring redesign tracked in #453"
+    lifecycle: stable-pin
+    type: github-tag
+    repo: openssl/openssl
+    tag_filter: "^openssl-3\\.5\\."
+    version_extract: "^openssl-(3\\.5\\.[0-9]+)$"
+    supported_until: "2030-04-08"
+    supported_until_source: "https://www.openssl.org/policies/releasestrat.html"
+    liveness_url: "https://www.openssl.org/source/openssl-3.5.6.tar.gz"
+    reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned to 3.5.x — monitors patch releases within LTS line only"
   RESTY_OPENSSL_PATCH_VERSION:
     monitor: false
-    reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned — tracked-source monitoring redesign tracked in #453"
+    lifecycle: untracked
+    tracks_with: RESTY_OPENSSL_VERSION
+    reason: "Selects an openresty raw patch file (raw.githubusercontent.com/openresty/openresty/master/patches/openssl-VER-...); must be updated manually alongside RESTY_OPENSSL_VERSION"
   RESTY_PCRE_VERSION:
     monitor: false
-    reason: "PCRE2 10.47 (active); pinned — tracked-source monitoring redesign tracked in #453"
+    lifecycle: tracked
+    type: github-tag
+    repo: PCRE2Project/pcre2
+    tag_filter: "^pcre2-10\\."
+    version_extract: "^pcre2-(10\\.[0-9]+)$"
+    liveness_url: "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz"
+    reason: "PCRE2 10.x (active); tracked for latest patch releases"
   RESTY_PCRE_SHA256:
     monitor: false
-    reason: "SHA256 integrity digest for RESTY_PCRE_VERSION .tar.gz; update both together when bumping RESTY_PCRE_VERSION"
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 integrity digest for RESTY_PCRE_VERSION .tar.gz; must be recomputed atomically when bumping RESTY_PCRE_VERSION"
   LUAROCKS_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: luarocks/luarocks
     strip_v: true
   NGX_PROXY_CONNECT_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: chobits/ngx_http_proxy_connect_module
     strip_v: true
   RESTY_J:
     monitor: false
+    lifecycle: untracked
     reason: "Build parallelism, not a version to track"
 value_proposition: OpenResty with common modules pre-compiled. Multi-arch, SBOM-attested, daily upstream monitoring.

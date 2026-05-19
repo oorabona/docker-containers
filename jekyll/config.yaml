@@ -20,29 +20,38 @@ build_args:
 dependency_sources:
   RUBY_VERSION:
     monitor: false
+    lifecycle: untracked
     reason: "Base image version component — tracked via base_image_cache"
   ALPINE_VERSION:
     monitor: false
+    lifecycle: untracked
     reason: "Base image version component — tracked via base_image_cache"
   BUNDLER_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: bundler
   WEBRICK_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: webrick
   JEKYLL_FEED_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: jekyll-feed
   JEKYLL_SEO_TAG_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: jekyll-seo-tag
   JEKYLL_SITEMAP_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: jekyll-sitemap
   JEKYLL_VERSION:
+    lifecycle: tracked
     type: rubygems
     gem: jekyll
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
 value_proposition: Jekyll runtime with native build deps pre-installed. Multi-version retention tracks Jekyll upstream daily.

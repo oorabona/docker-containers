@@ -790,6 +790,7 @@ collect_variants_json() {
 # Build dependency monitoring JSON for a container's front matter
 # Reads dependency_sources from config.yaml and produces a static summary
 # (no network calls — just config introspection)
+# T16/AC-20: includes lifecycle counts and per-entry badges
 build_dependency_monitoring_json() {
     local container="$1"
     local dep_config="$2"
@@ -798,6 +799,14 @@ build_dependency_monitoring_json() {
     local total=0
     local monitored=0
     local disabled=0
+    # Lifecycle counts (AC-20)
+    local lc_tracked=0
+    local lc_stable_pin=0
+    local lc_eol_migrate=0
+    local lc_untracked=0
+
+    # Named constant for EOL countdown — matches check-dependency-versions.sh
+    local STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
 
     # Read all dependency_sources keys
     local dep_names
@@ -807,19 +816,32 @@ build_dependency_monitoring_json() {
         [[ -z "$dep_name" ]] && continue
         total=$((total + 1))
 
-        # Check if monitoring is disabled
+        # Read lifecycle field (new; backward-compat: fall back to monitor:false logic)
+        local lifecycle
+        lifecycle=$(yq -r ".dependency_sources.${dep_name}.lifecycle // \"\"" "$dep_config")
+
+        # Increment lifecycle counters
+        case "$lifecycle" in
+            tracked)      lc_tracked=$((lc_tracked + 1)) ;;
+            stable-pin)   lc_stable_pin=$((lc_stable_pin + 1)) ;;
+            eol-migrate)  lc_eol_migrate=$((lc_eol_migrate + 1)) ;;
+            untracked)    lc_untracked=$((lc_untracked + 1)) ;;
+        esac
+
+        # Backward-compat: if no lifecycle, fall back to monitor:false check
         local is_disabled
         is_disabled=$(yq -r "(.dependency_sources.${dep_name}.monitor) == false" "$dep_config")
 
-        if [[ "$is_disabled" == "true" ]]; then
+        if [[ "$is_disabled" == "true" && (-z "$lifecycle" || "$lifecycle" == "untracked") ]]; then
             disabled=$((disabled + 1))
             local reason
             reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
             deps_json=$(echo "$deps_json" | jq \
                 --arg name "$dep_name" \
                 --arg status "disabled" \
+                --arg lc "${lifecycle:-untracked}" \
                 --arg reason "$reason" \
-                '. + [{"name": $name, "status": "disabled", "reason": $reason}]')
+                '. + [{"name": $name, "status": "disabled", "lifecycle": $lc, "reason": $reason}]')
         else
             monitored=$((monitored + 1))
             local dep_type current_version source_ref
@@ -845,13 +867,35 @@ build_dependency_monitoring_json() {
                 *) source_ref="" ;;
             esac
 
+            # Compute per-entry badge for dashboard (AC-20)
+            local badge=""
+            if [[ "$lifecycle" == "eol-migrate" ]]; then
+                badge="needs-migration"
+            elif [[ "$lifecycle" == "stable-pin" ]]; then
+                local supported_until
+                supported_until=$(yq -r ".dependency_sources.${dep_name}.supported_until // \"\"" "$dep_config")
+                if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
+                    local today_epoch until_epoch days_left
+                    today_epoch=$(date +%s)
+                    until_epoch=$(date -d "$supported_until" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$supported_until" +%s 2>/dev/null || echo "0")
+                    days_left=$(( (until_epoch - today_epoch) / 86400 ))
+                    if [[ "$days_left" -le 0 ]]; then
+                        badge="eol-passed"
+                    elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
+                        badge="eol-approaching"
+                    fi
+                fi
+            fi
+
             deps_json=$(echo "$deps_json" | jq \
                 --arg name "$dep_name" \
                 --arg status "monitored" \
+                --arg lc "${lifecycle:-tracked}" \
                 --arg type "$dep_type" \
                 --arg current "$current_version" \
                 --arg source "$source_ref" \
-                '. + [{"name": $name, "status": "monitored", "type": $type, "current": $current, "source": $source}]')
+                --arg badge "$badge" \
+                '. + [{"name": $name, "status": "monitored", "lifecycle": $lc, "type": $type, "current": $current, "source": $source, "badge": $badge}]')
         fi
     done <<< "$dep_names"
 
@@ -859,8 +903,15 @@ build_dependency_monitoring_json() {
         --argjson total "$total" \
         --argjson monitored "$monitored" \
         --argjson disabled "$disabled" \
+        --argjson lc_tracked "$lc_tracked" \
+        --argjson lc_stable_pin "$lc_stable_pin" \
+        --argjson lc_eol_migrate "$lc_eol_migrate" \
+        --argjson lc_untracked "$lc_untracked" \
         --argjson deps "$deps_json" \
-        '{enabled: true, total: $total, monitored: $monitored, disabled: $disabled, deps: $deps}'
+        '{enabled: true, total: $total, monitored: $monitored, disabled: $disabled,
+          lifecycle_counts: {tracked: $lc_tracked, "stable-pin": $lc_stable_pin,
+            "eol-migrate": $lc_eol_migrate, untracked: $lc_untracked},
+          deps: $deps}'
 }
 
 # --- Output functions ---
