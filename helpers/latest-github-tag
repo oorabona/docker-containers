@@ -21,7 +21,9 @@
 # Override by passing --include-prerelease.
 #
 # Pagination: uses gh api --paginate (requires GITHUB_TOKEN or gh auth login).
-# Fallback: git ls-remote --tags (no auth required).
+# Curl path: follows Link rel="next" headers (max 10 pages) when gh is unavailable
+#   but GITHUB_TOKEN is set.
+# Fallback: git ls-remote --tags (unauthenticated, no token required).
 
 set -euo pipefail
 
@@ -39,19 +41,61 @@ STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
 
 _gh_api_tags() {
     local repo="$1"
-    # Use gh cli with paginate if available; fall back to curl
+    # Use gh cli with paginate if available; fall back to curl with pagination
     if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
         gh api --paginate "repos/${repo}/tags" --jq '.[].name' 2>/dev/null
-    else
-        # Curl fallback — fetches up to 100 tags per page (page 1 only without auth)
-        local url="${GITHUB_API_URL}/repos/${repo}/tags?per_page=100"
-        local curl_args=(-fsSL --connect-timeout 10 --max-time 30
-            -H "Accept: application/vnd.github+json")
-        if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-        fi
-        curl "${curl_args[@]}" "$url" | jq -r '.[].name' 2>/dev/null
+        return
     fi
+
+    # Curl path with Link header pagination (up to 10 pages)
+    local curl_args=(-fsSL --connect-timeout 10 --max-time 30
+        -H "Accept: application/vnd.github+json")
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+
+    local url="${GITHUB_API_URL}/repos/${repo}/tags?per_page=100"
+    local max_pages=10
+    local pages_fetched=0
+    local tags_emitted=0
+    local hdr_file
+    hdr_file=$(mktemp)
+
+    while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
+        pages_fetched=$((pages_fetched + 1))
+        local body
+        body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null) || break
+        local page_tags
+        page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null || true)
+        if [[ -n "$page_tags" ]]; then
+            printf '%s\n' "$page_tags"
+            tags_emitted=$((tags_emitted + 1))
+        fi
+        # Parse Link: <url>; rel="next" header
+        local next_url
+        next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+            | grep -o '<[^>]*>; rel="next"' \
+            | sed 's/^<//; s/>; rel="next"//' \
+            | head -1)
+        url="$next_url"
+    done
+    rm -f "$hdr_file"
+
+    # Fall back to git ls-remote when curl returned nothing (network failure,
+    # rate-limit without token, or genuinely empty repo).
+    if [[ "$tags_emitted" -eq 0 ]]; then
+        _git_ls_remote_tags "$repo"
+    fi
+}
+
+# git ls-remote --tags fallback — unauthenticated, no GITHUB_TOKEN required.
+# Returns one tag name per line (refs/tags/ prefix stripped, ^{} derefs excluded).
+_git_ls_remote_tags() {
+    local repo="$1"
+    git ls-remote --tags --refs "https://github.com/${repo}" 2>/dev/null \
+        | awk '{print $2}' \
+        | sed 's|^refs/tags/||' \
+        || true
 }
 
 latest-github-tag() {

@@ -816,7 +816,7 @@ build_dependency_monitoring_json() {
         [[ -z "$dep_name" ]] && continue
         total=$((total + 1))
 
-        # Read lifecycle field (new; backward-compat: fall back to monitor:false logic)
+        # Read lifecycle field (required; backward-compat: empty defaults to "tracked")
         local lifecycle
         lifecycle=$(yq -r ".dependency_sources.${dep_name}.lifecycle // \"\"" "$dep_config")
 
@@ -828,75 +828,81 @@ build_dependency_monitoring_json() {
             untracked)    lc_untracked=$((lc_untracked + 1)) ;;
         esac
 
-        # Backward-compat: if no lifecycle, fall back to monitor:false check
-        local is_disabled
-        is_disabled=$(yq -r "(.dependency_sources.${dep_name}.monitor) == false" "$dep_config")
+        # Status assignment is PURELY lifecycle-driven (AC-20).
+        # The legacy monitor: boolean is no longer consulted here; lifecycle:
+        # is the single source of truth for dashboard classification.
+        # Backward-compat: empty lifecycle defaults to "tracked" (transition period).
+        local effective_lifecycle="${lifecycle:-tracked}"
 
-        if [[ "$is_disabled" == "true" && (-z "$lifecycle" || "$lifecycle" == "untracked") ]]; then
-            disabled=$((disabled + 1))
-            local reason
-            reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
-            deps_json=$(echo "$deps_json" | jq \
-                --arg name "$dep_name" \
-                --arg status "disabled" \
-                --arg lc "${lifecycle:-untracked}" \
-                --arg reason "$reason" \
-                '. + [{"name": $name, "status": "disabled", "lifecycle": $lc, "reason": $reason}]')
-        else
-            monitored=$((monitored + 1))
-            local dep_type current_version source_ref
-            dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
-            current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
-            # Fallback: check extensions/config.yaml for postgres-style extensions
-            if [[ -z "$current_version" ]]; then
-                local ext_config
-                ext_config="$(dirname "$dep_config")/extensions/config.yaml"
-                if [[ -f "$ext_config" ]]; then
-                    current_version=$(yq -r ".extensions.${dep_name}.version // \"\"" "$ext_config")
-                fi
-            fi
-
-            # Build source reference for display
-            case "$dep_type" in
-                github-release|github-tag)
-                    source_ref=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$dep_config")
-                    ;;
-                pypi)
-                    source_ref=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$dep_config")
-                    ;;
-                *) source_ref="" ;;
-            esac
-
-            # Compute per-entry badge for dashboard (AC-20)
-            local badge=""
-            if [[ "$lifecycle" == "eol-migrate" ]]; then
-                badge="needs-migration"
-            elif [[ "$lifecycle" == "stable-pin" ]]; then
-                local supported_until
-                supported_until=$(yq -r ".dependency_sources.${dep_name}.supported_until // \"\"" "$dep_config")
-                if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
-                    local today_epoch until_epoch days_left
-                    today_epoch=$(date +%s)
-                    until_epoch=$(date -d "$supported_until" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$supported_until" +%s 2>/dev/null || echo "0")
-                    days_left=$(( (until_epoch - today_epoch) / 86400 ))
-                    if [[ "$days_left" -le 0 ]]; then
-                        badge="eol-passed"
-                    elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
-                        badge="eol-approaching"
+        case "$effective_lifecycle" in
+            untracked|eol-migrate)
+                disabled=$((disabled + 1))
+                local reason
+                reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
+                local entry_badge=""
+                [[ "$effective_lifecycle" == "eol-migrate" ]] && entry_badge="needs-migration"
+                deps_json=$(echo "$deps_json" | jq \
+                    --arg name "$dep_name" \
+                    --arg status "$effective_lifecycle" \
+                    --arg lc "$effective_lifecycle" \
+                    --arg reason "$reason" \
+                    --arg badge "$entry_badge" \
+                    '. + [{"name": $name, "status": $status, "lifecycle": $lc, "reason": $reason, "badge": $badge}]')
+                ;;
+            stable-pin|tracked)
+                monitored=$((monitored + 1))
+                local dep_type current_version source_ref
+                dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
+                current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
+                # Fallback: check extensions/config.yaml for postgres-style extensions
+                if [[ -z "$current_version" ]]; then
+                    local ext_config
+                    ext_config="$(dirname "$dep_config")/extensions/config.yaml"
+                    if [[ -f "$ext_config" ]]; then
+                        current_version=$(yq -r ".extensions.${dep_name}.version // \"\"" "$ext_config")
                     fi
                 fi
-            fi
 
-            deps_json=$(echo "$deps_json" | jq \
-                --arg name "$dep_name" \
-                --arg status "monitored" \
-                --arg lc "${lifecycle:-tracked}" \
-                --arg type "$dep_type" \
-                --arg current "$current_version" \
-                --arg source "$source_ref" \
-                --arg badge "$badge" \
-                '. + [{"name": $name, "status": "monitored", "lifecycle": $lc, "type": $type, "current": $current, "source": $source, "badge": $badge}]')
-        fi
+                # Build source reference for display
+                case "$dep_type" in
+                    github-release|github-tag)
+                        source_ref=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$dep_config")
+                        ;;
+                    pypi)
+                        source_ref=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$dep_config")
+                        ;;
+                    *) source_ref="" ;;
+                esac
+
+                # Compute per-entry badge for stable-pin date escalation (AC-20)
+                local badge=""
+                if [[ "$effective_lifecycle" == "stable-pin" ]]; then
+                    local supported_until
+                    supported_until=$(yq -r ".dependency_sources.${dep_name}.supported_until // \"\"" "$dep_config")
+                    if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
+                        local today_epoch until_epoch days_left
+                        today_epoch=$(date +%s)
+                        until_epoch=$(date -d "$supported_until" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$supported_until" +%s 2>/dev/null || echo "0")
+                        days_left=$(( (until_epoch - today_epoch) / 86400 ))
+                        if [[ "$days_left" -le 0 ]]; then
+                            badge="eol-passed"
+                        elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
+                            badge="eol-approaching"
+                        fi
+                    fi
+                fi
+
+                deps_json=$(echo "$deps_json" | jq \
+                    --arg name "$dep_name" \
+                    --arg status "monitored" \
+                    --arg lc "$effective_lifecycle" \
+                    --arg type "$dep_type" \
+                    --arg current "$current_version" \
+                    --arg source "$source_ref" \
+                    --arg badge "$badge" \
+                    '. + [{"name": $name, "status": "monitored", "lifecycle": $lc, "type": $type, "current": $current, "source": $source, "badge": $badge}]')
+                ;;
+        esac
     done <<< "$dep_names"
 
     jq -n \
