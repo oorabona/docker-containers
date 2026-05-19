@@ -128,7 +128,8 @@ docker exec openresty luarocks list
 | `RESTY_VERSION` | OpenResty version (same as VERSION) | ${VERSION} |
 | `RESTY_OPENSSL_VERSION` | OpenSSL version (3.5 LTS) | 3.5.6 |
 | `RESTY_OPENSSL_PATCH_VERSION` | OpenResty OpenSSL patch version | 3.5.5 |
-| `RESTY_PCRE_VERSION` | PCRE version (frozen at 8.x) | 8.45 |
+| `RESTY_PCRE_VERSION` | PCRE2 version | 10.47 |
+| `RESTY_PCRE_SHA256` | SHA256 digest for the PCRE2 .tar.gz (must match `RESTY_PCRE_VERSION`; update both together) | (see config.yaml) |
 | `RESTY_J` | Parallel build jobs | 4 |
 | `RESTY_CONFIG_OPTIONS` | Nginx build options | (see Dockerfile) |
 | `RESTY_CONFIG_OPTIONS_MORE` | Additional configure options | -j${RESTY_J} |
@@ -256,21 +257,21 @@ This container includes the following pinned dependencies:
 | Alpine Linux | latest | Active | Base image |
 | OpenResty | (from version.sh) | Active | Main application |
 | OpenSSL | 3.5.6 | Pinned (3.5 LTS) | LTS, supported to 2030-04-08; migrated from EOL 1.1.1w (#448) |
-| PCRE | 8.45 | Frozen (EOL) | PCRE 8.x is legacy, PCRE2 not used — migration tracked in #453 |
+| PCRE2 | 10.47 | Active (pinned) | Migrated from EOL PCRE1 8.45 (#453 volet 1); tracked-source monitoring redesign tracked in #453 |
 | LuaRocks | 3.13.0 | Active | Lua package manager |
 | ngx_http_proxy_connect_module | 0.0.7 | Active | Optional forward proxy support |
 
 **Note on pinned dependencies:**
 
 - **OpenSSL 3.5.6**: Pinned to the OpenSSL 3.5 LTS series (supported to 2030-04-08). Migrated from the EOL 1.1.1w pin after openssl.org removed the 1.1.1w tarball and broke the build (#448). OpenResty's `sess_set_get_cb_yield` patch (version 3.5.5) is applied for Lua coroutine session-callback yield. `monitor: false` is retained for now; the tracked-source monitoring redesign is tracked in #453.
-- **PCRE 8.45**: Legacy PCRE library (not PCRE2). OpenResty builds against PCRE 8.x for compatibility. Same latent EOL-removal risk as the old OpenSSL pin — PCRE2 10.x migration is tracked in #453.
+- **PCRE2 10.47**: Migrated from EOL PCRE1 8.45 (#453 volet 1). Downloaded from `github.com/PCRE2Project/pcre2/releases` and integrity-verified via SHA256 (`RESTY_PCRE_SHA256`) before extraction. `RESTY_PCRE_VERSION` now refers to a PCRE2 version (PCRE1 is retired). When bumping the version, update both `RESTY_PCRE_VERSION` and `RESTY_PCRE_SHA256` together — they are coupled to the same `.tar.gz` asset. `monitor:false` is retained; tracked-source monitoring redesign is tracked in #453.
 
 ## Architecture
 
 ### Build Process
 
 1. **Bootstrap**: Downloads and compiles OpenSSL 3.5.x with OpenResty patches
-2. **PCRE Compilation**: Builds PCRE with JIT support
+2. **PCRE2 Compilation**: Downloads, SHA256-verifies, and builds PCRE2 10.47 with JIT support
 3. **Optional Module**: Downloads ngx_http_proxy_connect_module if enabled
 4. **OpenResty Build**: Configures and compiles OpenResty with all modules
 5. **LuaRocks Installation**: Installs Lua package manager
@@ -330,7 +331,7 @@ This container includes the following pinned dependencies:
 │   ├── html/               # Default web root
 │   └── logs/               # Logs (symlinked to stdout/stderr)
 ├── openssl/                # OpenSSL libraries
-└── pcre/                   # PCRE libraries
+└── pcre2/                  # PCRE2 libraries
 ```
 
 ## Common Use Cases

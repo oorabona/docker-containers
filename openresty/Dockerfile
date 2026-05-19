@@ -18,6 +18,7 @@ ARG RESTY_OPENSSL_VERSION
 ARG RESTY_OPENSSL_PATCH_VERSION
 ARG RESTY_OPENSSL_URL_BASE="https://www.openssl.org/source"
 ARG RESTY_PCRE_VERSION
+ARG RESTY_PCRE_SHA256
 ARG RESTY_J
 ARG RESTY_CONFIG_OPTIONS="\
     --with-compat \
@@ -57,21 +58,22 @@ ARG RESTY_ADD_PACKAGE_RUNDEPS=""
 
 # These are not intended to be user-specified
 ARG _RESTY_CONFIG_DEPS="--with-pcre \
-    --with-cc-opt='-DNGX_LUA_ABORT_AT_PANIC -I/usr/local/openresty/pcre/include -I/usr/local/openresty/openssl/include' \
-    --with-ld-opt='-L/usr/local/openresty/pcre/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre/lib:/usr/local/openresty/openssl/lib' \
+    --with-cc-opt='-DNGX_LUA_ABORT_AT_PANIC -I/usr/local/openresty/pcre2/include -I/usr/local/openresty/openssl/include' \
+    --with-ld-opt='-L/usr/local/openresty/pcre2/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre2/lib:/usr/local/openresty/openssl/lib' \
     "
 
 # For Luarocks
 ARG LUAROCKS_VERSION
 
 # Validate required build args
-RUN : "${RESTY_VERSION:?required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
+RUN : "${RESTY_VERSION:?required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
 
 LABEL resty_image_base="${RESTY_IMAGE_BASE}"
 LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
 LABEL resty_version="${RESTY_VERSION}"
 LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"
 LABEL resty_pcre_version="${RESTY_PCRE_VERSION}"
+LABEL resty_pcre_sha256="${RESTY_PCRE_SHA256}"
 LABEL resty_config_options="${RESTY_CONFIG_OPTIONS}"
 LABEL resty_config_options_more="${RESTY_CONFIG_OPTIONS_MORE}"
 LABEL resty_config_deps="${_RESTY_CONFIG_DEPS}"
@@ -121,17 +123,39 @@ RUN set -ex \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install_sw \
     && cd /tmp \
-    && curl -fSL https://sourceforge.net/projects/pcre/files/pcre/${RESTY_PCRE_VERSION}/pcre-${RESTY_PCRE_VERSION}.tar.gz/download -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
-    && tar xzf pcre-${RESTY_PCRE_VERSION}.tar.gz \
-    && cd /tmp/pcre-${RESTY_PCRE_VERSION} \
-    && ./configure \
-        --prefix=/usr/local/openresty/pcre \
-        --disable-cpp \
+    && curl -fSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${RESTY_PCRE_VERSION}/pcre2-${RESTY_PCRE_VERSION}.tar.gz" -o pcre2-${RESTY_PCRE_VERSION}.tar.gz \
+    && echo "${RESTY_PCRE_SHA256}  pcre2-${RESTY_PCRE_VERSION}.tar.gz" | shasum -a 256 --check \
+    && tar xzf pcre2-${RESTY_PCRE_VERSION}.tar.gz \
+    && cd /tmp/pcre2-${RESTY_PCRE_VERSION} \
+    && CFLAGS="-g -O3" ./configure \
+        --prefix=/usr/local/openresty/pcre2 \
+        --libdir=/usr/local/openresty/pcre2/lib \
         --enable-jit \
-        --enable-utf \
-        --enable-unicode-properties \
-    && make -j${RESTY_J} \
-    && make -j${RESTY_J} install \
+        --enable-pcre2grep-jit \
+        --disable-bsr-anycrlf \
+        --disable-coverage \
+        --disable-ebcdic \
+        --disable-fuzz-support \
+        --disable-jit-sealloc \
+        --disable-never-backslash-C \
+        --enable-newline-is-lf \
+        --enable-pcre2-8 \
+        --enable-pcre2-16 \
+        --enable-pcre2-32 \
+        --enable-pcre2grep-callout \
+        --enable-pcre2grep-callout-fork \
+        --disable-pcre2grep-libbz2 \
+        --disable-pcre2grep-libz \
+        --disable-pcre2test-libedit \
+        --enable-percent-zt \
+        --disable-rebuild-chartables \
+        --enable-shared \
+        --disable-static \
+        --disable-silent-rules \
+        --enable-unicode \
+        --disable-valgrind \
+    && CFLAGS="-g -O3" make -j${RESTY_J} \
+    && CFLAGS="-g -O3" make -j${RESTY_J} install \
     && cd /tmp \
     && curl -fSL https://openresty.org/download/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
     && tar xzf openresty-${RESTY_VERSION}.tar.gz
