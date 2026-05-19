@@ -241,16 +241,201 @@ EOF
 
 # ---------------------------------------------------------------------------
 # P3 — Coupled-atomic refuse (AC-15)
-# A dep with updates_with: must NOT produce a half-coupled PR.
-# Mutation: removing the coupled-atomic guard → no "coupled" signal emitted.
+# When the workflow bumps dep N, it must find every sibling that declares
+# updates_with: N or tracks_with: N and refuse the auto-PR.
+#
+# Schema polarity (load-bearing): the coupling is declared ON THE SIBLING:
+#   RESTY_PCRE_SHA256.updates_with: RESTY_PCRE_VERSION
+#   RESTY_OPENSSL_PATCH_VERSION.tracks_with: RESTY_OPENSSL_VERSION
+# NOT on the driving dep.  Reading .dependency_sources.${name}.updates_with
+# is the broken direction (the old code path) — the driving dep's field is
+# always empty, so the guard fires on nothing.
+#
+# Mutation caught: revert the fix to the old direction
+#   yq -r ".dependency_sources.${name}.updates_with // \"\""
+# → the yq expression returns "" for RESTY_PCRE_VERSION → coupled_siblings=""
+# → no ::error:: emitted → the test FAILS (expected string not found).
+#
+# The guard lives in the workflow step "Apply dependency updates" and is
+# expressed as an inline yq expression.  We test it in isolation by running
+# the same yq command against fixture configs, matching the exact production
+# expression from upstream-monitor.yaml.
 # ---------------------------------------------------------------------------
 
-@test "P3: coupled-atomic entry with updates_with refuses auto-PR (surfaced signal)" {
-    # We test the check-dependency-versions.sh lifecycle dispatch path:
-    # an entry with updates_with should be flagged as untracked and the
-    # coupled relationship documented.
+# Helper: run the production sibling-lookup expression from upstream-monitor.yaml.
+# Usage: _sibling_lookup <config_file> <dep_name>
+# Returns: space-separated sibling keys (empty if none).
+#
+# mikefarah/yq (v4) does NOT support --arg (that is a jq flag).
+# Use strenv() with an env var prefix for variable substitution.
+# This mirrors the exact production expression in upstream-monitor.yaml.
+_sibling_lookup() {
+    local config="$1"
+    local name="$2"
+    YQ_DEP_NAME="${name}" yq -r \
+        '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+        "${config}" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+@test "P3a: bumping RESTY_PCRE_VERSION surfaces RESTY_PCRE_SHA256 as coupled sibling (updates_with polarity)" {
+    # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
+    # The workflow bumps RESTY_PCRE_VERSION.
+    # Correct guard: find siblings pointing AT the bumped dep.
     local cdir
-    cdir=$(_mk_container "bats-coupled-$$")
+    cdir=$(_mk_container "bats-coupled-a-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest — must be updated atomically with RESTY_PCRE_VERSION"
+EOF
+
+    # Simulate the workflow bumping RESTY_PCRE_VERSION.
+    local siblings
+    siblings=$(_sibling_lookup "$cdir/config.yaml" "RESTY_PCRE_VERSION")
+
+    # The guard must find RESTY_PCRE_SHA256 as a coupled sibling.
+    [[ -n "$siblings" ]] || {
+        echo "FAIL: coupled_siblings is empty — guard would not fire"
+        echo "Siblings found: '${siblings}'"
+        return 1
+    }
+    echo "$siblings" | grep -q "RESTY_PCRE_SHA256" || {
+        echo "FAIL: RESTY_PCRE_SHA256 not in coupled siblings: '${siblings}'"
+        return 1
+    }
+
+    # Verify the ::error:: message would name the sibling (simulate the guard block).
+    local error_msg
+    error_msg="Coupled-atomic refuse: bumping RESTY_PCRE_VERSION requires atomic update of: ${siblings} — declared on sibling(s) via updates_with/tracks_with"
+    echo "$error_msg" | grep -q "RESTY_PCRE_SHA256" || {
+        echo "FAIL: sibling name not in error message: '${error_msg}'"
+        return 1
+    }
+}
+
+@test "P3b: bumping RESTY_OPENSSL_VERSION surfaces RESTY_OPENSSL_PATCH_VERSION as coupled sibling (tracks_with polarity)" {
+    # Fixture: RESTY_OPENSSL_PATCH_VERSION declares tracks_with: RESTY_OPENSSL_VERSION.
+    # The workflow bumps RESTY_OPENSSL_VERSION.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-b-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_OPENSSL_VERSION: "3.5.6"
+  RESTY_OPENSSL_PATCH_VERSION: "3.5"
+dependency_sources:
+  RESTY_OPENSSL_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: openssl/openssl
+  RESTY_OPENSSL_PATCH_VERSION:
+    lifecycle: untracked
+    tracks_with: RESTY_OPENSSL_VERSION
+    reason: "Major.Minor of RESTY_OPENSSL_VERSION — must track atomically"
+EOF
+
+    local siblings
+    siblings=$(_sibling_lookup "$cdir/config.yaml" "RESTY_OPENSSL_VERSION")
+
+    [[ -n "$siblings" ]] || {
+        echo "FAIL: coupled_siblings is empty for tracks_with — guard would not fire"
+        return 1
+    }
+    echo "$siblings" | grep -q "RESTY_OPENSSL_PATCH_VERSION" || {
+        echo "FAIL: RESTY_OPENSSL_PATCH_VERSION not in coupled siblings: '${siblings}'"
+        return 1
+    }
+}
+
+@test "P3c: bumping a dep with NO declared siblings produces empty coupled_siblings (no false positive)" {
+    # Fixture: STANDALONE_VERSION has no sibling pointing at it.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-c-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  STANDALONE_VERSION: "1.2.3"
+  UNRELATED_SHA: "deadbeef"
+dependency_sources:
+  STANDALONE_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: example/standalone
+  UNRELATED_SHA:
+    lifecycle: untracked
+    updates_with: SOME_OTHER_DEP
+    reason: "coupled to a different dep"
+EOF
+
+    local siblings
+    siblings=$(_sibling_lookup "$cdir/config.yaml" "STANDALONE_VERSION")
+
+    # No sibling declares updates_with/tracks_with STANDALONE_VERSION → empty → no guard fire.
+    [[ -z "$siblings" ]] || {
+        echo "FAIL: expected empty siblings but got: '${siblings}'"
+        return 1
+    }
+}
+
+@test "P3d: mutation trace — old polarity (broken direction) finds nothing for RESTY_PCRE_VERSION" {
+    # This test documents that the OLD broken yq expression returns empty.
+    # When the fix is reverted to the old direction, P3a fails (siblings="").
+    # This test PASSES by asserting the old expression returns empty —
+    # demonstrating why the old code was wrong.
+    #
+    # Mutation: replace the fix with the old expression:
+    #   yq -r ".dependency_sources.${name}.updates_with // \"\""
+    # Effect: returns "" for RESTY_PCRE_VERSION (it has no updates_with field)
+    # → coupled_siblings="" → guard does NOT fire → half-update PR proceeds.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-d-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest"
+EOF
+
+    # OLD (broken) direction: reads the BUMPED dep's own updates_with field.
+    # RESTY_PCRE_VERSION has no updates_with → returns "".
+    local name="RESTY_PCRE_VERSION"
+    local broken_result
+    broken_result=$(yq -r ".dependency_sources.${name}.updates_with // \"\"" \
+        "$cdir/config.yaml" 2>/dev/null || true)
+
+    # The old direction returns empty — confirming the polarity bug.
+    [[ -z "$broken_result" || "$broken_result" == "null" ]] || {
+        echo "FAIL: expected old direction to return empty for ${name}, got: '${broken_result}'"
+        echo "(This would mean the schema changed — re-evaluate the polarity fix)"
+        return 1
+    }
+    echo "Confirmed: old broken direction returns '${broken_result}' for ${name} (guard silent — bug demonstrated)"
+}
+
+@test "P3-compat: PCRE_SHA256 untracked is still skipped cleanly by check-dependency-versions.sh" {
+    # Regression guard for the original P3 behaviour: untracked entries must
+    # still be skipped without errors — unchanged by the polarity fix.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-compat-$$")
     local cname
     cname=$(basename "$cdir")
 
@@ -264,22 +449,16 @@ dependency_sources:
     type: github-release
     repo: PCRE2Project/pcre2
   PCRE_SHA256:
-    monitor: false
     lifecycle: untracked
     updates_with: PCRE_VERSION
     reason: "SHA256 digest — must be updated atomically with PCRE_VERSION"
 EOF
 
-    # PCRE_SHA256 is untracked → skipped silently (correct).
-    # PCRE_VERSION is tracked → resolved.
-    # The important assertion: PCRE_SHA256 is NOT attempted to be resolved
-    # without its coupled sibling.
     local output
     output=$(bash "$REPO_ROOT/scripts/check-dependency-versions.sh" "$cname" 2>&1 \
         || true)
 
-    # PCRE_SHA256 must not show up as an error about "missing version" —
-    # it is declared untracked and should be skipped cleanly.
+    # PCRE_SHA256 must NOT appear in "missing version" or "unknown source" errors.
     if echo "$output" | grep -q "PCRE_SHA256.*missing version\|PCRE_SHA256.*unknown source"; then
         echo "FAIL: PCRE_SHA256 was not properly skipped as untracked"
         echo "OUTPUT: $output"

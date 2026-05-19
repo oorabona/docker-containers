@@ -172,8 +172,14 @@ check_container_deps() {
                 errors_json=$(echo "$errors_json" | jq \
                     --arg msg "${dep_name}: EOL dependency (eol-migrate) — manual migration required: ${reason}" \
                     '. + [$msg]')
-                # Do NOT continue past here; fall through to version resolution so the
-                # current vs latest delta is still surfaced (informational).
+                # continue: do NOT fall through to version resolution.
+                # An eol-migrate dep must NEVER enter updates_json and trigger an
+                # auto-PR — the intent is "manual migration required", not
+                # "auto-bump to latest". The downstream create-update-prs job has
+                # no lifecycle filter, so the single point of enforcement is here.
+                # Contract: create-update-prs reads only what enters updates_json;
+                # eol-migrate entries are excluded at this dispatch site.
+                continue
                 ;;
             stable-pin)
                 # Deliberately pinned to a supported branch/LTS.
