@@ -55,14 +55,30 @@ classify_version_change() {
 }
 
 # Build source URL for a dependency update
+# Args: type source version [raw_tag]
+#   raw_tag: optional 4th argument for github-tag type.
+#     When provided, used as-is for the releases/tag/ path (e.g. "openssl-3.5.6").
+#     When absent for github-tag, falls back to "v${version}" (standard GitHub convention).
+#   For github-release the GitHub API already returns the tag name; callers may
+#   pass it as raw_tag too, but the v-prefix fallback is correct for most releases.
 build_source_url() {
     local type="$1"
     local source="$2"
     local version="$3"
+    local raw_tag="${4:-}"
 
     case "$type" in
-        github-release|github-tag)
+        github-release)
             echo "https://github.com/${source}/releases/tag/v${version}"
+            ;;
+        github-tag)
+            # Use the actual raw tag if we have it (avoids wrong v-prefix for
+            # non-standard tag schemes like openssl-3.5.6 or pcre2-10.47).
+            if [[ -n "$raw_tag" ]]; then
+                echo "https://github.com/${source}/releases/tag/${raw_tag}"
+            else
+                echo "https://github.com/${source}/releases/tag/v${version}"
+            fi
             ;;
         pypi)
             echo "https://pypi.org/project/${source}/${version}/"
@@ -193,12 +209,17 @@ check_container_deps() {
                     days_left=$(( (until_epoch - today_epoch) / 86400 ))
 
                     if [[ "$days_left" -le 0 ]]; then
-                        # Past EOL: treat as eol-migrate-equivalent — loud every run
+                        # Past EOL: treat as eol-migrate-equivalent — loud every run.
+                        # STOP here: do NOT fall through to version resolution.
+                        # An EOL-passed stable-pin must never enter updates_json and
+                        # trigger an auto-PR — the intent is "manual migration required".
+                        # Contract mirrors eol-migrate: surface-only, then continue.
                         echo "::warning::${container}/${dep_name}: lifecycle=stable-pin has PASSED supported_until=${supported_until} — treat as eol-migrate. Manual migration required." >&2
                         log_error "[${container}] ${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" >&2
                         errors_json=$(echo "$errors_json" | jq \
                             --arg msg "${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" \
                             '. + [$msg]')
+                        continue
                     elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
                         # Within countdown window: emit warning
                         echo "::warning::${container}/${dep_name}: lifecycle=stable-pin EOL approaching — ${days_left} days until ${supported_until} (STABLE_PIN_WARN_DAYS=${STABLE_PIN_WARN_DAYS})" >&2
@@ -206,7 +227,8 @@ check_container_deps() {
                     fi
                     # If days_left > STABLE_PIN_WARN_DAYS: silent OK (no warning yet)
                 fi
-                # Fall through to version resolution (patch within pin line)
+                # Fall through to version resolution ONLY when still within support window.
+                # (Past-EOL branch above issues continue before reaching here.)
                 ;;
             tracked|"")
                 # tracked: actively follow latest upstream.
@@ -244,6 +266,7 @@ check_container_deps() {
         # Query latest version based on type
         local latest_version=""
         local source_ref=""
+        local latest_raw_tag=""  # raw tag for github-tag type (used in URL builder)
 
         case "$dep_type" in
             github-release)
@@ -282,10 +305,17 @@ check_container_deps() {
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
                     --tag-filter "$tag_filter" \
-                    --version-extract "$version_extract" 2>/dev/null) || {
+                    --version-extract "$version_extract" \
+                    --output version 2>/dev/null) || {
                     errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitHub tag API error for ${repo}" '. + [$msg]')
                     continue
                 }
+                # Also capture the raw tag so build_source_url uses the correct scheme
+                # (e.g. "openssl-3.5.6" not "v3.5.6"; "pcre2-10.47" not "v10.47").
+                latest_raw_tag=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
+                    --tag-filter "$tag_filter" \
+                    --version-extract "$version_extract" \
+                    --output raw 2>/dev/null) || latest_raw_tag=""
                 ;;
             pypi)
                 local package
@@ -331,7 +361,7 @@ check_container_deps() {
             local change_type
             change_type=$(classify_version_change "$current_version" "$latest_version")
             local source_url
-            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version")
+            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag")
 
             updates_json=$(echo "$updates_json" | jq \
                 --arg name "$dep_name" \

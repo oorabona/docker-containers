@@ -703,7 +703,7 @@ jobs:
               # Correct lookup: scan ALL siblings for .updates_with/$name or
               # .tracks_with/$name.
               # mikefarah/yq uses strenv() not --arg for variable substitution.
-              YQ_DEP_NAME="${name}" coupled_siblings=$(yq -r \
+              coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
                 '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
                 "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
               if [[ -n "$coupled_siblings" ]]; then

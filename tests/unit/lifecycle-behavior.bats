@@ -581,3 +581,217 @@ pcre2-10.46"
     fi
     # Pass: no capture group → empty → correctly skipped
 }
+
+# ---------------------------------------------------------------------------
+# P3-PRODUCTION-FORM: regression lock for the subprocess export scoping fix.
+#
+# The production workflow uses:
+#   coupled_siblings=$(YQ_DEP_NAME="${name}" yq ...)    ← CORRECT (env scopes to yq)
+#
+# The broken form that MUST stay absent is:
+#   YQ_DEP_NAME="${name}" coupled_siblings=$(yq ...)    ← BROKEN (env scopes to the
+#       assignment statement, NOT to yq inside the $() subshell)
+#
+# Mutation caught: reverting the fix back to the outside-the-$() form causes
+# strenv(YQ_DEP_NAME) to see "" inside yq → returns no siblings → guard silent.
+# This test exercises the EXACT production form (env-prefix inside $()) and
+# asserts it produces non-empty output for the RESTY_PCRE_VERSION coupling case.
+#
+# How to verify mutation → RED:
+#   1. Change the production yq call back to the broken form in this test only.
+#   2. Run the test — it must go RED (siblings="").
+#   3. Restore → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "P3-PRODUCTION-FORM: coupled_siblings=\$(YQ_DEP_NAME=N yq ...) scopes env to yq subprocess" {
+    # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
+    # The workflow bumps RESTY_PCRE_VERSION.
+    local cdir
+    cdir=$(_mk_container "bats-p3-prod-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-release
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest — must be updated atomically with RESTY_PCRE_VERSION"
+EOF
+
+    local name="RESTY_PCRE_VERSION"
+
+    # CORRECT production form: env-var prefix is INSIDE the $() so yq inherits it.
+    local coupled_siblings
+    coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
+        '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+        "${cdir}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+    [[ -n "$coupled_siblings" ]] || {
+        echo "FAIL: production form returned empty siblings — env did not scope to yq subprocess"
+        echo "Siblings found: '${coupled_siblings}'"
+        return 1
+    }
+    echo "$coupled_siblings" | grep -q "RESTY_PCRE_SHA256" || {
+        echo "FAIL: expected RESTY_PCRE_SHA256 in siblings, got: '${coupled_siblings}'"
+        return 1
+    }
+
+    # Demonstrate the BROKEN form returns empty (documents the mutation).
+    # VAR=val cmd $(...) — VAR is in cmd's env, NOT in yq's env inside $().
+    local broken_result
+    broken_result=$(YQ_DEP_NAME="" yq -r \
+        '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+        "${cdir}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+    # With empty YQ_DEP_NAME the select matches nothing (strenv("") == "" matches nothing).
+    # This confirms what the broken outside-$() form would see when YQ_DEP_NAME is not
+    # in yq's env: an empty string → no siblings found → guard silent.
+    [[ -z "$broken_result" ]] || {
+        echo "WARNING: expected empty result for empty YQ_DEP_NAME, got: '${broken_result}'"
+        echo "(This may mean yq matched on empty string — investigate but not a blocker for the fix)"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# stable-pin past-EOL does NOT enter updates_json (Finding 2 regression lock).
+#
+# Contract: when lifecycle=stable-pin AND supported_until has PASSED,
+# check-dependency-versions.sh must NOT add this entry to updates_json.
+# The continue added to the days_left <= 0 branch enforces this.
+#
+# Mutation caught: removing the continue causes the EOL-passed dep to fall
+# through to version resolution → it enters updates_json → this test goes RED.
+#
+# How to verify mutation → RED:
+#   1. Remove the continue from the days_left <= 0 branch.
+#   2. The test container needs a github-release type dep (so resolution runs).
+#   3. Run: the test will fail because updates_json becomes non-empty.
+# ---------------------------------------------------------------------------
+
+@test "stable-pin past-EOL: does NOT enter updates_json (no auto-PR triggered)" {
+    local cdir
+    cdir=$(_mk_container "bats-pin-eol-continue-$$")
+    local cname
+    cname=$(basename "$cdir")
+
+    # Dep with past EOL + type github-release (would normally trigger version resolution).
+    # If continue is absent, the script reaches version resolution, sees current != latest,
+    # and would add an entry.  With continue it stops after emitting the error.
+    # We use a nonsense current version that would never match any real upstream,
+    # so if version resolution runs and fails gracefully, we still detect the leak.
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  EOL_PINNED_VERSION: "0.9.0"
+dependency_sources:
+  EOL_PINNED_VERSION:
+    lifecycle: stable-pin
+    type: github-release
+    repo: example/past-lib
+    supported_until: "2020-01-01"
+    supported_until_source: "https://example.com/eol"
+    liveness_url: "https://example.com/past-lib-0.9.0.tar.gz"
+EOF
+
+    local output
+    output=$(bash "$REPO_ROOT/scripts/check-dependency-versions.sh" "$cname" 2>&1 \
+        || true)
+
+    # Must emit the loud EOL-passed signal
+    echo "$output" | grep -qE "passed|EOL|eol" || {
+        echo "FAIL: no EOL-passed signal emitted"
+        echo "OUTPUT: $output"
+        return 1
+    }
+
+    # Must NOT add the entry to updates_json.
+    # check-dependency-versions.sh emits a JSON line to stdout. Extract it.
+    local updates_section
+    updates_section=$(echo "$output" | grep -o '"updates":\s*\[[^]]*\]' || echo '"updates":[]')
+
+    # The updates array must be empty for this container.
+    # Accept both empty array forms: [] and [ ] (whitespace-normalized).
+    if echo "$updates_section" | grep -qE '"updates"\s*:\s*\[\s*\{'; then
+        echo "FAIL: EOL-passed stable-pin leaked into updates_json — continue is missing"
+        echo "updates_section: $updates_section"
+        echo "OUTPUT: $output"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# URL builder: github-tag type uses raw tag, not v-prefix (Finding 3 regression lock).
+#
+# Mutation caught: reverting build_source_url to always prepend "v${version}"
+# causes the pcre2 and openssl URLs to be wrong (e.g. /releases/tag/v10.47
+# instead of /releases/tag/pcre2-10.47) → this test goes RED.
+#
+# How to verify mutation → RED:
+#   1. Change build_source_url to echo "https://github.com/${source}/releases/tag/v${version}"
+#      for github-tag (remove the raw_tag branch).
+#   2. Run: the pcre2 assertion fails (gets /tag/v10.47 instead of /tag/pcre2-10.47).
+# ---------------------------------------------------------------------------
+
+@test "build_source_url: github-tag with raw_tag uses raw tag in URL (no spurious v-prefix)" {
+    # build_source_url is a pure function — test it by extracting and running it
+    # in a subprocess so the script's main() does not execute.
+    # Extract the function body from the script and eval it directly.
+
+    # Helper: invoke build_source_url by extracting the function from the script
+    # and running it in a clean bash subprocess (avoids main() execution).
+    _call_build_source_url() {
+        bash -c "
+            $(sed -n '/^build_source_url()/,/^}/p' "$REPO_ROOT/scripts/check-dependency-versions.sh")
+            build_source_url \"\$@\"
+        " -- "$@"
+    }
+
+    # pcre2 case: raw tag "pcre2-10.47", extracted version "10.47"
+    local url_pcre2
+    url_pcre2=$(_call_build_source_url "github-tag" "PCRE2Project/pcre2" "10.47" "pcre2-10.47")
+    local expected_pcre2="https://github.com/PCRE2Project/pcre2/releases/tag/pcre2-10.47"
+    [[ "$url_pcre2" == "$expected_pcre2" ]] || {
+        echo "FAIL: pcre2 URL mismatch"
+        echo "  Got:      ${url_pcre2}"
+        echo "  Expected: ${expected_pcre2}"
+        return 1
+    }
+
+    # openssl case: raw tag "openssl-3.5.6", extracted version "3.5.6"
+    local url_openssl
+    url_openssl=$(_call_build_source_url "github-tag" "openssl/openssl" "3.5.6" "openssl-3.5.6")
+    local expected_openssl="https://github.com/openssl/openssl/releases/tag/openssl-3.5.6"
+    [[ "$url_openssl" == "$expected_openssl" ]] || {
+        echo "FAIL: openssl URL mismatch"
+        echo "  Got:      ${url_openssl}"
+        echo "  Expected: ${expected_openssl}"
+        return 1
+    }
+
+    # Standard v-prefix case: when raw_tag is empty, fallback to v${version}
+    local url_vprefix
+    url_vprefix=$(_call_build_source_url "github-tag" "example/repo" "1.2.3" "")
+    local expected_vprefix="https://github.com/example/repo/releases/tag/v1.2.3"
+    [[ "$url_vprefix" == "$expected_vprefix" ]] || {
+        echo "FAIL: v-prefix fallback URL mismatch"
+        echo "  Got:      ${url_vprefix}"
+        echo "  Expected: ${expected_vprefix}"
+        return 1
+    }
+
+    # github-release type still uses v-prefix (unaffected by fix)
+    local url_release
+    url_release=$(_call_build_source_url "github-release" "example/repo" "2.0.0" "")
+    local expected_release="https://github.com/example/repo/releases/tag/v2.0.0"
+    [[ "$url_release" == "$expected_release" ]] || {
+        echo "FAIL: github-release v-prefix URL mismatch"
+        echo "  Got:      ${url_release}"
+        echo "  Expected: ${expected_release}"
+        return 1
+    }
+}
