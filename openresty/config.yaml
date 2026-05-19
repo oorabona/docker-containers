@@ -10,8 +10,8 @@ base_image_cache:
 build_args:
   RESTY_IMAGE_BASE: "alpine"
   RESTY_IMAGE_TAG: "latest"
-  RESTY_OPENSSL_VERSION: "1.1.1w"
-  RESTY_OPENSSL_PATCH_VERSION: "1.1.1f"
+  RESTY_OPENSSL_VERSION: "3.5.6"
+  RESTY_OPENSSL_PATCH_VERSION: "3.5.5"
   RESTY_PCRE_VERSION: "8.45"
   LUAROCKS_VERSION: "3.13.0"
   NGX_PROXY_CONNECT_VERSION: "0.0.7"
@@ -29,10 +29,10 @@ dependency_sources:
     reason: "Base image tag fallback, not a version to track"
   RESTY_OPENSSL_VERSION:
     monitor: false
-    reason: "OpenSSL 1.1.1 is EOL, frozen"
+    reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned — tracked-source monitoring redesign tracked in #453"
   RESTY_OPENSSL_PATCH_VERSION:
     monitor: false
-    reason: "OpenSSL 1.1.1 is EOL, frozen"
+    reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned — tracked-source monitoring redesign tracked in #453"
   RESTY_PCRE_VERSION:
     monitor: false
     reason: "PCRE 8.x is legacy, frozen"
