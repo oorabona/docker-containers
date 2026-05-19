@@ -76,3 +76,12 @@ A transient external degradation has no code signature. Reading the code or re-r
 - **Reviews check diffs; they do not check premises.** The most consequential error here was upstream of every line anyone reviewed.
 
 The headline number — 67 minutes to 10 — was real. The story attached to it was not. The most useful thing this project can publish is not the fix; it is the six rounds of measurement it took to disprove our own published root cause, and the admission that the thing that "fixed" the stall was GitHub having a bad hour, and us being there to take the credit.
+
+## Postscript (2026-05-19): the lessons, acted on
+
+A post-mortem that only writes lessons is itself a kind of archaeology. Two follow-ups closed the loop:
+
+- **The data-dropping guard was removed** (PR #471). The 25 MiB SBOM cutoff — the regression this post criticised — is gone; only the cheap `timeout 60 jq` backstop remains, and the `github-runner` windows-dev package breakdown is back on the dashboard.
+- **The "instrument the failing operation while it fails" lesson was shipped** (PR #475, commit `7fd8428`). The dashboard generator now emits a per-call latency line to the run log for every `gh api`, GHCR, skopeo, and attestation call — plus a `::warning::` annotation when a single call exceeds its threshold. If GitHub has another bad hour, it will show up *as it happens*, as a labelled slow call, not as a silent 22-minute gap reconstructed days later. The exact instrumentation this incident lacked is now always on.
+
+The number we could not explain post-hoc is now one we will be able to see live.
