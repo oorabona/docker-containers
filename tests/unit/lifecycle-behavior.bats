@@ -25,13 +25,48 @@ teardown() {
         [[ -L "$link" ]] && rm -f "$link"
     done
     cd "$ORIG_DIR" 2>/dev/null || true
+
+    # CLASS-LEVEL CLEANLINESS CHECK (Class #2 regression lock):
+    # Verify no bats-* symlinks leaked into REPO_ROOT after teardown.
+    # A leak means _mk_container was called via $(...) so CONTAINER_SYMLINKS
+    # was populated in a subshell — the symlink was created but never registered,
+    # and teardown() could not remove it.
+    local leaked=0
+    local leaked_list=""
+    while IFS= read -r -d '' link; do
+        # Only flag symlinks pointing into a bats tmp dir
+        local target
+        target=$(readlink -f "$link" 2>/dev/null || true)
+        if [[ "$target" == *"/bats"* || "$target" == *"/tmp."* ]]; then
+            leaked=$((leaked + 1))
+            leaked_list="$leaked_list $link"
+            rm -f "$link"  # best-effort cleanup to avoid polluting subsequent tests
+        fi
+    done < <(find "$REPO_ROOT" -maxdepth 1 -name "bats-*" -type l -print0 2>/dev/null)
+    if [[ "$leaked" -gt 0 ]]; then
+        echo "CLEANLINESS FAIL: ${leaked} symlink(s) leaked into REPO_ROOT after teardown."
+        echo "  Leaked:${leaked_list}"
+        echo "  This means _mk_container was called via \$(...) (subshell) somewhere in this test."
+        echo "  Fix: call _mk_container directly and use local cdir=\"\$_MK_CONTAINER_RESULT\"."
+        return 1
+    fi
 }
 
 # Create a synthetic container dir under BATS_TEST_TMPDIR (per-test isolation).
 # A symlink is created in REPO_ROOT so that check-dependency-versions.sh can
 # resolve <container>/config.yaml via PROJECT_ROOT.
 # bats auto-cleans BATS_TEST_TMPDIR; the symlink is removed in teardown().
-# Usage: cdir=$(_mk_container <name>)
+#
+# IMPORTANT: This function registers the symlink in CONTAINER_SYMLINKS and
+# writes the directory path to _MK_CONTAINER_RESULT. Call it as a direct call
+# (NOT via command substitution) to ensure the CONTAINER_SYMLINKS side-effect
+# reaches the parent shell:
+#
+#   _mk_container "my-name-$$"
+#   local cdir="$_MK_CONTAINER_RESULT"
+#
+# Calling via $(_mk_container ...) runs it in a subshell: the CONTAINER_SYMLINKS
+# append is lost and teardown() never removes the symlink.
 _mk_container() {
     local name="$1"
     local dir="${BATS_TEST_TMPDIR}/${name}"
@@ -40,7 +75,7 @@ _mk_container() {
     local link="${REPO_ROOT}/${name}"
     ln -sfn "$dir" "$link"
     CONTAINER_SYMLINKS+=("$link")
-    echo "$dir"
+    _MK_CONTAINER_RESULT="$dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -54,8 +89,8 @@ _mk_container() {
 
 @test "P1: eol-migrate entry produces a LOUD ::warning:: via check-dependency-versions.sh" {
     # Synthetic container with an eol-migrate entry — must live under REPO_ROOT
-    local cdir
-    cdir=$(_mk_container "bats-eol-test-$$")
+    _mk_container "bats-eol-test-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -92,8 +127,8 @@ EOF
 }
 
 @test "P1: eol-migrate entry does NOT silently continue (output contains the dep name)" {
-    local cdir
-    cdir=$(_mk_container "bats-eol-test2-$$")
+    _mk_container "bats-eol-test2-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -130,8 +165,8 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "stable-pin date escalation: silent when > STABLE_PIN_WARN_DAYS away" {
-    local cdir
-    cdir=$(_mk_container "bats-pin-silent-$$")
+    _mk_container "bats-pin-silent-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -168,8 +203,8 @@ EOF
 }
 
 @test "stable-pin date escalation: ::warning:: countdown when within STABLE_PIN_WARN_DAYS" {
-    local cdir
-    cdir=$(_mk_container "bats-pin-countdown-$$")
+    _mk_container "bats-pin-countdown-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -206,8 +241,8 @@ EOF
 }
 
 @test "stable-pin date escalation: loud surface when past supported_until" {
-    local cdir
-    cdir=$(_mk_container "bats-pin-past-$$")
+    _mk_container "bats-pin-past-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -280,8 +315,8 @@ _sibling_lookup() {
     # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
     # The workflow bumps RESTY_PCRE_VERSION.
     # Correct guard: find siblings pointing AT the bumped dep.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-a-$$")
+    _mk_container "bats-coupled-a-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -325,8 +360,8 @@ EOF
 @test "P3b: bumping RESTY_OPENSSL_VERSION surfaces RESTY_OPENSSL_PATCH_VERSION as coupled sibling (tracks_with polarity)" {
     # Fixture: RESTY_OPENSSL_PATCH_VERSION declares tracks_with: RESTY_OPENSSL_VERSION.
     # The workflow bumps RESTY_OPENSSL_VERSION.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-b-$$")
+    _mk_container "bats-coupled-b-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -358,8 +393,8 @@ EOF
 
 @test "P3c: bumping a dep with NO declared siblings produces empty coupled_siblings (no false positive)" {
     # Fixture: STANDALONE_VERSION has no sibling pointing at it.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-c-$$")
+    _mk_container "bats-coupled-c-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -396,8 +431,8 @@ EOF
     #   yq -r ".dependency_sources.${name}.updates_with // \"\""
     # Effect: returns "" for RESTY_PCRE_VERSION (it has no updates_with field)
     # → coupled_siblings="" → guard does NOT fire → half-update PR proceeds.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-d-$$")
+    _mk_container "bats-coupled-d-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -433,8 +468,8 @@ EOF
 @test "P3-compat: PCRE_SHA256 untracked is still skipped cleanly by check-dependency-versions.sh" {
     # Regression guard for the original P3 behaviour: untracked entries must
     # still be skipped without errors — unchanged by the polarity fix.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-compat-$$")
+    _mk_container "bats-coupled-compat-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -605,8 +640,8 @@ pcre2-10.46"
 @test "P3-PRODUCTION-FORM: coupled_siblings=\$(YQ_DEP_NAME=N yq ...) scopes env to yq subprocess" {
     # Fixture: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
     # The workflow bumps RESTY_PCRE_VERSION.
-    local cdir
-    cdir=$(_mk_container "bats-p3-prod-$$")
+    _mk_container "bats-p3-prod-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -674,8 +709,8 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "stable-pin past-EOL: does NOT enter updates_json (no auto-PR triggered)" {
-    local cdir
-    cdir=$(_mk_container "bats-pin-eol-continue-$$")
+    _mk_container "bats-pin-eol-continue-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
     local cname
     cname=$(basename "$cdir")
 
@@ -837,6 +872,103 @@ for i, ch in enumerate(text):
 }
 
 # ---------------------------------------------------------------------------
+# CLASS-LEVEL URL regression lock: ALL github-tag entries in ALL configs →
+# EVERY URL builder produces raw-tag URL (no spurious v-prefix).
+#
+# This test iterates every config.yaml in the repo, finds every entry with
+# type: github-tag, derives the raw_tag from tag_filter and the version from
+# build_args, then asserts build_source_url() (the only URL builder for
+# github-tag in the V2 diff) produces a URL containing the raw tag literal —
+# NOT v${extracted_version}.
+#
+# Mutation caught: reverting ANY github-tag branch in build_source_url to use
+# v${version} causes at least one assertion to fail (the first github-tag
+# config found with a non-v-prefix tag scheme).
+#
+# New github-tag entries added to any config.yaml are automatically covered —
+# no test update required as long as tag_filter follows the "prefix-version"
+# convention (e.g. ^openssl-3\.5\.).
+# ---------------------------------------------------------------------------
+
+@test "CLASS-LEVEL: all github-tag config entries produce raw-tag URLs from build_source_url" {
+    # Extract build_source_url function once and reuse across all assertions.
+    _call_build_source_url_fn() {
+        bash -c "
+            $(sed -n '/^build_source_url()/,/^}/p' "$REPO_ROOT/scripts/check-dependency-versions.sh")
+            build_source_url \"\$@\"
+        " -- "$@"
+    }
+
+    local failures=0
+    local fail_log=""
+
+    # Iterate all container config.yaml files in the repo.
+    while IFS= read -r config; do
+        [[ -f "$config" ]] || continue
+        # Get all dependency_sources entries with type: github-tag
+        local entries
+        entries=$(yq -r '
+            .dependency_sources // {} | to_entries[]
+            | select(.value.type == "github-tag")
+            | [.key, (.value.repo // ""), (.value.tag_filter // ""), (.value.version_extract // "")]
+            | @tsv
+        ' "$config" 2>/dev/null) || continue
+        [[ -z "$entries" ]] && continue
+
+        local container
+        container=$(basename "$(dirname "$config")")
+
+        # shellcheck disable=SC2034  # version_extract read for completeness; unused in URL construction
+        while IFS=$'\t' read -r dep_key repo tag_filter version_extract; do
+            [[ -z "$repo" ]] && continue
+
+            # Derive the expected raw-tag prefix from tag_filter.
+            # Convention: tag_filter = "^prefix-MAJOR." where prefix is literal
+            # (e.g. "^openssl-3\." → prefix "openssl-", "^pcre2-10\." → prefix "pcre2-").
+            # We extract the literal prefix up to the first digit run.
+            local tag_prefix
+            tag_prefix=$(echo "$tag_filter" | sed -E 's/^\^//; s/\\//g; s/[0-9].*//')
+
+            # Get the configured version from build_args
+            local version
+            version=$(yq -r ".build_args.${dep_key} // \"\"" "$config" 2>/dev/null)
+            [[ -z "$version" || "$version" == "null" ]] && continue
+
+            # The expected raw_tag for a "prefix-version" scheme is "${tag_prefix}${version}"
+            local raw_tag="${tag_prefix}${version}"
+            local expected_url="https://github.com/${repo}/releases/tag/${raw_tag}"
+
+            # Invoke build_source_url with the raw_tag — must produce expected URL.
+            local actual_url
+            actual_url=$(_call_build_source_url_fn "github-tag" "$repo" "$version" "$raw_tag")
+
+            if [[ "$actual_url" != "$expected_url" ]]; then
+                failures=$((failures + 1))
+                fail_log="$fail_log\n  [${container}/${dep_key}] got='${actual_url}' want='${expected_url}'"
+            fi
+
+            # Also assert: the URL does NOT contain "tag/v${version}"
+            # (catches the specific v-prefix regression this class fixes).
+            local spurious_vprefix_url="https://github.com/${repo}/releases/tag/v${version}"
+            if [[ "$actual_url" == "$spurious_vprefix_url" && "$raw_tag" != "v${version}" ]]; then
+                failures=$((failures + 1))
+                fail_log="$fail_log\n  [${container}/${dep_key}] spurious v-prefix: got='${actual_url}'"
+            fi
+
+        done <<< "$entries"
+    done < <(find "$REPO_ROOT" -maxdepth 2 -name "config.yaml" \
+        -not -path "*/postgres/extensions/config.yaml" \
+        -not -path "*/bats-*" \
+        | sort)
+
+    if [[ "$failures" -gt 0 ]]; then
+        echo "FAIL: ${failures} github-tag URL(s) used wrong format:"
+        printf '%b\n' "$fail_log"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Fix-C regression lock: dashboard lifecycle-aware status accounting (AC-20)
 #
 # Contract: lifecycle: is the SOLE key for dashboard status classification.
@@ -862,8 +994,8 @@ for i, ch in enumerate(text):
 # ---------------------------------------------------------------------------
 
 @test "dashboard Fix-C: lifecycle=untracked + monitor=true → status='untracked', NOT 'monitored'" {
-    local cdir
-    cdir=$(_mk_container "bats-dash-lc-$$")
+    _mk_container "bats-dash-lc-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     # Corner case: lifecycle explicitly untracked but monitor: true
     cat > "$cdir/config.yaml" <<'EOF'
@@ -1017,8 +1149,8 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "Fix-#1: variant_deps_for_flavor includes stable-pin entries regardless of monitor: flag" {
-    local cdir
-    cdir=$(_mk_container "bats-vdf-stable-pin-$$")
+    _mk_container "bats-vdf-stable-pin-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     # Fixture: one stable-pin entry with monitor: false, one untracked (must be excluded).
     cat > "$cdir/config.yaml" <<'EOF'
@@ -1086,8 +1218,8 @@ EOF
 @test "Fix-#2: coupled-atomic guard ALLOWS when sibling is also in update set (atomic update)" {
     # Simulate the coupled-atomic guard logic from upstream-monitor.yaml.
     # UPDATES JSON has both RESTY_PCRE_VERSION and RESTY_PCRE_SHA256 → all siblings present.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-allow-$$")
+    _mk_container "bats-coupled-allow-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
@@ -1142,8 +1274,8 @@ EOF
     #
     # Mutation caught: removing the per-sibling membership check causes missing_siblings
     # to remain empty → guard allows the partial update → test RED.
-    local cdir
-    cdir=$(_mk_container "bats-coupled-refuse-$$")
+    _mk_container "bats-coupled-refuse-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
 
     cat > "$cdir/config.yaml" <<'EOF'
 build_args:
