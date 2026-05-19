@@ -12,7 +12,8 @@ build_args:
   RESTY_IMAGE_TAG: "latest"
   RESTY_OPENSSL_VERSION: "3.5.6"
   RESTY_OPENSSL_PATCH_VERSION: "3.5.5"
-  RESTY_PCRE_VERSION: "8.45"
+  RESTY_PCRE_VERSION: "10.47"
+  RESTY_PCRE_SHA256: "c08ae2388ef333e8403e670ad70c0a11f1eed021fd88308d7e02f596fcd9dc16"
   LUAROCKS_VERSION: "3.13.0"
   NGX_PROXY_CONNECT_VERSION: "0.0.7"
   RESTY_J: "4"
@@ -35,7 +36,10 @@ dependency_sources:
     reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned — tracked-source monitoring redesign tracked in #453"
   RESTY_PCRE_VERSION:
     monitor: false
-    reason: "PCRE 8.x is legacy, frozen"
+    reason: "PCRE2 10.47 (active); pinned — tracked-source monitoring redesign tracked in #453"
+  RESTY_PCRE_SHA256:
+    monitor: false
+    reason: "SHA256 integrity digest for RESTY_PCRE_VERSION .tar.gz; update both together when bumping RESTY_PCRE_VERSION"
   LUAROCKS_VERSION:
     type: github-release
     repo: luarocks/luarocks
