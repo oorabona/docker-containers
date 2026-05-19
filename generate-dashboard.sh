@@ -209,7 +209,9 @@ get_container_versions() {
 
     local current_version latest_version status_color status_text
 
+    local _t0_skopeo=${EPOCHREALTIME:-}
     current_version=$(get_current_published_version "oorabona/$container")
+    log_latency "skopeo-list-tags oorabona/$container" "$_t0_skopeo" 60
     # Handle empty result
     [[ -z "$current_version" ]] && current_version="no-published-version"
 
@@ -552,10 +554,12 @@ collect_variant_json() {
     fi
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] subject_digest for $container-$sbom_tag = ${subject_digest:0:60}…" >&2
+    local _t0_att=${EPOCHREALTIME:-}
     if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
         && attestation_id=$(get_attestation_id "$subject_digest"); then
         attestation_url=$(get_attestation_url "$attestation_id")
     fi
+    log_latency "gh-attestation" "$_t0_att" 20
 
     # Trivy: collect vulnerability summary for the primary platform (linux/amd64)
     local trivy_category trivy_summary
@@ -568,7 +572,9 @@ collect_variant_json() {
     local multi_arch_platforms_json="[]"
     if [[ "$current_version" != "no-published-version" ]]; then
         local raw_sizes arch_list=""
+        local _t0_ghcr=${EPOCHREALTIME:-}
         raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+        log_latency "ghcr-index oorabona/${container}:${variant_tag}" "$_t0_ghcr" 30
         if [[ -n "$raw_sizes" ]]; then
             arch_list=$(echo "$raw_sizes" | awk -F: '{print $1}' | \
                 jq -R . | jq -s '.')
@@ -582,7 +588,9 @@ collect_variant_json() {
     local multi_arch_digests_json
     multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
     if [[ "$current_version" != "no-published-version" ]]; then
+        local _t0_ghcr_ma=${EPOCHREALTIME:-}
         multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+        log_latency "ghcr-index oorabona/${container}:${variant_tag} (multi-arch)" "$_t0_ghcr_ma" 30
         [[ -z "$multi_arch_digests_json" ]] && \
             multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
     fi
@@ -922,8 +930,10 @@ get_ghcr_sizes() {
     local tag=${2:-latest}
     local sizes_output=""
 
+    local _t0_ghcr_sz=${EPOCHREALTIME:-}
     local raw_sizes
-    raw_sizes=$(ghcr_get_manifest_sizes "$image" "$tag") || return
+    raw_sizes=$(ghcr_get_manifest_sizes "$image" "$tag") || { log_latency "ghcr-index ${image}:${tag}" "$_t0_ghcr_sz" 30; return 1; }
+    log_latency "ghcr-index ${image}:${tag}" "$_t0_ghcr_sz" 30
 
     while IFS=':' read -r arch bytes; do
         [[ -z "$arch" || -z "$bytes" ]] && continue
@@ -945,12 +955,16 @@ github_api_get() {
     local endpoint="$1"
     local max_time="${2:-15}"
 
+    local _t0=${EPOCHREALTIME:-}
+    local _rc=0
     if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-        gh api "$endpoint" 2>/dev/null
+        gh api "$endpoint" 2>/dev/null || _rc=$?
     else
         curl -s --max-time "$max_time" \
-            "https://api.github.com/$endpoint" 2>/dev/null
+            "https://api.github.com/$endpoint" 2>/dev/null || _rc=$?
     fi
+    log_latency "gh-api ${endpoint%%\?*}" "$_t0" 30
+    return $_rc
 }
 
 # --- Stats calculation functions ---
@@ -1407,10 +1421,12 @@ generate_data() {
                         echo "[debug] non-variant: using fallback build_digest=$subject_digest for $container-$current_version" >&2
                 fi
             fi
+            local _t0_att=${EPOCHREALTIME:-}
             if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
                 && attestation_id=$(get_attestation_id "$subject_digest"); then
                 attestation_url=$(get_attestation_url "$attestation_id")
             fi
+            log_latency "gh-attestation" "$_t0_att" 20
             trivy_category=$(build_trivy_category "$container" "$current_version" "linux/amd64")
             trivy_summary=$(get_trivy_summary "$trivy_category" || echo "{}")
             [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
@@ -1443,8 +1459,9 @@ generate_data() {
         # versions-only containers where per-variant platforms are not emitted.
         if [[ "$current_version" != "no-published-version" ]]; then
             local container_arch_list=""
-            local container_raw_sizes
+            local container_raw_sizes _t0_ghcr_cv=${EPOCHREALTIME:-}
             container_raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$current_version" 2>/dev/null) || true
+            log_latency "ghcr-index oorabona/${container}:${current_version}" "$_t0_ghcr_cv" 30
             if [[ -n "$container_raw_sizes" ]]; then
                 container_arch_list=$(echo "$container_raw_sizes" | awk -F: '{print $1}' | \
                     jq -R . | jq -s '.')
