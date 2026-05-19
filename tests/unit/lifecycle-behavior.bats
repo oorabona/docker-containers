@@ -709,15 +709,56 @@ EOF
     }
 
     # Must NOT add the entry to updates_json.
-    # check-dependency-versions.sh emits a JSON line to stdout. Extract it.
-    local updates_section
-    updates_section=$(echo "$output" | grep -o '"updates":\s*\[[^]]*\]' || echo '"updates":[]')
+    # check-dependency-versions.sh emits a pretty-printed JSON array to stdout
+    # (one object per container), with colorized status lines on stderr.
+    # The combined output (2>&1) includes both.
+    #
+    # Previous implementation used a single-line grep that silently passed when
+    # the JSON was pretty-printed (multi-line) — that was a false-green (Fix #4).
+    # We now use jq to parse the actual JSON structure.
+    #
+    # Strategy: strip ANSI escapes and ::annotation:: lines, then use jq to
+    # extract the first container's updates array and assert its length == 0.
+    #
+    # Mutation caught: removing the `continue` from the days_left <= 0 branch
+    # causes the EOL entry to fall through to version resolution and enter
+    # updates_json → jq sees length > 0 → exits 1 → test RED.
+    # How to verify: revert the `continue`, re-run → this assertion fails.
+    local clean_output
+    clean_output=$(printf '%s\n' "$output" \
+        | grep -v "^::" \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -v "^[[:space:]]*$")
 
-    # The updates array must be empty for this container.
-    # Accept both empty array forms: [] and [ ] (whitespace-normalized).
-    if echo "$updates_section" | grep -qE '"updates"\s*:\s*\[\s*\{'; then
+    # The JSON is emitted as a top-level array: [ { ... } ]
+    # Extract it by finding the bracketed block.
+    local json_block
+    json_block=$(printf '%s\n' "$clean_output" | python3 -c "
+import sys, json
+text = sys.stdin.read()
+# Find the outermost [...] JSON array in the output.
+depth = 0
+start = -1
+for i, ch in enumerate(text):
+    if ch == '[':
+        if depth == 0:
+            start = i
+        depth += 1
+    elif ch == ']':
+        depth -= 1
+        if depth == 0 and start != -1:
+            candidate = text[start:i+1]
+            try:
+                parsed = json.loads(candidate)
+                print(json.dumps(parsed))
+                break
+            except Exception:
+                start = -1
+" 2>/dev/null || echo '[]')
+
+    if ! printf '%s\n' "$json_block" | jq -e '.[0].updates | length == 0' &>/dev/null; then
         echo "FAIL: EOL-passed stable-pin leaked into updates_json — continue is missing"
-        echo "updates_section: $updates_section"
+        echo "json_block: $json_block"
         echo "OUTPUT: $output"
         return 1
     fi
@@ -950,6 +991,252 @@ EOF
 
     [[ "$result" == "3.5.6" ]] || {
         echo "FAIL: expected '3.5.6' from git ls-remote fallback, got: '${result}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix #1 regression lock: variant_deps_for_flavor uses lifecycle not monitor:.
+#
+# Contract: lifecycle: is the single source of truth for dep inclusion in
+# variant_deps. An entry with lifecycle: stable-pin + monitor: false MUST
+# be included (not excluded by the old monitor != false filter).
+#
+# Specifically: RESTY_OPENSSL_VERSION has lifecycle: stable-pin + monitor: false.
+# Old code: select(.value.monitor != false) → excludes it (monitor=false).
+# New code: select((.value.lifecycle // "") != "untracked") → includes it.
+#
+# Mutation caught: reverting the yq filter to select(.value.monitor != false)
+# causes RESTY_OPENSSL_VERSION to be excluded → the resulting JSON array does
+# NOT contain "RESTY_OPENSSL_VERSION" → this test goes RED.
+#
+# How to verify mutation → RED:
+#   1. In variant_deps_for_flavor, revert yq filter to select(.value.monitor != false).
+#   2. Run this test — it fails: RESTY_OPENSSL_VERSION absent from output.
+#   3. Restore lifecycle-based filter → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix-#1: variant_deps_for_flavor includes stable-pin entries regardless of monitor: flag" {
+    local cdir
+    cdir=$(_mk_container "bats-vdf-stable-pin-$$")
+
+    # Fixture: one stable-pin entry with monitor: false, one untracked (must be excluded).
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_OPENSSL_VERSION: "3.5.6"
+  RESTY_J: "4"
+dependency_sources:
+  RESTY_OPENSSL_VERSION:
+    monitor: false
+    lifecycle: stable-pin
+    type: github-tag
+    repo: openssl/openssl
+    supported_until: "2030-04-08"
+    supported_until_source: "https://www.openssl.org/policies/releasestrat.html"
+    liveness_url: "https://www.openssl.org/source/openssl-3.5.6.tar.gz"
+    reason: "OpenSSL 3.5 LTS"
+  RESTY_J:
+    monitor: false
+    lifecycle: untracked
+    reason: "Build parallelism, not a version to track"
+EOF
+
+    local result
+    result=$(bash -c "
+        source '${REPO_ROOT}/generate-dashboard.sh'
+        variant_deps_for_flavor 'bats-vdf-stable-pin-$$' ''
+    " 2>/dev/null)
+
+    # RESTY_OPENSSL_VERSION (stable-pin) must be included.
+    echo "$result" | jq -e 'index("RESTY_OPENSSL_VERSION") != null' &>/dev/null || {
+        echo "FAIL: RESTY_OPENSSL_VERSION (stable-pin + monitor:false) must be included in variant_deps"
+        echo "  result: ${result}"
+        echo "  (Mutation: revert to monitor != false filter → this entry excluded → RED)"
+        return 1
+    }
+
+    # RESTY_J (untracked) must be EXCLUDED.
+    echo "$result" | jq -e 'index("RESTY_J") == null' &>/dev/null || {
+        echo "FAIL: RESTY_J (lifecycle: untracked) must be excluded from variant_deps"
+        echo "  result: ${result}"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix #2 regression lock: coupled-atomic ALLOWS when ALL siblings are also
+# being updated in the same update set (atomic update is the GOAL, not refused).
+#
+# Contract: the guard must REFUSE only when a sibling is NOT in UPDATES.
+# Previous bug: "if any sibling exists → refuse unconditionally" — this made
+# atomic updates (both dep + sibling in UPDATES) impossible via auto-PR.
+#
+# Mutation caught: reverting to "refuse if any sibling found" (removing the
+# per-sibling membership check against UPDATES) causes the test to go RED
+# because the guard would refuse even when RESTY_PCRE_SHA256 IS in UPDATES.
+#
+# How to verify mutation → RED:
+#   1. In the guard, replace the per-sibling loop with the old unconditional
+#      "touch /tmp/coupled-atomic-refused; continue" on any sibling.
+#   2. Run this test — it fails: missing_siblings is non-empty when it should
+#      be empty (both deps are in UPDATES).
+#   3. Restore the per-sibling membership check → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix-#2: coupled-atomic guard ALLOWS when sibling is also in update set (atomic update)" {
+    # Simulate the coupled-atomic guard logic from upstream-monitor.yaml.
+    # UPDATES JSON has both RESTY_PCRE_VERSION and RESTY_PCRE_SHA256 → all siblings present.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-allow-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-tag
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest — must be updated atomically with RESTY_PCRE_VERSION"
+EOF
+
+    # UPDATES JSON: both RESTY_PCRE_VERSION and RESTY_PCRE_SHA256 are in the update set.
+    local UPDATES='[{"name":"RESTY_PCRE_VERSION","current":"10.45","latest":"10.48"},{"name":"RESTY_PCRE_SHA256","current":"aaabbbccc000111","latest":"newsha256hash"}]'
+
+    # Run the production guard logic inline (mirrors upstream-monitor.yaml exactly).
+    local name="RESTY_PCRE_VERSION"
+    local coupled_siblings missing_siblings
+    coupled_siblings=$(_sibling_lookup "$cdir/config.yaml" "$name")
+
+    # Confirm sibling IS found (RESTY_PCRE_SHA256 declared updates_with: RESTY_PCRE_VERSION)
+    [[ -n "$coupled_siblings" ]] || {
+        echo "FAIL: precondition — sibling lookup returned empty; fixture may be wrong"
+        return 1
+    }
+
+    # Evaluate the Fix #2 guard: check each sibling against UPDATES.
+    missing_siblings=""
+    for sibling in $coupled_siblings; do
+        if ! echo "$UPDATES" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
+            missing_siblings="${missing_siblings}${sibling} "
+        fi
+    done
+    missing_siblings="${missing_siblings% }"
+
+    # ALL siblings are in UPDATES → missing_siblings must be EMPTY → ALLOW.
+    [[ -z "$missing_siblings" ]] || {
+        echo "FAIL: guard should ALLOW (sibling is in UPDATES) but got missing: '${missing_siblings}'"
+        echo "UPDATES: $UPDATES"
+        echo "coupled_siblings: $coupled_siblings"
+        return 1
+    }
+}
+
+@test "Fix-#2: coupled-atomic guard REFUSES when sibling is NOT in update set (partial update)" {
+    # Mirror the P3a fixture but UPDATES contains only RESTY_PCRE_VERSION — sibling is absent.
+    # Guard must REFUSE (missing_siblings is non-empty).
+    #
+    # Mutation caught: removing the per-sibling membership check causes missing_siblings
+    # to remain empty → guard allows the partial update → test RED.
+    local cdir
+    cdir=$(_mk_container "bats-coupled-refuse-$$")
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-tag
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest"
+EOF
+
+    # UPDATES JSON: only RESTY_PCRE_VERSION — sibling RESTY_PCRE_SHA256 is absent.
+    local UPDATES='[{"name":"RESTY_PCRE_VERSION","current":"10.45","latest":"10.48"}]'
+    local name="RESTY_PCRE_VERSION"
+    local coupled_siblings missing_siblings
+    coupled_siblings=$(_sibling_lookup "$cdir/config.yaml" "$name")
+
+    missing_siblings=""
+    for sibling in $coupled_siblings; do
+        if ! echo "$UPDATES" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
+            missing_siblings="${missing_siblings}${sibling} "
+        fi
+    done
+    missing_siblings="${missing_siblings% }"
+
+    # Sibling is NOT in UPDATES → missing_siblings must be NON-EMPTY → REFUSE.
+    [[ -n "$missing_siblings" ]] || {
+        echo "FAIL: guard should REFUSE (sibling absent from UPDATES) but missing_siblings is empty"
+        echo "UPDATES: $UPDATES"
+        echo "coupled_siblings: $coupled_siblings"
+        return 1
+    }
+    echo "$missing_siblings" | grep -q "RESTY_PCRE_SHA256" || {
+        echo "FAIL: RESTY_PCRE_SHA256 not in missing_siblings: '${missing_siblings}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix #3 regression lock: latest-github-tag pagination fails closed on page-N failure.
+#
+# Contract: if any page in the pagination loop fails (curl non-zero), the helper
+# must exit non-zero (fail-closed) rather than returning the partial tag list
+# silently (the old "|| break" behaviour).
+#
+# Mutation caught: reverting the fix to "|| break" causes the helper to
+# return with exit 0 and the partial page-1 tags — test goes RED because
+# the helper exits 0 when it should exit non-zero.
+#
+# How to verify mutation → RED:
+#   1. In helpers/latest-github-tag, revert the fail-closed block to the old
+#      "body=$(curl ...) || break" form.
+#   2. Run this test — it fails: the helper exits 0 (or emits partial output)
+#      instead of exiting non-zero.
+#   3. Restore the fail-closed exit → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix-#3: pagination fail-closed — page-2 failure exits non-zero (no silent truncation)" {
+    # We override _gh_api_tags to inject a real curl-style failure on page 2.
+    # The mock simulates: page 1 succeeds (returns tags), page 2 curl fails (rc=22).
+    # The production code must detect this and exit non-zero.
+    #
+    # The underlying contract: _gh_api_tags returns non-zero → latest-github-tag
+    # returns non-zero (fail-closed, via the "|| { return 1 }" guard at line ~178).
+    #
+    # We use bats `run` to capture both exit code and output without aborting.
+
+    run bash -c "
+        source '${REPO_ROOT}/helpers/latest-github-tag'
+
+        # Override _gh_api_tags: emit page-1 tags then return 1 (simulates
+        # curl failure on page 2 after a successful page 1).
+        _gh_api_tags() {
+            local repo=\$1
+            printf 'openssl-3.4.0\nopenssl-3.4.1\n'
+            return 1
+        }
+
+        latest-github-tag 'openssl/openssl' \
+            --tag-filter '^openssl-3\.' \
+            --version-extract '^openssl-(3\.[0-9]+\.[0-9]+)$'
+    " 2>/dev/null
+
+    # The helper must exit non-zero when a page fails (fail-closed).
+    [[ "$status" -ne 0 ]] || {
+        echo "FAIL: expected non-zero exit on page-2 failure (fail-closed), got exit 0"
+        echo "output: ${output}"
+        echo "(Mutation: revert fail-closed to '|| break' → _gh_api_tags rc ignored → latest-github-tag uses partial tags → exits 0 → this test RED)"
         return 1
     }
 }

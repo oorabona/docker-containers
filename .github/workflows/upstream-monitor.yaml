@@ -98,7 +98,38 @@ jobs:
             dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$config")
             while IFS= read -r dep; do
               [[ -z "$dep" ]] && continue
-              url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+
+              # For tracked entries: prefer liveness_url_template if present.
+              # Template uses {version} placeholder substituted with the current
+              # pinned version from build_args, keeping liveness coherent with
+              # the version the build actually fetches (Fix #5 / AC-16).
+              # For stable-pin / untracked entries: use static liveness_url.
+              lifecycle=$(yq -r ".dependency_sources.${dep}.lifecycle // \"\"" "$config")
+              url_template=$(yq -r ".dependency_sources.${dep}.liveness_url_template // \"\"" "$config")
+              url=""
+
+              if [[ "$lifecycle" == "tracked" && -n "$url_template" && "$url_template" != "null" ]]; then
+                # Substitute {version} with the current pinned version from build_args.
+                current_version=$(yq -r ".build_args.${dep} // \"\"" "$config")
+                if [[ -n "$current_version" && "$current_version" != "null" ]]; then
+                  url="${url_template//\{version\}/$current_version}"
+                else
+                  # No build_args entry for this dep — fall back to static liveness_url.
+                  url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+                fi
+              elif [[ "$lifecycle" == "tracked" && ( -z "$url_template" || "$url_template" == "null" ) ]]; then
+                # tracked entry without liveness_url_template — advisory warning only.
+                # Falls through to static liveness_url for backward-compat.
+                static_url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+                if [[ -n "$static_url" && "$static_url" != "null" ]]; then
+                  echo "::warning::liveness-template: ${container}/${dep} is tracked but has no liveness_url_template — static liveness_url may become stale when version is bumped"
+                fi
+                url="$static_url"
+              else
+                # stable-pin / eol-migrate / untracked: static liveness_url is correct.
+                url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+              fi
+
               [[ -z "$url" || "$url" == "null" ]] && continue
 
               checked=$((checked + 1))
@@ -707,13 +738,28 @@ jobs:
                 '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
                 "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
               if [[ -n "$coupled_siblings" ]]; then
-                echo "::warning::deps(${CONTAINER}): bumping ${name} requires atomic update of coupled sibling(s): ${coupled_siblings} — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: ${name} ${coupled_siblings} together)." >&2
-                echo "::error::Coupled-atomic refuse: bumping ${name} requires atomic update of: ${coupled_siblings} — declared on sibling(s) via updates_with/tracks_with — the PR creator must update all of them together or refuse this auto-PR." >&2
-                # Skip only this dep's update (continue the loop); the summary
-                # job will surface this container as needing manual attention.
-                # Using a marker file avoids exiting the entire while-loop step.
-                touch /tmp/coupled-atomic-refused
-                continue
+                # Refuse ONLY if a sibling is NOT also being updated in this same
+                # run (AC-15 intent: "refuse partial updates", not "refuse all").
+                # When both dep and sibling are in UPDATES (atomic update), allow.
+                missing_siblings=""
+                for sibling in $coupled_siblings; do
+                  if ! echo "$UPDATES" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
+                    missing_siblings="${missing_siblings}${sibling} "
+                  fi
+                done
+                missing_siblings="${missing_siblings% }"
+                if [[ -n "$missing_siblings" ]]; then
+                  echo "::warning::deps(${CONTAINER}): bumping ${name} requires atomic update of coupled sibling(s): ${missing_siblings} — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: ${name} ${missing_siblings} together)." >&2
+                  echo "::error::Coupled-atomic refuse: bumping ${name} requires atomic update of: ${missing_siblings} — declared on sibling(s) via updates_with/tracks_with — the PR creator must update all of them together or refuse this auto-PR." >&2
+                  # Skip only this dep's update (continue the loop); the summary
+                  # job will surface this container as needing manual attention.
+                  # Using a marker file avoids exiting the entire while-loop step.
+                  touch /tmp/coupled-atomic-refused
+                  continue
+                fi
+                # All siblings are also being updated in this same run — atomic
+                # update is the goal; allow the update to proceed.
+                echo "  Coupled-atomic ALLOW: ${name} + ${coupled_siblings} updated atomically in same run."
               fi
             done < <(echo "$UPDATES" | jq -c '.[]')
 

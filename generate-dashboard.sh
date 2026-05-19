@@ -407,19 +407,31 @@ get_build_history() {
     fi
 }
 
-# Return the JSON array of monitored dependency names for a given container+flavor.
+# Return the JSON array of dependency names visible in the dashboard for a given container+flavor.
+#
+# Lifecycle-driven (AC-20): lifecycle: is the single source of truth.
+# The legacy monitor: boolean is NOT consulted — it was the cause of stable-pin
+# entries being incorrectly omitted from variant_deps (RESTY_OPENSSL_VERSION
+# has lifecycle: stable-pin + monitor: false → was wrongly excluded).
+#
+# Inclusion rule (mirrors build_dependency_monitoring_json):
+#   tracked     → included (actively monitored)
+#   stable-pin  → included (pinned with EOL date — shown with countdown badge)
+#   eol-migrate → included (needs migration action)
+#   untracked   → excluded (build-only values: parallelism flags, fallback tags)
+#   (empty)     → included (backward-compat: empty lifecycle defaults to "tracked")
 #
 # For postgres (which has per-flavor extension lists):
 #   - Reads the flavor's extension list from postgres/flavors/<flavor>.yaml
-#   - Intersects with dependency_sources that have monitor != false
+#   - Intersects with lifecycle-included names with flavor extensions
 #   - Returns [] for base flavor (no extensions) or unknown flavors
 #
 # For all other containers (no flavor concept):
-#   - Returns all dependency_sources names where monitor != false
+#   - Returns all lifecycle-included dependency_sources names
 #   - The "flavor" argument is ignored for non-postgres containers
 #
 # Usage: variant_deps_for_flavor <container> <flavor>
-# Output: JSON array of dep names, e.g. ["pgvector","pg_cron"]
+# Output: JSON array of dep names, e.g. ["RESTY_OPENSSL_VERSION","RESTY_PCRE_VERSION"]
 variant_deps_for_flavor() {
     local container="$1"
     local flavor="${2:-}"
@@ -436,19 +448,20 @@ variant_deps_for_flavor() {
         return 0
     fi
 
-    # Collect monitored dep names from dependency_sources
-    local monitored_names
-    monitored_names=$(yq -r '
+    # Collect dep names by lifecycle (AC-20): exclude only lifecycle: untracked.
+    # stable-pin, tracked, eol-migrate, and empty-lifecycle are all included.
+    local included_names
+    included_names=$(yq -r '
         .dependency_sources // {} | to_entries[] |
-        select(.value.monitor != false) |
+        select((.value.lifecycle // "") != "untracked") |
         .key' "$dep_config" 2>/dev/null) || true
 
-    if [[ -z "$monitored_names" ]]; then
+    if [[ -z "$included_names" ]]; then
         echo "[]"
         return 0
     fi
 
-    # For postgres with a known flavor: intersect monitored names with flavor extensions
+    # For postgres with a known flavor: intersect included names with flavor extensions
     if [[ "$container" == "postgres" && -n "$flavor" && "$flavor" != "null" ]]; then
         local flavor_exts
         flavor_exts=$(get_flavor_extensions_yaml "$flavor")
@@ -459,16 +472,16 @@ variant_deps_for_flavor() {
             return 0
         fi
 
-        # Intersect: keep only monitored names that appear in flavor_exts
-        echo "$monitored_names" | \
+        # Intersect: keep only included names that appear in flavor_exts
+        echo "$included_names" | \
             jq -Rs 'split("\n") | map(select(length > 0))' | \
             jq --argjson exts "$flavor_exts" \
                '[.[] | select(. as $n | $exts | index($n) != null)]'
         return 0
     fi
 
-    # Non-postgres (or postgres with no flavor): return all monitored dep names
-    echo "$monitored_names" | \
+    # Non-postgres (or postgres with no flavor): return all lifecycle-included dep names
+    echo "$included_names" | \
         jq -Rs 'split("\n") | map(select(length > 0))'
 }
 

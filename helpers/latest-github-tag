@@ -63,10 +63,25 @@ _gh_api_tags() {
 
     while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
         pages_fetched=$((pages_fetched + 1))
-        local body
-        body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null) || break
+        local body http_rc
+        body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null)
+        http_rc=$?
+        if [[ "$http_rc" -ne 0 ]]; then
+            # Fail-closed: a page failure after prior pages succeeded means the
+            # tag list is PARTIAL.  Do not return a truncated result silently —
+            # exit non-zero so callers treat the output as unreliable.
+            rm -f "$hdr_file"
+            echo "::error::latest-github-tag: curl failed (exit ${http_rc}) on page ${pages_fetched} for ${repo} — partial-pagination-failure, aborting to prevent truncated tag list" >&2
+            return 1
+        fi
         local page_tags
-        page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null || true)
+        page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null)
+        if [[ $? -ne 0 ]]; then
+            # Invalid JSON on this page — treat as partial failure (fail-closed).
+            rm -f "$hdr_file"
+            echo "::error::latest-github-tag: invalid JSON on page ${pages_fetched} for ${repo} — partial-pagination-failure, aborting" >&2
+            return 1
+        fi
         if [[ -n "$page_tags" ]]; then
             printf '%s\n' "$page_tags"
             tags_emitted=$((tags_emitted + 1))

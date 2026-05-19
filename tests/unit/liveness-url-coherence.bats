@@ -182,3 +182,83 @@ _dockerfile_urls_for() {
         return 1
     fi
 }
+
+# ---------------------------------------------------------------------------
+# Fix #5 regression lock: liveness_url_template coherence for tracked entries.
+#
+# Contract: for a tracked entry with liveness_url_template, substituting
+# {version} with the current pinned version must produce the same URL that
+# the Dockerfile constructs for that version.
+#
+# This test verifies:
+# 1. RESTY_PCRE_VERSION has liveness_url_template declared.
+# 2. Substituting {version} with the pinned build_args value yields a URL
+#    that matches the Dockerfile-constructed URL (same semantic as the
+#    RESTY_PCRE_VERSION liveness_url test above, but driven by template).
+# 3. The template URL is coherent with the static liveness_url for the
+#    pinned version (so both mechanisms agree for the current pin).
+#
+# Mutation caught: reverting to "always use static liveness_url" means this
+# test passes (they both refer to the pinned version) BUT after a version bump
+# the template URL would track the new version while the static URL would not.
+# The template mechanism is validated here to confirm {version} substitution
+# is syntactically correct and yields the expected URL format.
+#
+# How to verify mutation → RED:
+#   1. Set liveness_url_template to a malformed string (e.g. missing {version}).
+#   2. The substituted URL will be wrong → assertion fails → RED.
+#   3. Restore correct template → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix #5: RESTY_PCRE_VERSION liveness_url_template substitutes {version} to Dockerfile URL" {
+    local config="$REPO_ROOT/openresty/config.yaml"
+
+    [[ -f "$config" ]] || { echo "SKIP: openresty/config.yaml not found"; return 0; }
+
+    # Assert the template is declared (prerequisite for Fix #5 to be active).
+    local tmpl
+    tmpl=$(yq -r '.dependency_sources.RESTY_PCRE_VERSION.liveness_url_template // ""' "$config")
+
+    if [[ -z "$tmpl" || "$tmpl" == "null" ]]; then
+        echo "FAIL: RESTY_PCRE_VERSION has no liveness_url_template — Fix #5 not applied to config"
+        return 1
+    fi
+
+    # Read the current pinned version from build_args.
+    local version
+    version=$(yq -r '.build_args.RESTY_PCRE_VERSION // ""' "$config")
+
+    if [[ -z "$version" || "$version" == "null" ]]; then
+        echo "SKIP: RESTY_PCRE_VERSION not in build_args"
+        return 0
+    fi
+
+    # Perform the same {version} substitution as the workflow step does.
+    local derived_url="${tmpl//\{version\}/$version}"
+
+    # The derived URL must match the Dockerfile-constructed URL.
+    # Dockerfile: curl -fSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${RESTY_PCRE_VERSION}/pcre2-${RESTY_PCRE_VERSION}.tar.gz"
+    local expected_url="https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${version}/pcre2-${version}.tar.gz"
+
+    if [[ "$derived_url" != "$expected_url" ]]; then
+        echo "FAIL: liveness_url_template substitution mismatch for RESTY_PCRE_VERSION"
+        echo "  Template:  ${tmpl}"
+        echo "  Version:   ${version}"
+        echo "  Derived:   ${derived_url}"
+        echo "  Expected:  ${expected_url}"
+        return 1
+    fi
+
+    # Also confirm the derived URL matches the static liveness_url (for the pinned version,
+    # both should agree — this validates that the template is not drifting from the static URL).
+    local static_url
+    static_url=$(yq -r '.dependency_sources.RESTY_PCRE_VERSION.liveness_url // ""' "$config")
+
+    if [[ -n "$static_url" && "$static_url" != "null" && "$derived_url" != "$static_url" ]]; then
+        echo "FAIL: template-derived URL does not match static liveness_url for pinned version"
+        echo "  Template-derived: ${derived_url}"
+        echo "  Static:           ${static_url}"
+        echo "  (When both are set, they must agree for the current pinned version)"
+        return 1
+    fi
+}
