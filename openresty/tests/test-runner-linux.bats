@@ -17,21 +17,47 @@
 # The build system tags as <container>:<version>; for the smoke test we
 # accept any locally-built tag that starts with "openresty:" (or the GHCR form).
 _find_image() {
-    # Prefer an explicit override (CI sets IMAGE_TAG)
+    # Deterministic image resolution — fail-closed on 0 or ambiguous images.
+    # $OPENRESTY_IMAGE is the explicit override: local runs and CI SHOULD set it
+    # (a tracked follow-up will wire it in the upstream workflow).
     if [[ -n "${OPENRESTY_IMAGE:-}" ]]; then
         echo "$OPENRESTY_IMAGE"
-        return
+        return 0
     fi
-    # Fall back to the most-recently-built openresty image
-    local img
-    img=$(docker images --format '{{.Repository}}:{{.Tag}}' \
-          | grep -E '^(ghcr\.io/oorabona/openresty|openresty):' \
-          | head -1)
-    if [[ -z "$img" ]]; then
-        echo "ERROR: no openresty image found locally. Run: ./make build openresty" >&2
+
+    # Enumerate built openresty images by IMAGE ID, deduplicated.
+    # A single build produces multiple tag aliases (ghcr.io/…, docker.io/…, :latest)
+    # all sharing the SAME image ID — counting tags would wrongly report "multiple".
+    # The repo-component filter is anchored to avoid matching base-image cache repos
+    # or unrelated images that happen to contain "openresty" in a path component.
+    local ids
+    ids=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+          | awk '$2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $1}' \
+          | sort -u)
+
+    local count
+    count=$(echo "$ids" | grep -c .) 2>/dev/null || count=0
+    # grep -c on empty string returns 1 (the empty line); guard for that:
+    if [[ -z "$ids" ]]; then
+        count=0
+    fi
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "ERROR: no built openresty image found (run ./make build openresty, or set OPENRESTY_IMAGE)" >&2
         return 1
     fi
-    echo "$img"
+
+    if [[ "$count" -gt 1 ]]; then
+        echo "ERROR: ambiguous — ${count} distinct openresty images present; set OPENRESTY_IMAGE to the one under test" >&2
+        return 1
+    fi
+
+    # Exactly 1 distinct image ID — return the first matching tag (docker run <tag> works).
+    local tag
+    tag=$(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+          | awk -v id="$ids" '$1 == id && $2 ~ /^(ghcr\.io\/oorabona\/openresty|docker\.io\/oorabona\/openresty|openresty):/ {print $2; exit}')
+    echo "$tag"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -39,7 +65,7 @@ _find_image() {
 # ---------------------------------------------------------------------------
 
 setup() {
-    IMAGE=$(_find_image)
+    IMAGE=$(_find_image) || return 1
     CONTAINER_NAME="openresty-bats-smoke-$$"
     PORT=18080
 
