@@ -174,7 +174,8 @@ get_variant_build_args_json() {
         while IFS= read -r ext; do
             [[ -z "$ext" ]] && continue
             local ver
-            ver=$(yq -r ".extensions.${ext}.version // \"\"" "$ext_config" 2>/dev/null)
+            # P1-SECURITY: ext name comes from yq output — use strenv() to prevent injection.
+            ver=$(YQ_EXT="$ext" yq -r '.extensions[strenv(YQ_EXT)].version // ""' "$ext_config" 2>/dev/null)
             [[ -z "$ver" ]] && continue
             $first || result+=","
             first=false
@@ -829,9 +830,12 @@ build_dependency_monitoring_json() {
         [[ -z "$dep_name" ]] && continue
         total=$((total + 1))
 
+        # P1-SECURITY: dep_name comes from yq .dependency_sources keys — a PR author
+        # controls config.yaml key names. Never interpolate ${dep_name} into the yq
+        # query expression. Pass via env-var + strenv() so yq treats it as a literal.
         # Read lifecycle field (required; backward-compat: empty defaults to "tracked")
         local lifecycle
-        lifecycle=$(yq -r ".dependency_sources.${dep_name}.lifecycle // \"\"" "$dep_config")
+        lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$dep_config")
 
         # Increment lifecycle counters
         case "$lifecycle" in
@@ -851,7 +855,7 @@ build_dependency_monitoring_json() {
             untracked|eol-migrate)
                 disabled=$((disabled + 1))
                 local reason
-                reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
+                reason=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].reason // ""' "$dep_config")
                 local entry_badge=""
                 [[ "$effective_lifecycle" == "eol-migrate" ]] && entry_badge="needs-migration"
                 deps_json=$(echo "$deps_json" | jq \
@@ -865,24 +869,24 @@ build_dependency_monitoring_json() {
             stable-pin|tracked)
                 monitored=$((monitored + 1))
                 local dep_type current_version source_ref
-                dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
-                current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
+                dep_type=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].type // ""' "$dep_config")
+                current_version=$(YQ_DEP="$dep_name" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$dep_config")
                 # Fallback: check extensions/config.yaml for postgres-style extensions
                 if [[ -z "$current_version" ]]; then
                     local ext_config
                     ext_config="$(dirname "$dep_config")/extensions/config.yaml"
                     if [[ -f "$ext_config" ]]; then
-                        current_version=$(yq -r ".extensions.${dep_name}.version // \"\"" "$ext_config")
+                        current_version=$(YQ_DEP="$dep_name" yq -r '.extensions[strenv(YQ_DEP)].version // ""' "$ext_config")
                     fi
                 fi
 
                 # Build source reference for display
                 case "$dep_type" in
                     github-release|github-tag)
-                        source_ref=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$dep_config")
+                        source_ref=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$dep_config")
                         ;;
                     pypi)
-                        source_ref=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$dep_config")
+                        source_ref=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].package // ""' "$dep_config")
                         ;;
                     *) source_ref="" ;;
                 esac
@@ -891,7 +895,7 @@ build_dependency_monitoring_json() {
                 local badge=""
                 if [[ "$effective_lifecycle" == "stable-pin" ]]; then
                     local supported_until
-                    supported_until=$(yq -r ".dependency_sources.${dep_name}.supported_until // \"\"" "$dep_config")
+                    supported_until=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].supported_until // ""' "$dep_config")
                     if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
                         local today_epoch until_epoch days_left
                         today_epoch=$(date +%s)

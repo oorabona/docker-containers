@@ -58,7 +58,16 @@ jobs:
   # This step is intentionally SEPARATE so its failure does not cascade to
   # downstream PR-fanout jobs (non-cascading failure design, AC-12/AC-16).
   # BOUNDED: --max-time + --retry (AC-14).
+  #
+  # P2: needs check-upstream-versions so that for tracked entries with
+  # liveness_url_template, we substitute the DETECTED latest_version (not the
+  # old pinned version) when a newer version has been found. This ensures the
+  # liveness check validates the URL the NEXT build will actually fetch, not
+  # the URL for the version already shipped.
+  # Non-cascading failure is preserved via continue-on-error: true on this job.
   check-source-liveness:
+    needs: [check-upstream-versions]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
@@ -80,6 +89,13 @@ jobs:
 
       - name: Check source liveness (HEAD each liveness_url)
         id: liveness
+        env:
+          # P2: pass detected version_info from check-upstream-versions so that
+          # tracked entries with liveness_url_template use the CANDIDATE latest
+          # version (not the old pinned version) when a newer version was found.
+          # Falls back to "{}" when check-upstream-versions did not run or had
+          # no updates — in that case the pinned version is used (no regression).
+          UPSTREAM_VERSION_INFO: ${{ needs.check-upstream-versions.outputs.version_info || '[]' }}
         shell: bash
         run: |
           # Named constants (AC-14)
@@ -100,34 +116,52 @@ jobs:
               [[ -z "$dep" ]] && continue
 
               # For tracked entries: prefer liveness_url_template if present.
-              # Template uses {version} placeholder substituted with the current
-              # pinned version from build_args, keeping liveness coherent with
-              # the version the build actually fetches (Fix #5 / AC-16).
-              # For stable-pin / untracked entries: use static liveness_url.
-              lifecycle=$(yq -r ".dependency_sources.${dep}.lifecycle // \"\"" "$config")
-              url_template=$(yq -r ".dependency_sources.${dep}.liveness_url_template // \"\"" "$config")
+              # Template uses {version} placeholder.
+              # P2: for tracked entries, prefer the detected latest_version over
+              # the pinned current_version so liveness validates the candidate URL.
+              # P1-SECURITY: dep names from config.yaml are untrusted (a PR author
+              # controls the key names). yq query expressions must NOT be built via
+              # shell "${dep}" interpolation — that allows injection of yq special
+              # chars (., [], ", etc.) to reshape the query path.
+              # FIX: pass the dep name via env-var + strenv() so yq treats it as
+              # a literal value, never as part of the query expression.
+              lifecycle=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
+              url_template=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "$config")
               url=""
 
               if [[ "$lifecycle" == "tracked" && -n "$url_template" && "$url_template" != "null" ]]; then
-                # Substitute {version} with the current pinned version from build_args.
-                current_version=$(yq -r ".build_args.${dep} // \"\"" "$config")
-                if [[ -n "$current_version" && "$current_version" != "null" ]]; then
-                  url="${url_template//\{version\}/$current_version}"
+                # P2: prefer the detected latest_version from upstream detection
+                # over the current pinned version. If detection found a newer
+                # version for this dep, HEAD the NEW artifact URL (the one the
+                # next build will actually fetch), not the already-shipped URL.
+                candidate_version=""
+                if [[ -n "$UPSTREAM_VERSION_INFO" && "$UPSTREAM_VERSION_INFO" != "[]" ]]; then
+                  candidate_version=$(echo "$UPSTREAM_VERSION_INFO" \
+                    | jq -r --arg c "$container" --arg d "$dep" \
+                    '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+                    2>/dev/null | head -1)
+                fi
+                # Fall back to current pinned version when no candidate was detected
+                if [[ -z "$candidate_version" ]]; then
+                  candidate_version=$(YQ_DEP="$dep" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
+                fi
+                if [[ -n "$candidate_version" && "$candidate_version" != "null" ]]; then
+                  url="${url_template//\{version\}/$candidate_version}"
                 else
-                  # No build_args entry for this dep — fall back to static liveness_url.
-                  url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+                  # No version available — fall back to static liveness_url.
+                  url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
                 fi
               elif [[ "$lifecycle" == "tracked" && ( -z "$url_template" || "$url_template" == "null" ) ]]; then
                 # tracked entry without liveness_url_template — advisory warning only.
                 # Falls through to static liveness_url for backward-compat.
-                static_url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+                static_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
                 if [[ -n "$static_url" && "$static_url" != "null" ]]; then
                   echo "::warning::liveness-template: ${container}/${dep} is tracked but has no liveness_url_template — static liveness_url may become stale when version is bumped"
                 fi
                 url="$static_url"
               else
                 # stable-pin / eol-migrate / untracked: static liveness_url is correct.
-                url=$(yq -r ".dependency_sources.${dep}.liveness_url // \"\"" "$config")
+                url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
               fi
 
               [[ -z "$url" || "$url" == "null" ]] && continue
@@ -712,7 +746,9 @@ jobs:
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating postgres extension $name to $latest"
-              yq -i ".extensions.${name}.version = \"$latest\"" "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension ${name} config"; exit 1; }
+              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+              # yq query injection if a dep name contains special chars.
+              YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension ${name} config"; exit 1; }
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
             # Other containers: update config.yaml build_args
@@ -722,7 +758,9 @@ jobs:
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating ${CONTAINER} build_arg $name to $latest"
-              yq -i ".build_args.${name} = \"$latest\"" "${CONTAINER}/config.yaml"
+              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+              # yq query injection if a dep name contains special chars.
+              YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
 
               # Coupled-atomic guard (AC-15): find every sibling in this config
               # that declares updates_with OR tracks_with pointing at ${name}.

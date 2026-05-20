@@ -168,7 +168,7 @@ check_container_deps() {
 
         # Read lifecycle (required field — schema test gates this)
         local lifecycle
-        lifecycle=$(yq -r ".dependency_sources.${dep_name}.lifecycle // \"\"" "$config")
+        lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
 
         # Lifecycle dispatch — replaces the binary monitor:false blanket continue.
         # AC-3: eol-migrate MUST NOT be silently skipped.
@@ -182,7 +182,7 @@ check_container_deps() {
                 # LOUD surfaced signal every run — the honest replacement for silent monitor:false.
                 # This is the #448 root-cause inversion fix: never continue-skip an eol-migrate.
                 local reason
-                reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"pinned to EOL line\"" "$config")
+                reason=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].reason // "pinned to EOL line"' "$config")
                 echo "::warning::${container}/${dep_name}: lifecycle=eol-migrate — manual migration required. ${reason}" >&2
                 log_error "[${container}] ${dep_name}: EOL dependency — manual migration required: ${reason}" >&2
                 errors_json=$(echo "$errors_json" | jq \
@@ -201,7 +201,7 @@ check_container_deps() {
                 # Deliberately pinned to a supported branch/LTS.
                 # T10: Date escalation — compare today vs supported_until.
                 local supported_until
-                supported_until=$(yq -r ".dependency_sources.${dep_name}.supported_until // \"\"" "$config")
+                supported_until=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].supported_until // ""' "$config")
                 if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
                     local today_epoch until_epoch days_left
                     today_epoch=$(date +%s)
@@ -248,11 +248,11 @@ check_container_deps() {
         # For stable-pin/tracked: resolve normally.
 
         local dep_type
-        dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$config")
+        dep_type=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].type // ""' "$config")
 
         # Get current version from build_args
         local current_version
-        current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$config")
+        current_version=$(YQ_DEP="$dep_name" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
 
         if [[ -z "$current_version" || "$current_version" == "null" ]]; then
             # For untracked entries that have no build_args version, skip quietly.
@@ -271,9 +271,9 @@ check_container_deps() {
         case "$dep_type" in
             github-release)
                 local repo strip_v tag_pattern
-                repo=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$config")
-                strip_v=$(yq -r ".dependency_sources.${dep_name}.strip_v // false" "$config")
-                tag_pattern=$(yq -r ".dependency_sources.${dep_name}.tag_pattern // \"\"" "$config")
+                repo=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$config")
+                strip_v=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].strip_v // false' "$config")
+                tag_pattern=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_pattern // ""' "$config")
                 source_ref="$repo"
 
                 local helper_args=("$repo")
@@ -289,9 +289,9 @@ check_container_deps() {
                 # Real github-tag branch: calls latest-github-tag with tag_filter/version_extract.
                 # Previously aliased to latest-github-release (wrong — openssl/pcre2 ship tags).
                 local repo tag_filter version_extract
-                repo=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$config")
-                tag_filter=$(yq -r ".dependency_sources.${dep_name}.tag_filter // \"\"" "$config")
-                version_extract=$(yq -r ".dependency_sources.${dep_name}.version_extract // \"\"" "$config")
+                repo=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$config")
+                tag_filter=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
+                version_extract=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
                 source_ref="$repo"
 
                 if [[ -z "$repo" ]]; then
@@ -319,7 +319,7 @@ check_container_deps() {
                 ;;
             pypi)
                 local package
-                package=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$config")
+                package=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].package // ""' "$config")
                 source_ref="$package"
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-pypi-version" "$package" 2>/dev/null) || {
@@ -329,7 +329,7 @@ check_container_deps() {
                 ;;
             rubygems)
                 local gem
-                gem=$(yq -r ".dependency_sources.${dep_name}.gem // \"\"" "$config")
+                gem=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].gem // ""' "$config")
                 source_ref="$gem"
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-rubygems-version" "$gem" 2>/dev/null) || {

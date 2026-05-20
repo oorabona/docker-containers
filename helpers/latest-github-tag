@@ -94,6 +94,18 @@ _gh_api_tags() {
             | head -1)
         url="$next_url"
     done
+
+    # P3: fail-closed when the page bound is reached but more pages exist.
+    # Silent truncation at max_pages would silently miss tags on large repos —
+    # the caller could pick an outdated "latest" without knowing it.
+    # Check: if we stopped because pages_fetched == max_pages AND a next-link
+    # was present in the last response, the tag list is incomplete.
+    if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
+        rm -f "$hdr_file"
+        echo "::error::latest-github-tag: pagination bound reached (max_pages=${max_pages}) but more pages exist (Link: rel=next present) for ${repo} — tag list is truncated, aborting to prevent stale-latest detection" >&2
+        return 1
+    fi
+
     rm -f "$hdr_file"
 
     # Fall back to git ls-remote when curl returned nothing (network failure,

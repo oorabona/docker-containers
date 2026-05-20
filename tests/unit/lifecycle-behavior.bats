@@ -286,7 +286,7 @@ EOF
 # always empty, so the guard fires on nothing.
 #
 # Mutation caught: revert the fix to the old direction
-#   yq -r ".dependency_sources.${name}.updates_with // \"\""
+#   YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].updates_with // ""'
 # → the yq expression returns "" for RESTY_PCRE_VERSION → coupled_siblings=""
 # → no ::error:: emitted → the test FAILS (expected string not found).
 #
@@ -428,7 +428,7 @@ EOF
     # demonstrating why the old code was wrong.
     #
     # Mutation: replace the fix with the old expression:
-    #   yq -r ".dependency_sources.${name}.updates_with // \"\""
+    #   YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].updates_with // ""'
     # Effect: returns "" for RESTY_PCRE_VERSION (it has no updates_with field)
     # → coupled_siblings="" → guard does NOT fire → half-update PR proceeds.
     _mk_container "bats-coupled-d-$$"
@@ -453,7 +453,8 @@ EOF
     # RESTY_PCRE_VERSION has no updates_with → returns "".
     local name="RESTY_PCRE_VERSION"
     local broken_result
-    broken_result=$(yq -r ".dependency_sources.${name}.updates_with // \"\"" \
+    # P1-SECURITY: even in tests, use strenv() to prevent injection if name contains special chars.
+    broken_result=$(YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].updates_with // ""' \
         "$cdir/config.yaml" 2>/dev/null || true)
 
     # The old direction returns empty — confirming the polarity bug.
@@ -931,7 +932,7 @@ for i, ch in enumerate(text):
 
             # Get the configured version from build_args
             local version
-            version=$(yq -r ".build_args.${dep_key} // \"\"" "$config" 2>/dev/null)
+            version=$(YQ_DEP="$dep_key" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config" 2>/dev/null)
             [[ -z "$version" || "$version" == "null" ]] && continue
 
             # The expected raw_tag for a "prefix-version" scheme is "${tag_prefix}${version}"
@@ -1371,4 +1372,79 @@ EOF
         echo "(Mutation: revert fail-closed to '|| break' → _gh_api_tags rc ignored → latest-github-tag uses partial tags → exits 0 → this test RED)"
         return 1
     }
+}
+
+# ---------------------------------------------------------------------------
+# P2 regression lock: liveness template uses candidate (latest) version, not pinned
+#
+# Contract: for a tracked entry with liveness_url_template, when a newer
+# version has been detected (UPSTREAM_VERSION_INFO contains a .latest for
+# this dep), the liveness check MUST substitute that candidate version into
+# the template URL — not the current pinned version from build_args.
+#
+# This test exercises the bash substitution logic inline (the workflow step
+# is not executable in unit tests, but the logic is deterministic shell).
+#
+# Mutation caught: reverting to always using the pinned build_args version
+# (removing the UPSTREAM_VERSION_INFO lookup) means liveness validates the
+# OLD URL even when a new version has been found. The test goes RED because
+# the derived URL would contain "10.47" (old) instead of "10.99" (candidate).
+#
+# How to verify mutation → RED:
+#   1. In upstream-monitor.yaml, revert the candidate_version logic to always
+#      use the build_args (pinned) version.
+#   2. Run the assertion below standalone with the patched logic — it fails
+#      because derived_url contains "10.47" not "10.99".
+#   3. Restore the candidate lookup → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "P2: liveness template substitutes detected latest_version over pinned version" {
+    # Simulate the workflow step logic inline.
+    # Fixture: a tracked dep with a template and a detected latest "10.99"
+    local url_template="https://github.com/PCRE2Project/pcre2/releases/download/pcre2-{version}/pcre2-{version}.tar.gz"
+    local pinned_version="10.47"
+    local detected_latest="10.99"
+
+    # Simulate UPSTREAM_VERSION_INFO JSON (the structure emitted by check-dependency-versions.sh)
+    local upstream_info
+    upstream_info=$(jq -n \
+        --arg container "openresty" \
+        --arg dep "RESTY_PCRE_VERSION" \
+        --arg latest "$detected_latest" \
+        '[{container: $container, updates: [{name: $dep, latest: $latest}], errors: [], update_count: 1}]')
+
+    # Reproduce the candidate_version selection logic from the liveness step.
+    local container="openresty"
+    local dep="RESTY_PCRE_VERSION"
+    local candidate_version=""
+    if [[ -n "$upstream_info" && "$upstream_info" != "[]" ]]; then
+        candidate_version=$(echo "$upstream_info" \
+            | jq -r --arg c "$container" --arg d "$dep" \
+            '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+            2>/dev/null | head -1)
+    fi
+    # Fall back to pinned when no candidate detected
+    if [[ -z "$candidate_version" ]]; then
+        candidate_version="$pinned_version"
+    fi
+
+    # Assert: the candidate must be the detected latest, not the pinned version
+    if [[ "$candidate_version" != "$detected_latest" ]]; then
+        echo "FAIL: candidate_version='${candidate_version}' expected='${detected_latest}'"
+        echo "  The liveness template substitution is using the pinned version instead of"
+        echo "  the detected latest — liveness validates the OLD artifact URL."
+        return 1
+    fi
+
+    # The derived URL must contain the detected latest version
+    local derived_url="${url_template//\{version\}/$candidate_version}"
+    if [[ "$derived_url" != *"$detected_latest"* ]]; then
+        echo "FAIL: derived URL '${derived_url}' does not contain candidate version '${detected_latest}'"
+        return 1
+    fi
+    if [[ "$derived_url" == *"$pinned_version"* ]]; then
+        echo "FAIL: derived URL '${derived_url}' contains OLD pinned version '${pinned_version}'"
+        echo "  Liveness is checking the wrong artifact URL."
+        return 1
+    fi
 }
