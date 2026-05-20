@@ -732,53 +732,87 @@ jobs:
           refused_json="[]"
 
           if [ "$CONTAINER" != "postgres" ]; then
+            # Fixed-point transitive closure: iterate the filter until stable.
+            # Checking siblings against raw_updates is insufficient for chains:
+            # if B.updates_with=A and A.updates_with=C with C absent, A is
+            # removed in the first sweep but B is not removed until a second
+            # sweep notices A is gone. Iterating until no change handles chains
+            # of arbitrary depth and bidirectionality.
+            declare -A to_apply_names
+            declare -A refused_reasons
+            while IFS= read -r uname; do
+              to_apply_names["$uname"]=1
+            done < <(echo "$raw_updates" | jq -r '.[].name')
+
+            changed=true
+            while [[ "$changed" == "true" ]]; do
+              changed=false
+              for dep_name in "${!to_apply_names[@]}"; do
+                # Direction A: siblings that declare updates_with/tracks_with
+                # pointing AT dep_name.
+                coupled_siblings=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                  '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+                # Direction B: this dep's own updates_with/tracks_with targets.
+                own_targets=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                  '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                   ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null || true)
+
+                missing_siblings=""
+
+                # Check Direction A against to_apply_names (not raw_updates).
+                for sibling in $coupled_siblings; do
+                  if [[ -z "${to_apply_names[$sibling]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${sibling} "
+                  fi
+                done
+
+                # Check Direction B against to_apply_names.
+                for target in $own_targets; do
+                  if [[ -z "${to_apply_names[$target]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${target} "
+                  fi
+                done
+
+                missing_siblings="${missing_siblings% }"
+
+                if [[ -n "$missing_siblings" ]]; then
+                  refused_reasons["$dep_name"]="atomic chain broken: ${missing_siblings} not approved"
+                  unset "to_apply_names[$dep_name]"
+                  changed=true
+                fi
+              done
+            done
+
+            # Reconstruct to_apply_json and refused_json from raw_updates
+            # preserving original insertion order.
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
-
-              # Direction A: find siblings in config that declare updates_with/tracks_with
-              # pointing AT ${name}.
-              coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
-                '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
-                "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-
-              # Direction B: read this dep's own updates_with/tracks_with fields.
-              own_targets=$(YQ_DEP_NAME="${name}" yq -r \
-                '.dependency_sources[strenv(YQ_DEP_NAME)] |
-                 ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
-                "${CONTAINER}/config.yaml" 2>/dev/null || true)
-
-              # Combine both directions into a single missing_siblings check.
-              missing_siblings=""
-
-              # Check Direction A: each sibling must be present in raw_updates.
-              for sibling in $coupled_siblings; do
-                if ! echo "$raw_updates" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
-                  missing_siblings="${missing_siblings}${sibling} "
+              if [[ -n "${to_apply_names[$name]+set}" ]]; then
+                # All siblings/targets present (or none declared) — approved.
+                # Log if there was any coupling involved.
+                coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
+                  '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+                own_targets=$(YQ_DEP_NAME="${name}" yq -r \
+                  '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                   ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null || true)
+                if [[ -n "$coupled_siblings" || -n "$own_targets" ]]; then
+                  echo "  Coupled-atomic ALLOW: ${name} updated atomically in same run."
                 fi
-              done
-
-              # Check Direction B: each declared target must be present in raw_updates.
-              for target in $own_targets; do
-                if ! echo "$raw_updates" | jq -e --arg s "$target" '[.[].name] | index($s) != null' &>/dev/null; then
-                  missing_siblings="${missing_siblings}${target} "
-                fi
-              done
-
-              missing_siblings="${missing_siblings% }"
-
-              if [[ -n "$missing_siblings" ]]; then
-                echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${missing_siblings}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: $(_gha_escape "${name}") $(_gha_escape "${missing_siblings}") together)." >&2
-                refused_entry=$(echo "$update" | jq -c --arg reason "missing sibling(s): ${missing_siblings}" '. + {refused_reason: $reason}')
+                to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
+              else
+                reason="${refused_reasons[$name]:-missing sibling(s)}"
+                echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${reason}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required." >&2
+                refused_entry=$(echo "$update" | jq -c --arg reason "${reason}" '. + {refused_reason: $reason}')
                 refused_json=$(echo "$refused_json" | jq -c --argjson e "$refused_entry" '. + [$e]')
-                continue
               fi
-
-              # All siblings/targets present (or none declared) — approved.
-              if [[ -n "$coupled_siblings" || -n "$own_targets" ]]; then
-                echo "  Coupled-atomic ALLOW: ${name} updated atomically in same run."
-              fi
-              to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
             done < <(echo "$raw_updates" | jq -c '.[]')
+
+            unset to_apply_names refused_reasons
           else
             # Postgres: no coupled-atomic semantics — all updates pass through.
             to_apply_json="$raw_updates"

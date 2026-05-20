@@ -65,18 +65,31 @@ _gh_api_tags() {
     while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
         pages_fetched=$((pages_fetched + 1))
         local body
-        # Fail-closed: a page failure after prior pages succeeded means the
-        # tag list is PARTIAL.  Do not return a truncated result silently —
-        # exit non-zero so callers treat the output as unreliable.
+        # Fail-closed vs fallback split:
+        #   Page 1 failure with tags_emitted==0 → break to L115 git ls-remote
+        #     fallback (no partial data risk; fallback is safe to run).
+        #   Page N>1 failure with tags_emitted>0 → return 1 (partial-pagination
+        #     protection; appending fresh ls-remote tags to partial curl tags
+        #     would yield an inconsistent set).
         if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
             rm -f "$hdr_file"
-            echo "::error::latest-github-tag: curl failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${repo}") — partial-pagination-failure, aborting to prevent truncated tag list" >&2
+            if [[ "$tags_emitted" -eq 0 ]]; then
+                # First-page failure: no partial data was emitted; the L115
+                # fallback check can safely call _git_ls_remote_tags.
+                break
+            fi
+            # Partial-pagination failure: fail-closed.
+            echo "::error::latest-github-tag: curl failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${repo}") — partial-pagination-failure (had $(_gha_escape "${tags_emitted}") prior page(s)), aborting to prevent truncated tag list" >&2
             return 1
         fi
         local page_tags
-        # Invalid JSON on this page — treat as partial failure (fail-closed).
+        # Invalid JSON on this page — same fail-closed vs fallback split.
         if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
             rm -f "$hdr_file"
+            if [[ "$tags_emitted" -eq 0 ]]; then
+                # First-page JSON failure: fall through to git ls-remote fallback.
+                break
+            fi
             echo "::error::latest-github-tag: invalid JSON on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${repo}") — partial-pagination-failure, aborting" >&2
             return 1
         fi

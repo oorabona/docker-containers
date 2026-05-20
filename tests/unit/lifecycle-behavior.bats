@@ -2199,7 +2199,7 @@ EOF
     }
 }
 
-@test "Fix-D/curl-path: curl failure exits non-zero fail-closed (sourced helper)" {
+@test "Fix-D/curl-path: curl failure on page 2 exits non-zero fail-closed (sourced helper)" {
     # Mutation trace: revert Fix D to dead-branch form:
     #   body=$(curl ...); http_rc=$?; if [[ "$http_rc" -ne 0 ]]; then ...
     # Under set -euo pipefail, `body=$(curl ...)` does NOT cause the script to
@@ -2210,17 +2210,22 @@ EOF
     # `http_rc=$?` form is racy under aggressive set -e + subshell interaction.
     # The mutation that makes this test RED: replace `if ! body=$(curl ...)` with
     # `body=$(curl ...); if [[ $? -ne 0 ]]` — the $? check must happen BEFORE any
-    # other command that could overwrite $?. If we add any assignment between
-    # the curl call and the $? check, the check becomes stale. Fix D eliminates
-    # this entire class of bug by capturing success/failure atomically.
+    # other command that could overwrite $?. Fix D eliminates this entire class.
     # With Fix D reverted to a bare `body=$(curl ...); http_rc=$?` without the
     # intermediate `local` declaration, the local declaration itself resets $? to
     # 0 — causing the error to be swallowed → helper exits 0 → this test RED.
+    #
+    # NOTE: Hardening-R11 changed page-1 failure semantics (tags_emitted==0 →
+    # break to fallback). This test exercises the page-2 failure path
+    # (tags_emitted>0 after page 1) which remains fail-closed regardless.
+    # Page-2 failure with partial data must still exit non-zero.
 
     local stub_dir="$BATS_TEST_TMPDIR/stub-fail"
     mkdir -p "$stub_dir"
-    # curl stub: always exits 22 (curl's "HTTP error" exit code with -f flag).
-    # Does NOT write body — simulates a network/5xx failure.
+    local call_count="${BATS_TEST_TMPDIR}/fix-d-calls"
+    printf '0' > "$call_count"
+    # curl stub: page 1 succeeds (returns JSON + Link header), page 2 fails.
+    # This ensures tags_emitted>0 before the failure, triggering fail-closed.
     printf '%s\n' '#!/usr/bin/env bash' \
         'hdr_file=""' \
         'while [[ $# -gt 0 ]]; do' \
@@ -2229,7 +2234,15 @@ EOF
         '    *) shift;;' \
         '  esac' \
         'done' \
-        '[[ -n "$hdr_file" ]] && printf "HTTP/2 503\r\ncontent-type: application/json\r\n\r\n" > "$hdr_file"' \
+        "count=\$(cat '${call_count}' 2>/dev/null || printf '0')" \
+        "count=\$((count + 1))" \
+        "printf '%s' \"\$count\" > '${call_count}'" \
+        'if [[ "$count" -eq 1 ]]; then' \
+        '  [[ -n "$hdr_file" ]] && printf "HTTP/2 200\r\nlink: <https://api.github.com/page2>; rel=\"next\"\r\n\r\n" > "$hdr_file"' \
+        '  printf '"'"'[{"name":"openssl-3.4.0"}]'"'"'' \
+        '  exit 0' \
+        'fi' \
+        '[[ -n "$hdr_file" ]] && printf "HTTP/2 503\r\n\r\n" > "$hdr_file"' \
         'exit 22' \
         > "$stub_dir/curl"
     chmod +x "$stub_dir/curl"
@@ -2246,7 +2259,7 @@ EOF
     unset -f gh
 
     [[ "$status" -ne 0 ]] || {
-        echo "FAIL: helper exited 0 on curl failure — should be fail-closed (exit non-zero)"
+        echo "FAIL: helper exited 0 on page-2 curl failure — should be fail-closed (exit non-zero)"
         echo "  (Mutation: revert Fix D dead-branch form where local http_rc resets \$? → exit 0 → RED)"
         return 1
     }
@@ -2267,8 +2280,9 @@ EOF
 # ---------------------------------------------------------------------------
 
 # Shared filter fixture (mirrors Prepare-step filter logic from upstream-monitor.yaml).
+# Uses the same fixed-point transitive closure algorithm as production.
 # Args: <config_file> <updates_json>
-# Outputs (via echo on stdout, newline-separated): update_count refused_json to_apply_json
+# Outputs (via printf on stdout, newline-separated): update_count refused_json to_apply_json
 _prepare_filter() {
     local config="$1"
     local raw_updates="$2"
@@ -2276,48 +2290,67 @@ _prepare_filter() {
     local to_apply_json="[]"
     local refused_json="[]"
 
+    # Fixed-point transitive closure — mirrors production Prepare-step filter.
+    declare -A _pf_to_apply
+    declare -A _pf_refused_reasons
+    local _pf_uname
+    while IFS= read -r _pf_uname; do
+        _pf_to_apply["$_pf_uname"]=1
+    done < <(echo "$raw_updates" | jq -r '.[].name')
+
+    local changed=true
+    while [[ "$changed" == "true" ]]; do
+        changed=false
+        local dep_name
+        for dep_name in "${!_pf_to_apply[@]}"; do
+            local coupled_siblings
+            coupled_siblings=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                "${config}" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+            local own_targets
+            own_targets=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                 ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                "${config}" 2>/dev/null || true)
+
+            local missing_siblings=""
+            local sibling target
+            for sibling in $coupled_siblings; do
+                if [[ -z "${_pf_to_apply[$sibling]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${sibling} "
+                fi
+            done
+            for target in $own_targets; do
+                if [[ -z "${_pf_to_apply[$target]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${target} "
+                fi
+            done
+            missing_siblings="${missing_siblings% }"
+
+            if [[ -n "$missing_siblings" ]]; then
+                _pf_refused_reasons["$dep_name"]="atomic chain broken: ${missing_siblings} not approved"
+                unset "_pf_to_apply[$dep_name]"
+                changed=true
+            fi
+        done
+    done
+
+    # Reconstruct ordered arrays from raw_updates.
+    local update name
     while IFS= read -r update; do
-        local name
         name=$(echo "$update" | jq -r '.name')
-
-        # Direction A: siblings declaring updates_with/tracks_with pointing AT name.
-        local coupled_siblings
-        coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
-            '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
-            "${config}" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-
-        # Direction B: this dep's own updates_with/tracks_with targets.
-        local own_targets
-        own_targets=$(YQ_DEP_NAME="${name}" yq -r \
-            '.dependency_sources[strenv(YQ_DEP_NAME)] |
-             ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
-            "${config}" 2>/dev/null || true)
-
-        local missing_siblings=""
-
-        for sibling in $coupled_siblings; do
-            if ! echo "$raw_updates" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
-                missing_siblings="${missing_siblings}${sibling} "
-            fi
-        done
-
-        for target in $own_targets; do
-            if ! echo "$raw_updates" | jq -e --arg s "$target" '[.[].name] | index($s) != null' &>/dev/null; then
-                missing_siblings="${missing_siblings}${target} "
-            fi
-        done
-
-        missing_siblings="${missing_siblings% }"
-
-        if [[ -n "$missing_siblings" ]]; then
+        if [[ -n "${_pf_to_apply[$name]+set}" ]]; then
+            to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
+        else
+            local reason="${_pf_refused_reasons[$name]:-missing sibling(s)}"
             local refused_entry
-            refused_entry=$(echo "$update" | jq -c --arg reason "missing sibling(s): ${missing_siblings}" '. + {refused_reason: $reason}')
+            refused_entry=$(echo "$update" | jq -c --arg reason "${reason}" '. + {refused_reason: $reason}')
             refused_json=$(echo "$refused_json" | jq -c --argjson e "$refused_entry" '. + [$e]')
-            continue
         fi
-
-        to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
     done < <(echo "$raw_updates" | jq -c '.[]')
+
+    unset _pf_to_apply _pf_refused_reasons
 
     local update_count
     update_count=$(echo "$to_apply_json" | jq 'length')
@@ -2540,6 +2573,269 @@ EOF
     reason=$(echo "$refused_json" | jq -r '.[0].refused_reason')
     echo "$reason" | grep -q "RESTY_PCRE_VERSION" || {
         echo "FAIL: refused_reason should mention RESTY_PCRE_VERSION, got: '${reason}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Hardening R11 regression locks — fixed-point transitive closure.
+#
+# Contract: the Prepare-step filter must converge to a stable set where every
+# approved dep has all its required siblings also approved.  A single pass
+# checking against raw_updates cannot satisfy this for transitive chains.
+#
+# Fix: iterate until changed==false (fixed-point).
+# ---------------------------------------------------------------------------
+
+@test "Hardening-R11/fixed-point: transitive chain B->A->C with C missing refuses BOTH A and B" {
+    # Chain: B.updates_with=A, A.updates_with=C. C is absent from raw_updates.
+    # First sweep: A is refused (C missing). After A is removed from to_apply_names,
+    # a second sweep finds B's required A is also gone, so B is refused too.
+    # Revert to single-pass (check against raw_updates): B would be approved
+    # because A IS in raw_updates → invariant broken → to_apply has B without A.
+    #
+    # Mutation trace: revert _prepare_filter to single-pass raw_updates check
+    # → B passes through (A is in raw_updates) → to_apply has 1 entry → RED.
+    _mk_container "bats-r11-transitive-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  DEP_A: "1.0"
+  DEP_B: "2.0"
+  DEP_C: "3.0"
+dependency_sources:
+  DEP_A:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/bar
+    updates_with: DEP_C
+  DEP_B:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/bar
+    updates_with: DEP_A
+  DEP_C:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/baz
+EOF
+
+    # raw_updates: A and B only — C is absent.
+    local raw_updates='[
+      {"name":"DEP_A","current":"1.0","latest":"1.1","change_type":"minor","source_url":"https://example.com"},
+      {"name":"DEP_B","current":"2.0","latest":"2.1","change_type":"minor","source_url":"https://example.com"}
+    ]'
+
+    local filter_output
+    filter_output=$(_prepare_filter "$cdir/config.yaml" "$raw_updates")
+    local update_count refused_json to_apply_json
+    update_count=$(echo "$filter_output" | sed -n '1p')
+    refused_json=$(echo "$filter_output" | sed -n '2p')
+    to_apply_json=$(echo "$filter_output" | sed -n '3p')
+
+    # Both A and B must be refused (chain requires C which is absent).
+    [[ "$update_count" -eq 0 ]] || {
+        echo "FAIL: expected update_count=0 (both A and B refused via transitive chain), got ${update_count}"
+        echo "  to_apply_json: ${to_apply_json}"
+        echo "  refused_json: ${refused_json}"
+        echo "  (Mutation: revert to single-pass raw_updates check → B approved, A refused → count=1 → RED)"
+        return 1
+    }
+
+    local refused_count
+    refused_count=$(echo "$refused_json" | jq 'length')
+    [[ "$refused_count" -eq 2 ]] || {
+        echo "FAIL: expected 2 refused entries (A and B), got ${refused_count}"
+        echo "  refused_json: ${refused_json}"
+        return 1
+    }
+
+    # DEP_A must appear in refused (C missing directly).
+    echo "$refused_json" | jq -e '[.[].name] | index("DEP_A") != null' &>/dev/null || {
+        echo "FAIL: DEP_A must be in refused (missing target DEP_C)"
+        echo "  refused_json: ${refused_json}"
+        return 1
+    }
+
+    # DEP_B must appear in refused (required DEP_A was itself refused).
+    echo "$refused_json" | jq -e '[.[].name] | index("DEP_B") != null' &>/dev/null || {
+        echo "FAIL: DEP_B must be in refused (required DEP_A was refused via transitive chain)"
+        echo "  refused_json: ${refused_json}"
+        echo "  (Mutation: single-pass check → B sees A in raw_updates and is approved → RED)"
+        return 1
+    }
+}
+
+@test "Hardening-R11/fixed-point: mutual cycle A<->B both in updates → both approved" {
+    # Cycle: A.updates_with=B, B.updates_with=A. Both A and B are in raw_updates.
+    # Neither requires a dep outside raw_updates — both should be approved.
+    # The fixed-point loop must NOT refuse either one.
+    #
+    # Mutation trace: if the loop removed any dep that references another dep
+    # in the same set, this test would go RED because one would be refused.
+    _mk_container "bats-r11-cycle-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  DEP_A: "1.0"
+  DEP_B: "2.0"
+dependency_sources:
+  DEP_A:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/bar
+    updates_with: DEP_B
+  DEP_B:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/bar
+    updates_with: DEP_A
+EOF
+
+    # raw_updates: both A and B — they satisfy each other.
+    local raw_updates='[
+      {"name":"DEP_A","current":"1.0","latest":"1.1","change_type":"minor","source_url":"https://example.com"},
+      {"name":"DEP_B","current":"2.0","latest":"2.1","change_type":"minor","source_url":"https://example.com"}
+    ]'
+
+    local filter_output
+    filter_output=$(_prepare_filter "$cdir/config.yaml" "$raw_updates")
+    local update_count refused_json to_apply_json
+    update_count=$(echo "$filter_output" | sed -n '1p')
+    refused_json=$(echo "$filter_output" | sed -n '2p')
+    to_apply_json=$(echo "$filter_output" | sed -n '3p')
+
+    # Both A and B must be in to_apply (mutual cycle, both present).
+    [[ "$update_count" -eq 2 ]] || {
+        echo "FAIL: expected update_count=2 (both A and B approved, mutual cycle), got ${update_count}"
+        echo "  to_apply_json: ${to_apply_json}"
+        echo "  refused_json: ${refused_json}"
+        echo "  (Mutation: incorrect cycle handling → one dep removed incorrectly → RED)"
+        return 1
+    }
+
+    local refused_count
+    refused_count=$(echo "$refused_json" | jq 'length')
+    [[ "$refused_count" -eq 0 ]] || {
+        echo "FAIL: expected 0 refused entries for mutual cycle with both present, got ${refused_count}"
+        echo "  refused_json: ${refused_json}"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Hardening R11 regression locks — curl fallback on first-page failure.
+#
+# Contract: _gh_api_tags must distinguish first-page failure (break → fallback)
+# from subsequent-page failure (return 1, fail-closed).
+# ---------------------------------------------------------------------------
+
+@test "Hardening-R11/curl-fallback: page-1 curl failure with no tags emitted triggers ls-remote fallback" {
+    # When curl fails on page 1 and tags_emitted==0, _gh_api_tags must break
+    # out of the pagination loop and reach the fallback check at L115, which
+    # calls _git_ls_remote_tags. The fallback must return tags successfully.
+    #
+    # We exercise the real _gh_api_tags curl path by injecting a failing mock
+    # curl script via PATH manipulation. gh is disabled via PATH exclusion so
+    # the function enters the curl path. _git_ls_remote_tags is overridden to
+    # return known tags.
+    #
+    # Mutation trace: revert page-1 curl failure to 'return 1' (old code)
+    # → _gh_api_tags exits non-zero → outer caller fails → no tags → RED.
+    local mockdir
+    mockdir="${BATS_TEST_TMPDIR}/mock-bin-$$"
+    mkdir -p "$mockdir"
+    # Mock curl: always fails (simulates network error / rate-limit).
+    printf '#!/usr/bin/env bash\nexit 22\n' > "$mockdir/curl"
+    chmod +x "$mockdir/curl"
+    # Disable gh so the function enters the curl path.
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$mockdir/gh"
+    chmod +x "$mockdir/gh"
+
+    local result exit_code=0
+    result=$(PATH="$mockdir:$PATH" bash -c "
+        source '${REPO_ROOT}/helpers/latest-github-tag'
+        # Override _git_ls_remote_tags to return known tags.
+        _git_ls_remote_tags() {
+            printf 'openssl-3.5.0\nopenssl-3.5.6\nopenssl-3.4.2\n'
+        }
+        _gh_api_tags 'openssl/openssl'
+    " 2>/dev/null) || exit_code=$?
+
+    [[ "$exit_code" -eq 0 ]] || {
+        echo "FAIL: expected exit 0 from ls-remote fallback after page-1 curl failure, got exit ${exit_code}"
+        echo "  (Mutation: revert to 'return 1' on curl failure → no fallback → exit 1 → RED)"
+        return 1
+    }
+
+    echo "$result" | grep -q "openssl-3.5.6" || {
+        echo "FAIL: expected ls-remote tags in output, got: '${result}'"
+        return 1
+    }
+}
+
+@test "Hardening-R11/curl-fallback: page-2 curl failure after page-1 succeeds is fail-closed, no fallback" {
+    # When curl fails on page 2 and tags_emitted>0, _gh_api_tags must return 1
+    # (fail-closed). It must NOT call _git_ls_remote_tags because appending
+    # fresh ls-remote tags to a partial page-1 set yields an inconsistent list.
+    #
+    # Strategy: inject a mock curl that succeeds on the first call (returning
+    # one page of tags + a Link header pointing to a page-2 URL), then fails on
+    # the second call. We then assert that _gh_api_tags returns non-zero AND
+    # that _git_ls_remote_tags is never called.
+    #
+    # Mutation trace: change 'return 1' on page-N failure to 'break' → fallback
+    # runs → caller gets partial+ls-remote tags → exits 0 → RED.
+    local mockdir
+    mockdir="${BATS_TEST_TMPDIR}/mock-bin2-$$"
+    mkdir -p "$mockdir"
+    local call_count_file="${BATS_TEST_TMPDIR}/curl-calls-$$"
+    printf '0' > "$call_count_file"
+
+    # Mock curl: succeeds on first call (page 1 with Link header), fails on second.
+    cat > "$mockdir/curl" << 'CURLEOF'
+#!/usr/bin/env bash
+# Count calls and alternate: first call = success with Link header,
+# second call = failure (rc 22).
+CALL_FILE="${CALL_COUNT_FILE}"
+count=$(cat "$CALL_FILE" 2>/dev/null || printf '0')
+count=$((count + 1))
+printf '%s' "$count" > "$CALL_FILE"
+if [[ "$count" -eq 1 ]]; then
+    # Parse -D <hdrfile> from args to write a fake Link header
+    hdr_file=""
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "-D" ]]; then hdr_file="$2"; shift 2; else shift; fi
+    done
+    if [[ -n "$hdr_file" ]]; then
+        printf 'HTTP/1.1 200 OK\r\nlink: <https://api.github.com/repos/foo/bar/tags?page=2>; rel="next"\r\n\r\n' > "$hdr_file"
+    fi
+    printf '[{"name":"openssl-3.4.0"},{"name":"openssl-3.4.1"}]'
+    exit 0
+else
+    exit 22
+fi
+CURLEOF
+    chmod +x "$mockdir/curl"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$mockdir/gh"
+    chmod +x "$mockdir/gh"
+
+    local exit_code=0
+    CALL_COUNT_FILE="$call_count_file" PATH="$mockdir:$PATH" bash -c "
+        source '${REPO_ROOT}/helpers/latest-github-tag'
+        _git_ls_remote_tags() {
+            # Must NOT be called on page-N failure (fail-closed).
+            printf 'FALLBACK_CALLED\n' >&2
+            return 0
+        }
+        _gh_api_tags 'openssl/openssl'
+    " 2>/dev/null || exit_code=$?
+
+    [[ "$exit_code" -ne 0 ]] || {
+        echo "FAIL: expected non-zero exit (fail-closed) on page-2 curl failure, got exit 0"
+        echo "  (Mutation: 'break' on page-N failure → fallback runs → exits 0 → RED)"
         return 1
     }
 }
