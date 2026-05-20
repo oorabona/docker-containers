@@ -388,3 +388,74 @@ NOSCRIPT
     # Reaching here means: guard=non-zero (correct), no-guard=0 (expected mutation RED)
     # P3 regression lock verified.
 }
+
+# ---------------------------------------------------------------------------
+# Fix-R8 regression lock: stable-pin entries have liveness_url_template
+#
+# Contract: every stable-pin entry in config.yaml that has a liveness_url
+# MUST also declare liveness_url_template so that the liveness step can
+# substitute the CANDIDATE version (from a pending auto-PR) rather than the
+# pinned version. Without liveness_url_template, an auto-PR opening for
+# openssl 3.5.7 would HEAD the OLD 3.5.6 URL — false-green for the upgrade.
+#
+# This test reads all config.yaml files, finds stable-pin entries that have
+# liveness_url set, and asserts that liveness_url_template is ALSO present.
+#
+# Axes covered: lifecycle=stable-pin + liveness_url present + template absent → FAIL
+#               lifecycle=stable-pin + liveness_url present + template present → PASS
+#               lifecycle=stable-pin + no liveness_url → SKIP (no liveness check at all)
+#               lifecycle=tracked (covered by existing Fix #5 coherence test)
+#               lifecycle=eol-migrate/untracked → template not required
+#
+# Mutation caught: removing liveness_url_template from openresty/config.yaml
+# RESTY_OPENSSL_VERSION → this test detects the gap and goes RED.
+#
+# How to verify mutation → RED:
+#   1. Remove liveness_url_template from openresty/config.yaml RESTY_OPENSSL_VERSION.
+#   2. Run this test — it fails: RESTY_OPENSSL_VERSION has liveness_url but no template.
+#   3. Restore liveness_url_template → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix-R8: all stable-pin entries with liveness_url also declare liveness_url_template" {
+    local bad=0
+    local bad_list=""
+
+    for config in "$REPO_ROOT"/*/config.yaml; do
+        local container
+        container=$(basename "$(dirname "$config")")
+
+        if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
+            continue
+        fi
+
+        local dep_names
+        dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$config")
+
+        while IFS= read -r dep; do
+            [[ -z "$dep" ]] && continue
+
+            local lc liveness_url tmpl
+            lc=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
+            [[ "$lc" == "stable-pin" ]] || continue
+
+            liveness_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+            [[ -n "$liveness_url" && "$liveness_url" != "null" ]] || continue
+
+            # stable-pin entry with liveness_url → must also have template.
+            tmpl=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "$config")
+            if [[ -z "$tmpl" || "$tmpl" == "null" ]]; then
+                bad=$((bad + 1))
+                bad_list="${bad_list}\n  ${container}/${dep}: has liveness_url but no liveness_url_template"
+            fi
+        done <<< "$dep_names"
+    done
+
+    if [[ "$bad" -gt 0 ]]; then
+        echo "FAIL: ${bad} stable-pin entries have liveness_url but no liveness_url_template:"
+        printf '%b\n' "$bad_list"
+        echo ""
+        echo "Fix: add liveness_url_template with a {version} placeholder to each entry above."
+        echo "Without it, liveness validates the stale pinned URL when an auto-PR opens."
+        return 1
+    fi
+}

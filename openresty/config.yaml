@@ -39,6 +39,7 @@ dependency_sources:
     supported_until: "2030-04-08"
     supported_until_source: "https://www.openssl.org/policies/releasestrat.html"
     liveness_url: "https://www.openssl.org/source/openssl-3.5.6.tar.gz"
+    liveness_url_template: "https://www.openssl.org/source/openssl-{version}.tar.gz"
     reason: "OpenSSL 3.5 LTS (EOL 2030-04-08); pinned to 3.5.x — monitors patch releases within LTS line only"
   RESTY_OPENSSL_PATCH_VERSION:
     monitor: false

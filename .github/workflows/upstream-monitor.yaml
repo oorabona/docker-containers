@@ -133,40 +133,52 @@ jobs:
               url_template=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "$config")
               url=""
 
-              if [[ "$lifecycle" == "tracked" && -n "$url_template" && "$url_template" != "null" ]]; then
-                # P2: prefer the detected latest_version from upstream detection
-                # over the current pinned version. If detection found a newer
-                # version for this dep, HEAD the NEW artifact URL (the one the
-                # next build will actually fetch), not the already-shipped URL.
-                candidate_version=""
-                if [[ -n "$UPSTREAM_VERSION_INFO" && "$UPSTREAM_VERSION_INFO" != "[]" ]]; then
-                  candidate_version=$(echo "$UPSTREAM_VERSION_INFO" \
-                    | jq -r --arg c "$container" --arg d "$dep" \
-                    '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
-                    2>/dev/null | head -1)
-                fi
-                # Fall back to current pinned version when no candidate was detected
-                if [[ -z "$candidate_version" ]]; then
-                  candidate_version=$(YQ_DEP="$dep" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
-                fi
-                if [[ -n "$candidate_version" && "$candidate_version" != "null" ]]; then
-                  url="${url_template//\{version\}/$candidate_version}"
-                else
-                  # No version available — fall back to static liveness_url.
+              case "$lifecycle" in
+                tracked|stable-pin)
+                  # P2 / Fix-R8: tracked AND stable-pin entries both auto-bump
+                  # within their version line (tracked → any new version;
+                  # stable-pin → patch within LTS pin).  When the upstream
+                  # monitor opens an auto-PR for the new patch, liveness MUST
+                  # validate the NEW artifact URL (the one the upcoming build
+                  # will actually fetch), not the stale pinned URL already in
+                  # build_args.  So candidate-version substitution is required
+                  # for both lifecycles when liveness_url_template is present.
+                  if [[ -n "$url_template" && "$url_template" != "null" ]]; then
+                    # Prefer the detected latest_version from upstream detection.
+                    # If no candidate was detected (no auto-PR pending), fall
+                    # back to the current pinned version — still correct.
+                    candidate_version=""
+                    if [[ -n "$UPSTREAM_VERSION_INFO" && "$UPSTREAM_VERSION_INFO" != "[]" ]]; then
+                      candidate_version=$(echo "$UPSTREAM_VERSION_INFO" \
+                        | jq -r --arg c "$container" --arg d "$dep" \
+                        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+                        2>/dev/null | head -1)
+                    fi
+                    # Fall back to current pinned version when no candidate detected.
+                    if [[ -z "$candidate_version" ]]; then
+                      candidate_version=$(YQ_DEP="$dep" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
+                    fi
+                    if [[ -n "$candidate_version" && "$candidate_version" != "null" ]]; then
+                      url="${url_template//\{version\}/$candidate_version}"
+                    else
+                      # No version available — fall back to static liveness_url.
+                      url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+                    fi
+                  else
+                    # tracked/stable-pin WITHOUT liveness_url_template — advisory
+                    # warning; fall through to static liveness_url for backward-compat.
+                    static_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+                    if [[ -n "$static_url" && "$static_url" != "null" ]]; then
+                      echo "::warning::liveness-template: ${container}/${dep} is ${lifecycle} but has no liveness_url_template — static liveness_url may become stale when version is bumped"
+                    fi
+                    url="$static_url"
+                  fi
+                  ;;
+                *)
+                  # eol-migrate / untracked: static liveness_url is correct.
                   url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
-                fi
-              elif [[ "$lifecycle" == "tracked" && ( -z "$url_template" || "$url_template" == "null" ) ]]; then
-                # tracked entry without liveness_url_template — advisory warning only.
-                # Falls through to static liveness_url for backward-compat.
-                static_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
-                if [[ -n "$static_url" && "$static_url" != "null" ]]; then
-                  echo "::warning::liveness-template: ${container}/${dep} is tracked but has no liveness_url_template — static liveness_url may become stale when version is bumped"
-                fi
-                url="$static_url"
-              else
-                # stable-pin / eol-migrate / untracked: static liveness_url is correct.
-                url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
-              fi
+                  ;;
+              esac
 
               [[ -z "$url" || "$url" == "null" ]] && continue
 

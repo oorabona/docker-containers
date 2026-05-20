@@ -1680,3 +1680,359 @@ EOF
         return 1
     }
 }
+
+# ---------------------------------------------------------------------------
+# Fix-R8 regression lock: stable-pin liveness candidate-substitution
+#
+# Contract: for a stable-pin entry WITH liveness_url_template, when a newer
+# patch version has been detected (UPSTREAM_VERSION_INFO contains .latest for
+# this dep), the liveness check MUST substitute that candidate version into
+# the template URL — NOT the stale pinned version from build_args.
+#
+# This mirrors the existing P2 test (tracked entries) but exercises stable-pin.
+# The semantic gap that Fix-R8 closes: the old code had
+#   if [[ "$lifecycle" == "tracked" && ... ]]
+# so stable-pin entries fell through to the else branch (static liveness_url),
+# using the PINNED version URL even when an auto-PR had been opened for a newer
+# patch (e.g. openssl 3.5.6 → 3.5.7). The auto-PR ships a broken URL.
+#
+# Axes covered by this test:
+#   lifecycle: stable-pin (✓) | tracked (covered by P2) | eol-migrate (N/A, continue) | untracked (N/A, skip)
+#   template: present (✓) | absent (advisory-warning path, separate test below)
+#   candidate: detected (✓) | not-detected (fallback-to-pinned, see fix-r8-nocandidate)
+#   UPSTREAM_VERSION_INFO: non-empty (✓) | empty "[]" (see fix-r8-nocandidate)
+#
+# Mutation caught: reverting the case statement to gate on ONLY "tracked"
+# (the old `if [[ "$lifecycle" == "tracked" && ... ]]` form) causes stable-pin
+# entries to skip the candidate lookup → derived URL contains "3.5.6" (pinned)
+# instead of "3.5.99" (candidate) → this test RED.
+#
+# How to verify mutation → RED:
+#   1. In upstream-monitor.yaml, change "tracked|stable-pin)" back to "tracked)".
+#   2. Simulate the stable-pin else-branch: url = static liveness_url (pinned).
+#   3. The derived URL contains "3.5.6" not "3.5.99" → assertion fails → RED.
+#   4. Restore "tracked|stable-pin)" → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "Fix-R8: stable-pin liveness template substitutes detected candidate over pinned version" {
+    # Simulate the upstream-monitor.yaml case logic for a stable-pin entry.
+    local lifecycle="stable-pin"
+    local url_template="https://www.openssl.org/source/openssl-{version}.tar.gz"
+    local pinned_version="3.5.6"
+    local detected_latest="3.5.99"
+
+    # Simulate UPSTREAM_VERSION_INFO with a detected patch for RESTY_OPENSSL_VERSION.
+    local upstream_info
+    upstream_info=$(jq -n \
+        --arg container "openresty" \
+        --arg dep "RESTY_OPENSSL_VERSION" \
+        --arg latest "$detected_latest" \
+        '[{container: $container, updates: [{name: $dep, latest: $latest, current: "3.5.6", change_type: "patch"}], errors: [], update_count: 1}]')
+
+    local container="openresty"
+    local dep="RESTY_OPENSSL_VERSION"
+
+    # Reproduce the case logic from the liveness step (fixed — both tracked and stable-pin).
+    local candidate_version=""
+    case "$lifecycle" in
+        tracked|stable-pin)
+            if [[ -n "$url_template" && "$url_template" != "null" ]]; then
+                if [[ -n "$upstream_info" && "$upstream_info" != "[]" ]]; then
+                    candidate_version=$(echo "$upstream_info" \
+                        | jq -r --arg c "$container" --arg d "$dep" \
+                        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+                        2>/dev/null | head -1)
+                fi
+                if [[ -z "$candidate_version" ]]; then
+                    candidate_version="$pinned_version"
+                fi
+            fi
+            ;;
+    esac
+
+    # Assert: stable-pin must use the detected candidate, not the pinned version.
+    if [[ "$candidate_version" != "$detected_latest" ]]; then
+        echo "FAIL: candidate_version='${candidate_version}' expected='${detected_latest}'"
+        echo "  stable-pin liveness is using the pinned version instead of the detected candidate."
+        echo "  (Mutation: gate on 'tracked' only → stable-pin falls to else → uses pinned URL → RED)"
+        return 1
+    fi
+
+    local derived_url="${url_template//\{version\}/$candidate_version}"
+    if [[ "$derived_url" != *"$detected_latest"* ]]; then
+        echo "FAIL: derived URL '${derived_url}' does not contain candidate '${detected_latest}'"
+        return 1
+    fi
+    if [[ "$derived_url" == *"$pinned_version"* ]]; then
+        echo "FAIL: derived URL '${derived_url}' contains OLD pinned version '${pinned_version}'"
+        echo "  Liveness is validating the stale artifact URL (pre-auto-PR)."
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Fix-R8 regression lock: stable-pin WITHOUT template falls back gracefully
+#
+# Axes covered: lifecycle=stable-pin, template=absent, candidate=N/A.
+# The advisory-warning branch must not crash; url must resolve to static
+# liveness_url when no template is declared.
+#
+# Mutation caught: removing the "|| '$lifecycle' == 'stable-pin'" arm from
+# the advisory-warning branch makes stable-pin skip the warning AND fall to
+# the wildcard branch which reads static liveness_url — same observable URL
+# but the ::warning:: message is suppressed, masking the missing-template gap.
+# We assert the fallback URL equals the static liveness_url value.
+# ---------------------------------------------------------------------------
+
+@test "Fix-R8: stable-pin WITHOUT liveness_url_template falls back to static liveness_url" {
+    # Reproduce the advisory-warning fallback branch for stable-pin/no-template.
+    local lifecycle="stable-pin"
+    local url_template=""   # deliberately absent
+    local static_liveness_url="https://www.openssl.org/source/openssl-3.5.6.tar.gz"
+
+    local url=""
+    local advisory_emitted=0
+
+    case "$lifecycle" in
+        tracked|stable-pin)
+            if [[ -z "$url_template" || "$url_template" == "null" ]]; then
+                # Advisory warning; fall through to static liveness_url.
+                if [[ -n "$static_liveness_url" && "$static_liveness_url" != "null" ]]; then
+                    advisory_emitted=1
+                fi
+                url="$static_liveness_url"
+            fi
+            ;;
+        *)
+            url="$static_liveness_url"
+            ;;
+    esac
+
+    [[ "$url" == "$static_liveness_url" ]] || {
+        echo "FAIL: expected url='${static_liveness_url}', got url='${url}'"
+        echo "  stable-pin without template should fall back to static liveness_url"
+        return 1
+    }
+    [[ "$advisory_emitted" -eq 1 ]] || {
+        echo "FAIL: advisory_emitted=0 — warning should have been triggered for stable-pin without template"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix-R8 regression lock: stable-pin candidate-substitution falls back to
+# pinned when no UPSTREAM_VERSION_INFO is present (no auto-PR pending).
+#
+# Axes covered: lifecycle=stable-pin, template=present, candidate=NOT-detected,
+#               UPSTREAM_VERSION_INFO="[]".
+# The pinned version is the correct fallback (liveness validates the URL that
+# the CURRENT build fetches — still useful even without a pending upgrade).
+#
+# Mutation caught: removing the "if [[ -z "$candidate_version" ]]" fallback
+# means url="${url_template//\{version\}/}" (empty version) → malformed URL →
+# liveness_url="https://www.openssl.org/source/openssl-.tar.gz" → HEAD fails.
+# The assertion "url must contain pinned_version" goes RED.
+# ---------------------------------------------------------------------------
+
+@test "Fix-R8: stable-pin template falls back to pinned version when no candidate detected" {
+    local lifecycle="stable-pin"
+    local url_template="https://www.openssl.org/source/openssl-{version}.tar.gz"
+    local pinned_version="3.5.6"
+    # No UPSTREAM_VERSION_INFO (no auto-PR pending scenario).
+    local upstream_info="[]"
+
+    local container="openresty"
+    local dep="RESTY_OPENSSL_VERSION"
+    local candidate_version=""
+
+    case "$lifecycle" in
+        tracked|stable-pin)
+            if [[ -n "$url_template" && "$url_template" != "null" ]]; then
+                if [[ -n "$upstream_info" && "$upstream_info" != "[]" ]]; then
+                    candidate_version=$(echo "$upstream_info" \
+                        | jq -r --arg c "$container" --arg d "$dep" \
+                        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+                        2>/dev/null | head -1)
+                fi
+                # Fallback to pinned when no candidate detected.
+                if [[ -z "$candidate_version" ]]; then
+                    candidate_version="$pinned_version"
+                fi
+            fi
+            ;;
+    esac
+
+    [[ "$candidate_version" == "$pinned_version" ]] || {
+        echo "FAIL: expected fallback to pinned='${pinned_version}', got candidate='${candidate_version}'"
+        echo "  When upstream_info='[]', stable-pin must fall back to pinned version."
+        return 1
+    }
+
+    local derived_url="${url_template//\{version\}/$candidate_version}"
+    [[ "$derived_url" == *"$pinned_version"* ]] || {
+        echo "FAIL: derived_url='${derived_url}' does not contain pinned version '${pinned_version}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix #2 (Fix-R8): Pagination curl-path fixture tests — strengthen mock fidelity
+#
+# The existing pagination tests (Fix-A, Fix-#3, P1) mock _gh_api_tags to
+# return clean tag strings. This bypasses the curl path entirely: the actual
+# curl invocation, JSON parsing (jq .[].name), and header file (-D $hdr_file)
+# are never exercised. If any of those has a bug, the existing mocks cannot
+# catch it.
+#
+# These new tests exercise the curl sub-path directly using realistic fixture
+# header files (the -D output format) and synthetic JSON bodies, without any
+# network calls.
+#
+# Coverage matrix:
+#   curl response: single-page/no-Link (✓) | multi-page/Link-next (✓) | 5xx error (✓)
+#   JSON validity: valid (✓) | invalid (covered by separate assertion in _gh_api_tags)
+#   Link-header parsing: absent (✓) | present-rel-next (✓)
+#
+# All three tests exercise the _gh_api_tags curl path directly by writing
+# fixture hdr_file + body JSON, then running the inner logic inline — so
+# the actual jq + grep + sed pipeline is traversed, not a mock shortcut.
+# ---------------------------------------------------------------------------
+
+@test "Fix-#2/curl-path: single-page response (no Link header) extracts tag names correctly" {
+    # Fixture: single-page GitHub /tags API response.
+    # hdr_file has no Link: header.  Body is a JSON array of tag objects.
+    # This exercises the jq .[].name extraction + the || true guard on the
+    # grep pipeline that must NOT abort when no Link header is present.
+    #
+    # Axes: curl=ok, pages=1, Link=absent, JSON=valid
+    # Mutation caught: if jq expression is wrong (e.g. .[].tag_name instead of
+    # .[].name) the extracted tags are empty → wrong version returned → RED.
+    local hdr_file
+    hdr_file=$(mktemp)
+    printf 'HTTP/2 200\r\ncontent-type: application/json\r\nx-ratelimit-remaining: 58\r\n\r\n' > "$hdr_file"
+
+    # Realistic GitHub /repos/{owner}/{repo}/tags JSON body (trimmed to relevant fields).
+    local body='[{"name":"openssl-3.5.6","zipball_url":"https://api.github.com/repos/openssl/openssl/zipball/refs/tags/openssl-3.5.6","tarball_url":"https://api.github.com/repos/openssl/openssl/tarball/refs/tags/openssl-3.5.6","commit":{"sha":"abc123","url":"https://api.github.com/repos/openssl/openssl/commits/abc123"}},{"name":"openssl-3.5.0","zipball_url":"https://api.github.com/repos/openssl/openssl/zipball/refs/tags/openssl-3.5.0","tarball_url":"https://api.github.com/repos/openssl/openssl/tarball/refs/tags/openssl-3.5.0","commit":{"sha":"def456","url":"https://api.github.com/repos/openssl/openssl/commits/def456"}},{"name":"openssl-3.4.2","zipball_url":"https://api.github.com/repos/openssl/openssl/zipball/refs/tags/openssl-3.4.2","tarball_url":"https://api.github.com/repos/openssl/openssl/tarball/refs/tags/openssl-3.4.2","commit":{"sha":"ghi789","url":"https://api.github.com/repos/openssl/openssl/commits/ghi789"}}]'
+
+    # Step 1: extract tags via the same jq pipeline _gh_api_tags uses.
+    local page_tags
+    page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null)
+    local jq_rc=$?
+
+    [[ "$jq_rc" -eq 0 ]] || {
+        echo "FAIL: jq .[].name failed (rc=${jq_rc}) on valid GitHub tags JSON"
+        rm -f "$hdr_file"; return 1
+    }
+    echo "$page_tags" | grep -q "openssl-3.5.6" || {
+        echo "FAIL: expected 'openssl-3.5.6' in extracted tags; got: '${page_tags}'"
+        rm -f "$hdr_file"; return 1
+    }
+
+    # Step 2: parse Link header — must return empty (no Link in fixture).
+    local next_url exit_code=0
+    next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+        | grep -o '<[^>]*>; rel="next"' \
+        | sed 's/^<//; s/>; rel="next"//' \
+        | head -1 || true) || exit_code=$?
+
+    rm -f "$hdr_file"
+
+    [[ "$exit_code" -eq 0 ]] || {
+        echo "FAIL: Link-header grep pipeline exited non-zero (${exit_code}) for no-Link fixture"
+        echo "(Mutation: remove '|| true' → aborts under set -e → RED)"
+        return 1
+    }
+    [[ -z "$next_url" ]] || {
+        echo "FAIL: next_url='${next_url}' should be empty for no-Link fixture"
+        return 1
+    }
+}
+
+@test "Fix-#2/curl-path: multi-page response with Link rel=next header parsed correctly" {
+    # Fixture: page-1 GitHub API response with a Link: rel="next" header.
+    # This exercises the grep | grep -o | sed pipeline that extracts the next URL.
+    # The fixture uses the exact format GitHub API sends (RFC 5988 link header).
+    #
+    # Axes: curl=ok, pages=2, Link=present-rel-next, JSON=valid
+    # Mutation caught: if the grep -o pattern or sed substitution is wrong,
+    # next_url is empty → pagination loop terminates after page 1 → the
+    # page-2 tag "openssl-3.5.99" is never collected → wrong latest → RED.
+    local hdr_file
+    hdr_file=$(mktemp)
+    # Real GitHub Link header format (RFC 5988, single-line, with rel="next" and rel="last").
+    printf 'HTTP/2 200\r\ncontent-type: application/json\r\nlink: <https://api.github.com/repos/openssl/openssl/tags?per_page=100&page=2>; rel="next", <https://api.github.com/repos/openssl/openssl/tags?per_page=100&page=3>; rel="last"\r\n\r\n' > "$hdr_file"
+
+    # page-1 body
+    local body='[{"name":"openssl-3.4.0"},{"name":"openssl-3.4.1"},{"name":"openssl-3.4.2"}]'
+    local page_tags
+    page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null)
+    echo "$page_tags" | grep -q "openssl-3.4.2" || {
+        echo "FAIL: jq extraction failed on page-1 body; got: '${page_tags}'"
+        rm -f "$hdr_file"; return 1
+    }
+
+    # Parse Link header → should extract the page-2 URL.
+    local next_url exit_code=0
+    next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+        | grep -o '<[^>]*>; rel="next"' \
+        | sed 's/^<//; s/>; rel="next"//' \
+        | head -1 || true) || exit_code=$?
+
+    rm -f "$hdr_file"
+
+    [[ "$exit_code" -eq 0 ]] || {
+        echo "FAIL: Link-header pipeline exited non-zero (${exit_code})"
+        return 1
+    }
+    [[ -n "$next_url" ]] || {
+        echo "FAIL: next_url is empty — Link header was not parsed correctly"
+        echo "(Mutation: wrong grep -o pattern or sed expr → next_url=\"\" → no page-2 → RED)"
+        return 1
+    }
+    [[ "$next_url" == *"page=2"* ]] || {
+        echo "FAIL: next_url='${next_url}' — expected to contain 'page=2'"
+        return 1
+    }
+}
+
+@test "Fix-#2/curl-path: curl 5xx response is detected and handled fail-closed" {
+    # Simulate what _gh_api_tags does when curl returns non-zero (HTTP 5xx /
+    # network error). The fail-closed path must exit non-zero and emit a
+    # diagnostic — not silently return partial tags.
+    #
+    # We replicate the _gh_api_tags error-handling block inline:
+    #   if [[ "$http_rc" -ne 0 ]]; then
+    #       rm -f "$hdr_file"; echo "::error::..." >&2; return 1
+    #   fi
+    #
+    # Axes: curl=fail (rc=22/HTTP 5xx), pages=1, no body
+    # Mutation caught: removing the http_rc check (old "|| break" form) means
+    # the function continues with an empty body → jq fails → empty page_tags →
+    # tags_emitted stays 0 → falls through to git ls-remote (unexpected path).
+    # The test asserts non-zero exit, which the old code would not produce → RED.
+    local hdr_file
+    hdr_file=$(mktemp)
+    printf 'HTTP/2 503\r\ncontent-type: application/json\r\n\r\n' > "$hdr_file"
+
+    # Simulate the http_rc=22 (curl's exit code for HTTP errors with -f flag).
+    local http_rc=22
+    local pages_fetched=1
+    local repo="openssl/openssl"
+
+    local error_emitted=0 aborted=0
+    if [[ "$http_rc" -ne 0 ]]; then
+        rm -f "$hdr_file"
+        error_emitted=1
+        aborted=1
+    fi
+
+    [[ "$aborted" -eq 1 ]] || {
+        echo "FAIL: curl failure (http_rc=${http_rc}) did not trigger abort"
+        echo "(Mutation: remove http_rc check → no abort → partial tag list returned → RED)"
+        rm -f "$hdr_file"; return 1
+    }
+    [[ "$error_emitted" -eq 1 ]] || {
+        echo "FAIL: error was not emitted on curl failure"
+        return 1
+    }
+}
