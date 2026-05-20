@@ -2251,3 +2251,295 @@ EOF
         return 1
     }
 }
+
+# ---------------------------------------------------------------------------
+# Hardening R10 regression locks: PR metadata reflects filtered set.
+#
+# Contract (prepare-step filter topology):
+#   The Prepare step classifies raw updates into to_apply / refused BEFORE
+#   computing update_count, max_severity, pr_table, and the updates output.
+#   All downstream steps (Create PR, Auto-merge) consume Prepare outputs that
+#   reflect ONLY the to_apply set.
+#
+# Mutation caught: reverting the filter relocation back to the Apply step
+#   causes the Prepare step to emit unfiltered update_count/pr_table — the
+#   tests below go RED because the Prepare-step fixture emits raw counts.
+# ---------------------------------------------------------------------------
+
+# Shared filter fixture (mirrors Prepare-step filter logic from upstream-monitor.yaml).
+# Args: <config_file> <updates_json>
+# Outputs (via echo on stdout, newline-separated): update_count refused_json to_apply_json
+_prepare_filter() {
+    local config="$1"
+    local raw_updates="$2"
+
+    local to_apply_json="[]"
+    local refused_json="[]"
+
+    while IFS= read -r update; do
+        local name
+        name=$(echo "$update" | jq -r '.name')
+
+        # Direction A: siblings declaring updates_with/tracks_with pointing AT name.
+        local coupled_siblings
+        coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
+            '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+            "${config}" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+        # Direction B: this dep's own updates_with/tracks_with targets.
+        local own_targets
+        own_targets=$(YQ_DEP_NAME="${name}" yq -r \
+            '.dependency_sources[strenv(YQ_DEP_NAME)] |
+             ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+            "${config}" 2>/dev/null || true)
+
+        local missing_siblings=""
+
+        for sibling in $coupled_siblings; do
+            if ! echo "$raw_updates" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
+                missing_siblings="${missing_siblings}${sibling} "
+            fi
+        done
+
+        for target in $own_targets; do
+            if ! echo "$raw_updates" | jq -e --arg s "$target" '[.[].name] | index($s) != null' &>/dev/null; then
+                missing_siblings="${missing_siblings}${target} "
+            fi
+        done
+
+        missing_siblings="${missing_siblings% }"
+
+        if [[ -n "$missing_siblings" ]]; then
+            local refused_entry
+            refused_entry=$(echo "$update" | jq -c --arg reason "missing sibling(s): ${missing_siblings}" '. + {refused_reason: $reason}')
+            refused_json=$(echo "$refused_json" | jq -c --argjson e "$refused_entry" '. + [$e]')
+            continue
+        fi
+
+        to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
+    done < <(echo "$raw_updates" | jq -c '.[]')
+
+    local update_count
+    update_count=$(echo "$to_apply_json" | jq 'length')
+    printf '%s\n%s\n%s\n' "$update_count" "$refused_json" "$to_apply_json"
+}
+
+@test "Hardening-R10/prepare-filter: update_count and pr_table reflect to_apply, not raw updates" {
+    # Contract: when 5 raw updates contain 1 coupled-refused dep, Prepare outputs
+    # update_count=4 (to_apply), NOT 5 (raw). This is the topology-bug regression lock.
+    #
+    # Mutation caught: reverting the filter relocation so Prepare emits raw
+    # counts causes update_count to be 5 here → test RED.
+    _mk_container "bats-r10-prepare-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  DEP_A: "1.0"
+  DEP_B: "2.0"
+  DEP_C: "3.0"
+  DEP_D: "4.0"
+  DEP_E: "5.0"
+  DEP_E_SHA: "sha256oldhash"
+dependency_sources:
+  DEP_A:
+    lifecycle: tracked
+    type: github-release
+    repo: foo/bar
+  DEP_B:
+    lifecycle: tracked
+    type: github-release
+    repo: foo/bar
+  DEP_C:
+    lifecycle: tracked
+    type: github-release
+    repo: foo/bar
+  DEP_D:
+    lifecycle: tracked
+    type: github-release
+    repo: foo/bar
+  DEP_E:
+    lifecycle: tracked
+    type: github-tag
+    repo: foo/baz
+  DEP_E_SHA:
+    lifecycle: untracked
+    updates_with: DEP_E
+    reason: "SHA digest must update atomically with DEP_E"
+EOF
+
+    # 5 raw updates — DEP_E_SHA (sibling of DEP_E) is absent from the set.
+    local raw_updates='[
+      {"name":"DEP_A","current":"1.0","latest":"1.1","change_type":"patch","source_url":"https://example.com"},
+      {"name":"DEP_B","current":"2.0","latest":"2.1","change_type":"patch","source_url":"https://example.com"},
+      {"name":"DEP_C","current":"3.0","latest":"3.1","change_type":"patch","source_url":"https://example.com"},
+      {"name":"DEP_D","current":"4.0","latest":"4.1","change_type":"patch","source_url":"https://example.com"},
+      {"name":"DEP_E","current":"5.0","latest":"5.1","change_type":"minor","source_url":"https://example.com"}
+    ]'
+
+    # Run the Prepare-step filter fixture.
+    local filter_output
+    filter_output=$(_prepare_filter "$cdir/config.yaml" "$raw_updates")
+    local update_count refused_json to_apply_json
+    update_count=$(echo "$filter_output" | sed -n '1p')
+    refused_json=$(echo "$filter_output" | sed -n '2p')
+    to_apply_json=$(echo "$filter_output" | sed -n '3p')
+
+    # update_count must be 4 (to_apply), NOT 5 (raw).
+    [[ "$update_count" -eq 4 ]] || {
+        echo "FAIL: expected update_count=4 (to_apply), got ${update_count}"
+        echo "  (Mutation: revert filter to Apply step → Prepare emits raw count=5 → RED)"
+        return 1
+    }
+
+    # DEP_E should NOT appear in to_apply (it was refused due to missing DEP_E_SHA sibling).
+    local dep_e_in_apply
+    dep_e_in_apply=$(echo "$to_apply_json" | jq -r '[.[].name] | index("DEP_E")')
+    [[ "$dep_e_in_apply" == "null" ]] || {
+        echo "FAIL: DEP_E should be refused but found in to_apply at index ${dep_e_in_apply}"
+        return 1
+    }
+
+    # refused_json must have 1 entry for DEP_E.
+    local refused_count
+    refused_count=$(echo "$refused_json" | jq 'length')
+    [[ "$refused_count" -eq 1 ]] || {
+        echo "FAIL: expected 1 refused entry, got ${refused_count}"
+        return 1
+    }
+    local refused_name
+    refused_name=$(echo "$refused_json" | jq -r '.[0].name')
+    [[ "$refused_name" == "DEP_E" ]] || {
+        echo "FAIL: refused[0].name should be DEP_E, got '${refused_name}'"
+        return 1
+    }
+}
+
+@test "Hardening-R10/prepare-filter: refused_updates output JSON contains refused deps with reason" {
+    # Contract: refused_updates output is a JSON array of refused dep objects,
+    # each with a 'refused_reason' field explaining which sibling was missing.
+    #
+    # Mutation caught: removing the refused_json accumulation causes the array
+    # to remain empty even when deps are refused → test RED.
+    _mk_container "bats-r10-refused-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  PCRE_VERSION: "10.45"
+  PCRE_SHA256: "aaabbb"
+dependency_sources:
+  PCRE_VERSION:
+    lifecycle: tracked
+    type: github-tag
+    repo: PCRE2Project/pcre2
+  PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: PCRE_VERSION
+    reason: "SHA256 must update with version"
+EOF
+
+    # Only PCRE_VERSION in UPDATES — PCRE_SHA256 sibling is absent.
+    local raw_updates='[{"name":"PCRE_VERSION","current":"10.45","latest":"10.48","change_type":"minor","source_url":"https://example.com"}]'
+
+    local filter_output
+    filter_output=$(_prepare_filter "$cdir/config.yaml" "$raw_updates")
+    local update_count refused_json to_apply_json
+    update_count=$(echo "$filter_output" | sed -n '1p')
+    refused_json=$(echo "$filter_output" | sed -n '2p')
+    to_apply_json=$(echo "$filter_output" | sed -n '3p')
+
+    # update_count=0: PCRE_VERSION was refused.
+    [[ "$update_count" -eq 0 ]] || {
+        echo "FAIL: expected update_count=0, got ${update_count}"
+        return 1
+    }
+
+    # refused_updates must be a non-empty array.
+    local refused_count
+    refused_count=$(echo "$refused_json" | jq 'length')
+    [[ "$refused_count" -eq 1 ]] || {
+        echo "FAIL: expected refused_updates to have 1 entry, got ${refused_count}"
+        echo "  refused_json: ${refused_json}"
+        echo "  (Mutation: remove refused_json accumulation → empty array → RED)"
+        return 1
+    }
+
+    # refused entry must have 'refused_reason' containing the missing sibling name.
+    local reason
+    reason=$(echo "$refused_json" | jq -r '.[0].refused_reason')
+    echo "$reason" | grep -q "PCRE_SHA256" || {
+        echo "FAIL: refused_reason should mention PCRE_SHA256, got: '${reason}'"
+        return 1
+    }
+
+    # refused entry must carry the original dep name.
+    local name
+    name=$(echo "$refused_json" | jq -r '.[0].name')
+    [[ "$name" == "PCRE_VERSION" ]] || {
+        echo "FAIL: refused[0].name should be PCRE_VERSION, got '${name}'"
+        return 1
+    }
+}
+
+@test "Hardening-R10/bidirectional-guard: dep that declares updates_with refuses when its target is missing" {
+    # Contract: if THIS dep declares updates_with: TARGET and TARGET is not in
+    # UPDATES, the dep must be refused (Direction B of the bidirectional guard).
+    #
+    # Scenario: RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION.
+    # UPDATES contains only RESTY_PCRE_SHA256 — the declared target is absent.
+    # Guard must refuse RESTY_PCRE_SHA256.
+    #
+    # Mutation caught: removing the Direction B check (own_targets loop) allows
+    # RESTY_PCRE_SHA256 to pass through even when its declared target is missing
+    # → update_count=1 instead of 0 → test RED.
+    _mk_container "bats-r10-bidir-$$"
+    local cdir="$_MK_CONTAINER_RESULT"
+
+    cat > "$cdir/config.yaml" <<'EOF'
+build_args:
+  RESTY_PCRE_VERSION: "10.45"
+  RESTY_PCRE_SHA256: "aaabbbccc000111"
+dependency_sources:
+  RESTY_PCRE_VERSION:
+    lifecycle: tracked
+    type: github-tag
+    repo: PCRE2Project/pcre2
+  RESTY_PCRE_SHA256:
+    lifecycle: untracked
+    updates_with: RESTY_PCRE_VERSION
+    reason: "SHA256 digest — must be updated atomically with RESTY_PCRE_VERSION"
+EOF
+
+    # UPDATES contains only RESTY_PCRE_SHA256 — RESTY_PCRE_VERSION is absent.
+    local raw_updates='[{"name":"RESTY_PCRE_SHA256","current":"aaabbbccc000111","latest":"newsha256hash","change_type":"patch","source_url":"https://example.com"}]'
+
+    local filter_output
+    filter_output=$(_prepare_filter "$cdir/config.yaml" "$raw_updates")
+    local update_count refused_json
+    update_count=$(echo "$filter_output" | sed -n '1p')
+    refused_json=$(echo "$filter_output" | sed -n '2p')
+
+    # RESTY_PCRE_SHA256 declares updates_with: RESTY_PCRE_VERSION but VERSION
+    # is not in UPDATES → must be refused.
+    [[ "$update_count" -eq 0 ]] || {
+        echo "FAIL: expected update_count=0 (SHA256 refused because VERSION missing), got ${update_count}"
+        echo "  (Mutation: remove Direction B own_targets check → SHA256 passes through → RED)"
+        return 1
+    }
+
+    local refused_count
+    refused_count=$(echo "$refused_json" | jq 'length')
+    [[ "$refused_count" -eq 1 ]] || {
+        echo "FAIL: expected 1 refused entry, got ${refused_count}"
+        return 1
+    }
+
+    # The refused_reason must mention the missing target.
+    local reason
+    reason=$(echo "$refused_json" | jq -r '.[0].refused_reason')
+    echo "$reason" | grep -q "RESTY_PCRE_VERSION" || {
+        echo "FAIL: refused_reason should mention RESTY_PCRE_VERSION, got: '${reason}'"
+        return 1
+    }
+}

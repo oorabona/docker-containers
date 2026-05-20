@@ -224,14 +224,18 @@ latest-github-tag() {
     local versions_with_tags=""
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
-        # Use bash regex match to extract capture group 1
+        # Use bash regex match to extract capture group 1.
+        # Use ${BASH_REMATCH[1]-} (default-empty) to guard against -u (nounset):
+        # if the regex matched but defined no capture group, BASH_REMATCH[1] is
+        # unset; reading it under set -u exits abruptly. The default makes the
+        # unset case explicit so we can emit a clear diagnostic below.
         if [[ "$tag" =~ $version_extract ]]; then
-            local extracted="${BASH_REMATCH[1]}"
-            if [[ -n "$extracted" ]]; then
-                versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
-            else
-                log_info "version_extract '${version_extract}' matched '${tag}' but capture group 1 is empty — skipping" >&2
+            local extracted="${BASH_REMATCH[1]-}"
+            if [[ -z "$extracted" ]]; then
+                echo "::error::latest-github-tag: version-extract regex matched tag '$(_gha_escape "${tag}")' but produced no capture — verify the regex has exactly one parenthesized capture group" >&2
+                return 1
             fi
+            versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
         else
             log_info "version_extract '${version_extract}' did not match tag '${tag}' — skipping" >&2
         fi

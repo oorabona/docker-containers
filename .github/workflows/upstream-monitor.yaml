@@ -709,25 +709,120 @@ jobs:
           CONTAINER: ${{ matrix.container }}
           DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
         run: |
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+
           # Extract updates for this container (using env vars to avoid injection)
           container_data=$(echo "$DEP_INFO" | jq --arg c "$CONTAINER" '.[] | select(.container == $c)')
-          updates=$(echo "$container_data" | jq -c '.updates')
-          update_count=$(echo "$container_data" | jq '.update_count')
+          raw_updates=$(echo "$container_data" | jq -c '.updates')
 
-          echo "📦 Processing $update_count update(s) for $CONTAINER"
+          echo "📦 Processing $(echo "$raw_updates" | jq 'length') raw update(s) for $CONTAINER"
 
-          # Determine max severity (major > minor > patch)
+          # T12/AC-15: Coupled-atomic filter (non-postgres only).
+          # Classifies raw updates into to_apply / refused BEFORE computing outputs
+          # so that PR title/body/max_severity reflect only the approved set.
+          #
+          # Bidirectional guard: checks BOTH directions —
+          #   Direction A (existing): siblings that declare updates_with/tracks_with
+          #                           pointing AT this dep.
+          #   Direction B (new):      this dep's own updates_with/tracks_with fields,
+          #                           pointing at a target that must also be in UPDATES.
+          # Both directions must be satisfied for a dep to reach to_apply.
+          to_apply_json="[]"
+          refused_json="[]"
+
+          if [ "$CONTAINER" != "postgres" ]; then
+            while IFS= read -r update; do
+              name=$(echo "$update" | jq -r '.name')
+
+              # Direction A: find siblings in config that declare updates_with/tracks_with
+              # pointing AT ${name}.
+              coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
+                '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+              # Direction B: read this dep's own updates_with/tracks_with fields.
+              own_targets=$(YQ_DEP_NAME="${name}" yq -r \
+                '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                 ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                "${CONTAINER}/config.yaml" 2>/dev/null || true)
+
+              # Combine both directions into a single missing_siblings check.
+              missing_siblings=""
+
+              # Check Direction A: each sibling must be present in raw_updates.
+              for sibling in $coupled_siblings; do
+                if ! echo "$raw_updates" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
+                  missing_siblings="${missing_siblings}${sibling} "
+                fi
+              done
+
+              # Check Direction B: each declared target must be present in raw_updates.
+              for target in $own_targets; do
+                if ! echo "$raw_updates" | jq -e --arg s "$target" '[.[].name] | index($s) != null' &>/dev/null; then
+                  missing_siblings="${missing_siblings}${target} "
+                fi
+              done
+
+              missing_siblings="${missing_siblings% }"
+
+              if [[ -n "$missing_siblings" ]]; then
+                echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${missing_siblings}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: $(_gha_escape "${name}") $(_gha_escape "${missing_siblings}") together)." >&2
+                refused_entry=$(echo "$update" | jq -c --arg reason "missing sibling(s): ${missing_siblings}" '. + {refused_reason: $reason}')
+                refused_json=$(echo "$refused_json" | jq -c --argjson e "$refused_entry" '. + [$e]')
+                continue
+              fi
+
+              # All siblings/targets present (or none declared) — approved.
+              if [[ -n "$coupled_siblings" || -n "$own_targets" ]]; then
+                echo "  Coupled-atomic ALLOW: ${name} updated atomically in same run."
+              fi
+              to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
+            done < <(echo "$raw_updates" | jq -c '.[]')
+          else
+            # Postgres: no coupled-atomic semantics — all updates pass through.
+            to_apply_json="$raw_updates"
+          fi
+
+          update_count=$(echo "$to_apply_json" | jq 'length')
+          echo "📦 $update_count update(s) approved for PR (after coupled-atomic filter)"
+
+          # Edge: if to_apply is empty, emit safe defaults so downstream gating
+          # skips PR creation cleanly (update_count=0 → no-op).
+          if [[ "$update_count" -eq 0 ]]; then
+            echo "::warning::Prepare dependency updates: all updates for $(_gha_escape "${CONTAINER}") were coupled-refused. No PR will be created. Manual atomic bump required." >&2
+            echo "update_count=0" >> "$GITHUB_OUTPUT"
+            echo "max_severity=patch" >> "$GITHUB_OUTPUT"
+            {
+              echo "updates<<EOF"
+              echo "[]"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "pr_table<<EOF"
+              echo ""
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "refused_updates<<EOF"
+              echo "$refused_json"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Determine max severity from to_apply ONLY (not raw updates).
           max_severity="patch"
-          if echo "$updates" | jq -e '.[] | select(.change_type == "major")' &>/dev/null; then
+          if echo "$to_apply_json" | jq -e '.[] | select(.change_type == "major")' &>/dev/null; then
             max_severity="major"
-          elif echo "$updates" | jq -e '.[] | select(.change_type == "minor")' &>/dev/null; then
+          elif echo "$to_apply_json" | jq -e '.[] | select(.change_type == "minor")' &>/dev/null; then
             max_severity="minor"
           fi
 
           echo "max_severity=$max_severity" >> "$GITHUB_OUTPUT"
           echo "update_count=$update_count" >> "$GITHUB_OUTPUT"
 
-          # Build PR body table
+          # Build PR body table from to_apply ONLY.
           pr_table="| Dependency | Current | New | Change | Release |"
           pr_table="$pr_table
           |------------|---------|-----|--------|---------|"
@@ -740,7 +835,7 @@ jobs:
             source_url=$(echo "$update" | jq -r '.source_url')
             pr_table="$pr_table
           | $name | $current | $latest | $change_type | [Release notes]($source_url) |"
-          done < <(echo "$updates" | jq -c '.[]')
+          done < <(echo "$to_apply_json" | jq -c '.[]')
 
           {
             echo "pr_table<<EOF"
@@ -750,7 +845,13 @@ jobs:
 
           {
             echo "updates<<EOF"
-            echo "$updates"
+            echo "$to_apply_json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "refused_updates<<EOF"
+            echo "$refused_json"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -762,6 +863,8 @@ jobs:
           # Escape dynamic strings for GHA workflow-commands per spec.
           _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
 
+          # $UPDATES is already the coupled-atomic-filtered to_apply set from the
+          # Prepare step. No filter logic here — iterate and apply directly.
           if [ "$CONTAINER" = "postgres" ]; then
             # Postgres: update extensions/config.yaml
             while IFS= read -r update; do
@@ -773,72 +876,15 @@ jobs:
               YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension $(_gha_escape "${name}") config"; exit 1; }
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
-            # Other containers: update config.yaml build_args.
-            # T12/AC-15: Coupled-atomic check (two-stage):
-            #   Stage 1 — filter only, no mutation: build to_apply / refused arrays.
-            #   Stage 2 — mutation on to_apply only: yq -i each approved dep.
-            # Eliminates the /tmp marker-file pattern (cross-job state is fragile).
-
-            # Stage 1: classify each update as to_apply or refused.
-            to_apply=()   # dep entries (JSON objects) approved for yq mutation
-            refused=()    # dep names refused due to missing siblings
-
+            # Other containers: apply pre-filtered to_apply set from Prepare step.
+            # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+            # yq query injection if a dep name contains special chars.
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
-
-              # Coupled-atomic guard (AC-15): find every sibling in this config
-              # that declares updates_with OR tracks_with pointing at ${name}.
-              # Schema polarity: the coupling is declared ON THE SIBLING
-              # (e.g. RESTY_PCRE_SHA256.updates_with: RESTY_PCRE_VERSION).
-              # mikefarah/yq uses strenv() not --arg for variable substitution.
-              coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
-                '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
-                "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-
-              if [[ -n "$coupled_siblings" ]]; then
-                # Refuse ONLY when a required sibling is absent from UPDATES.
-                missing_siblings=""
-                for sibling in $coupled_siblings; do
-                  if ! echo "$UPDATES" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
-                    missing_siblings="${missing_siblings}${sibling} "
-                  fi
-                done
-                missing_siblings="${missing_siblings% }"
-                if [[ -n "$missing_siblings" ]]; then
-                  echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${missing_siblings}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: $(_gha_escape "${name}") $(_gha_escape "${missing_siblings}") together)." >&2
-                  echo "::error::Coupled-atomic refuse: bumping $(_gha_escape "${name}") requires atomic update of: $(_gha_escape "${missing_siblings}") — declared on sibling(s) via updates_with/tracks_with — the PR creator must update all of them together or refuse this auto-PR." >&2
-                  refused+=("$name")
-                  continue
-                fi
-                # All siblings present — atomic update allowed.
-                echo "  Coupled-atomic ALLOW: ${name} + ${coupled_siblings} updated atomically in same run."
-              fi
-
-              to_apply+=("$update")
-            done < <(echo "$UPDATES" | jq -c '.[]')
-
-            # Empty to_apply edge: nothing to write, no PR.
-            if [[ "${#to_apply[@]}" -eq 0 ]]; then
-              echo "::warning::Apply dependency updates: all updates for $(_gha_escape "${CONTAINER}") were coupled-refused. No PR will be created. Manual atomic bump required." >&2
-              exit 0
-            fi
-
-            # Stage 2: mutate — apply only approved deps.
-            for update in "${to_apply[@]}"; do
-              name=$(echo "$update" | jq -r '.name')
-              latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating ${CONTAINER} build_arg $name to $latest"
-              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
-              # yq query injection if a dep name contains special chars.
               YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
-            done
-
-            # Summary warning if some deps were refused but others proceed.
-            if [[ "${#refused[@]}" -gt 0 ]]; then
-              refused_list="${refused[*]}"
-              echo "::warning::Apply dependency updates: $(_gha_escape "${CONTAINER}") — ${#refused[@]} dep(s) coupled-refused and excluded from PR: $(_gha_escape "${refused_list}"). Manual atomic update required for those deps." >&2
-            fi
+            done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 
       - name: Import GPG key
