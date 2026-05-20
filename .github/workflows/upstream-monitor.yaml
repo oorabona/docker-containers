@@ -937,6 +937,17 @@ jobs:
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating ${CONTAINER} build_arg $name to $latest"
               YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
+
+              # Sync versioned liveness_url from liveness_url_template + new version.
+              # Without this sync, the static liveness_url stays pinned to the old
+              # artifact on the very PR that bumps build_args, causing the committed
+              # config to fail the liveness-url-coherence test on the next CI run.
+              template=$(YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "${CONTAINER}/config.yaml")
+              if [[ -n "$template" && "$template" != "null" ]]; then
+                new_url="${template//\{version\}/$latest}"
+                YQ_DEP="$name" YQ_URL="$new_url" yq -i '.dependency_sources[strenv(YQ_DEP)].liveness_url = strenv(YQ_URL)' "${CONTAINER}/config.yaml"
+                echo "  Synced ${CONTAINER}/${name} liveness_url to ${new_url}"
+              fi
             done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 

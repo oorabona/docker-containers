@@ -2919,3 +2919,40 @@ CURLEOF
     grep -q "proto-redir '=https'" "$helper" || \
         { echo "helper curl_args missing --proto-redir '=https'"; return 1; }
 }
+
+@test "harden: Apply step syncs liveness_url with build_args via template" {
+    # Mutation trace: remove the liveness_url_template substitution from the
+    # Apply step and this test goes RED — the simulated bump leaves liveness_url
+    # pointing at the old artifact, breaking liveness-url-coherence on next run.
+
+    local tmpdir="$BATS_TEST_TMPDIR/sync"
+    mkdir -p "$tmpdir"
+    cat > "$tmpdir/config.yaml" <<'EOF'
+build_args:
+  MY_DEP: "1.0.0"
+dependency_sources:
+  MY_DEP:
+    lifecycle: stable-pin
+    type: github-tag
+    source: example/repo
+    liveness_url: "https://example.com/downloads/v1.0.0.tar.gz"
+    liveness_url_template: "https://example.com/downloads/v{version}.tar.gz"
+EOF
+
+    # Simulate the Apply step's per-dep sync (the exact 2 yq calls)
+    name="MY_DEP"
+    latest="1.0.1"
+    YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "$tmpdir/config.yaml"
+    template=$(YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "$tmpdir/config.yaml")
+    [[ -n "$template" && "$template" != "null" ]]
+    new_url="${template//\{version\}/$latest}"
+    YQ_DEP="$name" YQ_URL="$new_url" yq -i '.dependency_sources[strenv(YQ_DEP)].liveness_url = strenv(YQ_URL)' "$tmpdir/config.yaml"
+
+    # Verify both fields moved in lockstep
+    local new_build_arg new_liveness_url
+    new_build_arg=$(yq -r '.build_args.MY_DEP' "$tmpdir/config.yaml")
+    new_liveness_url=$(yq -r '.dependency_sources.MY_DEP.liveness_url' "$tmpdir/config.yaml")
+
+    [ "$new_build_arg" = "1.0.1" ]
+    [ "$new_liveness_url" = "https://example.com/downloads/v1.0.1.tar.gz" ]
+}
