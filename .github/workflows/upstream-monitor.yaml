@@ -100,6 +100,11 @@ jobs:
           # (NOT version_info from check-upstream-versions — that carries
           # container-level version data, not per-dep update data).
           UPSTREAM_VERSION_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info || '[]' }}
+          # Scoped manual run filter: when workflow_dispatch.inputs.container is
+          # provided, the liveness loop probes ONLY that container — same scoping
+          # as check-upstream-versions/check-dependency-updates accept via their
+          # `container` action input. Empty (default) probes all containers.
+          SCOPE_CONTAINER: ${{ github.event.inputs.container || '' }}
         shell: bash
         run: |
           # Named constants (AC-14)
@@ -120,6 +125,12 @@ jobs:
 
           for config in */config.yaml; do
             container=$(dirname "$config")
+            # Honor workflow_dispatch.inputs.container when provided: a scoped
+            # manual run ("check just openresty") should NOT probe every other
+            # container's liveness URLs and emit unrelated warnings.
+            if [[ -n "$SCOPE_CONTAINER" && "$container" != "$SCOPE_CONTAINER" ]]; then
+              continue
+            fi
             if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
               continue
             fi
@@ -203,12 +214,35 @@ jobs:
                 -w "%{http_code}" \
                 "$url" 2>/dev/null || echo "000")
 
+              # Some CDN endpoints (S3, jsDelivr, ...) return 403/405 to HEAD but
+              # respond 200/206 to GET. If HEAD failed, retry with a 1-byte GET
+              # range request — same bandwidth cost as HEAD for a healthy URL,
+              # but unmasks false-positive dead reports from HEAD-allergic hosts.
+              if [[ ! "$http_code" =~ ^2 ]]; then
+                head_code="$http_code"
+                http_code=$(curl --proto '=https' --proto-redir '=https' -sL \
+                  --max-time "$LIVENESS_MAX_TIME" \
+                  --retry "$LIVENESS_RETRY" \
+                  --retry-delay 3 \
+                  --range 0-0 \
+                  -o /dev/null \
+                  -w "%{http_code}" \
+                  "$url" 2>/dev/null || echo "000")
+                if [[ "$http_code" =~ ^2 ]]; then
+                  echo "  live: ${container}/${dep}: HTTP ${http_code} (HEAD returned ${head_code}, GET range succeeded)"
+                fi
+              fi
+
               if [[ "$http_code" =~ ^2 ]]; then
-                echo "  live: ${container}/${dep}: HTTP ${http_code}"
+                if [[ -z "${head_code:-}" ]]; then
+                  echo "  live: ${container}/${dep}: HTTP ${http_code}"
+                fi
+                unset head_code
               else
                 echo "::warning::liveness-check: $(_gha_escape "${container}/${dep}") returned HTTP $(_gha_escape "${http_code}") — artifact may be unavailable (url=$(_gha_escape "${url}"))"
                 echo "  dead: ${container}/${dep}: HTTP ${http_code} (FAIL)"
                 failed=$((failed + 1))
+                unset head_code
               fi
             done <<< "$dep_names"
           done

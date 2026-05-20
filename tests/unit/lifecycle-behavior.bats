@@ -2956,3 +2956,27 @@ EOF
     [ "$new_build_arg" = "1.0.1" ]
     [ "$new_liveness_url" = "https://example.com/downloads/v1.0.1.tar.gz" ]
 }
+
+@test "harden: check-source-liveness honors SCOPE_CONTAINER for scoped manual runs" {
+    # Mutation trace: remove the SCOPE_CONTAINER continue from the loop and
+    # this test goes RED — the loop body runs for every container instead of
+    # only the scoped one.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    grep -q 'SCOPE_CONTAINER: \${{ github.event.inputs.container' "$wf" || \
+        { echo "SCOPE_CONTAINER env var missing"; return 1; }
+    grep -qE 'if \[\[ -n "\$SCOPE_CONTAINER" && "\$container" != "\$SCOPE_CONTAINER" \]\]; then' "$wf" || \
+        { echo "liveness loop missing SCOPE_CONTAINER guard"; return 1; }
+}
+
+@test "harden: liveness retries with GET range 0-0 when HEAD returns non-2xx" {
+    # Mutation trace: remove the GET-range retry and this test goes RED —
+    # the workflow would mark HEAD-allergic CDN endpoints as dead even when
+    # the actual artifact is reachable via GET.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    grep -q '\-\-range 0-0' "$wf" || \
+        { echo "liveness check missing GET range 0-0 fallback"; return 1; }
+    grep -qE 'if \[\[ ! "\$http_code" =~ \^2 \]\]; then' "$wf" || \
+        { echo "liveness check missing non-2xx retry guard"; return 1; }
+}
