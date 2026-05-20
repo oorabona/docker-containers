@@ -33,7 +33,13 @@ STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
 # Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
 # Per GHA spec: % → %25, CR → %0D, LF → %0A.
 # Must be applied to ALL dynamic ${var} interpolations in annotation messages.
-_gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+_gha_escape() {
+    local s="$1"
+    s="${s//%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
 
 # Classify semver change type between two versions
 # Returns: major, minor, patch, or unknown

@@ -38,14 +38,27 @@ PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
 
 # Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
 # Per GHA spec: % → %25, CR → %0D, LF → %0A.
-_gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+_gha_escape() {
+    local s="$1"
+    s="${s//%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
 
 _gh_api_tags() {
     local repo="$1"
     # Use gh cli with paginate if available; fall back to curl with pagination
     if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-        gh api --paginate "repos/${repo}/tags" --jq '.[].name' 2>/dev/null
-        return
+        local gh_output
+        if gh_output=$(gh api --paginate "repos/${repo}/tags" --jq '.[].name' 2>/dev/null) \
+           && [[ -n "$gh_output" ]]; then
+            printf '%s\n' "$gh_output"
+            return
+        fi
+        # gh api failed or returned empty — fall through to the curl path
+        # (preserves the documented layered design: gh -> curl -> git ls-remote)
+        log_info "gh api failed or empty for ${repo}, falling back to curl path" >&2
     fi
 
     # Curl path with Link header pagination (up to 10 pages)

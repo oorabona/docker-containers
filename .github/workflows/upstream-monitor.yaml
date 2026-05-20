@@ -107,7 +107,13 @@ jobs:
           LIVENESS_RETRY=2
 
           # Escape dynamic strings for GHA workflow-commands per spec.
-          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
 
           failed=0
           checked=0
@@ -710,7 +716,13 @@ jobs:
           DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
         run: |
           # Escape dynamic strings for GHA workflow-commands per spec.
-          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
 
           # Extract updates for this container (using env vars to avoid injection)
           container_data=$(echo "$DEP_INFO" | jq --arg c "$CONTAINER" '.[] | select(.container == $c)')
@@ -895,7 +907,13 @@ jobs:
           UPDATES: ${{ steps.prepare.outputs.updates }}
         run: |
           # Escape dynamic strings for GHA workflow-commands per spec.
-          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
 
           # $UPDATES is already the coupled-atomic-filtered to_apply set from the
           # Prepare step. No filter logic here — iterate and apply directly.

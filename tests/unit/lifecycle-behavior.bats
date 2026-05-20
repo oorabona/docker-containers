@@ -2839,3 +2839,48 @@ CURLEOF
         return 1
     }
 }
+
+@test "harden: _gha_escape replaces actual LF with %0A (not literal backslash-n)" {
+    # Mutation trace: revert to sed-based escape and this test goes RED
+    # because sed line-buffered cannot match real LF characters.
+
+    source "$REPO_ROOT/helpers/latest-github-tag"
+
+    # The escape function should turn a literal LF byte into the %0A escape.
+    input=$(printf 'line1\nline2')
+    result=$(_gha_escape "$input")
+    [ "$result" = "line1%0Aline2" ]
+
+    # And CR:
+    input=$(printf 'a\rb')
+    result=$(_gha_escape "$input")
+    [ "$result" = "a%0Db" ]
+
+    # And percent stays first (no double-escape):
+    input='100%'
+    result=$(_gha_escape "$input")
+    [ "$result" = "100%25" ]
+}
+
+@test "harden: gh-api failure falls through to curl path (sourced helper)" {
+    # Mutation trace: revert to unconditional `gh api ... ; return` and
+    # this test goes RED because the curl stub never gets called.
+
+    local stub_dir="$BATS_TEST_TMPDIR/stub"
+    mkdir -p "$stub_dir"
+
+    # Stub gh: pretends to be authenticated but `gh api` fails
+    printf '#!/usr/bin/env bash\nif [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi\nif [[ "$1" == "api" ]]; then exit 1; fi\nexit 1\n' > "$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+
+    # Stub curl: returns a valid tags JSON for page 1, no next-link
+    printf '#!/usr/bin/env bash\n# Find the -D <hdr_file> arg and write empty headers (no Link header)\nfor ((i=1; i<=$#; i++)); do\n    if [[ "${!i}" == "-D" ]]; then\n        j=$((i+1))\n        printf '"'"''"'"' > "${!j}"\n        break\n    fi\ndone\nprintf '"'"'[{"name":"v1.0.0"},{"name":"v1.0.1"}]'"'"'\n' > "$stub_dir/curl"
+    chmod +x "$stub_dir/curl"
+
+    run env PATH="$stub_dir:$PATH" GH_TOKEN="" GITHUB_TOKEN="" \
+        bash -c 'source "'"$REPO_ROOT"'/helpers/latest-github-tag" && \
+                 _gh_api_tags "owner/repo"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"v1.0.0"* ]]
+    [[ "$output" == *"v1.0.1"* ]]
+}
