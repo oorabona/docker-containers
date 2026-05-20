@@ -48,8 +48,12 @@ _gha_escape() {
 
 _gh_api_tags() {
     local repo="$1"
-    # Use gh cli with paginate if available; fall back to curl with pagination
-    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+    # Use gh cli with paginate ONLY when targeting api.github.com (the default).
+    # gh api does not honor GITHUB_API_URL, so for a GitHub Enterprise host
+    # the curl path is the only one that talks to the configured server.
+    # Fall through to curl whenever a non-default GITHUB_API_URL is set.
+    if [[ "${GITHUB_API_URL:-https://api.github.com}" == "https://api.github.com" ]] \
+       && command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
         local gh_output
         if gh_output=$(gh api --paginate "repos/${repo}/tags" --jq '.[].name' 2>/dev/null) \
            && [[ -n "$gh_output" ]]; then
@@ -61,11 +65,18 @@ _gh_api_tags() {
         log_info "gh api failed or empty for ${repo}, falling back to curl path" >&2
     fi
 
-    # Curl path with Link header pagination (up to 10 pages)
+    # Curl path with Link header pagination (up to 10 pages).
+    # The Authorization header is written to a curl --config file (mode 600)
+    # so the bearer token does NOT appear in process argv (visible to other
+    # users via `ps`). The static -H flags stay in argv (no secrets).
     local curl_args=(--proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 30
         -H "Accept: application/vnd.github+json")
+    local curl_cfg=""
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+        curl_cfg=$(mktemp)
+        chmod 600 "$curl_cfg"
+        printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" > "$curl_cfg"
+        curl_args+=(--config "$curl_cfg")
     fi
 
     local url="${GITHUB_API_URL}/repos/${repo}/tags?per_page=100"
@@ -85,7 +96,7 @@ _gh_api_tags() {
         #     protection; appending fresh ls-remote tags to partial curl tags
         #     would yield an inconsistent set).
         if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
-            rm -f "$hdr_file"
+            rm -f "$hdr_file" "$curl_cfg"
             if [[ "$tags_emitted" -eq 0 ]]; then
                 # First-page failure: no partial data was emitted; the L115
                 # fallback check can safely call _git_ls_remote_tags.
@@ -98,7 +109,7 @@ _gh_api_tags() {
         local page_tags
         # Invalid JSON on this page — same fail-closed vs fallback split.
         if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
-            rm -f "$hdr_file"
+            rm -f "$hdr_file" "$curl_cfg"
             if [[ "$tags_emitted" -eq 0 ]]; then
                 # First-page JSON failure: fall through to git ls-remote fallback.
                 break
@@ -129,12 +140,12 @@ _gh_api_tags() {
     # Check: if we stopped because pages_fetched == max_pages AND a next-link
     # was present in the last response, the tag list is incomplete.
     if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
-        rm -f "$hdr_file"
+        rm -f "$hdr_file" "$curl_cfg"
         echo "::error::latest-github-tag: pagination bound reached (max_pages=$(_gha_escape "${max_pages}")) but more pages exist (Link: rel=next present) for $(_gha_escape "${repo}") — tag list is truncated, aborting to prevent stale-latest detection" >&2
         return 1
     fi
 
-    rm -f "$hdr_file"
+    rm -f "$hdr_file" "$curl_cfg"
 
     # Fall back to git ls-remote when curl returned nothing (network failure,
     # rate-limit without token, or genuinely empty repo).

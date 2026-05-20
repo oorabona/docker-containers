@@ -254,9 +254,14 @@ jobs:
           fi
 
   create-update-prs:
-    needs: [check-upstream-versions, check-source-liveness]
-    # if: always() ensures liveness failure does not skip PR creation (AC-12/AC-16/T11)
-    if: always() && needs.check-upstream-versions.outputs.update_count > 0
+    # check-source-liveness runs as a parallel sibling job (no needs:
+    # dependency here). GitHub Actions' implicit `success()` gating combined
+    # with `continue-on-error: true` on liveness can leave needs.X.result in
+    # an ambiguous state for downstream gating; making liveness purely
+    # parallel removes the ambiguity. Liveness still emits ::warning::
+    # annotations on the run summary as designed.
+    needs: [check-upstream-versions]
+    if: needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

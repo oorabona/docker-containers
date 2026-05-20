@@ -3012,3 +3012,69 @@ EOF
     result=$(distro_property "$tmpdir/config.yaml" "alpine" "install_cmd" "ignored")
     [ "$result" = "apk add --no-cache" ] || { echo "expected install_cmd, got '$result'"; return 1; }
 }
+
+@test "harden: distro_property preserves explicit false (not collapsed by yq // operator)" {
+    # Mutation trace: revert to the `// strenv(YQ_DEFAULT)` form and this test
+    # goes RED — mikefarah/yq's `//` collapses both null AND false to the
+    # default, so `user_exists: false` with default `"true"` would yield "true"
+    # silently. The explicit literal-"null" check preserves false.
+    local tmpdir="$BATS_TEST_TMPDIR/dp_false"
+    mkdir -p "$tmpdir"
+    cat > "$tmpdir/config.yaml" <<'EOF'
+distros:
+  alpine:
+    user_exists: false
+    debug_enabled: true
+EOF
+
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/helpers/logging.sh"
+    source "$REPO_ROOT/helpers/generate-utils.sh"
+
+    # Explicit false must be preserved (not collapsed to default)
+    local result
+    result=$(distro_property "$tmpdir/config.yaml" "alpine" "user_exists" "true")
+    [ "$result" = "false" ] || { echo "expected 'false', got '$result' — yq // operator regression"; return 1; }
+
+    # Explicit true also preserved
+    result=$(distro_property "$tmpdir/config.yaml" "alpine" "debug_enabled" "false")
+    [ "$result" = "true" ] || { echo "expected 'true', got '$result'"; return 1; }
+}
+
+@test "harden: latest-github-tag passes GITHUB_TOKEN via curl --config file (not argv)" {
+    # Mutation trace: revert to `curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")`
+    # and this test goes RED — the token would land in argv visible to `ps`.
+    local helper="$REPO_ROOT/helpers/latest-github-tag"
+
+    grep -q 'curl_args+=(--config "\$curl_cfg")' "$helper" || \
+        { echo "helper missing curl --config form for token passthrough"; return 1; }
+    grep -qE 'curl_args\+=\(-H "Authorization' "$helper" && \
+        { echo "helper still has Authorization header in argv form"; return 1; }
+    grep -q 'chmod 600 "\$curl_cfg"' "$helper" || \
+        { echo "helper missing chmod 600 on curl_cfg temp file"; return 1; }
+}
+
+@test "harden: latest-github-tag skips gh-api branch when GITHUB_API_URL is non-default (GHES)" {
+    # Mutation trace: remove the GITHUB_API_URL guard from the gh-api gate
+    # and this test goes RED — GHES users would always hit the gh-api branch
+    # which doesn't honor the custom hostname, querying api.github.com instead.
+    local helper="$REPO_ROOT/helpers/latest-github-tag"
+
+    grep -q '\${GITHUB_API_URL:-https://api.github.com}.*==.*"https://api.github.com"' "$helper" || \
+        { echo "helper missing GITHUB_API_URL == default-host guard on gh-api branch"; return 1; }
+}
+
+@test "harden: create-update-prs no longer depends on check-source-liveness in needs" {
+    # Mutation trace: re-add check-source-liveness to needs of create-update-prs
+    # and this test goes RED — the continue-on-error + needs.X.result interaction
+    # can block PR fanout despite if: always() gating intent.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    # Use yq to read the actual needs array of the create-update-prs job
+    local needs_arr
+    needs_arr=$(yq -r '.jobs."create-update-prs".needs | join(",")' "$wf")
+    [[ "$needs_arr" != *"check-source-liveness"* ]] || \
+        { echo "create-update-prs still depends on check-source-liveness: $needs_arr"; return 1; }
+    [[ "$needs_arr" == *"check-upstream-versions"* ]] || \
+        { echo "create-update-prs missing check-upstream-versions dep: $needs_arr"; return 1; }
+}

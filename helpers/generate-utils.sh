@@ -46,15 +46,22 @@ distro_property() {
     local property="$3"
     local default="${4:-}"
 
-    # Always apply the `// strenv(...)` fallback so missing fields resolve to
-    # the supplied default (or empty when omitted). Without this, the bare
-    # `yq e '.distros.X.Y'` branch returns the literal string "null" for an
-    # absent field, which then trips callers that do `[[ -n "$result" ]]`
-    # checks (e.g. web-shell/generate-dockerfile.sh:100 emitting
-    # `RUN null && apk add ...` when pre_install is absent).
-    # `strenv` is used instead of inline shell interpolation to avoid yq
-    # query injection when default values contain special characters.
-    YQ_DEFAULT="$default" yq e ".distros.${distro}.${property} // strenv(YQ_DEFAULT)" "$config"
+    # Use a literal-"null" check rather than yq's `//` alternative operator.
+    # mikefarah/yq's `//` collapses both null AND false to the default, so an
+    # explicit boolean false field (e.g. `user_exists: false`) would silently
+    # fall back to the default. Querying first then checking for the literal
+    # string "null" preserves false values correctly.
+    # All three lookup keys go through strenv() so config-supplied distro /
+    # property names containing yq-special characters (., [], quotes) cannot
+    # reshape the query path.
+    local raw
+    raw=$(YQ_DISTRO="$distro" YQ_PROPERTY="$property" \
+          yq e '.distros[strenv(YQ_DISTRO)][strenv(YQ_PROPERTY)]' "$config")
+    if [[ "$raw" == "null" ]]; then
+        printf '%s' "$default"
+    else
+        printf '%s' "$raw"
+    fi
 }
 
 # List all distro names from config.yaml, one per line.
