@@ -3,12 +3,12 @@
 | Field | Value |
 |-------|-------|
 | **Container** | `ansible` |
-| **Version Change** | `13.5.0-ubuntu` → `13.6.0-ubuntu` |
+| **Version Change** | `13.6.0-ubuntu` → `13.7.0-ubuntu` |
 | **Change Type** | `minor` |
-| **Rebuild Date** | 2026-04-23T06:37:47Z |
+| **Rebuild Date** | 2026-05-20T07:11:27Z |
 | **Triggered By** | Upstream Monitor (automated) |
 | **Reason** | 🚀 Minor/patch version update detected |
-| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/24820793694) |
+| **Detection Run** | [View Workflow](https://github.com/oorabona/docker-containers/actions/runs/26147266669) |
 
 ## Build Status
 
