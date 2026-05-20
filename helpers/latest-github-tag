@@ -62,7 +62,7 @@ _gh_api_tags() {
     fi
 
     # Curl path with Link header pagination (up to 10 pages)
-    local curl_args=(--proto '=https' -fsSL --connect-timeout 10 --max-time 30
+    local curl_args=(--proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 30
         -H "Accept: application/vnd.github+json")
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")

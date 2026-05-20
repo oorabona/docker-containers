@@ -195,7 +195,7 @@ jobs:
               # -L follows redirects: GitHub release download URLs return 302
               # (redirect to S3/CDN) as healthy behavior; without -L a live
               # artifact is misreported as dead (HTTP 302 → not-2xx → FAIL).
-              http_code=$(curl --proto '=https' -sIL \
+              http_code=$(curl --proto '=https' --proto-redir '=https' -sIL \
                 --max-time "$LIVENESS_MAX_TIME" \
                 --retry "$LIVENESS_RETRY" \
                 --retry-delay 3 \

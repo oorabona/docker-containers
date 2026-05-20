@@ -2905,3 +2905,17 @@ CURLEOF
     [[ "$pr_if" == *"update_count"* ]] || \
         { echo "Create PR step missing update_count gate: $pr_if"; return 1; }
 }
+
+@test "harden: curl liveness uses --proto-redir =https (redirect scheme restriction)" {
+    # Mutation trace: remove --proto-redir from either site and this test
+    # goes RED. Restricts the initial scheme via --proto but also the redirect
+    # scheme via --proto-redir, so a 302 to http: cannot downgrade an https:
+    # liveness probe.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+    local helper="$REPO_ROOT/helpers/latest-github-tag"
+
+    grep -q "proto-redir '=https'" "$wf" || \
+        { echo "workflow curl missing --proto-redir '=https'"; return 1; }
+    grep -q "proto-redir '=https'" "$helper" || \
+        { echo "helper curl_args missing --proto-redir '=https'"; return 1; }
+}
