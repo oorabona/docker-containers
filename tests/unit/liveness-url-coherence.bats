@@ -284,109 +284,57 @@ _dockerfile_urls_for() {
 #   3. Restore the P3 block → GREEN.
 # ---------------------------------------------------------------------------
 
-@test "P3: pagination bound reached with more pages exits non-zero (fail-closed)" {
-    # Strategy: exercise the P3 guard logic directly by replicating the exact
-    # _gh_api_tags curl-path structure in a bash subshell with a mock curl
-    # that returns per-page JSON + Link headers, simulating >max_pages scenario.
+@test "P3: pagination bound reached with more pages exits non-zero (sourced helper)" {
+    # Mutation trace: remove the P3 guard block from helpers/latest-github-tag
+    # (the `if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]` block) and
+    # this test goes RED — the helper exits 0 with truncated tags when max_pages
+    # is hit but more pages exist.
     #
-    # Instead of trying to mock _gh_api_tags inside the helper (complex due to
-    # source scoping), we test the guard logic directly as a self-contained
-    # bash script that mirrors the _gh_api_tags implementation.
+    # Strategy: source the REAL helpers/latest-github-tag, inject a curl stub
+    # via PATH hijack that returns per-page JSON + Link: next header for all 10
+    # pages (simulating a repo with >1000 tags). The real _gh_api_tags loop hits
+    # max_pages=10, finds the Link still present, and the P3 guard fires.
     #
-    # This validates the P3 fix in helpers/latest-github-tag WITHOUT a network
-    # call, and the mutation trace demonstrates exactly which lines must stay.
+    # How to verify mutation → RED:
+    #   1. Remove the P3 guard block from helpers/latest-github-tag.
+    #   2. Run this test — exits 0 (guard never fires) → assertion fails → RED.
+    #   3. Restore the P3 guard → GREEN.
 
-    # Write a self-contained test script that implements _gh_api_tags
-    # including the P3 guard, then asserts the guard fires.
-    local test_script="$BATS_TEST_TMPDIR/test-p3-guard.sh"
-    cat > "$test_script" <<'SCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
+    local stub_dir="$BATS_TEST_TMPDIR/stub-p3"
+    mkdir -p "$stub_dir"
+    # curl stub: always responds with a Link: next header (infinite repo simulation).
+    # Writes minimal JSON body + Link header to -D file, body to stdout.
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'hdr_file=""' \
+        'while [[ $# -gt 0 ]]; do' \
+        '  case "$1" in' \
+        '    -D) hdr_file="$2"; shift 2;;' \
+        '    *) shift;;' \
+        '  esac' \
+        'done' \
+        'next_url="https://api.github.com/repos/example/big-repo/tags?per_page=100&page=99"' \
+        '[[ -n "$hdr_file" ]] && printf "HTTP/2 200\r\ncontent-type: application/json\r\nlink: <%s>; rel=\"next\"\r\n\r\n" "$next_url" > "$hdr_file"' \
+        'printf '"'"'[{"name":"v1.0.0"}]\n'"'"'' \
+        'exit 0' \
+        > "$stub_dir/curl"
+    chmod +x "$stub_dir/curl"
 
-# Replicate the _gh_api_tags curl path + P3 guard from helpers/latest-github-tag.
-# mock_curl emits JSON for the first N pages, each with a Link: next header.
-mock_curl_tags() {
-    local repo="$1"
-    local max_pages=10
-    local pages_fetched=0
-    local tags_emitted=0
-    # Simulate a URL that keeps returning next-links (>1000 tags)
-    local url="https://api.github.com/repos/${repo}/tags?per_page=100"
+    gh() { return 1; }
+    export -f gh
 
-    while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
-        pages_fetched=$((pages_fetched + 1))
-        # Emit a dummy tag
-        printf 'v%d.0.0\n' "$pages_fetched"
-        tags_emitted=$((tags_emitted + 1))
-        # Simulate: always a next-link (repo has >1000 tags, so 10 pages is never enough)
-        url="https://api.github.com/repos/${repo}/tags?per_page=100&page=$((pages_fetched + 1))"
-    done
+    local status=0
+    env PATH="$stub_dir:$PATH" GH_TOKEN="test" \
+        bash -c 'source "'"$REPO_ROOT"'/helpers/latest-github-tag" && \
+        _gh_api_tags example/big-repo' >/dev/null 2>&1 \
+        || status=$?
 
-    # --- P3 GUARD (lines that MUST be present in helpers/latest-github-tag) ---
-    if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
-        echo "::error::latest-github-tag: pagination bound reached (max_pages=${max_pages}) but more pages exist (Link: rel=next present) for ${repo} — tag list is truncated, aborting to prevent stale-latest detection" >&2
+    unset -f gh
+
+    [[ "$status" -ne 0 ]] || {
+        echo "FAIL: P3 guard did not fire — helper exited 0 when max_pages reached with next-link"
+        echo "  (Mutation: remove the P3 guard block in helpers/latest-github-tag → exit 0 → RED)"
         return 1
-    fi
-    # --- END P3 GUARD ---
-}
-
-mock_curl_tags "example/big-repo"
-SCRIPT
-    chmod +x "$test_script"
-
-    # Run: must exit non-zero (P3 guard fires) with error message
-    local output exit_code
-    exit_code=0
-    output=$(bash "$test_script" 2>&1) || exit_code=$?
-
-    # Assert exit is non-zero (guard fires)
-    if [[ "$exit_code" -eq 0 ]]; then
-        echo "FAIL: P3 guard did not fire — exited 0 when max_pages reached with next-link"
-        echo "  Output: ${output}"
-        echo "  (Mutation: remove the P3 guard block → exit 0 → this test RED)"
-        return 1
-    fi
-
-    # Assert: the ::error:: truncation message was emitted
-    if ! echo "$output" | grep -q "pagination bound reached\|truncated"; then
-        echo "FAIL: P3 guard fired (exit ${exit_code}) but no truncation error message found"
-        echo "  Output: ${output}"
-        return 1
-    fi
-
-    # MUTATION VERIFICATION: confirm that WITHOUT the P3 guard the same
-    # scenario exits 0 (silent truncation — the bug we're fixing).
-    local no_guard_script="$BATS_TEST_TMPDIR/test-p3-no-guard.sh"
-    cat > "$no_guard_script" <<'NOSCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
-mock_curl_tags_no_guard() {
-    local repo="$1"
-    local max_pages=10
-    local pages_fetched=0
-    local url="https://api.github.com/repos/${repo}/tags?per_page=100"
-    while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
-        pages_fetched=$((pages_fetched + 1))
-        printf 'v%d.0.0\n' "$pages_fetched"
-        url="https://api.github.com/repos/${repo}/tags?per_page=100&page=$((pages_fetched + 1))"
-    done
-    # No P3 guard here — silent return (the BUG)
-}
-mock_curl_tags_no_guard "example/big-repo"
-NOSCRIPT
-    chmod +x "$no_guard_script"
-
-    local no_guard_exit=0
-    bash "$no_guard_script" > /dev/null 2>&1 || no_guard_exit=$?
-
-    # Without the guard, must exit 0 (proving the guard is what makes it non-zero)
-    if [[ "$no_guard_exit" -ne 0 ]]; then
-        echo "FAIL: mutation baseline (no guard) unexpectedly exited non-zero (${no_guard_exit})"
-        echo "  The test cannot distinguish guard-present from guard-absent."
-        return 1
-    fi
-    # Reaching here means: guard=non-zero (correct), no-guard=0 (expected mutation RED)
-    # P3 regression lock verified.
+    }
 }
 
 # ---------------------------------------------------------------------------

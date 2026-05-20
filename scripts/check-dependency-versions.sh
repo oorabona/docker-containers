@@ -30,6 +30,11 @@ source "$PROJECT_ROOT/helpers/logging.sh"
 # Configurable via env; named so it is never a magic number.
 STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
 
+# Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
+# Per GHA spec: % → %25, CR → %0D, LF → %0A.
+# Must be applied to ALL dynamic ${var} interpolations in annotation messages.
+_gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+
 # Classify semver change type between two versions
 # Returns: major, minor, patch, or unknown
 classify_version_change() {
@@ -57,10 +62,12 @@ classify_version_change() {
 # Build source URL for a dependency update
 # Args: type source version [raw_tag]
 #   raw_tag: optional 4th argument for github-tag type.
-#     When provided, used as-is for the releases/tag/ path (e.g. "openssl-3.5.6").
-#     When absent for github-tag, falls back to "v${version}" (standard GitHub convention).
-#   For github-release the GitHub API already returns the tag name; callers may
-#   pass it as raw_tag too, but the v-prefix fallback is correct for most releases.
+#     For github-release: raw_tag unused; v${version} path is always correct.
+#     For github-tag: use /tree/${raw_tag} (the git ref always resolves; no
+#       dependence on a release being published). Falls back to v${version}
+#       when raw_tag is empty.
+#     Assumption: raw_tag values from the upstream API are simple [-.\w]+ shaped
+#       (e.g. "openssl-3.5.6", "pcre2-10.47") — no URL-special chars in practice.
 build_source_url() {
     local type="$1"
     local source="$2"
@@ -72,12 +79,13 @@ build_source_url() {
             echo "https://github.com/${source}/releases/tag/v${version}"
             ;;
         github-tag)
-            # Use the actual raw tag if we have it (avoids wrong v-prefix for
-            # non-standard tag schemes like openssl-3.5.6 or pcre2-10.47).
+            # Use /tree/ ref path — works for any git tag without requiring a
+            # published GitHub Release. Falls back to v${version} when raw_tag
+            # is empty (e.g. caller could not fetch raw tag).
             if [[ -n "$raw_tag" ]]; then
-                echo "https://github.com/${source}/releases/tag/${raw_tag}"
+                echo "https://github.com/${source}/tree/${raw_tag}"
             else
-                echo "https://github.com/${source}/releases/tag/v${version}"
+                echo "https://github.com/${source}/tree/v${version}"
             fi
             ;;
         pypi)
@@ -183,7 +191,7 @@ check_container_deps() {
                 # This is the #448 root-cause inversion fix: never continue-skip an eol-migrate.
                 local reason
                 reason=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].reason // "pinned to EOL line"' "$config")
-                echo "::warning::${container}/${dep_name}: lifecycle=eol-migrate — manual migration required. ${reason}" >&2
+                echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=eol-migrate — manual migration required. $(_gha_escape "${reason}")" >&2
                 log_error "[${container}] ${dep_name}: EOL dependency — manual migration required: ${reason}" >&2
                 errors_json=$(echo "$errors_json" | jq \
                     --arg msg "${dep_name}: EOL dependency (eol-migrate) — manual migration required: ${reason}" \
@@ -214,7 +222,7 @@ check_container_deps() {
                         # An EOL-passed stable-pin must never enter updates_json and
                         # trigger an auto-PR — the intent is "manual migration required".
                         # Contract mirrors eol-migrate: surface-only, then continue.
-                        echo "::warning::${container}/${dep_name}: lifecycle=stable-pin has PASSED supported_until=${supported_until} — treat as eol-migrate. Manual migration required." >&2
+                        echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=stable-pin has PASSED supported_until=$(_gha_escape "${supported_until}") — treat as eol-migrate. Manual migration required." >&2
                         log_error "[${container}] ${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" >&2
                         errors_json=$(echo "$errors_json" | jq \
                             --arg msg "${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" \
@@ -222,7 +230,7 @@ check_container_deps() {
                         continue
                     elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
                         # Within countdown window: emit warning
-                        echo "::warning::${container}/${dep_name}: lifecycle=stable-pin EOL approaching — ${days_left} days until ${supported_until} (STABLE_PIN_WARN_DAYS=${STABLE_PIN_WARN_DAYS})" >&2
+                        echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=stable-pin EOL approaching — $(_gha_escape "${days_left}") days until $(_gha_escape "${supported_until}") (STABLE_PIN_WARN_DAYS=${STABLE_PIN_WARN_DAYS})" >&2
                         log_info "[${container}] ${dep_name}: stable-pin countdown: ${days_left} days until EOL ${supported_until}" >&2
                     fi
                     # If days_left > STABLE_PIN_WARN_DAYS: silent OK (no warning yet)
@@ -243,8 +251,7 @@ check_container_deps() {
                 ;;
         esac
 
-        # For untracked (never reaches here due to continue above).
-        # For eol-migrate: fall through to resolve (informational delta).
+        # eol-migrate has already exited the loop iteration above (via continue).
         # For stable-pin/tracked: resolve normally.
 
         local dep_type
@@ -255,8 +262,9 @@ check_container_deps() {
         current_version=$(YQ_DEP="$dep_name" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
 
         if [[ -z "$current_version" || "$current_version" == "null" ]]; then
-            # For untracked entries that have no build_args version, skip quietly.
-            # (Should not reach here for untracked due to early continue above.)
+            # Dead-code-by-defense-in-depth: untracked continues early above, so
+            # this branch is only reachable for tracked/stable-pin with no build_args
+            # entry — a schema/config error, not a normal lifecycle path.
             if [[ "$lifecycle" != "eol-migrate" ]]; then
                 errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: no current version in build_args" '. + [$msg]')
             fi

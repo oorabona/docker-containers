@@ -36,8 +36,9 @@ GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
 # Default pre-release exclusion regex (case-insensitive match on tag name)
 PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
 
-# Named constant for documentation / override
-STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
+# Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
+# Per GHA spec: % → %25, CR → %0D, LF → %0A.
+_gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
 
 _gh_api_tags() {
     local repo="$1"
@@ -48,7 +49,7 @@ _gh_api_tags() {
     fi
 
     # Curl path with Link header pagination (up to 10 pages)
-    local curl_args=(-fsSL --connect-timeout 10 --max-time 30
+    local curl_args=(--proto '=https' -fsSL --connect-timeout 10 --max-time 30
         -H "Accept: application/vnd.github+json")
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -63,23 +64,20 @@ _gh_api_tags() {
 
     while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
         pages_fetched=$((pages_fetched + 1))
-        local body http_rc
-        body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null)
-        http_rc=$?
-        if [[ "$http_rc" -ne 0 ]]; then
-            # Fail-closed: a page failure after prior pages succeeded means the
-            # tag list is PARTIAL.  Do not return a truncated result silently —
-            # exit non-zero so callers treat the output as unreliable.
+        local body
+        # Fail-closed: a page failure after prior pages succeeded means the
+        # tag list is PARTIAL.  Do not return a truncated result silently —
+        # exit non-zero so callers treat the output as unreliable.
+        if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
             rm -f "$hdr_file"
-            echo "::error::latest-github-tag: curl failed (exit ${http_rc}) on page ${pages_fetched} for ${repo} — partial-pagination-failure, aborting to prevent truncated tag list" >&2
+            echo "::error::latest-github-tag: curl failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${repo}") — partial-pagination-failure, aborting to prevent truncated tag list" >&2
             return 1
         fi
         local page_tags
-        page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null)
-        if [[ $? -ne 0 ]]; then
-            # Invalid JSON on this page — treat as partial failure (fail-closed).
+        # Invalid JSON on this page — treat as partial failure (fail-closed).
+        if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
             rm -f "$hdr_file"
-            echo "::error::latest-github-tag: invalid JSON on page ${pages_fetched} for ${repo} — partial-pagination-failure, aborting" >&2
+            echo "::error::latest-github-tag: invalid JSON on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${repo}") — partial-pagination-failure, aborting" >&2
             return 1
         fi
         if [[ -n "$page_tags" ]]; then
@@ -106,7 +104,7 @@ _gh_api_tags() {
     # was present in the last response, the tag list is incomplete.
     if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
         rm -f "$hdr_file"
-        echo "::error::latest-github-tag: pagination bound reached (max_pages=${max_pages}) but more pages exist (Link: rel=next present) for ${repo} — tag list is truncated, aborting to prevent stale-latest detection" >&2
+        echo "::error::latest-github-tag: pagination bound reached (max_pages=$(_gha_escape "${max_pages}")) but more pages exist (Link: rel=next present) for $(_gha_escape "${repo}") — tag list is truncated, aborting to prevent stale-latest detection" >&2
         return 1
     fi
 

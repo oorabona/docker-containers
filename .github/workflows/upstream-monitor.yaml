@@ -106,6 +106,9 @@ jobs:
           LIVENESS_MAX_TIME=30
           LIVENESS_RETRY=2
 
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+
           failed=0
           checked=0
 
@@ -169,7 +172,7 @@ jobs:
                     # warning; fall through to static liveness_url for backward-compat.
                     static_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
                     if [[ -n "$static_url" && "$static_url" != "null" ]]; then
-                      echo "::warning::liveness-template: ${container}/${dep} is ${lifecycle} but has no liveness_url_template — static liveness_url may become stale when version is bumped"
+                      echo "::warning::liveness-template: $(_gha_escape "${container}/${dep}") is $(_gha_escape "${lifecycle}") but has no liveness_url_template — static liveness_url may become stale when version is bumped"
                     fi
                     url="$static_url"
                   fi
@@ -186,7 +189,7 @@ jobs:
               # -L follows redirects: GitHub release download URLs return 302
               # (redirect to S3/CDN) as healthy behavior; without -L a live
               # artifact is misreported as dead (HTTP 302 → not-2xx → FAIL).
-              http_code=$(curl -sIL \
+              http_code=$(curl --proto '=https' -sIL \
                 --max-time "$LIVENESS_MAX_TIME" \
                 --retry "$LIVENESS_RETRY" \
                 --retry-delay 3 \
@@ -197,7 +200,7 @@ jobs:
               if [[ "$http_code" =~ ^2 ]]; then
                 echo "  live: ${container}/${dep}: HTTP ${http_code}"
               else
-                echo "::warning::liveness-check: ${container}/${dep} returned HTTP ${http_code} — artifact may be unavailable (url=${url})"
+                echo "::warning::liveness-check: $(_gha_escape "${container}/${dep}") returned HTTP $(_gha_escape "${http_code}") — artifact may be unavailable (url=$(_gha_escape "${url}"))"
                 echo "  dead: ${container}/${dep}: HTTP ${http_code} (FAIL)"
                 failed=$((failed + 1))
               fi
@@ -206,7 +209,7 @@ jobs:
 
           echo "Liveness check: ${checked} URLs checked, ${failed} failed"
           if [[ "$failed" -gt 0 ]]; then
-            echo "::error::${failed} liveness check(s) failed — see ::warning:: annotations above"
+            echo "::error::$(_gha_escape "${failed}") liveness check(s) failed — see ::warning:: annotations above"
             exit 1
           fi
 
@@ -756,6 +759,9 @@ jobs:
           CONTAINER: ${{ matrix.container }}
           UPDATES: ${{ steps.prepare.outputs.updates }}
         run: |
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() { printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/\n/%0A/g'; }
+
           if [ "$CONTAINER" = "postgres" ]; then
             # Postgres: update extensions/config.yaml
             while IFS= read -r update; do
@@ -764,37 +770,34 @@ jobs:
               echo "  Updating postgres extension $name to $latest"
               # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
               # yq query injection if a dep name contains special chars.
-              YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension ${name} config"; exit 1; }
+              YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension $(_gha_escape "${name}") config"; exit 1; }
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
-            # Other containers: update config.yaml build_args
-            # T12/AC-15: Coupled-atomic check — if an entry has updates_with:, both
-            # keys must be updated in the same commit or the PR is refused.
+            # Other containers: update config.yaml build_args.
+            # T12/AC-15: Coupled-atomic check (two-stage):
+            #   Stage 1 — filter only, no mutation: build to_apply / refused arrays.
+            #   Stage 2 — mutation on to_apply only: yq -i each approved dep.
+            # Eliminates the /tmp marker-file pattern (cross-job state is fragile).
+
+            # Stage 1: classify each update as to_apply or refused.
+            to_apply=()   # dep entries (JSON objects) approved for yq mutation
+            refused=()    # dep names refused due to missing siblings
+
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
-              echo "  Updating ${CONTAINER} build_arg $name to $latest"
-              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
-              # yq query injection if a dep name contains special chars.
-              YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
 
               # Coupled-atomic guard (AC-15): find every sibling in this config
               # that declares updates_with OR tracks_with pointing at ${name}.
               # Schema polarity: the coupling is declared ON THE SIBLING
               # (e.g. RESTY_PCRE_SHA256.updates_with: RESTY_PCRE_VERSION).
-              # Reading .dependency_sources.${name}.updates_with is WRONG — it
-              # looks at the bumped entry's own field, which is always empty for
-              # the driving dep (RESTY_PCRE_VERSION has no updates_with).
-              # Correct lookup: scan ALL siblings for .updates_with/$name or
-              # .tracks_with/$name.
               # mikefarah/yq uses strenv() not --arg for variable substitution.
               coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
                 '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
                 "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
               if [[ -n "$coupled_siblings" ]]; then
-                # Refuse ONLY if a sibling is NOT also being updated in this same
-                # run (AC-15 intent: "refuse partial updates", not "refuse all").
-                # When both dep and sibling are in UPDATES (atomic update), allow.
+                # Refuse ONLY when a required sibling is absent from UPDATES.
                 missing_siblings=""
                 for sibling in $coupled_siblings; do
                   if ! echo "$UPDATES" | jq -e --arg s "$sibling" '[.[].name] | index($s) != null' &>/dev/null; then
@@ -803,26 +806,38 @@ jobs:
                 done
                 missing_siblings="${missing_siblings% }"
                 if [[ -n "$missing_siblings" ]]; then
-                  echo "::warning::deps(${CONTAINER}): bumping ${name} requires atomic update of coupled sibling(s): ${missing_siblings} — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: ${name} ${missing_siblings} together)." >&2
-                  echo "::error::Coupled-atomic refuse: bumping ${name} requires atomic update of: ${missing_siblings} — declared on sibling(s) via updates_with/tracks_with — the PR creator must update all of them together or refuse this auto-PR." >&2
-                  # Skip only this dep's update (continue the loop); the summary
-                  # job will surface this container as needing manual attention.
-                  # Using a marker file avoids exiting the entire while-loop step.
-                  touch /tmp/coupled-atomic-refused
+                  echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${missing_siblings}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required (update all of: $(_gha_escape "${name}") $(_gha_escape "${missing_siblings}") together)." >&2
+                  echo "::error::Coupled-atomic refuse: bumping $(_gha_escape "${name}") requires atomic update of: $(_gha_escape "${missing_siblings}") — declared on sibling(s) via updates_with/tracks_with — the PR creator must update all of them together or refuse this auto-PR." >&2
+                  refused+=("$name")
                   continue
                 fi
-                # All siblings are also being updated in this same run — atomic
-                # update is the goal; allow the update to proceed.
+                # All siblings present — atomic update allowed.
                 echo "  Coupled-atomic ALLOW: ${name} + ${coupled_siblings} updated atomically in same run."
               fi
+
+              to_apply+=("$update")
             done < <(echo "$UPDATES" | jq -c '.[]')
 
-            # Fail the step after processing all deps if any were coupled-refused,
-            # so the PR creation step is skipped for this container.
-            if [[ -f /tmp/coupled-atomic-refused ]]; then
-              rm -f /tmp/coupled-atomic-refused
-              echo "::error::Apply dependency updates: one or more coupled-atomic deps were refused for ${CONTAINER}. Manual atomic update required." >&2
-              exit 1
+            # Empty to_apply edge: nothing to write, no PR.
+            if [[ "${#to_apply[@]}" -eq 0 ]]; then
+              echo "::warning::Apply dependency updates: all updates for $(_gha_escape "${CONTAINER}") were coupled-refused. No PR will be created. Manual atomic bump required." >&2
+              exit 0
+            fi
+
+            # Stage 2: mutate — apply only approved deps.
+            for update in "${to_apply[@]}"; do
+              name=$(echo "$update" | jq -r '.name')
+              latest=$(echo "$update" | jq -r '.latest')
+              echo "  Updating ${CONTAINER} build_arg $name to $latest"
+              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+              # yq query injection if a dep name contains special chars.
+              YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
+            done
+
+            # Summary warning if some deps were refused but others proceed.
+            if [[ "${#refused[@]}" -gt 0 ]]; then
+              refused_list="${refused[*]}"
+              echo "::warning::Apply dependency updates: $(_gha_escape "${CONTAINER}") — ${#refused[@]} dep(s) coupled-refused and excluded from PR: $(_gha_escape "${refused_list}"). Manual atomic update required for those deps." >&2
             fi
           fi
 
