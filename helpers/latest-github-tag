@@ -158,7 +158,14 @@ _gh_api_tags() {
 # Returns one tag name per line (refs/tags/ prefix stripped, ^{} derefs excluded).
 _git_ls_remote_tags() {
     local repo="$1"
-    git ls-remote --tags --refs "https://github.com/${repo}" 2>/dev/null \
+    # Use GITHUB_SERVER_URL when the workflow is running on a non-default host
+    # (GitHub Enterprise / private GitLab Mirror). Without this, the fallback
+    # would query api.github.com regardless of the configured server, which
+    # leaks private owner/repo names and can return wrong-server tag data.
+    # In GitHub Actions, GITHUB_SERVER_URL is auto-populated. Locally it
+    # defaults to the public host.
+    local server="${GITHUB_SERVER_URL:-https://github.com}"
+    git ls-remote --tags --refs "${server}/${repo}" 2>/dev/null \
         | awk '{print $2}' \
         | sed 's|^refs/tags/||' \
         || true
@@ -171,6 +178,11 @@ latest-github-tag() {
     local include_prerelease=false
     # --output version (default): print extracted version (e.g. "3.5.6")
     # --output raw:               print the matching raw git tag (e.g. "openssl-3.5.6")
+    # --output both:              print "VERSION<TAB>RAW_TAG" on a single line —
+    #                             use this when both fields are needed so the
+    #                             caller does not race two independent calls
+    #                             (which could pick different tags if upstream
+    #                             changes between the two invocations).
     local output_mode="version"
 
     # Parse arguments
@@ -317,8 +329,17 @@ latest-github-tag() {
             fi
             echo "$best_raw_tag"
             ;;
+        both)
+            if [[ -z "$best_raw_tag" ]]; then
+                log_error "No raw tag captured for ${repo} (versions_with_tags parse error)" >&2
+                return 1
+            fi
+            # Tab-separated so callers can `IFS=$'\t' read -r ver raw < <(...)`
+            # without worrying about spaces in either field.
+            printf '%s\t%s\n' "$best_version" "$best_raw_tag"
+            ;;
         *)
-            log_error "Unknown --output mode '${output_mode}': use 'version' or 'raw'" >&2
+            log_error "Unknown --output mode '${output_mode}': use 'version', 'raw', or 'both'" >&2
             return 1
             ;;
     esac

@@ -317,19 +317,21 @@ check_container_deps() {
                     continue
                 fi
 
-                latest_version=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
+                # Single atomic call returning both version and raw tag. A two-call
+                # form (--output version then --output raw) could pick different
+                # tags if upstream changed between the two invocations, and would
+                # silently desync source_url from the version reported in the PR.
+                _gh_both=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
                     --tag-filter "$tag_filter" \
                     --version-extract "$version_extract" \
-                    --output version 2>/dev/null) || {
+                    --output both 2>/dev/null) || {
                     errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitHub tag API error for ${repo}" '. + [$msg]')
                     continue
                 }
-                # Also capture the raw tag so build_source_url uses the correct scheme
-                # (e.g. "openssl-3.5.6" not "v3.5.6"; "pcre2-10.47" not "v10.47").
-                latest_raw_tag=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
-                    --tag-filter "$tag_filter" \
-                    --version-extract "$version_extract" \
-                    --output raw 2>/dev/null) || latest_raw_tag=""
+                # Tab-separated: VERSION<TAB>RAW_TAG (e.g. "10.47\tpcre2-10.47")
+                latest_version="${_gh_both%%$'\t'*}"
+                latest_raw_tag="${_gh_both##*$'\t'}"
+                unset _gh_both
                 ;;
             pypi)
                 local package

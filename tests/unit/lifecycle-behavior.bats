@@ -3078,3 +3078,38 @@ EOF
     [[ "$needs_arr" == *"check-upstream-versions"* ]] || \
         { echo "create-update-prs missing check-upstream-versions dep: $needs_arr"; return 1; }
 }
+
+@test "harden: _git_ls_remote_tags honors GITHUB_SERVER_URL (not hardcoded github.com)" {
+    # Mutation trace: revert to `https://github.com/${repo}` hardcoded form and
+    # this test goes RED. GHE consumers would query the public host instead of
+    # their configured server, leaking private repo names.
+    local helper="$REPO_ROOT/helpers/latest-github-tag"
+
+    grep -qE 'server="\$\{GITHUB_SERVER_URL:-https://github\.com\}"' "$helper" || \
+        { echo "helper missing GITHUB_SERVER_URL guard in _git_ls_remote_tags"; return 1; }
+    grep -qE 'git ls-remote.*"\$\{server\}/\$\{repo\}"' "$helper" || \
+        { echo "helper still uses hardcoded github.com in ls-remote URL"; return 1; }
+}
+
+@test "harden: latest-github-tag --output both returns atomic version<TAB>raw_tag" {
+    # Mutation trace: revert the script-side caller to two-call form and this
+    # test loses its coverage point. Inversely: remove --output both case from
+    # the helper and the test goes RED.
+    local helper="$REPO_ROOT/helpers/latest-github-tag"
+
+    grep -q '"--output both"\|--output both' "$helper" || \
+        { echo "helper missing --output both branch"; return 1; }
+    grep -qF "printf '%s\\t%s\\n' \"\$best_version\" \"\$best_raw_tag\"" "$helper" || \
+        { echo "helper --output both emit form is wrong (expected TAB separator)"; return 1; }
+
+    # Script-side caller switched to single atomic call
+    local script="$REPO_ROOT/scripts/check-dependency-versions.sh"
+    grep -q -- '--output both 2>/dev/null' "$script" || \
+        { echo "check-dependency-versions.sh did not switch to atomic --output both"; return 1; }
+    # The script should no longer make a second call for raw-tag only. Match
+    # invocation lines (suffix " 2>/dev/null") to ignore explanatory comments.
+    local raw_only_calls
+    raw_only_calls=$(grep -cE -- '--output raw 2>/dev/null' "$script" || true)
+    [ "$raw_only_calls" -eq 0 ] || \
+        { echo "check-dependency-versions.sh still has $raw_only_calls --output raw call(s) — should be 0 after atomic refactor"; return 1; }
+}
