@@ -2884,3 +2884,24 @@ CURLEOF
     [[ "$output" == *"v1.0.0"* ]]
     [[ "$output" == *"v1.0.1"* ]]
 }
+
+@test "harden: downstream PR-creation steps gated on update_count != '0'" {
+    # Mutation trace: remove `update_count` from any of the 3 step `if:` clauses
+    # and this test goes RED.
+    local wf="$REPO_ROOT/.github/workflows/upstream-monitor.yaml"
+
+    local apply_if
+    apply_if=$(yq -r '.jobs."create-dependency-update-prs".steps[] | select(.name == "Apply dependency updates") | .if // ""' "$wf")
+    [[ "$apply_if" == *"update_count"* ]] || \
+        { echo "Apply step missing update_count gate: $apply_if"; return 1; }
+
+    local gpg_if
+    gpg_if=$(yq -r '.jobs."create-dependency-update-prs".steps[] | select(.name == "Import GPG key") | .if // ""' "$wf")
+    [[ "$gpg_if" == *"update_count"* ]] || \
+        { echo "GPG step missing update_count gate: $gpg_if"; return 1; }
+
+    local pr_if
+    pr_if=$(yq -r '.jobs."create-dependency-update-prs".steps[] | select(.name == "Create Pull Request") | .if // ""' "$wf")
+    [[ "$pr_if" == *"update_count"* ]] || \
+        { echo "Create PR step missing update_count gate: $pr_if"; return 1; }
+}
