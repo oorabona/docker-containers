@@ -86,12 +86,16 @@ _gh_api_tags() {
             printf '%s\n' "$page_tags"
             tags_emitted=$((tags_emitted + 1))
         fi
-        # Parse Link: <url>; rel="next" header
+        # Parse Link: <url>; rel="next" header.
+        # Use "|| true" so that the grep pipeline never exits non-zero under
+        # set -euo pipefail when there is no Link header (normal single-page
+        # case). Without it, grep exits 1 on no-match and the script aborts
+        # before setting url="" to terminate the pagination loop.
         local next_url
         next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
             | grep -o '<[^>]*>; rel="next"' \
             | sed 's/^<//; s/>; rel="next"//' \
-            | head -1)
+            | head -1 || true)
         url="$next_url"
     done
 

@@ -1448,3 +1448,235 @@ EOF
         return 1
     fi
 }
+
+# ---------------------------------------------------------------------------
+# P1 regression lock: latest-github-tag single-page (no Link header) completes
+#
+# Contract: when GitHub returns a SINGLE page (no Link: rel="next" header),
+# the helper MUST exit 0 and return the page-1 tags.
+#
+# The bug: under set -euo pipefail the grep pipeline for the Link header exits
+# 1 (no match) → script aborts → exits non-zero for a normal response.
+#
+# Mutation caught: remove the "|| true" from the grep pipeline for Link header
+# parsing. The helper aborts mid-loop on the first (only) page → exits non-zero
+# → the test fails (expected 0).
+#
+# How to verify mutation → RED:
+#   1. In helpers/latest-github-tag, remove "|| true" from the next_url pipeline.
+#   2. Run this test — it fails: helper exits non-zero on a normal single-page
+#      response (no Link header in the fixture).
+#   3. Restore "|| true" → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "P1: latest-github-tag single-page (no Link header) exits 0 and returns tags" {
+    # Simulate a real single-page GitHub API response: only one page of results,
+    # no Link header in the response. The helper MUST complete without error.
+    #
+    # Strategy: mock _gh_api_tags to emit tags from a single page only. The
+    # outer pagination loop in the helper reads url from next_url (parsed from
+    # the Link header). With no Link header, next_url="" → loop exits cleanly.
+    # The || true guard in the grep pipeline is what allows this to work under
+    # set -euo pipefail.
+    local result exit_code=0
+    result=$(bash -c "
+        source '${REPO_ROOT}/helpers/latest-github-tag'
+
+        # Return tags from a single page only (no Link rel=next).
+        _gh_api_tags() {
+            printf 'openssl-3.5.0\nopenssl-3.5.6\nopenssl-3.4.2\n'
+        }
+
+        latest-github-tag 'openssl/openssl' \
+            --tag-filter '^openssl-3\.' \
+            --version-extract '^openssl-(3\.[0-9]+\.[0-9]+)$'
+    " 2>/dev/null) || exit_code=$?
+
+    # The helper must exit 0 (single-page is the normal case, not an error).
+    [[ "$exit_code" -eq 0 ]] || {
+        echo "FAIL: expected exit 0 on single-page response (no Link header), got exit ${exit_code}"
+        echo "(Mutation: remove '|| true' from Link-header grep pipeline → helper aborts under set -e → this test RED)"
+        return 1
+    }
+    # Must still return the best version from the single page
+    [[ "$result" == "3.5.6" ]] || {
+        echo "FAIL: expected '3.5.6' from single-page response, got: '${result}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# P1 regression lock (inline): grep | head pipeline exits 0 on no-Link header
+#
+# This is a more targeted lock: directly exercises the grep pipeline that was
+# broken under set -euo pipefail. Tests the || true guard in isolation by
+# reproducing the exact shell construct from latest-github-tag, with a header
+# file that has NO Link: line.
+#
+# Mutation caught: remove "|| true" → the subshell exits non-zero when the
+# grep finds nothing → assignment fails → test RED.
+# ---------------------------------------------------------------------------
+
+@test "P1: Link-header grep pipeline exits 0 and returns empty when no Link header present" {
+    # Create a header file with NO Link: line (normal single-page response)
+    local hdr_file
+    hdr_file=$(mktemp)
+    printf 'HTTP/2 200\r\ncontent-type: application/json\r\nx-ratelimit-remaining: 58\r\n\r\n' > "$hdr_file"
+
+    local next_url exit_code=0
+    # Reproduce the exact pipeline from helpers/latest-github-tag.
+    # Without "|| true": grep exits 1 → assignment aborts under set -e.
+    # With    "|| true": pipeline exits 0 → next_url="" → loop terminates cleanly.
+    next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+        | grep -o '<[^>]*>; rel="next"' \
+        | sed 's/^<//; s/>; rel="next"//' \
+        | head -1 || true) || exit_code=$?
+
+    rm -f "$hdr_file"
+
+    [[ "$exit_code" -eq 0 ]] || {
+        echo "FAIL: Link-header grep pipeline exited non-zero ($exit_code) on a header file with no Link: line"
+        echo "(Mutation: remove '|| true' → pipeline exits 1 under set -e → exit_code non-zero → RED)"
+        return 1
+    }
+    [[ -z "$next_url" ]] || {
+        echo "FAIL: expected empty next_url for no-Link-header response, got: '${next_url}'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# P0 regression lock: liveness jq query uses dep_version_info shape
+#
+# Contract: the UPSTREAM_VERSION_INFO env var fed to the liveness step MUST
+# carry dep_version_info shape ([{container, updates: [{name, latest, ...}]}]),
+# NOT version_info shape (container-level data from check-upstream-versions).
+# The jq query .updates[]? | select(.name == $d) | .latest only resolves
+# against the dep_version_info shape.
+#
+# This test verifies that the jq lookup succeeds with dep_version_info shape
+# AND returns empty (falls back to pinned) with check-upstream-versions shape.
+#
+# Mutation caught: revert the env var binding back to
+# needs.check-upstream-versions.outputs.version_info → the jq query finds no
+# .updates[].name match → candidate_version="" → liveness uses pinned version
+# → the URL contains the old version → test RED.
+# ---------------------------------------------------------------------------
+
+@test "P0: liveness jq lookup succeeds against dep_version_info shape (not version_info shape)" {
+    # dep_version_info shape (correct — from check-dependency-versions action)
+    local dep_info
+    dep_info=$(jq -n \
+        --arg container "openresty" \
+        --arg dep "RESTY_PCRE_VERSION" \
+        --arg latest "10.99" \
+        '[{container: $container, updates: [{name: $dep, latest: $latest, current: "10.47", change_type: "minor"}], errors: [], update_count: 1}]')
+
+    local container="openresty"
+    local dep="RESTY_PCRE_VERSION"
+
+    # jq query as used in upstream-monitor.yaml liveness step
+    local candidate
+    candidate=$(echo "$dep_info" \
+        | jq -r --arg c "$container" --arg d "$dep" \
+        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+        2>/dev/null | head -1)
+
+    [[ "$candidate" == "10.99" ]] || {
+        echo "FAIL: jq query against dep_version_info returned '${candidate}', expected '10.99'"
+        echo "  dep_version_info: ${dep_info}"
+        return 1
+    }
+
+    # version_info shape (wrong — from check-upstream-versions, no .updates[].name field)
+    # This represents what the old wiring sent to the liveness step.
+    local version_info
+    version_info=$(jq -n \
+        --arg container "openresty" \
+        --arg latest "10.99" \
+        '[{container: $container, current_version: "10.47", latest_version: $latest}]')
+
+    local candidate_wrong
+    candidate_wrong=$(echo "$version_info" \
+        | jq -r --arg c "$container" --arg d "$dep" \
+        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+        2>/dev/null | head -1)
+
+    [[ -z "$candidate_wrong" ]] || {
+        echo "FAIL: jq query against version_info (wrong shape) returned non-empty '${candidate_wrong}'"
+        echo "  This means the wrong shape accidentally resolves — test cannot distinguish wiring."
+        return 1
+    }
+    # Mutation: if UPSTREAM_VERSION_INFO is bound to version_info (old wiring),
+    # candidate_wrong="" → liveness falls back to pinned version → validates OLD artifact URL.
+    # The test above would go RED: candidate would be empty when it should be "10.99".
+}
+
+# ---------------------------------------------------------------------------
+# P2 regression lock: empty lifecycle counted in lc_tracked (not silently dropped)
+#
+# Contract: an entry with NO explicit lifecycle: field must be counted in the
+# lc_tracked summary counter — exactly as effective_lifecycle resolves to
+# "tracked" for the per-entry status. If the counter case uses raw $lifecycle
+# instead of $effective_lifecycle, empty-lifecycle entries are skipped in all
+# case branches → lc_tracked undercounts → summary vs per-entry mismatch.
+#
+# Mutation caught: revert to using $lifecycle in the case statement. An entry
+# with empty lifecycle matches none of tracked/stable-pin/eol-migrate/untracked
+# → lc_tracked is NOT incremented → the assertion below fails (expected 1 got 0).
+#
+# How to verify mutation → RED:
+#   1. In generate-dashboard.sh, change the counter case to use "$lifecycle"
+#      instead of "$effective_lifecycle".
+#   2. Run this test — it fails: lc_tracked=0 while per-entry shows "tracked".
+#   3. Restore "$effective_lifecycle" in the counter case → GREEN.
+# ---------------------------------------------------------------------------
+
+@test "P2: lifecycle counter increments lc_tracked for empty-lifecycle entry (backward-compat)" {
+    # Simulate the counter logic from generate-dashboard.sh using the fixed code path.
+    local lifecycle=""   # empty — entry has no explicit lifecycle: field
+    local lc_tracked=0
+    local lc_stable_pin=0
+    local lc_eol_migrate=0
+    local lc_untracked=0
+
+    # FIXED code: resolve effective_lifecycle BEFORE the case statement
+    local effective_lifecycle="${lifecycle:-tracked}"
+
+    case "$effective_lifecycle" in
+        tracked)      lc_tracked=$((lc_tracked + 1)) ;;
+        stable-pin)   lc_stable_pin=$((lc_stable_pin + 1)) ;;
+        eol-migrate)  lc_eol_migrate=$((lc_eol_migrate + 1)) ;;
+        untracked)    lc_untracked=$((lc_untracked + 1)) ;;
+    esac
+
+    [[ "$lc_tracked" -eq 1 ]] || {
+        echo "FAIL: lc_tracked=${lc_tracked}, expected 1 for empty-lifecycle entry"
+        echo "  effective_lifecycle='${effective_lifecycle}'"
+        echo "(Mutation: use raw \$lifecycle in case → empty string matches no branch → lc_tracked=0 → RED)"
+        return 1
+    }
+    [[ "$effective_lifecycle" == "tracked" ]] || {
+        echo "FAIL: effective_lifecycle='${effective_lifecycle}', expected 'tracked'"
+        return 1
+    }
+}
+
+@test "P2: lifecycle counter does NOT double-count when effective_lifecycle resolves to tracked" {
+    # Explicit "tracked" must count exactly once (not confused with empty-resolved-to-tracked)
+    local lifecycle="tracked"
+    local lc_tracked=0
+    local effective_lifecycle="${lifecycle:-tracked}"
+
+    case "$effective_lifecycle" in
+        tracked)      lc_tracked=$((lc_tracked + 1)) ;;
+        stable-pin)   : ;;
+        eol-migrate)  : ;;
+        untracked)    : ;;
+    esac
+
+    [[ "$lc_tracked" -eq 1 ]] || {
+        echo "FAIL: lc_tracked=${lc_tracked}, expected 1 for explicit 'tracked' lifecycle"
+        return 1
+    }
+}

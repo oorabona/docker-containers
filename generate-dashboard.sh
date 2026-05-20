@@ -837,8 +837,16 @@ build_dependency_monitoring_json() {
         local lifecycle
         lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$dep_config")
 
-        # Increment lifecycle counters
-        case "$lifecycle" in
+        # Backward-compat: empty lifecycle defaults to "tracked" (transition
+        # period). Resolved BEFORE the counter case so that entries without
+        # an explicit lifecycle: field are counted in lc_tracked — matching
+        # the per-entry status they receive from effective_lifecycle below.
+        # (Bug: using raw $lifecycle in the case misses empty-lifecycle entries,
+        # causing the summary counter to undercount vs per-entry listing.)
+        local effective_lifecycle="${lifecycle:-tracked}"
+
+        # Increment lifecycle counters using the resolved value.
+        case "$effective_lifecycle" in
             tracked)      lc_tracked=$((lc_tracked + 1)) ;;
             stable-pin)   lc_stable_pin=$((lc_stable_pin + 1)) ;;
             eol-migrate)  lc_eol_migrate=$((lc_eol_migrate + 1)) ;;
@@ -848,8 +856,6 @@ build_dependency_monitoring_json() {
         # Status assignment is PURELY lifecycle-driven (AC-20).
         # The legacy monitor: boolean is no longer consulted here; lifecycle:
         # is the single source of truth for dashboard classification.
-        # Backward-compat: empty lifecycle defaults to "tracked" (transition period).
-        local effective_lifecycle="${lifecycle:-tracked}"
 
         case "$effective_lifecycle" in
             untracked|eol-migrate)

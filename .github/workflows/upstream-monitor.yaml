@@ -66,7 +66,7 @@ jobs:
   # the URL for the version already shipped.
   # Non-cascading failure is preserved via continue-on-error: true on this job.
   check-source-liveness:
-    needs: [check-upstream-versions]
+    needs: [check-upstream-versions, check-dependency-updates]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -90,12 +90,16 @@ jobs:
       - name: Check source liveness (HEAD each liveness_url)
         id: liveness
         env:
-          # P2: pass detected version_info from check-upstream-versions so that
-          # tracked entries with liveness_url_template use the CANDIDATE latest
-          # version (not the old pinned version) when a newer version was found.
-          # Falls back to "{}" when check-upstream-versions did not run or had
-          # no updates — in that case the pinned version is used (no regression).
-          UPSTREAM_VERSION_INFO: ${{ needs.check-upstream-versions.outputs.version_info || '[]' }}
+          # P2: pass detected dep_version_info from check-dependency-updates so
+          # that tracked entries with liveness_url_template use the CANDIDATE
+          # latest version (not the old pinned version) when a newer version was
+          # found. Falls back to "[]" when check-dependency-updates did not run
+          # or had no updates — in that case the pinned version is used (no
+          # regression).
+          # Shape: [{container, updates: [{name, latest, current, change_type}]}]
+          # (NOT version_info from check-upstream-versions — that carries
+          # container-level version data, not per-dep update data).
+          UPSTREAM_VERSION_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info || '[]' }}
         shell: bash
         run: |
           # Named constants (AC-14)
