@@ -2980,3 +2980,35 @@ EOF
     grep -qE 'if \[\[ ! "\$http_code" =~ \^2 \]\]; then' "$wf" || \
         { echo "liveness check missing non-2xx retry guard"; return 1; }
 }
+
+@test "harden: distro_property returns empty for missing field with empty default (not literal 'null')" {
+    # Mutation trace: revert distro_property to the bare-yq else-branch and
+    # this test goes RED — yq returns the string "null" instead of "" for an
+    # absent field, which then makes -n "$result" checks fire incorrectly
+    # (web-shell generator emits `RUN null && apk add ...` as a result).
+    local tmpdir="$BATS_TEST_TMPDIR/dp"
+    mkdir -p "$tmpdir"
+    cat > "$tmpdir/config.yaml" <<'EOF'
+distros:
+  alpine:
+    pkg_manager: apk
+    install_cmd: "apk add --no-cache"
+EOF
+
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/helpers/logging.sh"
+    source "$REPO_ROOT/helpers/generate-utils.sh"
+
+    # Missing field with empty default → empty string
+    local result
+    result=$(distro_property "$tmpdir/config.yaml" "alpine" "pre_install" "")
+    [ -z "$result" ] || { echo "expected empty, got literal '$result'"; return 1; }
+
+    # Missing field with non-empty default → default value
+    result=$(distro_property "$tmpdir/config.yaml" "alpine" "pre_install" "fallback-value")
+    [ "$result" = "fallback-value" ] || { echo "expected fallback-value, got '$result'"; return 1; }
+
+    # Present field → its value, ignoring default
+    result=$(distro_property "$tmpdir/config.yaml" "alpine" "install_cmd" "ignored")
+    [ "$result" = "apk add --no-cache" ] || { echo "expected install_cmd, got '$result'"; return 1; }
+}

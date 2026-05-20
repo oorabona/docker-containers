@@ -46,11 +46,15 @@ distro_property() {
     local property="$3"
     local default="${4:-}"
 
-    if [[ -n "$default" ]]; then
-        yq e ".distros.${distro}.${property} // \"${default}\"" "$config"
-    else
-        yq e ".distros.${distro}.${property}" "$config"
-    fi
+    # Always apply the `// strenv(...)` fallback so missing fields resolve to
+    # the supplied default (or empty when omitted). Without this, the bare
+    # `yq e '.distros.X.Y'` branch returns the literal string "null" for an
+    # absent field, which then trips callers that do `[[ -n "$result" ]]`
+    # checks (e.g. web-shell/generate-dockerfile.sh:100 emitting
+    # `RUN null && apk add ...` when pre_install is absent).
+    # `strenv` is used instead of inline shell interpolation to avoid yq
+    # query injection when default values contain special characters.
+    YQ_DEFAULT="$default" yq e ".distros.${distro}.${property} // strenv(YQ_DEFAULT)" "$config"
 }
 
 # List all distro names from config.yaml, one per line.
