@@ -1,0 +1,139 @@
+name: Docker Hub Mirror
+description: >
+  Start a per-job registry:2 pull-through proxy sidecar for Docker Hub.
+  Caches the proxy's /var/lib/registry store via actions/cache so warm hits
+  are served locally. Requires a prior docker.io login so the proxy can
+  authenticate cold-miss upstream fetches (higher Hub rate limit).
+  Linux-only: all steps are no-ops on Windows (Windows base images are not
+  the docker.io 429 source).
+
+inputs:
+  dockerhub_username:
+    description: Docker Hub username (passed as REGISTRY_PROXY_USERNAME to the proxy)
+    required: true
+  dockerhub_token:
+    description: Docker Hub token (passed as REGISTRY_PROXY_PASSWORD to the proxy)
+    required: true
+  port:
+    description: Host port the proxy listens on (published to 127.0.0.1 only)
+    required: false
+    default: '5000'
+  registry_image:
+    description: >
+      Image to use for the registry:2 proxy sidecar. Defaults to the GHCR-hosted
+      copy (intra-GitHub, no docker.io pull). Fall back to the digest-pinned
+      docker.io image only when the GHCR copy is absent (first-run before B5 seeds it).
+    required: false
+    default: ''
+  cache_key_prefix:
+    description: Prefix for the actions/cache key used to persist the proxy store
+    required: false
+    default: 'dockerhub-mirror'
+  allow_self_hosted:
+    description: >
+      Explicit opt-in to run on a trusted single-tenant self-hosted runner
+      despite REGISTRY_PROXY_PASSWORD being visible via docker inspect.
+      Default 'false' (fail-closed on self-hosted). Only set to 'true' when
+      the self-hosted runner is single-tenant and ephemeral (no co-tenancy risk).
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # ── Step 1: Restore cached proxy store ────────────────────────────────────
+    # sha → exact rerun hits (same commit, different run); job + job-index →
+    # collision-free across parallel matrix jobs (each GH job = separate runner VM);
+    # restore-keys prefix → cross-commit warm from any prior job in the same OS bucket.
+    - name: Restore Docker Hub mirror cache
+      if: runner.os != 'Windows'
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        path: ${{ runner.temp }}/registry-mirror
+        key: ${{ inputs.cache_key_prefix }}-${{ runner.os }}-${{ github.sha }}-${{ github.job }}-${{ strategy.job-index }}
+        restore-keys: |
+          ${{ inputs.cache_key_prefix }}-${{ runner.os }}-
+
+    # ── Step 2: Start registry:2 pull-through proxy sidecar ───────────────────
+    # Pulls the sidecar image from GHCR (intra-GitHub) when available; falls back
+    # to a digest-pinned docker.io/library/registry:2 image for first-run bootstrap
+    # (before B5 seeds the GHCR copy via cache-base-images).
+    # To refresh the digest pin: skopeo inspect --raw docker://docker.io/library/registry:2
+    # | python3 -c "import sys,hashlib; d=sys.stdin.buffer.read(); print('sha256:'+hashlib.sha256(d).hexdigest())"
+    - name: Start Docker Hub mirror proxy
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        PORT: ${{ inputs.port }}
+        REGISTRY_IMAGE: ${{ inputs.registry_image }}
+        ALLOW_SELF_HOSTED: ${{ inputs.allow_self_hosted }}
+        # digest-pinned docker.io fallback (refresh via command above when registry:2 releases)
+        REGISTRY_FALLBACK_IMAGE: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      run: |
+        set -euo pipefail
+
+        # DRY_RUN support: source helpers/logging.sh when available for $DOCKER indirection.
+        # If helpers are absent (e.g. future reuse outside this repo), fall back to an
+        # inline guard so the action stays self-contained.
+        if [ -f "${GITHUB_WORKSPACE}/helpers/logging.sh" ]; then
+          # shellcheck source=helpers/logging.sh
+          source "${GITHUB_WORKSPACE}/helpers/logging.sh"
+        else
+          DOCKER="docker"
+          [[ "${DRY_RUN:-false}" == "true" ]] && DOCKER="echo docker"
+        fi
+
+        # shellcheck source=.github/actions/dockerhub-mirror/mirror-lib.sh
+        source "${GITHUB_ACTION_PATH}/mirror-lib.sh"
+
+        # Safety gate: REGISTRY_PROXY_PASSWORD is visible via docker inspect.
+        # Fail-closed on self-hosted runners unless the caller has explicitly opted in.
+        dhm_assert_ephemeral_runner "${RUNNER_ENVIRONMENT:-}" "${ALLOW_SELF_HOSTED:-false}"
+
+        # Pull sidecar image (GHCR first, digest-pinned docker.io fallback) and start proxy.
+        # Pass GITHUB_REPOSITORY_OWNER (built-in env var, always lowercase-safe via ${owner,,}
+        # inside the function) so the GHCR ref is resolved in shell, not in a composite
+        # input default (which does NOT reliably evaluate ${{ github.* }} expressions).
+        REGISTRY_IMAGE="$(dhm_resolve_registry_image "${REGISTRY_IMAGE}" "${REGISTRY_FALLBACK_IMAGE}" "${GITHUB_REPOSITORY_OWNER}")"
+        dhm_start_proxy "${PORT}" "${RUNNER_TEMP}" "${REGISTRY_IMAGE}" \
+          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}"
+
+    # ── Step 3: Healthcheck — always fail-closed ──────────────────────────────
+    # Poll /v2/ up to 30×1 s. A dead proxy fails the step (no escape hatch:
+    # buildkitd-config is already applied by setup-buildx so an unhealthy proxy
+    # cannot be bypassed transparently — fail loudly instead).
+    # DRY_RUN: proxy was never started (step 2 only echoed the docker run
+    # command), so polling would always fail. Short-circuit immediately.
+    - name: Wait for Docker Hub mirror proxy to be healthy
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        PORT: ${{ inputs.port }}
+      run: |
+        set -euo pipefail
+
+        # DRY_RUN support: mirror the same detection as step 2 so the
+        # healthcheck is skipped when no real proxy was started.
+        if [ -f "${GITHUB_WORKSPACE}/helpers/logging.sh" ]; then
+          # shellcheck source=helpers/logging.sh
+          source "${GITHUB_WORKSPACE}/helpers/logging.sh"
+        else
+          [[ "${DRY_RUN:-false}" == "true" ]] && DOCKER="echo docker" || DOCKER="docker"
+        fi
+
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+          echo "DRY_RUN: skipping proxy healthcheck (proxy was not started)"
+          exit 0
+        fi
+
+        # shellcheck source=.github/actions/dockerhub-mirror/mirror-lib.sh
+        source "${GITHUB_ACTION_PATH}/mirror-lib.sh"
+
+        proxy_url="$(dhm_proxy_url "${PORT}")"
+
+        if ! dhm_healthcheck "${proxy_url}" 30; then
+          echo "::error::dockerhub-mirror proxy failed to become healthy"
+          exit 1
+        fi

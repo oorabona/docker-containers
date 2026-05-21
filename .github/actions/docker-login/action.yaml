@@ -15,6 +15,11 @@ inputs:
     description: Docker Hub token (optional)
     required: false
     default: ""
+outputs:
+  dockerhub_authed:
+    description: Whether Docker Hub login succeeded (true/false)
+    value: ${{ steps.dockerhub.outcome == 'success' }}
+
 runs:
   using: composite
   steps:
@@ -27,6 +32,7 @@ runs:
 
     - name: Log in to Docker Hub
       if: inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
+      id: dockerhub
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
       with:
         registry: docker.io
