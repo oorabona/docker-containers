@@ -115,5 +115,36 @@ most complex.
 - The sidecar registry must be reachable from buildkitd (host networking /
   `docker` driver); verify per build driver during implementation.
 
-**Implementation tracking:** issue #488. Reference for the buildkitd config-inline
-and `registry:2` proxy wiring to be captured in the shared composite action.
+**Implementation tracking:** issue #488.
+
+## Implementation (issue #488)
+
+Shipped as the shared composite action [`.github/actions/dockerhub-mirror`](../../.github/actions/dockerhub-mirror/action.yaml)
+plus the buildkitd config [`.github/buildkitd-mirror.toml`](../../.github/buildkitd-mirror.toml).
+The action restores a `registry:2` pull-through store from `actions/cache`, starts
+the proxy on `127.0.0.1:5000` (`REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io`
+plus Docker Hub backend credentials), fail-closes on an unhealthy proxy, and lets
+`actions/cache` persist the store on a per-job key.
+
+Wiring (per job that pulls `docker.io` through `docker buildx build`):
+`docker.io login → dockerhub-mirror → setup-buildx-action` with
+`driver-opts: network=host` and **`buildkitd-config: .github/buildkitd-mirror.toml`**
+(the `network=host` driver-opt is how the `docker-container` buildkitd reaches the
+host-published proxy; `buildkitd-config` — not `config` — is the setup-buildx-action
+input that loads the mirror, the latter being silently ignored).
+
+Scope verified at implementation time (the "verify per build driver" step above):
+only the buildx-build pull path is mirrored — the **build matrix** (via the
+`build-container` action) and **build-extensions**. `cache-base-images` and
+`create-manifest` pull `docker.io` through `docker buildx imagetools create`, which
+resolves source manifests directly against the upstream registry and does not honor
+the buildkitd mirror; they remain on authenticated direct pull. `cache-base-images`
+is made non-blocking (`continue-on-error: true`) so its un-mirrorable rate-limit
+cannot fail the workflow — `build-and-push` carries the mirror as the safety net, and
+also seeds a digest-pinned `registry:2` into GHCR so the proxy image itself is pulled
+intra-GitHub.
+
+Once the mirror is observed eliminating the rate-limit on full-matrix runs, the GHCR
+base-image-copy repos, the skopeo-copy job, and the `get_cache_build_args` build-arg
+override become redundant for rate-limit avoidance and are slated for removal in a
+follow-up (they are kept until then). Design + hardening: `docs/plans/488-dockerhub-mirror.md`.

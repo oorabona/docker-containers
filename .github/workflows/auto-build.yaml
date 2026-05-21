@@ -233,11 +233,8 @@ jobs:
           echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-        timeout-minutes: 10
-
       - name: Log in to container registries
+        id: login
         uses: ./.github/actions/docker-login
         timeout-minutes: 5
         with:
@@ -247,6 +244,20 @@ jobs:
           # Docker Hub so those base pulls are not anonymous (429 under load).
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Start Docker Hub pull-through mirror
+        if: steps.login.outputs.dockerhub_authed == 'true'
+        uses: ./.github/actions/dockerhub-mirror
+        with:
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        timeout-minutes: 10
+        with:
+          driver-opts: ${{ steps.login.outputs.dockerhub_authed == 'true' && 'network=host' || '' }}
+          buildkitd-config: ${{ steps.login.outputs.dockerhub_authed == 'true' && '.github/buildkitd-mirror.toml' || '' }}
 
       - name: Get versions requiring extensions
         id: ext-versions
@@ -334,6 +345,14 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Non-blocking for build-and-push: ADR-009 / spec §C1b. The DockerHub mirror
+    # (B3) is the safety net — if GHCR base cache is absent, Dockerfiles pull
+    # FROM docker.io through the per-job sidecar proxy. Failure here therefore
+    # degrades performance (no cache hit) but never breaks the build. GitHub
+    # semantics: continue-on-error: true causes this job's result to appear as
+    # 'success' to dependent jobs even when it fails, so build-and-push is never
+    # skipped by a cache-population 429.
+    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -402,6 +421,35 @@ jobs:
 
           echo ""
           echo "✅ Base image caching complete"
+
+      - name: Seed registry:2 proxy image to GHCR
+        # ADR-009 / spec §C2. Copies the digest-pinned registry:2 image to GHCR
+        # so the dockerhub-mirror action (B1) can pull its sidecar proxy
+        # intra-GitHub, avoiding a per-job docker.io pull.
+        # IMPORTANT: digest must stay in sync with
+        # .github/actions/dockerhub-mirror/action.yaml fallback pin.
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          # Lowercase owner: GHCR refs are case-sensitive in tooling and
+          # require lowercase. Must match the ${owner,,} resolution in
+          # .github/actions/dockerhub-mirror (dhm_resolve_registry_image).
+          owner="${OWNER,,}"
+          ghcr_image="ghcr.io/${owner}/registry:2"
+          source_img="docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+
+          echo "🔄 Seeding registry:2 → ${ghcr_image}"
+
+          if output=$(docker buildx imagetools create \
+            --tag "${ghcr_image}" \
+            "${source_img}" 2>&1); then
+            echo "  ✅ registry:2 seeded to GHCR successfully"
+          else
+            echo "  ⚠️ Failed to seed registry:2 to GHCR"
+            echo "  Error: ${output}"
+          fi
 
   sync-registries:
     name: Sync ${{ matrix.build.container }}:${{ matrix.build.tag }} GHCR→DockerHub
