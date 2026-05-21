@@ -210,5 +210,33 @@ get_cache_build_args() {
     echo "$args"
 }
 
+# Resolve the tag to use when verifying a GHCR cache entry is accessible.
+# For tags_from_versions entries (e.g. postgres), there is no tags[] array —
+# the GHCR copy uses the build_version as the tag (e.g. "18-alpine").
+# For tags[] entries, resolves tags[0] via _resolve_tag_template.
+# Falls back to "latest" if tags[] is absent and tags_from_versions is false.
+# Usage: resolve_cache_check_tag <config_file> <entry_index> <build_version>
+# Output: the tag string to use in the docker manifest inspect check
+resolve_cache_check_tag() {
+    local config_file="$1"
+    local entry_index="$2"
+    local build_version="$3"
+    local container_dir
+    container_dir="$(dirname "$config_file")"
+
+    local tags_from_versions
+    tags_from_versions=$(yq -r ".base_image_cache[$entry_index].tags_from_versions // false" "$config_file")
+
+    if [[ "$tags_from_versions" == "true" ]]; then
+        # Tags are derived from versions: the GHCR copy uses build_version as the tag
+        printf '%s' "$build_version"
+        return
+    fi
+
+    local raw_tag
+    raw_tag=$(yq -r ".base_image_cache[$entry_index].tags[0] // \"latest\"" "$config_file")
+    _resolve_tag_template "$raw_tag" "$build_version" "$config_file" "$container_dir"
+}
+
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag

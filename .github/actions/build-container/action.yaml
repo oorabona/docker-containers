@@ -395,8 +395,7 @@ runs:
               entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
               for ((i = 0; i < entry_count; i++)); do
                 ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "./$container/config.yaml")
-                raw_tag=$(yq -r ".base_image_cache[$i].tags[0] // \"latest\"" "./$container/config.yaml")
-                resolved_tag=$(_resolve_tag_template "$raw_tag" "$build_version" "./$container/config.yaml" "./$container")
+                resolved_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
                 check_image="ghcr.io/${{ github.repository_owner }}/${ghcr_repo}:${resolved_tag}"
                 if docker manifest inspect "$check_image" &>/dev/null; then
                   cache_ok=true
