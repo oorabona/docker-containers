@@ -11,16 +11,20 @@ build_args:
 
 dependency_sources:
   TTYD_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: tsl0922/ttyd
   ALPINE_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   ROCKY_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   UBUNTU_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
 
 # Base image cache for Docker Hub rate limiting

@@ -19,26 +19,34 @@ build_args:
 dependency_sources:
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   OS_VERSION:
     monitor: false
+    lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
   PYASN1_VERSION:
+    lifecycle: tracked
     type: pypi
     package: pyasn1
   PARAMIKO_VERSION:
+    lifecycle: tracked
     type: pypi
     package: paramiko
   CFFI_VERSION:
+    lifecycle: tracked
     type: pypi
     package: cffi
   CRYPTOGRAPHY_VERSION:
+    lifecycle: tracked
     type: pypi
     package: cryptography
   PYCRYPTODOME_VERSION:
+    lifecycle: tracked
     type: pypi
     package: pycryptodome
   PYNACL_VERSION:
+    lifecycle: tracked
     type: pypi
     package: PyNaCl
 value_proposition: Pre-installed common collections, multi-version retention, ARM-native (amd64 + arm64). Daily upstream version monitoring with auto-PRs.

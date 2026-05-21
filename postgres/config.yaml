@@ -15,44 +15,55 @@ build_args:
 dependency_sources:
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   pgvector:
+    lifecycle: tracked
     type: github-release
     repo: pgvector/pgvector
     strip_v: true
   pg_partman:
+    lifecycle: tracked
     type: github-release
     repo: pgpartman/pg_partman
     strip_v: true
   hypopg:
+    lifecycle: tracked
     type: github-release
     repo: HypoPG/hypopg
     strip_v: false
   pg_qualstats:
+    lifecycle: tracked
     type: github-release
     repo: powa-team/pg_qualstats
     strip_v: false
   paradedb:
+    lifecycle: tracked
     type: github-release
     repo: paradedb/paradedb
     strip_v: true
   citus:
+    lifecycle: tracked
     type: github-release
     repo: citusdata/citus
     strip_v: true
   timescaledb:
+    lifecycle: tracked
     type: github-release
     repo: timescale/timescaledb
     strip_v: false
   pg_cron:
+    lifecycle: tracked
     type: github-release
     repo: citusdata/pg_cron
     strip_v: true
   pg_ivm:
+    lifecycle: tracked
     type: github-release
     repo: sraoss/pg_ivm
     strip_v: true
   postgis:
+    lifecycle: tracked
     type: github-release
     repo: postgis/postgis
     strip_v: false

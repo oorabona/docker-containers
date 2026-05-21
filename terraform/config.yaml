@@ -36,44 +36,56 @@ build_args:
 dependency_sources:
   TERRAFORM_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   ALPINE_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   PYTHON_BASE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   TFLINT_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: terraform-linters/tflint
     strip_v: true
   TRIVY_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: aquasecurity/trivy
     strip_v: true
   TERRAGRUNT_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: gruntwork-io/terragrunt
     strip_v: true
   TERRAFORM_DOCS_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: terraform-docs/terraform-docs
     strip_v: true
   INFRACOST_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: infracost/infracost
     strip_v: true
   GITHUB_CLI_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: cli/cli
     strip_v: true
   AWS_CLI_VERSION:
+    lifecycle: tracked
     type: pypi
     package: awscli
   AZURE_CLI_VERSION:
+    lifecycle: tracked
     type: pypi
     package: azure-cli
   GCP_CLI_VERSION:
     monitor: false
+    lifecycle: untracked
     reason: "Always latest — no version to track"
 value_proposition: Multi-version retention (3 latest). GCP/AWS/Azure providers pre-fetched, full provider cache layer. Daily upstream monitoring of all dependencies.

@@ -12,5 +12,6 @@ build_args:
 dependency_sources:
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
 value_proposition: Minimal Debian base with verifiable supply chain — SBOM attestations, multi-arch, signed git history.

@@ -13,12 +13,33 @@
 #   --summary   Human-readable table (default for terminal)
 #
 # Exit code: always 0 (errors collected in output, not fatal)
+#
+# lifecycle: field dispatch:
+#   untracked   → skip silently (declared, not silent boolean)
+#   eol-migrate → LOUD surfaced signal every run (never continue-skipped)
+#   stable-pin  → resolve latest within pin + date escalation via STABLE_PIN_WARN_DAYS
+#   tracked     → resolve normally (open update PRs)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$PROJECT_ROOT/helpers/logging.sh"
+
+# Named constant: days before supported_until to emit a ::warning:: countdown
+# Configurable via env; named so it is never a magic number.
+STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
+
+# Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
+# Per GHA spec: % → %25, CR → %0D, LF → %0A.
+# Must be applied to ALL dynamic ${var} interpolations in annotation messages.
+_gha_escape() {
+    local s="$1"
+    s="${s//%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
 
 # Classify semver change type between two versions
 # Returns: major, minor, patch, or unknown
@@ -45,14 +66,33 @@ classify_version_change() {
 }
 
 # Build source URL for a dependency update
+# Args: type source version [raw_tag]
+#   raw_tag: optional 4th argument for github-tag type.
+#     For github-release: raw_tag unused; v${version} path is always correct.
+#     For github-tag: use /tree/${raw_tag} (the git ref always resolves; no
+#       dependence on a release being published). Falls back to v${version}
+#       when raw_tag is empty.
+#     Assumption: raw_tag values from the upstream API are simple [-.\w]+ shaped
+#       (e.g. "openssl-3.5.6", "pcre2-10.47") — no URL-special chars in practice.
 build_source_url() {
     local type="$1"
     local source="$2"
     local version="$3"
+    local raw_tag="${4:-}"
 
     case "$type" in
-        github-release|github-tag)
+        github-release)
             echo "https://github.com/${source}/releases/tag/v${version}"
+            ;;
+        github-tag)
+            # Use /tree/ ref path — works for any git tag without requiring a
+            # published GitHub Release. Falls back to v${version} when raw_tag
+            # is empty (e.g. caller could not fetch raw tag).
+            if [[ -n "$raw_tag" ]]; then
+                echo "https://github.com/${source}/tree/${raw_tag}"
+            else
+                echo "https://github.com/${source}/tree/v${version}"
+            fi
             ;;
         pypi)
             echo "https://pypi.org/project/${source}/${version}/"
@@ -140,36 +180,114 @@ check_container_deps() {
     while IFS= read -r dep_name; do
         [[ -z "$dep_name" ]] && continue
 
-        # Check if monitoring is disabled (monitor: false in YAML)
-        # Note: can't use `// "true"` fallback — yq treats boolean false as falsy
-        local is_disabled
-        is_disabled=$(yq -r "(.dependency_sources.${dep_name}.monitor) == false" "$config")
-        if [[ "$is_disabled" == "true" ]]; then
-            continue
-        fi
+        # Read lifecycle (required field — schema test gates this)
+        local lifecycle
+        lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
+
+        # Lifecycle dispatch — replaces the binary monitor:false blanket continue.
+        # AC-3: eol-migrate MUST NOT be silently skipped.
+        case "$lifecycle" in
+            untracked)
+                # Declared skip: genuinely nothing to track (base-image fallback,
+                # build parallelism, "always latest" CLI). Skip is now explicit.
+                continue
+                ;;
+            eol-migrate)
+                # LOUD surfaced signal every run — the honest replacement for silent monitor:false.
+                # This is the #448 root-cause inversion fix: never continue-skip an eol-migrate.
+                local reason
+                reason=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].reason // "pinned to EOL line"' "$config")
+                echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=eol-migrate — manual migration required. $(_gha_escape "${reason}")" >&2
+                log_error "[${container}] ${dep_name}: EOL dependency — manual migration required: ${reason}" >&2
+                errors_json=$(echo "$errors_json" | jq \
+                    --arg msg "${dep_name}: EOL dependency (eol-migrate) — manual migration required: ${reason}" \
+                    '. + [$msg]')
+                # continue: do NOT fall through to version resolution.
+                # An eol-migrate dep must NEVER enter updates_json and trigger an
+                # auto-PR — the intent is "manual migration required", not
+                # "auto-bump to latest". The downstream create-update-prs job has
+                # no lifecycle filter, so the single point of enforcement is here.
+                # Contract: create-update-prs reads only what enters updates_json;
+                # eol-migrate entries are excluded at this dispatch site.
+                continue
+                ;;
+            stable-pin)
+                # Deliberately pinned to a supported branch/LTS.
+                # T10: Date escalation — compare today vs supported_until.
+                local supported_until
+                supported_until=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].supported_until // ""' "$config")
+                if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
+                    local today_epoch until_epoch days_left
+                    today_epoch=$(date +%s)
+                    until_epoch=$(date -d "$supported_until" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$supported_until" +%s 2>/dev/null || echo "0")
+                    days_left=$(( (until_epoch - today_epoch) / 86400 ))
+
+                    if [[ "$days_left" -le 0 ]]; then
+                        # Past EOL: treat as eol-migrate-equivalent — loud every run.
+                        # STOP here: do NOT fall through to version resolution.
+                        # An EOL-passed stable-pin must never enter updates_json and
+                        # trigger an auto-PR — the intent is "manual migration required".
+                        # Contract mirrors eol-migrate: surface-only, then continue.
+                        echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=stable-pin has PASSED supported_until=$(_gha_escape "${supported_until}") — treat as eol-migrate. Manual migration required." >&2
+                        log_error "[${container}] ${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" >&2
+                        errors_json=$(echo "$errors_json" | jq \
+                            --arg msg "${dep_name}: stable-pin EOL date passed (${supported_until}) — migration required" \
+                            '. + [$msg]')
+                        continue
+                    elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
+                        # Within countdown window: emit warning
+                        echo "::warning::$(_gha_escape "${container}/${dep_name}"): lifecycle=stable-pin EOL approaching — $(_gha_escape "${days_left}") days until $(_gha_escape "${supported_until}") (STABLE_PIN_WARN_DAYS=${STABLE_PIN_WARN_DAYS})" >&2
+                        log_info "[${container}] ${dep_name}: stable-pin countdown: ${days_left} days until EOL ${supported_until}" >&2
+                    fi
+                    # If days_left > STABLE_PIN_WARN_DAYS: silent OK (no warning yet)
+                fi
+                # Fall through to version resolution ONLY when still within support window.
+                # (Past-EOL branch above issues continue before reaching here.)
+                ;;
+            tracked|"")
+                # tracked: actively follow latest upstream.
+                # "" (empty): backward-compat for entries that lack lifecycle: yet;
+                # only reached if schema test is not gating CI.
+                ;;
+            *)
+                errors_json=$(echo "$errors_json" | jq \
+                    --arg msg "${dep_name}: unknown lifecycle '${lifecycle}'" \
+                    '. + [$msg]')
+                continue
+                ;;
+        esac
+
+        # eol-migrate has already exited the loop iteration above (via continue).
+        # For stable-pin/tracked: resolve normally.
 
         local dep_type
-        dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$config")
+        dep_type=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].type // ""' "$config")
 
         # Get current version from build_args
         local current_version
-        current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$config")
+        current_version=$(YQ_DEP="$dep_name" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
 
         if [[ -z "$current_version" || "$current_version" == "null" ]]; then
-            errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: no current version in build_args" '. + [$msg]')
+            # Dead-code-by-defense-in-depth: untracked continues early above, so
+            # this branch is only reachable for tracked/stable-pin with no build_args
+            # entry — a schema/config error, not a normal lifecycle path.
+            if [[ "$lifecycle" != "eol-migrate" ]]; then
+                errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: no current version in build_args" '. + [$msg]')
+            fi
             continue
         fi
 
         # Query latest version based on type
         local latest_version=""
         local source_ref=""
+        local latest_raw_tag=""  # raw tag for github-tag type (used in URL builder)
 
         case "$dep_type" in
             github-release)
                 local repo strip_v tag_pattern
-                repo=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$config")
-                strip_v=$(yq -r ".dependency_sources.${dep_name}.strip_v // false" "$config")
-                tag_pattern=$(yq -r ".dependency_sources.${dep_name}.tag_pattern // \"\"" "$config")
+                repo=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$config")
+                strip_v=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].strip_v // false' "$config")
+                tag_pattern=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_pattern // ""' "$config")
                 source_ref="$repo"
 
                 local helper_args=("$repo")
@@ -182,22 +300,42 @@ check_container_deps() {
                 }
                 ;;
             github-tag)
-                local repo strip_v
-                repo=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$config")
-                strip_v=$(yq -r ".dependency_sources.${dep_name}.strip_v // false" "$config")
+                # Real github-tag branch: calls latest-github-tag with tag_filter/version_extract.
+                # Previously aliased to latest-github-release (wrong — openssl/pcre2 ship tags).
+                local repo tag_filter version_extract
+                repo=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$config")
+                tag_filter=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
+                version_extract=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
                 source_ref="$repo"
 
-                local helper_args=("$repo")
-                [[ "$strip_v" == "true" ]] && helper_args+=("--strip-v")
+                if [[ -z "$repo" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: github-tag type missing repo:" '. + [$msg]')
+                    continue
+                fi
+                if [[ -z "$tag_filter" || -z "$version_extract" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: github-tag type requires tag_filter and version_extract" '. + [$msg]')
+                    continue
+                fi
 
-                latest_version=$("$PROJECT_ROOT/helpers/latest-github-release" "${helper_args[@]}" 2>/dev/null) || {
-                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitHub API error for ${repo}" '. + [$msg]')
+                # Single atomic call returning both version and raw tag. A two-call
+                # form (--output version then --output raw) could pick different
+                # tags if upstream changed between the two invocations, and would
+                # silently desync source_url from the version reported in the PR.
+                _gh_both=$("$PROJECT_ROOT/helpers/latest-github-tag" "$repo" \
+                    --tag-filter "$tag_filter" \
+                    --version-extract "$version_extract" \
+                    --output both 2>/dev/null) || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitHub tag API error for ${repo}" '. + [$msg]')
                     continue
                 }
+                # Tab-separated: VERSION<TAB>RAW_TAG (e.g. "10.47\tpcre2-10.47")
+                latest_version="${_gh_both%%$'\t'*}"
+                latest_raw_tag="${_gh_both##*$'\t'}"
+                unset _gh_both
                 ;;
             pypi)
                 local package
-                package=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$config")
+                package=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].package // ""' "$config")
                 source_ref="$package"
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-pypi-version" "$package" 2>/dev/null) || {
@@ -207,13 +345,21 @@ check_container_deps() {
                 ;;
             rubygems)
                 local gem
-                gem=$(yq -r ".dependency_sources.${dep_name}.gem // \"\"" "$config")
+                gem=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].gem // ""' "$config")
                 source_ref="$gem"
 
                 latest_version=$("$PROJECT_ROOT/helpers/latest-rubygems-version" "$gem" 2>/dev/null) || {
                     errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: RubyGems API error for ${gem}" '. + [$msg]')
                     continue
                 }
+                ;;
+            "")
+                # Empty type: only valid for untracked entries (already continue'd above).
+                # If we reach here it means a tracked/stable-pin/eol-migrate entry is missing type.
+                if [[ "$lifecycle" != "untracked" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: missing type field for lifecycle=${lifecycle}" '. + [$msg]')
+                fi
+                continue
                 ;;
             *)
                 errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: unknown source type '${dep_type}'" '. + [$msg]')
@@ -231,7 +377,7 @@ check_container_deps() {
             local change_type
             change_type=$(classify_version_change "$current_version" "$latest_version")
             local source_url
-            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version")
+            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag")
 
             updates_json=$(echo "$updates_json" | jq \
                 --arg name "$dep_name" \

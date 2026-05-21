@@ -53,8 +53,214 @@ jobs:
             echo "Containers to update: ${{ steps.check.outputs.containers_with_updates }}"
           fi
 
+  # Source liveness check (T7/T11): for every dependency_sources entry with a
+  # liveness_url:, HTTP HEAD the URL. Non-2xx → ::warning:: + non-zero exit.
+  # This step is intentionally SEPARATE so its failure does not cascade to
+  # downstream PR-fanout jobs (non-cascading failure design, AC-12/AC-16).
+  # BOUNDED: --max-time + --retry (AC-14).
+  #
+  # P2: needs check-upstream-versions so that for tracked entries with
+  # liveness_url_template, we substitute the DETECTED latest_version (not the
+  # old pinned version) when a newer version has been found. This ensures the
+  # liveness check validates the URL the NEXT build will actually fetch, not
+  # the URL for the version already shipped.
+  # Non-cascading failure is preserved via continue-on-error: true on this job.
+  check-source-liveness:
+    needs: [check-upstream-versions, check-dependency-updates]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        shell: bash
+        run: |
+          # Install yq on PATH (mikefarah/yq action only runs yq inside the
+          # action itself, it does NOT put yq on PATH for subsequent steps).
+          # Mirror the exact pattern used in create-update-prs (line ~212).
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Check source liveness (HEAD each liveness_url)
+        id: liveness
+        env:
+          # P2: pass detected dep_version_info from check-dependency-updates so
+          # that tracked entries with liveness_url_template use the CANDIDATE
+          # latest version (not the old pinned version) when a newer version was
+          # found. Falls back to "[]" when check-dependency-updates did not run
+          # or had no updates — in that case the pinned version is used (no
+          # regression).
+          # Shape: [{container, updates: [{name, latest, current, change_type}]}]
+          # (NOT version_info from check-upstream-versions — that carries
+          # container-level version data, not per-dep update data).
+          UPSTREAM_VERSION_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info || '[]' }}
+          # Scoped manual run filter: when workflow_dispatch.inputs.container is
+          # provided, the liveness loop probes ONLY that container — same scoping
+          # as check-upstream-versions/check-dependency-updates accept via their
+          # `container` action input. Empty (default) probes all containers.
+          SCOPE_CONTAINER: ${{ github.event.inputs.container || '' }}
+        shell: bash
+        run: |
+          # Named constants (AC-14)
+          LIVENESS_MAX_TIME=30
+          LIVENESS_RETRY=2
+
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
+
+          failed=0
+          checked=0
+
+          for config in */config.yaml; do
+            container=$(dirname "$config")
+            # Honor workflow_dispatch.inputs.container when provided: a scoped
+            # manual run ("check just openresty") should NOT probe every other
+            # container's liveness URLs and emit unrelated warnings.
+            if [[ -n "$SCOPE_CONTAINER" && "$container" != "$SCOPE_CONTAINER" ]]; then
+              continue
+            fi
+            if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
+              continue
+            fi
+
+            dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$config")
+            while IFS= read -r dep; do
+              [[ -z "$dep" ]] && continue
+
+              # For tracked entries: prefer liveness_url_template if present.
+              # Template uses {version} placeholder.
+              # P2: for tracked entries, prefer the detected latest_version over
+              # the pinned current_version so liveness validates the candidate URL.
+              # P1-SECURITY: dep names from config.yaml are untrusted (a PR author
+              # controls the key names). yq query expressions must NOT be built via
+              # shell "${dep}" interpolation — that allows injection of yq special
+              # chars (., [], ", etc.) to reshape the query path.
+              # FIX: pass the dep name via env-var + strenv() so yq treats it as
+              # a literal value, never as part of the query expression.
+              lifecycle=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$config")
+              url_template=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "$config")
+              url=""
+
+              case "$lifecycle" in
+                tracked|stable-pin)
+                  # P2 / Fix-R8: tracked AND stable-pin entries both auto-bump
+                  # within their version line (tracked → any new version;
+                  # stable-pin → patch within LTS pin).  When the upstream
+                  # monitor opens an auto-PR for the new patch, liveness MUST
+                  # validate the NEW artifact URL (the one the upcoming build
+                  # will actually fetch), not the stale pinned URL already in
+                  # build_args.  So candidate-version substitution is required
+                  # for both lifecycles when liveness_url_template is present.
+                  if [[ -n "$url_template" && "$url_template" != "null" ]]; then
+                    # Prefer the detected latest_version from upstream detection.
+                    # If no candidate was detected (no auto-PR pending), fall
+                    # back to the current pinned version — still correct.
+                    candidate_version=""
+                    if [[ -n "$UPSTREAM_VERSION_INFO" && "$UPSTREAM_VERSION_INFO" != "[]" ]]; then
+                      candidate_version=$(echo "$UPSTREAM_VERSION_INFO" \
+                        | jq -r --arg c "$container" --arg d "$dep" \
+                        '.[] | select(.container == $c) | .updates[]? | select(.name == $d) | .latest // empty' \
+                        2>/dev/null | head -1)
+                    fi
+                    # Fall back to current pinned version when no candidate detected.
+                    if [[ -z "$candidate_version" ]]; then
+                      candidate_version=$(YQ_DEP="$dep" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$config")
+                    fi
+                    if [[ -n "$candidate_version" && "$candidate_version" != "null" ]]; then
+                      url="${url_template//\{version\}/$candidate_version}"
+                    else
+                      # No version available — fall back to static liveness_url.
+                      url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+                    fi
+                  else
+                    # tracked/stable-pin WITHOUT liveness_url_template — advisory
+                    # warning; fall through to static liveness_url for backward-compat.
+                    static_url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+                    if [[ -n "$static_url" && "$static_url" != "null" ]]; then
+                      echo "::warning::liveness-template: $(_gha_escape "${container}/${dep}") is $(_gha_escape "${lifecycle}") but has no liveness_url_template — static liveness_url may become stale when version is bumped"
+                    fi
+                    url="$static_url"
+                  fi
+                  ;;
+                *)
+                  # eol-migrate / untracked: static liveness_url is correct.
+                  url=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url // ""' "$config")
+                  ;;
+              esac
+
+              [[ -z "$url" || "$url" == "null" ]] && continue
+
+              checked=$((checked + 1))
+              # -L follows redirects: GitHub release download URLs return 302
+              # (redirect to S3/CDN) as healthy behavior; without -L a live
+              # artifact is misreported as dead (HTTP 302 → not-2xx → FAIL).
+              http_code=$(curl --proto '=https' --proto-redir '=https' -sIL \
+                --max-time "$LIVENESS_MAX_TIME" \
+                --retry "$LIVENESS_RETRY" \
+                --retry-delay 3 \
+                -o /dev/null \
+                -w "%{http_code}" \
+                "$url" 2>/dev/null || echo "000")
+
+              # Some CDN endpoints (S3, jsDelivr, ...) return 403/405 to HEAD but
+              # respond 200/206 to GET. If HEAD failed, retry with a 1-byte GET
+              # range request — same bandwidth cost as HEAD for a healthy URL,
+              # but unmasks false-positive dead reports from HEAD-allergic hosts.
+              if [[ ! "$http_code" =~ ^2 ]]; then
+                head_code="$http_code"
+                http_code=$(curl --proto '=https' --proto-redir '=https' -sL \
+                  --max-time "$LIVENESS_MAX_TIME" \
+                  --retry "$LIVENESS_RETRY" \
+                  --retry-delay 3 \
+                  --range 0-0 \
+                  -o /dev/null \
+                  -w "%{http_code}" \
+                  "$url" 2>/dev/null || echo "000")
+                if [[ "$http_code" =~ ^2 ]]; then
+                  echo "  live: ${container}/${dep}: HTTP ${http_code} (HEAD returned ${head_code}, GET range succeeded)"
+                fi
+              fi
+
+              if [[ "$http_code" =~ ^2 ]]; then
+                if [[ -z "${head_code:-}" ]]; then
+                  echo "  live: ${container}/${dep}: HTTP ${http_code}"
+                fi
+                unset head_code
+              else
+                echo "::warning::liveness-check: $(_gha_escape "${container}/${dep}") returned HTTP $(_gha_escape "${http_code}") — artifact may be unavailable (url=$(_gha_escape "${url}"))"
+                echo "  dead: ${container}/${dep}: HTTP ${http_code} (FAIL)"
+                failed=$((failed + 1))
+                unset head_code
+              fi
+            done <<< "$dep_names"
+          done
+
+          echo "Liveness check: ${checked} URLs checked, ${failed} failed"
+          if [[ "$failed" -gt 0 ]]; then
+            echo "::error::$(_gha_escape "${failed}") liveness check(s) failed — see ::warning:: annotations above"
+            exit 1
+          fi
+
   create-update-prs:
-    needs: check-upstream-versions
+    # check-source-liveness runs as a parallel sibling job (no needs:
+    # dependency here). GitHub Actions' implicit `success()` gating combined
+    # with `continue-on-error: true` on liveness can leave needs.X.result in
+    # an ambiguous state for downstream gating; making liveness purely
+    # parallel removes the ambiguity. Liveness still emits ::warning::
+    # annotations on the run summary as designed.
+    needs: [check-upstream-versions]
     if: needs.check-upstream-versions.outputs.update_count > 0
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -548,25 +754,160 @@ jobs:
           CONTAINER: ${{ matrix.container }}
           DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
         run: |
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
+
           # Extract updates for this container (using env vars to avoid injection)
           container_data=$(echo "$DEP_INFO" | jq --arg c "$CONTAINER" '.[] | select(.container == $c)')
-          updates=$(echo "$container_data" | jq -c '.updates')
-          update_count=$(echo "$container_data" | jq '.update_count')
+          raw_updates=$(echo "$container_data" | jq -c '.updates')
 
-          echo "📦 Processing $update_count update(s) for $CONTAINER"
+          echo "📦 Processing $(echo "$raw_updates" | jq 'length') raw update(s) for $CONTAINER"
 
-          # Determine max severity (major > minor > patch)
+          # T12/AC-15: Coupled-atomic filter (non-postgres only).
+          # Classifies raw updates into to_apply / refused BEFORE computing outputs
+          # so that PR title/body/max_severity reflect only the approved set.
+          #
+          # Bidirectional guard: checks BOTH directions —
+          #   Direction A (existing): siblings that declare updates_with/tracks_with
+          #                           pointing AT this dep.
+          #   Direction B (new):      this dep's own updates_with/tracks_with fields,
+          #                           pointing at a target that must also be in UPDATES.
+          # Both directions must be satisfied for a dep to reach to_apply.
+          to_apply_json="[]"
+          refused_json="[]"
+
+          if [ "$CONTAINER" != "postgres" ]; then
+            # Fixed-point transitive closure: iterate the filter until stable.
+            # Checking siblings against raw_updates is insufficient for chains:
+            # if B.updates_with=A and A.updates_with=C with C absent, A is
+            # removed in the first sweep but B is not removed until a second
+            # sweep notices A is gone. Iterating until no change handles chains
+            # of arbitrary depth and bidirectionality.
+            declare -A to_apply_names
+            declare -A refused_reasons
+            while IFS= read -r uname; do
+              to_apply_names["$uname"]=1
+            done < <(echo "$raw_updates" | jq -r '.[].name')
+
+            changed=true
+            while [[ "$changed" == "true" ]]; do
+              changed=false
+              for dep_name in "${!to_apply_names[@]}"; do
+                # Direction A: siblings that declare updates_with/tracks_with
+                # pointing AT dep_name.
+                coupled_siblings=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                  '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+
+                # Direction B: this dep's own updates_with/tracks_with targets.
+                own_targets=$(YQ_DEP_NAME="${dep_name}" yq -r \
+                  '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                   ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null || true)
+
+                missing_siblings=""
+
+                # Check Direction A against to_apply_names (not raw_updates).
+                for sibling in $coupled_siblings; do
+                  if [[ -z "${to_apply_names[$sibling]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${sibling} "
+                  fi
+                done
+
+                # Check Direction B against to_apply_names.
+                for target in $own_targets; do
+                  if [[ -z "${to_apply_names[$target]+set}" ]]; then
+                    missing_siblings="${missing_siblings}${target} "
+                  fi
+                done
+
+                missing_siblings="${missing_siblings% }"
+
+                if [[ -n "$missing_siblings" ]]; then
+                  refused_reasons["$dep_name"]="atomic chain broken: ${missing_siblings} not approved"
+                  unset "to_apply_names[$dep_name]"
+                  changed=true
+                fi
+              done
+            done
+
+            # Reconstruct to_apply_json and refused_json from raw_updates
+            # preserving original insertion order.
+            while IFS= read -r update; do
+              name=$(echo "$update" | jq -r '.name')
+              if [[ -n "${to_apply_names[$name]+set}" ]]; then
+                # All siblings/targets present (or none declared) — approved.
+                # Log if there was any coupling involved.
+                coupled_siblings=$(YQ_DEP_NAME="${name}" yq -r \
+                  '.dependency_sources | to_entries[] | select(.value.updates_with == strenv(YQ_DEP_NAME) or .value.tracks_with == strenv(YQ_DEP_NAME)) | .key' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+                own_targets=$(YQ_DEP_NAME="${name}" yq -r \
+                  '.dependency_sources[strenv(YQ_DEP_NAME)] |
+                   ([.updates_with, .tracks_with] | map(select(. != null and . != "")) | join(" "))' \
+                  "${CONTAINER}/config.yaml" 2>/dev/null || true)
+                if [[ -n "$coupled_siblings" || -n "$own_targets" ]]; then
+                  echo "  Coupled-atomic ALLOW: ${name} updated atomically in same run."
+                fi
+                to_apply_json=$(echo "$to_apply_json" | jq -c --argjson e "$update" '. + [$e]')
+              else
+                reason="${refused_reasons[$name]:-missing sibling(s)}"
+                echo "::warning::deps($(_gha_escape "${CONTAINER}")): bumping $(_gha_escape "${name}") requires atomic update of coupled sibling(s): $(_gha_escape "${reason}") — declared via updates_with/tracks_with. Auto-PR refused; manual atomic bump required." >&2
+                refused_entry=$(echo "$update" | jq -c --arg reason "${reason}" '. + {refused_reason: $reason}')
+                refused_json=$(echo "$refused_json" | jq -c --argjson e "$refused_entry" '. + [$e]')
+              fi
+            done < <(echo "$raw_updates" | jq -c '.[]')
+
+            unset to_apply_names refused_reasons
+          else
+            # Postgres: no coupled-atomic semantics — all updates pass through.
+            to_apply_json="$raw_updates"
+          fi
+
+          update_count=$(echo "$to_apply_json" | jq 'length')
+          echo "📦 $update_count update(s) approved for PR (after coupled-atomic filter)"
+
+          # Edge: if to_apply is empty, emit safe defaults so downstream gating
+          # skips PR creation cleanly (update_count=0 → no-op).
+          if [[ "$update_count" -eq 0 ]]; then
+            echo "::warning::Prepare dependency updates: all updates for $(_gha_escape "${CONTAINER}") were coupled-refused. No PR will be created. Manual atomic bump required." >&2
+            echo "update_count=0" >> "$GITHUB_OUTPUT"
+            echo "max_severity=patch" >> "$GITHUB_OUTPUT"
+            {
+              echo "updates<<EOF"
+              echo "[]"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "pr_table<<EOF"
+              echo ""
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "refused_updates<<EOF"
+              echo "$refused_json"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Determine max severity from to_apply ONLY (not raw updates).
           max_severity="patch"
-          if echo "$updates" | jq -e '.[] | select(.change_type == "major")' &>/dev/null; then
+          if echo "$to_apply_json" | jq -e '.[] | select(.change_type == "major")' &>/dev/null; then
             max_severity="major"
-          elif echo "$updates" | jq -e '.[] | select(.change_type == "minor")' &>/dev/null; then
+          elif echo "$to_apply_json" | jq -e '.[] | select(.change_type == "minor")' &>/dev/null; then
             max_severity="minor"
           fi
 
           echo "max_severity=$max_severity" >> "$GITHUB_OUTPUT"
           echo "update_count=$update_count" >> "$GITHUB_OUTPUT"
 
-          # Build PR body table
+          # Build PR body table from to_apply ONLY.
           pr_table="| Dependency | Current | New | Change | Release |"
           pr_table="$pr_table
           |------------|---------|-----|--------|---------|"
@@ -579,7 +920,7 @@ jobs:
             source_url=$(echo "$update" | jq -r '.source_url')
             pr_table="$pr_table
           | $name | $current | $latest | $change_type | [Release notes]($source_url) |"
-          done < <(echo "$updates" | jq -c '.[]')
+          done < <(echo "$to_apply_json" | jq -c '.[]')
 
           {
             echo "pr_table<<EOF"
@@ -589,35 +930,68 @@ jobs:
 
           {
             echo "updates<<EOF"
-            echo "$updates"
+            echo "$to_apply_json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "refused_updates<<EOF"
+            echo "$refused_json"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Apply dependency updates
+        if: steps.prepare.outputs.update_count != '0'
         env:
           CONTAINER: ${{ matrix.container }}
           UPDATES: ${{ steps.prepare.outputs.updates }}
         run: |
+          # Escape dynamic strings for GHA workflow-commands per spec.
+          _gha_escape() {
+              local s="$1"
+              s="${s//%/%25}"
+              s="${s//$'\r'/%0D}"
+              s="${s//$'\n'/%0A}"
+              printf '%s' "$s"
+          }
+
+          # $UPDATES is already the coupled-atomic-filtered to_apply set from the
+          # Prepare step. No filter logic here — iterate and apply directly.
           if [ "$CONTAINER" = "postgres" ]; then
             # Postgres: update extensions/config.yaml
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating postgres extension $name to $latest"
-              yq -i ".extensions.${name}.version = \"$latest\"" "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension ${name} config"; exit 1; }
+              # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+              # yq query injection if a dep name contains special chars.
+              YQ_EXT="$name" YQ_VER="$latest" yq -i '.extensions[strenv(YQ_EXT)].version = strenv(YQ_VER)' "postgres/extensions/config.yaml" || { echo "::error::Failed to update postgres extension $(_gha_escape "${name}") config"; exit 1; }
             done < <(echo "$UPDATES" | jq -c '.[]')
           else
-            # Other containers: update config.yaml build_args
+            # Other containers: apply pre-filtered to_apply set from Prepare step.
+            # P1-SECURITY: pass name/latest via env-vars + strenv() to prevent
+            # yq query injection if a dep name contains special chars.
             while IFS= read -r update; do
               name=$(echo "$update" | jq -r '.name')
               latest=$(echo "$update" | jq -r '.latest')
               echo "  Updating ${CONTAINER} build_arg $name to $latest"
-              yq -i ".build_args.${name} = \"$latest\"" "${CONTAINER}/config.yaml"
+              YQ_DEP="$name" YQ_VER="$latest" yq -i '.build_args[strenv(YQ_DEP)] = strenv(YQ_VER)' "${CONTAINER}/config.yaml"
+
+              # Sync versioned liveness_url from liveness_url_template + new version.
+              # Without this sync, the static liveness_url stays pinned to the old
+              # artifact on the very PR that bumps build_args, causing the committed
+              # config to fail the liveness-url-coherence test on the next CI run.
+              template=$(YQ_DEP="$name" yq -r '.dependency_sources[strenv(YQ_DEP)].liveness_url_template // ""' "${CONTAINER}/config.yaml")
+              if [[ -n "$template" && "$template" != "null" ]]; then
+                new_url="${template//\{version\}/$latest}"
+                YQ_DEP="$name" YQ_URL="$new_url" yq -i '.dependency_sources[strenv(YQ_DEP)].liveness_url = strenv(YQ_URL)' "${CONTAINER}/config.yaml"
+                echo "  Synced ${CONTAINER}/${name} liveness_url to ${new_url}"
+              fi
             done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 
       - name: Import GPG key
-        if: steps.env_check.outputs.is_local_test != 'true'
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.prepare.outputs.update_count != '0'
         uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -628,7 +1002,7 @@ jobs:
           git_committer_email: oorabona@users.noreply.github.com
 
       - name: Create Pull Request
-        if: steps.env_check.outputs.is_local_test != 'true'
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.prepare.outputs.update_count != '0'
         id: create_pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:

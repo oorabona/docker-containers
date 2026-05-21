@@ -15,16 +15,20 @@ build_args:
 dependency_sources:
   BASE_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   OS_VERSION:
     monitor: false
+    lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
   PKCS11_HELPER_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: opensc/pkcs11-helper
     strip_v: false
     tag_pattern: "(?<=pkcs11-helper-)\\d+\\.\\d+\\.\\d+"
   EASYRSA_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: OpenVPN/easy-rsa
     strip_v: true

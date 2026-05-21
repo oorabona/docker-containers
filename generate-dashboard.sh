@@ -174,7 +174,8 @@ get_variant_build_args_json() {
         while IFS= read -r ext; do
             [[ -z "$ext" ]] && continue
             local ver
-            ver=$(yq -r ".extensions.${ext}.version // \"\"" "$ext_config" 2>/dev/null)
+            # P1-SECURITY: ext name comes from yq output — use strenv() to prevent injection.
+            ver=$(YQ_EXT="$ext" yq -r '.extensions[strenv(YQ_EXT)].version // ""' "$ext_config" 2>/dev/null)
             [[ -z "$ver" ]] && continue
             $first || result+=","
             first=false
@@ -407,19 +408,31 @@ get_build_history() {
     fi
 }
 
-# Return the JSON array of monitored dependency names for a given container+flavor.
+# Return the JSON array of dependency names visible in the dashboard for a given container+flavor.
+#
+# Lifecycle-driven (AC-20): lifecycle: is the single source of truth.
+# The legacy monitor: boolean is NOT consulted — it was the cause of stable-pin
+# entries being incorrectly omitted from variant_deps (RESTY_OPENSSL_VERSION
+# has lifecycle: stable-pin + monitor: false → was wrongly excluded).
+#
+# Inclusion rule (mirrors build_dependency_monitoring_json):
+#   tracked     → included (actively monitored)
+#   stable-pin  → included (pinned with EOL date — shown with countdown badge)
+#   eol-migrate → included (needs migration action)
+#   untracked   → excluded (build-only values: parallelism flags, fallback tags)
+#   (empty)     → included (backward-compat: empty lifecycle defaults to "tracked")
 #
 # For postgres (which has per-flavor extension lists):
 #   - Reads the flavor's extension list from postgres/flavors/<flavor>.yaml
-#   - Intersects with dependency_sources that have monitor != false
+#   - Intersects with lifecycle-included names with flavor extensions
 #   - Returns [] for base flavor (no extensions) or unknown flavors
 #
 # For all other containers (no flavor concept):
-#   - Returns all dependency_sources names where monitor != false
+#   - Returns all lifecycle-included dependency_sources names
 #   - The "flavor" argument is ignored for non-postgres containers
 #
 # Usage: variant_deps_for_flavor <container> <flavor>
-# Output: JSON array of dep names, e.g. ["pgvector","pg_cron"]
+# Output: JSON array of dep names, e.g. ["RESTY_OPENSSL_VERSION","RESTY_PCRE_VERSION"]
 variant_deps_for_flavor() {
     local container="$1"
     local flavor="${2:-}"
@@ -436,19 +449,20 @@ variant_deps_for_flavor() {
         return 0
     fi
 
-    # Collect monitored dep names from dependency_sources
-    local monitored_names
-    monitored_names=$(yq -r '
+    # Collect dep names by lifecycle (AC-20): exclude only lifecycle: untracked.
+    # stable-pin, tracked, eol-migrate, and empty-lifecycle are all included.
+    local included_names
+    included_names=$(yq -r '
         .dependency_sources // {} | to_entries[] |
-        select(.value.monitor != false) |
+        select((.value.lifecycle // "") != "untracked") |
         .key' "$dep_config" 2>/dev/null) || true
 
-    if [[ -z "$monitored_names" ]]; then
+    if [[ -z "$included_names" ]]; then
         echo "[]"
         return 0
     fi
 
-    # For postgres with a known flavor: intersect monitored names with flavor extensions
+    # For postgres with a known flavor: intersect included names with flavor extensions
     if [[ "$container" == "postgres" && -n "$flavor" && "$flavor" != "null" ]]; then
         local flavor_exts
         flavor_exts=$(get_flavor_extensions_yaml "$flavor")
@@ -459,16 +473,16 @@ variant_deps_for_flavor() {
             return 0
         fi
 
-        # Intersect: keep only monitored names that appear in flavor_exts
-        echo "$monitored_names" | \
+        # Intersect: keep only included names that appear in flavor_exts
+        echo "$included_names" | \
             jq -Rs 'split("\n") | map(select(length > 0))' | \
             jq --argjson exts "$flavor_exts" \
                '[.[] | select(. as $n | $exts | index($n) != null)]'
         return 0
     fi
 
-    # Non-postgres (or postgres with no flavor): return all monitored dep names
-    echo "$monitored_names" | \
+    # Non-postgres (or postgres with no flavor): return all lifecycle-included dep names
+    echo "$included_names" | \
         jq -Rs 'split("\n") | map(select(length > 0))'
 }
 
@@ -790,6 +804,7 @@ collect_variants_json() {
 # Build dependency monitoring JSON for a container's front matter
 # Reads dependency_sources from config.yaml and produces a static summary
 # (no network calls — just config introspection)
+# T16/AC-20: includes lifecycle counts and per-entry badges
 build_dependency_monitoring_json() {
     local container="$1"
     local dep_config="$2"
@@ -798,6 +813,14 @@ build_dependency_monitoring_json() {
     local total=0
     local monitored=0
     local disabled=0
+    # Lifecycle counts (AC-20)
+    local lc_tracked=0
+    local lc_stable_pin=0
+    local lc_eol_migrate=0
+    local lc_untracked=0
+
+    # Named constant for EOL countdown — matches check-dependency-versions.sh
+    local STABLE_PIN_WARN_DAYS="${STABLE_PIN_WARN_DAYS:-90}"
 
     # Read all dependency_sources keys
     local dep_names
@@ -807,60 +830,117 @@ build_dependency_monitoring_json() {
         [[ -z "$dep_name" ]] && continue
         total=$((total + 1))
 
-        # Check if monitoring is disabled
-        local is_disabled
-        is_disabled=$(yq -r "(.dependency_sources.${dep_name}.monitor) == false" "$dep_config")
+        # P1-SECURITY: dep_name comes from yq .dependency_sources keys — a PR author
+        # controls config.yaml key names. Never interpolate ${dep_name} into the yq
+        # query expression. Pass via env-var + strenv() so yq treats it as a literal.
+        # Read lifecycle field (required; backward-compat: empty defaults to "tracked")
+        local lifecycle
+        lifecycle=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].lifecycle // ""' "$dep_config")
 
-        if [[ "$is_disabled" == "true" ]]; then
-            disabled=$((disabled + 1))
-            local reason
-            reason=$(yq -r ".dependency_sources.${dep_name}.reason // \"\"" "$dep_config")
-            deps_json=$(echo "$deps_json" | jq \
-                --arg name "$dep_name" \
-                --arg status "disabled" \
-                --arg reason "$reason" \
-                '. + [{"name": $name, "status": "disabled", "reason": $reason}]')
-        else
-            monitored=$((monitored + 1))
-            local dep_type current_version source_ref
-            dep_type=$(yq -r ".dependency_sources.${dep_name}.type // \"\"" "$dep_config")
-            current_version=$(yq -r ".build_args.${dep_name} // \"\"" "$dep_config")
-            # Fallback: check extensions/config.yaml for postgres-style extensions
-            if [[ -z "$current_version" ]]; then
-                local ext_config
-                ext_config="$(dirname "$dep_config")/extensions/config.yaml"
-                if [[ -f "$ext_config" ]]; then
-                    current_version=$(yq -r ".extensions.${dep_name}.version // \"\"" "$ext_config")
+        # Backward-compat: empty lifecycle defaults to "tracked" (transition
+        # period). Resolved BEFORE the counter case so that entries without
+        # an explicit lifecycle: field are counted in lc_tracked — matching
+        # the per-entry status they receive from effective_lifecycle below.
+        # (Bug: using raw $lifecycle in the case misses empty-lifecycle entries,
+        # causing the summary counter to undercount vs per-entry listing.)
+        local effective_lifecycle="${lifecycle:-tracked}"
+
+        # Increment lifecycle counters using the resolved value.
+        case "$effective_lifecycle" in
+            tracked)      lc_tracked=$((lc_tracked + 1)) ;;
+            stable-pin)   lc_stable_pin=$((lc_stable_pin + 1)) ;;
+            eol-migrate)  lc_eol_migrate=$((lc_eol_migrate + 1)) ;;
+            untracked)    lc_untracked=$((lc_untracked + 1)) ;;
+        esac
+
+        # Status assignment is PURELY lifecycle-driven (AC-20).
+        # The legacy monitor: boolean is no longer consulted here; lifecycle:
+        # is the single source of truth for dashboard classification.
+
+        case "$effective_lifecycle" in
+            untracked|eol-migrate)
+                disabled=$((disabled + 1))
+                local reason
+                reason=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].reason // ""' "$dep_config")
+                local entry_badge=""
+                [[ "$effective_lifecycle" == "eol-migrate" ]] && entry_badge="needs-migration"
+                deps_json=$(echo "$deps_json" | jq \
+                    --arg name "$dep_name" \
+                    --arg status "$effective_lifecycle" \
+                    --arg lc "$effective_lifecycle" \
+                    --arg reason "$reason" \
+                    --arg badge "$entry_badge" \
+                    '. + [{"name": $name, "status": $status, "lifecycle": $lc, "reason": $reason, "badge": $badge}]')
+                ;;
+            stable-pin|tracked)
+                monitored=$((monitored + 1))
+                local dep_type current_version source_ref
+                dep_type=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].type // ""' "$dep_config")
+                current_version=$(YQ_DEP="$dep_name" yq -r '.build_args[strenv(YQ_DEP)] // ""' "$dep_config")
+                # Fallback: check extensions/config.yaml for postgres-style extensions
+                if [[ -z "$current_version" ]]; then
+                    local ext_config
+                    ext_config="$(dirname "$dep_config")/extensions/config.yaml"
+                    if [[ -f "$ext_config" ]]; then
+                        current_version=$(YQ_DEP="$dep_name" yq -r '.extensions[strenv(YQ_DEP)].version // ""' "$ext_config")
+                    fi
                 fi
-            fi
 
-            # Build source reference for display
-            case "$dep_type" in
-                github-release|github-tag)
-                    source_ref=$(yq -r ".dependency_sources.${dep_name}.repo // \"\"" "$dep_config")
-                    ;;
-                pypi)
-                    source_ref=$(yq -r ".dependency_sources.${dep_name}.package // \"\"" "$dep_config")
-                    ;;
-                *) source_ref="" ;;
-            esac
+                # Build source reference for display
+                case "$dep_type" in
+                    github-release|github-tag)
+                        source_ref=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].repo // ""' "$dep_config")
+                        ;;
+                    pypi)
+                        source_ref=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].package // ""' "$dep_config")
+                        ;;
+                    *) source_ref="" ;;
+                esac
 
-            deps_json=$(echo "$deps_json" | jq \
-                --arg name "$dep_name" \
-                --arg status "monitored" \
-                --arg type "$dep_type" \
-                --arg current "$current_version" \
-                --arg source "$source_ref" \
-                '. + [{"name": $name, "status": "monitored", "type": $type, "current": $current, "source": $source}]')
-        fi
+                # Compute per-entry badge for stable-pin date escalation (AC-20)
+                local badge=""
+                if [[ "$effective_lifecycle" == "stable-pin" ]]; then
+                    local supported_until
+                    supported_until=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].supported_until // ""' "$dep_config")
+                    if [[ -n "$supported_until" && "$supported_until" != "null" ]]; then
+                        local today_epoch until_epoch days_left
+                        today_epoch=$(date +%s)
+                        until_epoch=$(date -d "$supported_until" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$supported_until" +%s 2>/dev/null || echo "0")
+                        days_left=$(( (until_epoch - today_epoch) / 86400 ))
+                        if [[ "$days_left" -le 0 ]]; then
+                            badge="eol-passed"
+                        elif [[ "$days_left" -le "$STABLE_PIN_WARN_DAYS" ]]; then
+                            badge="eol-approaching"
+                        fi
+                    fi
+                fi
+
+                deps_json=$(echo "$deps_json" | jq \
+                    --arg name "$dep_name" \
+                    --arg status "monitored" \
+                    --arg lc "$effective_lifecycle" \
+                    --arg type "$dep_type" \
+                    --arg current "$current_version" \
+                    --arg source "$source_ref" \
+                    --arg badge "$badge" \
+                    '. + [{"name": $name, "status": "monitored", "lifecycle": $lc, "type": $type, "current": $current, "source": $source, "badge": $badge}]')
+                ;;
+        esac
     done <<< "$dep_names"
 
     jq -n \
         --argjson total "$total" \
         --argjson monitored "$monitored" \
         --argjson disabled "$disabled" \
+        --argjson lc_tracked "$lc_tracked" \
+        --argjson lc_stable_pin "$lc_stable_pin" \
+        --argjson lc_eol_migrate "$lc_eol_migrate" \
+        --argjson lc_untracked "$lc_untracked" \
         --argjson deps "$deps_json" \
-        '{enabled: true, total: $total, monitored: $monitored, disabled: $disabled, deps: $deps}'
+        '{enabled: true, total: $total, monitored: $monitored, disabled: $disabled,
+          lifecycle_counts: {tracked: $lc_tracked, "stable-pin": $lc_stable_pin,
+            "eol-migrate": $lc_eol_migrate, untracked: $lc_untracked},
+          deps: $deps}'
 }
 
 # --- Output functions ---

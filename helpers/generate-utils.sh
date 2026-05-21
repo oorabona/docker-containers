@@ -46,10 +46,21 @@ distro_property() {
     local property="$3"
     local default="${4:-}"
 
-    if [[ -n "$default" ]]; then
-        yq e ".distros.${distro}.${property} // \"${default}\"" "$config"
+    # Use a literal-"null" check rather than yq's `//` alternative operator.
+    # mikefarah/yq's `//` collapses both null AND false to the default, so an
+    # explicit boolean false field (e.g. `user_exists: false`) would silently
+    # fall back to the default. Querying first then checking for the literal
+    # string "null" preserves false values correctly.
+    # All three lookup keys go through strenv() so config-supplied distro /
+    # property names containing yq-special characters (., [], quotes) cannot
+    # reshape the query path.
+    local raw
+    raw=$(YQ_DISTRO="$distro" YQ_PROPERTY="$property" \
+          yq e '.distros[strenv(YQ_DISTRO)][strenv(YQ_PROPERTY)]' "$config")
+    if [[ "$raw" == "null" ]]; then
+        printf '%s' "$default"
     else
-        yq e ".distros.${distro}.${property}" "$config"
+        printf '%s' "$raw"
     fi
 }
 

@@ -9,12 +9,15 @@ build_args:
 dependency_sources:
   PHP_IMAGE:
     monitor: false
+    lifecycle: untracked
     reason: "Base image fallback, not a version to track"
   WPCLI_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: wp-cli/wp-cli
     strip_v: true
   SQLITE_PLUGIN_VERSION:
+    lifecycle: tracked
     type: github-release
     repo: WordPress/sqlite-database-integration
     strip_v: true
