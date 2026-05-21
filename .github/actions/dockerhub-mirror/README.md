@@ -1,7 +1,7 @@
 # dockerhub-mirror
 
 Composite action that starts a per-job `registry:2` pull-through proxy sidecar, routing
-`docker.io` base-image pulls through a local cache at `127.0.0.1:<port>`. Eliminates
+`docker.io` base-image pulls through a local cache at `127.0.0.1:5000`. Eliminates
 `docker.io HTTP 429` on the `docker buildx build` base-image pull path without modifying
 Dockerfiles. Implements ADR-009 / issue #488.
 
@@ -14,7 +14,6 @@ not the docker.io 429 source).
 |-------|----------|---------|-------------|
 | `dockerhub_username` | yes | — | Docker Hub username (proxy backend credentials) |
 | `dockerhub_token` | yes | — | Docker Hub token (proxy backend credentials) |
-| `port` | no | `5000` | Host port for the proxy (bound to `127.0.0.1` only) |
 | `registry_image` | no | `ghcr.io/<owner>/registry:2` | Proxy sidecar image (GHCR copy preferred) |
 | `cache_key_prefix` | no | `dockerhub-mirror` | `actions/cache` key prefix for the proxy store |
 | `allow_self_hosted` | no | `false` | Explicit opt-in to run on a self-hosted runner despite `REGISTRY_PROXY_PASSWORD` being visible via `docker inspect`. Only set to `true` on a trusted single-tenant ephemeral runner. The action fails-closed by default on any non-GitHub-hosted environment. |

@@ -14,10 +14,6 @@ inputs:
   dockerhub_token:
     description: Docker Hub token (passed as REGISTRY_PROXY_PASSWORD to the proxy)
     required: true
-  port:
-    description: Host port the proxy listens on (published to 127.0.0.1 only)
-    required: false
-    default: '5000'
   registry_image:
     description: >
       Image to use for the registry:2 proxy sidecar. Defaults to the GHCR-hosted
@@ -66,7 +62,10 @@ runs:
       env:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
-        PORT: ${{ inputs.port }}
+        # Port is fixed at 5000: buildkitd-mirror.toml hardcodes 127.0.0.1:5000 as the mirror
+        # target (a static file); a configurable port would require generating that config inline.
+        # 5000 is conflict-free on ephemeral GitHub-hosted runners.
+        PORT: '5000'
         REGISTRY_IMAGE: ${{ inputs.registry_image }}
         ALLOW_SELF_HOSTED: ${{ inputs.allow_self_hosted }}
         # digest-pinned docker.io fallback (refresh via command above when registry:2 releases)
@@ -110,7 +109,7 @@ runs:
       if: runner.os != 'Windows'
       shell: bash
       env:
-        PORT: ${{ inputs.port }}
+        PORT: '5000'
       run: |
         set -euo pipefail
 
