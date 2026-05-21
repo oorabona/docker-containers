@@ -66,23 +66,48 @@ _wrap_list() {
 # ============================================================
 # @@BASE_IMAGE@@ — Distro-specific ARGs + FROM instruction
 # Values like ${DEBIAN_TAG} are Docker ARG references — output literally
+#
+# Two-ARG pattern (base repo + tag as separate ARGs): the CI cache override
+# (helpers/base-cache-utils.sh get_cache_build_args) emits a TAG-LESS
+# ALPINE_BASE=ghcr.io/owner/alpine-base, so the tag must come from a separate
+# ARG. A one-ARG `FROM ${ALPINE_BASE}` would resolve to an implicit :latest
+# against the GHCR cache, which is not guaranteed to exist (rocky-base only
+# publishes :9). The default tag is read from base_image_cache[].tags[0] in
+# config.yaml — the SAME value the cache-population job uses — so the FROM tag
+# and the cached tag stay in lockstep with no duplicated literal.
 # ============================================================
+
+# Read the pinned base-image tag for a given build-arg from base_image_cache.
+_base_cache_tag() {
+    local arg="$1"
+    YQ_ARG="$arg" yq -r '.base_image_cache[] | select(.arg == strenv(YQ_ARG)) | .tags[0] // ""' "$config"
+}
+
 case "$distro" in
     debian)
         base_block='ARG DEBIAN_TAG="trixie"
 FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}'
         ;;
     alpine)
-        base_block='ARG ALPINE_BASE=alpine:3.21
-FROM ${ALPINE_BASE}'
+        alpine_tag=$(_base_cache_tag "ALPINE_BASE")
+        [[ -z "$alpine_tag" ]] && { log_error "No base_image_cache tag for ALPINE_BASE in $config"; exit 1; }
+        base_block="ARG ALPINE_BASE=alpine
+ARG ALPINE_TAG=${alpine_tag}
+FROM \${ALPINE_BASE}:\${ALPINE_TAG}"
         ;;
     ubuntu)
-        base_block='ARG UBUNTU_BASE=ubuntu:noble
-FROM ${UBUNTU_BASE}'
+        ubuntu_tag=$(_base_cache_tag "UBUNTU_BASE")
+        [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for UBUNTU_BASE in $config"; exit 1; }
+        base_block="ARG UBUNTU_BASE=ubuntu
+ARG UBUNTU_TAG=${ubuntu_tag}
+FROM \${UBUNTU_BASE}:\${UBUNTU_TAG}"
         ;;
     rocky)
-        base_block='ARG ROCKY_BASE=rockylinux:9
-FROM ${ROCKY_BASE}'
+        rocky_tag=$(_base_cache_tag "ROCKY_BASE")
+        [[ -z "$rocky_tag" ]] && { log_error "No base_image_cache tag for ROCKY_BASE in $config"; exit 1; }
+        base_block="ARG ROCKY_BASE=rockylinux
+ARG ROCKY_TAG=${rocky_tag}
+FROM \${ROCKY_BASE}:\${ROCKY_TAG}"
         ;;
     *)
         log_error "No BASE_IMAGE template for distro: $distro"
