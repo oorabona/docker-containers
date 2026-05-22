@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '**/version.sh'
+      - '**/config.yaml'
       - 'validate-version-scripts.sh'
       - '.github/workflows/validate-version-scripts.yaml'
       - '.github/workflows/upstream-monitor.yaml'
