@@ -388,7 +388,7 @@ main() {
         if validate_container_base_cache_schema "$specific_container"; then
             log_success "base_image_cache schema: $specific_container clean"
         else
-            log_error "base_image_cache schema violations detected in $specific_container — fix the above errors before proceeding"
+            log_error "base_image_cache schema validation failed (missing tool, parse error, or rule violation) in $specific_container — see the errors above"
             exit 1
         fi
     else
@@ -396,7 +396,7 @@ main() {
         if validate_all_containers_base_cache_schema "."; then
             log_success "base_image_cache schema: all containers clean"
         else
-            log_error "base_image_cache schema violations detected — fix the above errors before proceeding"
+            log_error "base_image_cache schema validation failed (missing tool, parse error, or rule violation) — see the errors above"
             exit 1
         fi
     fi

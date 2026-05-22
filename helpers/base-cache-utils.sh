@@ -24,13 +24,18 @@
 #   → emit_reachable_cache_args emits --build-arg REMOTE_CR=ghcr.io/<owner> (once per container)
 #   → collect_all_cache_images dest: ghcr.io/<owner>/library/postgres:<tag>
 #
-# Discriminator: ghcr_repo key ABSENT ⇒ NEW style. PRESENT ⇒ OLD style (takes precedence).
+# Discriminator: ghcr_repo present and non-empty ⇒ OLD style; absent / null / empty ⇒ NEW style.
 # Build-arg emission: emit_reachable_cache_args is the SOLE emitter (per-entry probe-gated,
 # validated). Do not add a second emitter.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source logging if not already loaded
+if ! declare -F log_error &>/dev/null; then
+    source "$SCRIPT_DIR/logging.sh"
+fi
 
 # Source variant utils for tags_from_versions resolution
 source "$SCRIPT_DIR/variant-utils.sh"

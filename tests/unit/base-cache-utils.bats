@@ -557,6 +557,38 @@ EOF
     [ "$status" -ne 0 ]
 }
 
+# ─── FIX 1 (RED→GREEN): standalone source guard — log_error must be defined ────
+#
+# BCU-STANDALONE-01: source base-cache-utils.sh in a FRESH subshell (no pre-sourcing
+# of logging.sh) and trigger emit_reachable_cache_args with a malformed arg.
+# RED before FIX 1: "log_error: command not found" appears on stderr.
+# GREEN after FIX 1: the intended validation message appears; "command not found" absent.
+@test "BCU-STANDALONE-01: standalone source — log_error defined, malformed arg emits validation message not 'command not found'" {
+    # Build a config with a shell-unsafe arg identifier to trigger the log_error path
+    mkdir -p standalone_test
+    cat > standalone_test/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BAD ARG"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+
+    # Run in a fresh subshell that does NOT pre-source logging.sh.
+    # The source guard in base-cache-utils.sh must pull in logging.sh on its own.
+    local stderr_out
+    stderr_out=$(bash --norc --noprofile -c "
+        source \"$ORIG_DIR/helpers/variant-utils.sh\"   # needed by base-cache-utils
+        source \"$ORIG_DIR/helpers/base-cache-utils.sh\"  # standalone — no logging pre-sourced
+        emit_reachable_cache_args 'standalone_test/config.yaml' 'myowner' '22.04' 'true'
+    " 2>&1 1>/dev/null || true)
+
+    # Must NOT contain "command not found" — that is the bug indicator
+    [[ "$stderr_out" != *"command not found"* ]]
+    # Must contain the intended validation error message keywords
+    [[ "$stderr_out" == *"is not a valid Docker ARG identifier"* ]]
+}
+
 # BCU-GHCR-PASS: valid ghcr_repo values (all current containers) → exit 0 + correct flag
 @test "BCU-GHCR-PASS: emit_reachable_cache_args — all valid old-style ghcr_repo names → PASS" {
     local repos="ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base"
