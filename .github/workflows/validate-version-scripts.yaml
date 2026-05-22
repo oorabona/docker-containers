@@ -34,6 +34,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
       - name: Verify dependencies
         run: |
           # Verify that required dependencies are available
@@ -42,11 +49,13 @@ jobs:
           echo "- jq: $(jq --version)"
           echo "- curl: $(curl --version | head -1)"
           echo "- git: $(git --version)"
+          echo "- yq: $(yq --version)"
 
           # Verify all dependencies are available
           command -v jq >/dev/null 2>&1 || { echo "❌ jq not found" && exit 1; }
           command -v curl >/dev/null 2>&1 || { echo "❌ curl not found" && exit 1; }
           command -v git >/dev/null 2>&1 || { echo "❌ git not found" && exit 1; }
+          command -v yq >/dev/null 2>&1 || { echo "❌ yq not found" && exit 1; }
           echo "✅ All dependencies verified and ready"
       - name: Make scripts executable
         run: |

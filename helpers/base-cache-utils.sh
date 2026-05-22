@@ -256,25 +256,21 @@ get_cache_build_args() {
 # Falls back to "latest" if tags[] is absent and tags_from_versions is false.
 # Usage: resolve_cache_check_tag <config_file> <entry_index> <build_version>
 # Output: the tag string to use in the docker manifest inspect check
+
 # Decide whether REMOTE_CR should be applied, given per-entry reachability results.
 #
-# Rules (pure function — no I/O, no docker calls, fully bats-testable):
-#   - Count how many NEW-style entries exist in the config (ghcr_repo absent/null/empty).
-#   - If no new-style entries → REMOTE_CR is irrelevant; print "n/a" and return 0.
-#   - If all new-style entries are reachable (all corresponding reachability flags = "true")
-#     → print "apply" and return 0.
-#   - If any new-style entry is unreachable (any flag = "false")
-#     → print "drop" and return 0.
+# Pure function — no I/O, no docker calls, fully bats-testable.
+# Called by emit_reachable_cache_args as the single source of truth for the
+# REMOTE_CR applicability decision; also directly testable via BCU-16..21.
 #
-# Usage: remote_cr_applicable <config_file> [reachable_flags...]
-#   <config_file>       path to the container's config.yaml
-#   [reachable_flags]   one "true" or "false" per base_image_cache entry, in order.
-#                       For OLD-style entries pass "old" (ignored); for NEW-style
-#                       entries pass the actual probe result ("true" / "false").
+# Rules:
+#   - No new-style entries → print "n/a" (REMOTE_CR not relevant).
+#   - All new-style entries reachable → print "apply".
+#   - Any new-style entry unreachable → print "drop".
 #
-# The caller (action) probes each entry via docker manifest inspect, then calls:
-#   remote_cr_applicable "./$container/config.yaml" "$flag0" "$flag1" ...
-#
+# Usage: remote_cr_applicable <config_file> [flag0 flag1 ...]
+#   flagN: "true" or "false" per base_image_cache entry (index order).
+#          OLD-style entries may pass any value — they are ignored.
 # Output (stdout): "apply" | "drop" | "n/a"
 remote_cr_applicable() {
     local config_file="$1"
@@ -315,6 +311,76 @@ remote_cr_applicable() {
     return 0
 }
 
+# Emit --build-arg flags for reachable cache entries only (per-entry filtered).
+#
+# Pure function — no I/O, no docker calls, fully bats-testable.
+# Each entry is included ONLY when its corresponding probe flag is "true":
+#   OLD-style (ghcr_repo present): emit --build-arg <arg>=ghcr.io/<owner>/<ghcr_repo>
+#   NEW-style (ghcr_repo absent):  contribute to REMOTE_CR gate (see below)
+#
+# REMOTE_CR is emitted ONCE iff ALL new-style entries are reachable (all flags "true").
+# If any new-style entry is unreachable, REMOTE_CR is omitted entirely — applying a
+# shared registry-root knob when even one new-style mirror is missing would hard-fail
+# the FROM that references it (no docker.io fallback for a ghcr.io ref).
+#
+# Old-style entries are independent: a missing old-style mirror only suppresses its
+# own --build-arg; reachable old-style entries are always emitted regardless of
+# whether other old-style or new-style entries are reachable.
+#
+# Usage: emit_reachable_cache_args <config_file> <owner> <build_version> [flag0 flag1 ...]
+#   config_file:   path to the container's config.yaml
+#   owner:         GHCR owner (e.g. "oorabona")
+#   build_version: version string for REMOTE_CR tag resolution (unused for arg emission
+#                  itself, kept for signature consistency with get_cache_build_args)
+#   flagN:         "true" or "false" per base_image_cache entry, in index order.
+#                  If fewer flags than entries are provided, missing flags default to "false".
+# Output: space-separated --build-arg flags (empty string if nothing reachable)
+emit_reachable_cache_args() {
+    local config_file="$1"
+    local owner="$2"
+    # build_version is accepted for API symmetry but not needed for arg value construction
+    local container_dir
+    container_dir="$(dirname "$config_file")"
+    shift 3
+    local -a flags=("$@")
+
+    [[ ! -f "$config_file" ]] && return 0
+    has_base_cache "$container_dir" || return 0
+
+    local entry_count
+    entry_count=$(yq -r '.base_image_cache | length' "$config_file")
+
+    local args=""
+
+    for ((i = 0; i < entry_count; i++)); do
+        local ghcr_repo
+        ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
+        local flag="${flags[$i]:-false}"
+
+        if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
+            # NEW-style entry: never emit a per-arg flag here.
+            # REMOTE_CR applicability is decided below via remote_cr_applicable.
+            :
+        else
+            # OLD-style entry: emit per-arg flag only when this entry's mirror is reachable.
+            if [[ "$flag" == "true" ]]; then
+                local arg
+                arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
+                args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+            fi
+        fi
+    done
+
+    # Delegate the REMOTE_CR decision to remote_cr_applicable — single source of truth.
+    # "apply": all new-style entries reachable → emit REMOTE_CR.
+    # "drop" / "n/a": any new-style missing, or no new-style entries → omit REMOTE_CR.
+    if [[ "$(remote_cr_applicable "$config_file" "${flags[@]}")" == "apply" ]]; then
+        args+=" --build-arg REMOTE_CR=ghcr.io/${owner}"
+    fi
+
+    printf '%s' "${args# }"
+}
+
 resolve_cache_check_tag() {
     local config_file="$1"
     local entry_index="$2"
@@ -337,4 +403,4 @@ resolve_cache_check_tag() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag remote_cr_applicable
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args

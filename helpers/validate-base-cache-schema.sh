@@ -119,6 +119,14 @@ _vbc_validate_new_style_source() {
 validate_container_base_cache_schema() {
     local container_dir="$1"
 
+    # Fail closed: yq is required for all schema checks. Without it every yq
+    # command substitution silently returns an empty string and exit-0, causing
+    # the guard to pass without inspecting anything — a trust-boundary bypass.
+    command -v yq >/dev/null 2>&1 || {
+        printf 'ERROR: yq is required for base-cache schema validation but was not found in PATH.\n' >&2
+        return 1
+    }
+
     # Defensive: container dir name must not contain a slash (repo invariant)
     local container_name
     container_name="$(basename "$container_dir")"
@@ -153,22 +161,40 @@ validate_container_base_cache_schema() {
     # R7: REMOTE_CR must not appear as a KEY in build_args (trust boundary).
     # Check key presence — not value — so that `REMOTE_CR: null` (or `REMOTE_CR:` with
     # no value, which yq also returns as "null") is still rejected.
+    # Treat any yq parse/eval error as a validation failure (fail closed).
     local remote_cr_present
-    remote_cr_present=$(yq -r '.build_args | has("REMOTE_CR")' "$config_file")
+    if ! remote_cr_present=$(yq -r '.build_args | has("REMOTE_CR")' "$config_file" 2>/dev/null); then
+        printf 'ERROR [%s]: yq failed to parse build_args from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
     if [[ "$remote_cr_present" == "true" ]]; then
         printf 'ERROR [%s]: REMOTE_CR found in build_args — this key must never appear in config.yaml. It is injected exclusively by the CI pipeline as a trusted override and must not be controllable via PR-committed config.\n' \
             "$container" >&2
         errors=1
     fi
 
-    # Count base_image_cache entries
+    # Count base_image_cache entries — yq error here means we cannot safely validate; fail closed.
     local entry_count
-    entry_count=$(yq -r '.base_image_cache | length // 0' "$config_file")
+    if ! entry_count=$(yq -r '.base_image_cache | length // 0' "$config_file" 2>/dev/null); then
+        printf 'ERROR [%s]: yq failed to read base_image_cache from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
 
     for ((i = 0; i < entry_count; i++)); do
         local source ghcr_repo
-        source=$(yq -r ".base_image_cache[$i].source" "$config_file")
-        ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
+        # Fail closed on per-entry yq errors: a parse failure could mask a bad entry.
+        if ! source=$(yq -r ".base_image_cache[$i].source" "$config_file" 2>/dev/null); then
+            printf 'ERROR [%s]: yq failed to read base_image_cache[%d].source — treating as validation failure.\n' \
+                "$container" "$i" >&2
+            return 1
+        fi
+        if ! ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file" 2>/dev/null); then
+            printf 'ERROR [%s]: yq failed to read base_image_cache[%d].ghcr_repo — treating as validation failure.\n' \
+                "$container" "$i" >&2
+            return 1
+        fi
 
         if _vbc_is_new_style "$ghcr_repo"; then
             # NEW-style entry: ghcr_repo absent / null / empty
@@ -184,7 +210,11 @@ validate_container_base_cache_schema() {
 
             # R8: old-style must have a non-empty arg key
             local arg_val
-            arg_val=$(yq -r ".base_image_cache[$i].arg // \"\"" "$config_file")
+            if ! arg_val=$(yq -r ".base_image_cache[$i].arg // \"\"" "$config_file" 2>/dev/null); then
+                printf 'ERROR [%s]: yq failed to read base_image_cache[%d].arg — treating as validation failure.\n' \
+                    "$container" "$i" >&2
+                return 1
+            fi
             if [[ -z "$arg_val" || "$arg_val" == "null" ]]; then
                 _vbc_error "$container" "$i" \
                     "old-style entry (ghcr_repo='${ghcr_repo}') has absent or empty 'arg' key. This would produce a malformed --build-arg flag. Add a non-empty arg name (e.g. 'arg: BASE_IMAGE')."

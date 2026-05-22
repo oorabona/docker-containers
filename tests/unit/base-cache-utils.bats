@@ -398,6 +398,125 @@ EOF
     [ "$output" = "apply" ]
 }
 
+# --- emit_reachable_cache_args: per-entry filtered arg emitter ---
+
+# BCU-22: all old-style entries reachable → all --build-arg flags emitted (regression lock)
+# Verifies full-reachable old-style behaviour is identical to get_cache_build_args output.
+@test "BCU-22: emit_reachable_cache_args — all old-style reachable → all args emitted" {
+    mkdir -p oldall
+    cat > oldall/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["3.21"]
+EOF
+    run emit_reachable_cache_args "oldall/config.yaml" "myowner" "22.04" "true" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    [[ "$output" == *"--build-arg ALPINE_BASE=ghcr.io/myowner/alpine-base"* ]]
+    # No REMOTE_CR — pure old-style config
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-23 (RED→GREEN for FINDING A): one old-style entry unreachable → that arg omitted
+# This is the class bug: old-style args were previously bulk-applied on any-reachable.
+# Now each arg is gated on its own probe flag.
+@test "BCU-23: emit_reachable_cache_args — one old-style unreachable → only reachable arg emitted (FINDING-A lock)" {
+    mkdir -p oldpartial
+    cat > oldpartial/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["3.21"]
+EOF
+    # Entry 0 reachable, entry 1 NOT reachable
+    run emit_reachable_cache_args "oldpartial/config.yaml" "myowner" "22.04" "true" "false"
+    [ "$status" -eq 0 ]
+    # Reachable entry present
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    # Unreachable entry ABSENT — mutation guard: the bulk-apply bug would include it
+    [[ "$output" != *"--build-arg ALPINE_BASE="* ]]
+    # No REMOTE_CR
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-24: mixed old+new, all reachable → old args + REMOTE_CR present
+@test "BCU-24: emit_reachable_cache_args — mixed old+new all reachable → old args + REMOTE_CR" {
+    mkdir -p mixall
+    cat > mixall/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "mixall/config.yaml" "myowner" "18-alpine" "true" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+}
+
+# BCU-25: mixed old+new, new-style unreachable → old reachable arg present, REMOTE_CR ABSENT
+@test "BCU-25: emit_reachable_cache_args — mixed old+new, new unreachable → old arg kept, REMOTE_CR absent" {
+    mkdir -p mixnewmissing
+    cat > mixnewmissing/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Entry 0 (old) reachable, entry 1 (new) NOT reachable
+    run emit_reachable_cache_args "mixnewmissing/config.yaml" "myowner" "18-alpine" "true" "false"
+    [ "$status" -eq 0 ]
+    # Old-style arg still present (independent of new-style reachability)
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    # REMOTE_CR absent — new-style mirror missing → must NOT be applied
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-26: pure new-style, all reachable → REMOTE_CR emitted, no old-style args
+@test "BCU-26: emit_reachable_cache_args — pure new-style all reachable → REMOTE_CR only" {
+    mkdir -p newonly
+    cat > newonly/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "newonly/config.yaml" "myowner" "18-alpine" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    # No old-style arg
+    [[ "$output" != *"BASE_IMAGE"* ]]
+}
+
+# BCU-27: pure new-style, unreachable → empty output (no REMOTE_CR)
+@test "BCU-27: emit_reachable_cache_args — pure new-style unreachable → empty output" {
+    mkdir -p newmiss
+    cat > newmiss/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "newmiss/config.yaml" "myowner" "18-alpine" "false"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # BCU-15: entry with explicit ghcr_repo: (nil in YAML) → routed as NEW style
 @test "BCU-15: explicit ghcr_repo nil is routed to NEW style (emits REMOTE_CR, not 'null')" {
     mkdir -p nilrepo

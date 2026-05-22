@@ -378,3 +378,36 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" =~ "bad" ]]
 }
+
+# ─── Fail-closed: yq missing / parse error (FINDING B) ────────────────────────
+
+# VBC-FC-01 (RED→GREEN for FINDING B): malformed YAML → validation failure (not pass)
+# A yq parse error on a syntactically invalid config.yaml must cause the guard to
+# return non-zero. Previously a yq command substitution error returned "" + exit-0
+# from the subshell, causing the outer variable to be "" which the guard treated as
+# "no REMOTE_CR" → silent pass. Fixed by checking yq exit status explicitly.
+@test "VBC-FC-01: malformed config.yaml (yq parse error) → REJECT (fail-closed lock)" {
+    mkdir -p badyaml
+    # Deliberately malformed YAML — yq will error on this
+    printf 'build_args: { REMOTE_CR: [unclosed\n' > badyaml/config.yaml
+    run validate_container_base_cache_schema "badyaml"
+    [ "$status" -ne 0 ]
+}
+
+# VBC-FC-02: yq missing from PATH → validation failure (not pass)
+# Tests the command-v guard at the top of validate_container_base_cache_schema.
+@test "VBC-FC-02: yq not in PATH → REJECT (fail-closed lock)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+)"
+    # Run with a PATH that excludes yq — the guard must return non-zero
+    run env PATH="/usr/bin:/bin" bash -c "
+        source '$ORIG_DIR/helpers/validate-base-cache-schema.sh'
+        validate_container_base_cache_schema 'myapp'
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "yq" ]]
+}
