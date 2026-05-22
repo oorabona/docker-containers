@@ -573,3 +573,105 @@ EOF
     "
     [ "$status" -ne 0 ]
 }
+
+# ─── FIX 2: source whitespace / non-scalar checks ─────────────────────────────
+
+# VBC-SRC-WS-01: source containing a space → REJECT
+# "library/postgres bad" passes all prior format rules (has slash, no colon, lowercase,
+# no empty component) but the embedded space would break cache probing / imagetools refs.
+@test "VBC-SRC-WS-01: new-style source with embedded space → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: "library/postgres bad"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "whitespace" ]] || [[ "$output" =~ "source" ]]
+}
+
+# VBC-SRC-WS-02: source containing a tab → REJECT
+@test "VBC-SRC-WS-02: new-style source with embedded tab → REJECT" {
+    make_container "myapp" "$(printf 'base_image_cache:\n  - source: "library/postgres\teval"\n    tags: ["latest"]\n')"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+}
+
+# VBC-SRC-NS-01: non-scalar source (object/mapping) → REJECT
+# yq emits the object as a non-string representation; the guard must detect
+# and reject it rather than treating the stringified object as a source path.
+@test "VBC-SRC-NS-01: new-style source that is an object (non-scalar) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source:
+      a: b
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+}
+
+# VBC-SRC-NS-02: null source → REJECT (null is non-scalar string, unusable as image ref)
+@test "VBC-SRC-NS-02: new-style source is null → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+}
+
+# VBC-SRC-PASS: valid whitespace-free scalar source → PASS (regression lock)
+@test "VBC-SRC-PASS: clean source library/postgres (whitespace-free scalar) → PASS" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+# VBC-BA-NS-01: build_args value that is an object → REJECT (FIX 2: non-scalar value)
+# tostring on an object emits '{"foo":"bar"}' which may or may not contain \s,
+# but `type == "object"` is always a non-scalar that should be rejected explicitly.
+@test "VBC-BA-NS-01: build_args value that is an object → REJECT (non-scalar)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE:
+    foo: bar
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-BA-NS-02: build_args value that is an array → REJECT (non-scalar)
+@test "VBC-BA-NS-02: build_args value that is an array → REJECT (non-scalar)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE:
+    - ubuntu
+    - alpine
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-BA-NS-PASS: numeric value (valid scalar, type==number) → PASS
+@test "VBC-BA-NS-PASS: build_args value that is a number (scalar) → PASS" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  NPROC: 4
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}

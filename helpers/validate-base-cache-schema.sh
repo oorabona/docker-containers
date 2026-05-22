@@ -108,7 +108,150 @@ _vbc_validate_new_style_source() {
         ok=1
     fi
 
+    # R6b: whitespace in source — a space/tab/newline/CR would break cache probing
+    # and imagetools refs. yq -r already strips surrounding quotes but does not
+    # validate inner content; check the raw string value here.
+    if [[ "$source" =~ [[:space:]] ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains whitespace (space/tab/newline/CR). Image reference paths must be whitespace-free."
+        ok=1
+    fi
+
+    # R6c: source must be a non-empty string scalar (not null, not an object/array).
+    # yq -r emits "null" for a missing or explicit null value, and emits the object
+    # representation for mappings. Both are unusable as an OCI image reference.
+    if [[ "$source" == "null" || -z "$source" ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source is null or empty — a concrete Docker Hub path is required (e.g. library/postgres)."
+        ok=1
+    fi
+
     return $ok
+}
+
+# ---------------------------------------------------------------------------
+# _vbc_validate_build_args_config <container_label> <config_file>
+# Validates the build_args section of a config.yaml file.
+# Enforces:
+#   R7  — REMOTE_CR key forbidden (trust boundary: injected by CI only)
+#   R7b — all keys must be valid Docker ARG identifiers (^[A-Za-z_][A-Za-z0-9_]*$)
+#   R7c — all values must be scalar (string/number/boolean) with no whitespace
+#
+# Reads build_args as a single JSON object via `yq -o=json -I=0` so that
+# embedded newlines in values are caught atomically (line-by-line reads miss them).
+# Fail-closed: any yq or jq parse error returns 1 immediately.
+# Empty build_args (null or {}) passes all checks (all(…) on empty is true).
+#
+# Used by: validate_container_base_cache_schema (schema lint)
+#          build_args_flags (point-of-use enforcement before docker flags are emitted)
+#
+# Returns 0 if clean, 1 on any violation.
+# ---------------------------------------------------------------------------
+_vbc_validate_build_args_config() {
+    local container="$1"
+    local config_file="$2"
+    local errors=0
+
+    # Fail closed: yq and jq are both required.
+    command -v yq >/dev/null 2>&1 || {
+        printf 'ERROR: yq is required for build_args validation but was not found in PATH.\n' >&2
+        return 1
+    }
+    command -v jq >/dev/null 2>&1 || {
+        printf 'ERROR: jq is required for build_args validation but was not found in PATH.\n' >&2
+        return 1
+    }
+
+    # R7: REMOTE_CR must not appear as a KEY in build_args (trust boundary).
+    # Check key presence — not value — so that `REMOTE_CR: null` (or `REMOTE_CR:`
+    # with no value, which yq returns as "null") is still rejected.
+    local remote_cr_present
+    if ! remote_cr_present=$(yq -r '.build_args | has("REMOTE_CR")' "$config_file" 2>/dev/null); then
+        printf 'ERROR [%s]: yq failed to parse build_args from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+    if [[ "$remote_cr_present" == "true" ]]; then
+        printf 'ERROR [%s]: REMOTE_CR found in build_args — this key must never appear in config.yaml. It is injected exclusively by the CI pipeline as a trusted override and must not be controllable via PR-committed config.\n' \
+            "$container" >&2
+        errors=1
+    fi
+
+    # R7b + R7c: validate keys and values using a single JSON read.
+    # WHY JSON-based (not line-by-line yq reads):
+    # A value containing embedded newlines is emitted as multiple lines by yq;
+    # each line appears clean so a loop-based check passes it. Reading the whole
+    # build_args map as JSON and running jq on raw bytes catches newlines before
+    # any shell line-splitting occurs. \s in jq regex covers space/tab/newline/CR.
+    local bargs_json
+    if ! bargs_json=$(yq -o=json -I=0 '.build_args // {}' "$config_file" 2>/dev/null); then
+        printf 'ERROR [%s]: yq failed to parse build_args as JSON from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+
+    # R7b: every key must match ^[A-Za-z_][A-Za-z0-9_]*$
+    local keys_ok
+    if ! keys_ok=$(printf '%s' "$bargs_json" | \
+            jq -r 'keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$"))' 2>/dev/null); then
+        printf 'ERROR [%s]: jq failed to validate build_args keys — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+    if [[ "$keys_ok" != "true" ]]; then
+        local bad_keys
+        bad_keys=$(printf '%s' "$bargs_json" | \
+            jq -r 'keys[] | select(test("^[A-Za-z_][A-Za-z0-9_]*$") | not)' 2>/dev/null)
+        printf 'ERROR [%s]: build_args contains key(s) that are not valid Docker ARG identifiers: %s\n' \
+            "$container" "$bad_keys" >&2
+        printf '  Keys must match ^[A-Za-z_][A-Za-z0-9_]*$ (letters, digits, underscores only).\n' >&2
+        printf '  A key containing whitespace or CLI flags injects extra docker build-arg tokens.\n' >&2
+        errors=1
+    fi
+
+    # R7c: every value must be a scalar (string/number/boolean — NOT object/array/null)
+    # AND must contain no whitespace (\\s covers space/tab/newline/CR).
+    #
+    # Two-stage check: object/array values whose tostring has no whitespace would
+    # silently pass the whitespace gate alone, so type is checked first.
+    local scalars_ok
+    if ! scalars_ok=$(printf '%s' "$bargs_json" | \
+            jq -r 'to_entries | all(.value | type | . == "string" or . == "number" or . == "boolean")' \
+            2>/dev/null); then
+        printf 'ERROR [%s]: jq failed to validate build_args value types — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+    if [[ "$scalars_ok" != "true" ]]; then
+        local bad_types
+        bad_types=$(printf '%s' "$bargs_json" | \
+            jq -r 'to_entries[] | select(.value | type | . != "string" and . != "number" and . != "boolean") | "\(.key) (type: \(.value|type))"' \
+            2>/dev/null)
+        printf 'ERROR [%s]: build_args contains value(s) with non-scalar type (object/array/null): %s\n' \
+            "$container" "$bad_types" >&2
+        printf '  Only string, number, or boolean values are valid Docker --build-arg values.\n' >&2
+        errors=1
+    fi
+
+    local vals_ok
+    if ! vals_ok=$(printf '%s' "$bargs_json" | \
+            jq -r 'to_entries | all(.value | tostring | test("\\s") | not)' 2>/dev/null); then
+        printf 'ERROR [%s]: jq failed to validate build_args values — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+    if [[ "$vals_ok" != "true" ]]; then
+        local bad_vals
+        bad_vals=$(printf '%s' "$bargs_json" | \
+            jq -r 'to_entries[] | select(.value | tostring | test("\\s")) | "\(.key)=\(.value)"' \
+            2>/dev/null)
+        printf 'ERROR [%s]: build_args contains value(s) with whitespace (space/tab/newline/CR): %s\n' \
+            "$container" "$bad_vals" >&2
+        printf '  Whitespace in a value injects extra docker CLI tokens when expanded unquoted.\n' >&2
+        errors=1
+    fi
+
+    return $errors
 }
 
 # ---------------------------------------------------------------------------
@@ -158,88 +301,7 @@ validate_container_base_cache_schema() {
 
     local errors=0
 
-    # R7: REMOTE_CR must not appear as a KEY in build_args (trust boundary).
-    # Check key presence — not value — so that `REMOTE_CR: null` (or `REMOTE_CR:` with
-    # no value, which yq also returns as "null") is still rejected.
-    # Treat any yq parse/eval error as a validation failure (fail closed).
-    local remote_cr_present
-    if ! remote_cr_present=$(yq -r '.build_args | has("REMOTE_CR")' "$config_file" 2>/dev/null); then
-        printf 'ERROR [%s]: yq failed to parse build_args from config.yaml — treating as validation failure.\n' \
-            "$container" >&2
-        return 1
-    fi
-    if [[ "$remote_cr_present" == "true" ]]; then
-        printf 'ERROR [%s]: REMOTE_CR found in build_args — this key must never appear in config.yaml. It is injected exclusively by the CI pipeline as a trusted override and must not be controllable via PR-committed config.\n' \
-            "$container" >&2
-        errors=1
-    fi
-
-    # R7b + R7c: ALL build_args keys must be valid Docker ARG identifiers AND all
-    # values must contain no whitespace (space, tab, newline, CR).
-    #
-    # WHY JSON-based (not line-by-line yq reads):
-    # A line-by-line `while IFS= read -r val` loop over yq output splits on newlines.
-    # A value containing embedded newlines (e.g. "ubuntu\n--build-arg\nREMOTE_CR=x")
-    # is emitted as multiple lines — each line is clean — so the loop passes it.
-    # The newline then acts as a shell token separator when the value is expanded
-    # unquoted into docker CLI flags, injecting arbitrary build-args. The fix reads
-    # build_args as a single JSON object via `yq -o=json -I=0` and validates the
-    # entire structure with jq, which operates on the raw string bytes before any
-    # line-splitting occurs. \s in the jq regex covers space, tab, newline, and CR.
-    #
-    # Fail closed: any yq or jq non-zero exit → return 1 immediately.
-    # Empty build_args (null or {}) → both jq checks pass (all(…) on empty is true).
-
-    # Require jq — same fail-closed contract as yq above.
-    command -v jq >/dev/null 2>&1 || {
-        printf 'ERROR: jq is required for build_args validation but was not found in PATH.\n' >&2
-        return 1
-    }
-
-    local bargs_json
-    if ! bargs_json=$(yq -o=json -I=0 '.build_args // {}' "$config_file" 2>/dev/null); then
-        printf 'ERROR [%s]: yq failed to parse build_args as JSON from config.yaml — treating as validation failure.\n' \
-            "$container" >&2
-        return 1
-    fi
-
-    # R7b: every key must match ^[A-Za-z_][A-Za-z0-9_]*$
-    local keys_ok
-    if ! keys_ok=$(printf '%s' "$bargs_json" | \
-            jq -r 'keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$"))' 2>/dev/null); then
-        printf 'ERROR [%s]: jq failed to validate build_args keys — treating as validation failure.\n' \
-            "$container" >&2
-        return 1
-    fi
-    if [[ "$keys_ok" != "true" ]]; then
-        # Find and report the offending key(s) for a useful error message.
-        local bad_keys
-        bad_keys=$(printf '%s' "$bargs_json" | \
-            jq -r 'keys[] | select(test("^[A-Za-z_][A-Za-z0-9_]*$") | not)' 2>/dev/null)
-        printf 'ERROR [%s]: build_args contains key(s) that are not valid Docker ARG identifiers: %s\n' \
-            "$container" "$bad_keys" >&2
-        printf '  Keys must match ^[A-Za-z_][A-Za-z0-9_]*$ (letters, digits, underscores only).\n' >&2
-        printf '  A key containing whitespace or CLI flags injects extra docker build-arg tokens.\n' >&2
-        errors=1
-    fi
-
-    # R7c: every value must contain no whitespace (\\s covers space/tab/newline/CR).
-    # Values are converted to string first so numeric YAML values (e.g. "4") also work.
-    local vals_ok
-    if ! vals_ok=$(printf '%s' "$bargs_json" | \
-            jq -r 'to_entries | all(.value | tostring | test("\\s") | not)' 2>/dev/null); then
-        printf 'ERROR [%s]: jq failed to validate build_args values — treating as validation failure.\n' \
-            "$container" >&2
-        return 1
-    fi
-    if [[ "$vals_ok" != "true" ]]; then
-        local bad_vals
-        bad_vals=$(printf '%s' "$bargs_json" | \
-            jq -r 'to_entries[] | select(.value | tostring | test("\\s")) | "\(.key)=\(.value)"' \
-            2>/dev/null)
-        printf 'ERROR [%s]: build_args contains value(s) with whitespace (space/tab/newline/CR): %s\n' \
-            "$container" "$bad_vals" >&2
-        printf '  Whitespace in a value injects extra docker CLI tokens when expanded unquoted.\n' >&2
+    if ! _vbc_validate_build_args_config "$container" "$config_file"; then
         errors=1
     fi
 
@@ -329,4 +391,5 @@ validate_all_containers_base_cache_schema() {
 
 # Export for use by sourcing scripts and subshells
 export -f _vbc_error _vbc_is_new_style _vbc_validate_new_style_source \
+    _vbc_validate_build_args_config \
     validate_container_base_cache_schema validate_all_containers_base_cache_schema
