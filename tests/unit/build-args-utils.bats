@@ -181,3 +181,75 @@ EOF
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
+# ─── FIX 1: prepare_build_args propagates build_args_flags failure ────────────
+
+# Helper: create a version.sh stub that outputs nothing (avoids real network call)
+make_version_stub() {
+    printf '#!/bin/bash\necho ""\n' > version.sh
+    chmod +x version.sh
+}
+
+@test "PAB-01: prepare_build_args aborts (non-zero) when config has REMOTE_CR key" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "ubuntu"
+  REMOTE_CR: "ghcr.io/attacker"
+EOF
+)"
+    make_version_stub
+    run prepare_build_args "1.0"
+    [ "$status" -ne 0 ]
+    # Error message must reach stderr (captured in output by bats 'run')
+    [[ "$output" =~ "build_args validation failed" ]] || [[ "$output" =~ "REMOTE_CR" ]]
+}
+
+@test "PAB-02: prepare_build_args aborts (non-zero) when config has whitespace-injecting value" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "foo --network host"
+EOF
+)"
+    make_version_stub
+    run prepare_build_args "1.0"
+    [ "$status" -ne 0 ]
+}
+
+@test "PAB-03: prepare_build_args aborts (non-zero) when config has non-identifier key" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  "INVALID-KEY": "value"
+EOF
+)"
+    make_version_stub
+    run prepare_build_args "1.0"
+    [ "$status" -ne 0 ]
+}
+
+# Regression lock: valid php-shaped config must still succeed end-to-end
+@test "PAB-PASS-01: prepare_build_args succeeds + sets _BUILD_ARGS for php-shaped config" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  COMPOSER_VERSION: "2.9.8"
+  APCU_VERSION: "5.1.28"
+EOF
+)"
+    make_version_stub
+    # Run in the same shell so _BUILD_ARGS is accessible
+    prepare_build_args "8.4"
+    [ $? -eq 0 ]
+    [[ "$_BUILD_ARGS" =~ "--build-arg VERSION=8.4" ]]
+    [[ "$_BUILD_ARGS" =~ "--build-arg COMPOSER_VERSION=2.9.8" ]]
+    [[ "$_BUILD_ARGS" =~ "--build-arg APCU_VERSION=5.1.28" ]]
+    # Must NOT contain REMOTE_CR
+    [[ ! "$_BUILD_ARGS" =~ "REMOTE_CR" ]]
+}
+
+# Regression lock: no config.yaml → prepare_build_args still succeeds (no abort)
+@test "PAB-PASS-02: prepare_build_args succeeds when no config.yaml present" {
+    # TEST_DIR has no config.yaml
+    mkdir -p noconfig && cd noconfig
+    prepare_build_args "2.0"
+    [ $? -eq 0 ]
+    cd ..
+}

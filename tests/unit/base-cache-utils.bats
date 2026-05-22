@@ -517,6 +517,90 @@ EOF
     [ -z "$output" ]
 }
 
+# ─── FIX 2 (RED→GREEN): emit_reachable_cache_args arg validation ─────────────
+
+# BCU-FIX2-01: OLD-style entry with injected shell tokens in arg → non-zero, no flag emitted
+# This is the FINDING: "BASE_IMAGE --network host" would inject extra docker flags.
+# RED before fix (returns 0, emits the bad flag), GREEN after (returns non-zero, emits nothing).
+@test "BCU-FIX2-01: emit_reachable_cache_args — malformed arg with shell token → non-zero + no flag (injection prevention)" {
+    mkdir -p badarg
+    cat > badarg/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE_IMAGE --network host"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg/config.yaml" "myowner" "22.04" "true"
+    # Must fail closed (non-zero exit)
+    [ "$status" -ne 0 ]
+    # Must not emit any --build-arg flag (no partial emission)
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-02: OLD-style entry with multi-word arg (spaces) → non-zero
+@test "BCU-FIX2-02: emit_reachable_cache_args — arg with embedded spaces → non-zero" {
+    mkdir -p badarg2
+    cat > badarg2/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "FOO BAR"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg2/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-03: OLD-style entry with hyphen in arg (invalid Docker ARG name) → non-zero
+@test "BCU-FIX2-03: emit_reachable_cache_args — arg with hyphen → non-zero" {
+    mkdir -p badarg3
+    cat > badarg3/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE-IMAGE"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg3/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-PASS: valid arg identifier → clean output (regression lock)
+# This must pass before AND after the fix (it was already working; guard against over-rejection).
+@test "BCU-FIX2-PASS: emit_reachable_cache_args — valid identifier arg → emits flag correctly" {
+    mkdir -p validarg
+    cat > validarg/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "validarg/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+}
+
+# BCU-FIX2-05: unreachable old-style entry with bad arg → still non-zero
+# The validation must run regardless of the reachability flag — bad config is a config error,
+# not a "suppress it" signal. (Guards against: skip validation if flag==false.)
+@test "BCU-FIX2-05: emit_reachable_cache_args — bad arg in unreachable entry → non-zero (no silent skip)" {
+    mkdir -p badarg5
+    cat > badarg5/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE_IMAGE --network host"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    # Flag is "false" (entry unreachable) — but arg is still validated
+    run emit_reachable_cache_args "badarg5/config.yaml" "myowner" "22.04" "false"
+    [ "$status" -ne 0 ]
+}
+
 # BCU-15: entry with explicit ghcr_repo: (nil in YAML) → routed as NEW style
 @test "BCU-15: explicit ghcr_repo nil is routed to NEW style (emits REMOTE_CR, not 'null')" {
     mkdir -p nilrepo

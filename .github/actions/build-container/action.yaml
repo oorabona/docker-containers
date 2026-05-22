@@ -429,8 +429,13 @@ runs:
                 # Build the filtered arg set: each entry included iff its probe passed.
                 # emit_reachable_cache_args handles old-style (per-entry) and new-style
                 # (REMOTE_CR all-or-nothing) in one call — no sed-strip needed.
-                filtered_args=$(emit_reachable_cache_args "./$container/config.yaml" \
-                  "$owner" "$build_version" "${probe_flags[@]}")
+                # A non-zero exit means a malformed arg was detected (config error):
+                # fail the build with a clear message rather than silently proceeding.
+                if ! filtered_args=$(emit_reachable_cache_args "./$container/config.yaml" \
+                  "$owner" "$build_version" "${probe_flags[@]}"); then
+                  echo "::error::emit_reachable_cache_args failed — malformed base_image_cache arg detected in $container/config.yaml; aborting build"
+                  exit 1
+                fi
                 if [[ -n "$filtered_args" ]]; then
                   export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$filtered_args"
                   echo "✅ Using GHCR base images: $filtered_args"

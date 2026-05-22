@@ -256,7 +256,10 @@ build_container() {
 
     _resolve_platforms
     _configure_cache "ghcr.io/$github_username/$container:buildcache"
-    _prepare_build_args "$version" "$build_flavor"
+    _prepare_build_args "$version" "$build_flavor" || {
+        log_error "build arg preparation failed (invalid build_args/cache config); aborting build"
+        return 1
+    }
 
     # Prepare tags — versioned tag always included, plus rolling latest tags
     local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"

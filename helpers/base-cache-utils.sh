@@ -362,10 +362,18 @@ emit_reachable_cache_args() {
             # REMOTE_CR applicability is decided below via remote_cr_applicable.
             :
         else
-            # OLD-style entry: emit per-arg flag only when this entry's mirror is reachable.
+            # OLD-style entry: validate arg regardless of reachability (config error = hard fail),
+            # then emit the flag only when this entry's mirror is reachable.
+            local arg
+            arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
+            # Validate arg is a safe Docker ARG identifier before interpolating into flags.
+            # Reject anything that is not ^[A-Za-z_][A-Za-z0-9_]*$ — spaces, hyphens, or
+            # embedded shell tokens would inject extra docker flags (config-injection path).
+            if [[ ! "$arg" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                log_error "base_image_cache[$i].arg '${arg}' is not a valid Docker ARG identifier; aborting to prevent flag injection" >&2
+                return 1
+            fi
             if [[ "$flag" == "true" ]]; then
-                local arg
-                arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
                 args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
             fi
         fi

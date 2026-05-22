@@ -96,7 +96,10 @@ prepare_build_args() {
     [[ -n "${NPROC:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg NPROC=$NPROC"
 
     local config_build_args
-    config_build_args=$(build_args_flags ".")
+    if ! config_build_args=$(build_args_flags "."); then
+        log_error "build_args validation failed; aborting build arg preparation" >&2
+        return 1
+    fi
     if [[ -n "$config_build_args" ]]; then
         _BUILD_ARGS="$_BUILD_ARGS $config_build_args"
         log_info "Loaded build args from config.yaml"
