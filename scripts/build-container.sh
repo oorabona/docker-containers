@@ -125,7 +125,29 @@ _resolve_base_image() {
         _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$VERSION/$version}"
         [[ -n "${_MAJOR_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{MAJOR_VERSION\}/$_MAJOR_VERSION}"
         [[ -n "${_UPSTREAM_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{UPSTREAM_VERSION\}/$_UPSTREAM_VERSION}"
-        # Resolve Dockerfile ARG defaults (e.g. ARG BASE_IMAGE=postgres)
+
+        # Collect CUSTOM_BUILD_ARGS overrides before applying ARG defaults.
+        # Docker semantics: --build-arg wins over ARG default; apply overrides FIRST
+        # so that ARG-default substitution (below) is skipped for overridden args.
+        # Parse LAST occurrence of each --build-arg NAME=VALUE (last wins, matching docker).
+        declare -A _custom_arg_overrides=()
+        if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
+            while read -r arg_val; do
+                local _ov_name="${arg_val%%=*}"
+                local _ov_value="${arg_val#*=}"
+                [[ -n "$_ov_name" ]] && _custom_arg_overrides["$_ov_name"]="$_ov_value"
+            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
+        fi
+
+        # Apply CUSTOM_BUILD_ARGS overrides now (before ARG defaults) so they win.
+        for _ov_name in "${!_custom_arg_overrides[@]}"; do
+            local _ov_value="${_custom_arg_overrides[$_ov_name]}"
+            _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ov_name\}/$_ov_value}"
+            _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ov_name/$_ov_value}"
+        done
+
+        # Resolve Dockerfile ARG defaults (e.g. ARG REMOTE_CR=docker.io) for any
+        # variables not already substituted by a CUSTOM_BUILD_ARGS override above.
         while IFS= read -r arg_line; do
             local arg_name="${arg_line%%=*}"
             local arg_default="${arg_line#*=}"
@@ -134,19 +156,15 @@ _resolve_base_image() {
             arg_default="${arg_default%\'}"
             arg_default="${arg_default#\'}"
             [[ -z "$arg_name" || "$arg_name" == "$arg_line" ]] && continue
+            # Skip if this arg was already applied via CUSTOM_BUILD_ARGS override
+            [[ -v _custom_arg_overrides["$arg_name"] ]] && continue
             if [[ "$_BASE_IMAGE_REF" == *"\${$arg_name}"* || "$_BASE_IMAGE_REF" == *"\$$arg_name"* ]]; then
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_default}"
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_default}"
             fi
         done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
-        if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
-            while read -r arg_val; do
-                local arg_name="${arg_val%%=*}"
-                local arg_value="${arg_val#*=}"
-                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_value}"
-                _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_value}"
-            done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
-        fi
+
+        unset _custom_arg_overrides
     fi
 
     # Resolve digest if we have a concrete image reference

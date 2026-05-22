@@ -142,6 +142,24 @@ runs:
           fi
         fi
 
+        # Shared build-infra canary: if only shared build/cache logic changed
+        # (no container dir), smoke-build postgres so that logic is exercised.
+        shared_infra_changed=false
+        while IFS= read -r file; do
+          [[ -z "$file" ]] && continue
+          case "$file" in
+            helpers/*|scripts/build-container.sh|scripts/build-extensions.sh|.github/actions/build-container/*|.github/actions/dockerhub-mirror/*)
+              shared_infra_changed=true; break ;;
+          esac
+        done <<< "$changed_files"
+
+        if [[ "$shared_infra_changed" == "true" && ${#containers_to_build[@]} -eq 0 ]]; then
+          if echo "$valid_containers" | grep -qx "postgres"; then
+            echo "🔧 Shared build-infra change with no container dir touched — adding canary: postgres"
+            containers_to_build+=("postgres")
+          fi
+        fi
+
         # Create outputs (CSV first, then JSON for matrix compatibility)
         if [ ${#containers_to_build[@]} -eq 0 ]; then
           echo "containers_list=" >> $GITHUB_OUTPUT

@@ -14,6 +14,15 @@ setup() {
     source "$ORIG_DIR/helpers/build-cache-utils.sh"
 }
 
+# Additional setup for _resolve_base_image tests (sources build-container.sh)
+_setup_resolve_base_image() {
+    source "$ORIG_DIR/helpers/variant-utils.sh"
+    source "$ORIG_DIR/helpers/build-args-utils.sh"
+    source "$ORIG_DIR/helpers/template-utils.sh"
+    source "$ORIG_DIR/helpers/extension-utils.sh"
+    source "$ORIG_DIR/scripts/build-container.sh"
+}
+
 teardown() {
     cd "$ORIG_DIR" || true
     rm -rf "$TEST_DIR"
@@ -511,4 +520,65 @@ EOF
     [[ "$output" == *"digest input: Dockerfile"* ]]
     [[ "$output" == *"digest type: postgres-style"* ]]
     [[ "$output" == *"pgvector=0.8.1"* ]]
+}
+
+# --- _resolve_base_image: REMOTE_CR override (FIX-2) ---
+# Verifies that CUSTOM_BUILD_ARGS="--build-arg REMOTE_CR=..." wins over the
+# Dockerfile ARG default (ARG REMOTE_CR=docker.io) when resolving the base
+# image reference for lineage labels and manifest-inspect.
+
+@test "RBI-01: CUSTOM_BUILD_ARGS REMOTE_CR override wins over Dockerfile ARG default" {
+    _setup_resolve_base_image
+
+    # Dockerfile that mirrors the postgres pattern: ARG REMOTE_CR with docker.io default
+    cat > Dockerfile <<'EOF'
+ARG REMOTE_CR=docker.io
+FROM ${REMOTE_CR}/library/postgres:${VERSION}
+EOF
+    # No config.yaml base_image — falls through to Dockerfile FROM parsing
+    local label_args=""
+    CUSTOM_BUILD_ARGS="--build-arg REMOTE_CR=ghcr.io/owner"
+    export CUSTOM_BUILD_ARGS
+
+    _resolve_base_image "Dockerfile" "17-alpine" "label_args"
+
+    unset CUSTOM_BUILD_ARGS
+
+    # Must resolve to the GHCR mirror, not docker.io
+    [[ "$_BASE_IMAGE_REF" == "ghcr.io/owner/library/postgres:17-alpine" ]]
+}
+
+@test "RBI-02: without CUSTOM_BUILD_ARGS override, ARG default (docker.io) applies" {
+    _setup_resolve_base_image
+
+    cat > Dockerfile <<'EOF'
+ARG REMOTE_CR=docker.io
+FROM ${REMOTE_CR}/library/postgres:${VERSION}
+EOF
+    local label_args=""
+    unset CUSTOM_BUILD_ARGS
+
+    _resolve_base_image "Dockerfile" "17-alpine" "label_args"
+
+    # Must resolve to docker.io (the ARG default)
+    [[ "$_BASE_IMAGE_REF" == "docker.io/library/postgres:17-alpine" ]]
+}
+
+@test "RBI-03: last --build-arg REMOTE_CR occurrence wins (docker semantics)" {
+    _setup_resolve_base_image
+
+    cat > Dockerfile <<'EOF'
+ARG REMOTE_CR=docker.io
+FROM ${REMOTE_CR}/library/postgres:${VERSION}
+EOF
+    local label_args=""
+    # Two occurrences — last one (ghcr.io/second) must win
+    CUSTOM_BUILD_ARGS="--build-arg REMOTE_CR=ghcr.io/first --build-arg REMOTE_CR=ghcr.io/second"
+    export CUSTOM_BUILD_ARGS
+
+    _resolve_base_image "Dockerfile" "17-alpine" "label_args"
+
+    unset CUSTOM_BUILD_ARGS
+
+    [[ "$_BASE_IMAGE_REF" == "ghcr.io/second/library/postgres:17-alpine" ]]
 }
