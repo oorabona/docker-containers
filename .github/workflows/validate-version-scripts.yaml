@@ -6,6 +6,8 @@ on:
       - '**/version.sh'
       - '**/config.yaml'
       - 'validate-version-scripts.sh'
+      - 'helpers/validate-base-cache-schema.sh'
+      - 'helpers/base-cache-utils.sh'
       - '.github/workflows/validate-version-scripts.yaml'
       - '.github/workflows/upstream-monitor.yaml'
       - '.github/actions/check-upstream-versions/**'

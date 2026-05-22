@@ -256,6 +256,65 @@ get_cache_build_args() {
 # Falls back to "latest" if tags[] is absent and tags_from_versions is false.
 # Usage: resolve_cache_check_tag <config_file> <entry_index> <build_version>
 # Output: the tag string to use in the docker manifest inspect check
+# Decide whether REMOTE_CR should be applied, given per-entry reachability results.
+#
+# Rules (pure function — no I/O, no docker calls, fully bats-testable):
+#   - Count how many NEW-style entries exist in the config (ghcr_repo absent/null/empty).
+#   - If no new-style entries → REMOTE_CR is irrelevant; print "n/a" and return 0.
+#   - If all new-style entries are reachable (all corresponding reachability flags = "true")
+#     → print "apply" and return 0.
+#   - If any new-style entry is unreachable (any flag = "false")
+#     → print "drop" and return 0.
+#
+# Usage: remote_cr_applicable <config_file> [reachable_flags...]
+#   <config_file>       path to the container's config.yaml
+#   [reachable_flags]   one "true" or "false" per base_image_cache entry, in order.
+#                       For OLD-style entries pass "old" (ignored); for NEW-style
+#                       entries pass the actual probe result ("true" / "false").
+#
+# The caller (action) probes each entry via docker manifest inspect, then calls:
+#   remote_cr_applicable "./$container/config.yaml" "$flag0" "$flag1" ...
+#
+# Output (stdout): "apply" | "drop" | "n/a"
+remote_cr_applicable() {
+    local config_file="$1"
+    shift
+    local -a flags=("$@")
+
+    local entry_count
+    entry_count=$(yq -r '.base_image_cache | length' "$config_file")
+
+    local new_style_count=0
+    local new_style_reachable=0
+
+    for ((i = 0; i < entry_count; i++)); do
+        local ghcr_repo
+        ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
+
+        if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
+            # NEW-style entry
+            new_style_count=$((new_style_count + 1))
+            local flag="${flags[$i]:-false}"
+            if [[ "$flag" == "true" ]]; then
+                new_style_reachable=$((new_style_reachable + 1))
+            fi
+        fi
+        # OLD-style entries: skip — they do not contribute to REMOTE_CR applicability
+    done
+
+    if [[ "$new_style_count" -eq 0 ]]; then
+        printf 'n/a'
+        return 0
+    fi
+
+    if [[ "$new_style_reachable" -eq "$new_style_count" ]]; then
+        printf 'apply'
+    else
+        printf 'drop'
+    fi
+    return 0
+}
+
 resolve_cache_check_tag() {
     local config_file="$1"
     local entry_index="$2"
@@ -278,4 +337,4 @@ resolve_cache_check_tag() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag remote_cr_applicable

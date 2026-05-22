@@ -385,31 +385,36 @@ runs:
           if has_base_cache "./$container"; then
             cache_args=$(get_cache_build_args "./$container" "${{ github.repository_owner }}" "$build_version")
             if [[ -n "$cache_args" ]]; then
-              # Verify at least one cached image is accessible before using GHCR args.
-              # If cache-base-images job failed silently, fall back to Docker Hub defaults.
-              # Iterate every base_image_cache entry to find one reachable image as proof.
+              # Probe every base_image_cache entry for GHCR accessibility.
               #
               # Dual-schema discriminator (mirrors base-cache-utils.sh):
               #   OLD style: ghcr_repo present → check ghcr.io/<owner>/<ghcr_repo>:<resolved_tag>
               #   NEW style: ghcr_repo absent  → check ghcr.io/<owner>/<source>:<explicit_tag>
-              #     where <source> is the full upstream path (e.g. library/postgres)
-              #     and <explicit_tag> is build_version (tags_from_versions) or tags[0] resolved.
-              #     resolve_cache_check_tag already handles both sub-cases correctly.
               #
-              # All-or-nothing for REMOTE_CR: REMOTE_CR is a single registry-root knob that
-              # applies to the whole container. If no new-style entry is reachable, the entire
-              # cache_args (incl. REMOTE_CR) is dropped so docker.io remains the fallback.
-              cache_ok=false
+              # All-or-nothing for REMOTE_CR:
+              #   REMOTE_CR is a registry-root knob shared by ALL new-style FROM lines in the
+              #   Dockerfile. Applying it when even one new-style mirror is missing causes a
+              #   hard-fail (the FROM resolves to a missing GHCR ref with no docker.io fallback).
+              #   Decision logic is delegated to remote_cr_applicable() — a pure, bats-testable
+              #   function in helpers/base-cache-utils.sh. The function returns:
+              #     "apply"  — all new-style entries reachable → keep REMOTE_CR in cache_args
+              #     "drop"   — any new-style entry unreachable → strip REMOTE_CR from cache_args
+              #     "n/a"    — no new-style entries → REMOTE_CR not in cache_args; old-style
+              #                args already gated via any-reachable (cache_ok) below
+              #
+              # Old-style args keep the existing any-reachable semantics (cache_ok=true on
+              # first hit) — they are per-arg flags pointing to dedicated GHCR repos; a missing
+              # old-style repo does NOT break other old-style refs.
               entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
               owner="${{ github.repository_owner }}"
+              cache_ok=false
+              declare -a probe_flags=()
               for ((i = 0; i < entry_count; i++)); do
                 ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "./$container/config.yaml")
                 if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
                   # NEW style: path-preserving mirror — source holds the full upstream path.
-                  # Reuse resolve_cache_check_tag: for tags_from_versions it returns
-                  # build_version (the explicit tag baked into the new-style FROM —
-                  # correct and #492-safe); for tags[] it resolves tags[0]. Path is
-                  # built from source (not ghcr_repo, which is absent for new-style).
+                  # resolve_cache_check_tag returns build_version for tags_from_versions (#492-safe)
+                  # or the resolved tags[0] template — the same tag the build will actually use.
                   source_path=$(yq -r ".base_image_cache[$i].source" "./$container/config.yaml")
                   explicit_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
                   check_image="ghcr.io/${owner}/${source_path}:${explicit_tag}"
@@ -419,16 +424,34 @@ runs:
                   check_image="ghcr.io/${owner}/${ghcr_repo}:${resolved_tag}"
                 fi
                 if docker manifest inspect "$check_image" &>/dev/null; then
+                  probe_flags[$i]="true"
                   cache_ok=true
-                  echo "✅ GHCR cache verified via $check_image"
-                  break
+                  echo "✅ GHCR cache accessible: $check_image"
                 else
-                  echo "⚠️ Not yet accessible: $check_image"
+                  probe_flags[$i]="false"
+                  echo "⚠️ Not accessible: $check_image"
                 fi
               done
+
+              # Ask the pure decision helper whether REMOTE_CR may be applied.
+              rc_decision=$(remote_cr_applicable "./$container/config.yaml" "${probe_flags[@]}")
+
               if [[ "$cache_ok" == "true" ]]; then
-                export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
-                echo "✅ Using GHCR base images: $cache_args"
+                if [[ "$rc_decision" == "drop" ]]; then
+                  # At least one new-style mirror is missing → strip REMOTE_CR from args.
+                  # Old-style per-arg flags that ARE reachable may still be applied.
+                  safe_args=$(echo "$cache_args" | sed 's/--build-arg REMOTE_CR=[^ ]*//g' | xargs)
+                  if [[ -n "$safe_args" ]]; then
+                    export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$safe_args"
+                    echo "✅ Using GHCR base images (REMOTE_CR dropped — new-style mirror incomplete): $safe_args"
+                  else
+                    echo "::warning::REMOTE_CR dropped and no old-style args remain — falling back to Docker Hub defaults"
+                  fi
+                else
+                  # "apply" or "n/a": REMOTE_CR is safe or absent. Apply full cache_args.
+                  export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
+                  echo "✅ Using GHCR base images: $cache_args"
+                fi
               else
                 echo "::warning::No GHCR cache image accessible — falling back to Docker Hub defaults"
               fi

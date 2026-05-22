@@ -296,6 +296,108 @@ EOF
     [[ "$output" != *"--build-arg ="* ]]
 }
 
+# --- remote_cr_applicable: pure decision helper ---
+
+# BCU-16: all new-style entries reachable → "apply"
+@test "BCU-16: remote_cr_applicable — all new-style reachable → apply" {
+    mkdir -p pgcontainer
+    cat > pgcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run remote_cr_applicable "pgcontainer/config.yaml" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
+# BCU-17: mixed old+new config, new-style entry unreachable → "drop"
+# Locks the always-apply mutation: a single unreachable new-style entry in a mixed
+# config must produce "drop", not "apply". BCU-20 covers the partial-reachability
+# boundary (multiple new-style entries, only some reachable).
+@test "BCU-17: remote_cr_applicable — mixed old+new, new-style unreachable → drop (always-apply mutation lock)" {
+    mkdir -p mixcontainer
+    cat > mixcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Flag 0 = old-style (reachable, passed as "true"), flag 1 = new-style (missing, "false")
+    run remote_cr_applicable "mixcontainer/config.yaml" "true" "false"
+    [ "$status" -eq 0 ]
+    [ "$output" = "drop" ]
+    # Mutation guard: must NOT be "apply" — that is the bug FIX-1 corrects
+    [ "$output" != "apply" ]
+}
+
+# BCU-18: no new-style entries → "n/a"
+@test "BCU-18: remote_cr_applicable — pure old-style config → n/a" {
+    mkdir -p oldcontainer
+    cat > oldcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run remote_cr_applicable "oldcontainer/config.yaml" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "n/a" ]
+}
+
+# BCU-19: multiple new-style entries all reachable → "apply"
+@test "BCU-19: remote_cr_applicable — multiple new-style all reachable → apply" {
+    mkdir -p multinew
+    cat > multinew/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+    run remote_cr_applicable "multinew/config.yaml" "true" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
+# BCU-20: multiple new-style entries with one unreachable → "drop"
+@test "BCU-20: remote_cr_applicable — multiple new-style one unreachable → drop" {
+    mkdir -p multinew2
+    cat > multinew2/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+    run remote_cr_applicable "multinew2/config.yaml" "true" "false"
+    [ "$status" -eq 0 ]
+    [ "$output" = "drop" ]
+}
+
+# BCU-21: mixed old+new, new reachable → "apply" (old flags are ignored)
+@test "BCU-21: remote_cr_applicable — mixed old+new, new reachable → apply" {
+    mkdir -p mixok
+    cat > mixok/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Flag 0 = old-style ("old" semantically, but we pass "true" — old flags are not counted)
+    # Flag 1 = new-style, reachable
+    run remote_cr_applicable "mixok/config.yaml" "true" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
 # BCU-15: entry with explicit ghcr_repo: (nil in YAML) → routed as NEW style
 @test "BCU-15: explicit ghcr_repo nil is routed to NEW style (emits REMOTE_CR, not 'null')" {
     mkdir -p nilrepo

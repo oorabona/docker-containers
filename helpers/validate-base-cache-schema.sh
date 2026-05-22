@@ -150,10 +150,12 @@ validate_container_base_cache_schema() {
 
     local errors=0
 
-    # R7: REMOTE_CR must not appear in build_args (trust boundary)
-    local remote_cr_val
-    remote_cr_val=$(yq -r '.build_args.REMOTE_CR // "null"' "$config_file")
-    if [[ "$remote_cr_val" != "null" ]]; then
+    # R7: REMOTE_CR must not appear as a KEY in build_args (trust boundary).
+    # Check key presence — not value — so that `REMOTE_CR: null` (or `REMOTE_CR:` with
+    # no value, which yq also returns as "null") is still rejected.
+    local remote_cr_present
+    remote_cr_present=$(yq -r '.build_args | has("REMOTE_CR")' "$config_file")
+    if [[ "$remote_cr_present" == "true" ]]; then
         printf 'ERROR [%s]: REMOTE_CR found in build_args — this key must never appear in config.yaml. It is injected exclusively by the CI pipeline as a trusted override and must not be controllable via PR-committed config.\n' \
             "$container" >&2
         errors=1

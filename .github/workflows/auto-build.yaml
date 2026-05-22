@@ -274,6 +274,11 @@ jobs:
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
           REBUILD: ${{ env.REBUILD_MODE }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
+          # USE_BASE_CACHE mirrors the use_base_cache gate in build-container: true only for
+          # non-fork push/dispatch events (where GHCR write access and cache-base-images ran).
+          # REMOTE_CR is NOT set here at job level — it is probed per major_version below.
+          USE_BASE_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -303,6 +308,27 @@ jobs:
                   continue
                 fi
               fi
+
+              # Probe the GHCR postgres library mirror per major_version.
+              # build-extensions runs parallel to cache-base-images (no ordering dependency)
+              # and cache-base-images is continue-on-error — so the mirror may or may not
+              # exist. Probe each version individually and set REMOTE_CR only when the mirror
+              # is confirmed reachable; otherwise leave it unset so build-extensions falls
+              # back to docker.io via the #488 registry:2 sidecar (no hard-fail).
+              # Tag format: <major_version>-alpine  (matches the postgres base_suffix and
+              # the tag the extension Dockerfiles reference via FROM ${REMOTE_CR}/library/postgres).
+              REMOTE_CR=""
+              if [[ "$USE_BASE_CACHE" == "true" ]]; then
+                mirror_tag="${major_version}-alpine"
+                mirror_ref="ghcr.io/${REPO_OWNER}/library/postgres:${mirror_tag}"
+                if docker manifest inspect "$mirror_ref" >/dev/null 2>&1; then
+                  REMOTE_CR="ghcr.io/${REPO_OWNER}"
+                  echo "✅ postgres library mirror reachable for ${mirror_tag} — extensions use GHCR"
+                else
+                  echo "::warning::postgres library mirror missing for ${mirror_tag} — extensions fall back to docker.io via #488 mirror"
+                fi
+              fi
+              export REMOTE_CR
 
               # Build specific extensions or all
               if [[ -n "$SCOPE_EXTENSIONS" ]]; then

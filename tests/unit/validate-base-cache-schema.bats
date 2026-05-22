@@ -159,6 +159,40 @@ EOF
     [[ "$output" =~ "REMOTE_CR" ]]
 }
 
+# VBC-08b (RED→GREEN for FIX 3): REMOTE_CR key with null value → REJECT
+# The old code used `// "null"` value-check: `REMOTE_CR:` (YAML-null) returns the
+# string "null" via `// "null"` fallback and PASSED the check. Fixed by checking
+# key presence via `yq has("REMOTE_CR")` instead of checking the value.
+@test "VBC-08b: REMOTE_CR key with null value (REMOTE_CR:) → REJECT (FIX-3 regression lock)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags: ["latest"]
+build_args:
+  REMOTE_CR:
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "REMOTE_CR" ]]
+    # Mutation guard: the old code would have returned 0 (passed) — must NOT be 0
+}
+
+# VBC-08c: REMOTE_CR key with explicit null literal → REJECT
+@test "VBC-08c: REMOTE_CR key with explicit YAML null → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags: ["latest"]
+build_args:
+  REMOTE_CR: null
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "REMOTE_CR" ]]
+}
+
 @test "VBC-09: old-style with empty arg → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
