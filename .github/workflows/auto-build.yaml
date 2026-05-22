@@ -214,20 +214,22 @@ jobs:
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
     name: Build PostgreSQL Extensions
-    needs: [detect-containers]
-    # cache-base-images is intentionally NOT a dependency here.
-    # Rationale: the GHCR base cache is OPTIONAL — the per-major-version REMOTE_CR
-    # probe in the build step falls back gracefully to docker.io (via the #488
-    # registry:2 sidecar) when the mirror is missing. Coupling this job to
-    # cache-base-images would turn an optional performance accelerator into a
-    # blocking prerequisite, delaying or preventing extension builds whenever
-    # the cache job is skipped (fork PRs) or slow. The mutable-tag refresh race
-    # (a cache seed racing this build within the same run) is accepted: low-impact
-    # within a postgres major version, and the same mutability exists on docker.io.
+    needs: [detect-containers, cache-base-images]
+    # Ordered after cache-base-images so the per-major-version GHCR probe below
+    # (docker manifest inspect ghcr.io/<owner>/library/postgres:<ver>-alpine) runs
+    # AFTER cache-base-images has seeded that tag — fulfilling SC-18 (extensions use
+    # GHCR). The always() + result-in-(success,skipped) guard mirrors build-and-push
+    # exactly: a skipped seed (fork PRs) or a failed seed (continue-on-error: true
+    # means the job reports 'success' to dependents even on failure — but we guard
+    # 'skipped' too for future-proofing) never blocks extensions. When the probe
+    # finds the mirror absent it falls back to docker.io via the #488 registry:2
+    # sidecar — graceful degradation is preserved; only the race is eliminated.
     if: |
+      always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true'
+      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
+      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
       group: build-extensions-${{ github.ref }}
@@ -329,11 +331,13 @@ jobs:
               fi
 
               # Probe the GHCR postgres library mirror per major_version.
-              # build-extensions runs parallel to cache-base-images (no ordering dependency)
-              # and cache-base-images is continue-on-error — so the mirror may or may not
-              # exist. Probe each version individually and set REMOTE_CR only when the mirror
-              # is confirmed reachable; otherwise leave it unset so build-extensions falls
-              # back to docker.io via the #488 registry:2 sidecar (no hard-fail).
+              # build-extensions is ordered after cache-base-images (see job needs:), so
+              # the mirror is likely seeded by the time this probe runs; however the probe
+              # is still required as the graceful-degradation fallback for fork PRs (where
+              # cache-base-images is skipped) and any seed failure. Probe each version
+              # individually and set REMOTE_CR only when the mirror is confirmed reachable;
+              # otherwise leave it unset so build-extensions falls back to docker.io via
+              # the #488 registry:2 sidecar (no hard-fail).
               # Tag format: <major_version>-alpine  (matches the postgres base_suffix and
               # the tag the extension Dockerfiles reference via FROM ${REMOTE_CR}/library/postgres).
               REMOTE_CR=""
