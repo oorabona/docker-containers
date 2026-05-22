@@ -11,7 +11,10 @@
 #   R4. New-style source with tag (:) or digest (@) → REJECT
 #   R5. New-style source with uppercase letters → REJECT
 #   R6. New-style source with empty path component (leading/, trailing/, //) → REJECT
+#   R6d. New-style source allowlist ^[a-z0-9._/-]+$ → REJECT glob/shell metacharacters
 #   R7. REMOTE_CR in build_args → REJECT (trust-boundary: must only come from CI override)
+#   R7c (allowlist). build_args values must match ^[A-Za-z0-9._/:@+=-]+$ → REJECT
+#        glob metacharacters (* ? [ ] { }), shell expansions ($ ` \ ' "), and whitespace
 #   R8. Old-style entry with absent/empty arg → REJECT
 #
 # Discriminator: BINARY on ghcr_repo key — present and non-empty ⇒ OLD-style,
@@ -126,6 +129,19 @@ _vbc_validate_new_style_source() {
         ok=1
     fi
 
+    # R6d: source allowlist — must match ^[a-z0-9._/-]+$ (catch-all for shell metacharacters).
+    # This positive allowlist closes the glob/brace/parameter-expansion class for source:
+    # no * ? [ ] ( ) { } ~ $ \ ' " | & ; < > and no whitespace.
+    # Lowercase is already enforced by R5; the set [a-z0-9._/-] covers all valid OCI
+    # registry path components (library/postgres, hashicorp/terraform, 2-segment paths).
+    # Applied after the null/empty check so the error message is specific.
+    if [[ "$source" != "null" && -n "$source" ]] && \
+       [[ ! "$source" =~ ^[a-z0-9._/-]+$ ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains shell-unsafe characters. Source must match ^[a-z0-9._/-]+$ (lowercase letters, digits, dot, underscore, hyphen, slash only — no glob metacharacters or shell-special characters)."
+        ok=1
+    fi
+
     return $ok
 }
 
@@ -210,10 +226,9 @@ _vbc_validate_build_args_config() {
     fi
 
     # R7c: every value must be a scalar (string/number/boolean — NOT object/array/null)
-    # AND must contain no whitespace (\\s covers space/tab/newline/CR).
+    # AND must match the safe character allowlist when converted to string.
     #
-    # Two-stage check: object/array values whose tostring has no whitespace would
-    # silently pass the whitespace gate alone, so type is checked first.
+    # Two-stage check: object/array values must be rejected by type first.
     local scalars_ok
     if ! scalars_ok=$(printf '%s' "$bargs_json" | \
             jq -r 'to_entries | all(.value | type | . == "string" or . == "number" or . == "boolean")' \
@@ -233,9 +248,16 @@ _vbc_validate_build_args_config() {
         errors=1
     fi
 
+    # R7c (allowlist): every scalar value must match ^[A-Za-z0-9._/:@+=-]+$ after tostring.
+    # This positive allowlist closes the entire shell-expansion class in one rule:
+    # no whitespace, no glob metacharacters (* ? [ ] ( ) { } ~ $ \ ' "),
+    # no brace/tilde/parameter expansion characters, no pipe/semicolon/redirect.
+    # Covers all legitimate values: image refs (ghcr.io/foo/bar:tag), versions
+    # (8.5.6-fpm-alpine), names (postgres), numerics (4).
+    # An empty string value is also rejected (requires at least one character).
     local vals_ok
     if ! vals_ok=$(printf '%s' "$bargs_json" | \
-            jq -r 'to_entries | all(.value | tostring | test("\\s") | not)' 2>/dev/null); then
+            jq -r 'to_entries | all(.value | tostring | test("^[A-Za-z0-9._/:@+=-]+$"))' 2>/dev/null); then
         printf 'ERROR [%s]: jq failed to validate build_args values — treating as validation failure.\n' \
             "$container" >&2
         return 1
@@ -243,11 +265,11 @@ _vbc_validate_build_args_config() {
     if [[ "$vals_ok" != "true" ]]; then
         local bad_vals
         bad_vals=$(printf '%s' "$bargs_json" | \
-            jq -r 'to_entries[] | select(.value | tostring | test("\\s")) | "\(.key)=\(.value)"' \
+            jq -r 'to_entries[] | select(.value | tostring | test("^[A-Za-z0-9._/:@+=-]+$") | not) | "\(.key)=\(.value)"' \
             2>/dev/null)
-        printf 'ERROR [%s]: build_args contains value(s) with whitespace (space/tab/newline/CR): %s\n' \
+        printf 'ERROR [%s]: build_args contains value(s) with shell-unsafe characters: %s\n' \
             "$container" "$bad_vals" >&2
-        printf '  Whitespace in a value injects extra docker CLI tokens when expanded unquoted.\n' >&2
+        printf '  Values must match ^[A-Za-z0-9._/:@+=-]+$ (no whitespace, glob chars, or shell metacharacters).\n' >&2
         errors=1
     fi
 

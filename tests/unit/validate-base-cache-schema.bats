@@ -22,6 +22,14 @@
 #   VBC-12: container dir name with slash → REJECT (defensive invariant)
 #   VBC-13: new-style source with leading slash → REJECT (empty path component)
 #   VBC-14: new-style source with trailing slash → REJECT (empty path component)
+#   VBC-R7C-GLOB-01: build_args value with glob * → REJECT (R7c allowlist)
+#   VBC-R7C-GLOB-02: build_args value with glob ? → REJECT (R7c allowlist)
+#   VBC-R7C-BRACE-01: build_args value with brace expansion → REJECT (R7c allowlist)
+#   VBC-R7C-CMD-01: build_args value with $() command substitution → REJECT (R7c allowlist)
+#   VBC-R7C-CMD-02: build_args value with backtick substitution → REJECT (R7c allowlist)
+#   VBC-R7C-EMPTY-01: build_args value that is an empty string → REJECT (R7c allowlist)
+#   VBC-SRC-GLOB-01: new-style source with glob * → REJECT (R6d allowlist)
+#   VBC-SRC-GLOB-02: new-style source with glob ? → REJECT (R6d allowlist)
 
 setup() {
     TEST_DIR=$(mktemp -d)
@@ -513,6 +521,85 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
+# ─── FIX 3: build_args value positive allowlist (R7c — glob/shell metacharacters) ─
+
+# VBC-R7C-GLOB-01 (RED→GREEN): value with glob * → REJECT
+# "ubuntu*" passes the whitespace check but glob-expands when unquoted in a shell.
+# The positive allowlist ^[A-Za-z0-9._/:@+=-]+$ has no *, so it rejects this.
+@test "VBC-R7C-GLOB-01: build_args value with glob asterisk → REJECT (R7c allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "*"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-GLOB-02 (RED→GREEN): value with glob ? → REJECT
+@test "VBC-R7C-GLOB-02: build_args value with glob question mark → REJECT (R7c allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "a?b"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-BRACE-01 (RED→GREEN): value with brace expansion → REJECT
+# "a{b,c}" passes whitespace check; in an unquoted shell context it expands to "ab ac".
+@test "VBC-R7C-BRACE-01: build_args value with brace expansion → REJECT (R7c allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "a{b,c}"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-CMD-01 (RED→GREEN): value with $() command substitution → REJECT
+# $(id) passes whitespace check; shell would execute id when expanded unquoted.
+@test "VBC-R7C-CMD-01: build_args value with dollar-paren command substitution → REJECT (R7c allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "$(id)"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-CMD-02 (RED→GREEN): value with backtick substitution → REJECT
+@test "VBC-R7C-CMD-02: build_args value with backtick command substitution → REJECT (R7c allowlist)" {
+    # shellcheck disable=SC2016
+    make_container "myapp" 'build_args:
+  BASE_IMAGE: "`id`"
+'
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-EMPTY-01 (RED→GREEN): value that is an empty string → REJECT
+# An empty build_arg value is unusual and semantically void; reject to avoid
+# silent misconfigurations that produce --build-arg KEY= (empty injection).
+@test "VBC-R7C-EMPTY-01: build_args value that is an empty string → REJECT (R7c allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: ""
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
 # VBC-R7B-PASS: valid identifier keys (php real config pattern) → PASS
 @test "VBC-R7B-PASS: multiple valid ARG identifier keys (php pattern) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
@@ -622,6 +709,36 @@ EOF
 )"
     run validate_container_base_cache_schema "myapp"
     [ "$status" -ne 0 ]
+}
+
+# ─── FIX 3: source positive allowlist (R6d — glob/shell metacharacters) ──────────
+
+# VBC-SRC-GLOB-01 (RED→GREEN): source with glob * → REJECT (R6d allowlist)
+# "lib*/postgres" passes the whitespace and uppercase checks but glob-expands
+# when used unquoted in a shell imagetools/skopeo reference.
+@test "VBC-SRC-GLOB-01: new-style source with glob asterisk → REJECT (R6d allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: "lib*/postgres"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-SRC-GLOB-02 (RED→GREEN): source with glob ? → REJECT (R6d allowlist)
+@test "VBC-SRC-GLOB-02: new-style source with glob question mark → REJECT (R6d allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: "library/postgr?s"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
 }
 
 # VBC-SRC-PASS: valid whitespace-free scalar source → PASS (regression lock)
