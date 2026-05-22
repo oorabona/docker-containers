@@ -21,10 +21,12 @@
 #   base_image_cache:
 #     - source: library/postgres   # FULL upstream path (used as GHCR dest path)
 #       tags_from_versions: true   # or tags: ["..."]
-#   → get_cache_build_args emits --build-arg REMOTE_CR=ghcr.io/<owner> (once per container)
+#   → emit_reachable_cache_args emits --build-arg REMOTE_CR=ghcr.io/<owner> (once per container)
 #   → collect_all_cache_images dest: ghcr.io/<owner>/library/postgres:<tag>
 #
 # Discriminator: ghcr_repo key ABSENT ⇒ NEW style. PRESENT ⇒ OLD style (takes precedence).
+# Build-arg emission: emit_reachable_cache_args is the SOLE emitter (per-entry probe-gated,
+# validated). Do not add a second emitter.
 
 set -euo pipefail
 
@@ -199,56 +201,6 @@ collect_all_cache_images() {
     echo "$all_images" | jq -c 'unique_by(.ghcr_image)'
 }
 
-# Get --build-arg flags for a container's cached base images
-# Usage: get_cache_build_args <container_dir> <owner> [build_version]
-#   container_dir: e.g. "./ansible"
-#   owner:         GHCR owner, e.g. "oorabona"
-#   build_version: detected version (for resolving ${VERSION} in tags)
-# Output: space-separated --build-arg flags, e.g.:
-#   --build-arg BASE_IMAGE=ghcr.io/oorabona/ubuntu-base          (tags: ["latest"])
-#   --build-arg ALPINE_BASE=ghcr.io/oorabona/alpine-base:3.21    (tags: ["3.21"])
-get_cache_build_args() {
-    local container_dir="$1"
-    local owner="$2"
-    local build_version="${3:-latest}"
-    local config_file="$container_dir/config.yaml"
-
-    [[ ! -f "$config_file" ]] && return 0
-    has_base_cache "$container_dir" || return 0
-
-    local entry_count
-    entry_count=$(yq -r '.base_image_cache | length' "$config_file")
-
-    local args=""
-    local remote_cr_emitted=false
-
-    for ((i = 0; i < entry_count; i++)); do
-        local ghcr_repo
-        ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
-
-        if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
-            # NEW style (no ghcr_repo): emit a single REMOTE_CR pointing to the registry root.
-            # De-duplicate: only emit once per container regardless of how many new-style entries.
-            # Never include tag — the Dockerfile resolves the full image ref via REMOTE_CR + source path.
-            # Handles: absent key (yq → "null"), explicit nil (yq → "null"), empty string ("").
-            if [[ "$remote_cr_emitted" == "false" ]]; then
-                args+=" --build-arg REMOTE_CR=ghcr.io/${owner}"
-                remote_cr_emitted=true
-            fi
-        else
-            # OLD style (ghcr_repo PRESENT): emit per-arg flag with dedicated repo path.
-            # Never include tag — all Dockerfiles use Two-ARG pattern
-            # (tag comes from separate ARG or is hardcoded in FROM)
-            # The tags[] field in config.yaml is for the cache job, not build-args
-            local arg
-            arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
-            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
-        fi
-    done
-
-    echo "$args"
-}
-
 # Resolve the tag to use when verifying a GHCR cache entry is accessible.
 # For tags_from_versions entries (e.g. postgres), there is no tags[] array —
 # the GHCR copy uses the build_version as the tag (e.g. "18-alpine").
@@ -330,8 +282,7 @@ remote_cr_applicable() {
 # Usage: emit_reachable_cache_args <config_file> <owner> <build_version> [flag0 flag1 ...]
 #   config_file:   path to the container's config.yaml
 #   owner:         GHCR owner (e.g. "oorabona")
-#   build_version: version string for REMOTE_CR tag resolution (unused for arg emission
-#                  itself, kept for signature consistency with get_cache_build_args)
+#   build_version: version string (accepted for API symmetry; unused for arg value construction)
 #   flagN:         "true" or "false" per base_image_cache entry, in index order.
 #                  If fewer flags than entries are provided, missing flags default to "false".
 # Output: space-separated --build-arg flags (empty string if nothing reachable)
@@ -421,4 +372,4 @@ resolve_cache_check_tag() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images get_cache_build_args resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args

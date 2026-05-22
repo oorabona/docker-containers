@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 
 # Unit tests for helpers/base-cache-utils.sh
-# Covers: resolve_cache_check_tag — tag resolution for GHCR accessibility checks
-#         get_cache_build_args    — --build-arg emission for old and new entry styles
+# Covers: resolve_cache_check_tag  — tag resolution for GHCR accessibility checks
+#         emit_reachable_cache_args — --build-arg emission (sole validated emitter)
+#         remote_cr_applicable      — REMOTE_CR applicability decision (pure function)
 #         collect_all_cache_images / _collect_entry_tags — image dest path for old and new styles
 
 setup() {
@@ -119,87 +120,6 @@ EOF
     [ "$output" = "3.21" ]
 }
 
-# --- get_cache_build_args: old-style (regression lock) ---
-
-# BCU-07: OLD-style entry (has ghcr_repo) emits --build-arg ARG=ghcr.io/<owner>/<ghcr_repo>
-# Byte-identical to pre-dual-schema behaviour — mutation guard
-@test "BCU-07: OLD-style entry emits --build-arg with ghcr_repo path (regression lock)" {
-    mkdir -p mycontainer
-    cat > mycontainer/config.yaml <<'EOF'
-base_image_cache:
-  - arg: BASE_IMAGE
-    source: ubuntu
-    ghcr_repo: ubuntu-base
-    tags: ["latest"]
-EOF
-
-    run get_cache_build_args "mycontainer" "myowner" "22.04"
-    [ "$status" -eq 0 ]
-    [ "$output" = " --build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base" ]
-}
-
-# --- get_cache_build_args: new-style ---
-
-# BCU-08: NEW-style entry (no ghcr_repo) emits REMOTE_CR=ghcr.io/<owner>
-@test "BCU-08: NEW-style entry (no ghcr_repo) emits --build-arg REMOTE_CR=ghcr.io/<owner>" {
-    mkdir -p pgcontainer
-    cat > pgcontainer/config.yaml <<'EOF'
-base_image_cache:
-  - source: library/postgres
-    tags_from_versions: true
-EOF
-
-    run get_cache_build_args "pgcontainer" "myowner" "18-alpine"
-    [ "$status" -eq 0 ]
-    # Must contain REMOTE_CR pointing to registry root (no ghcr_repo segment)
-    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
-    # Must NOT contain a per-arg flag from arg: field (new-style has no arg:)
-    [[ "$output" != *"--build-arg BASE_IMAGE"* ]]
-}
-
-# BCU-09: NEW-style with multiple entries — REMOTE_CR emitted exactly ONCE (de-duplicated)
-@test "BCU-09: multiple NEW-style entries emit REMOTE_CR exactly once" {
-    mkdir -p multicontainer
-    cat > multicontainer/config.yaml <<'EOF'
-base_image_cache:
-  - source: library/postgres
-    tags_from_versions: true
-  - source: library/alpine
-    tags: ["3.21"]
-EOF
-
-    run get_cache_build_args "multicontainer" "myowner" "18-alpine"
-    [ "$status" -eq 0 ]
-    # Count occurrences of REMOTE_CR in output
-    count=$(echo "$output" | grep -o "REMOTE_CR" | wc -l)
-    [ "$count" -eq 1 ]
-}
-
-# BCU-10: MIXED config — one old-style + one new-style
-# Old emits its per-arg flag; new emits REMOTE_CR; both present in output
-@test "BCU-10: MIXED old+new entries — old emits per-arg flag, new emits REMOTE_CR" {
-    mkdir -p mixcontainer
-    cat > mixcontainer/config.yaml <<'EOF'
-base_image_cache:
-  - arg: BASE_IMAGE
-    source: ubuntu
-    ghcr_repo: ubuntu-base
-    tags: ["latest"]
-  - source: library/postgres
-    tags_from_versions: true
-EOF
-
-    run get_cache_build_args "mixcontainer" "myowner" "22.04"
-    [ "$status" -eq 0 ]
-    # Old-style flag present
-    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
-    # New-style REMOTE_CR present
-    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
-    # REMOTE_CR emitted exactly once
-    count=$(echo "$output" | grep -o "REMOTE_CR" | wc -l)
-    [ "$count" -eq 1 ]
-}
-
 # --- collect_all_cache_images / _collect_entry_tags: new-style dest path ---
 
 # BCU-11: NEW-style entry → ghcr_image dest preserves source path (library/postgres)
@@ -277,24 +197,7 @@ EOF
 }
 
 # --- F-001 discriminator robustness: empty-string and explicit-nil ghcr_repo ---
-
-# BCU-14: entry with ghcr_repo: "" (empty string) → routed as NEW style
-# Must emit REMOTE_CR, NOT --build-arg null=... or --build-arg =...
-@test "BCU-14: ghcr_repo empty string is routed to NEW style (emits REMOTE_CR, not 'null')" {
-    mkdir -p emptyrepo
-    cat > emptyrepo/config.yaml <<'EOF'
-base_image_cache:
-  - source: library/postgres
-    ghcr_repo: ""
-    tags_from_versions: true
-EOF
-
-    run get_cache_build_args "emptyrepo" "myowner" "18-alpine"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
-    [[ "$output" != *"--build-arg null="* ]]
-    [[ "$output" != *"--build-arg ="* ]]
-}
+# These cases are fully covered via emit_reachable_cache_args + remote_cr_applicable tests below.
 
 # --- remote_cr_applicable: pure decision helper ---
 
@@ -401,7 +304,6 @@ EOF
 # --- emit_reachable_cache_args: per-entry filtered arg emitter ---
 
 # BCU-22: all old-style entries reachable → all --build-arg flags emitted (regression lock)
-# Verifies full-reachable old-style behaviour is identical to get_cache_build_args output.
 @test "BCU-22: emit_reachable_cache_args — all old-style reachable → all args emitted" {
     mkdir -p oldall
     cat > oldall/config.yaml <<'EOF'
@@ -599,23 +501,6 @@ EOF
     # Flag is "false" (entry unreachable) — but arg is still validated
     run emit_reachable_cache_args "badarg5/config.yaml" "myowner" "22.04" "false"
     [ "$status" -ne 0 ]
-}
-
-# BCU-15: entry with explicit ghcr_repo: (nil in YAML) → routed as NEW style
-@test "BCU-15: explicit ghcr_repo nil is routed to NEW style (emits REMOTE_CR, not 'null')" {
-    mkdir -p nilrepo
-    cat > nilrepo/config.yaml <<'EOF'
-base_image_cache:
-  - source: library/postgres
-    ghcr_repo:
-    tags_from_versions: true
-EOF
-
-    run get_cache_build_args "nilrepo" "myowner" "18-alpine"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
-    [[ "$output" != *"--build-arg null="* ]]
-    [[ "$output" != *"--build-arg ="* ]]
 }
 
 # ─── FIX A: ghcr_repo injection prevention in emit_reachable_cache_args ──────
