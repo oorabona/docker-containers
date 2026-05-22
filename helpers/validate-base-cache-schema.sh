@@ -16,6 +16,14 @@
 #   R7c (allowlist). build_args values must match ^[A-Za-z0-9._/:@+=-]+$ → REJECT
 #        glob metacharacters (* ? [ ] { }), shell expansions ($ ` \ ' "), and whitespace
 #   R8. Old-style entry with absent/empty arg → REJECT
+#   R9. Old-style ghcr_repo allowlist ^[a-z0-9._/-]+$ → REJECT shell metacharacters/spaces
+#        A value like "ubuntu-base --network host" would inject extra docker flags when
+#        interpolated into --build-arg ARG=ghcr.io/<owner>/<ghcr_repo>.
+#  R10. tags[] values allowlist — raw config tag (before template resolution) must match
+#        ^([A-Za-z0-9._-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$
+#        Allows literal tags (18-alpine, latest, 3.21) and ${IDENT} template placeholders
+#        (${RUBY_VERSION}-alpine${ALPINE_VERSION}). Rejects any embedded space, flag
+#        injection, shell metacharacters, or malformed placeholders.
 #
 # Discriminator: BINARY on ghcr_repo key — present and non-empty ⇒ OLD-style,
 # absent / null / empty ⇒ NEW-style. A slash in source is a valid Docker Hub
@@ -141,6 +149,90 @@ _vbc_validate_new_style_source() {
             "new-style source '${source}' contains shell-unsafe characters. Source must match ^[a-z0-9._/-]+$ (lowercase letters, digits, dot, underscore, hyphen, slash only — no glob metacharacters or shell-special characters)."
         ok=1
     fi
+
+    return $ok
+}
+
+# ---------------------------------------------------------------------------
+# _vbc_validate_old_style_ghcr_repo <container> <entry_index> <ghcr_repo>
+# Validates the ghcr_repo field of an OLD-style base_image_cache entry.
+#
+# R9: ghcr_repo must match ^[a-z0-9._/-]+$ — the same allowlist used for
+# new-style source. This rejects any embedded space, shell metacharacter, flag
+# token, or control character that would be injected when ghcr_repo is
+# interpolated into:
+#   --build-arg ARG=ghcr.io/<owner>/<ghcr_repo>
+# Example attack: "ubuntu-base --network host" → injects "--network host" as
+# extra docker build arguments.
+#
+# Returns 0 on success, 1 on violation (error already printed to stderr).
+# ---------------------------------------------------------------------------
+_vbc_validate_old_style_ghcr_repo() {
+    local container="$1"
+    local idx="$2"
+    local ghcr_repo="$3"
+
+    if [[ ! "$ghcr_repo" =~ ^[a-z0-9._/-]+$ ]]; then
+        _vbc_error "$container" "$idx" \
+            "old-style ghcr_repo '${ghcr_repo}' contains shell-unsafe characters. ghcr_repo must match ^[a-z0-9._/-]+$ (lowercase letters, digits, dot, underscore, hyphen, slash only — no spaces, glob metacharacters, or shell-special characters). A value like 'ubuntu-base --network host' would inject extra docker CLI flags."
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _vbc_validate_tags_array <container> <entry_index> <config_file>
+# Validates the tags[] array of a base_image_cache entry (old or new style).
+#
+# R10: each raw tag value (before ${...} template resolution) must match:
+#   ^([A-Za-z0-9._-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$
+#
+# This allowlist:
+# - Allows literal tags: latest, 18-alpine, 3.21, noble, 24.04, 3.12-alpine
+# - Allows ${IDENT} template placeholders: ${VERSION}, ${RUBY_VERSION},
+#   ${ALPINE_VERSION}, ${UPSTREAM_VERSION}, ${COMPOSER_VERSION}
+# - Allows composite templates: ${RUBY_VERSION}-alpine${ALPINE_VERSION}
+# - Rejects: any embedded space ("18 --network host"), semicolons, dollar signs
+#   not followed by a valid {IDENT}, backticks, and other shell metacharacters.
+#
+# Called for both old-style and new-style entries that carry a tags[] field.
+# Entries using tags_from_versions: true have no tags[] to validate (skipped).
+#
+# Returns 0 if all tags pass, 1 on any violation (errors printed to stderr).
+# ---------------------------------------------------------------------------
+_vbc_validate_tags_array() {
+    local container="$1"
+    local idx="$2"
+    local config_file="$3"
+    local ok=0
+
+    local tags_from_versions
+    tags_from_versions=$(yq -r ".base_image_cache[$idx].tags_from_versions // false" "$config_file" 2>/dev/null)
+    if [[ "$tags_from_versions" == "true" ]]; then
+        # Tags derived from versions.yaml — no tags[] array to validate here.
+        return 0
+    fi
+
+    local tag_count
+    tag_count=$(yq -r ".base_image_cache[$idx].tags | length // 0" "$config_file" 2>/dev/null)
+    # If tags key is absent (null → length returns 0), nothing to validate.
+    [[ "$tag_count" -eq 0 ]] && return 0
+
+    for ((k = 0; k < tag_count; k++)); do
+        local raw_tag
+        raw_tag=$(yq -r ".base_image_cache[$idx].tags[$k]" "$config_file" 2>/dev/null)
+
+        # R10: must match literal-or-placeholder allowlist.
+        # Pattern breakdown:
+        #   [A-Za-z0-9._-]             — literal tag character
+        #   \$\{[A-Za-z_][A-Za-z0-9_]*\}  — ${IDENT} placeholder
+        # The overall pattern must cover the ENTIRE string (+, anchored with ^ and $).
+        if [[ ! "$raw_tag" =~ ^([A-Za-z0-9._-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$ ]]; then
+            _vbc_error "$container" "$idx" \
+                "tags[$k] value '${raw_tag}' contains shell-unsafe characters or an invalid placeholder. Tags must match ^([A-Za-z0-9._-]|\\\${IDENT})+$ — literal tag characters or \${VARNAME} template placeholders only. Embedded spaces, semicolons, dollar signs not in \${IDENT} form, and other metacharacters are rejected (injection prevention). Valid examples: 'latest', '18-alpine', '\${VERSION}', '\${RUBY_VERSION}-alpine\${ALPINE_VERSION}'."
+            ok=1
+        fi
+    done
 
     return $ok
 }
@@ -351,15 +443,18 @@ validate_container_base_cache_schema() {
 
         if _vbc_is_new_style "$ghcr_repo"; then
             # NEW-style entry: ghcr_repo absent / null / empty
-            if _vbc_validate_new_style_source "$container" "$i" "$source"; then
-                : # all checks passed
-            else
+            if ! _vbc_validate_new_style_source "$container" "$i" "$source"; then
+                errors=1
+            fi
+            # R10: validate tags[] values (allow ${IDENT} template placeholders)
+            if ! _vbc_validate_tags_array "$container" "$i" "$config_file"; then
                 errors=1
             fi
         else
             # OLD-style entry: ghcr_repo present and non-empty.
             # A slash in source is valid (Docker Hub namespace, e.g. hashicorp/terraform).
-            # No source-format checks apply to old-style — only arg is required (R8).
+            # No source-format checks apply to old-style — only arg (R8), ghcr_repo (R9),
+            # and tags[] (R10) are validated.
 
             # R8: old-style must have a non-empty arg key
             local arg_val
@@ -375,6 +470,16 @@ validate_container_base_cache_schema() {
             elif [[ ! "$arg_val" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
                 _vbc_error "$container" "$i" \
                     "old-style entry (ghcr_repo='${ghcr_repo}') arg '${arg_val}' is not a valid Docker ARG identifier. Must match ^[A-Za-z_][A-Za-z0-9_]*$ (letters, digits, underscores only — no spaces or special characters). A value like 'FOO BAR' would inject extra docker CLI flags."
+                errors=1
+            fi
+
+            # R9: validate ghcr_repo against safe allowlist ^[a-z0-9._/-]+$
+            if ! _vbc_validate_old_style_ghcr_repo "$container" "$i" "$ghcr_repo"; then
+                errors=1
+            fi
+
+            # R10: validate tags[] values (allow ${IDENT} template placeholders)
+            if ! _vbc_validate_tags_array "$container" "$i" "$config_file"; then
                 errors=1
             fi
         fi
@@ -413,5 +518,6 @@ validate_all_containers_base_cache_schema() {
 
 # Export for use by sourcing scripts and subshells
 export -f _vbc_error _vbc_is_new_style _vbc_validate_new_style_source \
+    _vbc_validate_old_style_ghcr_repo _vbc_validate_tags_array \
     _vbc_validate_build_args_config \
     validate_container_base_cache_schema validate_all_containers_base_cache_schema

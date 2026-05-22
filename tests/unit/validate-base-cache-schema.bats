@@ -792,3 +792,235 @@ EOF
     run validate_container_base_cache_schema "myapp"
     [ "$status" -eq 0 ]
 }
+
+# ─── FIX A: old-style ghcr_repo allowlist (R9) ───────────────────────────────
+
+# VBC-R9-01 (RED→GREEN): ghcr_repo with embedded space + flag token → REJECT
+# The injection: "ubuntu-base --network host" would expand to:
+#   --build-arg BASE_IMAGE=ghcr.io/owner/ubuntu-base --network host
+# injecting extra docker CLI flags.
+@test "VBC-R9-01: old-style ghcr_repo with space+flag (injection) → REJECT (R9)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base --network host"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+    [[ "$output" =~ "ghcr_repo" ]]
+}
+
+# VBC-R9-02: ghcr_repo with embedded semicolon → REJECT
+@test "VBC-R9-02: old-style ghcr_repo with semicolon → REJECT (R9)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base;id"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "ghcr_repo" ]]
+}
+
+# VBC-R9-03: ghcr_repo with $ (parameter expansion attempt) → REJECT
+@test "VBC-R9-03: old-style ghcr_repo with dollar sign → REJECT (R9)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base$EXTRA"
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "ghcr_repo" ]]
+}
+
+# VBC-R9-PASS-01: valid ghcr_repo names (all current containers) → PASS
+@test "VBC-R9-PASS-01: valid old-style ghcr_repo names (ubuntu-base, ruby-base, etc.) → PASS" {
+    # Regression lock: all current container ghcr_repo values must pass
+    for repo in ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base; do
+        make_container "app-${repo}" "$(cat <<EOF
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: test
+    ghcr_repo: ${repo}
+    tags: ["latest"]
+EOF
+)"
+        run validate_container_base_cache_schema "app-${repo}"
+        [ "$status" -eq 0 ] || {
+            echo "FAILED for ghcr_repo=${repo}, output: $output"
+            return 1
+        }
+    done
+}
+
+# VBC-R9-PASS-02: valid ghcr_repo with slash (org/repo) → PASS
+@test "VBC-R9-PASS-02: old-style ghcr_repo with slash (org/repo) → PASS (R9 allows slash)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: hashicorp/terraform
+    ghcr_repo: terraform/base
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+# ─── FIX B: tags[] value allowlist (R10) ─────────────────────────────────────
+
+# VBC-R10-01 (RED→GREEN): tag with embedded space → REJECT
+# "18 --network host" has no injection path in the current CI (values are
+# double-quoted), but the value is still syntactically invalid as an OCI tag
+# and is rejected to close the class entirely.
+@test "VBC-R10-01: tags value with embedded space → REJECT (R10)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["18 --network host"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "tags" ]]
+}
+
+# VBC-R10-02: tag with semicolon → REJECT
+@test "VBC-R10-02: tags value with semicolon → REJECT (R10)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest;id"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "tags" ]]
+}
+
+# VBC-R10-03: tag with bare $ (not a valid ${IDENT} placeholder) → REJECT
+@test "VBC-R10-03: tags value with bare dollar sign (not a valid placeholder) → REJECT (R10)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["$VERSION"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "tags" ]]
+}
+
+# VBC-R10-04: tag with new-style entry → REJECT propagates via new-style path too
+@test "VBC-R10-04: new-style entry tags value with injection chars → REJECT (R10)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags: ["18 --network host"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "tags" ]]
+}
+
+# VBC-R10-PASS-01: literal tags → PASS (regression lock)
+@test "VBC-R10-PASS-01: literal tags (latest, 18-alpine, 3.21, noble, 9) → PASS" {
+    for tag in latest 18-alpine 3.21 noble 9 24.04 3.12-alpine; do
+        make_container "app-tag-$(echo "$tag" | tr '.' '-')" "$(cat <<EOF
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["${tag}"]
+EOF
+)"
+        run validate_container_base_cache_schema "app-tag-$(echo "$tag" | tr '.' '-')"
+        [ "$status" -eq 0 ] || {
+            echo "FAILED for tag=${tag}, output: $output"
+            return 1
+        }
+    done
+}
+
+# VBC-R10-PASS-02: ${VERSION} placeholder → PASS
+@test "VBC-R10-PASS-02: tags with \${VERSION} placeholder → PASS (R10 template allowlist)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: hashicorp/terraform
+    ghcr_repo: terraform-base
+    tags: ["${VERSION}"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+# VBC-R10-PASS-03 (CRITICAL regression lock): jekyll composite template tag → PASS
+# "ruby-base" with tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"] is the
+# real jekyll config. This MUST pass — the composite template mixes literal
+# text ("-alpine") with two ${IDENT} placeholders.
+@test "VBC-R10-PASS-03: jekyll composite template tag \${RUBY_VERSION}-alpine\${ALPINE_VERSION} → PASS (regression lock)" {
+    make_container "jekyll" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ruby
+    ghcr_repo: ruby-base
+    tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"]
+EOF
+)"
+    run validate_container_base_cache_schema "jekyll"
+    [ "$status" -eq 0 ]
+}
+
+# VBC-R10-PASS-04: ${UPSTREAM_VERSION} placeholder (terraform pattern) → PASS
+@test "VBC-R10-PASS-04: tags with \${UPSTREAM_VERSION} placeholder → PASS (terraform pattern)" {
+    make_container "terraform" "$(cat <<'EOF'
+base_image_cache:
+  - arg: TERRAFORM_BASE
+    source: hashicorp/terraform
+    ghcr_repo: terraform-base
+    tags: ["${UPSTREAM_VERSION}"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["latest"]
+  - arg: PYTHON_BASE
+    source: python
+    ghcr_repo: python-base
+    tags: ["3.12-alpine"]
+EOF
+)"
+    run validate_container_base_cache_schema "terraform"
+    [ "$status" -eq 0 ]
+}
+
+# VBC-R10-PASS-05: tags_from_versions=true (no tags[] to validate) → PASS
+@test "VBC-R10-PASS-05: tags_from_versions=true entries skip tag validation → PASS" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}

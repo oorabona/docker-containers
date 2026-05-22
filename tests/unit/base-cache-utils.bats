@@ -617,3 +617,81 @@ EOF
     [[ "$output" != *"--build-arg null="* ]]
     [[ "$output" != *"--build-arg ="* ]]
 }
+
+# ─── FIX A: ghcr_repo injection prevention in emit_reachable_cache_args ──────
+
+# BCU-GHCR-01 (RED→GREEN): old-style entry with malicious ghcr_repo → non-zero, no flag emitted
+# The attack: "ubuntu-base --network host" expands in the flag string to:
+#   --build-arg BASE_IMAGE=ghcr.io/owner/ubuntu-base --network host
+# which would inject extra docker flags silently.
+# After the fix, emit_reachable_cache_args must return non-zero and emit nothing.
+@test "BCU-GHCR-01: emit_reachable_cache_args — ghcr_repo with space+flag → non-zero + no flag (injection prevention)" {
+    mkdir -p badrepo
+    cat > badrepo/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base --network host"
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badrepo/config.yaml" "myowner" "22.04" "true"
+    # Must fail closed (non-zero exit)
+    [ "$status" -ne 0 ]
+    # Must not emit any --build-arg flag (no partial emission)
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-GHCR-02: ghcr_repo with semicolon → non-zero
+@test "BCU-GHCR-02: emit_reachable_cache_args — ghcr_repo with semicolon → non-zero" {
+    mkdir -p badrepo2
+    cat > badrepo2/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base;id"
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badrepo2/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-GHCR-03: malicious ghcr_repo in unreachable entry → still non-zero (no silent skip)
+# Mirrors BCU-FIX2-05: validation runs regardless of the probe flag.
+@test "BCU-GHCR-03: emit_reachable_cache_args — bad ghcr_repo in unreachable entry → non-zero (no silent skip)" {
+    mkdir -p badrepo3
+    cat > badrepo3/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base --network host"
+    tags: ["latest"]
+EOF
+    # Flag is "false" (entry unreachable) — ghcr_repo is still validated
+    run emit_reachable_cache_args "badrepo3/config.yaml" "myowner" "22.04" "false"
+    [ "$status" -ne 0 ]
+}
+
+# BCU-GHCR-PASS: valid ghcr_repo values (all current containers) → exit 0 + correct flag
+@test "BCU-GHCR-PASS: emit_reachable_cache_args — all valid old-style ghcr_repo names → PASS" {
+    local repos="ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base"
+    for repo in $repos; do
+        mkdir -p "valrepo-${repo}"
+        cat > "valrepo-${repo}/config.yaml" <<EOF
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: test
+    ghcr_repo: ${repo}
+    tags: ["latest"]
+EOF
+        run emit_reachable_cache_args "valrepo-${repo}/config.yaml" "myowner" "1.0" "true"
+        [ "$status" -eq 0 ] || {
+            echo "FAILED for ghcr_repo=${repo}, output: $output"
+            return 1
+        }
+        [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/${repo}"* ]] || {
+            echo "MISSING flag for ghcr_repo=${repo}, output: $output"
+            return 1
+        }
+    done
+}
