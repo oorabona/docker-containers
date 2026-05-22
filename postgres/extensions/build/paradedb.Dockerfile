@@ -16,9 +16,11 @@
 # musl libc, which is required for pgrx dynamic loading on Alpine.
 # See: https://github.com/pgcentralfoundation/pgrx/pull/362
 
+ARG REMOTE_CR=docker.io
 ARG MAJOR_VERSION
-FROM postgres:${MAJOR_VERSION}-alpine AS builder
+FROM ${REMOTE_CR}/library/postgres:${MAJOR_VERSION}-alpine AS builder
 
+ARG REMOTE_CR
 ARG MAJOR_VERSION
 ARG EXT_VERSION
 ARG EXT_REPO

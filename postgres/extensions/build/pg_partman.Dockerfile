@@ -4,9 +4,11 @@
 # pg_partman provides automatic partition management for time-series
 # and serial-based table partitioning
 
+ARG REMOTE_CR=docker.io
 ARG MAJOR_VERSION
-FROM postgres:${MAJOR_VERSION}-alpine AS builder
+FROM ${REMOTE_CR}/library/postgres:${MAJOR_VERSION}-alpine AS builder
 
+ARG REMOTE_CR
 ARG EXT_VERSION
 ARG EXT_REPO
 ARG MAJOR_VERSION
