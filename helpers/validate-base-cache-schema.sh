@@ -1,0 +1,227 @@
+#!/bin/bash
+# validate-base-cache-schema.sh
+# Static schema-validation guard for base_image_cache entries in config.yaml files.
+#
+# Enforces the dual-schema invariants to prevent malformed or ambiguous configs
+# from merging. Called by validate-version-scripts.sh and directly in CI.
+#
+# Rules enforced:
+#   R2. New-style source without slash → REJECT (would collide with a single-segment name)
+#   R3. New-style source with registry prefix (dot or colon before first /) → REJECT
+#   R4. New-style source with tag (:) or digest (@) → REJECT
+#   R5. New-style source with uppercase letters → REJECT
+#   R6. New-style source with empty path component (leading/, trailing/, //) → REJECT
+#   R7. REMOTE_CR in build_args → REJECT (trust-boundary: must only come from CI override)
+#   R8. Old-style entry with absent/empty arg → REJECT
+#
+# Discriminator: BINARY on ghcr_repo key — present and non-empty ⇒ OLD-style,
+# absent / null / empty ⇒ NEW-style. A slash in source is a valid Docker Hub
+# namespace separator for either style (e.g. hashicorp/terraform in old-style).
+# This matches base-cache-utils.sh exactly:
+#   [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]
+#
+# Deferred (not validated here):
+#   - Dockerfile FROM implicit docker.io registry prefix check
+#     (migrated-Dockerfile check is a later step in the validation pipeline)
+#
+# Usage:
+#   source helpers/validate-base-cache-schema.sh
+#   validate_container_base_cache_schema <container_dir>  # → 0 = ok, non-0 = error
+#   validate_all_containers_base_cache_schema <root_dir>  # → 0 = all ok, 1 = any error
+#
+# Note: intentionally does NOT set -euo pipefail — this file is sourced into
+# validate-version-scripts.sh which manages its own error-handling mode.
+
+# ---------------------------------------------------------------------------
+# _vbc_error <container> <entry_index> <message>
+# Prints a structured error to stderr and returns non-zero.
+# ---------------------------------------------------------------------------
+_vbc_error() {
+    local container="$1"
+    local idx="$2"
+    local msg="$3"
+    printf 'ERROR [%s] base_image_cache[%s]: %s\n' "$container" "$idx" "$msg" >&2
+}
+
+# ---------------------------------------------------------------------------
+# _vbc_is_new_style <ghcr_repo_value>
+# Returns 0 (true) if the value indicates NEW-style (absent / null / empty).
+# Mirrors the discriminator in base-cache-utils.sh exactly.
+# ---------------------------------------------------------------------------
+_vbc_is_new_style() {
+    local ghcr_repo="$1"
+    [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]
+}
+
+# ---------------------------------------------------------------------------
+# _vbc_validate_new_style_source <container> <entry_index> <source>
+# Validates a NEW-style source value against all format rules.
+# Returns 0 on success, 1 on any violation (error already printed to stderr).
+# ---------------------------------------------------------------------------
+_vbc_validate_new_style_source() {
+    local container="$1"
+    local idx="$2"
+    local source="$3"
+    local ok=0
+
+    # R2: must contain a slash (at least one path component separator)
+    if [[ "$source" != */* ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' has no slash — must be a full path (e.g. library/postgres). Without a slash it would collide with a single-segment image name."
+        ok=1
+    fi
+
+    # R3: registry prefix — a dot or colon appearing before the first slash
+    #     e.g. docker.io/... ghcr.io/... localhost:5000/...
+    local prefix_segment="${source%%/*}"
+    if [[ "$prefix_segment" == *"."* || "$prefix_segment" == *":"* ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains a registry prefix ('${prefix_segment}') before the first slash. The source must be a bare path without a registry host."
+        ok=1
+    fi
+
+    # R4: tag (colon anywhere in source)
+    if [[ "$source" == *:* ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains a colon — tags must not be embedded in source. Use the tags[] or tags_from_versions field instead."
+        ok=1
+    fi
+
+    # R4b: digest (@ anywhere in source)
+    if [[ "$source" == *@* ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains '@' — digests must not be embedded in source."
+        ok=1
+    fi
+
+    # R5: uppercase letters
+    if [[ "$source" =~ [A-Z] ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' contains uppercase letters — OCI image names must be lowercase."
+        ok=1
+    fi
+
+    # R6: empty path components — leading slash, trailing slash, or double slash
+    if [[ "$source" == /* || "$source" == */ || "$source" == *//* ]]; then
+        _vbc_error "$container" "$idx" \
+            "new-style source '${source}' has an empty path component (leading slash, trailing slash, or '//'). Each path component must be non-empty."
+        ok=1
+    fi
+
+    return $ok
+}
+
+# ---------------------------------------------------------------------------
+# validate_container_base_cache_schema <container_dir>
+# Validates a single container's config.yaml base_image_cache section.
+# Prints errors to stderr; returns 0 if clean, 1 on any violation.
+# ---------------------------------------------------------------------------
+validate_container_base_cache_schema() {
+    local container_dir="$1"
+
+    # Defensive: container dir name must not contain a slash (repo invariant)
+    local container_name
+    container_name="$(basename "$container_dir")"
+    if [[ "$container_dir" == */* && "$container_name" != "$container_dir" ]]; then
+        # Allow paths like "./myapp" or "subdir/myapp" — the name itself must be slash-free
+        if [[ "$container_name" == */* ]]; then
+            printf 'ERROR [%s]: container dir name contains a slash — repository invariant violated.\n' \
+                "$container_dir" >&2
+            return 1
+        fi
+    fi
+    # Reject names that are themselves slash-bearing (e.g. "a/b" passed directly)
+    if [[ "$container_dir" =~ ^[^/]+/[^/]+ ]] && [[ ! -d "$container_dir" ]]; then
+        printf 'ERROR [%s]: container dir does not exist or name is invalid.\n' \
+            "$container_dir" >&2
+        return 1
+    fi
+    if [[ ! -d "$container_dir" ]]; then
+        printf 'ERROR [%s]: container directory does not exist.\n' "$container_dir" >&2
+        return 1
+    fi
+
+    local config_file="$container_dir/config.yaml"
+    local container
+    container="$(basename "$container_dir")"
+
+    # No config.yaml → nothing to validate
+    [[ ! -f "$config_file" ]] && return 0
+
+    local errors=0
+
+    # R7: REMOTE_CR must not appear in build_args (trust boundary)
+    local remote_cr_val
+    remote_cr_val=$(yq -r '.build_args.REMOTE_CR // "null"' "$config_file")
+    if [[ "$remote_cr_val" != "null" ]]; then
+        printf 'ERROR [%s]: REMOTE_CR found in build_args — this key must never appear in config.yaml. It is injected exclusively by the CI pipeline as a trusted override and must not be controllable via PR-committed config.\n' \
+            "$container" >&2
+        errors=1
+    fi
+
+    # Count base_image_cache entries
+    local entry_count
+    entry_count=$(yq -r '.base_image_cache | length // 0' "$config_file")
+
+    for ((i = 0; i < entry_count; i++)); do
+        local source ghcr_repo
+        source=$(yq -r ".base_image_cache[$i].source" "$config_file")
+        ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
+
+        if _vbc_is_new_style "$ghcr_repo"; then
+            # NEW-style entry: ghcr_repo absent / null / empty
+            if _vbc_validate_new_style_source "$container" "$i" "$source"; then
+                : # all checks passed
+            else
+                errors=1
+            fi
+        else
+            # OLD-style entry: ghcr_repo present and non-empty.
+            # A slash in source is valid (Docker Hub namespace, e.g. hashicorp/terraform).
+            # No source-format checks apply to old-style — only arg is required (R8).
+
+            # R8: old-style must have a non-empty arg key
+            local arg_val
+            arg_val=$(yq -r ".base_image_cache[$i].arg // \"\"" "$config_file")
+            if [[ -z "$arg_val" || "$arg_val" == "null" ]]; then
+                _vbc_error "$container" "$i" \
+                    "old-style entry (ghcr_repo='${ghcr_repo}') has absent or empty 'arg' key. This would produce a malformed --build-arg flag. Add a non-empty arg name (e.g. 'arg: BASE_IMAGE')."
+                errors=1
+            fi
+        fi
+    done
+
+    return $errors
+}
+
+# ---------------------------------------------------------------------------
+# validate_all_containers_base_cache_schema <root_dir>
+# Scans all container directories under root_dir (directories containing a
+# config.yaml) and validates each one.
+# Returns 0 if all containers are clean, 1 if any container has violations.
+# ---------------------------------------------------------------------------
+validate_all_containers_base_cache_schema() {
+    local root_dir="${1:-.}"
+    local overall=0
+
+    # Find all config.yaml files; derive container dirs from them.
+    # Exclude helpers/, archive/, .git/ — same exclusion pattern as validate-version-scripts.sh.
+    while IFS= read -r config_file; do
+        local container_dir
+        container_dir="$(dirname "$config_file")"
+        if ! validate_container_base_cache_schema "$container_dir"; then
+            overall=1
+        fi
+    done < <(find "$root_dir" -name "config.yaml" \
+        -not -path "*/.git/*" \
+        -not -path "*/helpers/*" \
+        -not -path "*/archive/*" \
+        -not -path "*/extensions/*" \
+        | sort)
+
+    return $overall
+}
+
+# Export for use by sourcing scripts and subshells
+export -f _vbc_error _vbc_is_new_style _vbc_validate_new_style_source \
+    validate_container_base_cache_schema validate_all_containers_base_cache_schema

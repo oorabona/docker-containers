@@ -9,6 +9,9 @@
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 
+# Source config schema guard (base_image_cache dual-schema validation)
+source "$(dirname "$0")/helpers/validate-base-cache-schema.sh"
+
 # Configuration
 # Increase timeouts in CI environments due to potential network latency
 if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -376,6 +379,19 @@ main() {
         echo ""
     fi
     
+    # Validate base_image_cache schema across all config.yaml files first.
+    # This is a static check (no network), so failures are reported immediately
+    # before any version.sh tests run.
+    echo ""
+    log_info "Validating base_image_cache schema in all config.yaml files..."
+    if validate_all_containers_base_cache_schema "."; then
+        log_success "base_image_cache schema: all containers clean"
+    else
+        log_error "base_image_cache schema violations detected — fix the above errors before proceeding"
+        exit 1
+    fi
+    echo ""
+
     if [ -n "$specific_container" ]; then
         log_info "Testing specific container: $specific_container"
         ((total_containers++))
