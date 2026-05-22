@@ -495,6 +495,24 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
+# VBC-R7C-02: value containing embedded newlines → REJECT (newline injection class)
+# ROOT CAUSE: a line-by-line yq read splits "ubuntu\n--build-arg\nREMOTE_CR=x" into
+# three separate lines (each clean) — the old loop passed this. The JSON-based check
+# reads the whole value atomically; \s in jq regex catches newlines before any split.
+# YAML double-quoted strings interpret \n as a literal newline character, so the
+# fixture below produces a value with actual embedded newlines that a shell would
+# word-split into separate docker CLI tokens when expanded unquoted.
+@test "VBC-R7C-02: build_args value with embedded newlines (newline injection) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "ubuntu\n--build-arg\nREMOTE_CR=ghcr.io/attacker"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
 # VBC-R7B-PASS: valid identifier keys (php real config pattern) → PASS
 @test "VBC-R7B-PASS: multiple valid ARG identifier keys (php pattern) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
@@ -534,4 +552,24 @@ EOF
     "
     [ "$status" -ne 0 ]
     [[ "$output" =~ "yq" ]]
+}
+
+# VBC-FC-03: jq required — guard emits clear error and rejects when jq unavailable
+# PATH isolation for jq is not feasible when jq lives in /bin (always in PATH).
+# Instead we verify the guard via function override: replace jq with a stub that
+# returns 127 (command-not-found exit code) to exercise the command -v branch.
+@test "VBC-FC-03: jq unavailable (stub) → REJECT (fail-closed lock)" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "ubuntu"
+EOF
+)"
+    run bash -c "
+        jq() { return 127; }
+        export -f jq
+        source '$ORIG_DIR/helpers/validate-base-cache-schema.sh'
+        cd '$TEST_DIR'
+        validate_container_base_cache_schema 'myapp'
+    "
+    [ "$status" -ne 0 ]
 }
