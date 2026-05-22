@@ -4,16 +4,27 @@
 # - Caching Docker Hub base images to GHCR (CI cache job)
 # - Resolving cached base image build args (build action)
 #
-# Config schema (in config.yaml):
+# Config schema supports TWO entry styles (discriminated by ghcr_repo presence):
+#
+# OLD style (ghcr_repo PRESENT — default for all current containers):
 #   base_image_cache:
 #     - arg: BASE_IMAGE           # Dockerfile ARG name to override
-#       source: ubuntu             # Docker Hub image name
+#       source: ubuntu             # Docker Hub image name (informational)
 #       ghcr_repo: ubuntu-base     # GHCR cache repo name
 #       tags: ["latest"]           # Tags to cache
 #     - arg: BASE_IMAGE
 #       source: postgres
 #       ghcr_repo: postgres-base
 #       tags_from_versions: true   # Derive tags from variants.yaml versions + base_suffix
+#
+# NEW style (ghcr_repo ABSENT — path-preserving mirror, e.g. postgres):
+#   base_image_cache:
+#     - source: library/postgres   # FULL upstream path (used as GHCR dest path)
+#       tags_from_versions: true   # or tags: ["..."]
+#   → get_cache_build_args emits --build-arg REMOTE_CR=ghcr.io/<owner> (once per container)
+#   → collect_all_cache_images dest: ghcr.io/<owner>/library/postgres:<tag>
+#
+# Discriminator: ghcr_repo key ABSENT ⇒ NEW style. PRESENT ⇒ OLD style (takes precedence).
 
 set -euo pipefail
 
@@ -85,6 +96,19 @@ _collect_entry_tags() {
 
     local images="[]"
 
+    # Discriminate entry style: ghcr_repo PRESENT (non-empty, non-null) → OLD style (unchanged dest).
+    # ghcr_repo ABSENT ("null"), explicit nil (yq renders as "null"), or empty string ("") → NEW style:
+    # dest path is source (path-preserving mirror).
+    local dest_path
+    if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
+        # NEW style: source is the full upstream path (e.g. library/postgres)
+        # ghcr_image dest: ghcr.io/<owner>/<source>:<tag>
+        dest_path="$source"
+    else
+        # OLD style: dest is the dedicated GHCR repo name
+        dest_path="$ghcr_repo"
+    fi
+
     if [[ "$tags_from_versions" == "true" ]]; then
         local base_sfx
         base_sfx=$(base_suffix "$container_dir")
@@ -95,7 +119,7 @@ _collect_entry_tags() {
                 --arg source "$source" \
                 --arg tag "$full_tag" \
                 --arg ghcr_repo "$ghcr_repo" \
-                --arg ghcr_image "ghcr.io/$owner/$ghcr_repo:$full_tag" \
+                --arg ghcr_image "ghcr.io/$owner/$dest_path:$full_tag" \
                 '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, ghcr_image: $ghcr_image}]')
         done
     else
@@ -112,7 +136,7 @@ _collect_entry_tags() {
                 --arg source "$source" \
                 --arg tag "$tag" \
                 --arg ghcr_repo "$ghcr_repo" \
-                --arg ghcr_image "ghcr.io/$owner/$ghcr_repo:$tag" \
+                --arg ghcr_image "ghcr.io/$owner/$dest_path:$tag" \
                 '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, ghcr_image: $ghcr_image}]')
         done
     fi
@@ -196,15 +220,30 @@ get_cache_build_args() {
     entry_count=$(yq -r '.base_image_cache | length' "$config_file")
 
     local args=""
+    local remote_cr_emitted=false
+
     for ((i = 0; i < entry_count; i++)); do
-        local arg ghcr_repo
-        arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
+        local ghcr_repo
         ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "$config_file")
 
-        # Never include tag — all Dockerfiles use Two-ARG pattern
-        # (tag comes from separate ARG or is hardcoded in FROM)
-        # The tags[] field in config.yaml is for the cache job, not build-args
-        args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+        if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
+            # NEW style (no ghcr_repo): emit a single REMOTE_CR pointing to the registry root.
+            # De-duplicate: only emit once per container regardless of how many new-style entries.
+            # Never include tag — the Dockerfile resolves the full image ref via REMOTE_CR + source path.
+            # Handles: absent key (yq → "null"), explicit nil (yq → "null"), empty string ("").
+            if [[ "$remote_cr_emitted" == "false" ]]; then
+                args+=" --build-arg REMOTE_CR=ghcr.io/${owner}"
+                remote_cr_emitted=true
+            fi
+        else
+            # OLD style (ghcr_repo PRESENT): emit per-arg flag with dedicated repo path.
+            # Never include tag — all Dockerfiles use Two-ARG pattern
+            # (tag comes from separate ARG or is hardcoded in FROM)
+            # The tags[] field in config.yaml is for the cache job, not build-args
+            local arg
+            arg=$(yq -r ".base_image_cache[$i].arg" "$config_file")
+            args+=" --build-arg ${arg}=ghcr.io/${owner}/${ghcr_repo}"
+        fi
     done
 
     echo "$args"

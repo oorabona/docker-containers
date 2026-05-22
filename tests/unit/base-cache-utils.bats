@@ -2,6 +2,8 @@
 
 # Unit tests for helpers/base-cache-utils.sh
 # Covers: resolve_cache_check_tag — tag resolution for GHCR accessibility checks
+#         get_cache_build_args    — --build-arg emission for old and new entry styles
+#         collect_all_cache_images / _collect_entry_tags — image dest path for old and new styles
 
 setup() {
     TEST_DIR=$(mktemp -d)
@@ -115,4 +117,198 @@ EOF
     run resolve_cache_check_tag "config.yaml" 1 "1.9.5"
     [ "$status" -eq 0 ]
     [ "$output" = "3.21" ]
+}
+
+# --- get_cache_build_args: old-style (regression lock) ---
+
+# BCU-07: OLD-style entry (has ghcr_repo) emits --build-arg ARG=ghcr.io/<owner>/<ghcr_repo>
+# Byte-identical to pre-dual-schema behaviour — mutation guard
+@test "BCU-07: OLD-style entry emits --build-arg with ghcr_repo path (regression lock)" {
+    mkdir -p mycontainer
+    cat > mycontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+
+    run get_cache_build_args "mycontainer" "myowner" "22.04"
+    [ "$status" -eq 0 ]
+    [ "$output" = " --build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base" ]
+}
+
+# --- get_cache_build_args: new-style ---
+
+# BCU-08: NEW-style entry (no ghcr_repo) emits REMOTE_CR=ghcr.io/<owner>
+@test "BCU-08: NEW-style entry (no ghcr_repo) emits --build-arg REMOTE_CR=ghcr.io/<owner>" {
+    mkdir -p pgcontainer
+    cat > pgcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    run get_cache_build_args "pgcontainer" "myowner" "18-alpine"
+    [ "$status" -eq 0 ]
+    # Must contain REMOTE_CR pointing to registry root (no ghcr_repo segment)
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    # Must NOT contain a per-arg flag from arg: field (new-style has no arg:)
+    [[ "$output" != *"--build-arg BASE_IMAGE"* ]]
+}
+
+# BCU-09: NEW-style with multiple entries — REMOTE_CR emitted exactly ONCE (de-duplicated)
+@test "BCU-09: multiple NEW-style entries emit REMOTE_CR exactly once" {
+    mkdir -p multicontainer
+    cat > multicontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+
+    run get_cache_build_args "multicontainer" "myowner" "18-alpine"
+    [ "$status" -eq 0 ]
+    # Count occurrences of REMOTE_CR in output
+    count=$(echo "$output" | grep -o "REMOTE_CR" | wc -l)
+    [ "$count" -eq 1 ]
+}
+
+# BCU-10: MIXED config — one old-style + one new-style
+# Old emits its per-arg flag; new emits REMOTE_CR; both present in output
+@test "BCU-10: MIXED old+new entries — old emits per-arg flag, new emits REMOTE_CR" {
+    mkdir -p mixcontainer
+    cat > mixcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    run get_cache_build_args "mixcontainer" "myowner" "22.04"
+    [ "$status" -eq 0 ]
+    # Old-style flag present
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    # New-style REMOTE_CR present
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    # REMOTE_CR emitted exactly once
+    count=$(echo "$output" | grep -o "REMOTE_CR" | wc -l)
+    [ "$count" -eq 1 ]
+}
+
+# --- collect_all_cache_images / _collect_entry_tags: new-style dest path ---
+
+# BCU-11: NEW-style entry → ghcr_image dest preserves source path (library/postgres)
+# ghcr_image must be ghcr.io/<owner>/library/postgres:<tag> — NOT ghcr.io/<owner>/postgres:<tag>
+@test "BCU-11: NEW-style collect_all_cache_images dest preserves full source path with slash" {
+    mkdir -p pgcontainer
+    cat > pgcontainer/variants.yaml <<'EOF'
+versions:
+  - tag: "18-alpine"
+  - tag: "17-alpine"
+EOF
+    cat > pgcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    local containers_json='["pgcontainer"]'
+    local versions_json='{"pgcontainer":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # ghcr_image must contain the two-segment path library/postgres (NOT just postgres)
+    [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
+    # Distinctness assertion: the path portion after owner must contain a '/'
+    # i.e. library/postgres not just postgres
+    [[ "$output" != *"ghcr.io/myowner/postgres:"* ]]
+}
+
+# BCU-12: OLD-style entry → ghcr_image dest uses ghcr_repo (regression lock)
+@test "BCU-12: OLD-style collect_all_cache_images dest uses ghcr_repo (regression lock)" {
+    mkdir -p ubuntucontainer
+    cat > ubuntucontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+
+    local containers_json='["ubuntucontainer"]'
+    local versions_json='{"ubuntucontainer":"22.04"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
+}
+
+# BCU-13: MIXED collect_all_cache_images — both old and new dests correct
+@test "BCU-13: MIXED collect_all_cache_images — old uses ghcr_repo, new uses source path" {
+    mkdir -p mixcontainer
+    cat > mixcontainer/variants.yaml <<'EOF'
+versions:
+  - tag: "18-alpine"
+EOF
+    cat > mixcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    local containers_json='["mixcontainer"]'
+    local versions_json='{"mixcontainer":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # Old-style dest
+    [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
+    # New-style dest preserves full source path
+    [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
+}
+
+# --- F-001 discriminator robustness: empty-string and explicit-nil ghcr_repo ---
+
+# BCU-14: entry with ghcr_repo: "" (empty string) → routed as NEW style
+# Must emit REMOTE_CR, NOT --build-arg null=... or --build-arg =...
+@test "BCU-14: ghcr_repo empty string is routed to NEW style (emits REMOTE_CR, not 'null')" {
+    mkdir -p emptyrepo
+    cat > emptyrepo/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    ghcr_repo: ""
+    tags_from_versions: true
+EOF
+
+    run get_cache_build_args "emptyrepo" "myowner" "18-alpine"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    [[ "$output" != *"--build-arg null="* ]]
+    [[ "$output" != *"--build-arg ="* ]]
+}
+
+# BCU-15: entry with explicit ghcr_repo: (nil in YAML) → routed as NEW style
+@test "BCU-15: explicit ghcr_repo nil is routed to NEW style (emits REMOTE_CR, not 'null')" {
+    mkdir -p nilrepo
+    cat > nilrepo/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    ghcr_repo:
+    tags_from_versions: true
+EOF
+
+    run get_cache_build_args "nilrepo" "myowner" "18-alpine"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    [[ "$output" != *"--build-arg null="* ]]
+    [[ "$output" != *"--build-arg ="* ]]
 }
