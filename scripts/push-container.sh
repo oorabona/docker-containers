@@ -42,7 +42,7 @@ get_platform_config() {
 # Prepare common build arguments (delegates to shared prepare_build_args)
 get_build_args() {
     local version="$1"
-    prepare_build_args "$version" ""
+    prepare_build_args "$version" "" || return 1
     echo "$_BUILD_ARGS"
 }
 
@@ -79,7 +79,10 @@ push_ghcr() {
 
     # Prepare build arguments and labels
     local build_args
-    build_args=$(get_build_args "$version")
+    build_args=$(get_build_args "$version") || {
+        log_error "build arg preparation failed (invalid build_args/cache config); aborting GHCR push"
+        return 1
+    }
     local label_args
     label_args=$(get_label_args)
 
@@ -178,7 +181,10 @@ push_dockerhub() {
     local platform_suffix="$PLATFORM_CONFIG_SUFFIX"
 
     local build_args
-    build_args=$(get_build_args "$version")
+    build_args=$(get_build_args "$version") || {
+        log_error "build arg preparation failed (invalid build_args/cache config); aborting Docker Hub push"
+        return 1
+    }
     local label_args
     label_args=$(get_label_args)
 

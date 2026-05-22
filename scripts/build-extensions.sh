@@ -21,6 +21,37 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=../helpers/extension-utils.sh
 source "$ROOT_DIR/helpers/extension-utils.sh"
 
+# Registry override: default to docker.io (raw builds); CI passes ghcr.io/oorabona.
+# Must NOT appear in config.yaml build_args (schema guard R7 rejects it).
+REMOTE_CR="${REMOTE_CR:-docker.io}"
+
+# Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
+# This ensures the trusted CI registry root reaches extension builder stages.
+build_ext_image() {
+    local ext_name="$1"
+    local ext_version="$2"
+    local ext_repo="$3"
+    local pg_major="$4"
+    local dockerfile="$5"
+    local context_dir="$6"
+
+    local local_tag
+    local_tag=$(ext_local_image_name "$ext_name" "$pg_major")
+
+    log_info "Building $ext_name $ext_version for PostgreSQL $pg_major (REMOTE_CR=${REMOTE_CR})"
+
+    $DOCKER build \
+        -f "$dockerfile" \
+        -t "$local_tag" \
+        --build-arg REMOTE_CR="${REMOTE_CR}" \
+        --build-arg MAJOR_VERSION="$pg_major" \
+        --build-arg EXT_VERSION="$ext_version" \
+        --build-arg EXT_REPO="$ext_repo" \
+        "$context_dir"
+
+    log_success "Built: $local_tag"
+}
+
 # Defaults
 CONTAINER=""
 MAJOR_VERSION=""
@@ -199,7 +230,8 @@ build_extension() {
     fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY-RUN] Would build $ext_name $version for $CONTAINER v$major_ver"
+        log_info "[DRY-RUN] Would build $ext_name $version for $CONTAINER v$major_ver (REMOTE_CR=${REMOTE_CR})"
+        log_info "[DRY-RUN]   --build-arg REMOTE_CR=${REMOTE_CR} --build-arg MAJOR_VERSION=$major_ver"
         return 0
     fi
 

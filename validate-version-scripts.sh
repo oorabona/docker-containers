@@ -9,6 +9,9 @@
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 
+# Source config schema guard (base_image_cache dual-schema validation)
+source "$(dirname "$0")/helpers/validate-base-cache-schema.sh"
+
 # Configuration
 # Increase timeouts in CI environments due to potential network latency
 if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -376,6 +379,29 @@ main() {
         echo ""
     fi
     
+    # Validate base_image_cache schema — static check (no network), fail-fast before
+    # any version.sh tests run. When a specific container is requested, validate only
+    # that container's config.yaml so unrelated containers do not cause early exit.
+    echo ""
+    if [ -n "$specific_container" ]; then
+        log_info "Validating base_image_cache schema for container: $specific_container..."
+        if validate_container_base_cache_schema "$specific_container"; then
+            log_success "base_image_cache schema: $specific_container clean"
+        else
+            log_error "base_image_cache schema validation failed (missing tool, parse error, or rule violation) in $specific_container — see the errors above"
+            exit 1
+        fi
+    else
+        log_info "Validating base_image_cache schema in all config.yaml files..."
+        if validate_all_containers_base_cache_schema "."; then
+            log_success "base_image_cache schema: all containers clean"
+        else
+            log_error "base_image_cache schema validation failed (missing tool, parse error, or rule violation) — see the errors above"
+            exit 1
+        fi
+    fi
+    echo ""
+
     if [ -n "$specific_container" ]; then
         log_info "Testing specific container: $specific_container"
         ((total_containers++))

@@ -1,7 +1,10 @@
 #!/usr/bin/env bats
 
 # Unit tests for helpers/base-cache-utils.sh
-# Covers: resolve_cache_check_tag — tag resolution for GHCR accessibility checks
+# Covers: resolve_cache_check_tag  — tag resolution for GHCR accessibility checks
+#         emit_reachable_cache_args — --build-arg emission (sole validated emitter)
+#         remote_cr_applicable      — REMOTE_CR applicability decision (pure function)
+#         collect_all_cache_images / _collect_entry_tags — image dest path for old and new styles
 
 setup() {
     TEST_DIR=$(mktemp -d)
@@ -115,4 +118,497 @@ EOF
     run resolve_cache_check_tag "config.yaml" 1 "1.9.5"
     [ "$status" -eq 0 ]
     [ "$output" = "3.21" ]
+}
+
+# --- collect_all_cache_images / _collect_entry_tags: new-style dest path ---
+
+# BCU-11: NEW-style entry → ghcr_image dest preserves source path (library/postgres)
+# ghcr_image must be ghcr.io/<owner>/library/postgres:<tag> — NOT ghcr.io/<owner>/postgres:<tag>
+@test "BCU-11: NEW-style collect_all_cache_images dest preserves full source path with slash" {
+    mkdir -p pgcontainer
+    cat > pgcontainer/variants.yaml <<'EOF'
+versions:
+  - tag: "18-alpine"
+  - tag: "17-alpine"
+EOF
+    cat > pgcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    local containers_json='["pgcontainer"]'
+    local versions_json='{"pgcontainer":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # ghcr_image must contain the two-segment path library/postgres (NOT just postgres)
+    [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
+    # Distinctness assertion: the path portion after owner must contain a '/'
+    # i.e. library/postgres not just postgres
+    [[ "$output" != *"ghcr.io/myowner/postgres:"* ]]
+}
+
+# BCU-12: OLD-style entry → ghcr_image dest uses ghcr_repo (regression lock)
+@test "BCU-12: OLD-style collect_all_cache_images dest uses ghcr_repo (regression lock)" {
+    mkdir -p ubuntucontainer
+    cat > ubuntucontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+
+    local containers_json='["ubuntucontainer"]'
+    local versions_json='{"ubuntucontainer":"22.04"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
+}
+
+# BCU-13: MIXED collect_all_cache_images — both old and new dests correct
+@test "BCU-13: MIXED collect_all_cache_images — old uses ghcr_repo, new uses source path" {
+    mkdir -p mixcontainer
+    cat > mixcontainer/variants.yaml <<'EOF'
+versions:
+  - tag: "18-alpine"
+EOF
+    cat > mixcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    local containers_json='["mixcontainer"]'
+    local versions_json='{"mixcontainer":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # Old-style dest
+    [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
+    # New-style dest preserves full source path
+    [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
+}
+
+# --- F-001 discriminator robustness: empty-string and explicit-nil ghcr_repo ---
+# These cases are fully covered via emit_reachable_cache_args + remote_cr_applicable tests below.
+
+# --- remote_cr_applicable: pure decision helper ---
+
+# BCU-16: all new-style entries reachable → "apply"
+@test "BCU-16: remote_cr_applicable — all new-style reachable → apply" {
+    mkdir -p pgcontainer
+    cat > pgcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run remote_cr_applicable "pgcontainer/config.yaml" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
+# BCU-17: mixed old+new config, new-style entry unreachable → "drop"
+# Locks the always-apply mutation: a single unreachable new-style entry in a mixed
+# config must produce "drop", not "apply". BCU-20 covers the partial-reachability
+# boundary (multiple new-style entries, only some reachable).
+@test "BCU-17: remote_cr_applicable — mixed old+new, new-style unreachable → drop (always-apply mutation lock)" {
+    mkdir -p mixcontainer
+    cat > mixcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Flag 0 = old-style (reachable, passed as "true"), flag 1 = new-style (missing, "false")
+    run remote_cr_applicable "mixcontainer/config.yaml" "true" "false"
+    [ "$status" -eq 0 ]
+    [ "$output" = "drop" ]
+    # Mutation guard: must NOT be "apply" — that is the bug FIX-1 corrects
+    [ "$output" != "apply" ]
+}
+
+# BCU-18: no new-style entries → "n/a"
+@test "BCU-18: remote_cr_applicable — pure old-style config → n/a" {
+    mkdir -p oldcontainer
+    cat > oldcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run remote_cr_applicable "oldcontainer/config.yaml" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "n/a" ]
+}
+
+# BCU-19: multiple new-style entries all reachable → "apply"
+@test "BCU-19: remote_cr_applicable — multiple new-style all reachable → apply" {
+    mkdir -p multinew
+    cat > multinew/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+    run remote_cr_applicable "multinew/config.yaml" "true" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
+# BCU-20: multiple new-style entries with one unreachable → "drop"
+@test "BCU-20: remote_cr_applicable — multiple new-style one unreachable → drop" {
+    mkdir -p multinew2
+    cat > multinew2/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+    run remote_cr_applicable "multinew2/config.yaml" "true" "false"
+    [ "$status" -eq 0 ]
+    [ "$output" = "drop" ]
+}
+
+# BCU-21: mixed old+new, new reachable → "apply" (old flags are ignored)
+@test "BCU-21: remote_cr_applicable — mixed old+new, new reachable → apply" {
+    mkdir -p mixok
+    cat > mixok/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Flag 0 = old-style ("old" semantically, but we pass "true" — old flags are not counted)
+    # Flag 1 = new-style, reachable
+    run remote_cr_applicable "mixok/config.yaml" "true" "true"
+    [ "$status" -eq 0 ]
+    [ "$output" = "apply" ]
+}
+
+# --- emit_reachable_cache_args: per-entry filtered arg emitter ---
+
+# BCU-22: all old-style entries reachable → all --build-arg flags emitted (regression lock)
+@test "BCU-22: emit_reachable_cache_args — all old-style reachable → all args emitted" {
+    mkdir -p oldall
+    cat > oldall/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["3.21"]
+EOF
+    run emit_reachable_cache_args "oldall/config.yaml" "myowner" "22.04" "true" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    [[ "$output" == *"--build-arg ALPINE_BASE=ghcr.io/myowner/alpine-base"* ]]
+    # No REMOTE_CR — pure old-style config
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-23 (RED→GREEN for FINDING A): one old-style entry unreachable → that arg omitted
+# This is the class bug: old-style args were previously bulk-applied on any-reachable.
+# Now each arg is gated on its own probe flag.
+@test "BCU-23: emit_reachable_cache_args — one old-style unreachable → only reachable arg emitted (FINDING-A lock)" {
+    mkdir -p oldpartial
+    cat > oldpartial/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - arg: ALPINE_BASE
+    source: alpine
+    ghcr_repo: alpine-base
+    tags: ["3.21"]
+EOF
+    # Entry 0 reachable, entry 1 NOT reachable
+    run emit_reachable_cache_args "oldpartial/config.yaml" "myowner" "22.04" "true" "false"
+    [ "$status" -eq 0 ]
+    # Reachable entry present
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    # Unreachable entry ABSENT — mutation guard: the bulk-apply bug would include it
+    [[ "$output" != *"--build-arg ALPINE_BASE="* ]]
+    # No REMOTE_CR
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-24: mixed old+new, all reachable → old args + REMOTE_CR present
+@test "BCU-24: emit_reachable_cache_args — mixed old+new all reachable → old args + REMOTE_CR" {
+    mkdir -p mixall
+    cat > mixall/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "mixall/config.yaml" "myowner" "18-alpine" "true" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+}
+
+# BCU-25: mixed old+new, new-style unreachable → old reachable arg present, REMOTE_CR ABSENT
+@test "BCU-25: emit_reachable_cache_args — mixed old+new, new unreachable → old arg kept, REMOTE_CR absent" {
+    mkdir -p mixnewmissing
+    cat > mixnewmissing/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    # Entry 0 (old) reachable, entry 1 (new) NOT reachable
+    run emit_reachable_cache_args "mixnewmissing/config.yaml" "myowner" "18-alpine" "true" "false"
+    [ "$status" -eq 0 ]
+    # Old-style arg still present (independent of new-style reachability)
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+    # REMOTE_CR absent — new-style mirror missing → must NOT be applied
+    [[ "$output" != *"REMOTE_CR"* ]]
+}
+
+# BCU-26: pure new-style, all reachable → REMOTE_CR emitted, no old-style args
+@test "BCU-26: emit_reachable_cache_args — pure new-style all reachable → REMOTE_CR only" {
+    mkdir -p newonly
+    cat > newonly/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "newonly/config.yaml" "myowner" "18-alpine" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/myowner"* ]]
+    # No old-style arg
+    [[ "$output" != *"BASE_IMAGE"* ]]
+}
+
+# BCU-27: pure new-style, unreachable → empty output (no REMOTE_CR)
+@test "BCU-27: emit_reachable_cache_args — pure new-style unreachable → empty output" {
+    mkdir -p newmiss
+    cat > newmiss/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+    run emit_reachable_cache_args "newmiss/config.yaml" "myowner" "18-alpine" "false"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# ─── FIX 2 (RED→GREEN): emit_reachable_cache_args arg validation ─────────────
+
+# BCU-FIX2-01: OLD-style entry with injected shell tokens in arg → non-zero, no flag emitted
+# This is the FINDING: "BASE_IMAGE --network host" would inject extra docker flags.
+# RED before fix (returns 0, emits the bad flag), GREEN after (returns non-zero, emits nothing).
+@test "BCU-FIX2-01: emit_reachable_cache_args — malformed arg with shell token → non-zero + no flag (injection prevention)" {
+    mkdir -p badarg
+    cat > badarg/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE_IMAGE --network host"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg/config.yaml" "myowner" "22.04" "true"
+    # Must fail closed (non-zero exit)
+    [ "$status" -ne 0 ]
+    # Must not emit any --build-arg flag (no partial emission)
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-02: OLD-style entry with multi-word arg (spaces) → non-zero
+@test "BCU-FIX2-02: emit_reachable_cache_args — arg with embedded spaces → non-zero" {
+    mkdir -p badarg2
+    cat > badarg2/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "FOO BAR"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg2/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-03: OLD-style entry with hyphen in arg (invalid Docker ARG name) → non-zero
+@test "BCU-FIX2-03: emit_reachable_cache_args — arg with hyphen → non-zero" {
+    mkdir -p badarg3
+    cat > badarg3/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE-IMAGE"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badarg3/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-FIX2-PASS: valid arg identifier → clean output (regression lock)
+# This must pass before AND after the fix (it was already working; guard against over-rejection).
+@test "BCU-FIX2-PASS: emit_reachable_cache_args — valid identifier arg → emits flag correctly" {
+    mkdir -p validarg
+    cat > validarg/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "validarg/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/ubuntu-base"* ]]
+}
+
+# BCU-FIX2-05: unreachable old-style entry with bad arg → still non-zero
+# The validation must run regardless of the reachability flag — bad config is a config error,
+# not a "suppress it" signal. (Guards against: skip validation if flag==false.)
+@test "BCU-FIX2-05: emit_reachable_cache_args — bad arg in unreachable entry → non-zero (no silent skip)" {
+    mkdir -p badarg5
+    cat > badarg5/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BASE_IMAGE --network host"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+    # Flag is "false" (entry unreachable) — but arg is still validated
+    run emit_reachable_cache_args "badarg5/config.yaml" "myowner" "22.04" "false"
+    [ "$status" -ne 0 ]
+}
+
+# ─── FIX A: ghcr_repo injection prevention in emit_reachable_cache_args ──────
+
+# BCU-GHCR-01 (RED→GREEN): old-style entry with malicious ghcr_repo → non-zero, no flag emitted
+# The attack: "ubuntu-base --network host" expands in the flag string to:
+#   --build-arg BASE_IMAGE=ghcr.io/owner/ubuntu-base --network host
+# which would inject extra docker flags silently.
+# After the fix, emit_reachable_cache_args must return non-zero and emit nothing.
+@test "BCU-GHCR-01: emit_reachable_cache_args — ghcr_repo with space+flag → non-zero + no flag (injection prevention)" {
+    mkdir -p badrepo
+    cat > badrepo/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base --network host"
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badrepo/config.yaml" "myowner" "22.04" "true"
+    # Must fail closed (non-zero exit)
+    [ "$status" -ne 0 ]
+    # Must not emit any --build-arg flag (no partial emission)
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-GHCR-02: ghcr_repo with semicolon → non-zero
+@test "BCU-GHCR-02: emit_reachable_cache_args — ghcr_repo with semicolon → non-zero" {
+    mkdir -p badrepo2
+    cat > badrepo2/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base;id"
+    tags: ["latest"]
+EOF
+    run emit_reachable_cache_args "badrepo2/config.yaml" "myowner" "22.04" "true"
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"--build-arg"* ]]
+}
+
+# BCU-GHCR-03: malicious ghcr_repo in unreachable entry → still non-zero (no silent skip)
+# Mirrors BCU-FIX2-05: validation runs regardless of the probe flag.
+@test "BCU-GHCR-03: emit_reachable_cache_args — bad ghcr_repo in unreachable entry → non-zero (no silent skip)" {
+    mkdir -p badrepo3
+    cat > badrepo3/config.yaml <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: "ubuntu-base --network host"
+    tags: ["latest"]
+EOF
+    # Flag is "false" (entry unreachable) — ghcr_repo is still validated
+    run emit_reachable_cache_args "badrepo3/config.yaml" "myowner" "22.04" "false"
+    [ "$status" -ne 0 ]
+}
+
+# ─── FIX 1 (RED→GREEN): standalone source guard — log_error must be defined ────
+#
+# BCU-STANDALONE-01: source base-cache-utils.sh in a FRESH subshell (no pre-sourcing
+# of logging.sh) and trigger emit_reachable_cache_args with a malformed arg.
+# RED before FIX 1: "log_error: command not found" appears on stderr.
+# GREEN after FIX 1: the intended validation message appears; "command not found" absent.
+@test "BCU-STANDALONE-01: standalone source — log_error defined, malformed arg emits validation message not 'command not found'" {
+    # Build a config with a shell-unsafe arg identifier to trigger the log_error path
+    mkdir -p standalone_test
+    cat > standalone_test/config.yaml <<'EOF'
+base_image_cache:
+  - arg: "BAD ARG"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+
+    # Run in a fresh subshell that does NOT pre-source logging.sh.
+    # The source guard in base-cache-utils.sh must pull in logging.sh on its own.
+    local stderr_out
+    stderr_out=$(bash --norc --noprofile -c "
+        source \"$ORIG_DIR/helpers/variant-utils.sh\"   # needed by base-cache-utils
+        source \"$ORIG_DIR/helpers/base-cache-utils.sh\"  # standalone — no logging pre-sourced
+        emit_reachable_cache_args 'standalone_test/config.yaml' 'myowner' '22.04' 'true'
+    " 2>&1 1>/dev/null || true)
+
+    # Must NOT contain "command not found" — that is the bug indicator
+    [[ "$stderr_out" != *"command not found"* ]]
+    # Must contain the intended validation error message keywords
+    [[ "$stderr_out" == *"is not a valid Docker ARG identifier"* ]]
+}
+
+# BCU-GHCR-PASS: valid ghcr_repo values (all current containers) → exit 0 + correct flag
+@test "BCU-GHCR-PASS: emit_reachable_cache_args — all valid old-style ghcr_repo names → PASS" {
+    local repos="ubuntu-base ruby-base php-base composer-base alpine-base rocky-base debian-base terraform-base postgres-base python-base"
+    for repo in $repos; do
+        mkdir -p "valrepo-${repo}"
+        cat > "valrepo-${repo}/config.yaml" <<EOF
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: test
+    ghcr_repo: ${repo}
+    tags: ["latest"]
+EOF
+        run emit_reachable_cache_args "valrepo-${repo}/config.yaml" "myowner" "1.0" "true"
+        [ "$status" -eq 0 ] || {
+            echo "FAILED for ghcr_repo=${repo}, output: $output"
+            return 1
+        }
+        [[ "$output" == *"--build-arg BASE_IMAGE=ghcr.io/myowner/${repo}"* ]] || {
+            echo "MISSING flag for ghcr_repo=${repo}, output: $output"
+            return 1
+        }
+    done
 }

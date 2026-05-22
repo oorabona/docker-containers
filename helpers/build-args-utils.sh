@@ -9,9 +9,19 @@ if ! declare -F log_warning &>/dev/null; then
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/logging.sh"
 fi
 
+# Source build_args validator if not already loaded.
+# _vbc_validate_build_args_config enforces R7/R7b/R7c at the point of use
+# (defense-in-depth: the schema lint runs only in CI, but every build path
+# must reject malformed/malicious build_args before flags reach docker).
+if ! declare -F _vbc_validate_build_args_config &>/dev/null; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validate-base-cache-schema.sh"
+fi
+
 # Get build args as Docker --build-arg flags
+# Validates build_args keys and values before emitting flags (fail-closed).
 # Usage: build_args_flags "./container-dir"
 # Output: "--build-arg FOO=bar --build-arg BAZ=qux" or ""
+# Returns: 0 on success, non-zero and prints error to stderr on validation failure.
 build_args_flags() {
     local dir="$1"
     local config_file="$dir/config.yaml"
@@ -20,11 +30,22 @@ build_args_flags() {
         return 0
     fi
 
+    # Validate before emitting: reject REMOTE_CR keys, non-identifier keys,
+    # non-scalar values, and whitespace-containing values. Fail-closed so a
+    # malformed or malicious config.yaml aborts the build rather than emitting
+    # unsafe --build-arg tokens to docker.
+    local container_label
+    container_label="$(basename "$dir")"
+    if ! _vbc_validate_build_args_config "$container_label" "$config_file"; then
+        return 1
+    fi
+
     local result
-    if result=$(yq -r '.build_args // {} | to_entries | map("--build-arg " + .key + "=" + .value) | join(" ")' "$config_file" 2>&1); then
+    if result=$(yq -r '.build_args // {} | to_entries | map("--build-arg " + .key + "=" + (.value | tostring)) | join(" ")' "$config_file" 2>&1); then
         echo "$result"
     else
         log_warning "Failed to parse build_args from $config_file: $result" >&2
+        return 1
     fi
 }
 
@@ -75,7 +96,10 @@ prepare_build_args() {
     [[ -n "${NPROC:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg NPROC=$NPROC"
 
     local config_build_args
-    config_build_args=$(build_args_flags ".")
+    if ! config_build_args=$(build_args_flags "."); then
+        log_error "build_args validation failed; aborting build arg preparation" >&2
+        return 1
+    fi
     if [[ -n "$config_build_args" ]]; then
         _BUILD_ARGS="$_BUILD_ARGS $config_build_args"
         log_info "Loaded build args from config.yaml"

@@ -383,35 +383,68 @@ runs:
         if [[ "${{ inputs.use_base_cache }}" == "true" ]]; then
           source ./helpers/base-cache-utils.sh
           if has_base_cache "./$container"; then
-            cache_args=$(get_cache_build_args "./$container" "${{ github.repository_owner }}" "$build_version")
-            if [[ -n "$cache_args" ]]; then
-              # Verify at least one cached image is accessible before using GHCR args.
-              # If cache-base-images job failed silently, fall back to Docker Hub defaults.
-              # Iterate every base_image_cache entry: tags[0] may be templated
-              # (e.g. "${UPSTREAM_VERSION}"), and the first entry can be unavailable
-              # while later ones are fine. Use the first reachable one as proof
-              # that the cache pipeline ran.
-              cache_ok=false
+              # Probe every base_image_cache entry individually for GHCR accessibility.
+              # Only reachable entries contribute to the final build args.
+              #
+              # Dual-schema discriminator (mirrors base-cache-utils.sh):
+              #   OLD style (ghcr_repo present): probe ghcr.io/<owner>/<ghcr_repo>:<resolved_tag>
+              #     → each reachable old-style entry emits its own --build-arg independently.
+              #       A missing old-style repo suppresses only that arg; others still apply.
+              #   NEW style (ghcr_repo absent):  probe ghcr.io/<owner>/<source>:<resolved_tag>
+              #     → REMOTE_CR emitted ONLY when ALL new-style entries are reachable.
+              #       One missing new-style mirror suppresses REMOTE_CR entirely (it is a shared
+              #       registry-root knob; applying it when any mirror is missing → hard-fail).
+              #
+              # emit_reachable_cache_args() encodes this logic as a pure helper (bats-tested).
+              # The action owns only the I/O (docker manifest inspect); the decision is in the helper.
               entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
+              owner="${{ github.repository_owner }}"
+              cache_ok=false
+              declare -a probe_flags=()
               for ((i = 0; i < entry_count; i++)); do
                 ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "./$container/config.yaml")
-                resolved_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
-                check_image="ghcr.io/${{ github.repository_owner }}/${ghcr_repo}:${resolved_tag}"
-                if docker manifest inspect "$check_image" &>/dev/null; then
-                  cache_ok=true
-                  echo "✅ GHCR cache verified via $check_image"
-                  break
+                if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
+                  # NEW style: full upstream path in source (e.g. library/postgres).
+                  # resolve_cache_check_tag returns build_version for tags_from_versions (#492-safe)
+                  # or the resolved tags[0] template — the same tag the build will actually use.
+                  source_path=$(yq -r ".base_image_cache[$i].source" "./$container/config.yaml")
+                  explicit_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
+                  check_image="ghcr.io/${owner}/${source_path}:${explicit_tag}"
                 else
-                  echo "⚠️ Not yet accessible: $check_image"
+                  # OLD style: dedicated GHCR repo with resolved tag.
+                  resolved_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
+                  check_image="ghcr.io/${owner}/${ghcr_repo}:${resolved_tag}"
+                fi
+                if docker manifest inspect "$check_image" &>/dev/null; then
+                  probe_flags[$i]="true"
+                  cache_ok=true
+                  echo "✅ GHCR cache accessible: $check_image"
+                else
+                  probe_flags[$i]="false"
+                  echo "⚠️ Not accessible: $check_image"
                 fi
               done
+
               if [[ "$cache_ok" == "true" ]]; then
-                export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$cache_args"
-                echo "✅ Using GHCR base images: $cache_args"
+                # Build the filtered arg set: each entry included iff its probe passed.
+                # emit_reachable_cache_args handles old-style (per-entry) and new-style
+                # (REMOTE_CR all-or-nothing) in one call — no sed-strip needed.
+                # A non-zero exit means a malformed arg was detected (config error):
+                # fail the build with a clear message rather than silently proceeding.
+                if ! filtered_args=$(emit_reachable_cache_args "./$container/config.yaml" \
+                  "$owner" "$build_version" "${probe_flags[@]}"); then
+                  echo "::error::emit_reachable_cache_args failed — malformed base_image_cache arg detected in $container/config.yaml; aborting build"
+                  exit 1
+                fi
+                if [[ -n "$filtered_args" ]]; then
+                  export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$filtered_args"
+                  echo "✅ Using GHCR base images: $filtered_args"
+                else
+                  echo "::warning::All reachable entries produced no usable args — falling back to Docker Hub defaults"
+                fi
               else
-                echo "⚠️ No GHCR cache image accessible — falling back to Docker Hub defaults"
+                echo "::warning::No GHCR cache image accessible — falling back to Docker Hub defaults"
               fi
-            fi
           fi
         fi
 

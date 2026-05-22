@@ -2,21 +2,13 @@
 # Base image and third-party dependency versions
 # Extension versions are managed in extensions/config.yaml
 
-base_image: "${BASE_IMAGE}:${VERSION}"
+base_image: "${REMOTE_CR}/library/postgres:${VERSION}"
 base_image_cache:
-  - arg: BASE_IMAGE
-    source: postgres
-    ghcr_repo: postgres-base
+  - source: library/postgres
     tags_from_versions: true
-build_args:
-  BASE_IMAGE: "postgres"
 # Maps extension names to their upstream source for monitoring
 # Names must match the build_args names used in variant lineage data
 dependency_sources:
-  BASE_IMAGE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   pgvector:
     lifecycle: tracked
     type: github-release
