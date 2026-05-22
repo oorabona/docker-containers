@@ -204,11 +204,17 @@ jobs:
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
     name: Build PostgreSQL Extensions
-    needs: [detect-containers]
+    needs: [detect-containers, cache-base-images]
+    # always() prevents cache-base-images being skipped (fork PRs) from also skipping
+    # this job. cache-base-images is continue-on-error: true so its result is always
+    # 'success' to dependents when it runs — the guard below is defensive for the
+    # skipped case (fork PRs where cache-base-images doesn't run at all).
     if: |
+      always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true'
+      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
+      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
       group: build-extensions-${{ github.ref }}

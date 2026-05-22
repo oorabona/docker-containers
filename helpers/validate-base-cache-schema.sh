@@ -219,6 +219,10 @@ validate_container_base_cache_schema() {
                 _vbc_error "$container" "$i" \
                     "old-style entry (ghcr_repo='${ghcr_repo}') has absent or empty 'arg' key. This would produce a malformed --build-arg flag. Add a non-empty arg name (e.g. 'arg: BASE_IMAGE')."
                 errors=1
+            elif [[ ! "$arg_val" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                _vbc_error "$container" "$i" \
+                    "old-style entry (ghcr_repo='${ghcr_repo}') arg '${arg_val}' is not a valid Docker ARG identifier. Must match ^[A-Za-z_][A-Za-z0-9_]*$ (letters, digits, underscores only — no spaces or special characters). A value like 'FOO BAR' would inject extra docker CLI flags."
+                errors=1
             fi
         fi
     done

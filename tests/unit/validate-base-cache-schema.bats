@@ -220,6 +220,65 @@ EOF
     [[ "$output" =~ "myapp" ]]
 }
 
+# VBC-09c (RED→GREEN for arg identifier safety): arg with spaces → REJECT
+# A value like "BASE_IMAGE --network host" passes the non-empty check but would
+# inject extra docker CLI tokens when expanded into CUSTOM_BUILD_ARGS. The fix
+# restricts arg to a valid Docker ARG identifier: ^[A-Za-z_][A-Za-z0-9_]*$.
+@test "VBC-09c: old-style arg with spaces (injection risk) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: "BASE_IMAGE --network host"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+@test "VBC-09d: old-style arg with two words (FOO BAR) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: "FOO BAR"
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+@test "VBC-09e: old-style arg with hyphen (not a valid identifier) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE-IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+@test "VBC-09f: old-style arg BASE_IMAGE (valid identifier) → PASS (regression lock)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - arg: BASE_IMAGE
+    source: ubuntu
+    ghcr_repo: ubuntu-base
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
 @test "VBC-13: new-style source with leading slash → REJECT" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:

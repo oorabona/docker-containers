@@ -379,16 +379,26 @@ main() {
         echo ""
     fi
     
-    # Validate base_image_cache schema across all config.yaml files first.
-    # This is a static check (no network), so failures are reported immediately
-    # before any version.sh tests run.
+    # Validate base_image_cache schema — static check (no network), fail-fast before
+    # any version.sh tests run. When a specific container is requested, validate only
+    # that container's config.yaml so unrelated containers do not cause early exit.
     echo ""
-    log_info "Validating base_image_cache schema in all config.yaml files..."
-    if validate_all_containers_base_cache_schema "."; then
-        log_success "base_image_cache schema: all containers clean"
+    if [ -n "$specific_container" ]; then
+        log_info "Validating base_image_cache schema for container: $specific_container..."
+        if validate_container_base_cache_schema "$specific_container"; then
+            log_success "base_image_cache schema: $specific_container clean"
+        else
+            log_error "base_image_cache schema violations detected in $specific_container — fix the above errors before proceeding"
+            exit 1
+        fi
     else
-        log_error "base_image_cache schema violations detected — fix the above errors before proceeding"
-        exit 1
+        log_info "Validating base_image_cache schema in all config.yaml files..."
+        if validate_all_containers_base_cache_schema "."; then
+            log_success "base_image_cache schema: all containers clean"
+        else
+            log_error "base_image_cache schema violations detected — fix the above errors before proceeding"
+            exit 1
+        fi
     fi
     echo ""
 
