@@ -174,6 +174,55 @@ validate_container_base_cache_schema() {
         errors=1
     fi
 
+    # R7b: ALL build_args keys must be valid Docker ARG identifiers.
+    # A key with whitespace or flag-like characters (e.g. "X --build-arg REMOTE_CR")
+    # would be expanded UNQUOTED into Docker CLI flags, bypassing the R7 REMOTE_CR key
+    # check. Enforce ^[A-Za-z_][A-Za-z0-9_]*$ on every key — this subsumes R7 for any
+    # crafted key that sneaks REMOTE_CR into the flag stream.
+    local build_args_key
+    while IFS= read -r build_args_key; do
+        [[ -z "$build_args_key" || "$build_args_key" == "null" ]] && continue
+        if [[ ! "$build_args_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            printf 'ERROR [%s]: build_args key %q is not a valid Docker ARG identifier. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$ (letters, digits, underscores only — no spaces, hyphens, or flag-like sequences). A key containing whitespace or CLI flags would inject extra docker build-arg tokens.\n' \
+                "$container" "$build_args_key" >&2
+            errors=1
+        fi
+    done < <(yq -r '.build_args // {} | keys | .[]' "$config_file" 2>/dev/null)
+    # Fail closed: if yq exits non-zero the process substitution produces no output
+    # but the loop body never runs (empty input), so we check exit status separately.
+    local _yq_keys_rc
+    yq -r '.build_args // {} | keys | .[]' "$config_file" >/dev/null 2>&1
+    _yq_keys_rc=$?
+    if [[ $_yq_keys_rc -ne 0 ]]; then
+        printf 'ERROR [%s]: yq failed to enumerate build_args keys from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+
+    # R7c: ALL build_args values must not contain whitespace or newlines.
+    # A value like "foo --network host" would be word-split by the shell when
+    # passed unquoted, injecting extra docker CLI flags. Normal version strings
+    # (e.g. "8.5.6-fpm-alpine", "ghcr.io/owner/image:latest") contain no whitespace.
+    local build_args_val
+    while IFS= read -r build_args_val; do
+        [[ -z "$build_args_val" || "$build_args_val" == "null" ]] && continue
+        # Reject any value containing a space, tab, CR, or newline character
+        if [[ "$build_args_val" =~ [[:space:]] ]]; then
+            printf 'ERROR [%s]: build_args value %q contains whitespace. Values must not contain spaces, tabs, or newlines — whitespace in a value would inject extra docker CLI tokens when the value is expanded unquoted.\n' \
+                "$container" "$build_args_val" >&2
+            errors=1
+        fi
+    done < <(yq -r '.build_args // {} | to_entries | .[] | .value' "$config_file" 2>/dev/null)
+    # Fail closed on yq error for values
+    local _yq_vals_rc
+    yq -r '.build_args // {} | to_entries | .[] | .value' "$config_file" >/dev/null 2>&1
+    _yq_vals_rc=$?
+    if [[ $_yq_vals_rc -ne 0 ]]; then
+        printf 'ERROR [%s]: yq failed to enumerate build_args values from config.yaml — treating as validation failure.\n' \
+            "$container" >&2
+        return 1
+    fi
+
     # Count base_image_cache entries — yq error here means we cannot safely validate; fail closed.
     local entry_count
     if ! entry_count=$(yq -r '.base_image_cache | length // 0' "$config_file" 2>/dev/null); then

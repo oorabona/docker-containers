@@ -455,6 +455,71 @@ EOF
 
 # VBC-FC-02: yq missing from PATH → validation failure (not pass)
 # Tests the command-v guard at the top of validate_container_base_cache_schema.
+# ─── FIX 1: build_args key/value injection (R7b, R7c) ────────────────────────
+
+# VBC-R7B-01: crafted key with spaces + injected --build-arg → REJECT
+# The gate finding: `"X --build-arg REMOTE_CR": value` would be expanded unquoted
+# into docker flags, bypassing the REMOTE_CR key check.
+@test "VBC-R7B-01: build_args key with spaces (injection vector) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  "X --build-arg REMOTE_CR": "ghcr.io/attacker"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7B-02: key with hyphen (not a valid ARG identifier) → REJECT
+@test "VBC-R7B-02: build_args key with hyphen → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  INVALID-KEY: "somevalue"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7C-01: value containing a space (flag injection) → REJECT
+@test "VBC-R7C-01: build_args value with embedded space (flag injection) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "foo --network host"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+# VBC-R7B-PASS: valid identifier keys (php real config pattern) → PASS
+@test "VBC-R7B-PASS: multiple valid ARG identifier keys (php pattern) → PASS" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  BASE_IMAGE: "php"
+  COMPOSER_BASE: "composer"
+  COMPOSER_VERSION: "2.9.8"
+  APCU_VERSION: "5.1.28"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+# VBC-R7C-PASS: value with colon+slash (docker image ref, no whitespace) → PASS
+@test "VBC-R7C-PASS: build_args value with colon and slash (image ref) → PASS" {
+    make_container "myapp" "$(cat <<'EOF'
+build_args:
+  WORDPRESS_IMAGE: "ghcr.io/oorabona/php:latest"
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
 @test "VBC-FC-02: yq not in PATH → REJECT (fail-closed lock)" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:

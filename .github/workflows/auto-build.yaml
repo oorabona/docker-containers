@@ -68,7 +68,12 @@ on:
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/extensions/config.yaml'
-      - 'helpers/extension-utils.sh'
+      - 'helpers/**'
+      - 'scripts/build-container.sh'
+      - 'scripts/build-extensions.sh'
+      - 'scripts/audit-base-image-cache.sh'
+      - '.github/actions/build-container/**'
+      - '.github/actions/dockerhub-mirror/**'
       - 'make'
       - '!archive/**'  # Exclude archived containers
   # Triggered on merge to master (actual deployment)
@@ -86,7 +91,12 @@ on:
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/extensions/config.yaml'
-      - 'helpers/extension-utils.sh'
+      - 'helpers/**'
+      - 'scripts/build-container.sh'
+      - 'scripts/build-extensions.sh'
+      - 'scripts/audit-base-image-cache.sh'
+      - '.github/actions/build-container/**'
+      - '.github/actions/dockerhub-mirror/**'
       - 'make'
       - '!archive/**'  # Exclude archived containers
   # Manual trigger
@@ -204,17 +214,20 @@ jobs:
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
     name: Build PostgreSQL Extensions
-    needs: [detect-containers, cache-base-images]
-    # always() prevents cache-base-images being skipped (fork PRs) from also skipping
-    # this job. cache-base-images is continue-on-error: true so its result is always
-    # 'success' to dependents when it runs — the guard below is defensive for the
-    # skipped case (fork PRs where cache-base-images doesn't run at all).
+    needs: [detect-containers]
+    # cache-base-images is intentionally NOT a dependency here.
+    # Rationale: the GHCR base cache is OPTIONAL — the per-major-version REMOTE_CR
+    # probe in the build step falls back gracefully to docker.io (via the #488
+    # registry:2 sidecar) when the mirror is missing. Coupling this job to
+    # cache-base-images would turn an optional performance accelerator into a
+    # blocking prerequisite, delaying or preventing extension builds whenever
+    # the cache job is skipped (fork PRs) or slow. The mutable-tag refresh race
+    # (a cache seed racing this build within the same run) is accepted: low-impact
+    # within a postgres major version, and the same mutability exists on docker.io.
     if: |
-      always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
-      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
+      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true'
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
       group: build-extensions-${{ github.ref }}
