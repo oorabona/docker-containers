@@ -80,6 +80,12 @@ on:
       - '!test-harness/**'                      # Test fixtures
       - '!test-logs/**'                         # Generated test logs
       - '!archive/**'                           # Archived containers
+      - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
+      - '!**/README*'                           # README without .md suffix
+      - '!**/LICENSE*'                          # License files
+      - '!**/CHANGELOG*'                        # Changelogs
+      - '!**/docs/**'                           # Nested docs subdirs inside container dirs
+      - '!**/tests/**'                          # Nested test subdirs inside container dirs
   # Triggered on merge to master (actual deployment)
   push:
     branches: [main, master]
@@ -100,6 +106,12 @@ on:
       - '!test-harness/**'                      # Test fixtures
       - '!test-logs/**'                         # Generated test logs
       - '!archive/**'                           # Archived containers
+      - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
+      - '!**/README*'                           # README without .md suffix
+      - '!**/LICENSE*'                          # License files
+      - '!**/CHANGELOG*'                        # Changelogs
+      - '!**/docs/**'                           # Nested docs subdirs inside container dirs
+      - '!**/tests/**'                          # Nested test subdirs inside container dirs
   # Manual trigger
   workflow_dispatch:
     inputs:
