@@ -19,7 +19,7 @@ permissions:
   contents: write      # Push version bumps and merge PRs
   pull-requests: write # Create and merge PRs
   actions: write       # Trigger auto-build and update-dashboard workflows
-  packages: write      # Push base images to GHCR (refresh-base-image-cache job)
+  packages: write      # Push base images to GHCR (sync-base-images job)
   pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
   id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
   attestations: read   # Required by update-dashboard reusable workflow (trust-strip attestation_url)
@@ -545,13 +545,22 @@ jobs:
     with:
       trigger_reason: "Post upstream-monitor PR merge"
 
-  # Cache all Docker Hub base images to GHCR to avoid rate limits during builds
-  # Reads base_image_cache from each container's config.yaml, deduplicates,
-  # and copies/updates images using buildx imagetools (with digest comparison)
-  # This is the ONLY place base images are seeded — builds always pull from GHCR
-  refresh-base-image-cache:
+  # Sync base images: daily blind-copy of all containers' base images from Docker
+  # Hub to GHCR. Shares the sync_base_images_to_ghcr helper with the push-trigger
+  # job in auto-build.yaml (#498). Scope = ALL containers (via ./make list)
+  # rather than the detect-containers subset, so this catches drift for containers
+  # not touched by recent pushes.
+  sync-base-images:
+    name: Sync base images (daily, all containers)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # sync_base_images_to_ghcr exits non-zero when any per-image copy fails so
+    # the Actions UI surfaces the issue (transient 429, registry blip, etc.).
+    # Job-level continue-on-error keeps the scheduled upstream-monitor workflow
+    # from failing on those bounded errors — the next sync recovers any missed
+    # tag, and the per-image ::warning:: lines from the helper provide the
+    # signal for maintainer attention.
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -579,97 +588,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      - name: Refresh base image cache
+      - name: Sync base images to GHCR (all containers)
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
+          set -euo pipefail
           source ./helpers/base-cache-utils.sh
 
-          # Discover all containers
+          # Discover all containers and their current versions
           containers_json=$(./make list 2>/dev/null | jq -Rc '[inputs]' || echo '[]')
 
-          # Build a versions map (best-effort, "latest" as fallback)
           versions_json="{}"
           for c in $(echo "$containers_json" | jq -r '.[]'); do
-            v=$(./make version "$c" 2>/dev/null || echo "latest")
-            [[ -z "$v" || "$v" == "unknown" ]] && v="latest"
-            versions_json=$(echo "$versions_json" | jq -c --arg c "$c" --arg v "$v" '. + {($c): $v}')
+              v=$(./make version "$c" 2>/dev/null || echo "latest")
+              [[ -z "$v" || "$v" == "unknown" ]] && v="latest"
+              versions_json=$(echo "$versions_json" | jq -c --arg c "$c" --arg v "$v" '. + {($c): $v}')
           done
 
-          # Collect and deduplicate all base images
-          cache_images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
-          total=$(echo "$cache_images" | jq 'length')
-
-          if [[ "$total" -eq 0 ]]; then
-            echo "ℹ️ No base images to cache"
-            exit 0
-          fi
-
-          echo "📦 Refreshing $total base images (deduplicated across all containers)"
-
-          updated=0
-          skipped=0
-          failed=0
-
-          for ((i = 0; i < total; i++)); do
-            source_name=$(echo "$cache_images" | jq -r ".[$i].source")
-            tag=$(echo "$cache_images" | jq -r ".[$i].tag")
-            ghcr_image=$(echo "$cache_images" | jq -r ".[$i].ghcr_image")
-
-            # Construct Docker Hub source
-            if [[ "$source_name" == */* ]]; then
-              source_image="docker.io/${source_name}:${tag}"
-            else
-              source_image="docker.io/library/${source_name}:${tag}"
-            fi
-
-            echo ""
-            echo "🔍 Checking ${source_name}:${tag}..."
-
-            # Compare digests to detect upstream changes
-            source_digest=$(docker buildx imagetools inspect "$source_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
-
-            if [[ -z "$source_digest" ]]; then
-              echo "  ⚠️ Could not inspect Docker Hub image (rate limit?)"
-              ((failed++)) || true
-              continue
-            fi
-
-            cache_digest=$(docker buildx imagetools inspect "$ghcr_image" 2>/dev/null | grep -m1 "Digest:" | awk '{print $2}' || echo "")
-
-            if [[ "$source_digest" == "$cache_digest" ]]; then
-              echo "  ✓ Up-to-date (${source_digest:0:20}...)"
-              ((skipped++)) || true
-              continue
-            fi
-
-            if [[ -z "$cache_digest" ]]; then
-              echo "  → Seeding cache..."
-            else
-              echo "  → Upstream changed, updating..."
-            fi
-
-            if docker buildx imagetools create \
-              --tag "$ghcr_image" \
-              "$source_image" 2>&1; then
-              echo "  ✅ Cached $(echo "$ghcr_image" | sed 's|.*/||')"
-              ((updated++)) || true
-            else
-              echo "  ⚠️ Failed to cache (rate limit?)"
-              ((failed++)) || true
-            fi
-          done
-
-          echo ""
-          echo "📊 Cache summary: $updated updated, $skipped up-to-date, $failed failed"
-
-          if [[ $failed -gt 0 ]]; then
-            echo "::warning::$failed images couldn't be cached (Docker Hub rate limit?)"
-          fi
-          if [[ $updated -gt 0 ]]; then
-            echo "::notice::Refreshed $updated base image(s) in GHCR cache"
-          fi
+          images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
+          sync_base_images_to_ghcr "$images"
 
   # Check 3rd party dependency versions (runs in parallel with base image checks)
   check-dependency-updates:

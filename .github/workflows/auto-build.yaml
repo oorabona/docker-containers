@@ -214,22 +214,23 @@ jobs:
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
     name: Build PostgreSQL Extensions
-    needs: [detect-containers, cache-base-images]
-    # Ordered after cache-base-images so the per-major-version GHCR probe below
+    needs: [detect-containers, sync-base-images]
+    # Ordered after sync-base-images so the per-major-version GHCR probe below
     # (docker manifest inspect ghcr.io/<owner>/library/postgres:<ver>-alpine) runs
-    # AFTER cache-base-images has seeded that tag — fulfilling SC-18 (extensions use
+    # AFTER sync-base-images has seeded that tag — fulfilling SC-18 (extensions use
     # GHCR). The always() + result-in-(success,skipped) guard mirrors build-and-push
     # exactly: a skipped seed (fork PRs) or a failed seed (continue-on-error: true
     # means the job reports 'success' to dependents even on failure — but we guard
     # 'skipped' too for future-proofing) never blocks extensions. When the probe
-    # finds the mirror absent it falls back to docker.io via the #488 registry:2
-    # sidecar — graceful degradation is preserved; only the race is eliminated.
+    # finds the GHCR cache absent it falls back to direct docker.io (authenticated
+    # via the existing docker-login step) — graceful degradation is preserved;
+    # only the race is eliminated.
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
       (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
-      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
       group: build-extensions-${{ github.ref }}
@@ -266,19 +267,9 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Start Docker Hub pull-through mirror
-        if: steps.login.outputs.dockerhub_authed == 'true'
-        uses: ./.github/actions/dockerhub-mirror
-        with:
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
         timeout-minutes: 10
-        with:
-          driver-opts: ${{ steps.login.outputs.dockerhub_authed == 'true' && 'network=host' || '' }}
-          buildkitd-config: ${{ steps.login.outputs.dockerhub_authed == 'true' && '.github/buildkitd-mirror.toml' || '' }}
 
       - name: Get versions requiring extensions
         id: ext-versions
@@ -296,7 +287,7 @@ jobs:
           REBUILD: ${{ env.REBUILD_MODE }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           # USE_BASE_CACHE mirrors the use_base_cache gate in build-container: true only for
-          # non-fork push/dispatch events (where GHCR write access and cache-base-images ran).
+          # non-fork push/dispatch events (where GHCR write access and sync-base-images ran).
           # REMOTE_CR is NOT set here at job level — it is probed per major_version below.
           USE_BASE_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
@@ -331,13 +322,14 @@ jobs:
               fi
 
               # Probe the GHCR postgres library mirror per major_version.
-              # build-extensions is ordered after cache-base-images (see job needs:), so
-              # the mirror is likely seeded by the time this probe runs; however the probe
-              # is still required as the graceful-degradation fallback for fork PRs (where
-              # cache-base-images is skipped) and any seed failure. Probe each version
-              # individually and set REMOTE_CR only when the mirror is confirmed reachable;
-              # otherwise leave it unset so build-extensions falls back to docker.io via
-              # the #488 registry:2 sidecar (no hard-fail).
+              # build-extensions is ordered after sync-base-images (see job needs:), so
+              # the GHCR cache is likely seeded by the time this probe runs; however the
+              # probe is still required as the graceful-degradation fallback for fork PRs
+              # (where sync-base-images is skipped) and any seed failure. Probe each
+              # version individually and set REMOTE_CR only when the GHCR cache is
+              # confirmed reachable; otherwise leave it unset so build-extensions falls
+              # back to direct docker.io (authenticated) — no hard-fail, single auth'd
+              # cold pull per missing tag, well under the rate limit.
               # Tag format: <major_version>-alpine  (matches the postgres base_suffix and
               # the tag the extension Dockerfiles reference via FROM ${REMOTE_CR}/library/postgres).
               REMOTE_CR=""
@@ -348,7 +340,7 @@ jobs:
                   REMOTE_CR="ghcr.io/${REPO_OWNER}"
                   echo "✅ postgres library mirror reachable for ${mirror_tag} — extensions use GHCR"
                 else
-                  echo "::warning::postgres library mirror missing for ${mirror_tag} — extensions fall back to docker.io via #488 mirror"
+                  echo "::warning::postgres GHCR cache missing for ${mirror_tag} — extensions fall back to direct docker.io (authenticated)"
                 fi
               fi
               export REMOTE_CR
@@ -380,27 +372,26 @@ jobs:
           # silently skips files inside hidden directories unless this is set.
           include-hidden-files: true
 
-  # Cache Docker Hub base images to GHCR to avoid rate limits during builds
-  cache-base-images:
-    name: Cache base images
+  # Sync base images: blind-copy detected containers' base images from Docker Hub
+  # to GHCR on every push. Consolidated with the daily upstream-monitor sync via
+  # the shared sync_base_images_to_ghcr helper (#498). The whole flow is
+  # ~N=25 imagetools calls per run, well under the auth'd 200/6h rate limit;
+  # `continue-on-error: true` absorbs the rare per-image 429 spike.
+  sync-base-images:
+    name: Sync base images (push scope)
     needs: [detect-containers]
-    # Run on push, workflow_dispatch, and own-repo PRs. Fork PRs are skipped
-    # because they lack GHCR write permission — they fall through to Docker Hub
-    # (and may 429, but that is GitHub's per-fork-PR limitation, not ours).
-    # Note: head.repo.full_name is read in an `if:` evaluation context only,
-    # never piped to shell — no injection surface.
+    # Run on push and workflow_dispatch only. PR events lack GHCR
+    # `write:packages` scope on `GITHUB_TOKEN` (the default token permission
+    # downgrades to read-only for pull_request, regardless of fork status),
+    # so the helper would always 403 trying to push base-image tags to GHCR.
+    # PR builds fall through to direct Docker Hub via the build-container
+    # action's existing fallback (auth'd, ~one cold pull per missing tag,
+    # well under the rate limit).
     if: |
-      needs.detect-containers.outputs.count > 0 &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name != 'pull_request' &&
+      needs.detect-containers.outputs.count > 0
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Non-blocking for build-and-push: ADR-009 / spec §C1b. The DockerHub mirror
-    # (B3) is the safety net — if GHCR base cache is absent, Dockerfiles pull
-    # FROM docker.io through the per-job sidecar proxy. Failure here therefore
-    # degrades performance (no cache hit) but never breaks the build. GitHub
-    # semantics: continue-on-error: true causes this job's result to appear as
-    # 'success' to dependent jobs even when it fails, so build-and-push is never
-    # skipped by a cache-population 429.
     continue-on-error: true
     steps:
       - name: Checkout repository
@@ -414,12 +405,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      # Authenticate BOTH registries: GHCR (push the cache) AND Docker Hub
-      # (the `docker buildx imagetools create` below PULLS from docker.io —
-      # anonymous pulls share the GitHub-runner IP rate limit and 429 under
-      # load). Docker Hub auth raises the ceiling for cache-population pulls;
-      # the registry-mirror in #488 removes Docker Hub from the path entirely
-      # as the durable fix.
+      # Authenticate BOTH registries: GHCR (push the sync results) AND Docker Hub
+      # (the imagetools-create source). Auth raises the per-IP rate-limit ceiling
+      # for the sync — per #498, the design is "blind copy ~N=25 images per
+      # run, accept occasional 429 via continue-on-error" rather than maintaining
+      # a sidecar cache layer or presence-check gymnastics.
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
         with:
@@ -428,7 +418,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Collect and cache base images
+      - name: Sync base images to GHCR
         env:
           OWNER: ${{ github.repository_owner }}
           CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
@@ -437,68 +427,8 @@ jobs:
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
 
-          echo "📦 Collecting base images to cache..."
           images=$(collect_all_cache_images "$CONTAINERS" "$VERSIONS" "$OWNER")
-          count=$(echo "$images" | jq 'length')
-          echo "Found $count unique base images to cache (deduplicated)"
-
-          if [[ "$count" -eq 0 ]]; then
-            echo "No base images to cache"
-            exit 0
-          fi
-
-          # Copy each base image from Docker Hub to GHCR
-          cached=0
-          failed=0
-          echo "$images" | jq -c '.[]' | while IFS= read -r img; do
-            source_img=$(echo "$img" | jq -r '.source')
-            tag=$(echo "$img" | jq -r '.tag')
-            ghcr_image=$(echo "$img" | jq -r '.ghcr_image')
-
-            echo ""
-            echo "🔄 Caching $source_img:$tag → $ghcr_image"
-
-            if output=$(docker buildx imagetools create \
-              --tag "$ghcr_image" \
-              "docker.io/$source_img:$tag" 2>&1); then
-              echo "  ✅ Cached successfully"
-            else
-              echo "  ⚠️ Failed to cache $source_img:$tag → $ghcr_image"
-              echo "  Error: $output"
-            fi
-          done
-
-          echo ""
-          echo "✅ Base image caching complete"
-
-      - name: Seed registry:2 proxy image to GHCR
-        # ADR-009 / spec §C2. Copies the digest-pinned registry:2 image to GHCR
-        # so the dockerhub-mirror action (B1) can pull its sidecar proxy
-        # intra-GitHub, avoiding a per-job docker.io pull.
-        # IMPORTANT: digest must stay in sync with
-        # .github/actions/dockerhub-mirror/action.yaml fallback pin.
-        env:
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-
-          # Lowercase owner: GHCR refs are case-sensitive in tooling and
-          # require lowercase. Must match the ${owner,,} resolution in
-          # .github/actions/dockerhub-mirror (dhm_resolve_registry_image).
-          owner="${OWNER,,}"
-          ghcr_image="ghcr.io/${owner}/registry:2"
-          source_img="docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
-
-          echo "🔄 Seeding registry:2 → ${ghcr_image}"
-
-          if output=$(docker buildx imagetools create \
-            --tag "${ghcr_image}" \
-            "${source_img}" 2>&1); then
-            echo "  ✅ registry:2 seeded to GHCR successfully"
-          else
-            echo "  ⚠️ Failed to seed registry:2 to GHCR"
-            echo "  Error: ${output}"
-          fi
+          sync_base_images_to_ghcr "$images"
 
   sync-registries:
     name: Sync ${{ matrix.build.container }}:${{ matrix.build.tag }} GHCR→DockerHub
@@ -548,13 +478,13 @@ jobs:
 
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
-    needs: [detect-containers, build-extensions, cache-base-images]
+    needs: [detect-containers, build-extensions, sync-base-images]
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
-      (needs.cache-base-images.result == 'success' || needs.cache-base-images.result == 'skipped')
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     # NOTE: No job-level concurrency here — caused unexpected mid-build cancellations
     # (observed 2026-04-23). Workflow-level concurrency is already removed so
     # different-container runs parallelize. Same-container races are rare in practice

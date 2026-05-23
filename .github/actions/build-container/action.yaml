@@ -58,7 +58,7 @@ inputs:
     required: false
     default: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
   use_base_cache:
-    description: 'Use GHCR base image cache (skip on PRs where cache-base-images is not run)'
+    description: 'Use GHCR base image cache (skip on fork PRs where sync-base-images is not run)'
     required: false
     default: 'true'
 outputs:
@@ -122,13 +122,6 @@ runs:
       run: echo "${{ inputs.dockerhub_token }}" | docker login docker.io -u ${{ inputs.dockerhub_username }} --password-stdin
       continue-on-error: true
 
-    - name: Start Docker Hub pull-through mirror
-      if: runner.os != 'Windows' && steps.dockerhub-login.outcome == 'success'
-      uses: ./.github/actions/dockerhub-mirror
-      with:
-        dockerhub_username: ${{ inputs.dockerhub_username }}
-        dockerhub_token: ${{ inputs.dockerhub_token }}
-
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
       with:
@@ -145,14 +138,6 @@ runs:
         # Without this, the Windows runner's outdated stock buildx would keep running and
         # reject `--tag` / `-t` for imagetools create. Pinned on both OS for reproducibility.
         version: 'v0.33.0'
-        # Linux with creds: route docker.io pulls through the local pull-through mirror
-        # (network=host allows BuildKit container to reach 127.0.0.1:5000 on the runner).
-        # buildkitd-config (NOT config) is the correct input for setup-buildx-action@v4;
-        # using config: is silently ignored and the mirror would never be used.
-        # Windows or secretless (fork PR): no mirror — leave driver-opts and buildkitd-config
-        # empty so the build falls back to direct docker.io pulls as before.
-        driver-opts: ${{ (runner.os != 'Windows' && steps.dockerhub-login.outcome == 'success') && 'network=host' || '' }}
-        buildkitd-config: ${{ (runner.os != 'Windows' && steps.dockerhub-login.outcome == 'success') && '.github/buildkitd-mirror.toml' || '' }}
       # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal.
       # Retry logic handles intermittent Docker Hub issues.
 
@@ -377,9 +362,10 @@ runs:
           fi
         fi
 
-        # Use GHCR-cached base images (seeded by upstream-monitor workflow)
-        # Skip on PRs: cache-base-images job is not run for pull_request events,
-        # so GHCR cache images may not exist yet — fall back to Docker Hub defaults.
+        # Use GHCR-cached base images (seeded by sync-base-images in auto-build
+        # on push, and refreshed daily by sync-base-images in upstream-monitor).
+        # Skip on fork PRs: sync-base-images is gated to own-repo PRs only, so
+        # GHCR cache images may not exist there — fall back to Docker Hub defaults.
         if [[ "${{ inputs.use_base_cache }}" == "true" ]]; then
           source ./helpers/base-cache-utils.sh
           if has_base_cache "./$container"; then
