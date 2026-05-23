@@ -64,52 +64,42 @@ on:
   pull_request:
     branches: [main, master]
     paths:
-      - '*/Dockerfile'
-      - '*/Dockerfile.*'
-      - '*/Dockerfile.windows'
-      - '*/Dockerfile.template'
-      - '*/generate-dockerfile.sh'
-      - '*/version.sh'
-      - '*/config.yaml'
-      - '*/variants.yaml'
-      - '*/build'              # per-container build-hook script (consumed by build-container.sh)
-      - '*/LAST_REBUILD.md'    # marker file dropped by upstream-monitor to force retained-version rebuild
-      - '*/docker-compose.yml'
-      - '*/compose.yml'
-      - '*/extensions/config.yaml'
-      - 'helpers/**'
-      - 'scripts/build-container.sh'
-      - 'scripts/build-extensions.sh'
-      - 'scripts/audit-base-image-cache.sh'
-      - '.github/actions/build-container/**'
-      - '.github/actions/dockerhub-mirror/**'
-      - 'make'
-      - '!archive/**'  # Exclude archived containers
+      # Match the detection logic: ANY file inside a first-level subdir is a
+      # potential build input (Dockerfile, build hook, entrypoint, prepare-build
+      # scripts, COPYed assets, generated context, etc.). Explicit allowlist
+      # was brittle — new file types kept slipping through (e.g. build hooks,
+      # prepare-build-context.sh). The denylist below excludes non-container
+      # top-level dirs.
+      - '*/**'
+      - 'make'                                  # Top-level build orchestrator
+      - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '!docs/**'                              # Jekyll site + ADRs (no build impact)
+      - '!examples/**'                          # Docker Compose usage examples
+      - '!tests/**'                             # Test suite (has its own CI)
+      - '!test-harness/**'                      # Test fixtures
+      - '!test-logs/**'                         # Generated test logs
+      - '!archive/**'                           # Archived containers
   # Triggered on merge to master (actual deployment)
   push:
     branches: [main, master]
     paths:
-      - '*/Dockerfile'
-      - '*/Dockerfile.*'
-      - '*/Dockerfile.windows'
-      - '*/Dockerfile.template'
-      - '*/generate-dockerfile.sh'
-      - '*/version.sh'
-      - '*/config.yaml'
-      - '*/variants.yaml'
-      - '*/build'              # per-container build-hook script (consumed by build-container.sh)
-      - '*/LAST_REBUILD.md'    # marker file dropped by upstream-monitor to force retained-version rebuild
-      - '*/docker-compose.yml'
-      - '*/compose.yml'
-      - '*/extensions/config.yaml'
-      - 'helpers/**'
-      - 'scripts/build-container.sh'
-      - 'scripts/build-extensions.sh'
-      - 'scripts/audit-base-image-cache.sh'
-      - '.github/actions/build-container/**'
-      - '.github/actions/dockerhub-mirror/**'
-      - 'make'
-      - '!archive/**'  # Exclude archived containers
+      # Match the detection logic: ANY file inside a first-level subdir is a
+      # potential build input (Dockerfile, build hook, entrypoint, prepare-build
+      # scripts, COPYed assets, generated context, etc.). Explicit allowlist
+      # was brittle — new file types kept slipping through (e.g. build hooks,
+      # prepare-build-context.sh). The denylist below excludes non-container
+      # top-level dirs.
+      - '*/**'
+      - 'make'                                  # Top-level build orchestrator
+      - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '!docs/**'                              # Jekyll site + ADRs (no build impact)
+      - '!examples/**'                          # Docker Compose usage examples
+      - '!tests/**'                             # Test suite (has its own CI)
+      - '!test-harness/**'                      # Test fixtures
+      - '!test-logs/**'                         # Generated test logs
+      - '!archive/**'                           # Archived containers
   # Manual trigger
   workflow_dispatch:
     inputs:
