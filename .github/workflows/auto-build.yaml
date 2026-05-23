@@ -72,6 +72,8 @@ on:
       - '*/version.sh'
       - '*/config.yaml'
       - '*/variants.yaml'
+      - '*/build'              # per-container build-hook script (consumed by build-container.sh)
+      - '*/LAST_REBUILD.md'    # marker file dropped by upstream-monitor to force retained-version rebuild
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/extensions/config.yaml'
@@ -95,6 +97,8 @@ on:
       - '*/version.sh'
       - '*/config.yaml'
       - '*/variants.yaml'
+      - '*/build'              # per-container build-hook script (consumed by build-container.sh)
+      - '*/LAST_REBUILD.md'    # marker file dropped by upstream-monitor to force retained-version rebuild
       - '*/docker-compose.yml'
       - '*/compose.yml'
       - '*/extensions/config.yaml'
