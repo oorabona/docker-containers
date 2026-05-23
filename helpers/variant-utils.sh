@@ -538,8 +538,9 @@ list_variant_tags() {
 #     2. event_name empty or unrecognized                       → c: true  (ERR-06 backward-compat)
 #     3. event_name == "pull_request"                           → c: true  (PR smoke matrix)
 #     4. build_all_retained == "true" (explicit string compare) → c: true  (operator override)
-#     5. changed_files contains "$c/config.yaml" or
-#        "$c/LAST_REBUILD.md" (grep -Fxq exact-line match)     → c: true  (dep-driven trigger)
+#     5. changed_files contains any path with prefix "$c/"
+#        (case-glob anchored prefix match, sibling-collision safe:
+#         "php-fpm/foo" does NOT match prefix "php/")            → c: true  (dep-driven trigger)
 #     6. otherwise                                              → c: false (default: latest only)
 #
 # Exit code: 0 on success, 1 on malformed containers_json.
