@@ -86,6 +86,7 @@ on:
       - '!**/CHANGELOG*'                        # Changelogs
       - '!**/docs/**'                           # Nested docs subdirs inside container dirs
       - '!**/tests/**'                          # Nested test subdirs inside container dirs
+      - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Triggered on merge to master (actual deployment)
   push:
     branches: [main, master]
@@ -112,6 +113,7 @@ on:
       - '!**/CHANGELOG*'                        # Changelogs
       - '!**/docs/**'                           # Nested docs subdirs inside container dirs
       - '!**/tests/**'                          # Nested test subdirs inside container dirs
+      - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Manual trigger
   workflow_dispatch:
     inputs:
