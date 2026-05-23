@@ -1,6 +1,6 @@
 # ADR-009: Transparent Docker Hub pull-through mirror on the runners (eliminate 429 without touching Dockerfiles)
 
-**Status:** Accepted
+**Status:** Superseded by #498 (2026-05-23) — see "Why this was removed" below
 **Date:** 2026-05-21
 
 ## Context
@@ -148,3 +148,49 @@ Once the mirror is observed eliminating the rate-limit on full-matrix runs, the 
 base-image-copy repos, the skopeo-copy job, and the `get_cache_build_args` build-arg
 override become redundant for rate-limit avoidance and are slated for removal in a
 follow-up (they are kept until then). Design + hardening: `docs/plans/488-dockerhub-mirror.md`.
+
+## Why this was removed (#498, 2026-05-23)
+
+The pull-through sidecar was introduced to protect the build path from 429s
+when Dockerfiles referenced `FROM docker.io/...`. Two subsequent changes made
+this protection redundant:
+
+- **#492** fixed the root cause that was forcing builds into the docker.io
+  fallback (the GHCR cache check used `:latest` instead of the version tag,
+  so the override was silently dropped and builds went straight to docker.io
+  even when GHCR was warm).
+- **#493 / #497** migrated containers to `FROM ${REMOTE_CR}/<upstream-path>`,
+  where `REMOTE_CR` resolves to `ghcr.io/<owner>` when the GHCR cache is
+  reachable for that tag. Builds with a warm cache no longer touch docker.io
+  at all.
+
+After these two changes, the only remaining docker.io consumers were the
+seed jobs (`cache-base-images` and `refresh-base-image-cache`). These two
+jobs did near-identical work on different triggers (push vs daily cron),
+each with its own ~70-line inline shell loop. #498 consolidated them into
+a single `sync-base-images` job in each workflow, both calling a shared
+`sync_base_images_to_ghcr` helper in `helpers/base-cache-utils.sh`.
+
+The helper performs a blind copy: each base image is unconditionally
+mirrored from `docker.io/<path>:<tag>` to `ghcr.io/<owner>/<path>:<tag>`
+via `docker buildx imagetools create`. No presence-check, no digest-compare,
+no sidecar cache layer. The math justifies this simplicity:
+
+- N ≈ 15 unique base images per run today (sum of deduped `base_image_cache`
+  entries across detected containers, or all containers for the daily run).
+  Headroom for growth: even at N = 30 the budget still holds.
+- Auth'd Docker Hub rate limit: 200 pulls per 6h per user.
+- Steady-state load (N = 15): ~15 pulls × ~5 runs / 6h = ~75 pulls per 6h
+  window, ~38% of the 200 budget.
+- Burst (release flurry): the helper retries each rate-limited call with
+  exponential backoff (5s, 10s, 20s; max 3 retries) before giving up. Non-
+  429 failures (auth, network) fail fast. Persistent failures after backoff
+  are bounded by `continue-on-error: true` on the job and per-image error
+  handling, so any spike that exceeds the per-IP budget just degrades to
+  a missing/stale GHCR tag — which the next push or the daily sync recovers.
+  Dependent jobs are never blocked.
+
+The `dockerhub-mirror` composite action and `.github/buildkitd-mirror.toml`
+are kept on disk in case a future use case re-surfaces, but no workflow
+currently invokes them. A future cleanup PR may remove them entirely once
+the new design has run in production for a stable observation window.

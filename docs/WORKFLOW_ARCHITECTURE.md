@@ -97,8 +97,8 @@ This document describes the complete CI/CD architecture: version detection, mult
 | Job | Purpose | Depends On |
 |-----|---------|------------|
 | `detect-containers` | Smart change detection via git diff or force input | - |
-| `cache-base-images` | Cache postgres base images (avoids Docker Hub rate limits) | detect |
-| `build-extensions` | Build PostgreSQL extension images (pgvector, etc.) | cache |
+| `sync-base-images` | Mirror Docker Hub base images to GHCR (avoids rate limits during builds) | detect |
+| `build-extensions` | Build PostgreSQL extension images (pgvector, etc.) | sync |
 | `build-and-push` | Multi-platform builds per container (amd64 + arm64 runners) + SBOM + attestation | extensions |
 | `create-manifest` | Create multi-arch manifest lists and push | build |
 | `cache-lineage` | Cache `.build-lineage/` artifacts + process SBOMs (changelog, history) | manifest |

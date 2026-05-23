@@ -1,7 +1,7 @@
 #!/bin/bash
 # Base image cache utilities
 # Reads base_image_cache from config.yaml and provides helpers for:
-# - Caching Docker Hub base images to GHCR (CI cache job)
+# - Syncing Docker Hub base images to GHCR (CI sync job — sync_base_images_to_ghcr)
 # - Resolving cached base image build args (build action)
 #
 # Config schema supports TWO entry styles (discriminated by ghcr_repo presence):
@@ -376,5 +376,186 @@ resolve_cache_check_tag() {
     _resolve_tag_template "$raw_tag" "$build_version" "$config_file" "$container_dir"
 }
 
+# _sync_one_with_backoff <source_ref> <ghcr_image>
+#
+# Run a single `docker buildx imagetools create` with exponential backoff on
+# rate-limit (429) errors. Other failures (auth, network, malformed ref) fail
+# fast — backoff only burns wall-time when it cannot help.
+#
+# Backoff schedule: 5s, 10s, 20s (3 retries max, then give up).
+# Sleep is performed via the injectable $SLEEP_CMD (defaults to `sleep`); tests
+# pass `:` or `true` to skip real sleeps.
+#
+# stdout: docker stderr from the last attempt (success or final failure)
+# stderr: backoff progress messages
+# exit:   0 on eventual success, 1 on persistent failure
+_sync_one_with_backoff() {
+    local source_ref="$1"
+    local ghcr_image="$2"
+    local sleep_cmd="${SLEEP_CMD:-sleep}"
+
+    local max_retries=3
+    local base_delay=5
+    local attempt=0
+    local output
+
+    while true; do
+        if output=$(docker buildx imagetools create \
+            --tag "$ghcr_image" \
+            "$source_ref" 2>&1); then
+            printf '%s' "$output"
+            return 0
+        fi
+
+        # Only retry rate-limit / 429 — anything else is non-transient.
+        # `toomanyrequests` is Docker Hub's literal error code; the broader
+        # phrasing variants are matched too for resilience to future wording.
+        if [[ "$output" != *"toomanyrequests"* ]] \
+            && [[ "$output" != *"rate limit"* ]] \
+            && [[ "$output" != *"429"* ]]; then
+            printf '%s' "$output"
+            return 1
+        fi
+
+        attempt=$((attempt + 1))
+        if (( attempt > max_retries )); then
+            printf '%s' "$output"
+            return 1
+        fi
+
+        # 5s, 10s, 20s — sublinear total wait (~35s worst case per image)
+        local delay=$((base_delay * (1 << (attempt - 1))))
+        echo "  ⏳ rate-limited; backing off ${delay}s (retry ${attempt}/${max_retries})" >&2
+        ${sleep_cmd} "$delay"
+    done
+}
+
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command. Without this, a newline/CR/`%` in the value could
+# terminate the command early and inject another (e.g. `::stop-commands::`,
+# `::add-mask::`, `::error::`). Mapping per GitHub's runner spec:
+#   %  → %25
+#   \n → %0A
+#   \r → %0D
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
+# sync_base_images_to_ghcr <images_json> [source_registry]
+#
+# Copy each base image from <source_registry> (default: docker.io) to GHCR
+# via `docker buildx imagetools create`. Blind copy — no presence check,
+# no digest compare. Per-image failures are logged but non-fatal so a single
+# 429 (or transient registry error) does not halt the whole sync run; the
+# outer job's `continue-on-error: true` further insulates dependent jobs.
+#
+# Args:
+#   $1 = images_json (output of collect_all_cache_images)
+#   $2 = source_registry (optional; default "docker.io")
+#
+# Output: progress lines printed to stdout, one section per image
+# Exit:   0 when all images synced; 1 when any failed (caller's
+#         `continue-on-error: true` keeps dependents unblocked while the
+#         non-zero exit surfaces the failure in the Actions UI)
+#
+# Normalization: docker.io implicitly maps single-segment names (`alpine`) to
+# `library/alpine`; for parity with arbitrary registries we always emit the
+# explicit `library/` prefix when the source name has no slash.
+sync_base_images_to_ghcr() {
+    local images_json="$1"
+    local source_registry="${2:-docker.io}"
+
+    # Same injection-prevention guard we apply to per-image refs, but at the
+    # function boundary so an attacker-influenced source_registry override
+    # cannot reach echo/log lines either.
+    if [[ "$source_registry" =~ [[:cntrl:]] ]]; then
+        echo "::warning::sync_base_images_to_ghcr: refusing source_registry with control characters (possible injection)"
+        return 1
+    fi
+
+    local count
+    count=$(echo "$images_json" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "ℹ️ No base images to sync"
+        return 0
+    fi
+
+    echo "📦 Syncing $count unique base images to GHCR (source: $source_registry)"
+
+    local synced=0 failed=0
+    while IFS= read -r img; do
+        local source_img tag ghcr_image source_ref output
+        source_img=$(echo "$img" | jq -r '.source')
+        tag=$(echo "$img" | jq -r '.tag')
+        ghcr_image=$(echo "$img" | jq -r '.ghcr_image')
+
+        # Reject control characters in any ref. base_image_cache.source is not
+        # schema-validated upstream (see top-of-file docstring); a value with
+        # a newline / CR would otherwise inject GitHub Actions workflow
+        # commands the next time we echo it (e.g. an embedded `::stop-commands::`
+        # line). Belt-and-suspenders alongside _escape_gha_command below.
+        if [[ "$source_img" =~ [[:cntrl:]] ]] \
+            || [[ "$tag" =~ [[:cntrl:]] ]] \
+            || [[ "$ghcr_image" =~ [[:cntrl:]] ]]; then
+            echo "::warning::sync_base_images_to_ghcr: refusing image entry with control characters in ref (possible injection)"
+            failed=$((failed + 1))
+            continue
+        fi
+
+        if [[ "$source_img" == */* ]]; then
+            source_ref="${source_registry}/${source_img}:${tag}"
+        else
+            source_ref="${source_registry}/library/${source_img}:${tag}"
+        fi
+
+        echo ""
+        echo "🔄 ${source_ref} → ${ghcr_image}"
+
+        if output=$(_sync_one_with_backoff "$source_ref" "$ghcr_image"); then
+            echo "  ✅ Synced"
+            synced=$((synced + 1))
+        else
+            echo "  ⚠️ Failed (continuing; daily sync will retry)"
+            # Prefix every line of $output (docker stderr) with "  Error: " so
+            # no line can begin at column 0 with `::` and be interpreted as a
+            # GitHub Actions workflow command. The upstream registry response
+            # is technically attacker-influenced, even if remote. Normalize
+            # CR → LF first so a bare carriage return (which GHA also treats
+            # as a line terminator) cannot bypass the prefix.
+            printf '%s\n' "$output" | tr '\r' '\n' | sed 's/^/  Error: /'
+            # Surface in the workflow summary so the maintainer notices that
+            # a stale GHCR tag may persist until the next successful sync.
+            # Refs come from base_image_cache.source which is not schema-
+            # validated (see top-of-file docstring); escape to prevent a
+            # newline-bearing value from injecting a second workflow command.
+            local safe_source_ref safe_ghcr_image
+            safe_source_ref=$(_escape_gha_command "$source_ref")
+            safe_ghcr_image=$(_escape_gha_command "$ghcr_image")
+            echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_ghcr_image}"
+            failed=$((failed + 1))
+        fi
+    done < <(echo "$images_json" | jq -c '.[]')
+
+    echo ""
+    echo "📊 Sync summary: $synced succeeded, $failed failed"
+
+    # Non-zero exit when any image failed so the GitHub Actions UI surfaces the
+    # sync run as red. Dependent jobs are kept unblocked by the caller's
+    # `continue-on-error: true`; this signal is for maintainer attention, not
+    # for build gating. The daily sync picks up anything missed.
+    if (( failed > 0 )); then
+        echo "::warning::sync_base_images_to_ghcr: ${failed} image(s) failed to sync; stale GHCR tags may persist until the next successful sync"
+        return 1
+    fi
+    return 0
+}
+
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff _escape_gha_command sync_base_images_to_ghcr

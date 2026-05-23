@@ -612,3 +612,259 @@ EOF
         }
     done
 }
+
+# --- sync_base_images_to_ghcr ---
+
+@test "sync_base_images_to_ghcr: empty input returns 0 and no-op message" {
+    run sync_base_images_to_ghcr '[]'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No base images to sync"* ]]
+}
+
+@test "sync_base_images_to_ghcr: single library/X image uses explicit library/ prefix" {
+    # Mock docker to capture the source_ref argument
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "MOCK_DOCKER_ARGS: $*"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"docker.io/library/alpine:3.18"* ]]
+    [[ "$output" == *"ghcr.io/oorabona/library/alpine:3.18"* ]]
+    [[ "$output" == *"Synced"* ]]
+}
+
+@test "sync_base_images_to_ghcr: single-segment source normalized to library/X" {
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "MOCK_DOCKER_ARGS: $*"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+
+    # Source has no slash — should be auto-prefixed with library/
+    local input='[{"source":"alpine","tag":"3.18","ghcr_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"docker.io/library/alpine:3.18"* ]]
+}
+
+@test "sync_base_images_to_ghcr: per-image failures exit non-zero with workflow warning" {
+    # Mock docker to fail
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "simulated registry error" >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"},{"source":"library/postgres","tag":"18-alpine","ghcr_image":"ghcr.io/x/library/postgres:18-alpine"}]'
+    run sync_base_images_to_ghcr "$input"
+    # Non-zero so the GitHub Actions UI surfaces the failure; the caller's
+    # job-level `continue-on-error: true` keeps dependent jobs unblocked.
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"⚠️ Failed"* ]]
+    [[ "$output" == *"0 succeeded, 2 failed"* ]]
+    # Workflow warning surfaced for each image AND for the summary
+    [[ "$output" == *"::warning::sync_base_images_to_ghcr: failed to sync"* ]]
+    [[ "$output" == *"::warning::sync_base_images_to_ghcr: 2 image(s) failed to sync"* ]]
+}
+
+@test "sync_base_images_to_ghcr: multiline docker stderr cannot inject workflow commands" {
+    # Mock docker to return multiline stderr containing a fake workflow command
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            printf 'fake error line1\n::stop-commands::xx\nline3\n' >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 1 ]
+    # The injected line must never appear at column 0 — every stderr line is
+    # prefixed with "  Error: " so it's quoted text, not a workflow command.
+    [[ "$output" != *$'\n::stop-commands::'* ]]
+    [[ "$output" == *"  Error: ::stop-commands::xx"* ]]
+}
+
+@test "sync_base_images_to_ghcr: carriage return in docker stderr cannot inject workflow commands" {
+    # CR (\\r) is also a line terminator for the GHA workflow-command parser.
+    # Mock docker to embed a CR-prefixed injection attempt.
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            printf 'first line\r::stop-commands::xx\r\nlast line\n' >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 1 ]
+    # The CR-injected `::stop-commands::` must not appear preceded by raw CR.
+    [[ "$output" != *$'\r::stop-commands::'* ]]
+    # And it must appear in prefixed form.
+    [[ "$output" == *"  Error: ::stop-commands::xx"* ]]
+}
+
+@test "sync_base_images_to_ghcr: newline in image ref is refused (injection prevention)" {
+    # Mock docker — should NOT be called for the malicious entry
+    local docker_call_count=0
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            docker_call_count=$((docker_call_count + 1))
+        fi
+        return 0
+    }
+    export -f docker
+
+    # Embed a newline + a fake workflow command in the source field
+    local malicious_source="library/alpine"$'\n'"::stop-commands::xx"
+    local input
+    input=$(jq -nc --arg s "$malicious_source" \
+        '[{"source":$s,"tag":"3.18","ghcr_image":"ghcr.io/x/lib/a:3.18"}]')
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 1 ]
+    # The injected `::stop-commands::xx` line must NOT appear as a standalone
+    # line at column 0 (which would be interpreted as a workflow command).
+    [[ "$output" != *$'\n::stop-commands::'* ]]
+    # The validation guard fires and the entry is counted as failed
+    [[ "$output" == *"refusing image entry with control characters"* ]]
+    [[ "$output" == *"0 succeeded, 1 failed"* ]]
+}
+
+@test "_sync_one_with_backoff: succeeds on first attempt without retry" {
+    local call_count=0
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            call_count=$((call_count + 1))
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:  # no-op sleep
+
+    run _sync_one_with_backoff "docker.io/library/alpine:3.18" "ghcr.io/x/lib/a:3.18"
+    [ "$status" -eq 0 ]
+    # Should NOT have retried (no backoff message)
+    [[ "$output" != *"backing off"* ]]
+}
+
+@test "_sync_one_with_backoff: retries on 429 then succeeds" {
+    # Use a real file as a counter so the mock survives subshells (docker is
+    # called inside command substitution which forks).
+    local counter_file
+    counter_file=$(mktemp)
+    echo 0 > "$counter_file"
+    export COUNTER_FILE="$counter_file"
+
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            local n
+            n=$(<"$COUNTER_FILE")
+            n=$((n + 1))
+            echo "$n" > "$COUNTER_FILE"
+            if (( n < 3 )); then
+                echo "toomanyrequests: You have reached your pull rate limit" >&2
+                return 1
+            fi
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run _sync_one_with_backoff "docker.io/library/alpine:3.18" "ghcr.io/x/lib/a:3.18"
+    [ "$status" -eq 0 ]
+    # Should have emitted at least one backoff message (retries 1 and 2 hit the limit)
+    [[ "$output" == *"backing off 5s (retry 1/3)"* ]]
+    [[ "$output" == *"backing off 10s (retry 2/3)"* ]]
+
+    rm -f "$counter_file"
+}
+
+@test "_sync_one_with_backoff: gives up after max retries on persistent 429" {
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "toomanyrequests: persistent rate limit" >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run _sync_one_with_backoff "docker.io/library/alpine:3.18" "ghcr.io/x/lib/a:3.18"
+    [ "$status" -eq 1 ]
+    # All three backoff messages emitted before giving up
+    [[ "$output" == *"backing off 5s"* ]]
+    [[ "$output" == *"backing off 10s"* ]]
+    [[ "$output" == *"backing off 20s"* ]]
+    # Final stderr from docker is returned on stdout (by the function's contract)
+    [[ "$output" == *"toomanyrequests"* ]]
+}
+
+@test "_sync_one_with_backoff: non-429 errors fail fast without retry" {
+    local call_count=0
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            call_count=$((call_count + 1))
+            echo "unauthorized: authentication required" >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    run _sync_one_with_backoff "docker.io/library/alpine:3.18" "ghcr.io/x/lib/a:3.18"
+    [ "$status" -eq 1 ]
+    # No backoff for non-429
+    [[ "$output" != *"backing off"* ]]
+}
+
+@test "sync_base_images_to_ghcr: control character in source_registry param is refused" {
+    docker() { return 0; }
+    export -f docker
+    export SLEEP_CMD=:
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/lib/a:3.18"}]'
+    local malicious_registry=$'docker.io\n::stop-commands::xx'
+    run sync_base_images_to_ghcr "$input" "$malicious_registry"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing source_registry with control characters"* ]]
+    # The injected line must not appear at column 0
+    [[ "$output" != *$'\n::stop-commands::'* ]]
+}
+
+@test "sync_base_images_to_ghcr: source_registry override changes the source URL" {
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "MOCK_DOCKER_ARGS: $*"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input" "127.0.0.1:5000"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"127.0.0.1:5000/library/alpine:3.18"* ]]
+}

@@ -101,7 +101,7 @@ Builds and pushes containers when triggered by upstream monitor or code changes.
 
 **Pipeline stages:**
 1. `detect-containers` — Smart change detection via git diff or force input
-2. `cache-base-images` — Cache Docker Hub base images to GHCR (avoids rate limits)
+2. `sync-base-images` — Mirror Docker Hub base images to GHCR (avoids rate limits during builds)
 3. `build-extensions` — Build PostgreSQL extension images (if postgres detected)
 4. `build-and-push` — Multi-platform builds (native amd64 + arm64 runners) + SBOM generation + GitHub attestation
 5. `create-manifest` — Multi-arch manifest lists (GHCR primary, Docker Hub via cross-registry from GHCR sources)
