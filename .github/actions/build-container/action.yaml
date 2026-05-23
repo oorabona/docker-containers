@@ -463,20 +463,7 @@ runs:
 
     # Security Scanning with Trivy
     # Note: Image is tagged as ghcr.io/owner/container:version by the build step
-    - name: Ensure Trivy cache directory exists
-      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
-      shell: bash
-      run: mkdir -p ~/.cache/trivy
-
-    - name: Restore Trivy vulnerability database cache
-      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
-      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-      with:
-        path: ~/.cache/trivy
-        key: trivy-db-${{ runner.os }}-${{ hashFiles('.github/actions/build-container/action.yaml') }}
-        restore-keys: |
-          trivy-db-${{ runner.os }}-
-
+    # trivy-action manages its own DB cache (cache-trivy-YYYY-MM-DD) — no project-level wrapper needed.
     - name: Scan for vulnerabilities (Trivy)
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
       id: trivy-scan
@@ -577,13 +564,6 @@ runs:
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
         wait-for-processing: false
       # No continue-on-error: SARIF upload to Security tab must succeed for visibility
-
-    - name: Save Trivy vulnerability database cache
-      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
-      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-      with:
-        path: ~/.cache/trivy
-        key: trivy-db-${{ runner.os }}-${{ hashFiles('.github/actions/build-container/action.yaml') }}
 
     - name: Check scan result
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
