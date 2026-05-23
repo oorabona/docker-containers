@@ -29,9 +29,22 @@ inputs:
   event_name:
     description: |
       GitHub event name (push|pull_request|workflow_dispatch|schedule).
-      When missing/unknown, treats as legacy caller and expands all retained
-      versions for every container (defensive — ERR-06 / SC-15).
       Pass `${{ github.event_name }}` from calling workflows.
+
+      SCOPE: this input is consumed ONLY by the compute_expand_retained_map
+      helper to classify the event (PR carve-out vs dep-driven matrix
+      expansion vs operator override). It does NOT control which git diff
+      branch the find-containers step takes — diff-branch selection uses
+      the ambient `github.event_name` and event-specific properties
+      (event.before/after for push, pull_request.base/head for pull_request)
+      that are only populated for those actual events. A workflow_call
+      caller passing `event_name: push` will still fall into the manual
+      detection path because event.before/after are not accessible from a
+      workflow_call context.
+
+      When missing/unknown, treats as legacy caller and expands all retained
+      versions for every container (defensive fallback — see
+      compute_expand_retained_map priority chain).
     required: false
     default: ""
   build_all_retained:
