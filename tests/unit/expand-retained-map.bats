@@ -31,10 +31,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-02: config.yaml change for a container triggers expansion
+# SC-02: container-dir file (config.yaml) change triggers expansion
 # ---------------------------------------------------------------------------
 
-@test "SC-02: config.yaml change for openresty → openresty:true" {
+@test "SC-02: container-dir file (config.yaml) change for openresty → openresty:true" {
     echo "openresty/config.yaml" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -43,10 +43,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# SC-03: LAST_REBUILD.md change for a container triggers expansion
+# SC-03: container-dir file (LAST_REBUILD.md) change triggers expansion
 # ---------------------------------------------------------------------------
 
-@test "SC-03: LAST_REBUILD.md change for openresty → openresty:true" {
+@test "SC-03: container-dir file (LAST_REBUILD.md) change for openresty → openresty:true" {
     echo "openresty/LAST_REBUILD.md" >> "$CHANGED_FILES"
     run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
     [ "$status" -eq 0 ]
@@ -184,4 +184,40 @@ teardown() {
     pg_val=$(echo "$output" | jq -r '.postgres')
     [ "$or_val" = "false" ]
     [ "$pg_val" = "false" ]
+}
+
+# ---------------------------------------------------------------------------
+# SC-16: Dockerfile change in container dir triggers expansion (gate finding regression-lock)
+# ---------------------------------------------------------------------------
+
+@test "SC-16: Dockerfile change in container dir → openresty:true" {
+    echo "openresty/Dockerfile" >> "$CHANGED_FILES"
+    run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
+    [ "$status" -eq 0 ]
+    val=$(echo "$output" | jq -r '.openresty')
+    [ "$val" = "true" ]
+}
+
+# ---------------------------------------------------------------------------
+# SC-17: variants.yaml change in container dir triggers expansion (gate finding regression-lock)
+# ---------------------------------------------------------------------------
+
+@test "SC-17: variants.yaml change in container dir → openresty:true" {
+    echo "openresty/variants.yaml" >> "$CHANGED_FILES"
+    run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
+    [ "$status" -eq 0 ]
+    val=$(echo "$output" | jq -r '.openresty')
+    [ "$val" = "true" ]
+}
+
+# ---------------------------------------------------------------------------
+# SC-18: build script change in container dir triggers expansion (gate finding regression-lock)
+# ---------------------------------------------------------------------------
+
+@test "SC-18: build script change in container dir → openresty:true" {
+    echo "openresty/build" >> "$CHANGED_FILES"
+    run compute_expand_retained_map "push" "false" "$CHANGED_FILES" '["openresty"]'
+    [ "$status" -eq 0 ]
+    val=$(echo "$output" | jq -r '.openresty')
+    [ "$val" = "true" ]
 }

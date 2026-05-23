@@ -600,18 +600,27 @@ compute_expand_retained_map() {
             continue
         fi
 
-        # Priority 5: dep-driven trigger via exact-line match
-        local triggered="false"
+        # Rule 5: dep-driven trigger — any file inside the container directory.
+        # A file `<c>/anything` (Dockerfile, build, variants.yaml, version.sh,
+        # config.yaml, LAST_REBUILD.md, custom helper, generated assets, etc.)
+        # implies the container's build inputs changed and ALL retained versions
+        # must rebuild to lock the new state. Exact-line prefix match via bash
+        # `case` — anchored at start, no regex interpolation hazard.
+        local found_match=false
         if [[ -f "$changed_files_file" ]]; then
-            if grep -Fxq "${container}/config.yaml" "$changed_files_file" 2>/dev/null; then
-                triggered="true"
-            elif grep -Fxq "${container}/LAST_REBUILD.md" "$changed_files_file" 2>/dev/null; then
-                triggered="true"
-            fi
+            while IFS= read -r changed_path; do
+                [[ -z "$changed_path" ]] && continue
+                case "$changed_path" in
+                    "${container}/"*)
+                        found_match=true
+                        break
+                        ;;
+                esac
+            done < "$changed_files_file"
         fi
 
-        if [[ "$triggered" == "true" ]]; then
-            expand_map["$container"]="true"
+        if [[ "$found_match" == "true" ]]; then
+            expand_map[$container]=true
             continue
         fi
 

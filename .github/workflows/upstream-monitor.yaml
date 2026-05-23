@@ -511,7 +511,10 @@ jobs:
             fi
           fi
 
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args
+          # build_all_retained=true: workflow_dispatch has no diff; without this flag, the
+          # latest-only default would silently skip retained-version rebuilds — defeating
+          # upstream-monitor's "propagate dep update to every supported version" purpose.
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true -f build_all_retained=true $scope_args
           echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Cleanup outdated registry images
@@ -1023,7 +1026,10 @@ jobs:
             fi
           fi
 
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true $scope_args
+          # build_all_retained=true: workflow_dispatch has no diff; without this flag, the
+          # latest-only default would silently skip retained-version rebuilds — defeating
+          # upstream-monitor's "propagate dep update to every supported version" purpose.
+          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true -f build_all_retained=true $scope_args
           echo "✅ Build workflow triggered for $CONTAINER"
 
       - name: Show PR details (test mode)
