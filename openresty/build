@@ -10,7 +10,17 @@ if ! command -v yq >/dev/null 2>&1; then
 fi
 
 # Get raw upstream version (without -alpine suffix) for source download
-RESTY_VERSION=$("$SCRIPT_DIR/version.sh" --upstream)
+# Honor $VERSION when set (CI/dep-rebuild path); fall back to upstream latest (local/manual invocation).
+if [[ -n "${VERSION:-}" ]]; then
+    # Strip the -alpine suffix (set by version.sh's TAG_SUFFIX) to get the raw openresty source version.
+    RESTY_VERSION="${VERSION%-alpine}"
+    if [[ -z "$RESTY_VERSION" ]]; then
+        echo "ERROR: VERSION=$VERSION resolves to empty RESTY_VERSION after suffix strip" >&2
+        exit 1
+    fi
+else
+    RESTY_VERSION=$("$SCRIPT_DIR/version.sh" --upstream)
+fi
 
 echo "Building OpenResty ${VERSION} (source: ${RESTY_VERSION})"
 

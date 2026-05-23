@@ -342,7 +342,7 @@ EOF
     hash -r
 
     create_postgres_variants "pg"
-    run list_build_matrix "pg" "18.4-alpine"
+    run --separate-stderr list_build_matrix "pg" "18.4-alpine" "true"
     [ "$status" -eq 0 ]
     # Postgres tags are "18" and "17", not "latest" — real_version should NOT change them
     local v18_count
@@ -462,7 +462,7 @@ EOF
     hash -r
 
     create_postgres_variants "pg"
-    run list_build_matrix "pg"
+    run --separate-stderr list_build_matrix "pg"
     [ "$status" -eq 0 ]
     # PG 18 (first in YAML) should have is_latest_version=true
     local v18_latest
@@ -552,7 +552,7 @@ EOF
     hash -r
 
     create_simple_container_variants "simple"
-    run list_build_matrix "simple" "2.0.0"
+    run --separate-stderr list_build_matrix "simple" "2.0.0" "true"
     [ "$status" -eq 0 ]
     local count
     count=$(echo "$output" | jq 'length')
@@ -580,7 +580,7 @@ EOF
     hash -r
 
     create_simple_container_variants "simple"
-    run list_container_builds "simple" "2.0.0"
+    run --separate-stderr list_container_builds "simple" "2.0.0" "true"
     [ "$status" -eq 0 ]
     local count
     count=$(echo "$output" | jq 'length')
@@ -604,4 +604,225 @@ EOF
     local full_version
     full_version=$(echo "$output" | jq -r '.[0].full_version')
     [ "$full_version" = "1.14.6-alpine" ]
+}
+
+# --- always_all_versions ---
+
+# Helper: multi-version variants.yaml with 3 versions (for filter tests)
+create_three_version_variants() {
+    local dir="${1:-.}"
+    mkdir -p "$dir"
+    cat > "$dir/variants.yaml" <<'EOF'
+build:
+  base_suffix: ""
+  version_retention: 3
+
+versions:
+  - tag: "3.0.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+  - tag: "2.9.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+  - tag: "2.8.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+EOF
+}
+
+@test "always_all_versions: returns false when build key missing" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "nokey"
+    cat > "nokey/variants.yaml" <<'EOF'
+versions:
+  - tag: "1.0.0"
+EOF
+    run always_all_versions "nokey"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
+}
+
+@test "always_all_versions: returns false when always_all_versions key missing from build block" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "nobuildkey"
+    cat > "nobuildkey/variants.yaml" <<'EOF'
+build:
+  version_retention: 3
+
+versions:
+  - tag: "1.0.0"
+EOF
+    run always_all_versions "nobuildkey"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
+}
+
+@test "always_all_versions: returns true when explicitly set to true" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "allver"
+    cat > "allver/variants.yaml" <<'EOF'
+build:
+  always_all_versions: true
+
+versions:
+  - tag: "1.0.0"
+EOF
+    run always_all_versions "allver"
+    [ "$status" -eq 0 ]
+    [ "$output" = "true" ]
+}
+
+@test "always_all_versions: returns false when variants.yaml missing" {
+    mkdir -p "missingdir"
+    run always_all_versions "missingdir"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
+}
+
+# --- list_build_matrix filtering ---
+
+@test "list_build_matrix: default (no 3rd arg) emits only is_latest_version=true entries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_three_version_variants "threevers"
+    # Use --separate-stderr so the ::notice:: stderr line doesn't pollute $output
+    run --separate-stderr list_build_matrix "threevers"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 1 ]
+    local all_latest
+    all_latest=$(echo "$output" | jq 'all(.is_latest_version == true)')
+    [ "$all_latest" = "true" ]
+}
+
+@test "list_build_matrix: include_all_retained=true emits all versions" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_three_version_variants "threevers"
+    run list_build_matrix "threevers" "" "true"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 3 ]
+}
+
+@test "list_build_matrix: always_all_versions=true in yaml overrides include_all_retained=false" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "alwaysall"
+    cat > "alwaysall/variants.yaml" <<'EOF'
+build:
+  always_all_versions: true
+  version_retention: 3
+
+versions:
+  - tag: "3.0.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+  - tag: "2.9.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+  - tag: "2.8.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+EOF
+    # Call with include_all_retained=false — always_all_versions=true in yaml must win
+    run list_build_matrix "alwaysall" "" "false"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 3 ]
+}
+
+@test "list_build_matrix: include_all_retained string 'false' emits filtered output" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_three_version_variants "threevers"
+    # Explicit string "false" must NOT be treated as truthy
+    # Use --separate-stderr so the ::notice:: stderr line doesn't pollute $output
+    run --separate-stderr list_build_matrix "threevers" "" "false"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 1 ]
+    local all_latest
+    all_latest=$(echo "$output" | jq 'all(.is_latest_version == true)')
+    [ "$all_latest" = "true" ]
+}
+
+@test "list_build_matrix: single-version container emits 1 entry with is_latest_version=true" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "singlever"
+    cat > "singlever/variants.yaml" <<'EOF'
+build:
+  base_suffix: ""
+
+versions:
+  - tag: "1.0.0"
+    variants:
+      - name: base
+        suffix: ""
+        flavor: base
+        default: true
+EOF
+    run list_build_matrix "singlever"
+    [ "$status" -eq 0 ]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 1 ]
+    local is_latest
+    is_latest=$(echo "$output" | jq '.[0].is_latest_version')
+    [ "$is_latest" = "true" ]
+}
+
+@test "list_build_matrix: emits ::notice:: to stderr when versions are skipped" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    create_three_version_variants "threevers"
+    # bats `run` captures stdout in $output; stderr goes to fd 3 (bats captures it in $stderr with run --)
+    # Use process substitution to capture stderr separately
+    local stderr_out
+    stderr_out=$(list_build_matrix "threevers" "" "false" 2>&1 >/dev/null)
+    [[ "$stderr_out" == *"::notice::Container threevers: latest-only (skipped retained versions:"* ]]
 }

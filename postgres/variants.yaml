@@ -12,6 +12,9 @@ build:
   requires_extensions: true
   # Base image suffix (appended to version tag)
   base_suffix: "-alpine"
+  # Postgres builds all supported PG majors on every push (not just the latest line).
+  # Rationale: each major is a long-lived supported release stream, not a rolling history.
+  always_all_versions: true
 # Versions to build (all maintained PostgreSQL releases)
 versions:
   - tag: "18"

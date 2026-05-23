@@ -53,6 +53,12 @@ jobs:
         with:
           container: ${{ inputs.container }}
           force_rebuild: true
+          event_name: ${{ github.event_name }}
+          # Manifest recreation re-creates the multi-arch manifest list for EVERY supported
+          # version (latest + retained). Without this, the matrix collapses to latest-only and
+          # retained-version manifests would be silently abandoned. force_rebuild=true implies
+          # the operator wants the full set rebuilt.
+          build_all_retained: true
 
       - name: Summary
         env:

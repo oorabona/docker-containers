@@ -53,6 +53,13 @@ on:
         required: false
         default: false
         type: boolean
+      build_all_retained:
+        description: |
+          Override the latest-only default — build all retained versions for
+          every container in the matrix. See workflow_dispatch.inputs for details.
+        type: boolean
+        default: false
+        required: false
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
@@ -152,6 +159,14 @@ on:
         required: false
         default: false
         type: boolean
+      build_all_retained:
+        description: |
+          Override the latest-only default — build all retained versions for
+          every container in the matrix. Equivalent to pre-#502 behavior.
+          Operator override for manual runs (security CVE fan-out, force resync).
+        type: boolean
+        default: false
+        required: false
 
 # NOTE: No workflow-level concurrency — serialization is per-container/per-job
 # (see `concurrency` blocks on individual jobs below). This lets unrelated
@@ -210,6 +225,8 @@ jobs:
           scope: ${{ env.BUILD_SCOPE }}
           scope_versions: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
+          event_name: ${{ github.event_name }}
+          build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
 
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:
