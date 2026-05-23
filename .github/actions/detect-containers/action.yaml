@@ -77,6 +77,7 @@ runs:
       shell: bash
       run: |
         set -e
+        diff_rc=0
         containers_to_build=()
 
         # Get list of valid containers from make script (source of truth)
@@ -232,6 +233,14 @@ runs:
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
 
+        # Fail-loud: empty container list combined with diff-failure sentinel means git
+        # diff failed BEFORE container detection could populate the list. This would
+        # otherwise silently skip every build. Surface the failure instead.
+        if [[ -f "${CHANGED_FILES_FILE}.diff_failed" && ( "$CONTAINERS_JSON" == "[]" || -z "$CONTAINERS_JSON" ) ]]; then
+          echo "::error::detect-containers: git diff failed AND no containers detected. Refusing to silently skip all builds. Check the runner's git checkout state and base ref availability."
+          exit 1
+        fi
+
         # Empty containers list short-circuits to empty map (no work).
         if [[ "$CONTAINERS_JSON" == "[]" || -z "$CONTAINERS_JSON" ]]; then
           echo "map={}" >> "$GITHUB_OUTPUT"
@@ -297,6 +306,11 @@ runs:
           echo "📦 Expanding builds for $container (version: $version)..."
 
           expand_for_container=$(echo "$EXPAND_RETAINED_MAP" | jq -r --arg c "$container" '.[$c] // "false"')
+          # scope_versions is an explicit user request for specific versions. Pre-filtering
+          # to latest-only would defeat it. Bypass the filter when scope_versions is set.
+          if [[ -n "$SCOPE_VERSIONS" ]]; then
+            expand_for_container="true"
+          fi
           container_builds=$(list_container_builds "$container" "$version" "$expand_for_container")
 
           # Apply scope_versions / scope_flavors filters (legacy inputs)
