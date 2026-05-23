@@ -6,6 +6,7 @@
 setup() {
     TEST_DIR=$(mktemp -d)
     ORIG_DIR="$PWD"
+    ORIG_PATH="$PATH"
     cd "$TEST_DIR" || exit 1
 
     # Provide a minimal yq mock (variant-utils.sh sources it but compute_expand_retained_map
@@ -28,6 +29,8 @@ MOCK
 teardown() {
     cd "$ORIG_DIR" || true
     rm -rf "$TEST_DIR"
+    # Restore PATH so successive tests don't accumulate stale temp-bin entries
+    export PATH="$ORIG_PATH"
 }
 
 # ---------------------------------------------------------------------------
