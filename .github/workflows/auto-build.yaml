@@ -53,52 +53,67 @@ on:
         required: false
         default: false
         type: boolean
+      build_all_retained:
+        description: |
+          Override the latest-only default — build all retained versions for
+          every container in the matrix. See workflow_dispatch.inputs for details.
+        type: boolean
+        default: false
+        required: false
   # Triggered by container file changes (main automation via PR)
   pull_request:
     branches: [main, master]
     paths:
-      - '*/Dockerfile'
-      - '*/Dockerfile.*'
-      - '*/Dockerfile.windows'
-      - '*/Dockerfile.template'
-      - '*/generate-dockerfile.sh'
-      - '*/version.sh'
-      - '*/config.yaml'
-      - '*/variants.yaml'
-      - '*/docker-compose.yml'
-      - '*/compose.yml'
-      - '*/extensions/config.yaml'
-      - 'helpers/**'
-      - 'scripts/build-container.sh'
-      - 'scripts/build-extensions.sh'
-      - 'scripts/audit-base-image-cache.sh'
-      - '.github/actions/build-container/**'
-      - '.github/actions/dockerhub-mirror/**'
-      - 'make'
-      - '!archive/**'  # Exclude archived containers
+      # Match the detection logic: ANY file inside a first-level subdir is a
+      # potential build input (Dockerfile, build hook, entrypoint, prepare-build
+      # scripts, COPYed assets, generated context, etc.). Explicit allowlist
+      # was brittle — new file types kept slipping through (e.g. build hooks,
+      # prepare-build-context.sh). The denylist below excludes non-container
+      # top-level dirs.
+      - '*/**'
+      - 'make'                                  # Top-level build orchestrator
+      - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '!docs/**'                              # Jekyll site + ADRs (no build impact)
+      - '!examples/**'                          # Docker Compose usage examples
+      - '!tests/**'                             # Test suite (has its own CI)
+      - '!test-harness/**'                      # Test fixtures
+      - '!test-logs/**'                         # Generated test logs
+      - '!archive/**'                           # Archived containers
+      - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
+      - '!**/README*'                           # README without .md suffix
+      - '!**/LICENSE*'                          # License files
+      - '!**/CHANGELOG*'                        # Changelogs
+      - '!**/docs/**'                           # Nested docs subdirs inside container dirs
+      - '!**/tests/**'                          # Nested test subdirs inside container dirs
+      - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Triggered on merge to master (actual deployment)
   push:
     branches: [main, master]
     paths:
-      - '*/Dockerfile'
-      - '*/Dockerfile.*'
-      - '*/Dockerfile.windows'
-      - '*/Dockerfile.template'
-      - '*/generate-dockerfile.sh'
-      - '*/version.sh'
-      - '*/config.yaml'
-      - '*/variants.yaml'
-      - '*/docker-compose.yml'
-      - '*/compose.yml'
-      - '*/extensions/config.yaml'
-      - 'helpers/**'
-      - 'scripts/build-container.sh'
-      - 'scripts/build-extensions.sh'
-      - 'scripts/audit-base-image-cache.sh'
-      - '.github/actions/build-container/**'
-      - '.github/actions/dockerhub-mirror/**'
-      - 'make'
-      - '!archive/**'  # Exclude archived containers
+      # Match the detection logic: ANY file inside a first-level subdir is a
+      # potential build input (Dockerfile, build hook, entrypoint, prepare-build
+      # scripts, COPYed assets, generated context, etc.). Explicit allowlist
+      # was brittle — new file types kept slipping through (e.g. build hooks,
+      # prepare-build-context.sh). The denylist below excludes non-container
+      # top-level dirs.
+      - '*/**'
+      - 'make'                                  # Top-level build orchestrator
+      - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '!docs/**'                              # Jekyll site + ADRs (no build impact)
+      - '!examples/**'                          # Docker Compose usage examples
+      - '!tests/**'                             # Test suite (has its own CI)
+      - '!test-harness/**'                      # Test fixtures
+      - '!test-logs/**'                         # Generated test logs
+      - '!archive/**'                           # Archived containers
+      - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
+      - '!**/README*'                           # README without .md suffix
+      - '!**/LICENSE*'                          # License files
+      - '!**/CHANGELOG*'                        # Changelogs
+      - '!**/docs/**'                           # Nested docs subdirs inside container dirs
+      - '!**/tests/**'                          # Nested test subdirs inside container dirs
+      - '**/LAST_REBUILD.md'                    # Re-include — upstream-monitor's explicit retained-rebuild trigger marker (overrides !**/*.md)
   # Manual trigger
   workflow_dispatch:
     inputs:
@@ -152,6 +167,14 @@ on:
         required: false
         default: false
         type: boolean
+      build_all_retained:
+        description: |
+          Override the latest-only default — build all retained versions for
+          every container in the matrix. Equivalent to pre-#502 behavior.
+          Operator override for manual runs (security CVE fan-out, force resync).
+        type: boolean
+        default: false
+        required: false
 
 # NOTE: No workflow-level concurrency — serialization is per-container/per-job
 # (see `concurrency` blocks on individual jobs below). This lets unrelated
@@ -210,6 +233,8 @@ jobs:
           scope: ${{ env.BUILD_SCOPE }}
           scope_versions: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
+          event_name: ${{ github.event_name }}
+          build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
 
   # Build and push PostgreSQL extension images if postgres is in the build list
   build-extensions:

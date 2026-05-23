@@ -26,6 +26,32 @@ inputs:
     description: 'Comma-separated flavors to build (e.g., "distributed,full"). Empty = all.'
     required: false
     default: ''
+  event_name:
+    description: >
+      GitHub event name (push, pull_request, workflow_dispatch, schedule).
+      Pass the github.event_name context from calling workflows.
+      SCOPE: this input is consumed only by the compute_expand_retained_map
+      helper to classify the event (PR carve-out, dep-driven matrix
+      expansion, operator override). It does NOT control which git diff
+      branch the find-containers step takes; diff-branch selection reads
+      the ambient github.event_name and event-specific properties
+      (event.before/after for push, pull_request.base/head for pull_request)
+      that are only populated for those actual events. A workflow_call
+      caller passing event_name=push will still fall into the manual
+      detection path because event.before/after are not accessible from a
+      workflow_call context. When missing or unknown, treats as legacy
+      caller and expands all retained versions for every container
+      (defensive fallback, see compute_expand_retained_map priority chain).
+    required: false
+    default: ""
+  build_all_retained:
+    description: |
+      Force expand all retained versions for every container.
+      Operator override (workflow_dispatch). Defaults to "false".
+      MUST be passed as a string — boolean coercion through workflow_call is
+      unreliable. Helper compares with explicit string equality.
+    required: false
+    default: "false"
 
 outputs:
   containers_list:
@@ -46,6 +72,12 @@ outputs:
   builds_count:
     description: 'Total number of builds (including variants)'
     value: ${{ steps.expand-variants.outputs.builds_count }}
+  expand_retained_map:
+    description: |
+      JSON object mapping container name to boolean. true = expand all retained
+      versions, false = latest version only. Computed by compute_expand_retained_map
+      helper. Consumed downstream by the Expand variants step.
+    value: ${{ steps.compute-expand-map.outputs.map }}
 
 runs:
   using: 'composite'
@@ -55,6 +87,7 @@ runs:
       shell: bash
       run: |
         set -e
+        diff_rc=0
         containers_to_build=()
 
         # Get list of valid containers from make script (source of truth)
@@ -82,18 +115,31 @@ runs:
           echo "🔍 Detecting containers that need building based on changed files..."
           
           # Determine what files changed in this push/PR
+          diff_rc=0
           if [[ "${{ github.event_name }}" == "push" ]]; then
             # For push events, use event SHAs (handles initial commit with all-zeros before SHA gracefully)
             if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
               # Initial commit - diff against empty tree
               # The SHA '4b825dc642cb6eb9a060e54bf8d69288fbee4904' is Git's canonical empty tree object hash, used for initial commit diffs.
-              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null) || { echo "⚠️ Git diff failed (initial commit)"; changed_files=""; }
+              set +e
+              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null)
+              diff_rc=$?
+              set -e
+              [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (initial commit)"; changed_files=""; }
             else
-              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null) || { echo "⚠️ Git diff failed (push event)"; changed_files=""; }
+              set +e
+              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null)
+              diff_rc=$?
+              set -e
+              [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (push event)"; changed_files=""; }
             fi
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
-            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null) || { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
+            set +e
+            changed_files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null)
+            diff_rc=$?
+            set -e
+            [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (pull request event)"; changed_files=""; }
           else
             # For manual triggers (workflow_dispatch)
             # rebuild != none OR force_rebuild=true → build ALL containers
@@ -175,6 +221,51 @@ runs:
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi
 
+        # Write changed_files to a temp file for compute-expand-map step consumption.
+        # Clean any stale sentinel from a prior step attempt (self-hosted runners reuse RUNNER_TEMP).
+        rm -f "${RUNNER_TEMP}/changed_files.txt.diff_failed"
+        printf '%s\n' "$changed_files" > "${RUNNER_TEMP}/changed_files.txt"
+        if [[ $diff_rc -ne 0 ]]; then
+          touch "${RUNNER_TEMP}/changed_files.txt.diff_failed"
+        fi
+        echo "changed_files_file=${RUNNER_TEMP}/changed_files.txt" >> "$GITHUB_OUTPUT"
+
+    - name: Compute expand_retained map
+      id: compute-expand-map
+      shell: bash
+      env:
+        EVENT_NAME: ${{ inputs.event_name }}
+        BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
+        CHANGED_FILES_FILE: ${{ steps.find-containers.outputs.changed_files_file }}
+        CONTAINERS_JSON: ${{ steps.find-containers.outputs.containers }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
+
+        # Fail-loud: empty container list combined with diff-failure sentinel means git
+        # diff failed BEFORE container detection could populate the list. This would
+        # otherwise silently skip every build. Surface the failure instead.
+        if [[ -f "${CHANGED_FILES_FILE}.diff_failed" && ( "$CONTAINERS_JSON" == "[]" || -z "$CONTAINERS_JSON" ) ]]; then
+          echo "::error::detect-containers: git diff failed AND no containers detected. Refusing to silently skip all builds. Check the runner's git checkout state and base ref availability."
+          exit 1
+        fi
+
+        # Empty containers list short-circuits to empty map (no work).
+        if [[ "$CONTAINERS_JSON" == "[]" || -z "$CONTAINERS_JSON" ]]; then
+          echo "map={}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        map=$(compute_expand_retained_map \
+          "$EVENT_NAME" \
+          "$BUILD_ALL_RETAINED" \
+          "$CHANGED_FILES_FILE" \
+          "$CONTAINERS_JSON")
+
+        echo "map=$map" >> "$GITHUB_OUTPUT"
+        echo "::notice::Expand-retained map: $map"
+
     - name: Compute versions for detected containers
       id: compute-versions
       if: steps.find-containers.outputs.count != '0'
@@ -209,9 +300,11 @@ runs:
         SCOPE_VERSIONS: ${{ inputs.scope_versions }}
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
         BUILD_SCOPE: ${{ inputs.scope }}
+        EXPAND_RETAINED_MAP: ${{ steps.compute-expand-map.outputs.map }}
       run: |
         set -e
-        source ./helpers/variant-utils.sh
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
         containers_json='${{ steps.find-containers.outputs.containers }}'
         versions_json='${{ steps.compute-versions.outputs.versions }}'
 
@@ -222,7 +315,13 @@ runs:
           version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
           echo "📦 Expanding builds for $container (version: $version)..."
 
-          container_builds=$(list_container_builds "$container" "$version")
+          expand_for_container=$(echo "$EXPAND_RETAINED_MAP" | jq -r --arg c "$container" '.[$c] // "false"')
+          # scope_versions is an explicit user request for specific versions. Pre-filtering
+          # to latest-only would defeat it. Bypass the filter when scope_versions is set.
+          if [[ -n "$SCOPE_VERSIONS" ]]; then
+            expand_for_container="true"
+          fi
+          container_builds=$(list_container_builds "$container" "$version" "$expand_for_container")
 
           # Apply scope_versions / scope_flavors filters (legacy inputs)
           if [[ -n "$SCOPE_VERSIONS" || -n "$SCOPE_FLAVORS" ]]; then

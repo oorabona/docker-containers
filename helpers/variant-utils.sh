@@ -270,16 +270,33 @@ variant_image_tag() {
     fi
 }
 
+# Check if a container always builds all retained versions (not just the latest)
+# Usage: always_all_versions <container_dir>
+# Returns: "true" or "false" on stdout
+always_all_versions() {
+    local container_dir="$1"
+    local variants_file="$container_dir/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        echo "false"
+        return
+    fi
+
+    yq -r '.build.always_all_versions // false' "$variants_file" 2>/dev/null || echo "false"
+}
+
 # Get all version+variant combinations for CI matrix
 # Output: JSON array for GitHub Actions matrix
 # Format: [{"version":"18","variant":"base","tag":"18-alpine","flavor":"base","is_default":true,"is_latest_version":true,"dockerfile":"","priority":0}, ...]
-# Usage: list_build_matrix <container_dir> [real_version]
+# Usage: list_build_matrix <container_dir> [real_version] [include_all_retained]
 #   real_version: if provided, substitutes "latest" version tags with this value
+#   include_all_retained: if "true", emit all retained versions (overrides default latest-only)
 #   is_latest_version: true only for the first (newest) version in variants.yaml
 #   full_version: resolved upstream version (e.g., "18.2-alpine") for version-specific tags
 list_build_matrix() {
     local container_dir="$1"
     local real_version="${2:-}"
+    local include_all_retained="${3:-false}"
     local variants_file="$container_dir/variants.yaml"
 
     if [[ ! -f "$variants_file" ]]; then
@@ -383,16 +400,32 @@ list_build_matrix() {
     done < <(list_versions "$container_dir")
 
     result+="]"
-    echo "$result"
+
+    local always_all
+    always_all=$(always_all_versions "$container_dir")
+    if [[ "$always_all" == "true" || "$include_all_retained" == "true" ]]; then
+        printf '%s' "$result"
+    else
+        local filtered
+        filtered=$(printf '%s' "$result" | jq -c '[.[] | select(.is_latest_version == true)]')
+        local container_name skipped
+        container_name=$(basename "$container_dir")
+        skipped=$(printf '%s' "$result" | jq -r '[.[] | select(.is_latest_version != true) | .version] | unique | join(",")')
+        if [[ -n "$skipped" ]]; then
+            echo "::notice::Container ${container_name}: latest-only (skipped retained versions: ${skipped})" >&2
+        fi
+        printf '%s' "$filtered"
+    fi
 }
 
 # Get CI-ready build list for a container (single entry point for all container types)
-# Usage: list_container_builds <container_name> <real_version>
+# Usage: list_container_builds <container_name> <real_version> [include_all_retained]
 # Output: JSON array sorted by priority, with container name in each entry
 # Handles: multi-version (postgres), single-version with "latest" tag (terraform), no-variant (ansible)
 list_container_builds() {
     local container_name="$1"
     local real_version="$2"
+    local include_all_retained="${3:-false}"
     local container_dir="./$container_name"
 
     if has_variants "$container_dir"; then
@@ -401,7 +434,7 @@ list_container_builds() {
 
         if [[ "$vc" -gt 0 ]]; then
             # Multi-version or single "latest" version structure — use list_build_matrix
-            list_build_matrix "$container_dir" "$real_version" \
+            list_build_matrix "$container_dir" "$real_version" "$include_all_retained" \
               | jq -c --arg c "$container_name" \
                   '[.[] | . + {container: $c}] | sort_by(.priority, .container, .version)'
         else
@@ -486,7 +519,129 @@ list_variant_tags() {
     echo "$result"
 }
 
+# Compute per-container expand-retained signals from a git-diff-derived changed-files list.
+# This is the signal-computation layer for "matrix default to latest-only, expand on dep change".
+#
+# Usage: compute_expand_retained_map <event_name> <build_all_retained> <changed_files_file> <containers_json>
+#
+# Args:
+#   event_name           - GitHub event name (e.g. "push", "pull_request", "workflow_dispatch"). May be empty.
+#   build_all_retained   - String "true" or "false" (workflow input). MUST be compared as string, not bool.
+#   changed_files_file   - Path to a file with one changed path per line (output of `git diff --name-only`).
+#                          If file <changed_files_file>.diff_failed exists alongside, treat as diff failure.
+#   containers_json      - JSON array of detected container names, e.g. ["openresty","postgres"].
+#
+# Output (stdout):
+#   JSON object mapping container name -> boolean. true = expand retained versions, false = latest only.
+#   Priority chain (first match wins) for each container c:
+#     1. <changed_files_file>.diff_failed sentinel exists       → c: true  (ERR-01a defensive expand)
+#     2. event_name empty or unrecognized                       → c: true  (ERR-06 backward-compat)
+#     3. event_name == "pull_request"                           → c: true  (PR smoke matrix)
+#     4. build_all_retained == "true" (explicit string compare) → c: true  (operator override)
+#     5. changed_files contains any path with prefix "$c/"
+#        (case-glob anchored prefix match, sibling-collision safe:
+#         "php-fpm/foo" does NOT match prefix "php/")            → c: true  (dep-driven trigger)
+#     6. otherwise                                              → c: false (default: latest only)
+#
+# Exit code: 0 on success, 1 on malformed containers_json.
+compute_expand_retained_map() {
+    local event_name="$1"
+    local build_all_retained="$2"
+    local changed_files_file="$3"
+    local containers_json="$4"
+
+    # Validate containers_json is a valid JSON array
+    if ! echo "$containers_json" | jq -e 'if type == "array" then true else error end' >/dev/null 2>&1; then
+        echo "compute_expand_retained_map: containers_json is not a valid JSON array" >&2
+        return 1
+    fi
+
+    # Determine global signals (same for all containers)
+
+    # Rule 1: diff_failed sentinel
+    local diff_failed="false"
+    if [[ -f "${changed_files_file}.diff_failed" ]]; then
+        diff_failed="true"
+    fi
+
+    # Rule 2: event_name empty or unrecognized
+    local unknown_event="false"
+    if [[ -z "$event_name" ]] || ! [[ "$event_name" =~ ^(push|pull_request|workflow_dispatch|schedule|repository_dispatch)$ ]]; then
+        unknown_event="true"
+    fi
+
+    # Build associative array: container -> bool string
+    declare -A expand_map
+
+    local container
+    while IFS= read -r container; do
+        [[ -z "$container" ]] && continue
+
+        # Priority 1: diff_failed sentinel
+        if [[ "$diff_failed" == "true" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
+
+        # Priority 2: unknown/empty event
+        if [[ "$unknown_event" == "true" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
+
+        # Priority 3: pull_request event
+        if [[ "$event_name" == "pull_request" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
+
+        # Priority 4: operator override (explicit string compare, NOT bash truthiness)
+        if [[ "$build_all_retained" == "true" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
+
+        # Rule 5: dep-driven trigger — any file inside the container directory.
+        # A file `<c>/anything` (Dockerfile, build, variants.yaml, version.sh,
+        # config.yaml, LAST_REBUILD.md, custom helper, generated assets, etc.)
+        # implies the container's build inputs changed and ALL retained versions
+        # must rebuild to lock the new state. Exact-line prefix match via bash
+        # `case` — anchored at start, no regex interpolation hazard.
+        local found_match=false
+        if [[ -f "$changed_files_file" ]]; then
+            while IFS= read -r changed_path; do
+                [[ -z "$changed_path" ]] && continue
+                case "$changed_path" in
+                    "${container}/"*)
+                        found_match=true
+                        break
+                        ;;
+                esac
+            done < "$changed_files_file"
+        fi
+
+        if [[ "$found_match" == "true" ]]; then
+            expand_map[$container]=true
+            continue
+        fi
+
+        # Priority 6: default — latest only
+        expand_map["$container"]="false"
+
+    done < <(echo "$containers_json" | jq -r '.[]')
+
+    # Convert associative array to compact JSON object
+    local kv_json="{}"
+    for container in "${!expand_map[@]}"; do
+        local bool_val="${expand_map[$container]}"
+        kv_json=$(echo "$kv_json" | jq -c --arg k "$container" --argjson v "$bool_val" '. + {($k): $v}')
+    done
+
+    echo "$kv_json"
+}
+
 # Export functions for use in other scripts
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
+export -f always_all_versions compute_expand_retained_map

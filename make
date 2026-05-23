@@ -521,7 +521,10 @@ list_builds() {
         return 1
     fi
 
-    list_container_builds "$target" "$version"
+    # 3rd arg "true" = include all retained versions in the introspection output.
+    # The CI matrix's latest-only default is a workflow concern, not an introspection concern;
+    # local users and downstream consumers (cleanup-outdated-tags.sh) need the FULL set.
+    list_container_builds "$target" "$version" "true"
 }
 
 # Generate SBOM for a container image

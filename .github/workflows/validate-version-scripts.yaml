@@ -80,6 +80,9 @@ jobs:
         uses: ./.github/actions/detect-containers
         with:
           force_rebuild: "true"  # Get all containers for comprehensive testing
+          event_name: ${{ github.event_name }}
+          # Comprehensive testing requires all retained versions, not just the latest line.
+          build_all_retained: true
 
       - name: Test upstream monitoring action
         if: steps.detect-containers.outputs.count > 0
