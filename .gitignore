@@ -23,6 +23,10 @@ docs/audit/
 
 # Generated dashboard files (recreated by generate-dashboard.sh)
 index.md
+# Exception: docs/index.md is a tracked Jekyll content page (permalink /docs/),
+# not a generated dashboard artifact. Without this re-include, the broad
+# `index.md` pattern above silently shadows it.
+!docs/index.md
 docs/site/_data/containers.yml
 docs/site/_data/stats.yml
 docs/site/_containers/
