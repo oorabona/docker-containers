@@ -3,7 +3,7 @@
 # Terraform build script - fetches latest tool versions and updates config.yaml
 # config.yaml is the single source of truth for build args
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
 # Source the git-tags helper
@@ -82,7 +82,35 @@ AWS_CLI_VERSION=$(get_aws_cli_version)
 AZURE_CLI_VERSION=$(get_azure_cli_version)
 GCP_CLI_VERSION=$(get_gcp_cli_version)
 
-echo "Building Terraform ${VERSION} with tools:"
+# Get raw upstream version (without -alpine suffix) for source download
+# Honor $VERSION when set (CI/dep-rebuild path); fall back to upstream latest (local/manual invocation).
+if [[ -n "${VERSION:-}" ]]; then
+    # Strip the -alpine suffix (set by version.sh's TAG_SUFFIX) to get the raw Terraform source version.
+    UPSTREAM_VERSION="${VERSION%-alpine}"
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: VERSION=$VERSION resolves to empty UPSTREAM_VERSION after suffix strip" >&2
+        exit 1
+    fi
+else
+    if ! UPSTREAM_VERSION=$("$SCRIPT_DIR/version.sh" --upstream); then
+        echo "ERROR: version.sh --upstream failed; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: version.sh --upstream returned empty; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+fi
+
+# Sanity-check: UPSTREAM_VERSION must be a safe version identifier.
+# Prevents shell/docker option injection if VERSION came from an untrusted
+# source (e.g. a workflow_dispatch input that contained whitespace or '--').
+if ! [[ "$UPSTREAM_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: UPSTREAM_VERSION='$UPSTREAM_VERSION' contains unsafe characters (allowed: A-Z, a-z, 0-9, dot, underscore, hyphen)" >&2
+    exit 1
+fi
+
+echo "Building Terraform ${VERSION} (source: ${UPSTREAM_VERSION}) with tools:"
 echo "  TFLint: ${TFLINT_VERSION}"
 echo "  Trivy: ${TRIVY_VERSION}"
 echo "  Terragrunt: ${TERRAGRUNT_VERSION}"
@@ -104,4 +132,8 @@ yq -i ".build_args.GCP_CLI_VERSION = \"${GCP_CLI_VERSION}\"" "$CONFIG_FILE"
 
 echo "Updated config.yaml with latest tool versions"
 
-# No CUSTOM_BUILD_ARGS needed — build-container.sh reads config.yaml directly
+# Propagate UPSTREAM_VERSION so the Dockerfile's ${UPSTREAM_VERSION:-${VERSION}} resolves correctly
+# for retained-version builds (where VERSION carries the -alpine suffix).
+CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg UPSTREAM_VERSION=${UPSTREAM_VERSION}"
+
+export CUSTOM_BUILD_ARGS

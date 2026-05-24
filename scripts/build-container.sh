@@ -119,17 +119,22 @@ _resolve_base_image() {
         [[ -z "$_BASE_IMAGE_REF" ]] && _BASE_IMAGE_REF=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
     fi
 
-    # Substitute known variables into the base image template
+    # Substitute known variables into the base image template.
+    #
+    # Ordering rationale: CUSTOM_BUILD_ARGS overrides must be parsed and applied
+    # BEFORE the standard VERSION/UPSTREAM_VERSION substitutions so that a build
+    # script's explicit --build-arg UPSTREAM_VERSION=<retained> wins over the
+    # helper-resolved _UPSTREAM_VERSION (which always reflects the latest upstream).
+    # Without this order, retained-version builds (e.g. terraform) would record the
+    # wrong base_image_ref in the lineage file because _UPSTREAM_VERSION (latest)
+    # would be substituted first, and the CUSTOM_BUILD_ARGS override would arrive
+    # too late to correct an already-expanded placeholder.
+    # Order: (1) parse CUSTOM_BUILD_ARGS, (2) apply overrides, (3) standard
+    # substitutions (no-ops for placeholders already consumed in step 2),
+    # (4) Dockerfile ARG defaults.
     if [[ "$_BASE_IMAGE_REF" =~ \$ ]]; then
-        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{VERSION\}/$version}"
-        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$VERSION/$version}"
-        [[ -n "${_MAJOR_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{MAJOR_VERSION\}/$_MAJOR_VERSION}"
-        [[ -n "${_UPSTREAM_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{UPSTREAM_VERSION\}/$_UPSTREAM_VERSION}"
-
-        # Collect CUSTOM_BUILD_ARGS overrides before applying ARG defaults.
-        # Docker semantics: --build-arg wins over ARG default; apply overrides FIRST
-        # so that ARG-default substitution (below) is skipped for overridden args.
-        # Parse LAST occurrence of each --build-arg NAME=VALUE (last wins, matching docker).
+        # Step 1 + 2: Parse CUSTOM_BUILD_ARGS and apply overrides first so they win
+        # over all subsequent substitutions. Docker semantics: last --build-arg wins.
         declare -A _custom_arg_overrides=()
         if [[ -n "${CUSTOM_BUILD_ARGS:-}" ]]; then
             while read -r arg_val; do
@@ -139,14 +144,21 @@ _resolve_base_image() {
             done < <(echo "$CUSTOM_BUILD_ARGS" | grep -oE '\-\-build-arg [^ ]+' | sed 's/--build-arg //' || true)
         fi
 
-        # Apply CUSTOM_BUILD_ARGS overrides now (before ARG defaults) so they win.
+        # Apply CUSTOM_BUILD_ARGS overrides before standard substitutions.
         for _ov_name in "${!_custom_arg_overrides[@]}"; do
             local _ov_value="${_custom_arg_overrides[$_ov_name]}"
             _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ov_name\}/$_ov_value}"
             _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ov_name/$_ov_value}"
         done
 
-        # Resolve Dockerfile ARG defaults (e.g. ARG REMOTE_CR=docker.io) for any
+        # Step 3: Standard substitutions. These are no-ops for any placeholder
+        # already consumed by a CUSTOM_BUILD_ARGS override above.
+        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{VERSION\}/$version}"
+        _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$VERSION/$version}"
+        [[ -n "${_MAJOR_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{MAJOR_VERSION\}/$_MAJOR_VERSION}"
+        [[ -n "${_UPSTREAM_VERSION:-}" ]] && _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{UPSTREAM_VERSION\}/$_UPSTREAM_VERSION}"
+
+        # Step 4: Resolve Dockerfile ARG defaults (e.g. ARG REMOTE_CR=docker.io) for any
         # variables not already substituted by a CUSTOM_BUILD_ARGS override above.
         while IFS= read -r arg_line; do
             local arg_name="${arg_line%%=*}"

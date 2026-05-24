@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Pre-build script for sslh
+# Sets dynamic build arguments not in config.yaml
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Get raw upstream version (without -alpine suffix) for source download
+# Honor $VERSION when set (CI/dep-rebuild path); fall back to upstream latest (local/manual invocation).
+if [[ -n "${VERSION:-}" ]]; then
+    # Strip the -alpine suffix (set by version.sh's TAG_SUFFIX) to get the raw sslh source version.
+    UPSTREAM_VERSION="${VERSION%-alpine}"
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: VERSION=$VERSION resolves to empty UPSTREAM_VERSION after suffix strip" >&2
+        exit 1
+    fi
+else
+    if ! UPSTREAM_VERSION=$("$SCRIPT_DIR/version.sh" --upstream); then
+        echo "ERROR: version.sh --upstream failed; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: version.sh --upstream returned empty; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+fi
+
+# Sanity-check: UPSTREAM_VERSION must be a safe version identifier.
+# Prevents shell/docker option injection if VERSION came from an untrusted
+# source (e.g. a workflow_dispatch input that contained whitespace or '--').
+if ! [[ "$UPSTREAM_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: UPSTREAM_VERSION='$UPSTREAM_VERSION' contains unsafe characters (allowed: A-Z, a-z, 0-9, dot, underscore, hyphen)" >&2
+    exit 1
+fi
+
+echo "Building sslh ${VERSION} (source: ${UPSTREAM_VERSION})"
+
+CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg UPSTREAM_VERSION=${UPSTREAM_VERSION}"
+
+export CUSTOM_BUILD_ARGS
