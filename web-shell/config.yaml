@@ -31,17 +31,11 @@ dependency_sources:
 # NOTE: Debian is already on GHCR (ghcr.io/oorabona/debian) — no caching needed
 # NOTE: rocky-base is a new GHCR cache repo — requires Write permissions setup
 base_image_cache:
-  - arg: ALPINE_BASE
-    source: alpine
-    ghcr_repo: alpine-base
+  - source: library/alpine
     tags: ["3.21"]
-  - arg: UBUNTU_BASE
-    source: ubuntu
-    ghcr_repo: ubuntu-base
+  - source: library/ubuntu
     tags: ["noble"]
-  - arg: ROCKY_BASE
-    source: rockylinux
-    ghcr_repo: rocky-base
+  - source: library/rockylinux
     tags: ["9"]
 
 # Distro definitions for generate-dockerfile.sh

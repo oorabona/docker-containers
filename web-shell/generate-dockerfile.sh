@@ -77,10 +77,16 @@ _wrap_list() {
 # and the cached tag stay in lockstep with no duplicated literal.
 # ============================================================
 
-# Read the pinned base-image tag for a given build-arg from base_image_cache.
+# Read the pinned base-image tag for a given build-arg from base_image_cache (old-schema: .arg lookup).
 _base_cache_tag() {
     local arg="$1"
     YQ_ARG="$arg" yq -r '.base_image_cache[] | select(.arg == strenv(YQ_ARG)) | .tags[0] // ""' "$config"
+}
+
+# Read the pinned base-image tag for a given source path from base_image_cache (new-schema: .source lookup).
+_base_cache_tag_new() {
+    local source="$1"
+    YQ_SOURCE="$source" yq -r '.base_image_cache[] | select(.source == strenv(YQ_SOURCE)) | .tags[0] // ""' "$config"
 }
 
 case "$distro" in
@@ -89,25 +95,25 @@ case "$distro" in
 FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}'
         ;;
     alpine)
-        alpine_tag=$(_base_cache_tag "ALPINE_BASE")
-        [[ -z "$alpine_tag" ]] && { log_error "No base_image_cache tag for ALPINE_BASE in $config"; exit 1; }
-        base_block="ARG ALPINE_BASE=alpine
+        alpine_tag=$(_base_cache_tag_new "library/alpine")
+        [[ -z "$alpine_tag" ]] && { log_error "No base_image_cache tag for library/alpine in $config"; exit 1; }
+        base_block="ARG REMOTE_CR
 ARG ALPINE_TAG=${alpine_tag}
-FROM \${ALPINE_BASE}:\${ALPINE_TAG}"
+FROM \${REMOTE_CR}/library/alpine:\${ALPINE_TAG}"
         ;;
     ubuntu)
-        ubuntu_tag=$(_base_cache_tag "UBUNTU_BASE")
-        [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for UBUNTU_BASE in $config"; exit 1; }
-        base_block="ARG UBUNTU_BASE=ubuntu
+        ubuntu_tag=$(_base_cache_tag_new "library/ubuntu")
+        [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for library/ubuntu in $config"; exit 1; }
+        base_block="ARG REMOTE_CR
 ARG UBUNTU_TAG=${ubuntu_tag}
-FROM \${UBUNTU_BASE}:\${UBUNTU_TAG}"
+FROM \${REMOTE_CR}/library/ubuntu:\${UBUNTU_TAG}"
         ;;
     rocky)
-        rocky_tag=$(_base_cache_tag "ROCKY_BASE")
-        [[ -z "$rocky_tag" ]] && { log_error "No base_image_cache tag for ROCKY_BASE in $config"; exit 1; }
-        base_block="ARG ROCKY_BASE=rockylinux
+        rocky_tag=$(_base_cache_tag_new "library/rockylinux")
+        [[ -z "$rocky_tag" ]] && { log_error "No base_image_cache tag for library/rockylinux in $config"; exit 1; }
+        base_block="ARG REMOTE_CR
 ARG ROCKY_TAG=${rocky_tag}
-FROM \${ROCKY_BASE}:\${ROCKY_TAG}"
+FROM \${REMOTE_CR}/library/rockylinux:\${ROCKY_TAG}"
         ;;
     *)
         log_error "No BASE_IMAGE template for distro: $distro"
