@@ -476,6 +476,15 @@ jobs:
           total=$(find .build-lineage -name '*.sbom.json' 2>/dev/null | wc -l)
           echo "::notice::SBOM hydration: downloaded from $downloaded/$run_count run(s); merged $merged SBOM file(s), $merged_lineage lineage file(s), $merged_derived derived file(s) (changelog/history); total SBOM entries: $total"
 
+      - name: Re-enrich lineage after merge (self-heal against concurrent cache races)
+        if: hashFiles('.build-lineage/*.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/enrich-lineage.sh
+          ./scripts/enrich-lineage.sh --owner "${{ github.repository_owner }}"
+
       - name: Snapshot pull/star counts (idempotent per day)
         run: |
           chmod +x scripts/snapshot-stats.sh
