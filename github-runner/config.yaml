@@ -39,9 +39,7 @@ dockerfile_generator: generate-dockerfile.sh
 # Base image cache for Docker Hub rate limiting
 # NOTE: debian-trixie comes from ghcr.io/oorabona/debian — no caching needed
 base_image_cache:
-  - arg: UBUNTU_2404_BASE
-    source: ubuntu
-    ghcr_repo: ubuntu-base
+  - source: library/ubuntu
     tags: ["24.04"]
 # NOTE: windows/server cannot be cached via skopeo (MCR auth required)
 # Dev stage pulls directly from MCR during build
