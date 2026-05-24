@@ -24,7 +24,7 @@ ARG REMOTE_CR=docker.io
 FROM ${TERRAFORM_BASE}:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
 # Stage 2: Security tools (included in all flavors)
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 FROM ${REMOTE_CR}/library/alpine:latest AS security-tools
 ARG TARGETARCH
 ARG TFLINT_VERSION
@@ -46,7 +46,7 @@ RUN apk add --no-cache curl unzip ca-certificates && \
     chmod +x trivy
 
 # Stage 3: DevOps tools (included in all flavors)
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 FROM ${REMOTE_CR}/library/alpine:latest AS devops-tools
 ARG TARGETARCH
 ARG TERRAGRUNT_VERSION
@@ -75,7 +75,7 @@ RUN apk add --no-cache curl tar ca-certificates && \
 # Stage 4: GCP CLI (only built when needed for gcp/full flavors)
 # NOTE: GCP SDK installer always fetches latest version - version pinning not supported
 # The GCP_CLI_VERSION in config.json is for reference/tracking only
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 FROM ${REMOTE_CR}/library/python:3.12-alpine AS cloud-tools-gcp
 ARG FLAVOR
 # Only install GCP SDK if flavor needs it
@@ -92,7 +92,7 @@ RUN if [ "${FLAVOR}" = "gcp" ] || [ "${FLAVOR}" = "full" ]; then \
     fi
 
 # Final stage: Assemble everything based on FLAVOR
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 FROM ${REMOTE_CR}/library/alpine:latest
 
 ARG FLAVOR

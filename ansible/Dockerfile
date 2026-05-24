@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && pip install pyasn1==${PYASN1_VERSION} paramiko==${PARAMIKO_VERSION} cffi==${CFFI_VERSION} cryptography==${CRYPTOGRAPHY_VERSION} pycryptodome==${PYCRYPTODOME_VERSION} ansible==${INSTALL_VERSION}
 
 # Runtime stage
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG OS_VERSION
 FROM ${REMOTE_CR}/library/ubuntu:${OS_VERSION}
 
