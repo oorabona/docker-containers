@@ -44,13 +44,27 @@ setup() {
 }
 
 @test "web-shell: ARG REMOTE_CR present in generator output for alpine/ubuntu/rocky (regression lock)" {
-    # Regression lock: Slice 3a requires REMOTE_CR ARG in migrated distros so
-    # CI can inject the GHCR mirror URL at build time. If the generator stops
-    # emitting it, the FROM line becomes unresolvable in CI.
+    # Regression lock: migrated distros require BOTH a template-global
+    # `ARG REMOTE_CR=docker.io` AND a stage-scope `ARG REMOTE_CR` re-import
+    # (no default) immediately before the FROM line, so ${REMOTE_CR} resolves
+    # inside the FROM. The FROM line itself must reference ${REMOTE_CR}/library/<distro>.
+    # If the stage re-import is dropped, ${REMOTE_CR} in FROM resolves to empty
+    # despite the global ARG existing — Docker scopes ARG to stages.
     for distro in alpine ubuntu rocky; do
-        local has_remote_cr
-        has_remote_cr=$(bash "$GEN" "$TEMPLATE" "$distro" 2>/dev/null | grep -cE '^ARG REMOTE_CR' || true)
-        [[ "$has_remote_cr" -ge 1 ]] || { echo "$distro: ARG REMOTE_CR missing from generated Dockerfile"; return 1; }
+        local gen
+        gen=$(bash "$GEN" "$TEMPLATE" "$distro" 2>/dev/null)
+        # Expect ≥ 2 ARG REMOTE_CR lines (template global + stage re-import)
+        local count
+        count=$(echo "$gen" | grep -cE '^ARG REMOTE_CR' || true)
+        [[ "$count" -ge 2 ]] || { echo "$distro: expected ≥ 2 ARG REMOTE_CR lines, found $count"; return 1; }
+        # Expect the FROM line to reference ${REMOTE_CR}/library/<distro>
+        local from_uses_remote_cr
+        case "$distro" in
+            alpine) from_uses_remote_cr=$(echo "$gen" | grep -cE '^FROM \$\{REMOTE_CR\}/library/alpine:') ;;
+            ubuntu) from_uses_remote_cr=$(echo "$gen" | grep -cE '^FROM \$\{REMOTE_CR\}/library/ubuntu:') ;;
+            rocky)  from_uses_remote_cr=$(echo "$gen" | grep -cE '^FROM \$\{REMOTE_CR\}/library/rockylinux:') ;;
+        esac
+        [[ "$from_uses_remote_cr" -ge 1 ]] || { echo "$distro: FROM does not reference \${REMOTE_CR}/library/<distro>"; return 1; }
     done
 }
 

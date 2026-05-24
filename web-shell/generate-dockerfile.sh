@@ -75,13 +75,12 @@ _wrap_list() {
 # publishes :9). The default tag is read from base_image_cache[].tags[0] in
 # config.yaml — the SAME value the cache-population job uses — so the FROM tag
 # and the cached tag stay in lockstep with no duplicated literal.
+#
+# For alpine/ubuntu/rocky, the FROM line now references ${REMOTE_CR}/library/<distro>:${TAG}
+# so the CI probe can override REMOTE_CR=ghcr.io/<owner> when the mirror is reachable.
+# The debian distro still resolves to ghcr.io/oorabona/debian directly (first-party
+# image, not a docker.io mirror — so no REMOTE_CR substitution applies there).
 # ============================================================
-
-# Read the pinned base-image tag for a given build-arg from base_image_cache (old-schema: .arg lookup).
-_base_cache_tag() {
-    local arg="$1"
-    YQ_ARG="$arg" yq -r '.base_image_cache[] | select(.arg == strenv(YQ_ARG)) | .tags[0] // ""' "$config"
-}
 
 # Read the pinned base-image tag for a given source path from base_image_cache (new-schema: .source lookup).
 _base_cache_tag_new() {

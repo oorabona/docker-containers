@@ -29,7 +29,8 @@ dependency_sources:
 
 # Base image cache for Docker Hub rate limiting
 # NOTE: Debian is already on GHCR (ghcr.io/oorabona/debian) — no caching needed
-# NOTE: rocky-base is a new GHCR cache repo — requires Write permissions setup
+# Alpine/Ubuntu/Rocky use the new-schema source: library/<distro> pattern; the
+# CI probe substitutes REMOTE_CR=ghcr.io/<owner> when the mirror is reachable.
 base_image_cache:
   - source: library/alpine
     tags: ["3.21"]
