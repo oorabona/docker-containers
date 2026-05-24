@@ -1,7 +1,7 @@
 # Ansible container configuration
 # Base image and third-party dependency versions
 
-base_image: "ubuntu:${OS_VERSION}"
+base_image: "${REMOTE_CR}/library/ubuntu:${OS_VERSION}"
 base_image_cache:
   - source: library/ubuntu
     tags: ["latest"]

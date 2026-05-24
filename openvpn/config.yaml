@@ -1,7 +1,7 @@
 # OpenVPN container configuration
 # Base image and third-party dependency versions
 
-base_image: "alpine:${OS_VERSION}"
+base_image: "${REMOTE_CR}/library/alpine:${OS_VERSION}"
 base_image_cache:
   - source: library/alpine
     tags: ["latest"]

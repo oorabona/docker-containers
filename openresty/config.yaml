@@ -1,7 +1,7 @@
 # OpenResty container configuration
 # Base image and third-party dependency versions
 
-base_image: "alpine:latest"
+base_image: "${REMOTE_CR}/library/alpine:latest"
 base_image_cache:
   - source: library/alpine
     tags: ["latest"]

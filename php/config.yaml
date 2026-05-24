@@ -1,7 +1,7 @@
 # PHP container configuration
 # Base image and third-party dependency versions
 
-base_image: "php:${VERSION}"
+base_image: "${REMOTE_CR}/library/php:${VERSION}"
 base_image_cache:
   - source: library/php
     tags_from_versions: true

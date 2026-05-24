@@ -1,7 +1,7 @@
 # Debian container configuration
 # Base image and third-party dependency versions
 
-base_image: "debian:${VERSION}"
+base_image: "${REMOTE_CR}/library/debian:${VERSION}"
 base_image_cache:
   - source: library/debian
     tags_from_versions: true

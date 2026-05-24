@@ -1,7 +1,7 @@
 # Vector container configuration
 # Base image and third-party dependency versions
 
-base_image: "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}"
+base_image: "${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}"
 base_image_cache:
   - source: library/alpine
     tags: ["latest"]
