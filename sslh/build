@@ -24,6 +24,14 @@ else
     fi
 fi
 
+# Sanity-check: UPSTREAM_VERSION must be a safe version identifier.
+# Prevents shell/docker option injection if VERSION came from an untrusted
+# source (e.g. a workflow_dispatch input that contained whitespace or '--').
+if ! [[ "$UPSTREAM_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: UPSTREAM_VERSION='$UPSTREAM_VERSION' contains unsafe characters (allowed: A-Z, a-z, 0-9, dot, underscore, hyphen)" >&2
+    exit 1
+fi
+
 echo "Building sslh ${VERSION} (source: ${UPSTREAM_VERSION})"
 
 CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg UPSTREAM_VERSION=${UPSTREAM_VERSION}"
