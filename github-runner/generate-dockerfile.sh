@@ -30,6 +30,16 @@ TEMPLATE="$SCRIPT_DIR/Dockerfile.linux"
 [[ -f "$TEMPLATE" ]] || { log_error "Dockerfile.linux not found: $TEMPLATE"; exit 1; }
 
 # ---------------------------------------------------------------------------
+# _base_cache_tag_new <source>
+# Read the pinned base-image tag for a given new-schema source path from
+# base_image_cache (new-style: no ghcr_repo, source is "library/foo" form).
+# ---------------------------------------------------------------------------
+_base_cache_tag_new() {
+    local source="$1"
+    YQ_SOURCE="$source" yq -r '.base_image_cache[] | select(.ghcr_repo == null or .ghcr_repo == "") | select(.source == strenv(YQ_SOURCE)) | .tags[0] // ""' "$CONFIG"
+}
+
+# ---------------------------------------------------------------------------
 # Generate a single distro+flavor combination — prints to stdout
 # ---------------------------------------------------------------------------
 generate_one() {
@@ -78,19 +88,31 @@ generate_one() {
 
     # ========================================================================
     # @@BASE_IMAGE@@ — ARG + FROM lines
-    # Strip the ${VAR:-default} shell syntax from base_image if present;
-    # we emit "ARG <arg>=<raw_default>" so Docker resolves it cleanly.
+    # ubuntu-2404: new-schema two-ARG pattern (REMOTE_CR + tag ARG).
+    # Other distros: generic single-ARG pattern from config base_image_arg.
     # ========================================================================
-    local raw_default
-    if [[ "$base_image" =~ ^\$\{[A-Za-z0-9_]+:-(.+)\}$ ]]; then
-        raw_default="${BASH_REMATCH[1]}"
-    else
-        raw_default="$base_image"
-    fi
-
     local base_block
-    base_block="ARG ${base_image_arg}=${raw_default}"$'\n'
-    base_block+="FROM \${${base_image_arg}}"$'\n'
+    case "$distro" in
+        ubuntu-2404)
+            local ubuntu_tag
+            ubuntu_tag=$(_base_cache_tag_new "library/ubuntu")
+            [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for library/ubuntu in $CONFIG"; exit 1; }
+            base_block="ARG REMOTE_CR"$'\n'
+            base_block+="ARG UBUNTU_2404_TAG=${ubuntu_tag}"$'\n'
+            base_block+="FROM \${REMOTE_CR}/library/ubuntu:\${UBUNTU_2404_TAG}"$'\n'
+            ;;
+        *)
+            # Generic single-ARG pattern: strip ${VAR:-default} shell syntax if present
+            local raw_default
+            if [[ "$base_image" =~ ^\$\{[A-Za-z0-9_]+:-(.+)\}$ ]]; then
+                raw_default="${BASH_REMATCH[1]}"
+            else
+                raw_default="$base_image"
+            fi
+            base_block="ARG ${base_image_arg}=${raw_default}"$'\n'
+            base_block+="FROM \${${base_image_arg}}"$'\n'
+            ;;
+    esac
 
     # ========================================================================
     # @@LABELS@@ — OCI image labels + runner metadata

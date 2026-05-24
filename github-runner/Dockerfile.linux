@@ -8,6 +8,7 @@
 #
 # Build: generate-dockerfile.sh <distro> <build_flavor> > Dockerfile.<distro>-<build_flavor>
 #        docker buildx build --build-arg VERSION=2.332.0 -f Dockerfile.<distro>-<build_flavor> .
+ARG REMOTE_CR=docker.io
 # @@BASE_IMAGE@@
 
 # Ensure root for package installation (some base images set a non-root USER)
