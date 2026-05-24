@@ -1009,6 +1009,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 1
+
       - name: Generate workflow summary
         id: summary
         run: |
@@ -1067,54 +1072,109 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "_🤖 Smart CI/CD powered by GitHub Actions_" >> $GITHUB_STEP_SUMMARY
 
-      - name: Create issue on build failure
+      - name: Gather dep-bump context for failure attribution
+        id: ctx
         if: steps.summary.outputs.build_failed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
+          PR_TITLE_FROM_EVENT: ${{ github.event.pull_request.title }}
+          PR_BODY_FROM_EVENT: ${{ github.event.pull_request.body }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
-          # Check if similar issue already exists (open, same run)
-          existing=$(gh issue list --repo "${{ github.repository }}" --label "build-failure" --state open --limit 5 --json title,number \
-            | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
+          commit_subject=$(git log -1 --format=%s "$GH_SHA" 2>/dev/null || true)
 
-          if [[ -n "$existing" ]]; then
-            echo "ℹ️ Adding comment to existing issue #$existing"
-            gh issue comment --repo "${{ github.repository }}" "$existing" --body "$(cat <<EOF
-          ## 🔄 Another build failure detected
-
-          **Run:** [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          **Trigger:** \`${{ github.event_name }}\`
-          **Ref:** \`${{ github.ref_name }}\`
-          **Time:** $(date -u +"%Y-%m-%d %H:%M UTC")
-          EOF
-          )"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            pr_number="$PR_NUMBER_FROM_EVENT"
+            pr_title="$PR_TITLE_FROM_EVENT"
+            pr_body="$PR_BODY_FROM_EVENT"
+            pr_labels=$(gh pr view "$pr_number" --repo "$GH_REPOSITORY" --json labels \
+              --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
           else
-            echo "🚨 Creating new build failure issue"
-            gh issue create --repo "${{ github.repository }}" \
-              --title "🚨 Auto Build Failed - $(date -u +%Y-%m-%d)" \
-              --label "build-failure,automation" \
-              --body "$(cat <<EOF
-          ## Build Failure Alert
+            pr_number=$(echo "$commit_subject" | grep -oP '\(#\K[0-9]+(?=\)$)' || true)
+            if [ -n "$pr_number" ]; then
+              pr_title=$(gh pr view "$pr_number" --repo "$GH_REPOSITORY" --json title \
+                --jq '.title' 2>/dev/null || true)
+              pr_body=$(gh pr view "$pr_number" --repo "$GH_REPOSITORY" --json body \
+                --jq '.body' 2>/dev/null || true)
+              pr_labels=$(gh pr view "$pr_number" --repo "$GH_REPOSITORY" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+            else
+              pr_title=""
+              pr_body=""
+              pr_labels=""
+            fi
+          fi
 
-          One or more container builds failed in the auto-build workflow.
+          failed_jobs_json=$(gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
+            --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}] | .[:5]' \
+            2>/dev/null || echo '[]')
 
-          | Property | Value |
-          |----------|-------|
-          | **Run** | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-          | **Trigger** | \`${{ github.event_name }}\` |
-          | **Ref** | \`${{ github.ref_name }}\` |
-          | **Commit** | \`${{ github.sha }}\` |
+          {
+            printf 'commit_subject=%s\n' "$commit_subject"
+            printf 'pr_number=%s\n' "$pr_number"
+            printf 'pr_title=%s\n' "$pr_title"
+            printf 'pr_labels=%s\n' "$pr_labels"
+            printf 'failed_jobs_json=%s\n' "$failed_jobs_json"
+          } >> "$GITHUB_OUTPUT"
 
-          ## Next Steps
+          {
+            printf 'pr_body<<%s\n' 'EOF_PR_BODY'
+            printf '%s\n' "$pr_body"
+            printf '%s\n' 'EOF_PR_BODY'
+          } >> "$GITHUB_OUTPUT"
 
-          1. Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details
-          2. Identify which container(s) failed
-          3. Test locally: \`./make build <container>\`
-          4. Fix and push to trigger rebuild
-
-          ---
-          _Auto-generated by CI workflow_
-          EOF
-          )"
+      - name: Open dep-attributed or generic build-failure issue
+        if: steps.summary.outputs.build_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          COMMIT_SUBJECT: ${{ steps.ctx.outputs.commit_subject }}
+          PR_NUMBER: ${{ steps.ctx.outputs.pr_number }}
+          PR_TITLE: ${{ steps.ctx.outputs.pr_title }}
+          PR_BODY: ${{ steps.ctx.outputs.pr_body }}
+          PR_LABELS: ${{ steps.ctx.outputs.pr_labels }}
+          FAILED_JOBS_JSON: ${{ steps.ctx.outputs.failed_jobs_json }}
+        run: |
+          chmod +x scripts/open-dep-failure-issue.sh
+          if ./scripts/open-dep-failure-issue.sh; then
+            echo "Dep-attributed issue opened/updated"
+          else
+            rc=$?
+            if [ "$rc" -eq 1 ]; then
+              echo "No dep-bump context detected, falling back to generic issue"
+              existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                --label "build-failure" --state open --limit 5 --json title,number \
+                | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
+              run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              if [[ -n "$existing" ]]; then
+                echo "Adding comment to existing issue #$existing"
+                comment_body="$(printf '## Another build failure detected\n\n**Run:** [%s](%s)\n**Trigger:** `%s`\n**Ref:** `%s`\n**Time:** %s' \
+                  "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                  "$(date -u +'%Y-%m-%d %H:%M UTC')")"
+                gh issue comment --repo "$GITHUB_REPOSITORY" "$existing" --body "$comment_body"
+              else
+                echo "Creating new build failure issue"
+                issue_body="$(printf '## Build Failure Alert\n\nOne or more container builds failed in the auto-build workflow.\n\n| Property | Value |\n|----------|-------|\n| **Run** | [%s](%s) |\n| **Trigger** | `%s` |\n| **Ref** | `%s` |\n| **Commit** | `%s` |\n\n## Next Steps\n\n1. Check the [workflow run](%s) for details\n2. Identify which container(s) failed\n3. Test locally: `./make build <container>`\n4. Fix and push to trigger rebuild\n\n---\n_Auto-generated by CI workflow_' \
+                  "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                  "$GITHUB_SHA" "$run_url")"
+                gh issue create --repo "$GITHUB_REPOSITORY" \
+                  --title "Auto Build Failed - $(date -u +%Y-%m-%d)" \
+                  --label "build-failure,automation" \
+                  --body "$issue_body"
+              fi
+            else
+              echo "open-dep-failure-issue.sh failed with exit $rc"
+              exit "$rc"
+            fi
           fi
 
   cache-lineage:
