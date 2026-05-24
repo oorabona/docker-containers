@@ -2,12 +2,12 @@
 # Downloads pre-built musl binary from GitHub releases
 # https://vector.dev
 
+ARG REMOTE_CR=docker.io
 ARG VERSION
 ARG UPSTREAM_VERSION
-ARG OS_IMAGE_BASE
 ARG OS_IMAGE_TAG
 
-FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
+FROM ${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}
 
 ARG UPSTREAM_VERSION
 ARG TARGETARCH
