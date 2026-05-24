@@ -2,7 +2,7 @@
 
 # Pre-build script for PHP
 # Sets dynamic build arguments not in config.yaml
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Get raw upstream version (without -fpm-alpine suffix) for source download
 # Honor $VERSION when set (CI/dep-rebuild path); fall back to upstream latest (local/manual invocation).

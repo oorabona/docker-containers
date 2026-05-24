@@ -3,7 +3,7 @@
 # Terraform build script - fetches latest tool versions and updates config.yaml
 # config.yaml is the single source of truth for build args
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
 # Source the git-tags helper
