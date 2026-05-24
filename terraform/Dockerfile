@@ -15,13 +15,12 @@ ARG AWS_CLI_VERSION
 ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
-# Base image overrides for GHCR caching (CI sets these to avoid Docker Hub rate limits)
-ARG TERRAFORM_BASE
+# Registry root for GHCR caching (CI sets this to avoid Docker Hub rate limits)
 ARG REMOTE_CR=docker.io
 
 # Stage 1: Get Terraform binary
 # Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION
-FROM ${TERRAFORM_BASE}:${UPSTREAM_VERSION:-${VERSION}} AS terraform
+FROM ${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION:-${VERSION}} AS terraform
 
 # Stage 2: Security tools (included in all flavors)
 ARG REMOTE_CR
