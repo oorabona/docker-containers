@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Pre-build script for Vector
+# Sets dynamic build arguments not in config.yaml
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Get raw upstream version (without -alpine suffix) for source download
+# Honor $VERSION when set (CI/dep-rebuild path); fall back to upstream latest (local/manual invocation).
+if [[ -n "${VERSION:-}" ]]; then
+    # Strip the -alpine suffix (set by version.sh's TAG_SUFFIX) to get the raw Vector source version.
+    UPSTREAM_VERSION="${VERSION%-alpine}"
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: VERSION=$VERSION resolves to empty UPSTREAM_VERSION after suffix strip" >&2
+        exit 1
+    fi
+else
+    if ! UPSTREAM_VERSION=$("$SCRIPT_DIR/version.sh" --upstream); then
+        echo "ERROR: version.sh --upstream failed; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+    if [[ -z "$UPSTREAM_VERSION" ]]; then
+        echo "ERROR: version.sh --upstream returned empty; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+fi
+
+echo "Building Vector ${VERSION} (source: ${UPSTREAM_VERSION})"
+
+CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }--build-arg UPSTREAM_VERSION=${UPSTREAM_VERSION}"
+
+export CUSTOM_BUILD_ARGS
