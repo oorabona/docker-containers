@@ -1,20 +1,13 @@
 # SSLH container configuration
 # Base image and third-party dependency versions
 
-base_image: "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}"
+base_image: "${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}"
 base_image_cache:
-  - arg: OS_IMAGE_BASE
-    source: alpine
-    ghcr_repo: alpine-base
+  - source: library/alpine
     tags: ["latest"]
 build_args:
-  OS_IMAGE_BASE: "alpine"
   OS_IMAGE_TAG: "latest"
 dependency_sources:
-  OS_IMAGE_BASE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   OS_IMAGE_TAG:
     monitor: false
     lifecycle: untracked

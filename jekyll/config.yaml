@@ -1,14 +1,11 @@
 # Jekyll container configuration
 # Base image and third-party dependency versions
 
-base_image: "ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}"
+base_image: "${REMOTE_CR}/library/ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}"
 base_image_cache:
-  - arg: BASE_IMAGE
-    source: ruby
-    ghcr_repo: ruby-base
+  - source: library/ruby
     tags: ["${RUBY_VERSION}-alpine${ALPINE_VERSION}"]
 build_args:
-  BASE_IMAGE: "ruby"
   RUBY_VERSION: "3.3"
   ALPINE_VERSION: "3.21"
   JEKYLL_VERSION: "4.4.1"
@@ -50,8 +47,4 @@ dependency_sources:
     lifecycle: tracked
     type: rubygems
     gem: jekyll
-  BASE_IMAGE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
 value_proposition: Jekyll runtime with native build deps pre-installed. Multi-version retention tracks Jekyll upstream daily.

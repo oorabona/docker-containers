@@ -1,14 +1,11 @@
 # OpenResty container configuration
 # Base image and third-party dependency versions
 
-base_image: "alpine:latest"
+base_image: "${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG}"
 base_image_cache:
-  - arg: RESTY_IMAGE_BASE
-    source: alpine
-    ghcr_repo: alpine-base
+  - source: library/alpine
     tags: ["latest"]
 build_args:
-  RESTY_IMAGE_BASE: "alpine"
   RESTY_IMAGE_TAG: "latest"
   RESTY_OPENSSL_VERSION: "3.5.6"
   RESTY_OPENSSL_PATCH_VERSION: "3.5.5"
@@ -21,10 +18,6 @@ build_args:
 # All build_args with pinned versions MUST have an entry here.
 # lifecycle: tracked | stable-pin | eol-migrate | untracked
 dependency_sources:
-  RESTY_IMAGE_BASE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   RESTY_IMAGE_TAG:
     monitor: false
     lifecycle: untracked

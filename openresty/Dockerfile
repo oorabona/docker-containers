@@ -4,11 +4,11 @@
 # For Luarocks
 ARG LUAROCKS_VERSION
 
+ARG REMOTE_CR=docker.io
 ARG VERSION
-ARG RESTY_IMAGE_BASE
 ARG RESTY_IMAGE_TAG
 
-FROM ${RESTY_IMAGE_BASE}:${RESTY_IMAGE_TAG}
+FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG}
 
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
@@ -68,7 +68,7 @@ ARG LUAROCKS_VERSION
 # Validate required build args
 RUN : "${RESTY_VERSION:?required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
 
-LABEL resty_image_base="${RESTY_IMAGE_BASE}"
+LABEL resty_image_base="alpine"
 LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
 LABEL resty_version="${RESTY_VERSION}"
 LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"

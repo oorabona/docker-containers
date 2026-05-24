@@ -1,10 +1,10 @@
 # Jekyll Static Site Generator
 # Lightweight container for building and serving Jekyll sites
+ARG REMOTE_CR=docker.io
 ARG RUBY_VERSION
 ARG ALPINE_VERSION
-ARG BASE_IMAGE
 
-FROM ${BASE_IMAGE}:${RUBY_VERSION}-alpine${ALPINE_VERSION}
+FROM ${REMOTE_CR}/library/ruby:${RUBY_VERSION}-alpine${ALPINE_VERSION}
 
 ARG JEKYLL_VERSION
 ARG BUNDLER_VERSION

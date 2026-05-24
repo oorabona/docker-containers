@@ -1,14 +1,11 @@
 # Ansible container configuration
 # Base image and third-party dependency versions
 
-base_image: "ubuntu:${OS_VERSION}"
+base_image: "${REMOTE_CR}/library/ubuntu:${OS_VERSION}"
 base_image_cache:
-  - arg: BASE_IMAGE
-    source: ubuntu
-    ghcr_repo: ubuntu-base
+  - source: library/ubuntu
     tags: ["latest"]
 build_args:
-  BASE_IMAGE: "ubuntu"
   OS_VERSION: "latest"
   PYASN1_VERSION: "0.6.3"
   PARAMIKO_VERSION: "5.0.0"
@@ -17,10 +14,6 @@ build_args:
   PYCRYPTODOME_VERSION: "3.23.0"
   PYNACL_VERSION: "1.6.2"
 dependency_sources:
-  BASE_IMAGE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   OS_VERSION:
     monitor: false
     lifecycle: untracked

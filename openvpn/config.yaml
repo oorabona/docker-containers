@@ -1,22 +1,15 @@
 # OpenVPN container configuration
 # Base image and third-party dependency versions
 
-base_image: "alpine:${OS_VERSION}"
+base_image: "${REMOTE_CR}/library/alpine:${OS_VERSION}"
 base_image_cache:
-  - arg: BASE_IMAGE
-    source: alpine
-    ghcr_repo: alpine-base
+  - source: library/alpine
     tags: ["latest"]
 build_args:
-  BASE_IMAGE: "alpine"
   OS_VERSION: "latest"
   PKCS11_HELPER_VERSION: "1.31.0"
   EASYRSA_VERSION: "3.2.6"
 dependency_sources:
-  BASE_IMAGE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   OS_VERSION:
     monitor: false
     lifecycle: untracked

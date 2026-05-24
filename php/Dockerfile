@@ -1,9 +1,9 @@
+ARG REMOTE_CR=docker.io
 ARG VERSION
 ARG COMPOSER_VERSION
-ARG COMPOSER_BASE
-ARG BASE_IMAGE
-FROM ${COMPOSER_BASE}:${COMPOSER_VERSION} AS composer
-FROM ${BASE_IMAGE}:${VERSION} AS php
+FROM ${REMOTE_CR}/library/composer:${COMPOSER_VERSION} AS composer
+ARG REMOTE_CR
+FROM ${REMOTE_CR}/library/php:${VERSION} AS php
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 
