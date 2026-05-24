@@ -14,12 +14,19 @@ if [[ -n "${VERSION:-}" ]]; then
         exit 1
     fi
 else
-    if ! UPSTREAM_VERSION=$("$SCRIPT_DIR/version.sh" --upstream); then
-        echo "ERROR: version.sh --upstream failed; cannot resolve UPSTREAM_VERSION" >&2
+    # php/version.sh does not support --upstream — its default output is the full
+    # tag (e.g. "8.5.6-fpm-alpine"). Strip the suffix here for parity.
+    if ! _RAW_TAG=$("$SCRIPT_DIR/version.sh"); then
+        echo "ERROR: version.sh failed; cannot resolve UPSTREAM_VERSION" >&2
         exit 1
     fi
-    if [[ -z "$UPSTREAM_VERSION" ]]; then
-        echo "ERROR: version.sh --upstream returned empty; cannot resolve UPSTREAM_VERSION" >&2
+    if [[ -z "$_RAW_TAG" ]]; then
+        echo "ERROR: version.sh returned empty; cannot resolve UPSTREAM_VERSION" >&2
+        exit 1
+    fi
+    UPSTREAM_VERSION="${_RAW_TAG%-fpm-alpine}"
+    if [[ "$UPSTREAM_VERSION" == "$_RAW_TAG" ]]; then
+        echo "ERROR: version.sh output '$_RAW_TAG' does not end with expected -fpm-alpine suffix" >&2
         exit 1
     fi
 fi
