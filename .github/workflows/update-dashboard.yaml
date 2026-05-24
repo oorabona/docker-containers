@@ -396,6 +396,16 @@ jobs:
               target=".build-lineage/$fname"
               src_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$src" >/dev/null 2>&1 && echo true || echo false)
               if [[ -f "$target" ]]; then
+                # Preserve enrichment written by auto-build's cache-lineage job (#515).
+                # Per-arch build artifacts are uploaded before enrichment runs and lack
+                # multi_arch_index_digest. When the cached file is enriched, never let
+                # an unenriched per-arch source clobber it.
+                tgt_enriched=$(jq -e '(.multi_arch_index_digest // null) != null' "$target" >/dev/null 2>&1 && echo true || echo false)
+                if [[ "$tgt_enriched" == "true" ]]; then
+                  echo "::notice::Preserving enriched cached lineage for $fname (per-arch artifact would clobber multi_arch fields)"
+                  lineage_locked[$fname]=1
+                  continue
+                fi
                 tgt_has_digest=$(jq -e '(.oci_subject_digest // "") != ""' "$target" >/dev/null 2>&1 && echo true || echo false)
                 if [[ "$tgt_has_digest" == "true" && "$src_has_digest" == "false" ]]; then
                   # Cache has digest, source doesn't — preserve cache, lock the slot.
