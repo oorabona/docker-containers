@@ -504,14 +504,26 @@ collect_variant_json() {
     fi
     [[ "$is_default" != "true" ]] && is_default="false"
 
-    # Sizes
+    # Sizes — prefer lineage (post-#515 enriched fields), fall back to network
     local size_amd64="" size_arm64=""
     if [[ "$current_version" != "no-published-version" ]]; then
-        local sizes_raw
-        sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-        if [[ -n "$sizes_raw" ]]; then
-            size_amd64=$(echo "$sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
-            size_arm64=$(echo "$sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+        local lineage_size_amd64 lineage_size_arm64
+        lineage_size_amd64=$(echo "$lineage_json" | jq -r '.size_amd64_bytes // empty' 2>/dev/null) || lineage_size_amd64=""
+        lineage_size_arm64=$(echo "$lineage_json" | jq -r '.size_arm64_bytes // empty' 2>/dev/null) || lineage_size_arm64=""
+        if [[ -n "$lineage_size_amd64" && "$lineage_size_amd64" =~ ^[0-9]+$ ]]; then
+            size_amd64=$(awk -v b="$lineage_size_amd64" 'BEGIN{printf "%.1fMB", b/1048576}')
+        fi
+        if [[ -n "$lineage_size_arm64" && "$lineage_size_arm64" =~ ^[0-9]+$ ]]; then
+            size_arm64=$(awk -v b="$lineage_size_arm64" 'BEGIN{printf "%.1fMB", b/1048576}')
+        fi
+        # Fallback: network call if neither size found in lineage
+        if [[ -z "$size_amd64" && -z "$size_arm64" ]]; then
+            local sizes_raw
+            sizes_raw=$(get_ghcr_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+            if [[ -n "$sizes_raw" ]]; then
+                size_amd64=$(echo "$sizes_raw" | grep -oP 'amd64:\K[0-9.]+MB' || echo "")
+                size_arm64=$(echo "$sizes_raw" | grep -oP 'arm64:\K[0-9.]+MB' || echo "")
+            fi
         fi
     fi
 
@@ -551,29 +563,33 @@ collect_variant_json() {
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] build_history for $container-$sbom_tag = ${build_history:0:60}…" >&2
 
-    # Attestation: look up SBOM attestation ID from GitHub Attestations API.
-    # The attestations API is keyed on the OCI subject digest (sha256:…) that
-    # `actions/attest-sbom` signs — NOT the internal build-cache digest. Prefer
-    # `.oci_subject_digest` when the build pipeline has captured it; fall back
-    # to `.build_digest` for older lineage files predating the post-flatten
-    # capture step. NB: jq's `//` only treats null/false as missing, so an
-    # empty-string `.oci_subject_digest` would short-circuit incorrectly — the
-    # explicit shell-level check below handles that case.
-    local subject_digest attestation_id="" attestation_url=""
-    subject_digest=$(echo "$lineage_json" | jq -r '.oci_subject_digest // empty')
-    if [[ -z "$subject_digest" ]]; then
-        subject_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
+    # Attestation — prefer lineage (post-#515 enriched fields), fall back to gh api.
+    # Lineage-enriched path: enrich-lineage.sh stored attestation_id + attestation_url
+    # at build time. Dashboard reads those directly, eliminating the per-variant gh api
+    # call that caused 20-29 min hangs on Windows variants.
+    local attestation_id="" attestation_url=""
+    attestation_id=$(echo "$lineage_json" | jq -r '.attestation_id // empty' 2>/dev/null) || attestation_id=""
+    attestation_url=$(echo "$lineage_json" | jq -r '.attestation_url // empty' 2>/dev/null) || attestation_url=""
+
+    if [[ -z "$attestation_id" ]]; then
+        # Fallback: network lookup for pre-#515 lineage files without enriched attestation.
+        # Prefer oci_subject_digest; fall back to build_digest for older lineage files.
+        local subject_digest
+        subject_digest=$(echo "$lineage_json" | jq -r '.oci_subject_digest // empty')
+        if [[ -z "$subject_digest" ]]; then
+            subject_digest=$(echo "$lineage_json" | jq -r '.build_digest // "unknown"')
+            [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
+                echo "[debug] using fallback build_digest=$subject_digest (oci_subject_digest empty) for $container-$sbom_tag" >&2
+        fi
         [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
-            echo "[debug] using fallback build_digest=$subject_digest (oci_subject_digest empty) for $container-$sbom_tag" >&2
+            echo "[debug] subject_digest for $container-$sbom_tag = ${subject_digest:0:60}…" >&2
+        local _t0_att=${EPOCHREALTIME:-}
+        if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
+            && attestation_id=$(get_attestation_id "$subject_digest"); then
+            attestation_url=$(get_attestation_url "$attestation_id")
+        fi
+        log_latency "gh-attestation" "$_t0_att" 20
     fi
-    [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
-        echo "[debug] subject_digest for $container-$sbom_tag = ${subject_digest:0:60}…" >&2
-    local _t0_att=${EPOCHREALTIME:-}
-    if [[ -n "$subject_digest" && "$subject_digest" != "unknown" ]] \
-        && attestation_id=$(get_attestation_id "$subject_digest"); then
-        attestation_url=$(get_attestation_url "$attestation_id")
-    fi
-    log_latency "gh-attestation" "$_t0_att" 20
 
     # Trivy: collect vulnerability summary for the primary platform (linux/amd64)
     local trivy_category trivy_summary
@@ -582,31 +598,52 @@ collect_variant_json() {
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] trivy_summary for $container-$variant_tag = ${trivy_summary:0:60}…" >&2
 
-    # Multi-arch platform list: derive from GHCR manifest (reuse ghcr_get_manifest_sizes)
+    # Multi-arch platform list + manifest digests — prefer lineage (post-#515 enriched
+    # fields), fall back to network only when lineage lacks all three digest fields.
     local multi_arch_platforms_json="[]"
-    if [[ "$current_version" != "no-published-version" ]]; then
-        local raw_sizes arch_list=""
-        local _t0_ghcr=${EPOCHREALTIME:-}
-        raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-        log_latency "ghcr-index oorabona/${container}:${variant_tag}" "$_t0_ghcr" 30
-        if [[ -n "$raw_sizes" ]]; then
-            arch_list=$(echo "$raw_sizes" | awk -F: '{print $1}' | \
-                jq -R . | jq -s '.')
-        fi
-        [[ -n "$arch_list" && "$arch_list" != "[]" ]] && multi_arch_platforms_json="$arch_list"
-    fi
-
-    # Multi-arch digests: index digest + per-platform (amd64, arm64) manifest digests.
-    # Fetched from the GHCR registry v2 API at dashboard-generation time.
-    # Returns all-null JSON on token/API failure — never exits non-zero.
     local multi_arch_digests_json
     multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+
     if [[ "$current_version" != "no-published-version" ]]; then
-        local _t0_ghcr_ma=${EPOCHREALTIME:-}
-        multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
-        log_latency "ghcr-index oorabona/${container}:${variant_tag} (multi-arch)" "$_t0_ghcr_ma" 30
-        [[ -z "$multi_arch_digests_json" ]] && \
-            multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        local lineage_platforms lineage_index_digest lineage_amd64 lineage_arm64
+        lineage_platforms=$(echo "$lineage_json" | jq -c '.multi_arch_platforms // empty' 2>/dev/null) || lineage_platforms=""
+        lineage_index_digest=$(echo "$lineage_json" | jq -r '.multi_arch_index_digest // empty' 2>/dev/null) || lineage_index_digest=""
+        lineage_amd64=$(echo "$lineage_json" | jq -r '.manifest_digest_amd64 // empty' 2>/dev/null) || lineage_amd64=""
+        lineage_arm64=$(echo "$lineage_json" | jq -r '.manifest_digest_arm64 // empty' 2>/dev/null) || lineage_arm64=""
+
+        if [[ -n "$lineage_platforms" && "$lineage_platforms" != "null" && "$lineage_platforms" != "[]" ]]; then
+            multi_arch_platforms_json="$lineage_platforms"
+        fi
+        if [[ -n "$lineage_index_digest" || -n "$lineage_amd64" || -n "$lineage_arm64" ]]; then
+            multi_arch_digests_json=$(jq -nc \
+                --arg idx "${lineage_index_digest}" \
+                --arg amd "${lineage_amd64}" \
+                --arg arm "${lineage_arm64}" \
+                '{
+                    index_digest: (if $idx == "" then null else $idx end),
+                    manifest_digest_amd64: (if $amd == "" then null else $amd end),
+                    manifest_digest_arm64: (if $arm == "" then null else $arm end)
+                }') || multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        fi
+
+        # Fallback: only if lineage had NO platforms AND NO digests at all
+        if [[ "$multi_arch_platforms_json" == "[]" && -z "$lineage_index_digest" && -z "$lineage_amd64" && -z "$lineage_arm64" ]]; then
+            local raw_sizes arch_list=""
+            local _t0_ghcr=${EPOCHREALTIME:-}
+            raw_sizes=$(ghcr_get_manifest_sizes "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+            log_latency "ghcr-index oorabona/${container}:${variant_tag}" "$_t0_ghcr" 30
+            if [[ -n "$raw_sizes" ]]; then
+                arch_list=$(echo "$raw_sizes" | awk -F: '{print $1}' | \
+                    jq -R . | jq -s '.')
+            fi
+            [[ -n "$arch_list" && "$arch_list" != "[]" ]] && multi_arch_platforms_json="$arch_list"
+
+            local _t0_ghcr_ma=${EPOCHREALTIME:-}
+            multi_arch_digests_json=$(ghcr_get_multi_arch_digests "oorabona/$container" "$variant_tag" 2>/dev/null) || true
+            log_latency "ghcr-index oorabona/${container}:${variant_tag} (multi-arch)" "$_t0_ghcr_ma" 30
+            [[ -z "$multi_arch_digests_json" ]] && \
+                multi_arch_digests_json='{"index_digest":null,"manifest_digest_amd64":null,"manifest_digest_arm64":null}'
+        fi
     fi
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] multi_arch_digests for $container-$variant_tag = ${multi_arch_digests_json:0:120}…" >&2
