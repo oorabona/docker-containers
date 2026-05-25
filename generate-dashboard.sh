@@ -1120,8 +1120,12 @@ calculate_build_success_rate() {
     local thirty_days_ago
     thirty_days_ago=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
 
+    # Filter to master-push runs only. Without this, the rate dilutes with PR-CI
+    # failures from iterative development cycles (six PRs of #515 alone added 40+
+    # expected-fail jobs to the rolling window) which aren't representative of
+    # production health. The dashboard signal should reflect shipped-master state.
     local build_runs_json
-    build_runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&created=>$thirty_days_ago" 30 || true)
+    build_runs_json=$(github_api_get "repos/oorabona/docker-containers/actions/workflows/auto-build.yaml/runs?per_page=20&branch=master&event=push&created=>$thirty_days_ago" 30 || true)
 
     if [[ -n "$build_runs_json" ]] && echo "$build_runs_json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
         local run_ids
@@ -1133,7 +1137,7 @@ calculate_build_success_rate() {
 
             if [[ -n "$jobs_json" ]] && echo "$jobs_json" | jq -e '.jobs' >/dev/null 2>&1; then
                 local run_build_total run_build_success
-                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion != "skipped")] | length' 2>/dev/null || echo "0")
+                run_build_total=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion != "skipped" and .conclusion != "cancelled")] | length' 2>/dev/null || echo "0")
                 run_build_success=$(echo "$jobs_json" | jq '[.jobs[] | select(.name | startswith("Build")) | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null || echo "0")
 
                 build_total=$((build_total + run_build_total))
