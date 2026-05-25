@@ -515,6 +515,21 @@ collect_variant_json() {
     fi
     [[ "$is_default" != "true" ]] && is_default="false"
 
+    # Lineage (build_digest + base_image with version mismatch check + #515 enrichment fields)
+    # Use variant_tag for lineage file lookup, version for mismatch check
+    # (NOT current_version — that's the container's latest published version,
+    # which may differ from this variant's PG major version).
+    # Resolved EARLY so the lineage-first reads below can consume it; resolve
+    # is cheap (file read + jq) and idempotent under repeated calls.
+    local flavor
+    if [[ "$is_versioned" == "true" ]]; then
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$version")
+    else
+        flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
+    fi
+    local lineage_json
+    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_tag" "$version" "$fallback_base_image" "$flavor")
+
     # Sizes — prefer lineage (post-#515 enriched fields), fall back to network
     local size_amd64="" size_arm64=""
     if [[ "$current_version" != "no-published-version" ]]; then
@@ -537,19 +552,6 @@ collect_variant_json() {
             fi
         fi
     fi
-
-    # Lineage (build_digest + base_image with version mismatch check)
-    # Use variant_tag for lineage file lookup, version for mismatch check
-    # (NOT current_version — that's the container's latest published version,
-    # which may differ from this variant's PG major version)
-    local flavor
-    if [[ "$is_versioned" == "true" ]]; then
-        flavor=$(variant_property "$container_dir" "$variant_name" "flavor" "$version")
-    else
-        flavor=$(variant_property "$container_dir" "$variant_name" "flavor")
-    fi
-    local lineage_json
-    lineage_json=$(resolve_variant_lineage_json "$container" "$variant_tag" "$version" "$fallback_base_image" "$flavor")
 
     # Build args
     local build_args_json
