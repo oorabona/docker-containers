@@ -327,8 +327,19 @@ resolve_variant_lineage_json() {
         fi
     fi
 
-    BD="$build_digest" BI="$base_image" OCI="$oci_subject_digest" \
-        yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI) | .oci_subject_digest = strenv(OCI)'
+    if [[ -n "$lineage_file" ]]; then
+        # Pass through ALL lineage fields (including #515 enrichment fields),
+        # overriding the 3 normalized fields with their resolved values.
+        # Without this pass-through, the synthesized JSON drops enrichment and
+        # the dashboard falls back to network for every variant.
+        BD="$build_digest" BI="$base_image" OCI="$oci_subject_digest" \
+            jq '. + {build_digest: env.BD, base_image: env.BI, oci_subject_digest: env.OCI}' "$lineage_file"
+    else
+        # No lineage file on disk: synthesize a minimal object so callers still
+        # get the 3 fields they expect (with normalized values).
+        BD="$build_digest" BI="$base_image" OCI="$oci_subject_digest" \
+            yq -n -o json '.build_digest = strenv(BD) | .base_image = strenv(BI) | .oci_subject_digest = strenv(OCI)'
+    fi
 }
 
 # --- SBOM data helpers ---
