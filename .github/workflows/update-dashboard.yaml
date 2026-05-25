@@ -510,6 +510,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GHCR_CACHE_DIR: ${{ github.workspace }}/.ghcr-cache
+          DASHBOARD_TRACE: ${{ (contains(github.event.inputs.trigger_reason, 'TRACE') || contains(inputs.trigger_reason, 'TRACE')) && '1' || '' }}
         run: |
           chmod +x generate-dashboard.sh
 

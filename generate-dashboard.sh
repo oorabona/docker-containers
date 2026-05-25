@@ -604,12 +604,15 @@ collect_variant_json() {
         log_latency "gh-attestation" "$_t0_att" 20
     fi
 
+    [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s pre-trivy %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
+
     # Trivy: collect vulnerability summary for the primary platform (linux/amd64)
     local trivy_category trivy_summary
     trivy_category=$(build_trivy_category "$container" "$variant_tag" "linux/amd64")
     trivy_summary=$(get_trivy_summary "$trivy_category")
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] trivy_summary for $container-$variant_tag = ${trivy_summary:0:60}…" >&2
+    [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s post-trivy %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
 
     # Multi-arch platform list + manifest digests — prefer lineage (post-#515 enriched
     # fields), fall back to network only when lineage lacks all three digest fields.
@@ -660,6 +663,7 @@ collect_variant_json() {
     fi
     [[ "${DASHBOARD_DEBUG:-}" == "1" ]] && \
         echo "[debug] multi_arch_digests for $container-$variant_tag = ${multi_arch_digests_json:0:120}…" >&2
+    [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s post-platforms %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
 
     # Postgres-specific: extensions and when_to_use from flavor file and variants.yaml
     local extensions_json="null" when_to_use=""
@@ -705,12 +709,21 @@ collect_variant_json() {
     _slurp_guard() {  # $1=slot name  $2=fallback ; operates on named var via $1
         local _name="$1" _fallback="$2"
         local _val="${!_name}"
-        if [[ -z "${_val//[[:space:]]/}" ]]; then
+        # Empty OR whitespace-only check. Avoid `${_val//[[:space:]]/}` — that
+        # global parameter expansion allocates a stripped COPY of the entire
+        # value, which is O(n) but with a large constant; on a 50-100MB SBOM
+        # packages payload (Windows-dev variants), it costs 5-10 minutes per
+        # call × 9 slurp_guards per variant × 3 variants ≈ the entire #515
+        # dashboard step. The regex below short-circuits on the first
+        # non-whitespace character, so non-empty values return in microseconds.
+        if [[ -z "$_val" || "$_val" =~ ^[[:space:]]+$ ]]; then
             printf 'WARN: collect_variant_json slurp guard fired: empty %s for %s:%s — substituted fallback\n' \
                 "$_name" "$container" "$variant_tag" >&2
             printf -v "$_name" '%s' "$_fallback"
         fi
     }
+    [[ -n "${DASHBOARD_TRACE:-}" ]] && printf '[trace] %s pre-slurp %s:%s\n' "$(date -Iseconds)" "$container" "$variant_tag" >&2
+
     _slurp_guard lineage_json '{"build_digest":"unknown","base_image":"unknown","oci_subject_digest":""}'
     _slurp_guard build_args_json '[]'
     _slurp_guard sbom_summary '{}'
