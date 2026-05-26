@@ -34,21 +34,68 @@ CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 # --- Lineage resolution helpers ---
 
 # Resolve the lineage JSON file for a container
-# Tries {container}.json first, then falls back to {container}-*.json (first match)
+# Fix B: uses default_variant() selection from variants.yaml (NEVER filesystem-first).
+#
+# Precedence:
+#   1. {container}.json exists → return it (legacy rollup path)
+#   2. variants.yaml exists → parse it:
+#      a. Malformed YAML → return empty sentinel (never fall back to filesystem-first)
+#      b. Latest version (versions[0]) + default variant name → try exact match
+#      c. Default variant file missing → fallback to any file for the latest version
+#      d. No variants key (versions-only) → any file for the latest version
+#   3. No variants.yaml → return empty
 resolve_lineage_file() {
     local container="$1"
     local lineage_dir="$SCRIPT_DIR/.build-lineage"
+
+    # 1. Legacy: {container}.json exists → return directly (no variants.yaml needed)
     local lineage_file="$lineage_dir/${container}.json"
     if [[ -f "$lineage_file" ]]; then
         echo "$lineage_file"
         return
     fi
-    # Fallback: flavored lineage files (e.g. postgres-base.json)
-    local fallback
-    fallback=$(find "$lineage_dir" -maxdepth 1 -name "${container}-*.json" -print -quit 2>/dev/null)
-    if [[ -n "$fallback" ]]; then
-        echo "$fallback"
+
+    # 2. Parse variants.yaml (malformed or missing → empty sentinel)
+    local variants_file="$SCRIPT_DIR/$container/variants.yaml"
+    [[ -f "$variants_file" ]] || return 0
+
+    # Validate YAML and get the latest version tag (versions[0].tag)
+    # yq exits non-zero on malformed YAML → return empty (never filesystem-first)
+    local latest_version
+    latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || return 0
+    [[ -n "$latest_version" ]] || return 0
+
+    # Get the default variant name for the latest version
+    local default_name
+    default_name=$(yq -r '.versions[0].variants[] | select(.default == true) | .name' \
+        "$variants_file" 2>/dev/null | head -1) || true
+
+    # Try exact match for default variant:
+    # Pattern: {container}-{version}*{default_name}.json
+    # The glob handles any base_suffix inserted between version and variant name
+    # (e.g. postgres-18-alpine-base.json where version=18, variant=base, base_sfx=-alpine)
+    local found_file=""
+    if [[ -n "$default_name" ]]; then
+        for _f in "$lineage_dir/${container}-${latest_version}"*"${default_name}.json"; do
+            if [[ -f "$_f" ]]; then
+                found_file="$_f"
+                break
+            fi
+        done
     fi
+
+    # Fallback: any lineage file for the latest version (when default variant file missing,
+    # or for versions-only containers that have no variants key)
+    if [[ -z "$found_file" ]]; then
+        for _f in "$lineage_dir/${container}-${latest_version}"*.json; do
+            if [[ -f "$_f" ]]; then
+                found_file="$_f"
+                break
+            fi
+        done
+    fi
+
+    [[ -n "$found_file" ]] && echo "$found_file" || true
 }
 
 # Resolve lineage file for a specific variant of a container
@@ -82,14 +129,24 @@ resolve_variant_lineage_file() {
 }
 
 # Get a field from the build lineage JSON for a container
-# Falls back to "unknown" if lineage data doesn't exist
+# Falls back to "unknown" if lineage data doesn't exist.
+# Fix E: sanitize-at-read — if the field value contains "${" (leaked build-arg placeholder
+# from pre-v2 lineage entries), treat it as empty ("") so the dashboard shows
+# "not available" rather than a literal unexpanded shell expression.
 get_build_lineage_field() {
     local container="$1"
     local field="$2"
     local lineage_file
     lineage_file=$(resolve_lineage_file "$container")
     if [[ -n "$lineage_file" ]]; then
-        jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null || echo "unknown"
+        local _val
+        _val=$(jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null) || _val="unknown"
+        # Sanitize: leaked placeholder (e.g. "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}") → empty
+        if [[ "$_val" == *'${'* ]]; then
+            echo ""
+        else
+            echo "$_val"
+        fi
     else
         echo "unknown"
     fi
