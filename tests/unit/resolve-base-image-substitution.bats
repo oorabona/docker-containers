@@ -447,3 +447,51 @@ DOCKER
         echo "NOTICE: no un-resolved warning emitted (acceptable if _BASE_IMAGE_REF is empty)"
     }
 }
+
+# =============================================================================
+# Finding #1 (gate r4 codex+copilot MEDIUM): ARG names with digits must be parsed
+# Docker allows [A-Za-z_][A-Za-z0-9_]* for ARG names.
+# Pre-fix regex '^ARG [A-Z_]+=' skips names containing digits (e.g. UBUNTU_2404_TAG).
+# =============================================================================
+
+@test "RBIS-13: ARG name with embedded digits is parsed and substituted (UBUNTU_2404_TAG)" {
+    # github-runner ubuntu-2404 Dockerfile contains:
+    #   ARG UBUNTU_2404_TAG=24.04
+    # The pre-fix regex '^ARG [A-Z_]+=' skips this ARG entirely because '2404' contains digits,
+    # leaving _BASE_IMAGE_REF un-substituted with a leaked literal.
+    make_dockerfile "ARG UBUNTU_2404_TAG=24.04" "FROM ubuntu:\${UBUNTU_2404_TAG}"
+    make_config 'ubuntu:${UBUNTU_2404_TAG}'
+
+    _prepare_build_args "24.04" ""
+
+    local label_args=""
+    _resolve_base_image "./Dockerfile" "24.04" "label_args" 2>/dev/null || true
+
+    [[ "$_BASE_IMAGE_REF" == "ubuntu:24.04" ]] || {
+        echo "FAIL: expected 'ubuntu:24.04', got '$_BASE_IMAGE_REF'"
+        echo "  (pre-fix: digit in ARG name causes regex skip → un-substituted literal)"
+        return 1
+    }
+    # No leaked placeholder
+    [[ "$_BASE_IMAGE_REF" != *'${'* ]] || {
+        echo "FAIL: placeholder leaked into _BASE_IMAGE_REF: '$_BASE_IMAGE_REF'"
+        return 1
+    }
+}
+
+@test "RBIS-14: ARG name with leading letter then digits-and-underscore mixed (R3_BASE=r3)" {
+    # Verify that a name starting with a letter followed by mixed digits/underscores
+    # is correctly parsed after the fix.
+    make_dockerfile "ARG R3_BASE=r3-img" "FROM \${R3_BASE}:latest"
+    make_config '${R3_BASE}:latest'
+
+    _prepare_build_args "1.0" ""
+
+    local label_args=""
+    _resolve_base_image "./Dockerfile" "1.0" "label_args" 2>/dev/null || true
+
+    [[ "$_BASE_IMAGE_REF" == "r3-img:latest" ]] || {
+        echo "FAIL: expected 'r3-img:latest', got '$_BASE_IMAGE_REF'"
+        return 1
+    }
+}

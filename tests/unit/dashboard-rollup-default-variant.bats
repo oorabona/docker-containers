@@ -389,3 +389,92 @@ YAML
         return 1
     }
 }
+
+# =============================================================================
+# Finding #1 (gate r4 copilot MEDIUM): Legacy rollup substring false positives
+# Pre-fix: [[ "$legacy_tag" == *"$current_latest"* ]] (substring contains)
+# Post-fix: [[ "$legacy_tag" == "$current_latest" ]]  (exact match)
+# =============================================================================
+
+@test "DRDV-13: Legacy rollup tag 11.0-alpine does NOT match current_latest 1.0 (substring false positive)" {
+    # Pre-fix: "11.0-alpine" CONTAINS "1.0" → substring match fires → wrong rollup returned
+    # Post-fix: "11.0-alpine" != "1.0" → no match → empty returned (correct)
+
+    # Legacy rollup with tag "11.0-alpine"
+    jq -n '{lineage_schema_version: 2, container: "mypkg", base_image_ref: "old:11.0", version: "11.0", tag: "11.0-alpine"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/mypkg.json"
+
+    # Per-tag file for current latest 1.0 does NOT exist (that is the scenario)
+    # variants.yaml says current latest = "1.0"
+    make_variants_yaml "$TEST_TEMP_DIR/mypkg" "$(cat <<'YAML'
+versions:
+  - tag: "1.0"
+    variants:
+      - name: alpine
+        default: true
+YAML
+)"
+
+    run resolve_lineage_file "mypkg"
+    [ "$status" -eq 0 ]
+    # Post-fix: legacy_tag "11.0-alpine" does NOT equal current_latest "1.0" → empty
+    [[ -z "$output" ]] || {
+        echo "FAIL: expected empty (no match), got: '$output'"
+        echo "  (pre-fix: substring '1.0' found inside '11.0-alpine' → false positive)"
+        return 1
+    }
+}
+
+@test "DRDV-14: Legacy rollup tag 2.0-debian does NOT match current_latest 2.0-alpine (distro differs)" {
+    # Pre-fix: "2.0-debian" CONTAINS "2.0" where current_latest="2.0-alpine" ?
+    # Actually current_latest from variants[0].tag would be "2.0-alpine" as a full string.
+    # But consider current_latest = "2.0": "2.0-debian" contains "2.0" → false positive.
+    # This test verifies the exact-match fix prevents cross-distro collision.
+
+    jq -n '{lineage_schema_version: 2, container: "webapp", base_image_ref: "debian:trixie", version: "2.0", tag: "2.0-debian"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/webapp.json"
+
+    # Per-tag file for 2.0-alpine does NOT exist
+    make_variants_yaml "$TEST_TEMP_DIR/webapp" "$(cat <<'YAML'
+versions:
+  - tag: "2.0"
+    variants:
+      - name: alpine
+        default: true
+YAML
+)"
+
+    run resolve_lineage_file "webapp"
+    [ "$status" -eq 0 ]
+    # current_latest="2.0", legacy_tag="2.0-debian": substring "2.0" IN "2.0-debian" → pre-fix false positive
+    # post-fix exact match: "2.0-debian" != "2.0" → empty
+    [[ -z "$output" ]] || {
+        echo "FAIL: expected empty (cross-distro no match), got: '$output'"
+        echo "  (pre-fix: '2.0' substring found in '2.0-debian' → false positive)"
+        return 1
+    }
+}
+
+@test "DRDV-15: Legacy rollup exact match — tag equals current_latest exactly (valid use case)" {
+    # When legacy_tag == current_latest exactly, the legacy rollup SHOULD be returned.
+    # (This is the legitimate case: a versions-only container wrote {container}.json
+    #  but its per-tag file somehow didn't land in .build-lineage.)
+
+    jq -n '{lineage_schema_version: 2, container: "simpleapp", base_image_ref: "alpine:3.21", version: "3.21", tag: "3.21"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/simpleapp.json"
+
+    # Per-tag file simpleapp-3.21*.json does NOT exist
+    make_variants_yaml "$TEST_TEMP_DIR/simpleapp" "$(cat <<'YAML'
+versions:
+  - tag: "3.21"
+YAML
+)"
+
+    run resolve_lineage_file "simpleapp"
+    [ "$status" -eq 0 ]
+    # current_latest="3.21", legacy_tag="3.21": exact match → legacy rollup returned
+    [[ "$output" == *"simpleapp.json" ]] || {
+        echo "FAIL: expected simpleapp.json (exact match should return legacy rollup), got: '$output'"
+        return 1
+    }
+}
