@@ -963,3 +963,48 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"127.0.0.1:5000/library/alpine:3.18"* ]]
 }
+
+# --- check_image construction guard (gate r3 fix — action.yaml ${source_path#/} strip) ---
+
+# BCU-ACTIONSTRIP-01: leading-slash source → probe_image has no double slash
+# Mirrors the action.yaml inline check_image construction: check_image="ghcr.io/${owner}/${source_path#/}:${tag}"
+# Without the #/ strip, source: /php would yield ghcr.io/owner//php:tag.
+@test "BCU-ACTIONSTRIP-01: leading-slash source (/php) → probe_image contains no double slash" {
+    mkdir -p wpstrip
+    cat > wpstrip/config.yaml <<'EOF'
+base_image_cache:
+  - source: /php
+    tags: ["8.2-fpm-alpine"]
+EOF
+
+    local containers_json='["wpstrip"]'
+    local versions_json='{"wpstrip":"latest"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # probe_image must not contain double slash
+    [[ "$output" != *'"//'* ]]
+    # probe_image must be leaf-only (no leading slash, no library/ prefix)
+    [[ "$output" == *'"probe_image":"ghcr.io/myowner/php:8.2-fpm-alpine"'* ]]
+}
+
+# BCU-ACTIONSTRIP-02: bash strip pattern sanity — ${source_path#/} is idempotent for non-slash sources
+@test "BCU-ACTIONSTRIP-02: strip pattern \${source_path#/} is idempotent for normal (non-leading-slash) source" {
+    # Direct bash expansion check: verifies the fix applied in action.yaml does not
+    # mangle normal sources like "library/postgres".
+    local source_path="library/postgres"
+    local stripped="${source_path#/}"
+    [ "$stripped" = "library/postgres" ]
+
+    local check_image="ghcr.io/myowner/${source_path#/}:18-alpine"
+    [ "$check_image" = "ghcr.io/myowner/library/postgres:18-alpine" ]
+    [[ "$check_image" != *'//'* ]]
+}
+
+# BCU-ACTIONSTRIP-03: bash strip pattern — ${source_path#/} strips exactly the leading slash for /php
+@test "BCU-ACTIONSTRIP-03: strip pattern \${source_path#/} produces clean path for leading-slash source /php" {
+    local source_path="/php"
+    local check_image="ghcr.io/myowner/${source_path#/}:8.2-fpm-alpine"
+    [ "$check_image" = "ghcr.io/myowner/php:8.2-fpm-alpine" ]
+    [[ "$check_image" != *'//'* ]]
+}
