@@ -361,3 +361,258 @@ VEOF
     run scripts/rotate-versions.sh "myapp" "anything"
     [ "$status" -eq 0 ]
 }
+
+# ----------------------------------------------------------------
+# check_updates multi-entry output for latest_per_major containers
+# ----------------------------------------------------------------
+
+# Helper: create a minimal make-compatible fixture for check_updates tests.
+# Sets up a self-contained $TEST_DIR tree that can run `./make check-updates wordpress`
+# without Docker or network access.
+#
+# Args:
+#   mock_ghcr_7  — version to return when querying GHCR for 7.x pattern
+#   mock_ghcr_6  — version to return when querying GHCR for 6.x pattern
+#   mock_latest_7 — version returned by version.sh --major 7
+#   mock_latest_6 — version returned by version.sh --major 6
+create_check_updates_fixture() {
+    local mock_ghcr_7="${1:-7.0.0-alpine}"
+    local mock_ghcr_6="${2:-6.9.4-alpine}"
+    local mock_latest_7="${3:-7.0.0-alpine}"
+    local mock_latest_6="${4:-6.9.4-alpine}"
+
+    mkdir -p wordpress helpers scripts
+
+    # variants.yaml with latest_per_major strategy
+    cat > wordpress/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [7, 6]
+versions:
+  - tag: 7.0.0-alpine
+  - tag: 6.9.4-alpine
+EOF
+
+    # version.sh: returns per-major or global latest via argument matching
+    # Use printf to avoid quoting issues with the EOF markers
+    printf '#!/bin/bash\n' > wordpress/version.sh
+    printf 'REGISTRY_PATTERN="^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"\n' >> wordpress/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi\n' >> wordpress/version.sh
+    printf 'if [[ "$1" == "--major" ]]; then\n' >> wordpress/version.sh
+    printf '  case "$2" in\n' >> wordpress/version.sh
+    printf '    7) echo "%s" ; exit 0 ;;\n' "${mock_latest_7}" >> wordpress/version.sh
+    printf '    6) echo "%s" ; exit 0 ;;\n' "${mock_latest_6}" >> wordpress/version.sh
+    printf '    *) exit 1 ;;\n' >> wordpress/version.sh
+    printf '  esac\n' >> wordpress/version.sh
+    printf 'fi\n' >> wordpress/version.sh
+    printf 'echo "%s"\n' "${mock_latest_7}" >> wordpress/version.sh
+    chmod +x wordpress/version.sh
+
+    # latest-docker-tag mock: returns version based on the GHCR image+pattern.
+    # The pattern arg is a regex like "^7\.[0-9]+..." — we match only the major
+    # prefix "^N" (enough to route to the right mock return value).
+    printf '#!/bin/bash\n' > helpers/latest-docker-tag
+    printf '# Args: <image> <pattern>\n' >> helpers/latest-docker-tag
+    printf 'pattern="$2"\n' >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^7"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^6"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
+    printf 'exit 1\n' >> helpers/latest-docker-tag
+    chmod +x helpers/latest-docker-tag
+
+    # Minimal logging stub (make sources helpers/logging.sh)
+    cat > helpers/logging.sh <<'EOF'
+log_error()   { echo "ERROR: $*" >&2; }
+log_warning() { echo "WARN: $*"  >&2; }
+log_info()    { echo "INFO: $*"  >&2; }
+log_success() { :; }
+log_help()    { :; }
+export DOCKER="${DOCKER:-docker}"
+export SKOPEO="${SKOPEO:-skopeo}"
+EOF
+
+    # registry-utils stub: list_containers finds subdirs (excludes helpers/scripts/bin)
+    cat > helpers/registry-utils.sh <<'EOF'
+list_containers() {
+    find "${1:-.}" -maxdepth 1 -mindepth 1 -type d \
+        ! -name '.*' ! -name 'helpers' ! -name 'scripts' ! -name 'bin' \
+        2>/dev/null | xargs -I{} basename {} 2>/dev/null
+}
+has_dockerfile()  { return 0; }
+EOF
+
+    # sbom-utils stub
+    cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    # check-version stub
+    cat > scripts/check-version.sh <<'EOF'
+get_build_version() { echo "${2:-latest}"; return 0; }
+EOF
+
+    # build/push stubs (sourced by make but not needed for check-updates)
+    cat > scripts/build-container.sh <<'EOF'
+EOF
+    cat > scripts/push-container.sh <<'EOF'
+EOF
+
+    cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+
+    # Copy make to $TEST_DIR so `./make check-updates` runs with TEST_DIR as $(dirname $0).
+    # This ensures `source "$(dirname "$0")/helpers/..."` resolves to the TEST_DIR stubs.
+    cp "$ORIG_DIR/make" ./make
+    chmod +x ./make
+}
+
+# Run check_updates inside the fixture and capture JSON output to stdout.
+# Usage: run_check_updates <container>
+run_check_updates() {
+    local container="${1:-wordpress}"
+    # Suppress docker-compose availability check errors from make
+    ./make check-updates "$container" 2>/dev/null
+}
+
+@test "check_updates multi-entry: emits one entry per retained major for latest_per_major container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    # Should have exactly 2 entries
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 2 ]
+
+    # Both entries should have major_line set (7 first, 6 second — desc sort)
+    ml0=$(echo "$output" | jq -r '.[0].major_line')
+    ml1=$(echo "$output" | jq -r '.[1].major_line')
+    [[ "$ml0" == "7" ]]
+    [[ "$ml1" == "6" ]]
+}
+
+@test "check_updates multi-entry: update_available=true only for 6.x when 6.x has new patch" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # GHCR has 7.0.0-alpine (up-to-date) and 6.9.4-alpine; upstream has 6.9.5-alpine for 6.x
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.5-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    # 7.x should be up-to-date, 6.x should have update available
+    update_7=$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .update_available')
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    [[ "$update_7" == "false" ]]
+    [[ "$update_6" == "true" ]]
+
+    # Container field should be composite key "wordpress:7" / "wordpress:6"
+    container_7=$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .container')
+    container_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .container')
+    [[ "$container_7" == "wordpress:7" ]]
+    [[ "$container_6" == "wordpress:6" ]]
+}
+
+@test "check_updates multi-entry: update_available=false for both lines when nothing changed" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # Both GHCR and upstream are in sync for both majors
+    create_check_updates_fixture "7.0.0-alpine" "6.9.4-alpine" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    update_7=$(echo "$output" | jq -r '.[] | select(.major_line == "7") | .update_available')
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    [[ "$update_7" == "false" ]]
+    [[ "$update_6" == "false" ]]
+}
+
+# ----------------------------------------------------------------
+# rotate-versions.sh — MAJOR_LINE single-line update path
+# ----------------------------------------------------------------
+
+@test "rotate MAJOR_LINE=6: updates only the 6.x entry, leaves 7.x untouched" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_latest_per_major_yaml "myapp"
+    create_mock_version_sh "myapp"
+
+    # Pass major_line as positional arg (mirrors upstream-monitor call)
+    run scripts/rotate-versions.sh "myapp" "6.9.5-alpine" "6"
+    [ "$status" -eq 0 ]
+
+    tag0=$(yq -r '.versions[0].tag' myapp/variants.yaml)
+    tag1=$(yq -r '.versions[1].tag' myapp/variants.yaml)
+
+    # 7.x entry must be unchanged
+    [[ "$tag0" == "7.0.0-alpine" ]]
+    # 6.x entry must be updated
+    [[ "$tag1" == "6.9.5-alpine" ]]
+}
+
+@test "rotate MAJOR_LINE env: updates only the 6.x entry via env var" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_latest_per_major_yaml "myapp"
+    create_mock_version_sh "myapp"
+
+    # Use MAJOR_LINE env var (mirrors upstream-monitor env block)
+    run env MAJOR_LINE=6 scripts/rotate-versions.sh "myapp" "6.9.5-alpine"
+    [ "$status" -eq 0 ]
+
+    tag0=$(yq -r '.versions[0].tag' myapp/variants.yaml)
+    tag1=$(yq -r '.versions[1].tag' myapp/variants.yaml)
+    [[ "$tag0" == "7.0.0-alpine" ]]
+    [[ "$tag1" == "6.9.5-alpine" ]]
+}
+
+@test "rotate MAJOR_LINE=7: updates only the 7.x entry, leaves 6.x untouched" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_latest_per_major_yaml "myapp"
+    create_mock_version_sh "myapp"
+
+    run scripts/rotate-versions.sh "myapp" "7.0.1-alpine" "7"
+    [ "$status" -eq 0 ]
+
+    tag0=$(yq -r '.versions[0].tag' myapp/variants.yaml)
+    tag1=$(yq -r '.versions[1].tag' myapp/variants.yaml)
+    [[ "$tag0" == "7.0.1-alpine" ]]
+    [[ "$tag1" == "6.9.4-alpine" ]]
+}
+
+@test "rotate MAJOR_LINE=invalid: exits 1 for non-numeric major_line" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_latest_per_major_yaml "myapp"
+    create_mock_version_sh "myapp"
+
+    run scripts/rotate-versions.sh "myapp" "6.9.5-alpine" "abc"
+    [ "$status" -eq 1 ]
+}
+
+@test "rotate without MAJOR_LINE: full re-resolution path still works (regression)" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_latest_per_major_yaml "myapp"
+    create_mock_version_sh "myapp"
+
+    # No MAJOR_LINE — full re-resolution via latest_per_major_versions
+    run scripts/rotate-versions.sh "myapp" "7.0.0-alpine"
+    [ "$status" -eq 0 ]
+
+    count=$(yq -r '.versions | length' myapp/variants.yaml)
+    [ "$count" -eq 2 ]
+
+    tag0=$(yq -r '.versions[0].tag' myapp/variants.yaml)
+    tag1=$(yq -r '.versions[1].tag' myapp/variants.yaml)
+    [[ "$tag0" == "7.0.0-alpine" ]]
+    [[ "$tag1" == "6.9.4-alpine" ]]
+}

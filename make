@@ -413,9 +413,81 @@ check_updates() {
     if [ ! -f "$container/version.sh" ]; then
       continue # Skip containers without version.sh
     fi
-    
+
     pushd "$container" > /dev/null
-    
+
+    # Detect retention strategy for multi-entry (latest_per_major) containers
+    local strategy
+    strategy=$(yq -r '.build.retention_strategy // ""' variants.yaml 2>/dev/null) || strategy=""
+
+    if [[ "$strategy" == "latest_per_major" ]]; then
+      # Multi-entry path: emit one entry per retained major.
+      # The container field uses a composite key "container:major_line" so that
+      # the check-upstream-versions action can include both entries in the
+      # containers_with_updates array without deduplication.  Downstream
+      # consumers (create-update-prs) split on ':' to recover the real
+      # container name and the major line independently.
+      local majors
+      majors=$(yq -r '.build.retained_majors[]?' variants.yaml 2>/dev/null | sort -rn) || majors=""
+
+      while IFS= read -r major; do
+        [[ -z "$major" ]] && continue
+
+        # Composite key used in the container field for routing
+        local composite_key="${container}:${major}"
+
+        # Current published version on GHCR matching ^N\. pattern for this major
+        local major_pattern
+        major_pattern="^${major}\\.[0-9]+\\.[0-9]+-alpine\$"
+        local current_version
+        current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "$major_pattern" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
+
+        # Latest upstream version for this major line
+        local latest_version
+        latest_version=$(./version.sh --major "$major" 2>/dev/null | head -1 | tr -d '\n' || echo "")
+
+        # Determine update status
+        local update_available="false"
+        local status="up_to_date"
+
+        if [ "$current_version" = "no-published-version" ]; then
+          if [ -n "$latest_version" ]; then
+            update_available="true"
+            status="new-container"
+          fi
+        elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
+          update_available="true"
+          status="update-available"
+        fi
+
+        # Build per-major JSON entry.
+        # container field = composite key (for action routing)
+        # major_line field = the plain major number (for human-readable outputs)
+        local container_json
+        container_json=$(jq -n \
+          --arg container "$composite_key" \
+          --arg major_line "$major" \
+          --arg current "$current_version" \
+          --arg latest "$latest_version" \
+          --argjson update_available "$update_available" \
+          --arg status "$status" \
+          '{
+            container: $container,
+            major_line: $major_line,
+            current_version: $current,
+            latest_version: $latest,
+            update_available: $update_available,
+            status: $status
+          }')
+
+        output_json=$(echo "$output_json" | jq ". + [$container_json]")
+      done <<< "$majors"
+
+      popd > /dev/null
+      continue  # skip the default single-entry path for this container
+    fi
+
+    # Default single-entry path (no latest_per_major strategy)
     # Get current and latest versions using container-specific patterns
     # Query GHCR (primary registry) to avoid stale Docker Hub data causing duplicate PRs
     local pattern
@@ -426,11 +498,11 @@ check_updates() {
       current_version=$(../helpers/latest-docker-tag "ghcr.io/oorabona/$container" "^[0-9]+\.[0-9]+(\.[0-9]+)?$" 2>/dev/null | head -1 | tr -d '\n' || echo "no-published-version")
     fi
     latest_version=$(./version.sh 2>/dev/null | head -1 | tr -d '\n' || echo "")
-    
+
     # Determine update status
     local update_available="false"
     local status="up_to_date"
-    
+
     if [ "$current_version" = "no-published-version" ]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
@@ -440,7 +512,7 @@ check_updates() {
       update_available="true"
       status="update-available"
     fi
-    
+
     # Build JSON object for this container
     container_json=$(jq -n \
       --arg container "$container" \
@@ -455,10 +527,10 @@ check_updates() {
         update_available: $update_available,
         status: $status
       }')
-    
+
     # Add to output array
     output_json=$(echo "$output_json" | jq ". + [$container_json]")
-    
+
     popd > /dev/null
   done
   

@@ -304,20 +304,39 @@ jobs:
             echo "🚀 Running in production mode"
           fi
 
+      - name: Resolve matrix entry
+        id: resolve
+        run: |
+          # matrix.container may be a plain name ("ansible") or a composite key
+          # ("wordpress:6") for latest_per_major containers.  Split on ':' to
+          # recover the real container name and the optional major line.
+          raw_key="${{ matrix.container }}"
+          if [[ "$raw_key" == *:* ]]; then
+            container_name="${raw_key%%:*}"
+            major_line="${raw_key#*:}"
+          else
+            container_name="$raw_key"
+            major_line=""
+          fi
+          echo "container_name=$container_name" >> $GITHUB_OUTPUT
+          echo "major_line=$major_line" >> $GITHUB_OUTPUT
+
       - name: Classify version change
         id: classify
         run: |
-          # Extract version info for this specific container from the JSON array
-          container_name="${{ matrix.container }}"
-          version_data=$(echo '${{ needs.check-upstream-versions.outputs.version_info }}' | jq -r --arg c "$container_name" '.[] | select(.container == $c)')
+          # Extract version info for this specific entry from the JSON array.
+          # For latest_per_major containers the container field in version_info is
+          # the composite key (e.g. "wordpress:6"); match exactly.
+          composite_key="${{ matrix.container }}"
+          version_data=$(echo '${{ needs.check-upstream-versions.outputs.version_info }}' | jq -r --arg c "$composite_key" '.[] | select(.container == $c)')
           current_version=$(echo "$version_data" | jq -r '.current_version')
           new_version=$(echo "$version_data" | jq -r '.latest_version')
 
           chmod +x .github/scripts/classify-version-change.sh
-          
+
           # Run classification and capture outputs (format: change_type=X, reason=Y)
           classification_output=$(.github/scripts/classify-version-change.sh "$current_version" "$new_version")
-          
+
           # Parse outputs using a loop for maintainability
           change_type=""
           reason=""
@@ -344,7 +363,7 @@ jobs:
           echo "new_version=$new_version" >> $GITHUB_OUTPUT
           echo "reason=$reason" >> $GITHUB_OUTPUT
 
-          echo "Container: ${{ matrix.container }}"
+          echo "Container: ${{ steps.resolve.outputs.container_name }} (major_line: ${{ steps.resolve.outputs.major_line || 'n/a' }})"
           echo "Change: $current_version -> $new_version ($change_type)"
           echo "Reason: $reason"
 
@@ -358,15 +377,22 @@ jobs:
       - name: Rotate version in variants.yaml
         id: rotate
         env:
-          CONTAINER: ${{ matrix.container }}
+          CONTAINER: ${{ steps.resolve.outputs.container_name }}
           NEW_VERSION: ${{ steps.classify.outputs.new_version }}
+          MAJOR_LINE: ${{ steps.resolve.outputs.major_line }}
         run: |
           if [[ -f "$CONTAINER/variants.yaml" ]]; then
             retention=$(yq -r '.build.version_retention // 0' "$CONTAINER/variants.yaml")
             strategy=$(yq -r '.build.retention_strategy // ""' "$CONTAINER/variants.yaml")
             if [[ "$retention" -gt 0 || "$strategy" == "latest_per_major" ]]; then
-              echo "🔄 Rotating version for $CONTAINER (retention: $retention, strategy: ${strategy:-count})"
-              ./scripts/rotate-versions.sh "$CONTAINER" "$NEW_VERSION"
+              echo "🔄 Rotating version for $CONTAINER (retention: $retention, strategy: ${strategy:-count}, major_line: ${MAJOR_LINE:-n/a})"
+              # For latest_per_major containers, pass MAJOR_LINE so rotate-versions.sh
+              # updates only the matching major entry (leaving other lines untouched).
+              if [[ -n "$MAJOR_LINE" ]]; then
+                MAJOR_LINE="$MAJOR_LINE" ./scripts/rotate-versions.sh "$CONTAINER" "$NEW_VERSION" "$MAJOR_LINE"
+              else
+                ./scripts/rotate-versions.sh "$CONTAINER" "$NEW_VERSION"
+              fi
               echo "rotated=true" >> "$GITHUB_OUTPUT"
             else
               echo "ℹ️ No version_retention for $CONTAINER — skipping rotation"
@@ -381,17 +407,26 @@ jobs:
         id: close_duplicates
         uses: ./.github/actions/close-duplicate-prs
         with:
-          container: ${{ matrix.container }}
+          container: ${{ steps.resolve.outputs.container_name }}
           new_version: ${{ steps.classify.outputs.new_version }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create rebuild marker
+        env:
+          CONTAINER_NAME: ${{ steps.resolve.outputs.container_name }}
+          MAJOR_LINE: ${{ steps.resolve.outputs.major_line }}
         run: |
-          mkdir -p ${{ matrix.container }}
-          
+          mkdir -p "$CONTAINER_NAME"
+
           # Generate workflow run URL
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
+
+          # Human-readable major line annotation for the rebuild marker
+          MAJOR_LINE_INFO=""
+          if [[ -n "$MAJOR_LINE" ]]; then
+            MAJOR_LINE_INFO="| **Major Line** | \`${MAJOR_LINE}.x\` |"
+          fi
+
           # Determine next steps based on change type
           if [[ "${{ steps.classify.outputs.change_type }}" == "major" ]]; then
             NEXT_STEPS="- ⚠️ **Manual review required** for major version changes
@@ -401,29 +436,30 @@ jobs:
             NEXT_STEPS="- ✅ **Auto-merge enabled** - will merge automatically once CI passes
           - Build will trigger automatically on merge"
           fi
-          
-          cat > ${{ matrix.container }}/LAST_REBUILD.md << EOF
+
+          cat > "$CONTAINER_NAME/LAST_REBUILD.md" << EOF
           # Container Rebuild Information
-          
+
           | Field | Value |
           |-------|-------|
-          | **Container** | \`${{ matrix.container }}\` |
+          | **Container** | \`$CONTAINER_NAME\` |
+          $MAJOR_LINE_INFO
           | **Version Change** | \`${{ steps.classify.outputs.current_version }}\` → \`${{ steps.classify.outputs.new_version }}\` |
           | **Change Type** | \`${{ steps.classify.outputs.change_type }}\` |
           | **Rebuild Date** | $(date -u +"%Y-%m-%dT%H:%M:%SZ") |
           | **Triggered By** | Upstream Monitor (automated) |
           | **Reason** | ${{ steps.classify.outputs.reason }} |
           | **Detection Run** | [View Workflow]($WORKFLOW_URL) |
-          
+
           ## Build Status
-          
+
           This file triggers the auto-build workflow when merged to master.
           Build status will be available in GitHub Actions after merge.
-          
+
           ## Next Steps
-          
+
           $NEXT_STEPS
-          
+
           ---
           *Auto-generated by docker-containers automation system*
           EOF
@@ -439,20 +475,57 @@ jobs:
           git_committer_name: Olivier ORABONA
           git_committer_email: oorabona@users.noreply.github.com
 
+      - name: Build PR metadata
+        id: pr_meta
+        env:
+          CONTAINER_NAME: ${{ steps.resolve.outputs.container_name }}
+          MAJOR_LINE: ${{ steps.resolve.outputs.major_line }}
+          CHANGE_TYPE: ${{ steps.classify.outputs.change_type }}
+          NEW_VERSION: ${{ steps.classify.outputs.new_version }}
+        run: |
+          # Construct PR title, branch, and body fragments that are major-line-aware.
+          # When major_line is set (latest_per_major container), the title includes
+          # the X.x line so operators can distinguish "6.x patch" from "7.x patch".
+          if [[ -n "$MAJOR_LINE" ]]; then
+            change_label="${CHANGE_TYPE^^}"
+            if [[ "$CHANGE_TYPE" == "major" ]]; then
+              emoji="🔄"
+            else
+              emoji="🚀"
+            fi
+            pr_title="${emoji} Patch: ${CONTAINER_NAME} ${MAJOR_LINE}.x to ${NEW_VERSION}"
+            # Branch suffix includes the major line to ensure parallel PRs for
+            # different major lines do not land on the same branch name.
+            pr_branch="update/${CONTAINER_NAME}-${NEW_VERSION}-line${MAJOR_LINE}"
+            major_line_note="**Major Line:** \`${MAJOR_LINE}.x\`"
+          else
+            if [[ "$CHANGE_TYPE" == "major" ]]; then
+              pr_title="🔄 Major: ${CONTAINER_NAME} to ${NEW_VERSION}"
+            else
+              pr_title="🚀 Minor: ${CONTAINER_NAME} to ${NEW_VERSION}"
+            fi
+            pr_branch="update/${CONTAINER_NAME}-${NEW_VERSION}"
+            major_line_note=""
+          fi
+          echo "pr_title=$pr_title" >> $GITHUB_OUTPUT
+          echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
+          echo "major_line_note=$major_line_note" >> $GITHUB_OUTPUT
+
       - name: Create Pull Request
         if: steps.close_duplicates.outputs.existing_pr_found != 'true' && steps.env_check.outputs.is_local_test != 'true'
         id: create_pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           token: ${{ steps.app-token.outputs.token }}
-          commit-message: "build(${{ matrix.container }}): update to ${{ steps.classify.outputs.new_version }}"
+          commit-message: "build(${{ steps.resolve.outputs.container_name }}): update to ${{ steps.classify.outputs.new_version }}"
           committer: Olivier ORABONA <oorabona@users.noreply.github.com>
-          title: "${{ steps.classify.outputs.change_type == 'major' && '🔄 Major' || '🚀 Minor' }}: ${{ matrix.container }} to ${{ steps.classify.outputs.new_version }}"
+          title: "${{ steps.pr_meta.outputs.pr_title }}"
           body: |
-            ## Container Update: ${{ matrix.container }}
+            ## Container Update: ${{ steps.resolve.outputs.container_name }}
 
             **Version Change:** `${{ steps.classify.outputs.current_version }}` → `${{ steps.classify.outputs.new_version }}`
             **Change Type:** `${{ steps.classify.outputs.change_type }}`
+            ${{ steps.pr_meta.outputs.major_line_note }}
 
             ${{ steps.classify.outputs.change_type == 'major' && '⚠️ **Major version change** - Please review carefully before merging.' || '✅ **Minor/patch update** - Should be safe to merge.' }}
 
@@ -460,7 +533,7 @@ jobs:
 
             ---
             *Auto-generated by Upstream Version Monitor*
-          branch: update/${{ matrix.container }}-${{ steps.classify.outputs.new_version }}
+          branch: ${{ steps.pr_meta.outputs.pr_branch }}
           delete-branch: true
           assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '' }}
 
@@ -473,7 +546,7 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           sleep 2
-          gh pr edit "$PR_NUMBER" --add-label "automation,${{ matrix.container }},${{ steps.classify.outputs.change_type }}-update"
+          gh pr edit "$PR_NUMBER" --add-label "automation,${{ steps.resolve.outputs.container_name }},${{ steps.classify.outputs.change_type }}-update"
 
       - name: Auto-merge minor updates
         id: merge_pr
@@ -495,7 +568,7 @@ jobs:
         if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONTAINER: ${{ matrix.container }}
+          CONTAINER: ${{ steps.resolve.outputs.container_name }}
           NEW_VERSION: ${{ steps.classify.outputs.new_version }}
           ROTATED: ${{ steps.rotate.outputs.rotated }}
         run: |
@@ -522,7 +595,7 @@ jobs:
         if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true' && steps.rotate.outputs.rotated == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONTAINER: ${{ matrix.container }}
+          CONTAINER: ${{ steps.resolve.outputs.container_name }}
         run: |
           echo "🧹 Triggering registry cleanup for $CONTAINER (version rotated out)"
           gh workflow run cleanup-registry.yaml \
@@ -534,10 +607,10 @@ jobs:
         if: steps.env_check.outputs.is_local_test == 'true'
         run: |
           echo "🧪 LOCAL TEST MODE - Would create PR with:"
-          echo "   Title: ${{ steps.classify.outputs.change_type == 'major' && '🔄 Major' || '🚀 Minor' }}: ${{ matrix.container }} to ${{ steps.classify.outputs.new_version }}"
-          echo "   Branch: update/${{ matrix.container }}-${{ steps.classify.outputs.new_version }}"
+          echo "   Title: ${{ steps.pr_meta.outputs.pr_title }}"
+          echo "   Branch: ${{ steps.pr_meta.outputs.pr_branch }}"
           echo "   Change: ${{ steps.classify.outputs.current_version }} → ${{ steps.classify.outputs.new_version }} (${{ steps.classify.outputs.change_type }})"
-          echo "   Labels: automation, ${{ matrix.container }}, ${{ steps.classify.outputs.change_type }}-update"
+          echo "   Labels: automation, ${{ steps.resolve.outputs.container_name }}, ${{ steps.classify.outputs.change_type }}-update"
           echo "   Assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '(none - minor update)' }}"
           echo "   Auto-merge: ${{ steps.classify.outputs.change_type == 'minor' && 'Yes (minor update)' || 'No (major update - requires manual review)' }}"
 

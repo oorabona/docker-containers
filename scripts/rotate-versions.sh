@@ -1,15 +1,27 @@
 #!/bin/bash
 # Rotate versions in variants.yaml for automated version updates
 #
-# Usage: rotate-versions.sh <container_dir> <new_version>
+# Usage: rotate-versions.sh <container_dir> <new_version> [major_line]
+#
+# Arguments:
+#   container_dir  Directory containing variants.yaml
+#   new_version    The new version tag to add / replace
+#   major_line     (optional) Numeric major line (e.g. "6").
+#                  When set AND retention_strategy==latest_per_major, only
+#                  the versions[].tag matching "^<major_line>." is updated.
+#                  Also honoured via MAJOR_LINE env var (arg wins over env).
 #
 # Algorithm:
-#   1. Read build.version_retention (exit 2 if absent/zero — not a managed container)
-#   2. Check if new_version already exists (idempotent — exit 0)
-#   3. If container has variants: copy variants from first versions[] entry
-#   4. If no variants: create simple version entry {tag: "new_version"}
-#   5. Prepend new entry to versions[]
-#   6. Trim to version_retention entries
+#   1. Detect retention_strategy.
+#      - latest_per_major with major_line: single-line update path (updates
+#        only the matching major entry, leaves all other entries untouched).
+#      - latest_per_major without major_line: full re-resolution via
+#        latest_per_major_versions helper.
+#   2. count-based: read build.version_retention (exit 2 if absent/zero).
+#      2a. Check if new_version already exists (idempotent — exit 0).
+#      2b. If container has variants: copy variants from first versions[] entry.
+#      2c. Prepend new entry to versions[].
+#      2d. Trim to version_retention entries.
 
 set -euo pipefail
 
@@ -19,7 +31,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/helpers/variant-utils.sh"
 
 usage() {
-    echo "Usage: $(basename "$0") <container_dir> <new_version>" >&2
+    echo "Usage: $(basename "$0") <container_dir> <new_version> [major_line]" >&2
     echo "Exit codes: 0=success, 1=error, 2=not a version_retention container" >&2
     exit 1
 }
@@ -28,6 +40,9 @@ usage() {
 
 container_dir="$1"
 new_version="$2"
+# Accept major_line as positional arg $3 or from MAJOR_LINE env var.
+# Positional arg wins when both are provided.
+major_line="${3:-${MAJOR_LINE:-}}"
 variants_file="$container_dir/variants.yaml"
 
 if [[ ! -f "$variants_file" ]]; then
@@ -39,6 +54,39 @@ fi
 strategy=$(yq -r '.build.retention_strategy // ""' "$variants_file" 2>/dev/null) || strategy=""
 if [[ "$strategy" == "latest_per_major" ]]; then
     echo "🔄 latest_per_major strategy detected for $container_dir" >&2
+
+    # ── Single-line update path ──────────────────────────────────────────────
+    # When major_line is provided (from upstream-monitor's per-major PR flow),
+    # update ONLY the versions[].tag entry whose tag starts with "<major_line>.".
+    # All other entries are left untouched.  This prevents a 6.x PR from
+    # accidentally overwriting the 7.x entry (or vice-versa).
+    if [[ -n "$major_line" ]]; then
+        # Validate: major_line must be a non-empty integer
+        if [[ ! "$major_line" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid major_line value: '$major_line' (must be a non-negative integer)" >&2
+            exit 1
+        fi
+
+        # Check that a matching entry actually exists in versions[]
+        existing_count=$(ML="$major_line" yq -r \
+            '[.versions[] | select(.tag | test("^" + strenv(ML) + "\\."))] | length' \
+            "$variants_file" 2>/dev/null || echo "0")
+        if [[ "$existing_count" -eq 0 ]]; then
+            echo "::warning::rotate-versions.sh: no versions[] entry matching ${major_line}.x found in $variants_file — skipping" >&2
+            exit 0
+        fi
+
+        # Replace only the matching entry's tag value.
+        ML="$major_line" NV="$new_version" yq -i \
+            '(.versions[] | select(.tag | test("^" + strenv(ML) + "\\.")) | .tag) = strenv(NV)' \
+            "$variants_file"
+        echo "✅ Updated $variants_file: ${major_line}.x line → $new_version" >&2
+        exit 0
+    fi
+
+    # ── Full re-resolution path ──────────────────────────────────────────────
+    # No major_line provided: resolve ALL retained majors via version.sh and
+    # rewrite the entire versions[] list.  Used for periodic rotation passes.
 
     # Capture rc safely under `set -e`: assignment inside the if-condition
     # is exempt, so a non-zero exit from latest_per_major_versions reaches
