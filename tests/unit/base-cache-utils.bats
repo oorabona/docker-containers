@@ -1008,3 +1008,51 @@ EOF
     [ "$check_image" = "ghcr.io/myowner/php:8.2-fpm-alpine" ]
     [[ "$check_image" != *'//'* ]]
 }
+
+# --- gate r4 Bug 2 regression: multi-segment leading-slash source must not double library/ ---
+
+# BCU-MULTISEG-01: source="/library/postgres" → sync_dest_path must be "library/postgres"
+# Regression lock for gate r4 Bug 2: the unconditional "library/${leaf}" prepend produced
+# "library/library/postgres" when source="/library/postgres" (leaf="library/postgres").
+# Fix: prepend library/ only when leaf has no slash (single-segment, like "php").
+@test "BCU-MULTISEG-01: source=/library/postgres → sync_image is library/postgres NOT library/library/postgres" {
+    mkdir -p pgchained
+    cat > pgchained/config.yaml <<'EOF'
+base_image_cache:
+  - source: /library/postgres
+    tags: ["18-alpine"]
+EOF
+
+    local containers_json='["pgchained"]'
+    local versions_json='{"pgchained":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # sync_image must use library/postgres (multi-segment leaf used as-is)
+    [[ "$output" == *'"sync_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
+    # Must NOT contain the doubled path
+    [[ "$output" != *'"sync_image":"ghcr.io/myowner/library/library/postgres:18-alpine"'* ]]
+    # probe_image must also be correct (leaf without leading slash)
+    [[ "$output" == *'"probe_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
+}
+
+# BCU-MULTISEG-02: source="/php" (single-segment) still gets library/ prepend
+# Regression guard: the multi-segment fix must NOT break the original /php → library/php behaviour.
+@test "BCU-MULTISEG-02: source=/php (single-segment) still uses library/php for sync_image" {
+    mkdir -p phpchained
+    cat > phpchained/config.yaml <<'EOF'
+base_image_cache:
+  - source: /php
+    tags: ["8.2-fpm-alpine"]
+EOF
+
+    local containers_json='["phpchained"]'
+    local versions_json='{"phpchained":"latest"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # Single-segment leaf: sync_image must retain library/ prefix
+    [[ "$output" == *'"sync_image":"ghcr.io/myowner/library/php:8.2-fpm-alpine"'* ]]
+    # probe_image is leaf-only
+    [[ "$output" == *'"probe_image":"ghcr.io/myowner/php:8.2-fpm-alpine"'* ]]
+}

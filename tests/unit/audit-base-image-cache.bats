@@ -199,6 +199,35 @@ build_args:
     [ "$status" -ne 0 ]
 }
 
+# ABA-11: chained-on-own-build marker — source: /php → is_cached returns 0 (CACHED)
+# Regression lock for gate r4 Bug 1: the yq-read source value retained the leading slash
+# while the candidates list stripped it, so the comparison always failed.  The fix adds
+# cache_source="${cache_source#/}" after the yq read so "/php" == "php" comparison works.
+@test "ABA-11: chained-on-own-build source:/php matches FROM php: — CACHED (gate r4 regression lock)" {
+    write_config "mywp/config.yaml" \
+'base_image_cache:
+  - source: /php
+    tags: ["8.2-fpm-alpine"]'
+
+    # FROM php:8.2-fpm-alpine resolves to bare "php:8.2-fpm-alpine" after normalization.
+    # is_cached must return 0 (cached); without the leading-slash strip it returns 1 (gap).
+    run is_cached "php:8.2-fpm-alpine" "mywp/config.yaml"
+    [ "$status" -eq 0 ]
+}
+
+# ABA-12: chained-on-own-build marker with REMOTE_CR prefix — same invariant
+@test "ABA-12: chained-on-own-build source:/php matches unresolved REMOTE_CR/php: — CACHED" {
+    write_config "mywp2/config.yaml" \
+'base_image_cache:
+  - source: /php
+    tags: ["8.2-fpm-alpine"]'
+
+    # In wordpress Dockerfile: FROM ${REMOTE_CR}/php:${VERSION}
+    # resolve_image_ref emits "<unresolved:REMOTE_CR>/php:<unresolved:VERSION>"
+    run is_cached "<unresolved:REMOTE_CR>/php:<unresolved:VERSION>" "mywp2/config.yaml"
+    [ "$status" -eq 0 ]
+}
+
 # ─── is_expected_uncached ─────────────────────────────────────────────────────
 
 @test "ABA-07: ghcr.io/oorabona/* self-ref matches expected-uncached pattern" {

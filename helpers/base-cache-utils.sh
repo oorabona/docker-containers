@@ -129,7 +129,14 @@ _collect_entry_tags() {
             local leaf="${source#/}"
             # Normalize any residual double slash (defensive: //foo → /foo → foo)
             leaf="${leaf//\/\//\/}"
-            sync_dest_path="library/${leaf}"
+            # Only prepend library/ when the leaf is a single-segment path (e.g. "php").
+            # Multi-segment leaves (e.g. "library/postgres" from source="/library/postgres")
+            # must use the leaf as-is to avoid the double-library path "library/library/postgres".
+            if [[ "$leaf" == */* ]]; then
+                sync_dest_path="$leaf"
+            else
+                sync_dest_path="library/${leaf}"
+            fi
             probe_dest_path="${leaf}"
         else
             # Normal NEW style: path-preserving mirror

@@ -131,6 +131,10 @@ is_cached() {
   for ((i = 0; i < count; i++)); do
     local cache_source
     cache_source=$(yq -r ".base_image_cache[$i].source" "$config")
+    # Strip leading slash: chained-on-own-build markers store source as "/php"
+    # but the normalized candidates list strips the slash (e.g. "php").
+    # Without this strip the comparison always fails for chained entries.
+    cache_source="${cache_source#/}"
     local cand
     for cand in "${candidates[@]}"; do
       if [[ "$cache_source" == "$cand" ]]; then
