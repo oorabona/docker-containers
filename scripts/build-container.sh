@@ -247,9 +247,9 @@ _resolve_base_image() {
 
         # Post-substitution fallback: if config.yaml base_image had a template
         # expression that still contains ${ after all passes, fall back to the concrete
-        # FROM line in the Dockerfile — but ONLY when _RESOLVE_FROM_GENERATED=1 (the
-        # caller has already expanded the template, so the generated Dockerfile's FROM
-        # is the authoritative per-flavor base image).
+        # FROM line in the Dockerfile — but ONLY when the 4th positional parameter
+        # from_generated=1 (the caller has already expanded the template, so the
+        # generated Dockerfile's FROM is the authoritative per-flavor base image).
         #
         # For monolithic containers (no template generation), config.yaml::base_image is
         # the source of truth. If its placeholders remain unresolved, that is a build-time

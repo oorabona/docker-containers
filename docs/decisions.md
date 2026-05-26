@@ -13,7 +13,7 @@ Five atomic fixes address base_image_ref leaking `${...}` placeholders into line
 
 - **A1** (`scripts/build-container.sh::_resolve_base_image` ~line 191): Extended the substitution pipeline with a `_BUILD_ARGS_RESOLVED` pass (Step 2.5). After CUSTOM_BUILD_ARGS overrides are applied, iterates the associative array populated by `_prepare_build_args` — up to 10 passes to resolve cross-arg chains (A→B→C). Covers ARGs from `config.yaml::build_args` that are invisible to both CUSTOM_BUILD_ARGS and Dockerfile ARG defaults.
 
-- **A2** (`scripts/build-container.sh::_resolve_base_image` ~line 131, `build_container` caller ~line 456): `_resolve_base_image` is now called post-template-generation when `_RESOLVE_FROM_GENERATED=1`. For template containers (web-shell, github-runner), the generated per-flavor Dockerfile's `FROM` line is the authoritative base image source. Calling before template generation reads the default-distro value from `config.yaml`, not the per-flavor value.
+- **A2** (`scripts/build-container.sh::_resolve_base_image` ~line 131, `build_container` caller ~line 456): `_resolve_base_image` is now called post-template-generation with `from_generated=1` (4th positional parameter). For template containers (web-shell, github-runner), the generated per-flavor Dockerfile's `FROM` line is the authoritative base image source. Calling before template generation reads the default-distro value from `config.yaml`, not the per-flavor value.
 
 - **B** (`generate-dashboard.sh::resolve_lineage_file`): Lineage file lookup now uses the container's default variant (via an inline yq query equivalent to `default_variant()`) when no flavor-specific file is found, rather than falling back to unversioned or network-fetched data.
 
