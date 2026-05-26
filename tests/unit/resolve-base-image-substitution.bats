@@ -495,3 +495,46 @@ DOCKER
         return 1
     }
 }
+
+# =============================================================================
+# Finding #1 (gate r5 copilot MEDIUM): ARG expansion cap must clear _BASE_IMAGE_REF
+# Pre-fix: cap fires, emits warning, but execution continues with unresolved literal.
+# Post-fix: cap fires → _BASE_IMAGE_REF is set to "" (or "unknown") AND a warning is
+# emitted.  Caller can detect failure via empty string.
+# =============================================================================
+
+@test "RBIS-15: Expanding build_args chain hits iteration cap and clears _BASE_IMAGE_REF" {
+    # A self-referential chain where each substitution introduces a new placeholder
+    # without converging: A=x${A}y — the value grows each iteration, never stabilising.
+    # The 10-iteration cap must fire AND _BASE_IMAGE_REF must be cleared to empty.
+    #
+    # A symmetric bidirectional chain (A=${B}, B=${A}) converges instantly because
+    # the value after each iteration equals the value before it — the cap is not reached.
+    # This test uses a growing chain to actually exercise the cap code path.
+    make_dockerfile "ARG A" "FROM \${A}-base"
+    make_config '${A}-base'
+
+    # Seed _BUILD_ARGS_RESOLVED: A expands to a new reference of itself, growing each iteration
+    declare -gA _BUILD_ARGS_RESOLVED=([A]='x${A}y')
+
+    local label_args=""
+    local stderr_file
+    stderr_file="$TEST_DIR/rbis15-stderr.txt"
+    _resolve_base_image "./Dockerfile" "1.0" "label_args" 2>"$stderr_file" || true
+    local stderr_out
+    stderr_out=$(cat "$stderr_file")
+    rm -f "$stderr_file"
+
+    # Post-fix: _BASE_IMAGE_REF must be empty (not the leaked growing literal)
+    [[ -z "$_BASE_IMAGE_REF" ]] || {
+        echo "FAIL: expected empty _BASE_IMAGE_REF after cap hit, got: '$_BASE_IMAGE_REF'"
+        echo "  (pre-fix: unresolved literal propagates to lineage file)"
+        return 1
+    }
+
+    # A stderr warning must have been emitted
+    [[ "$stderr_out" =~ "capped" || "$stderr_out" =~ "cap" || "$stderr_out" =~ "expansion" || "$stderr_out" =~ "un-resolved" ]] || {
+        echo "FAIL: no cap/expansion warning in stderr: '$stderr_out'"
+        return 1
+    }
+}

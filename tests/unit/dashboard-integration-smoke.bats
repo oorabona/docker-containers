@@ -405,3 +405,62 @@ source_dashboard_fns() {
         return 1
     }
 }
+
+# ---------------------------------------------------------------------------
+# Finding #3 (gate r5 copilot HIGH): Template-container lineage regression
+# Pre-fix: generated Dockerfile has ARG REMOTE_CR (no default) → ${REMOTE_CR}
+# survives all substitution passes → dashboard shows "unknown".
+# Post-fix: ARG REMOTE_CR=docker.io in generated Dockerfile → Step 4 substitutes
+# docker.io → _BASE_IMAGE_REF = "docker.io/library/alpine:3.21".
+# ---------------------------------------------------------------------------
+@test "SMOKE-10: Template container with ARG REMOTE_CR=docker.io default resolves to docker.io base" {
+    # Simulates web-shell alpine variant local build (no REMOTE_CR in env).
+    # The generated Dockerfile must declare ARG REMOTE_CR=docker.io so that
+    # _resolve_base_image Step 4 (Dockerfile ARG defaults) can resolve the placeholder.
+
+    local work="$TEST_TEMP_DIR/tpl-remote-cr"
+    mkdir -p "$work"
+    mkdir -p "$work/.build-lineage"
+
+    # Create a minimal generated Dockerfile as the real web-shell generator would,
+    # but WITH the fixed default (ARG REMOTE_CR=docker.io).
+    cat > "$work/Dockerfile.generated" <<'DOCKERFILE'
+ARG REMOTE_CR=docker.io
+ARG ALPINE_TAG=3.21
+FROM ${REMOTE_CR}/library/alpine:${ALPINE_TAG}
+RUN echo test
+DOCKERFILE
+
+    # No config.yaml base_image — this path uses _RESOLVE_FROM_GENERATED=1
+    # (config.yaml is absent, so the FROM line in the generated file is authoritative)
+
+    cd "$work" || return 1
+    source_build_container
+    export PROJECT_ROOT="$work"
+
+    docker() { echo ""; }
+    export -f docker
+
+    # Do NOT set CUSTOM_BUILD_ARGS (simulates local build without CI-injected REMOTE_CR)
+    unset CUSTOM_BUILD_ARGS
+    unset _BUILD_ARGS_RESOLVED
+
+    # No config.yaml in this fixture — _prepare_build_args must handle missing config gracefully
+    touch "$work/config.yaml"
+    _prepare_build_args "3.21" "" 2>/dev/null || true
+
+    local label_args=""
+    _RESOLVE_FROM_GENERATED=1 _resolve_base_image "$work/Dockerfile.generated" "3.21" "label_args" 2>/dev/null || true
+
+    # Post-fix: ARG REMOTE_CR=docker.io default is used → resolved to docker.io/library/alpine:3.21
+    [[ "$_BASE_IMAGE_REF" == "docker.io/library/alpine:3.21" ]] || {
+        echo "FAIL: expected 'docker.io/library/alpine:3.21', got: '$_BASE_IMAGE_REF'"
+        echo "  (pre-fix: ARG REMOTE_CR has no default → \${REMOTE_CR} unresolved → dashboard shows unknown)"
+        return 1
+    }
+    # Must not contain any leaked placeholder
+    [[ "$_BASE_IMAGE_REF" != *'${'* ]] || {
+        echo "FAIL: placeholder leaked in _BASE_IMAGE_REF: '$_BASE_IMAGE_REF'"
+        return 1
+    }
+}

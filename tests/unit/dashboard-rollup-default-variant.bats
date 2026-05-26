@@ -5,6 +5,8 @@
 # Red on current code (pre-fix); green after fix.
 # Fix E: sanitize-at-read for base_image_ref with leaked ${...} placeholders.
 
+bats_require_minimum_version 1.5.0
+
 load "../test_helper"
 
 PROJECT_ROOT_REAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
@@ -176,7 +178,8 @@ YAML
     # Malformed YAML (invalid syntax)
     make_variants_yaml "$TEST_TEMP_DIR/foo" "$(printf 'versions:\n  - tag: [\nnot: valid: yaml')"
 
-    run resolve_lineage_file "foo"
+    # --separate-stderr: the yq-failure warning goes to stderr; $output must be empty
+    run --separate-stderr resolve_lineage_file "foo"
     [ "$status" -eq 0 ]
     # Fix B: must return empty (sentinel), NOT a filesystem-first fallback
     [[ -z "$output" ]]
@@ -425,11 +428,10 @@ YAML
     }
 }
 
-@test "DRDV-14: Legacy rollup tag 2.0-debian does NOT match current_latest 2.0-alpine (distro differs)" {
-    # Pre-fix: "2.0-debian" CONTAINS "2.0" where current_latest="2.0-alpine" ?
-    # Actually current_latest from variants[0].tag would be "2.0-alpine" as a full string.
-    # But consider current_latest = "2.0": "2.0-debian" contains "2.0" → false positive.
-    # This test verifies the exact-match fix prevents cross-distro collision.
+@test "DRDV-14: Legacy rollup tag 2.0-debian matches current_latest 2.0 via prefix (version same)" {
+    # Finding #2 (gate r5): prefix-match fix: legacy_tag="2.0-debian" starts with "2.0-"
+    # → returns the legacy rollup (the version matches, regardless of variant suffix).
+    # Note: prior to Finding #2, exact-match was used → empty; prefix-match is the r5 correction.
 
     jq -n '{lineage_schema_version: 2, container: "webapp", base_image_ref: "debian:trixie", version: "2.0", tag: "2.0-debian"}' \
         > "$TEST_TEMP_DIR/.build-lineage/webapp.json"
@@ -446,11 +448,10 @@ YAML
 
     run resolve_lineage_file "webapp"
     [ "$status" -eq 0 ]
-    # current_latest="2.0", legacy_tag="2.0-debian": substring "2.0" IN "2.0-debian" → pre-fix false positive
-    # post-fix exact match: "2.0-debian" != "2.0" → empty
-    [[ -z "$output" ]] || {
-        echo "FAIL: expected empty (cross-distro no match), got: '$output'"
-        echo "  (pre-fix: '2.0' substring found in '2.0-debian' → false positive)"
+    # Post-fix (r5 prefix match): legacy_tag "2.0-debian" starts with "2.0-" → rollup returned
+    # "2.0-debian" has the same version as current_latest "2.0" → valid legacy fallback
+    [[ "$output" == *"webapp.json" ]] || {
+        echo "FAIL: expected webapp.json (prefix match 2.0-debian starts-with 2.0-), got: '$output'"
         return 1
     }
 }
@@ -475,6 +476,71 @@ YAML
     # current_latest="3.21", legacy_tag="3.21": exact match → legacy rollup returned
     [[ "$output" == *"simpleapp.json" ]] || {
         echo "FAIL: expected simpleapp.json (exact match should return legacy rollup), got: '$output'"
+        return 1
+    }
+}
+
+# =============================================================================
+# Finding #2 (gate r5 copilot MEDIUM): Legacy rollup tag comparison mismatch
+# Pre-fix: exact match used, but lineage_file.tag="1.7.7-debian" and
+# variants_file.versions[0].tag="1.7.7" → never equal → correct rollup skipped.
+# Post-fix: prefix match allows "1.7.7-debian" to match "1.7.7" (version prefix).
+# =============================================================================
+
+@test "DRDV-16: Legacy rollup with full tag '1.7.7-debian' matches current_latest '1.7.7'" {
+    # web-shell-style: legacy web-shell.json was written with .tag="1.7.7-debian".
+    # variants.yaml has versions[0].tag="1.7.7".
+    # Per-tag resolution finds nothing (no web-shell-1.7.7*.json in .build-lineage/).
+    # Post-fix: prefix match "1.7.7-debian" starts with "1.7.7" → legacy rollup returned.
+    jq -n '{lineage_schema_version: 2, container: "web-shell", base_image_ref: "ghcr.io/oorabona/debian:trixie", version: "1.7.7", tag: "1.7.7-debian"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/web-shell.json"
+
+    # No per-tag file exists for 1.7.7
+    make_variants_yaml "$TEST_TEMP_DIR/web-shell" "$(cat <<'YAML'
+versions:
+  - tag: "1.7.7"
+    variants:
+      - name: debian
+        default: true
+      - name: alpine
+YAML
+)"
+
+    run resolve_lineage_file "web-shell"
+    [ "$status" -eq 0 ]
+    # Post-fix: prefix match must return the legacy rollup
+    [[ "$output" == *"web-shell.json" ]] || {
+        echo "FAIL: expected web-shell.json (prefix match 1.7.7-debian starts-with 1.7.7), got: '$output'"
+        echo "  (pre-fix: exact match '1.7.7-debian' != '1.7.7' → empty → correct rollup skipped)"
+        return 1
+    }
+}
+
+# =============================================================================
+# Finding #4 (gate r5 copilot MEDIUM): Malformed variants.yaml must fail closed
+# Pre-fix: yq failure → latest_version="" → falls through to legacy rollup silently.
+# Post-fix: detect yq exit code, emit stderr warning, return empty immediately.
+#           NEVER fall back to legacy rollup when variants.yaml is malformed.
+# =============================================================================
+
+@test "DRDV-17: Malformed variants.yaml with stale legacy rollup present — fails closed, not silent fallback" {
+    # Scenario: variants.yaml is malformed AND a stale {container}.json exists.
+    # Pre-fix: yq fails → latest_version="" → legacy fallback fires → stale rollup returned silently.
+    # Post-fix: detect yq failure → return empty AND emit stderr warning.
+    jq -n '{lineage_schema_version: 2, container: "broken-pkg", base_image_ref: "STALE:wrong", version: "1.0", tag: "1.0"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/broken-pkg.json"
+
+    # Deliberately malformed YAML
+    make_variants_yaml "$TEST_TEMP_DIR/broken-pkg" "$(printf 'versions:\n  - tag: [\nnot: valid: yaml')"
+
+    # --separate-stderr: the yq-failure warning goes to stderr; $output must be empty
+    run --separate-stderr resolve_lineage_file "broken-pkg"
+    [ "$status" -eq 0 ]
+
+    # Post-fix: must return empty (fail closed), NOT the stale legacy rollup
+    [[ -z "$output" ]] || {
+        echo "FAIL: expected empty output (fail closed), got: '$output'"
+        echo "  (pre-fix: malformed yaml causes silent fallback to stale legacy rollup)"
         return 1
     }
 }
