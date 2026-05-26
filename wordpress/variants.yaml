@@ -1,6 +1,12 @@
 # WordPress Container Variants
+#
+# Retention model: latest_per_major.
+# We track the latest patch of each major listed in retained_majors.
+# rotate-versions.sh updates the versions[] list from version.sh --major N
+# on every upstream-monitor pass.
 build:
-  version_retention: 3
+  retention_strategy: latest_per_major
+  retained_majors: [7, 6]
 versions:
+  - tag: 7.0.0-alpine
   - tag: 6.9.4-alpine
-  - tag: "6.9.1-alpine"

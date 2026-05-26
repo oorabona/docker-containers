@@ -35,6 +35,28 @@ if [[ ! -f "$variants_file" ]]; then
     exit 1
 fi
 
+# Detect retention strategy — handle latest_per_major before count-based logic
+strategy=$(yq -r '.build.retention_strategy // ""' "$variants_file" 2>/dev/null) || strategy=""
+if [[ "$strategy" == "latest_per_major" ]]; then
+    echo "🔄 latest_per_major strategy detected for $container_dir" >&2
+
+    resolved=$(latest_per_major_versions "$container_dir")
+    if [[ $? -ne 0 || -z "$resolved" ]]; then
+        if [[ -z "$resolved" ]]; then
+            echo "::warning::No versions resolved for $container_dir via latest_per_major" >&2
+            exit 0
+        fi
+        echo "::error::Failed to resolve latest_per_major for $container_dir" >&2
+        exit 1
+    fi
+
+    # Rewrite variants.yaml versions[] from resolved list
+    versions_json=$(printf '%s' "$resolved" | jq -R -s 'split("\n") | map(select(length>0)) | map({tag: .})')
+    VERSIONS="$versions_json" yq -i '.versions = env(VERSIONS)' "$variants_file"
+    echo "✅ Updated $variants_file via latest_per_major: $(printf '%s' "$resolved" | tr '\n' ' ')" >&2
+    exit 0
+fi
+
 # Step 1: Check version_retention
 retention=$(version_retention "$container_dir")
 if [[ "$retention" -eq 0 ]]; then

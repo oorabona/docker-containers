@@ -363,8 +363,9 @@ jobs:
         run: |
           if [[ -f "$CONTAINER/variants.yaml" ]]; then
             retention=$(yq -r '.build.version_retention // 0' "$CONTAINER/variants.yaml")
-            if [[ "$retention" -gt 0 ]]; then
-              echo "🔄 Rotating version for $CONTAINER (retention: $retention)"
+            strategy=$(yq -r '.build.retention_strategy // ""' "$CONTAINER/variants.yaml")
+            if [[ "$retention" -gt 0 || "$strategy" == "latest_per_major" ]]; then
+              echo "🔄 Rotating version for $CONTAINER (retention: $retention, strategy: ${strategy:-count})"
               ./scripts/rotate-versions.sh "$CONTAINER" "$NEW_VERSION"
               echo "rotated=true" >> "$GITHUB_OUTPUT"
             else
@@ -501,8 +502,8 @@ jobs:
           echo "🔨 Triggering build for $CONTAINER after successful merge"
 
           scope_args=""
-          # Only scope by major version for multi-major containers (e.g., postgres)
-          # Containers with version_retention use full version tags — no major scoping needed
+          # Only scope by major version for containers without rotation (e.g., postgres with always_all_versions).
+          # Rotated containers (version_retention or latest_per_major) already updated their versions[] list — no scoping needed.
           if [[ "$ROTATED" != "true" ]]; then
             affected_major=$(echo "$NEW_VERSION" | grep -oE '^[0-9]+')
             if [[ -n "$affected_major" ]]; then
