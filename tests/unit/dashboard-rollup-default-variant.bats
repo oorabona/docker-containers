@@ -24,6 +24,13 @@ setup() {
     # pipefail environment and any top-level side effects), then extract the
     # function bodies with "declare -f" and eval them in the parent shell where we
     # control the set options.
+    # Source variant-utils directly so variant_image_tag/variant_property/base_suffix
+    # are available for the post-fix resolve_lineage_file (Finding #2 fix calls variant_image_tag).
+    # shellcheck source=/dev/null
+    source "$PROJECT_ROOT_REAL/helpers/logging.sh"
+    source "$PROJECT_ROOT_REAL/helpers/build-args-utils.sh"
+    source "$PROJECT_ROOT_REAL/helpers/variant-utils.sh"
+
     local _fn_defs
     _fn_defs=$(
         cd "$PROJECT_ROOT_REAL" 2>/dev/null
@@ -69,29 +76,40 @@ make_variants_yaml() {
 # =============================================================================
 
 @test "DRDV-01: Multi-variant single-version uses default_variant (debian is default)" {
-    # Create fake lineage files for all web-shell variants
+    # Production web-shell: debian has suffix: "" (no suffix) → lineage file = web-shell-1.7.7.json
+    # Non-default variants have explicit suffixes: -alpine, -ubuntu, -rocky
+    # Fix B: must return the default variant's suffixless file, not the first filesystem match.
+    make_lineage "web-shell-1.7.7" "ghcr.io/oorabona/debian:trixie"        # debian (default, no suffix)
     make_lineage "web-shell-1.7.7-alpine" "alpine:3.21"
-    make_lineage "web-shell-1.7.7-debian" "ghcr.io/oorabona/debian:trixie"
     make_lineage "web-shell-1.7.7-ubuntu" "ubuntu:noble"
     make_lineage "web-shell-1.7.7-rocky" "rockylinux:9"
 
-    # variants.yaml with debian as default
+    # variants.yaml matching production structure: debian default with empty suffix
     make_variants_yaml "$TEST_TEMP_DIR/web-shell" "$(cat <<'YAML'
 versions:
   - tag: "1.7.7"
     variants:
       - name: debian
+        suffix: ""
         default: true
       - name: alpine
+        suffix: "-alpine"
       - name: ubuntu
+        suffix: "-ubuntu"
       - name: rocky
+        suffix: "-rocky"
 YAML
 )"
 
     run resolve_lineage_file "web-shell"
     [ "$status" -eq 0 ]
-    # Fix B: must return the default variant (debian), not filesystem-first (may return alpine/rocky)
-    [[ "$output" == *"web-shell-1.7.7-debian.json" ]]
+    # Fix B: must return the default variant (debian, suffixless): web-shell-1.7.7.json
+    [[ "$output" == *"web-shell-1.7.7.json" ]] || {
+        echo "FAIL: expected *web-shell-1.7.7.json (debian default), got: '$output'"
+        return 1
+    }
+    # Must NOT return a variant-suffixed file
+    [[ "$output" != *"-alpine.json" && "$output" != *"-ubuntu.json" && "$output" != *"-rocky.json" ]]
 }
 
 @test "DRDV-02: Multi-version multi-flavor returns latest version default flavor" {
@@ -264,9 +282,10 @@ YAML
     make_lineage "postgres-18-alpine-base" "stale-wrong-base-image:should-not-be-selected"
 
     make_variants_yaml "$TEST_TEMP_DIR/postgres" "$(cat <<'YAML'
+build:
+  base_suffix: "-alpine"
 versions:
   - tag: "18"
-    base_suffix: "-alpine"
     variants:
       - name: base
         default: true

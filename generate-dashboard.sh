@@ -70,18 +70,17 @@ resolve_lineage_file() {
     default_name=$(yq -r '.versions[0].variants[] | select(.default == true) | .name' \
         "$variants_file" 2>/dev/null | head -1) || true
 
-    # Try exact match for default variant:
-    # Pattern: {container}-{version}*{default_name}.json
-    # The glob handles any base_suffix inserted between version and variant name
-    # (e.g. postgres-18-alpine-base.json where version=18, variant=base, base_sfx=-alpine)
+    # Compute the on-disk tag for the default variant using variant_image_tag, which
+    # applies base_suffix correctly. Example: postgres version=18, variant=base,
+    # base_suffix=-alpine → tag "18-alpine" → file postgres-18-alpine.json (no -base suffix).
+    # Using a raw-name glob (*base.json) would incorrectly match postgres-18-alpine-base.json.
     local found_file=""
     if [[ -n "$default_name" ]]; then
-        for _f in "$lineage_dir/${container}-${latest_version}"*"${default_name}.json"; do
-            if [[ -f "$_f" ]]; then
-                found_file="$_f"
-                break
-            fi
-        done
+        local default_tag
+        default_tag=$(variant_image_tag "$latest_version" "$default_name" "$SCRIPT_DIR/$container" 2>/dev/null) || true
+        if [[ -n "$default_tag" && -f "$lineage_dir/${container}-${default_tag}.json" ]]; then
+            found_file="$lineage_dir/${container}-${default_tag}.json"
+        fi
     fi
 
     # Fallback: any lineage file for the latest version (when default variant file missing,
@@ -359,7 +358,17 @@ resolve_variant_lineage_json() {
 
     if [[ -n "$lineage_file" ]]; then
         build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
-        base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        local _raw_base_image
+        _raw_base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        # Sanitize-at-read: pre-v2 lineage files may have leaked ${...} placeholders in
+        # base_image_ref. Detect by checking lineage_schema_version and the value itself.
+        local _schema_ver
+        _schema_ver=$(jq -r '.lineage_schema_version // ""' "$lineage_file" 2>/dev/null || echo "")
+        if [[ -z "$_schema_ver" || "$_raw_base_image" == *'${'* ]]; then
+            base_image="unknown"
+        else
+            base_image="$_raw_base_image"
+        fi
         oci_subject_digest=$(jq -r '.oci_subject_digest // empty' "$lineage_file" 2>/dev/null || echo "")
         # Version mismatch check: lineage file may be from a different version
         if [[ "$base_image" != "unknown" ]]; then

@@ -101,7 +101,7 @@ _configure_cache() {
 # _BUILD_ARGS_RESOLVED maps ARG_NAME → value for every --build-arg in _BUILD_ARGS.
 # _resolve_base_image reads this global as its Fix-A1 substitution source (Step 2.5).
 _prepare_build_args() {
-    prepare_build_args "$1" "$2"
+    prepare_build_args "$1" "$2" || return $?
     # Populate _BUILD_ARGS_RESOLVED from the assembled _BUILD_ARGS string.
     # Each --build-arg NAME=VALUE token is extracted; the map is consumed by
     # _resolve_base_image to substitute ARGs whose values come from config.yaml
