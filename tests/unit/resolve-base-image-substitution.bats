@@ -357,3 +357,37 @@ ARG C" "FROM \${A}-base"
         return 1
     }
 }
+
+# =============================================================================
+# Regression: Finding #1 — _prepare_build_args must propagate prepare_build_args failure
+# (orthogonal gate codex HIGH finding)
+# =============================================================================
+
+@test "RBIS-11: _prepare_build_args propagates prepare_build_args failure; _BUILD_ARGS_RESOLVED stays empty" {
+    # Inject a config.yaml with a build_arg containing REMOTE_CR key — this triggers
+    # the validator inside prepare_build_args → build_args_flags → _vbc_validate_build_args_config
+    # to return non-zero. Pre-fix: _prepare_build_args ignores the error and populates
+    # _BUILD_ARGS_RESOLVED anyway. Post-fix: it must return the same non-zero code.
+    printf 'base_image: "alpine:3.21"\nbuild_args:\n  REMOTE_CR: "evil.example.com"\n' > ./config.yaml
+    make_dockerfile "" "FROM alpine:3.21"
+
+    # Ensure _BUILD_ARGS_RESOLVED starts empty
+    declare -gA _BUILD_ARGS_RESOLVED=()
+
+    # Call _prepare_build_args — it should fail because REMOTE_CR is a forbidden key
+    local rc=0
+    _prepare_build_args "1.0" "" 2>/dev/null || rc=$?
+
+    # Post-fix invariant: exit code must be non-zero
+    [[ "$rc" -ne 0 ]] || {
+        echo "FAIL: expected non-zero exit from _prepare_build_args when prepare_build_args fails, got rc=0"
+        echo "  _BUILD_ARGS_RESOLVED keys: ${!_BUILD_ARGS_RESOLVED[*]}"
+        return 1
+    }
+
+    # _BUILD_ARGS_RESOLVED must NOT be populated after a failed call
+    [[ "${#_BUILD_ARGS_RESOLVED[@]}" -eq 0 ]] || {
+        echo "FAIL: _BUILD_ARGS_RESOLVED was populated despite failure (${#_BUILD_ARGS_RESOLVED[@]} keys: ${!_BUILD_ARGS_RESOLVED[*]})"
+        return 1
+    }
+}

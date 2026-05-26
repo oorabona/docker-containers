@@ -57,6 +57,8 @@ source_dashboard_fns() {
         source "$PROJECT_ROOT_REAL/generate-dashboard.sh" 2>/dev/null || true
         declare -f resolve_lineage_file
         declare -f get_build_lineage_field
+        declare -f resolve_variant_lineage_file
+        declare -f resolve_variant_lineage_json
     )
     eval "$_fn_defs"
 }
@@ -314,4 +316,46 @@ source_dashboard_fns() {
     # because the Dockerfile ARG lines have no defaults (ARG OS_IMAGE_BASE, not ARG OS_IMAGE_BASE=alpine)
     # The mutation guard: _BASE_IMAGE_REF must still contain ${ when A1 is disabled
     [[ "$_BASE_IMAGE_REF" == *'${'* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Regression: Finding #3 — resolve_variant_lineage_json must sanitize
+# base_image_ref containing ${...} (copilot HIGH finding)
+# Pre-v2 lineage files with leaked placeholders survive in multi-variant path.
+# ---------------------------------------------------------------------------
+@test "SMOKE-08: resolve_variant_lineage_json sanitizes pre-v2 leaked base_image_ref" {
+    local work="$TEST_TEMP_DIR/f3"
+    local lineage_dir="$work/.build-lineage"
+    local container_dir="$work/web-shell"
+    mkdir -p "$lineage_dir" "$container_dir"
+
+    # Write a pre-v2 lineage file (no lineage_schema_version) with leaked placeholder
+    # This simulates a web-shell variant lineage written before Fix E was applied.
+    jq -n \
+        '{container:"web-shell", base_image_ref:"${DEBIAN_TAG}", version:"1.7.7", tag:"1.7.7-debian"}' \
+        > "$lineage_dir/web-shell-1.7.7-debian.json"
+
+    export SCRIPT_DIR="$work"
+    source_dashboard_fns
+
+    # Invoke resolve_variant_lineage_json as the dashboard does for multi-variant containers
+    local result
+    result=$(resolve_variant_lineage_json "web-shell" "1.7.7-debian" "1.7.7" "unknown" "debian")
+
+    # The base_image field in the output must NOT contain ${ (sanitize-at-read)
+    local base_image_out
+    base_image_out=$(echo "$result" | jq -r '.base_image // ""')
+
+    [[ "$base_image_out" != *'${'* ]] || {
+        echo "FAIL: pre-v2 placeholder leaked into per-variant output: '$base_image_out'"
+        echo "Full output: $result"
+        return 1
+    }
+
+    # The value must be empty or "unknown" (not the leaked literal)
+    [[ -z "$base_image_out" || "$base_image_out" == "unknown" ]] || {
+        echo "FAIL: expected empty or 'unknown', got: '$base_image_out'"
+        echo "Full output: $result"
+        return 1
+    }
 }

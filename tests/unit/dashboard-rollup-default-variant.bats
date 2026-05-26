@@ -242,3 +242,49 @@ YAML
     # Fix E: sanitize-at-read: leaked placeholder should return empty, not the literal "${...}"
     [[ -z "$output" || "$output" == "unknown" ]]
 }
+
+# =============================================================================
+# Regression: Finding #2 — resolve_lineage_file must use variant_image_tag for
+# the default variant filename, not raw default_name in a glob.
+# (orthogonal gate codex MEDIUM finding)
+# =============================================================================
+
+@test "DRDV-10: Postgres default-variant (base) resolves suffixless file, not -base suffixed file" {
+    # Production postgres tags: base variant → "18-alpine" (NO -base suffix),
+    # vector variant → "18-alpine-vector". The current bug: the glob
+    # *{default_name}.json = *base.json matches "postgres-18-alpine-base.json"
+    # (if it exists) and picks it instead of the correct "postgres-18-alpine.json".
+    #
+    # This test deliberately creates BOTH the suffixless file AND a stale/wrong
+    # -base-suffixed file (which can arrive via a mis-tagged build), and verifies
+    # that resolve_lineage_file returns the CORRECT suffixless one.
+    make_lineage "postgres-18-alpine" "ghcr.io/oorabona/library/postgres:18-alpine"
+    make_lineage "postgres-18-alpine-vector" "ghcr.io/oorabona/library/postgres:18-alpine"
+    # Also create the wrong -base-suffixed stale file (the one the old glob would pick)
+    make_lineage "postgres-18-alpine-base" "stale-wrong-base-image:should-not-be-selected"
+
+    make_variants_yaml "$TEST_TEMP_DIR/postgres" "$(cat <<'YAML'
+versions:
+  - tag: "18"
+    base_suffix: "-alpine"
+    variants:
+      - name: base
+        default: true
+      - name: vector
+        suffix: "-vector"
+YAML
+)"
+
+    run resolve_lineage_file "postgres"
+    [ "$status" -eq 0 ]
+    # Must return the SUFFIXLESS file (postgres-18-alpine.json), NOT postgres-18-alpine-base.json
+    [[ "$output" == *"postgres-18-alpine.json" ]] || {
+        echo "FAIL: expected *postgres-18-alpine.json, got: '$output'"
+        return 1
+    }
+    # Explicitly must NOT end in -base.json (old glob would have picked this one)
+    [[ "$output" != *"-base.json" ]] || {
+        echo "FAIL: returned file has -base suffix (wrong): '$output'"
+        return 1
+    }
+}
