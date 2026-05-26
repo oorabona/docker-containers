@@ -40,18 +40,22 @@ strategy=$(yq -r '.build.retention_strategy // ""' "$variants_file" 2>/dev/null)
 if [[ "$strategy" == "latest_per_major" ]]; then
     echo "🔄 latest_per_major strategy detected for $container_dir" >&2
 
-    resolved=$(latest_per_major_versions "$container_dir")
-    if [[ $? -ne 0 || -z "$resolved" ]]; then
-        if [[ -z "$resolved" ]]; then
-            echo "::warning::No versions resolved for $container_dir via latest_per_major" >&2
-            exit 0
-        fi
+    # Capture rc safely under `set -e`: assignment inside the if-condition
+    # is exempt, so a non-zero exit from latest_per_major_versions reaches
+    # the explicit ::error:: annotation instead of aborting the script
+    # before the message can be printed.
+    if ! resolved=$(latest_per_major_versions "$container_dir"); then
         echo "::error::Failed to resolve latest_per_major for $container_dir" >&2
         exit 1
     fi
+    if [[ -z "$resolved" ]]; then
+        echo "::warning::No versions resolved for $container_dir via latest_per_major" >&2
+        exit 0
+    fi
 
-    # Rewrite variants.yaml versions[] from resolved list
-    versions_json=$(printf '%s' "$resolved" | jq -R -s 'split("\n") | map(select(length>0)) | map({tag: .})')
+    # Rewrite variants.yaml versions[] from resolved list (compact JSON avoids
+    # multi-line env-var edge cases when passed through to `yq -i`).
+    versions_json=$(printf '%s' "$resolved" | jq -c -R -s 'split("\n") | map(select(length>0)) | map({tag: .})')
     VERSIONS="$versions_json" yq -i '.versions = env(VERSIONS)' "$variants_file"
     echo "✅ Updated $variants_file via latest_per_major: $(printf '%s' "$resolved" | tr '\n' ' ')" >&2
     exit 0

@@ -184,6 +184,32 @@ VEOF
     [[ "$second" == "6.9.4-alpine" ]]
 }
 
+@test "latest_per_major_versions: defensive sort — misconfigured [6, 7] still yields 7.x first" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    # Misconfigured order: operator wrote retained_majors: [6, 7] instead of [7, 6].
+    # The helper must still emit 7.x first so downstream "first version = default"
+    # semantics stay correct.
+    mkdir -p myapp
+    cat > myapp/variants.yaml <<'EOF'
+build:
+  retention_strategy: latest_per_major
+  retained_majors: [6, 7]
+versions:
+  - tag: 6.9.4-alpine
+  - tag: 7.0.0-alpine
+EOF
+    create_mock_version_sh "myapp"
+
+    run latest_per_major_versions "myapp"
+    [ "$status" -eq 0 ]
+
+    first=$(echo "$output" | head -1)
+    second=$(echo "$output" | tail -1)
+    [[ "$first" == "7.0.0-alpine" ]]
+    [[ "$second" == "6.9.4-alpine" ]]
+}
+
 # ----------------------------------------------------------------
 # latest_per_major_versions — failure cases
 # ----------------------------------------------------------------
@@ -223,24 +249,12 @@ exit 1
 MOCK
     chmod +x helpers/latest-docker-tag
 
-    # Create a minimal wordpress/version.sh pointing at our mock
+    # Copy the REAL wordpress/version.sh into the fixture so the test exercises
+    # the actual code being shipped. The mocked helpers/latest-docker-tag above
+    # is found via the script's own `$(dirname "$0")/../helpers/latest-docker-tag`
+    # lookup, so it picks up the temp-dir mock and never hits the network.
     mkdir -p wordpress
-    cat > wordpress/version.sh <<'VEOF'
-#!/bin/bash
-REGISTRY_PATTERN="^[0-9]+\.[0-9]+\.[0-9]+-alpine$"
-if [[ "$1" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi
-if [[ "$1" == "--major" ]]; then
-    major="$2"
-    if [[ -z "$major" || ! "$major" =~ ^[0-9]+$ ]]; then
-        echo "error: --major requires a numeric value" >&2; exit 1
-    fi
-    upstream_version=$("$(dirname "$0")/../helpers/latest-docker-tag" library/wordpress "^${major}\.[0-9]+\.[0-9]+\$")
-    if [[ -n "$upstream_version" ]]; then echo "${upstream_version}-alpine"; exit 0; fi
-    exit 1
-fi
-upstream_version=$("$(dirname "$0")/../helpers/latest-docker-tag" library/wordpress "^[0-9]+\.[0-9]+\.[0-9]+$")
-if [[ -n "$upstream_version" ]]; then echo "${upstream_version}-alpine"; else exit 1; fi
-VEOF
+    cp "$ORIG_DIR/wordpress/version.sh" wordpress/version.sh
     chmod +x wordpress/version.sh
 
     run wordpress/version.sh --major 7

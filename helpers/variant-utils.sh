@@ -661,8 +661,13 @@ latest_per_major_versions() {
     local version_sh="$container_dir/version.sh"
     [[ -x "$version_sh" ]] || return 1
 
+    # Sort retained_majors numerically descending (newest first) so the first
+    # resolved entry is always the highest major. Downstream code that treats
+    # versions[0] as the "default" / "current" version then receives a stable,
+    # operator-misconfig-resistant answer even if retained_majors was written
+    # in arbitrary order (e.g. [6, 7] instead of [7, 6]).
     local majors
-    majors=$(yq -r '.build.retained_majors[]?' "$variants_file" 2>/dev/null) || return 1
+    majors=$(yq -r '.build.retained_majors[]?' "$variants_file" 2>/dev/null | sort -rn) || return 1
     [[ -z "$majors" ]] && return 0
 
     local failed=0
