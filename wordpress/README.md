@@ -326,6 +326,8 @@ docker build \
 
 Chained-base container: consumes `ghcr.io/oorabona/php` (project-produced). Docker Hub mirror at `docker.io/oorabona/php` (429-rate-limited; default local fallback).
 
+`config.yaml` declares `source: /php` — the leading-slash marker signals "chained-on-own-build": sync writes to `ghcr.io/<owner>/library/php` (shared upstream mirror path), while reachability probing targets `ghcr.io/<owner>/php` (project's published container). This ensures `REMOTE_CR` is injected only when the project-produced PHP image is available.
+
 | Component | Version | Source | Monitoring |
 |-----------|---------|--------|------------|
 | PHP | latest | [oorabona/php](../php/) | Base image tag |
