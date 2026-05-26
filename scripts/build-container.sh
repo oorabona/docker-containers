@@ -97,10 +97,22 @@ _configure_cache() {
     fi
 }
 
-# _prepare_build_args: thin wrapper for backward compatibility
-# Delegates to prepare_build_args() in helpers/build-args-utils.sh
+# _prepare_build_args: thin wrapper; also populates _BUILD_ARGS_RESOLVED global.
+# _BUILD_ARGS_RESOLVED maps ARG_NAME → value for every --build-arg in _BUILD_ARGS.
+# _resolve_base_image reads this global as its Fix-A1 substitution source (Step 2.5).
 _prepare_build_args() {
     prepare_build_args "$1" "$2"
+    # Populate _BUILD_ARGS_RESOLVED from the assembled _BUILD_ARGS string.
+    # Each --build-arg NAME=VALUE token is extracted; the map is consumed by
+    # _resolve_base_image to substitute ARGs whose values come from config.yaml
+    # build_args or version params (not visible via Dockerfile ARG defaults).
+    declare -gA _BUILD_ARGS_RESOLVED=()
+    local _ba_token
+    while IFS= read -r _ba_token; do
+        local _ba_name="${_ba_token%%=*}"
+        local _ba_value="${_ba_token#*=}"
+        [[ -n "$_ba_name" && "$_ba_name" != "$_ba_token" ]] && _BUILD_ARGS_RESOLVED["$_ba_name"]="$_ba_value"
+    done < <(echo "${_BUILD_ARGS:-}" | grep -oE -- '--build-arg [^ ]+' | sed 's/--build-arg //' || true)
 }
 
 # Resolve base image reference from config.yaml or Dockerfile, substitute variables
@@ -110,13 +122,24 @@ _resolve_base_image() {
     local version="$2"
     local label_args_var="$3"  # name of the label_args variable to append to
 
+    # Fix A2: when called with a generated Dockerfile (post-template-generation),
+    # the concrete FROM line is the authoritative source.  In that case, skip
+    # config.yaml::base_image — it contains the default-distro template value and
+    # would override the per-flavor FROM already baked into the generated file.
+    # Signal: caller sets _RESOLVE_FROM_GENERATED=1 before calling.
+    local _use_from_only="${_RESOLVE_FROM_GENERATED:-0}"
+
     _BASE_IMAGE_REF=""
-    if [[ -f "./config.yaml" ]]; then
+    if [[ "$_use_from_only" != "1" && -f "./config.yaml" ]]; then
         _BASE_IMAGE_REF=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
     fi
+    # Always pre-compute the FROM line; used as fallback and as the authoritative
+    # source when _use_from_only=1.
+    local _dockerfile_from=""
+    _dockerfile_from=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' 2>/dev/null || true)
+    [[ -z "$_dockerfile_from" ]] && _dockerfile_from=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' 2>/dev/null || true)
     if [[ -z "$_BASE_IMAGE_REF" ]]; then
-        _BASE_IMAGE_REF=$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS ' | tail -1 | awk '{print $2}' || true)
-        [[ -z "$_BASE_IMAGE_REF" ]] && _BASE_IMAGE_REF=$(grep -E '^FROM ' "$dockerfile" | tail -1 | awk '{print $2}' || true)
+        _BASE_IMAGE_REF="$_dockerfile_from"
     fi
 
     # Substitute known variables into the base image template.
@@ -129,9 +152,10 @@ _resolve_base_image() {
     # wrong base_image_ref in the lineage file because _UPSTREAM_VERSION (latest)
     # would be substituted first, and the CUSTOM_BUILD_ARGS override would arrive
     # too late to correct an already-expanded placeholder.
-    # Order: (1) parse CUSTOM_BUILD_ARGS, (2) apply overrides, (3) standard
-    # substitutions (no-ops for placeholders already consumed in step 2),
-    # (4) Dockerfile ARG defaults.
+    # Order: (1) parse CUSTOM_BUILD_ARGS, (2) apply overrides, (2.5) build_args
+    # resolved set from _prepare_build_args [Fix A1], (3) standard substitutions
+    # (no-ops for placeholders already consumed in steps 1-2.5), (4) Dockerfile
+    # ARG defaults.
     if [[ "$_BASE_IMAGE_REF" =~ \$ ]]; then
         # Step 1 + 2: Parse CUSTOM_BUILD_ARGS and apply overrides first so they win
         # over all subsequent substitutions. Docker semantics: last --build-arg wins.
@@ -150,6 +174,31 @@ _resolve_base_image() {
             _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ov_name\}/$_ov_value}"
             _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ov_name/$_ov_value}"
         done
+
+        # Step 2.5 [Fix A1]: Apply build_args resolved set from _prepare_build_args.
+        # This covers ARGs whose values come from config.yaml build_args or version
+        # params — invisible to both CUSTOM_BUILD_ARGS and Dockerfile ARG defaults.
+        # Iterates up to 10 times to resolve cross-arg chains (A→B→C).  On cap-hit,
+        # remaining placeholders survive to sanitize-at-read in the dashboard.
+        if [[ ${#_BUILD_ARGS_RESOLVED[@]} -gt 0 ]]; then
+            local _pass=0
+            while [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -lt 10 ]]; do
+                local _prev="$_BASE_IMAGE_REF"
+                for _ba_name in "${!_BUILD_ARGS_RESOLVED[@]}"; do
+                    # Skip args already handled by CUSTOM_BUILD_ARGS
+                    [[ -v _custom_arg_overrides["$_ba_name"] ]] && continue
+                    local _ba_val="${_BUILD_ARGS_RESOLVED[$_ba_name]}"
+                    _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$_ba_name\}/$_ba_val}"
+                    _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$_ba_name/$_ba_val}"
+                done
+                # Converged: no more substitutions possible
+                [[ "$_BASE_IMAGE_REF" == "$_prev" ]] && break
+                (( _pass++ )) || true
+            done
+            if [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -ge 10 ]]; then
+                log_warning "base_image_ref cross-arg expansion capped at 10 passes: $_BASE_IMAGE_REF"
+            fi
+        fi
 
         # Step 3: Standard substitutions. These are no-ops for any placeholder
         # already consumed by a CUSTOM_BUILD_ARGS override above.
@@ -177,6 +226,21 @@ _resolve_base_image() {
         done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
 
         unset _custom_arg_overrides
+
+        # Fix A2 post-substitution fallback: if config.yaml base_image had a template
+        # expression (e.g. distro-default like "${DEBIAN_TAG}") that still contains ${
+        # after all passes, fall back to the concrete FROM line in the Dockerfile.
+        # This fires for template-driven containers where the generated Dockerfile's FROM
+        # reflects the per-flavor base image — a more authoritative source than the
+        # config.yaml default-distro template.
+        if [[ "$_BASE_IMAGE_REF" =~ \$\{ && -n "$_dockerfile_from" && ! "$_dockerfile_from" =~ \$\{ ]]; then
+            _BASE_IMAGE_REF="$_dockerfile_from"
+        fi
+
+        # Emit warning when a placeholder survives all substitution passes
+        if [[ "$_BASE_IMAGE_REF" =~ \$\{ ]]; then
+            log_warning "base_image_ref left un-resolved: $_BASE_IMAGE_REF"
+        fi
     fi
 
     # Resolve digest if we have a concrete image reference
@@ -184,7 +248,8 @@ _resolve_base_image() {
     if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
         _BASE_DIGEST=$(docker manifest inspect "$_BASE_IMAGE_REF" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
         if [[ -n "$_BASE_DIGEST" ]]; then
-            eval "$label_args_var=\"\$$label_args_var --label org.opencontainers.image.base.digest=\$_BASE_DIGEST\""
+            # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
+            printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
             log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
         fi
     fi
@@ -208,30 +273,50 @@ _emit_build_lineage() {
     local build_args_data
     build_args_data=$(build_args_json ".")
 
-    cat > "$lineage_file" <<LINEAGE_EOF
-{
-  "container": "$container",
-  "version": "$version",
-  "tag": "$tag",
-  "flavor": "${flavor:-}",
-  "dockerfile": "$dockerfile",
-  "platform": "$platforms",
-  "runtime": "$runtime_info",
-  "image_id": "${image_id:-unknown}",
-  "build_digest": "${BUILD_DIGEST:-unknown}",
-  "oci_subject_digest": "${OCI_SUBJECT_DIGEST:-}",
-  "base_image_ref": "${_BASE_IMAGE_REF:-unknown}",
-  "base_image_digest": "${_BASE_DIGEST:-unresolved}",
-  "built_at": "$build_ts",
-  "duration_seconds": ${_BUILD_DURATION_SECONDS:-null},
-  "github_actions": ${GITHUB_ACTIONS:-false},
-  "images": {
-    "dockerhub": "$dockerhub_image:$tag",
-    "ghcr": "$ghcr_image:$tag"
-  },
-  "build_args": $build_args_data
-}
-LINEAGE_EOF
+    # Fix C: use jq -n --arg so values with '"' or backslash are safely escaped.
+    # Fix E: include lineage_schema_version=2 for downstream schema detection.
+    jq -n \
+        --arg     container        "$container" \
+        --arg     version          "$version" \
+        --arg     tag              "$tag" \
+        --arg     flavor           "${flavor:-}" \
+        --arg     dockerfile       "$dockerfile" \
+        --arg     platform         "$platforms" \
+        --arg     runtime          "$runtime_info" \
+        --arg     image_id         "${image_id:-unknown}" \
+        --arg     build_digest     "${BUILD_DIGEST:-unknown}" \
+        --arg     oci_subject_digest "${OCI_SUBJECT_DIGEST:-}" \
+        --arg     base_image_ref   "${_BASE_IMAGE_REF:-unknown}" \
+        --arg     base_image_digest "${_BASE_DIGEST:-unresolved}" \
+        --arg     built_at         "$build_ts" \
+        --argjson duration_seconds "${_BUILD_DURATION_SECONDS:-null}" \
+        --argjson github_actions   "${GITHUB_ACTIONS:-false}" \
+        --arg     dockerhub_image  "$dockerhub_image:$tag" \
+        --arg     ghcr_image       "$ghcr_image:$tag" \
+        --argjson build_args       "$build_args_data" \
+        '{
+          lineage_schema_version: 2,
+          container:              $container,
+          version:                $version,
+          tag:                    $tag,
+          flavor:                 $flavor,
+          dockerfile:             $dockerfile,
+          platform:               $platform,
+          runtime:                $runtime,
+          image_id:               $image_id,
+          build_digest:           $build_digest,
+          oci_subject_digest:     $oci_subject_digest,
+          base_image_ref:         $base_image_ref,
+          base_image_digest:      $base_image_digest,
+          built_at:               $built_at,
+          duration_seconds:       $duration_seconds,
+          github_actions:         $github_actions,
+          images: {
+            dockerhub: $dockerhub_image,
+            ghcr:      $ghcr_image
+          },
+          build_args: $build_args
+        }' > "$lineage_file"
 
     # Conditionally merge extensions_build_seconds when the caller actually
     # measured it. The field's PRESENCE (not its value) is the signal that
@@ -311,9 +396,10 @@ build_container() {
 
     local label_args=""
 
-    _resolve_base_image "$dockerfile" "$version" "label_args"
-
-    # Generate Dockerfile from template if it contains @@MARKER@@ patterns
+    # Generate Dockerfile from template if it contains @@MARKER@@ patterns.
+    # Fix A2: _resolve_base_image is called AFTER this block so that template-driven
+    # containers (web-shell, github-runner) have their per-flavor Dockerfile generated
+    # before the base-image resolution reads the concrete FROM line.
     local _generated_dockerfile=""
     if has_template_markers "$dockerfile"; then
         _generated_dockerfile=$(mktemp "${TMPDIR:-/tmp}/Dockerfile.${container}.XXXXXX") || {
@@ -352,6 +438,14 @@ build_container() {
         fi
         dockerfile="$_generated_dockerfile"
     fi
+
+    # Fix A2: resolve base image AFTER template generation so the correct per-flavor
+    # FROM line (from the generated Dockerfile) is visible.  For monolithic containers
+    # _generated_dockerfile is empty and _RESOLVE_FROM_GENERATED stays 0 so
+    # config.yaml::base_image is still read — no behavior change for monolithic path.
+    local _rbi_generated=0
+    [[ -n "$_generated_dockerfile" ]] && _rbi_generated=1
+    _RESOLVE_FROM_GENERATED="$_rbi_generated" _resolve_base_image "$dockerfile" "$version" "label_args"
 
     # Pre-build context hook: download external artifacts needed by the Dockerfile
     # (e.g., github-runner downloads the runner agent tarball via gh CLI)
