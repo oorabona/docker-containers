@@ -1,0 +1,17 @@
+# Template fixture: models web-shell-style multi-distro container
+base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
+
+build_args:
+  DEBIAN_TAG: "trixie"
+
+distros:
+  debian:
+    base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
+    pkg_manager: apt
+    install_cmd: "apt-get install -y"
+    cleanup_cmd: "rm -rf /var/lib/apt/lists/*"
+  alpine:
+    base_image: "alpine:3.21"
+    pkg_manager: apk
+    install_cmd: "apk add --no-cache"
+    cleanup_cmd: ""

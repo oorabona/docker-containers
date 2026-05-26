@@ -1,0 +1,4 @@
+@@BASE_IMAGE@@
+
+ARG FLAVOR
+RUN echo "template fixture for @@FLAVOR@@"
