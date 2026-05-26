@@ -1118,3 +1118,191 @@ jobs:
           echo "   Updates: $UPDATE_COUNT"
           echo "   Max severity: $MAX_SEVERITY"
           echo "   Branch: update/${CONTAINER}-deps"
+
+  detect-digest-drift:
+    name: Detect base image digest drift
+    needs: [create-dependency-update-prs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
+    concurrency:
+      group: digest-drift-detect
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    outputs:
+      drift_containers: ${{ steps.detect.outputs.drift_containers }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Restore lineage cache
+        # Cache miss is acceptable — script handles empty dir gracefully (emits warning)
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
+
+      - name: Detect drift
+        id: detect
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          chmod +x scripts/detect-base-digest-drift.sh
+          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/dev/null)
+
+          echo "$drift_json" > /tmp/drift.json
+
+          # Extract container names with actionable drift (drift or legacy status)
+          drift_containers=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+            || echo "[]")
+          echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
+
+          count=$(echo "$drift_containers" | jq 'length')
+          if [[ "$count" -gt 0 ]]; then
+            echo "::notice::Digest drift detected for ${count} container(s): ${drift_containers}"
+          else
+            echo "::notice::No base image digest drift detected"
+          fi
+
+  open-drift-prs:
+    name: Open drift PR for ${{ matrix.container }}
+    needs: [detect-digest-drift]
+    if: |
+      needs.detect-digest-drift.result == 'success' &&
+      needs.detect-digest-drift.outputs.drift_containers != '[]' &&
+      needs.detect-digest-drift.outputs.drift_containers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        container: ${{ fromJson(needs.detect-digest-drift.outputs.drift_containers) }}
+      max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
+      fail-fast: false  # One container's transient failure must not block others
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # App token required: GITHUB_TOKEN-authored PRs do not trigger downstream
+      # workflows (auto-build smoke check) by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Restore lineage cache
+        # Separate restore per matrix job: detect-digest-drift ran on a different runner.
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
+
+      - name: Re-detect drift for this container (idempotent)
+        id: drift-data
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          chmod +x scripts/detect-base-digest-drift.sh
+          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/dev/null)
+          echo "$drift_json" > /tmp/drift.json
+
+          # Check if this container actually has actionable drift
+          has_drift=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")] | length > 0')
+          echo "has_drift=${has_drift}" >> "$GITHUB_OUTPUT"
+
+      - name: Update LAST_REBUILD.md tracker
+        if: steps.drift-data.outputs.has_drift == 'true'
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          chmod +x scripts/update-last-rebuild.sh
+          < /tmp/drift.json ./scripts/update-last-rebuild.sh "$CONTAINER" "base-digest-drift"
+
+      - name: Build PR body
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: pr-body
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          drift_json=$(cat /tmp/drift.json)
+          today=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          variants=$(echo "$drift_json" | jq -c \
+            --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")]')
+
+          variants_drifted=$(echo "$variants" | jq 'length')
+          variants_total=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[]] | length')
+
+          pr_body_file="/tmp/pr-body-${CONTAINER}.md"
+
+          # YAML frontmatter (machine-parseable for downstream tooling)
+          {
+            printf 'drift_kind: base-digest\n'
+            printf 'container: %s\n' "$CONTAINER"
+            printf 'detected_at: %s\n' "$today"
+            printf 'variants_drifted: %s\n' "$variants_drifted"
+            printf 'variants_total: %s\n' "$variants_total"
+          } > /tmp/pr-frontmatter.txt
+
+          # Build variant table (injection-safe: values come from jq --arg)
+          printf '| Variant tag | Base image ref | Old digest | New digest |\n' > /tmp/pr-table.txt
+          printf '|-------------|----------------|------------|------------|\n' >> /tmp/pr-table.txt
+          echo "$variants" | jq -r \
+            '.[] | "| \(.variant_tag) | \(.base_image_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
+            >> /tmp/pr-table.txt
+
+          {
+            printf -- '---\n'
+            cat /tmp/pr-frontmatter.txt
+            printf -- '---\n\n'
+            printf '# Base image digest drift — %s\n\n' "$CONTAINER"
+            cat /tmp/pr-table.txt
+            printf '\n## Action\n\n'
+            printf 'Merging this PR appends a `## base-digest-drift` section to `%s/LAST_REBUILD.md`, which triggers `auto-build.yaml` via path filter. The rebuild captures the fresh base digest in the new lineage entry. Next-day cron sees match → no further drift PR.\n' "$CONTAINER"
+            printf '\n## Chained-on-own note\n\n'
+            printf "If \`%s\`'s base image is another project-produced container with an open base-digest-drift PR, prefer merging the upstream PR first to avoid a 2-day cascade.\n" "$CONTAINER"
+          } > "$pr_body_file"
+
+          echo "pr_body_file=${pr_body_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update PR (branch-upsert)
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
+          branch: update/base-digest-${{ matrix.container }}
+          delete-branch: true
+          commit-message: "build(${{ matrix.container }}): base image digest drift — trigger rebuild"
+          committer: Olivier ORABONA <oorabona@users.noreply.github.com>
+          title: "📦 base-digest-drift(${{ matrix.container }}): upstream base image rebase"
+          body-path: ${{ steps.pr-body.outputs.pr_body_file }}
+
+      # Labels applied separately — peter-evans/create-pull-request has a race condition
+      # where addLabels fails with "Could not resolve to a node" on fresh PRs
+      - name: Apply labels
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          sleep 2
+          gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}"
