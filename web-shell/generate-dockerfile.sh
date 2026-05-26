@@ -96,21 +96,21 @@ FROM ghcr.io/oorabona/debian:${DEBIAN_TAG}'
     alpine)
         alpine_tag=$(_base_cache_tag_new "library/alpine")
         [[ -z "$alpine_tag" ]] && { log_error "No base_image_cache tag for library/alpine in $config"; exit 1; }
-        base_block="ARG REMOTE_CR
+        base_block="ARG REMOTE_CR=docker.io
 ARG ALPINE_TAG=${alpine_tag}
 FROM \${REMOTE_CR}/library/alpine:\${ALPINE_TAG}"
         ;;
     ubuntu)
         ubuntu_tag=$(_base_cache_tag_new "library/ubuntu")
         [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for library/ubuntu in $config"; exit 1; }
-        base_block="ARG REMOTE_CR
+        base_block="ARG REMOTE_CR=docker.io
 ARG UBUNTU_TAG=${ubuntu_tag}
 FROM \${REMOTE_CR}/library/ubuntu:\${UBUNTU_TAG}"
         ;;
     rocky)
         rocky_tag=$(_base_cache_tag_new "library/rockylinux")
         [[ -z "$rocky_tag" ]] && { log_error "No base_image_cache tag for library/rockylinux in $config"; exit 1; }
-        base_block="ARG REMOTE_CR
+        base_block="ARG REMOTE_CR=docker.io
 ARG ROCKY_TAG=${rocky_tag}
 FROM \${REMOTE_CR}/library/rockylinux:\${ROCKY_TAG}"
         ;;
