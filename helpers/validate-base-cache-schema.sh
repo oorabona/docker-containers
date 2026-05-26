@@ -10,7 +10,11 @@
 #   R3. New-style source with registry prefix (dot or colon before first /) → REJECT
 #   R4. New-style source with tag (:) or digest (@) → REJECT
 #   R5. New-style source with uppercase letters → REJECT
-#   R6. New-style source with empty path component (leading/, trailing/, //) → REJECT
+#   R6. New-style source with trailing slash (*/), or double slash (*//*) → REJECT
+#       Leading slash (/…) is ALLOWED as a "chained-on-own-build" semantic marker:
+#         source: /php  →  sync target ghcr.io/<owner>/library/php (shared with upstream
+#                          mirror), probe target ghcr.io/<owner>/php (project-produced).
+#       Trailing slash and double slash remain invalid (empty path component).
 #   R6d. New-style source allowlist ^[a-z0-9._/-]+$ → REJECT glob/shell metacharacters
 #   R7. REMOTE_CR in build_args → REJECT (trust-boundary: must only come from CI override)
 #   R7c (allowlist). build_args values must match ^[A-Za-z0-9._/:@+=-]+$ → REJECT
@@ -112,10 +116,14 @@ _vbc_validate_new_style_source() {
         ok=1
     fi
 
-    # R6: empty path components — leading slash, trailing slash, or double slash
-    if [[ "$source" == /* || "$source" == */ || "$source" == *//* ]]; then
+    # R6: empty path components — trailing slash or double slash.
+    # Leading slash (/…) is explicitly ALLOWED as a "chained-on-own-build" semantic
+    # marker (e.g. source: /php declares wordpress consumes our project-produced PHP
+    # image, not a raw Docker Hub library mirror). Trailing slash and double slash
+    # remain invalid because they produce malformed OCI image refs.
+    if [[ "$source" == */ || "$source" == *//* ]]; then
         _vbc_error "$container" "$idx" \
-            "new-style source '${source}' has an empty path component (leading slash, trailing slash, or '//'). Each path component must be non-empty."
+            "new-style source '${source}' has an empty path component (trailing slash or '//'). Each path component must be non-empty. Note: a leading slash (e.g. /php) is allowed as a chained-on-own-build marker."
         ok=1
     fi
 

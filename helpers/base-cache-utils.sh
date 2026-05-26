@@ -22,7 +22,16 @@
 #     - source: library/postgres   # FULL upstream path (used as GHCR dest path)
 #       tags_from_versions: true   # or tags: ["..."]
 #   → emit_reachable_cache_args emits --build-arg REMOTE_CR=ghcr.io/<owner> (once per container)
-#   → collect_all_cache_images dest: ghcr.io/<owner>/library/postgres:<tag>
+#   → collect_all_cache_images sync_image: ghcr.io/<owner>/library/postgres:<tag>
+#
+# CHAINED-ON-OWN-BUILD marker (leading-slash source):
+#   base_image_cache:
+#     - source: /php               # Leading slash = chained-on-own-build semantic marker.
+#       tags: ["latest"]           # Declares the container consumes a project-produced image
+#   → sync_image: ghcr.io/<owner>/library/php:<tag>  (mirror path, shared with upstream cache)
+#   → probe_image: ghcr.io/<owner>/php:<tag>          (project's own published custom container)
+#   Sync writes to the library/ path (idempotent with upstream mirror). Probe checks the
+#   project-published leaf path to determine REMOTE_CR applicability.
 #
 # Discriminator: ghcr_repo present and non-empty ⇒ OLD style; absent / null / empty ⇒ NEW style.
 # Build-arg emission: emit_reachable_cache_args is the SOLE emitter (per-entry probe-gated,
@@ -106,14 +115,31 @@ _collect_entry_tags() {
     # Discriminate entry style: ghcr_repo PRESENT (non-empty, non-null) → OLD style (unchanged dest).
     # ghcr_repo ABSENT ("null"), explicit nil (yq renders as "null"), or empty string ("") → NEW style:
     # dest path is source (path-preserving mirror).
-    local dest_path
+    #
+    # Leading-slash source (e.g. source: /php) is the "chained-on-own-build" marker.
+    # For such entries the two image paths diverge:
+    #   sync_image  → ghcr.io/<owner>/library/<leaf>:<tag>  (mirror dest, shared with upstream cache)
+    #   probe_image → ghcr.io/<owner>/<leaf>:<tag>          (project's published custom container)
+    # For all other NEW-style entries: sync_image == probe_image == ghcr.io/<owner>/<source>:<tag>
+    # For OLD-style entries: sync_image == probe_image == ghcr.io/<owner>/<ghcr_repo>:<tag>
+    local sync_dest_path probe_dest_path
     if [[ "$ghcr_repo" == "null" || -z "$ghcr_repo" ]]; then
-        # NEW style: source is the full upstream path (e.g. library/postgres)
-        # ghcr_image dest: ghcr.io/<owner>/<source>:<tag>
-        dest_path="$source"
+        if [[ "$source" == /* ]]; then
+            # Leading-slash: chained-on-own-build marker
+            local leaf="${source#/}"
+            # Normalize any residual double slash (defensive: //foo → /foo → foo)
+            leaf="${leaf//\/\//\/}"
+            sync_dest_path="library/${leaf}"
+            probe_dest_path="${leaf}"
+        else
+            # Normal NEW style: path-preserving mirror
+            sync_dest_path="$source"
+            probe_dest_path="$source"
+        fi
     else
-        # OLD style: dest is the dedicated GHCR repo name
-        dest_path="$ghcr_repo"
+        # OLD style: dedicated GHCR repo name
+        sync_dest_path="$ghcr_repo"
+        probe_dest_path="$ghcr_repo"
     fi
 
     if [[ "$tags_from_versions" == "true" ]]; then
@@ -126,8 +152,9 @@ _collect_entry_tags() {
                 --arg source "$source" \
                 --arg tag "$full_tag" \
                 --arg ghcr_repo "$ghcr_repo" \
-                --arg ghcr_image "ghcr.io/$owner/$dest_path:$full_tag" \
-                '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, ghcr_image: $ghcr_image}]')
+                --arg sync_image "ghcr.io/$owner/$sync_dest_path:$full_tag" \
+                --arg probe_image "ghcr.io/$owner/$probe_dest_path:$full_tag" \
+                '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, sync_image: $sync_image, probe_image: $probe_image}]')
         done
     else
         local tag_count
@@ -143,8 +170,9 @@ _collect_entry_tags() {
                 --arg source "$source" \
                 --arg tag "$tag" \
                 --arg ghcr_repo "$ghcr_repo" \
-                --arg ghcr_image "ghcr.io/$owner/$dest_path:$tag" \
-                '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, ghcr_image: $ghcr_image}]')
+                --arg sync_image "ghcr.io/$owner/$sync_dest_path:$tag" \
+                --arg probe_image "ghcr.io/$owner/$probe_dest_path:$tag" \
+                '. + [{source: $source, tag: $tag, ghcr_repo: $ghcr_repo, sync_image: $sync_image, probe_image: $probe_image}]')
         done
     fi
 
@@ -166,7 +194,9 @@ has_base_cache() {
 #   containers_json: JSON array of container names, e.g. '["ansible","postgres"]'
 #   versions_json:   JSON object of {container: version}, e.g. '{"ansible":"latest","postgres":"18.1"}'
 #   owner:           GHCR owner, e.g. "oorabona"
-# Output: JSON array of {source, tag, ghcr_repo, ghcr_image} for each unique image to cache
+# Output: JSON array of {source, tag, ghcr_repo, sync_image, probe_image} for each unique image to cache.
+#   sync_image:  GHCR dest used by sync_base_images_to_ghcr (copy target)
+#   probe_image: GHCR ref used for reachability probing (differs for chained-on-own-build sources)
 collect_all_cache_images() {
     local containers_json="$1"
     local versions_json="$2"
@@ -202,8 +232,8 @@ collect_all_cache_images() {
         done
     done
 
-    # Deduplicate by ghcr_image (same repo+tag cached once)
-    echo "$all_images" | jq -c 'unique_by(.ghcr_image)'
+    # Deduplicate by sync_image (same repo+tag synced once)
+    echo "$all_images" | jq -c 'unique_by(.sync_image)'
 }
 
 # Resolve the tag to use when verifying a GHCR cache entry is accessible.
@@ -491,10 +521,10 @@ sync_base_images_to_ghcr() {
 
     local synced=0 failed=0
     while IFS= read -r img; do
-        local source_img tag ghcr_image source_ref output
+        local source_img tag sync_image source_ref output
         source_img=$(echo "$img" | jq -r '.source')
         tag=$(echo "$img" | jq -r '.tag')
-        ghcr_image=$(echo "$img" | jq -r '.ghcr_image')
+        sync_image=$(echo "$img" | jq -r '.sync_image')
 
         # Reject control characters in any ref. base_image_cache.source is not
         # schema-validated upstream (see top-of-file docstring); a value with
@@ -503,22 +533,25 @@ sync_base_images_to_ghcr() {
         # line). Belt-and-suspenders alongside _escape_gha_command below.
         if [[ "$source_img" =~ [[:cntrl:]] ]] \
             || [[ "$tag" =~ [[:cntrl:]] ]] \
-            || [[ "$ghcr_image" =~ [[:cntrl:]] ]]; then
+            || [[ "$sync_image" =~ [[:cntrl:]] ]]; then
             echo "::warning::sync_base_images_to_ghcr: refusing image entry with control characters in ref (possible injection)"
             failed=$((failed + 1))
             continue
         fi
 
         if [[ "$source_img" == */* ]]; then
+            # Normalize double slash: leading-slash source (e.g. /php) concatenated with
+            # source_registry produces "docker.io//php" — collapse // → / in the path.
             source_ref="${source_registry}/${source_img}:${tag}"
+            source_ref="${source_ref//\/\//\/}"
         else
             source_ref="${source_registry}/library/${source_img}:${tag}"
         fi
 
         echo ""
-        echo "🔄 ${source_ref} → ${ghcr_image}"
+        echo "🔄 ${source_ref} → ${sync_image}"
 
-        if output=$(_sync_one_with_backoff "$source_ref" "$ghcr_image"); then
+        if output=$(_sync_one_with_backoff "$source_ref" "$sync_image"); then
             echo "  ✅ Synced"
             synced=$((synced + 1))
         else
@@ -535,10 +568,10 @@ sync_base_images_to_ghcr() {
             # Refs come from base_image_cache.source which is not schema-
             # validated (see top-of-file docstring); escape to prevent a
             # newline-bearing value from injecting a second workflow command.
-            local safe_source_ref safe_ghcr_image
+            local safe_source_ref safe_sync_image
             safe_source_ref=$(_escape_gha_command "$source_ref")
-            safe_ghcr_image=$(_escape_gha_command "$ghcr_image")
-            echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_ghcr_image}"
+            safe_sync_image=$(_escape_gha_command "$sync_image")
+            echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_sync_image}"
             failed=$((failed + 1))
         fi
     done < <(echo "$images_json" | jq -c '.[]')

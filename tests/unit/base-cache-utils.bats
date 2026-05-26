@@ -122,8 +122,8 @@ EOF
 
 # --- collect_all_cache_images / _collect_entry_tags: new-style dest path ---
 
-# BCU-11: NEW-style entry → ghcr_image dest preserves source path (library/postgres)
-# ghcr_image must be ghcr.io/<owner>/library/postgres:<tag> — NOT ghcr.io/<owner>/postgres:<tag>
+# BCU-11: NEW-style entry → sync_image dest preserves source path (library/postgres)
+# sync_image must be ghcr.io/<owner>/library/postgres:<tag> — NOT ghcr.io/<owner>/postgres:<tag>
 @test "BCU-11: NEW-style collect_all_cache_images dest preserves full source path with slash" {
     mkdir -p pgcontainer
     cat > pgcontainer/variants.yaml <<'EOF'
@@ -142,14 +142,14 @@ EOF
 
     run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
     [ "$status" -eq 0 ]
-    # ghcr_image must contain the two-segment path library/postgres (NOT just postgres)
+    # sync_image must contain the two-segment path library/postgres (NOT just postgres)
     [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
     # Distinctness assertion: the path portion after owner must contain a '/'
     # i.e. library/postgres not just postgres
     [[ "$output" != *"ghcr.io/myowner/postgres:"* ]]
 }
 
-# BCU-12: OLD-style entry → ghcr_image dest uses ghcr_repo (regression lock)
+# BCU-12: OLD-style entry → sync_image dest uses ghcr_repo (regression lock)
 @test "BCU-12: OLD-style collect_all_cache_images dest uses ghcr_repo (regression lock)" {
     mkdir -p ubuntucontainer
     cat > ubuntucontainer/config.yaml <<'EOF'
@@ -168,7 +168,7 @@ EOF
     [[ "$output" == *"ghcr.io/myowner/ubuntu-base:latest"* ]]
 }
 
-# BCU-13: MIXED collect_all_cache_images — both old and new dests correct
+# BCU-13: MIXED collect_all_cache_images — both old and new sync_image dests correct
 @test "BCU-13: MIXED collect_all_cache_images — old uses ghcr_repo, new uses source path" {
     mkdir -p mixcontainer
     cat > mixcontainer/variants.yaml <<'EOF'
@@ -196,7 +196,102 @@ EOF
     [[ "$output" == *"ghcr.io/myowner/library/postgres:"* ]]
 }
 
-# --- F-001 discriminator robustness: empty-string and explicit-nil ghcr_repo ---
+# --- Leading-slash (chained-on-own-build) source path splitting ---
+
+# BCU-14: leading-slash source → sync_image has library/ prefix, probe_image is leaf-only
+@test "BCU-14: leading-slash source (/php) → sync_image uses library/php, probe_image uses php" {
+    mkdir -p wpcontainer
+    cat > wpcontainer/config.yaml <<'EOF'
+base_image_cache:
+  - source: /php
+    tags: ["latest"]
+EOF
+
+    local containers_json='["wpcontainer"]'
+    local versions_json='{"wpcontainer":"latest"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # sync_image must use library/ prefix (mirror dest)
+    [[ "$output" == *'"sync_image":"ghcr.io/myowner/library/php:latest"'* ]]
+    # probe_image must be leaf-only (project's published container)
+    [[ "$output" == *'"probe_image":"ghcr.io/myowner/php:latest"'* ]]
+    # Distinctness: sync_image must not equal the probe_image path
+    [[ "$output" != *'"sync_image":"ghcr.io/myowner/php:latest"'* ]]
+}
+
+# BCU-15: normal NEW-style source → sync_image == probe_image
+@test "BCU-15: normal NEW-style source (library/postgres) → sync_image equals probe_image" {
+    mkdir -p pgcontainer2
+    cat > pgcontainer2/variants.yaml <<'EOF'
+versions:
+  - tag: "18-alpine"
+EOF
+    cat > pgcontainer2/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/postgres
+    tags_from_versions: true
+EOF
+
+    local containers_json='["pgcontainer2"]'
+    local versions_json='{"pgcontainer2":"18-alpine"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # Both fields must be identical for normal NEW-style entries
+    [[ "$output" == *'"sync_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
+    [[ "$output" == *'"probe_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
+}
+
+# BCU-15b: sync_base_images_to_ghcr with leading-slash source — source_ref normalised (no double slash)
+@test "BCU-15b: sync_base_images_to_ghcr leading-slash source — source_ref has no double slash" {
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            echo "MOCK_DOCKER_ARGS: $*"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+
+    # Leading-slash source /php: sync target is library/php, source field is /php
+    local input='[{"source":"/php","tag":"latest","sync_image":"ghcr.io/myowner/library/php:latest","probe_image":"ghcr.io/myowner/php:latest"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 0 ]
+    # Source ref must be docker.io/php:latest (// normalized to /), NOT docker.io//php:latest
+    [[ "$output" == *"docker.io/php:latest"* ]]
+    [[ "$output" != *"docker.io//php:latest"* ]]
+    # Dest must be the sync_image (library/php path)
+    [[ "$output" == *"ghcr.io/myowner/library/php:latest"* ]]
+}
+
+# BCU-15c: dedup by sync_image — entries with same sync_image path are deduplicated
+@test "BCU-15c: collect_all_cache_images dedup uses sync_image field" {
+    mkdir -p dedup1 dedup2
+    cat > dedup1/config.yaml <<'EOF'
+base_image_cache:
+  - source: /php
+    tags: ["latest"]
+EOF
+    cat > dedup2/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/php
+    tags: ["latest"]
+EOF
+
+    local containers_json='["dedup1","dedup2"]'
+    local versions_json='{"dedup1":"latest","dedup2":"latest"}'
+
+    run collect_all_cache_images "$containers_json" "$versions_json" "myowner"
+    [ "$status" -eq 0 ]
+    # dedup1 sync_image=ghcr.io/myowner/library/php:latest
+    # dedup2 sync_image=ghcr.io/myowner/library/php:latest — same → deduped to 1 entry
+    local count
+    count=$(echo "$output" | jq 'length')
+    [ "$count" -eq 1 ]
+}
+
+# --- discriminator robustness: empty-string and explicit-nil ghcr_repo ---
 # These cases are fully covered via emit_reachable_cache_args + remote_cr_applicable tests below.
 
 # --- remote_cr_applicable: pure decision helper ---
@@ -632,7 +727,7 @@ EOF
     }
     export -f docker
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 0 ]
     [[ "$output" == *"docker.io/library/alpine:3.18"* ]]
@@ -651,7 +746,7 @@ EOF
     export -f docker
 
     # Source has no slash — should be auto-prefixed with library/
-    local input='[{"source":"alpine","tag":"3.18","ghcr_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
+    local input='[{"source":"alpine","tag":"3.18","sync_image":"ghcr.io/oorabona/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 0 ]
     [[ "$output" == *"docker.io/library/alpine:3.18"* ]]
@@ -668,7 +763,7 @@ EOF
     }
     export -f docker
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"},{"source":"library/postgres","tag":"18-alpine","ghcr_image":"ghcr.io/x/library/postgres:18-alpine"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"},{"source":"library/postgres","tag":"18-alpine","sync_image":"ghcr.io/x/library/postgres:18-alpine"}]'
     run sync_base_images_to_ghcr "$input"
     # Non-zero so the GitHub Actions UI surfaces the failure; the caller's
     # job-level `continue-on-error: true` keeps dependent jobs unblocked.
@@ -691,7 +786,7 @@ EOF
     }
     export -f docker
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 1 ]
     # The injected line must never appear at column 0 — every stderr line is
@@ -712,7 +807,7 @@ EOF
     }
     export -f docker
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 1 ]
     # The CR-injected `::stop-commands::` must not appear preceded by raw CR.
@@ -736,7 +831,7 @@ EOF
     local malicious_source="library/alpine"$'\n'"::stop-commands::xx"
     local input
     input=$(jq -nc --arg s "$malicious_source" \
-        '[{"source":$s,"tag":"3.18","ghcr_image":"ghcr.io/x/lib/a:3.18"}]')
+        '[{"source":$s,"tag":"3.18","sync_image":"ghcr.io/x/lib/a:3.18"}]')
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 1 ]
     # The injected `::stop-commands::xx` line must NOT appear as a standalone
@@ -844,7 +939,7 @@ EOF
     export -f docker
     export SLEEP_CMD=:
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/lib/a:3.18"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/lib/a:3.18"}]'
     local malicious_registry=$'docker.io\n::stop-commands::xx'
     run sync_base_images_to_ghcr "$input" "$malicious_registry"
     [ "$status" -eq 1 ]
@@ -863,7 +958,7 @@ EOF
     }
     export -f docker
 
-    local input='[{"source":"library/alpine","tag":"3.18","ghcr_image":"ghcr.io/x/library/alpine:3.18"}]'
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
     run sync_base_images_to_ghcr "$input" "127.0.0.1:5000"
     [ "$status" -eq 0 ]
     [[ "$output" == *"127.0.0.1:5000/library/alpine:3.18"* ]]
