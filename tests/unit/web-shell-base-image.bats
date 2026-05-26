@@ -44,19 +44,18 @@ setup() {
 }
 
 @test "web-shell: ARG REMOTE_CR present in generator output for alpine/ubuntu/rocky (regression lock)" {
-    # Regression lock: migrated distros require BOTH a template-global
-    # `ARG REMOTE_CR=docker.io` AND a stage-scope `ARG REMOTE_CR` re-import
-    # (no default) immediately before the FROM line, so ${REMOTE_CR} resolves
-    # inside the FROM. The FROM line itself must reference ${REMOTE_CR}/library/<distro>.
-    # If the stage re-import is dropped, ${REMOTE_CR} in FROM resolves to empty
-    # despite the global ARG existing — Docker scopes ARG to stages.
+    # Regression lock: migrated distros require exactly ONE template-global
+    # `ARG REMOTE_CR=docker.io` declaration. The previous Two-ARG pattern (global +
+    # stage-local re-import) has been replaced by a single-ARG contract: CI overrides
+    # the value via --build-arg REMOTE_CR=...; the ARG is never re-declared in generated
+    # stages. The FROM line must reference ${REMOTE_CR}/library/<distro>.
     for distro in alpine ubuntu rocky; do
         local gen
         gen=$(bash "$GEN" "$TEMPLATE" "$distro" 2>/dev/null)
-        # Expect ≥ 2 ARG REMOTE_CR lines (template global + stage re-import)
+        # Expect exactly 1 ARG REMOTE_CR line (template-global only; no stage re-import)
         local count
         count=$(echo "$gen" | grep -cE '^ARG REMOTE_CR' || true)
-        [[ "$count" -ge 2 ]] || { echo "$distro: expected ≥ 2 ARG REMOTE_CR lines, found $count"; return 1; }
+        [[ "$count" -eq 1 ]] || { echo "$distro: expected exactly 1 ARG REMOTE_CR line, found $count"; return 1; }
         # Expect the FROM line to reference ${REMOTE_CR}/library/<distro>
         local from_uses_remote_cr
         case "$distro" in
