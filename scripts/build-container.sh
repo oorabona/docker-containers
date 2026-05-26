@@ -205,6 +205,10 @@ _resolve_base_image() {
             done
             if [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -ge 10 ]]; then
                 log_warning "base_image_ref cross-arg expansion capped at 10 passes: $_BASE_IMAGE_REF"
+                # Clear the unresolved reference so the caller receives a clean empty
+                # signal rather than a leaked ${...} literal that would propagate into
+                # the lineage file and appear as "unknown" on the dashboard.
+                _BASE_IMAGE_REF=""
             fi
         fi
 

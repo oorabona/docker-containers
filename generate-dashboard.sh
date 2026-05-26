@@ -52,10 +52,16 @@ resolve_lineage_file() {
     #    Only attempted when variants.yaml exists and is valid; malformed/missing → fall through.
     local variants_file="$SCRIPT_DIR/$container/variants.yaml"
     if [[ -f "$variants_file" ]]; then
-        # Validate YAML and get the latest version tag (versions[0].tag)
-        # yq exits non-zero on malformed YAML → skip to legacy fallback
-        local latest_version
-        latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || latest_version=""
+        # Validate YAML and get the latest version tag (versions[0].tag).
+        # Detect yq parse failure explicitly: malformed variants.yaml must cause an
+        # early return with no fallback to the legacy rollup — operator must fix the YAML.
+        local latest_version _yq_rc
+        latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null)
+        _yq_rc=$?
+        if [[ $_yq_rc -ne 0 ]]; then
+            log_warning "resolve_lineage_file: variants.yaml parse error for $container (yq rc=$_yq_rc) — returning empty"
+            return 0
+        fi
 
         if [[ -n "$latest_version" ]]; then
             # Get the default variant name for the latest version
@@ -115,7 +121,14 @@ resolve_lineage_file() {
         legacy_tag=$(jq -r '.tag // ""' "$lineage_file" 2>/dev/null) || legacy_tag=""
         local current_latest
         current_latest=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || current_latest=""
-        if [[ -n "$legacy_tag" && -n "$current_latest" && "$legacy_tag" == "$current_latest" ]]; then
+        # Prefix match: lineage_file.tag may be "1.7.7-debian" while
+        # variants_file.versions[0].tag is the version component "1.7.7".
+        # Accept the legacy rollup when its tag equals current_latest OR
+        # when it starts with "$current_latest-" (version prefix, different variant suffix).
+        # This prevents false positives (11.0-alpine vs 1.0) while allowing
+        # multi-variant containers where the tag carries a distro suffix.
+        if [[ -n "$legacy_tag" && -n "$current_latest" && \
+              ( "$legacy_tag" == "$current_latest" || "$legacy_tag" == "${current_latest}-"* ) ]]; then
             echo "$lineage_file"
             return
         fi
