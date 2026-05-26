@@ -235,13 +235,18 @@ _resolve_base_image() {
 
         unset _custom_arg_overrides
 
-        # Fix A2 post-substitution fallback: if config.yaml base_image had a template
-        # expression (e.g. distro-default like "${DEBIAN_TAG}") that still contains ${
-        # after all passes, fall back to the concrete FROM line in the Dockerfile.
-        # This fires for template-driven containers where the generated Dockerfile's FROM
-        # reflects the per-flavor base image — a more authoritative source than the
-        # config.yaml default-distro template.
-        if [[ "$_BASE_IMAGE_REF" =~ \$\{ && -n "$_dockerfile_from" && ! "$_dockerfile_from" =~ \$\{ ]]; then
+        # Post-substitution fallback: if config.yaml base_image had a template
+        # expression that still contains ${ after all passes, fall back to the concrete
+        # FROM line in the Dockerfile — but ONLY when _RESOLVE_FROM_GENERATED=1 (the
+        # caller has already expanded the template, so the generated Dockerfile's FROM
+        # is the authoritative per-flavor base image).
+        #
+        # For monolithic containers (no template generation), config.yaml::base_image is
+        # the source of truth. If its placeholders remain unresolved, that is a build-time
+        # configuration error — substituting an unrelated concrete FROM line (e.g. a
+        # multi-stage final-stage "FROM scratch") would write false lineage silently.
+        # Instead, leave the unresolved literal so sanitize-at-read displays "unknown".
+        if [[ "$_BASE_IMAGE_REF" =~ \$\{ && "$_use_from_only" == "1" && -n "$_dockerfile_from" && ! "$_dockerfile_from" =~ \$\{ ]]; then
             _BASE_IMAGE_REF="$_dockerfile_from"
         fi
 

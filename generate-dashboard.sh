@@ -360,11 +360,11 @@ resolve_variant_lineage_json() {
         build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
         local _raw_base_image
         _raw_base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
-        # Sanitize-at-read: pre-v2 lineage files may have leaked ${...} placeholders in
-        # base_image_ref. Detect by checking lineage_schema_version and the value itself.
-        local _schema_ver
-        _schema_ver=$(jq -r '.lineage_schema_version // ""' "$lineage_file" 2>/dev/null || echo "")
-        if [[ -z "$_schema_ver" || "$_raw_base_image" == *'${'* ]]; then
+        # Sanitize-at-read: lineage files written before #530 may have leaked ${...}
+        # placeholders in base_image_ref. Sanitize only when the value actually
+        # contains an unresolved placeholder — the absence of lineage_schema_version
+        # is NOT a signal of corruption; v1 files can have concrete values.
+        if [[ "$_raw_base_image" == *'${'* ]]; then
             base_image="unknown"
         else
             base_image="$_raw_base_image"
