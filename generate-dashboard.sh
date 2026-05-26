@@ -48,53 +48,80 @@ resolve_lineage_file() {
     local container="$1"
     local lineage_dir="$SCRIPT_DIR/.build-lineage"
 
-    # 1. Legacy: {container}.json exists → return directly (no variants.yaml needed)
-    local lineage_file="$lineage_dir/${container}.json"
-    if [[ -f "$lineage_file" ]]; then
-        echo "$lineage_file"
-        return
-    fi
-
-    # 2. Parse variants.yaml (malformed or missing → empty sentinel)
+    # 1. Per-tag resolution via variants.yaml (preferred — new builds write per-tag files).
+    #    Only attempted when variants.yaml exists and is valid; malformed/missing → fall through.
     local variants_file="$SCRIPT_DIR/$container/variants.yaml"
-    [[ -f "$variants_file" ]] || return 0
+    if [[ -f "$variants_file" ]]; then
+        # Validate YAML and get the latest version tag (versions[0].tag)
+        # yq exits non-zero on malformed YAML → skip to legacy fallback
+        local latest_version
+        latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || latest_version=""
 
-    # Validate YAML and get the latest version tag (versions[0].tag)
-    # yq exits non-zero on malformed YAML → return empty (never filesystem-first)
-    local latest_version
-    latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || return 0
-    [[ -n "$latest_version" ]] || return 0
+        if [[ -n "$latest_version" ]]; then
+            # Get the default variant name for the latest version
+            local default_name
+            default_name=$(yq -r '.versions[0].variants[] | select(.default == true) | .name' \
+                "$variants_file" 2>/dev/null | head -1) || true
 
-    # Get the default variant name for the latest version
-    local default_name
-    default_name=$(yq -r '.versions[0].variants[] | select(.default == true) | .name' \
-        "$variants_file" 2>/dev/null | head -1) || true
+            # Compute the on-disk tag for the default variant using variant_image_tag, which
+            # applies base_suffix correctly. Example: postgres version=18, variant=base,
+            # base_suffix=-alpine → tag "18-alpine" → file postgres-18-alpine.json (no -base suffix).
+            # Using a raw-name glob (*base.json) would incorrectly match postgres-18-alpine-base.json.
+            local found_file=""
+            if [[ -n "$default_name" ]]; then
+                local default_tag
+                default_tag=$(variant_image_tag "$latest_version" "$default_name" "$SCRIPT_DIR/$container" 2>/dev/null) || true
+                if [[ -n "$default_tag" && -f "$lineage_dir/${container}-${default_tag}.json" ]]; then
+                    found_file="$lineage_dir/${container}-${default_tag}.json"
+                fi
+            fi
 
-    # Compute the on-disk tag for the default variant using variant_image_tag, which
-    # applies base_suffix correctly. Example: postgres version=18, variant=base,
-    # base_suffix=-alpine → tag "18-alpine" → file postgres-18-alpine.json (no -base suffix).
-    # Using a raw-name glob (*base.json) would incorrectly match postgres-18-alpine-base.json.
-    local found_file=""
-    if [[ -n "$default_name" ]]; then
-        local default_tag
-        default_tag=$(variant_image_tag "$latest_version" "$default_name" "$SCRIPT_DIR/$container" 2>/dev/null) || true
-        if [[ -n "$default_tag" && -f "$lineage_dir/${container}-${default_tag}.json" ]]; then
-            found_file="$lineage_dir/${container}-${default_tag}.json"
+            # Fallback within per-tag resolution: any non-sidecar lineage file for the latest
+            # version (when default variant file missing, or for versions-only containers).
+            # Excludes .sbom.json, .history.json, .changelog.json to avoid false-positive matches.
+            if [[ -z "$found_file" ]]; then
+                found_file=$(find "$lineage_dir" -maxdepth 1 \
+                    -name "${container}-${latest_version}*.json" \
+                    -not -name "*.sbom.json" \
+                    -not -name "*.history.json" \
+                    -not -name "*.changelog.json" \
+                    2>/dev/null | sort | head -1)
+            fi
+
+            if [[ -n "$found_file" ]]; then
+                echo "$found_file"
+                return
+            fi
+
+            # Per-tag resolution found nothing for this version — fall through to legacy.
         fi
     fi
 
-    # Fallback: any lineage file for the latest version (when default variant file missing,
-    # or for versions-only containers that have no variants key)
-    if [[ -z "$found_file" ]]; then
-        for _f in "$lineage_dir/${container}-${latest_version}"*.json; do
-            if [[ -f "$_f" ]]; then
-                found_file="$_f"
-                break
-            fi
-        done
+    # 2. Legacy: {container}.json — only used when no variants.yaml exists (versions-only
+    #    containers pre-variants, or containers not yet migrated) OR when the legacy rollup's
+    #    embedded .tag field matches the current default tag (i.e. it IS the latest build's output).
+    #    A stale legacy file whose .tag does NOT match is skipped to avoid shadowing newer per-tag files.
+    local lineage_file="$lineage_dir/${container}.json"
+    if [[ -f "$lineage_file" ]]; then
+        if [[ ! -f "$variants_file" ]]; then
+            # No variants.yaml at all → legacy file is the only source of truth
+            echo "$lineage_file"
+            return
+        fi
+        # variants.yaml exists but per-tag resolution above returned nothing.
+        # Only use the legacy rollup if its embedded .tag matches the latest version
+        # (i.e. it was written for the current build, not a stale prior-era rollup).
+        local legacy_tag
+        legacy_tag=$(jq -r '.tag // ""' "$lineage_file" 2>/dev/null) || legacy_tag=""
+        local current_latest
+        current_latest=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || current_latest=""
+        if [[ -n "$legacy_tag" && -n "$current_latest" && "$legacy_tag" == *"$current_latest"* ]]; then
+            echo "$lineage_file"
+            return
+        fi
     fi
 
-    [[ -n "$found_file" ]] && echo "$found_file" || true
+    true
 }
 
 # Resolve lineage file for a specific variant of a container
