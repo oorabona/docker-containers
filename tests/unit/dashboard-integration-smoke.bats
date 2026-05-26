@@ -359,3 +359,49 @@ source_dashboard_fns() {
         return 1
     }
 }
+
+# ---------------------------------------------------------------------------
+# Regression: sanitize-at-read must key on placeholder presence, NOT on the
+# absence of lineage_schema_version (#530).
+# A v1 lineage file (no lineage_schema_version) with a CONCRETE base_image_ref
+# must be preserved, not blanked to "unknown".
+# ---------------------------------------------------------------------------
+@test "SMOKE-09: v1 lineage file with concrete base_image_ref is preserved, not blanked" {
+    local work="$TEST_TEMP_DIR/f1-concrete"
+    local lineage_dir="$work/.build-lineage"
+    local container_dir="$work/mycontainer"
+    mkdir -p "$lineage_dir" "$container_dir"
+
+    # Write a v1 lineage file (no lineage_schema_version field) with a CONCRETE base_image_ref.
+    # This simulates every cached lineage file that existed before #530 — they have concrete
+    # values and must NOT be downgraded to "unknown" just because the schema version field is absent.
+    jq -n \
+        '{container:"mycontainer", base_image_ref:"alpine:3.21", version:"1.0", tag:"1.0-alpine"}' \
+        > "$lineage_dir/mycontainer-1.0-alpine.json"
+
+    # Verify no lineage_schema_version is present in the fixture
+    local schema_ver
+    schema_ver=$(jq -r '.lineage_schema_version // "absent"' "$lineage_dir/mycontainer-1.0-alpine.json")
+    [[ "$schema_ver" == "absent" ]]
+
+    printf 'versions:\n  - tag: "1.0"\n    variants:\n      - name: alpine\n        default: true\n' \
+        > "$container_dir/variants.yaml"
+
+    export SCRIPT_DIR="$work"
+    source_dashboard_fns
+
+    # Invoke resolve_variant_lineage_json as the dashboard does
+    local result
+    result=$(resolve_variant_lineage_json "mycontainer" "1.0-alpine" "1.0" "unknown" "alpine")
+
+    local base_image_out
+    base_image_out=$(echo "$result" | jq -r '.base_image // ""')
+
+    # v1 file with concrete value must be preserved AS-IS ("alpine:3.21").
+    # Bug: the absent-schema-version check blanks it to "unknown" even when the value is concrete.
+    [[ "$base_image_out" == "alpine:3.21" ]] || {
+        echo "FAIL: expected 'alpine:3.21' (v1 concrete value preserved), got: '$base_image_out'"
+        echo "Full output: $result"
+        return 1
+    }
+}

@@ -391,3 +391,59 @@ ARG C" "FROM \${A}-base"
         return 1
     }
 }
+
+# =============================================================================
+# Regression: FROM-line fallback must NOT substitute an unresolved config.yaml
+# placeholder with an unrelated Dockerfile FROM (e.g. final-stage "FROM scratch")
+# when _RESOLVE_FROM_GENERATED is not set (#530).
+# =============================================================================
+
+@test "RBIS-12: Unresolved placeholder in config.yaml is NOT replaced by multi-stage FROM scratch" {
+    # config.yaml::base_image contains an unresolvable ${MYSTERY_TAG}
+    # Dockerfile is multi-stage; final non-AS stage is "FROM scratch"
+    # Bug: the post-substitution fallback replaces the unresolved literal with "scratch"
+    # Fix: fallback only fires when _RESOLVE_FROM_GENERATED=1; otherwise leave unresolved as-is
+    cat > ./config.yaml <<'YAML'
+base_image: "${MYSTERY_TAG}-base"
+YAML
+
+    # Multi-stage Dockerfile: builder stage + final stage FROM scratch
+    cat > ./Dockerfile <<'DOCKER'
+ARG BUILDER_IMAGE=golang:1.21
+FROM ${BUILDER_IMAGE} AS builder
+RUN echo build
+FROM scratch
+COPY --from=builder /app /app
+DOCKER
+
+    _prepare_build_args "1.0" ""
+
+    local label_args=""
+    local stderr_file
+    stderr_file=$(mktemp)
+    # Do NOT set _RESOLVE_FROM_GENERATED — this is a monolithic container, not template-generated
+    unset _RESOLVE_FROM_GENERATED
+    _resolve_base_image "./Dockerfile" "1.0" "label_args" 2>"$stderr_file" || true
+    local stderr_out
+    stderr_out=$(cat "$stderr_file")
+    rm -f "$stderr_file"
+
+    # The unresolved placeholder must NOT be replaced by "scratch" from the final stage.
+    # The value must remain as the unresolved literal (containing ${) so that
+    # sanitize-at-read can display "unknown" on the dashboard.
+    [[ "$_BASE_IMAGE_REF" != "scratch" ]] || {
+        echo "FAIL: _BASE_IMAGE_REF was set to 'scratch' (FROM-line fallback fired incorrectly)"
+        echo "  Expected: literal containing \${ (e.g. '\${MYSTERY_TAG}-base')"
+        echo "  stderr: $stderr_out"
+        return 1
+    }
+    # The value must still contain the unresolved placeholder (or be empty — both acceptable)
+    [[ -z "$_BASE_IMAGE_REF" || "$_BASE_IMAGE_REF" =~ \$\{ ]] || {
+        echo "FAIL: expected unresolved literal or empty, got concrete: '$_BASE_IMAGE_REF'"
+        return 1
+    }
+    # A warning about the un-resolved placeholder should have been emitted
+    [[ "$stderr_out" =~ "un-resolved" || "$stderr_out" =~ "left un-resolved" ]] || {
+        echo "NOTICE: no un-resolved warning emitted (acceptable if _BASE_IMAGE_REF is empty)"
+    }
+}
