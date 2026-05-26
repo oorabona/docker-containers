@@ -129,6 +129,14 @@ _resolve_base_image() {
     # Signal: caller sets _RESOLVE_FROM_GENERATED=1 before calling.
     local _use_from_only="${_RESOLVE_FROM_GENERATED:-0}"
 
+    # Fix A1: _BUILD_ARGS_RESOLVED is populated by _prepare_build_args (wrapper).
+    # When _resolve_base_image is called directly in tests (without the wrapper),
+    # declare the array as empty so ${#_BUILD_ARGS_RESOLVED[@]} doesn't trigger
+    # "unbound variable" under set -u.
+    if ! declare -p _BUILD_ARGS_RESOLVED &>/dev/null; then
+        declare -gA _BUILD_ARGS_RESOLVED=()
+    fi
+
     _BASE_IMAGE_REF=""
     if [[ "$_use_from_only" != "1" && -f "./config.yaml" ]]; then
         _BASE_IMAGE_REF=$(yq -r '.base_image // ""' ./config.yaml 2>/dev/null || true)
