@@ -85,8 +85,8 @@ source_dashboard_fns() {
     docker() { echo ""; }
     export -f docker
 
-    # Run the substitution pipeline
-    _prepare_build_args "$work" "v2.3.1"
+    # Run the substitution pipeline (version first, then flavor — matches production signature)
+    _prepare_build_args "v2.3.1" ""
     _resolve_base_image "$work/Dockerfile" "v2.3.1" "label_args"
 
     # Emit lineage
@@ -119,7 +119,7 @@ source_dashboard_fns() {
     docker() { echo ""; }
     export -f docker
 
-    _prepare_build_args "$work" "v2.3.1"
+    _prepare_build_args "v2.3.1" ""
     _resolve_base_image "$work/Dockerfile" "v2.3.1" "label_args"
     _emit_build_lineage \
         "mono-fixture" "v2.3.1" "v2.3.1-alpine" "" \
@@ -134,7 +134,7 @@ source_dashboard_fns() {
 
 # ---------------------------------------------------------------------------
 # Smoke 3 — Template fixture (Fix A2 end-to-end)
-# Pipeline: template generation → _RESOLVE_FROM_GENERATED=1 → _resolve_base_image
+# Pipeline: template generation → _resolve_base_image with from_generated=1
 # Assert: base_image_ref = "alpine:3.21" (from generated Dockerfile, not config)
 # ---------------------------------------------------------------------------
 @test "SMOKE-03: Template fixture (alpine) produces alpine:3.21 (Fix A2)" {
@@ -163,10 +163,10 @@ source_dashboard_fns() {
     [[ "$(head -1 "$generated_df")" == "FROM alpine:3.21" ]]
 
     # Prepare build args (populates _BUILD_ARGS_RESOLVED)
-    _prepare_build_args "$work" "1.0"
+    _prepare_build_args "1.0" ""
 
     # Resolve base image POST-template-generation (Fix A2): use generated Dockerfile
-    _RESOLVE_FROM_GENERATED=1 _resolve_base_image "$generated_df" "1.0" "label_args"
+    _resolve_base_image "$generated_df" "1.0" "label_args" "1"
 
     # Emit lineage
     _emit_build_lineage \
@@ -204,8 +204,8 @@ source_dashboard_fns() {
     local generated_df="$work/Dockerfile.debian"
     bash "$work/generate-dockerfile.sh" "$work/Dockerfile.template" "debian" > "$generated_df"
 
-    _prepare_build_args "$work" "1.0"
-    _RESOLVE_FROM_GENERATED=1 _resolve_base_image "$generated_df" "1.0" "label_args"
+    _prepare_build_args "1.0" ""
+    _resolve_base_image "$generated_df" "1.0" "label_args" "1"
 
     _emit_build_lineage \
         "tpl-fixture" "1.0" "1.0" "debian" \
@@ -304,7 +304,7 @@ source_dashboard_fns() {
     docker() { echo ""; }
     export -f docker
 
-    _prepare_build_args "$work" "v2.3.1"
+    _prepare_build_args "v2.3.1" ""
 
     # Simulate pre-fix behavior: clear _BUILD_ARGS_RESOLVED before resolving
     # (this mimics the state before Fix A1 was applied)
@@ -431,7 +431,7 @@ FROM ${REMOTE_CR}/library/alpine:${ALPINE_TAG}
 RUN echo test
 DOCKERFILE
 
-    # No config.yaml base_image — this path uses _RESOLVE_FROM_GENERATED=1
+    # No config.yaml base_image — this path passes from_generated=1 as 4th arg
     # (config.yaml is absent, so the FROM line in the generated file is authoritative)
 
     cd "$work" || return 1
@@ -450,7 +450,7 @@ DOCKERFILE
     _prepare_build_args "3.21" "" 2>/dev/null || true
 
     local label_args=""
-    _RESOLVE_FROM_GENERATED=1 _resolve_base_image "$work/Dockerfile.generated" "3.21" "label_args" 2>/dev/null || true
+    _resolve_base_image "$work/Dockerfile.generated" "3.21" "label_args" "1" 2>/dev/null || true
 
     # Post-fix: ARG REMOTE_CR=docker.io default is used → resolved to docker.io/library/alpine:3.21
     [[ "$_BASE_IMAGE_REF" == "docker.io/library/alpine:3.21" ]] || {
@@ -463,4 +463,50 @@ DOCKERFILE
         echo "FAIL: placeholder leaked in _BASE_IMAGE_REF: '$_BASE_IMAGE_REF'"
         return 1
     }
+}
+
+# ---------------------------------------------------------------------------
+# Finding #8: lineage_schema_version=2 consumer audit
+# Non-dashboard consumers (enrich-lineage.sh, extension-duration-utils.sh,
+# build-container action) read only fields that pre-date schema v2 and use
+# jq "// default" guards.  A v2 lineage file with the new fields must not
+# cause any consumer to error or silently skip.
+# ---------------------------------------------------------------------------
+@test "SMOKE-11: enrich-lineage and extension-duration consumers do not error on v2 lineage" {
+    local work="$TEST_TEMP_DIR/schema-v2-audit"
+    local lineage_dir="$work/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Write a schema-v2 lineage file (adds lineage_schema_version + base_image_ref
+    # fields that did not exist in v1).
+    jq -n '{
+        lineage_schema_version: 2,
+        container: "test-container",
+        version: "1.0",
+        tag: "1.0-alpine",
+        base_image_ref: "alpine:3.21",
+        base_image_digest: "sha256:aaaa",
+        multi_arch_index_digest: "sha256:bbbb",
+        duration_seconds: 42,
+        built_at: "2026-01-01T00:00:00+00:00"
+    }' > "$lineage_dir/test-container-1.0-alpine.json"
+
+    # Simulate enrich-lineage.sh read path: reads .container, .tag, .multi_arch_index_digest
+    local container_field tag_field midx_field
+    container_field=$(jq -re '.container // empty' "$lineage_dir/test-container-1.0-alpine.json" 2>/dev/null)
+    tag_field=$(jq -r '.tag // empty' "$lineage_dir/test-container-1.0-alpine.json" 2>/dev/null) || tag_field=""
+    midx_field=$(jq -r '.multi_arch_index_digest // empty' "$lineage_dir/test-container-1.0-alpine.json" 2>/dev/null) || midx_field=""
+
+    [[ "$container_field" == "test-container" ]] || { echo "FAIL: enrich-lineage .container read failed"; return 1; }
+    [[ "$tag_field" == "1.0-alpine" ]] || { echo "FAIL: enrich-lineage .tag read failed"; return 1; }
+    [[ "$midx_field" == "sha256:bbbb" ]] || { echo "FAIL: enrich-lineage .multi_arch_index_digest read failed"; return 1; }
+
+    # Simulate extension-duration-utils.sh read path: reads .duration_seconds
+    local duration_field
+    duration_field=$(jq -r '.duration_seconds // 0' "$lineage_dir/test-container-1.0-alpine.json" 2>/dev/null || echo 0)
+    [[ "$duration_field" == "42" ]] || { echo "FAIL: extension-duration .duration_seconds read failed"; return 1; }
+
+    # The new fields (lineage_schema_version, base_image_ref) are additive.
+    # Consumers using '// default' guards tolerate unknown fields transparently.
+    true
 }

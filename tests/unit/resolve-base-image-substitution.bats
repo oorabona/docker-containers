@@ -243,11 +243,11 @@ ARG C" "FROM \${A}-base"
     "$fixture_dir/generate-dockerfile.sh" "./Dockerfile.template" "alpine" "1.0" > "$generated"
 
     # Call _resolve_base_image on the GENERATED Dockerfile (post-fix behavior).
-    # build_container sets _RESOLVE_FROM_GENERATED=1 when a template was expanded —
+    # build_container passes from_generated=1 (4th arg) when a template was expanded —
     # this signals _resolve_base_image to skip config.yaml::base_image (default-distro)
     # and use the concrete FROM line from the generated Dockerfile instead.
     local label_args_after=""
-    _RESOLVE_FROM_GENERATED=1 _resolve_base_image "$generated" "1.0" "label_args_after" 2>/dev/null || true
+    _resolve_base_image "$generated" "1.0" "label_args_after" "1" 2>/dev/null || true
 
     rm -f "$generated"
     cd "$TEST_DIR/container" || true
@@ -287,15 +287,25 @@ ARG C" "FROM \${A}-base"
 @test "RBIS-09: build_arg with quote character produces valid lineage JSON" {
     make_dockerfile "" "FROM alpine:3.21"
     # Values with quotes fail the build_args validator (correct: unsafe shell chars).
-    # We test _emit_build_lineage directly with a value injected after _prepare_build_args,
-    # simulating a hypothetical escaped value that could reach the write path.
-    # The real guard is: validator rejects such values in config.yaml. The Fix C test
-    # verifies that IF such a value reaches _emit_build_lineage, it produces valid JSON.
-    make_config "alpine:3.21"
-    _prepare_build_args "1.0" ""
-    # Inject the test value directly into _BUILD_ARGS (bypasses validator) to simulate
-    # the JSON escaping behaviour under Fix C.
-    _BUILD_ARGS="$_BUILD_ARGS --build-arg NOTE=has-quotes-here"
+    # We test _emit_build_lineage directly by writing config.yaml with special characters
+    # that the YAML parser accepts but that would break inline JSON string construction.
+    # Fix C uses jq --argjson to pass the build_args blob, so values with double-quotes
+    # and backslashes are safely escaped.
+    # Reverting Fix C to inline string construction would produce malformed JSON on this input.
+    #
+    # Write config.yaml with a YAML double-quoted string that contains " and \ chars.
+    # The YAML parser handles them; the test verifies jq --argjson writes valid JSON
+    # and that .build_args.NOTE round-trips the value losslessly.
+    cat > ./config.yaml << 'CONFIG'
+base_image: "alpine:3.21"
+build_args:
+  NOTE: "has \"double\" and \\back"
+CONFIG
+
+    # _prepare_build_args calls the validator which rejects these chars — bypass it
+    # and set state directly to simulate a value reaching _emit_build_lineage.
+    declare -gA _BUILD_ARGS_RESOLVED=()
+    _BUILD_ARGS=""
     # _BASE_IMAGE_REF and _BASE_DIGEST must be set for lineage
     _BASE_IMAGE_REF="alpine:3.21"
     _BASE_DIGEST=""
@@ -317,10 +327,18 @@ ARG C" "FROM \${A}-base"
         return 1
     }
 
-    # Must be valid JSON
+    # (a) Must be valid JSON
     jq '.' "$lineage_file" > /dev/null 2>&1 || {
         echo "FAIL: lineage file is not valid JSON"
         cat "$lineage_file"
+        return 1
+    }
+
+    # (b) NOTE field must round-trip losslessly — double-quote and backslash preserved
+    local note_val
+    note_val=$(jq -r '.build_args.NOTE // ""' "$lineage_file")
+    [[ "$note_val" == 'has "double" and \back' ]] || {
+        echo "FAIL: NOTE round-trip failed — expected 'has \"double\" and \\back', got: '$note_val'"
         return 1
     }
 }
@@ -393,16 +411,59 @@ ARG C" "FROM \${A}-base"
 }
 
 # =============================================================================
+# Finding #5 (senior review MEDIUM): _BUILD_ARGS_RESOLVED must not carry call-N
+# values into a failed call N+1 (cross-call contamination).
+# Pre-fix: declare -gA _BUILD_ARGS_RESOLVED=() was AFTER the || return $? guard,
+# so it was never executed on failure — stale values from call N survived into N+1.
+# Post-fix: the reset is unconditional (before prepare_build_args invocation).
+# =============================================================================
+
+@test "RBIS-16: _BUILD_ARGS_RESOLVED is empty after failed second call, not carrying call-1 values" {
+    # Call 1: valid config → populates _BUILD_ARGS_RESOLVED
+    make_dockerfile "ARG OS_IMAGE_BASE
+ARG OS_IMAGE_TAG" "FROM \${OS_IMAGE_BASE}:\${OS_IMAGE_TAG}"
+    make_config '${OS_IMAGE_BASE}:${OS_IMAGE_TAG}' '  OS_IMAGE_BASE: "alpine"
+  OS_IMAGE_TAG: "3.21"'
+
+    _prepare_build_args "1.0" ""
+
+    # Verify call 1 populated the map
+    [[ "${#_BUILD_ARGS_RESOLVED[@]}" -gt 0 ]] || {
+        echo "FAIL: call 1 did not populate _BUILD_ARGS_RESOLVED (prerequisite check)"
+        return 1
+    }
+
+    # Call 2: invalid config (REMOTE_CR is a forbidden key) → prepare_build_args fails
+    printf 'base_image: "alpine:3.21"\nbuild_args:\n  REMOTE_CR: "evil.example.com"\n' > ./config.yaml
+
+    local rc=0
+    _prepare_build_args "1.0" "" 2>/dev/null || rc=$?
+
+    # Failure expected
+    [[ "$rc" -ne 0 ]] || {
+        echo "FAIL: call 2 should have failed (REMOTE_CR forbidden), got rc=0"
+        return 1
+    }
+
+    # _BUILD_ARGS_RESOLVED must be EMPTY — not carrying call-1 values
+    [[ "${#_BUILD_ARGS_RESOLVED[@]}" -eq 0 ]] || {
+        echo "FAIL: _BUILD_ARGS_RESOLVED still has ${#_BUILD_ARGS_RESOLVED[@]} keys after failed call 2"
+        echo "  Keys (contamination from call 1): ${!_BUILD_ARGS_RESOLVED[*]}"
+        return 1
+    }
+}
+
+# =============================================================================
 # Regression: FROM-line fallback must NOT substitute an unresolved config.yaml
 # placeholder with an unrelated Dockerfile FROM (e.g. final-stage "FROM scratch")
-# when _RESOLVE_FROM_GENERATED is not set (#530).
+# when from_generated=0 (default; monolithic container, no template expansion, #530).
 # =============================================================================
 
 @test "RBIS-12: Unresolved placeholder in config.yaml is NOT replaced by multi-stage FROM scratch" {
     # config.yaml::base_image contains an unresolvable ${MYSTERY_TAG}
     # Dockerfile is multi-stage; final non-AS stage is "FROM scratch"
     # Bug: the post-substitution fallback replaces the unresolved literal with "scratch"
-    # Fix: fallback only fires when _RESOLVE_FROM_GENERATED=1; otherwise leave unresolved as-is
+    # Fix: fallback only fires when from_generated=1; otherwise leave unresolved as-is
     cat > ./config.yaml <<'YAML'
 base_image: "${MYSTERY_TAG}-base"
 YAML
@@ -421,8 +482,8 @@ DOCKER
     local label_args=""
     local stderr_file
     stderr_file=$(mktemp)
-    # Do NOT set _RESOLVE_FROM_GENERATED — this is a monolithic container, not template-generated
-    unset _RESOLVE_FROM_GENERATED
+    # Do NOT pass from_generated=1 — this is a monolithic container, not template-generated
+    # (default 4th arg of 0 means monolithic semantics)
     _resolve_base_image "./Dockerfile" "1.0" "label_args" 2>"$stderr_file" || true
     local stderr_out
     stderr_out=$(cat "$stderr_file")

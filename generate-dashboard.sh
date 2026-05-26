@@ -34,16 +34,18 @@ CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 # --- Lineage resolution helpers ---
 
 # Resolve the lineage JSON file for a container
-# Fix B: uses default_variant() selection from variants.yaml (NEVER filesystem-first).
+# Fix B: uses an inline yq query equivalent to default_variant() to select the
+# default variant from variants.yaml (NEVER filesystem-first).
 #
 # Precedence:
-#   1. {container}.json exists → return it (legacy rollup path)
-#   2. variants.yaml exists → parse it:
+#   1. variants.yaml exists → parse it (preferred — new builds write per-tag files):
 #      a. Malformed YAML → return empty sentinel (never fall back to filesystem-first)
-#      b. Latest version (versions[0]) + default variant name → try exact match
+#      b. Latest version (versions[0]) + default variant name (inline yq) → try exact match
 #      c. Default variant file missing → fallback to any file for the latest version
 #      d. No variants key (versions-only) → any file for the latest version
-#   3. No variants.yaml → return empty
+#   2. Legacy rollup: {container}.json — only when no variants.yaml exists, or when its
+#      embedded .tag matches the current default (i.e. it IS the latest build's output)
+#   3. No variants.yaml and no legacy rollup → return empty
 resolve_lineage_file() {
     local container="$1"
     local lineage_dir="$SCRIPT_DIR/.build-lineage"
@@ -119,16 +121,16 @@ resolve_lineage_file() {
         # (i.e. it was written for the current build, not a stale prior-era rollup).
         local legacy_tag
         legacy_tag=$(jq -r '.tag // ""' "$lineage_file" 2>/dev/null) || legacy_tag=""
-        local current_latest
-        current_latest=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || current_latest=""
+        # Reuse latest_version (already resolved at the top of this function) rather
+        # than issuing a second yq parse of variants_file.
         # Prefix match: lineage_file.tag may be "1.7.7-debian" while
         # variants_file.versions[0].tag is the version component "1.7.7".
-        # Accept the legacy rollup when its tag equals current_latest OR
-        # when it starts with "$current_latest-" (version prefix, different variant suffix).
+        # Accept the legacy rollup when its tag equals latest_version OR
+        # when it starts with "$latest_version-" (version prefix, different variant suffix).
         # This prevents false positives (11.0-alpine vs 1.0) while allowing
         # multi-variant containers where the tag carries a distro suffix.
-        if [[ -n "$legacy_tag" && -n "$current_latest" && \
-              ( "$legacy_tag" == "$current_latest" || "$legacy_tag" == "${current_latest}-"* ) ]]; then
+        if [[ -n "$legacy_tag" && -n "$latest_version" && \
+              ( "$legacy_tag" == "$latest_version" || "$legacy_tag" == "${latest_version}-"* ) ]]; then
             echo "$lineage_file"
             return
         fi

@@ -15,7 +15,7 @@ Five atomic fixes address base_image_ref leaking `${...}` placeholders into line
 
 - **A2** (`scripts/build-container.sh::_resolve_base_image` ~line 131, `build_container` caller ~line 456): `_resolve_base_image` is now called post-template-generation when `_RESOLVE_FROM_GENERATED=1`. For template containers (web-shell, github-runner), the generated per-flavor Dockerfile's `FROM` line is the authoritative base image source. Calling before template generation reads the default-distro value from `config.yaml`, not the per-flavor value.
 
-- **B** (`generate-dashboard.sh::resolve_lineage_file`): Lineage file lookup now uses the container's default variant (via `variant_property default_variant`) when no flavor-specific file is found, rather than falling back to unversioned or network-fetched data.
+- **B** (`generate-dashboard.sh::resolve_lineage_file`): Lineage file lookup now uses the container's default variant (via an inline yq query equivalent to `default_variant()`) when no flavor-specific file is found, rather than falling back to unversioned or network-fetched data.
 
 - **C** (`scripts/build-container.sh::_emit_build_lineage`): `jq -n` with `--arg` / `--argjson` replaces inline JSON string construction, eliminating shell-metacharacter injection and quoting hazards in the emitted lineage JSON.
 
@@ -30,6 +30,19 @@ Five atomic fixes address base_image_ref leaking `${...}` placeholders into line
 **(b) Dashboard-side substitution (resolve `${...}` at regen time).** Rejected because `generate-dashboard.sh` does not have access to the build-time ARG values. The dashboard reads already-written lineage files; it cannot reconstruct the `_prepare_build_args` resolved set from `config.yaml` without re-implementing the entire build pipeline. The bug is a write-time omission — the fix belongs at write time (A1/A2).
 
 **(c) Per-distro `yq` read at build time (alternative to A2 relocation).** Equivalent in outcome to relocating `_resolve_base_image` post-template-generation, but requires threading `flavor` as a new parameter through the call chain and adding a yq lookup that duplicates what `generate-dockerfile.sh` already does. The A2 relocation uses the generated Dockerfile as the single authoritative source, which is simpler and less coupled.
+
+### lineage_schema_version: 2 — consumer audit
+
+`lineage_schema_version: 2` is new as of #530. Audit of all `.build-lineage/*.json` consumers (scripts/, helpers/, .github/):
+
+| Consumer | Fields read | Handles schema v2? |
+|----------|-------------|-------------------|
+| `generate-dashboard.sh` | all fields incl. `base_image_ref`, `lineage_schema_version` | Yes — primary consumer; sanitize-at-read keyed on placeholder presence, not version field |
+| `scripts/enrich-lineage.sh` | `.container`, `.tag`, `.multi_arch_index_digest` | Yes — uses `// empty` guards; ignores unknown fields |
+| `helpers/extension-duration-utils.sh` | `.duration_seconds` | Yes — uses `// 0` guard; ignores unknown fields |
+| `.github/actions/build-container/action.yaml` | file existence check only (no jq field reads) | Yes — additive fields are transparent |
+
+Schema v2 currently has only the dashboard as a semantic consumer of the new fields. Future tools that read `base_image_ref` or `lineage_schema_version` must handle the field with a `// default` guard for backward compatibility with v1 files still present in the GHA cache.
 
 ### Post-merge expectation
 

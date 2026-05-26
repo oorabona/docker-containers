@@ -101,12 +101,14 @@ _configure_cache() {
 # _BUILD_ARGS_RESOLVED maps ARG_NAME → value for every --build-arg in _BUILD_ARGS.
 # _resolve_base_image reads this global as its Fix-A1 substitution source (Step 2.5).
 _prepare_build_args() {
+    # Reset the resolved map unconditionally so a failed call never contaminates
+    # the next call with stale values from the previous successful invocation.
+    declare -gA _BUILD_ARGS_RESOLVED=()
     prepare_build_args "$1" "$2" || return $?
     # Populate _BUILD_ARGS_RESOLVED from the assembled _BUILD_ARGS string.
     # Each --build-arg NAME=VALUE token is extracted; the map is consumed by
     # _resolve_base_image to substitute ARGs whose values come from config.yaml
     # build_args or version params (not visible via Dockerfile ARG defaults).
-    declare -gA _BUILD_ARGS_RESOLVED=()
     local _ba_token
     while IFS= read -r _ba_token; do
         local _ba_name="${_ba_token%%=*}"
@@ -117,17 +119,22 @@ _prepare_build_args() {
 
 # Resolve base image reference from config.yaml or Dockerfile, substitute variables
 # Sets: _BASE_IMAGE_REF, _BASE_DIGEST, adds to label_args
+# Args: <dockerfile> <version> <label_args_var> [<from_generated>]
+#   from_generated: 1 = use the concrete FROM line in the generated Dockerfile as the
+#     authoritative base-image source (Fix A2); 0 = use config.yaml::base_image (default).
+#     Pass this explicitly from every call site — callers that forget default to monolithic
+#     semantics (0), which is safe but may miss the per-flavor fix for template containers.
 _resolve_base_image() {
     local dockerfile="$1"
     local version="$2"
     local label_args_var="$3"  # name of the label_args variable to append to
+    local from_generated="${4:-0}"  # Fix A2 positional param (replaces _RESOLVE_FROM_GENERATED env)
 
     # Fix A2: when called with a generated Dockerfile (post-template-generation),
     # the concrete FROM line is the authoritative source.  In that case, skip
     # config.yaml::base_image — it contains the default-distro template value and
     # would override the per-flavor FROM already baked into the generated file.
-    # Signal: caller sets _RESOLVE_FROM_GENERATED=1 before calling.
-    local _use_from_only="${_RESOLVE_FROM_GENERATED:-0}"
+    local _use_from_only="$from_generated"
 
     # Fix A1: _BUILD_ARGS_RESOLVED is populated by _prepare_build_args (wrapper).
     # When _resolve_base_image is called directly in tests (without the wrapper),
@@ -205,9 +212,8 @@ _resolve_base_image() {
             done
             if [[ "$_BASE_IMAGE_REF" =~ \$ && $_pass -ge 10 ]]; then
                 log_warning "base_image_ref cross-arg expansion capped at 10 passes: $_BASE_IMAGE_REF"
-                # Clear the unresolved reference so the caller receives a clean empty
-                # signal rather than a leaked ${...} literal that would propagate into
-                # the lineage file and appear as "unknown" on the dashboard.
+                # On cap-hit, _BASE_IMAGE_REF is cleared to empty string.
+                # Sanitize-at-read in the dashboard displays "unknown" downstream.
                 _BASE_IMAGE_REF=""
             fi
         fi
@@ -458,11 +464,11 @@ build_container() {
 
     # Fix A2: resolve base image AFTER template generation so the correct per-flavor
     # FROM line (from the generated Dockerfile) is visible.  For monolithic containers
-    # _generated_dockerfile is empty and _RESOLVE_FROM_GENERATED stays 0 so
-    # config.yaml::base_image is still read — no behavior change for monolithic path.
+    # _generated_dockerfile is empty and from_generated=0 so config.yaml::base_image
+    # is still read — no behavior change for monolithic path.
     local _rbi_generated=0
     [[ -n "$_generated_dockerfile" ]] && _rbi_generated=1
-    _RESOLVE_FROM_GENERATED="$_rbi_generated" _resolve_base_image "$dockerfile" "$version" "label_args"
+    _resolve_base_image "$dockerfile" "$version" "label_args" "$_rbi_generated"
 
     # Pre-build context hook: download external artifacts needed by the Dockerfile
     # (e.g., github-runner downloads the runner agent tarball via gh CLI)

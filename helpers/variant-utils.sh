@@ -177,7 +177,8 @@ variant_property() {
 #   5. Multiple default: true entries → returns only the first match (yq | head -1).
 #      Callers checking for multi-default ambiguity should test the count separately.
 #
-# Used by: generate-dashboard.sh::resolve_lineage_file (Fix B, #530)
+# Note: generate-dashboard.sh::resolve_lineage_file (Fix B, #530) uses an inline yq
+#   query equivalent to this function rather than calling it directly.
 # Used by: build_container (future: per-variant tag routing)
 # Global consumed by _resolve_base_image: _BUILD_ARGS_RESOLVED (populated by
 #   _prepare_build_args — see scripts/build-container.sh Fix A1, #530).
