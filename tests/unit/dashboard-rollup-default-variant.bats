@@ -307,3 +307,85 @@ YAML
         return 1
     }
 }
+
+# =============================================================================
+# Finding #1 (gate r3 codex MEDIUM): Legacy rollup must NOT shadow newer per-tag file
+# =============================================================================
+
+@test "DRDV-11: Per-tag lineage preferred over stale legacy rollup when both exist" {
+    # Scenario: cache contains an OLD {container}.json (legacy rollup from a prior-era build)
+    # AND a current {container}-{version}-{variant}.json (per-tag file from the new build).
+    # The legacy rollup carries a STALE base_image_ref; the per-tag file has the current truth.
+    # resolve_lineage_file must return the PER-TAG file, not the legacy rollup.
+
+    # Legacy rollup — stale base_image_ref
+    jq -n '{lineage_schema_version: 2, container: "myapp", base_image_ref: "OLD-stale-value", version: "2.0", tag: "myapp-2.0-alpine"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/myapp.json"
+
+    # Per-tag file — current truth
+    jq -n '{lineage_schema_version: 2, container: "myapp", base_image_ref: "CURRENT-fresh-value", version: "2.0", tag: "2.0-alpine"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/myapp-2.0-alpine.json"
+
+    make_variants_yaml "$TEST_TEMP_DIR/myapp" "$(cat <<'YAML'
+versions:
+  - tag: "2.0"
+    variants:
+      - name: alpine
+        default: true
+YAML
+)"
+
+    run resolve_lineage_file "myapp"
+    [ "$status" -eq 0 ]
+    # Must return the per-tag file, NOT the legacy rollup
+    [[ "$output" == *"myapp-2.0-alpine.json" ]] || {
+        echo "FAIL: expected per-tag file myapp-2.0-alpine.json, got: '$output'"
+        return 1
+    }
+    [[ "$output" != *"myapp.json" ]] || {
+        echo "FAIL: returned stale legacy rollup myapp.json instead of per-tag file"
+        return 1
+    }
+
+    # Confirm the resolved file actually carries the CURRENT base_image_ref
+    local resolved_base
+    resolved_base=$(jq -r '.base_image_ref' "$output")
+    [[ "$resolved_base" == "CURRENT-fresh-value" ]] || {
+        echo "FAIL: base_image_ref is stale: '$resolved_base' (expected CURRENT-fresh-value)"
+        return 1
+    }
+}
+
+# =============================================================================
+# Finding #2 (gate r3 codex LOW): Sidecar files must not be returned by fallback glob
+# =============================================================================
+
+@test "DRDV-12: Sidecar files excluded from fallback glob — no false-positive match" {
+    # Scenario: .build-lineage/ contains ONLY sidecar files for a container
+    # (e.g. foo-1.0-alpine.sbom.json, foo-1.0-alpine.history.json).
+    # No actual lineage file (foo-1.0-alpine.json) exists.
+    # resolve_lineage_file must return empty string, not a sidecar file.
+
+    mkdir -p "$TEST_TEMP_DIR/.build-lineage"
+    # Create sidecar files only — NOT a real lineage file
+    echo '{"type":"sbom"}' > "$TEST_TEMP_DIR/.build-lineage/foo-1.0-alpine.sbom.json"
+    echo '{"type":"history"}' > "$TEST_TEMP_DIR/.build-lineage/foo-1.0-alpine.history.json"
+    echo '{"type":"changelog"}' > "$TEST_TEMP_DIR/.build-lineage/foo-1.0-alpine.changelog.json"
+
+    make_variants_yaml "$TEST_TEMP_DIR/foo" "$(cat <<'YAML'
+versions:
+  - tag: "1.0"
+    variants:
+      - name: alpine
+        default: true
+YAML
+)"
+
+    run resolve_lineage_file "foo"
+    [ "$status" -eq 0 ]
+    # Must return empty — no real lineage file exists, sidecar files must not match
+    [[ -z "$output" ]] || {
+        echo "FAIL: expected empty output but got: '$output'"
+        return 1
+    }
+}
