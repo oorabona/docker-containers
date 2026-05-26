@@ -1,0 +1,15 @@
+build:
+  version_retention: 3
+
+versions:
+  - tag: "1.0"
+    variants:
+      - name: alpine
+        suffix: "-alpine"
+        flavor: alpine
+        description: "Alpine — lightweight, default variant"
+        default: true
+      - name: debian
+        suffix: ""
+        flavor: debian
+        description: "Debian — APT package manager"

@@ -166,7 +166,22 @@ variant_property() {
     fi
 }
 
-# Get the default variant name for a version
+# Get the default variant name for a container.
+#
+# Canonical precedence (used by resolve_lineage_file in generate-dashboard.sh):
+#   1. Single variant with default: true wins.
+#   2. If exactly one variant exists, it is the default.
+#   3. If multiple variants exist without default: true, returns "" (empty sentinel).
+#      Callers must treat "" as "unknown" — never fall back to filesystem-first.
+#   4. Malformed variants.yaml (yq parse error) → returns "" + caller sees empty.
+#   5. Multiple default: true entries → returns only the first match (yq | head -1).
+#      Callers checking for multi-default ambiguity should test the count separately.
+#
+# Note: generate-dashboard.sh::resolve_lineage_file (Fix B, #530) uses an inline yq
+#   query equivalent to this function rather than calling it directly.
+# Used by: build_container (future: per-variant tag routing)
+# Global consumed by _resolve_base_image: _BUILD_ARGS_RESOLVED (populated by
+#   _prepare_build_args — see scripts/build-container.sh Fix A1, #530).
 default_variant() {
     local container_dir="$1"
     local pg_version="${2:-}"

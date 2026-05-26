@@ -1,0 +1,5 @@
+ARG OS_IMAGE_BASE
+ARG OS_IMAGE_TAG
+FROM ${OS_IMAGE_BASE}:${OS_IMAGE_TAG}
+
+RUN echo "monolithic fixture"

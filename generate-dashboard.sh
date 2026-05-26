@@ -34,21 +34,108 @@ CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
 # --- Lineage resolution helpers ---
 
 # Resolve the lineage JSON file for a container
-# Tries {container}.json first, then falls back to {container}-*.json (first match)
+# Fix B: uses an inline yq query equivalent to default_variant() to select the
+# default variant from variants.yaml (NEVER filesystem-first).
+#
+# Precedence:
+#   1. variants.yaml exists → parse it (preferred — new builds write per-tag files):
+#      a. Malformed YAML → return empty sentinel (never fall back to filesystem-first)
+#      b. Latest version (versions[0]) + default variant name (inline yq) → try exact match
+#      c. Default variant file missing → fallback to any file for the latest version
+#      d. No variants key (versions-only) → any file for the latest version
+#   2. Legacy rollup: {container}.json — only when no variants.yaml exists, or when its
+#      embedded .tag matches the current default (i.e. it IS the latest build's output)
+#   3. No variants.yaml and no legacy rollup → return empty
 resolve_lineage_file() {
     local container="$1"
     local lineage_dir="$SCRIPT_DIR/.build-lineage"
+
+    # 1. Per-tag resolution via variants.yaml (preferred — new builds write per-tag files).
+    #    Only attempted when variants.yaml exists and is valid; malformed/missing → fall through.
+    local variants_file="$SCRIPT_DIR/$container/variants.yaml"
+    if [[ -f "$variants_file" ]]; then
+        # Validate YAML and get the latest version tag (versions[0].tag).
+        # Detect yq parse failure explicitly: malformed variants.yaml must cause an
+        # early return with no fallback to the legacy rollup — operator must fix the YAML.
+        local latest_version
+        if ! latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null); then
+            log_warning "resolve_lineage_file: variants.yaml parse error for $container — returning empty"
+            return 0
+        fi
+
+        if [[ -n "$latest_version" ]]; then
+            # Get the default variant name for the latest version
+            local default_name
+            default_name=$(yq -r '.versions[0].variants[] | select(.default == true) | .name' \
+                "$variants_file" 2>/dev/null | head -1) || true
+
+            # Compute the on-disk tag for the default variant using variant_image_tag, which
+            # applies base_suffix correctly. Example: postgres version=18, variant=base,
+            # base_suffix=-alpine → tag "18-alpine" → file postgres-18-alpine.json (no -base suffix).
+            # Using a raw-name glob (*base.json) would incorrectly match postgres-18-alpine-base.json.
+            local found_file=""
+            if [[ -n "$default_name" ]]; then
+                local default_tag
+                default_tag=$(variant_image_tag "$latest_version" "$default_name" "$SCRIPT_DIR/$container" 2>/dev/null) || true
+                if [[ -n "$default_tag" && -f "$lineage_dir/${container}-${default_tag}.json" ]]; then
+                    found_file="$lineage_dir/${container}-${default_tag}.json"
+                fi
+            fi
+
+            # Fallback within per-tag resolution: any non-sidecar lineage file for the latest
+            # version (when default variant file missing, or for versions-only containers).
+            # Excludes .sbom.json, .history.json, .changelog.json to avoid false-positive matches.
+            if [[ -z "$found_file" ]]; then
+                found_file=$(find "$lineage_dir" -maxdepth 1 \( \
+                    -name "${container}-${latest_version}.json" \
+                    -o -name "${container}-${latest_version}-*.json" \) \
+                    -not -name "*.sbom.json" \
+                    -not -name "*.history.json" \
+                    -not -name "*.changelog.json" \
+                    2>/dev/null | sort | head -1)
+            fi
+
+            if [[ -n "$found_file" ]]; then
+                echo "$found_file"
+                return
+            fi
+
+            # Per-tag resolution found nothing for this version — fall through to legacy.
+        fi
+    fi
+
+    # 2. Legacy: {container}.json — only used when no variants.yaml exists (versions-only
+    #    containers pre-variants, or containers not yet migrated) OR when the legacy rollup's
+    #    embedded .tag field matches the current default tag (i.e. it IS the latest build's output).
+    #    A stale legacy file whose .tag does NOT match is skipped to avoid shadowing newer per-tag files.
     local lineage_file="$lineage_dir/${container}.json"
     if [[ -f "$lineage_file" ]]; then
-        echo "$lineage_file"
-        return
+        if [[ ! -f "$variants_file" ]]; then
+            # No variants.yaml at all → legacy file is the only source of truth
+            echo "$lineage_file"
+            return
+        fi
+        # variants.yaml exists but per-tag resolution above returned nothing.
+        # Only use the legacy rollup if its embedded .tag matches the latest version
+        # (i.e. it was written for the current build, not a stale prior-era rollup).
+        local legacy_tag
+        legacy_tag=$(jq -r '.tag // ""' "$lineage_file" 2>/dev/null) || legacy_tag=""
+        # Reuse latest_version (already resolved at the top of this function) rather
+        # than issuing a second yq parse of variants_file.
+        # Prefix match: lineage_file.tag may be "1.7.7-debian" while
+        # variants_file.versions[0].tag is the version component "1.7.7".
+        # Accept the legacy rollup when its tag equals latest_version OR
+        # when it starts with "$latest_version-" (version prefix, different variant suffix).
+        # This prevents false positives (11.0-alpine vs 1.0) while allowing
+        # multi-variant containers where the tag carries a distro suffix.
+        if [[ -n "$legacy_tag" && -n "$latest_version" && \
+              ( "$legacy_tag" == "$latest_version" || "$legacy_tag" == "${latest_version}-"* ) ]]; then
+            echo "$lineage_file"
+            return
+        fi
     fi
-    # Fallback: flavored lineage files (e.g. postgres-base.json)
-    local fallback
-    fallback=$(find "$lineage_dir" -maxdepth 1 -name "${container}-*.json" -print -quit 2>/dev/null)
-    if [[ -n "$fallback" ]]; then
-        echo "$fallback"
-    fi
+
+    true
 }
 
 # Resolve lineage file for a specific variant of a container
@@ -82,14 +169,24 @@ resolve_variant_lineage_file() {
 }
 
 # Get a field from the build lineage JSON for a container
-# Falls back to "unknown" if lineage data doesn't exist
+# Falls back to "unknown" if lineage data doesn't exist.
+# Fix E: sanitize-at-read — if the field value contains "${" (leaked build-arg placeholder
+# from pre-v2 lineage entries), treat it as empty ("") so the dashboard shows
+# "not available" rather than a literal unexpanded shell expression.
 get_build_lineage_field() {
     local container="$1"
     local field="$2"
     local lineage_file
     lineage_file=$(resolve_lineage_file "$container")
     if [[ -n "$lineage_file" ]]; then
-        jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null || echo "unknown"
+        local _val
+        _val=$(jq -r ".[\"$field\"] // \"unknown\"" "$lineage_file" 2>/dev/null) || _val="unknown"
+        # Sanitize: leaked placeholder (e.g. "${OS_IMAGE_BASE}:${OS_IMAGE_TAG}") → empty
+        if [[ "$_val" == *'${'* ]]; then
+            echo ""
+        else
+            echo "$_val"
+        fi
     else
         echo "unknown"
     fi
@@ -302,7 +399,17 @@ resolve_variant_lineage_json() {
 
     if [[ -n "$lineage_file" ]]; then
         build_digest=$(jq -r '.build_digest // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
-        base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        local _raw_base_image
+        _raw_base_image=$(jq -r '.base_image_ref // "unknown"' "$lineage_file" 2>/dev/null || echo "unknown")
+        # Sanitize-at-read: lineage files written before #530 may have leaked ${...}
+        # placeholders in base_image_ref. Sanitize only when the value actually
+        # contains an unresolved placeholder — the absence of lineage_schema_version
+        # is NOT a signal of corruption; v1 files can have concrete values.
+        if [[ "$_raw_base_image" == *'${'* ]]; then
+            base_image="unknown"
+        else
+            base_image="$_raw_base_image"
+        fi
         oci_subject_digest=$(jq -r '.oci_subject_digest // empty' "$lineage_file" 2>/dev/null || echo "")
         # Version mismatch check: lineage file may be from a different version
         if [[ "$base_image" != "unknown" ]]; then

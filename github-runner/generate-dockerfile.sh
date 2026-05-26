@@ -97,8 +97,7 @@ generate_one() {
             local ubuntu_tag
             ubuntu_tag=$(_base_cache_tag_new "library/ubuntu")
             [[ -z "$ubuntu_tag" ]] && { log_error "No base_image_cache tag for library/ubuntu in $CONFIG"; exit 1; }
-            base_block="ARG REMOTE_CR"$'\n'
-            base_block+="ARG UBUNTU_2404_TAG=${ubuntu_tag}"$'\n'
+            base_block="ARG UBUNTU_2404_TAG=${ubuntu_tag}"$'\n'
             base_block+="FROM \${REMOTE_CR}/library/ubuntu:\${UBUNTU_2404_TAG}"$'\n'
             ;;
         *)
