@@ -1,7 +1,8 @@
 # WordPress container based on our PHP image
 # All PHP extensions (gd, mysqli, opcache, zip) are already included
-ARG PHP_IMAGE
-FROM ${PHP_IMAGE}
+ARG REMOTE_CR=docker.io/oorabona
+ARG PHP_TAG
+FROM ${REMOTE_CR}/php:${PHP_TAG}
 
 # Switch to root for installation
 USER root
