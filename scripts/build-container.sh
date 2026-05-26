@@ -231,7 +231,7 @@ _resolve_base_image() {
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$\{$arg_name\}/$arg_default}"
                 _BASE_IMAGE_REF="${_BASE_IMAGE_REF//\$$arg_name/$arg_default}"
             fi
-        done < <(grep -E '^ARG [A-Z_]+=' "$dockerfile" | sed 's/^ARG //' || true)
+        done < <(grep -E '^ARG [A-Za-z_][A-Za-z0-9_]*=' "$dockerfile" | sed 's/^ARG //' || true)
 
         unset _custom_arg_overrides
 

@@ -115,7 +115,7 @@ resolve_lineage_file() {
         legacy_tag=$(jq -r '.tag // ""' "$lineage_file" 2>/dev/null) || legacy_tag=""
         local current_latest
         current_latest=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null) || current_latest=""
-        if [[ -n "$legacy_tag" && -n "$current_latest" && "$legacy_tag" == *"$current_latest"* ]]; then
+        if [[ -n "$legacy_tag" && -n "$current_latest" && "$legacy_tag" == "$current_latest" ]]; then
             echo "$lineage_file"
             return
         fi
