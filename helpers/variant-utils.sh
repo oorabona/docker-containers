@@ -640,8 +640,53 @@ compute_expand_retained_map() {
     echo "$kv_json"
 }
 
+# latest_per_major_versions <container_dir>
+#
+# When variants.yaml declares retention_strategy: latest_per_major, read the
+# retained_majors list and resolve each major to its latest patch via the
+# container's version.sh --major N flag. Emit one resolved version per line
+# (e.g. "7.0.0-alpine"). Order preserved from retained_majors (newest first).
+#
+# Returns 0 with empty output if the strategy is not set or retained_majors
+# is empty; non-zero if a per-major resolution fails for any reason.
+latest_per_major_versions() {
+    local container_dir="$1"
+    local variants_file="$container_dir/variants.yaml"
+    [[ -f "$variants_file" ]] || return 1
+
+    local strategy
+    strategy=$(yq -r '.build.retention_strategy // ""' "$variants_file" 2>/dev/null) || strategy=""
+    [[ "$strategy" == "latest_per_major" ]] || return 0
+
+    local version_sh="$container_dir/version.sh"
+    [[ -x "$version_sh" ]] || return 1
+
+    # Sort retained_majors numerically descending (newest first) so the first
+    # resolved entry is always the highest major. Downstream code that treats
+    # versions[0] as the "default" / "current" version then receives a stable,
+    # operator-misconfig-resistant answer even if retained_majors was written
+    # in arbitrary order (e.g. [6, 7] instead of [7, 6]).
+    local majors
+    majors=$(yq -r '.build.retained_majors[]?' "$variants_file" 2>/dev/null | sort -rn) || return 1
+    [[ -z "$majors" ]] && return 0
+
+    local failed=0
+    while IFS= read -r major; do
+        [[ -z "$major" ]] && continue
+        local resolved
+        if resolved=$("$version_sh" --major "$major" 2>/dev/null) && [[ -n "$resolved" ]]; then
+            printf '%s\n' "$resolved"
+        else
+            echo "::warning::latest_per_major_versions: failed to resolve major=$major for $(basename "$container_dir")" >&2
+            failed=1
+        fi
+    done <<< "$majors"
+
+    return "$failed"
+}
+
 # Export functions for use in other scripts
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions compute_expand_retained_map
+export -f always_all_versions compute_expand_retained_map latest_per_major_versions
