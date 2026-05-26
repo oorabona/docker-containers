@@ -395,7 +395,7 @@ runs:
                   # or the resolved tags[0] template — the same tag the build will actually use.
                   source_path=$(yq -r ".base_image_cache[$i].source" "./$container/config.yaml")
                   explicit_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
-                  check_image="ghcr.io/${owner}/${source_path}:${explicit_tag}"
+                  check_image="ghcr.io/${owner}/${source_path#/}:${explicit_tag}"
                 else
                   # OLD style: dedicated GHCR repo with resolved tag.
                   resolved_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")

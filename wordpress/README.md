@@ -128,7 +128,8 @@ All variables support the `_FILE` suffix for Docker secrets (e.g. `WP_ADMIN_PASS
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `PHP_IMAGE` | Base PHP-FPM image | `ghcr.io/oorabona/php:latest` |
+| `REMOTE_CR` | Registry root for the base PHP image | `docker.io/oorabona` |
+| `PHP_TAG` | Tag of the base PHP-FPM image | `latest` |
 | `WPCLI_VERSION` | WP-CLI version | `2.12.0` |
 | `VERSION` | WordPress version | latest |
 
@@ -314,13 +315,18 @@ WordPress 6.4+ introduced experimental SQLite support via a drop-in plugin. A fu
 
 # Build with specific versions
 docker build \
-  --build-arg PHP_IMAGE=ghcr.io/oorabona/php:latest \
+  --build-arg REMOTE_CR=ghcr.io/oorabona \
+  --build-arg PHP_TAG=latest \
   --build-arg WPCLI_VERSION=2.12.0 \
   --build-arg VERSION=6.9.1 \
   -t wordpress:custom .
 ```
 
 ## Dependencies
+
+Chained-base container: consumes `ghcr.io/oorabona/php` (project-produced). Docker Hub mirror at `docker.io/oorabona/php` (429-rate-limited; default local fallback).
+
+`config.yaml` declares `source: /php` — the leading-slash marker signals "chained-on-own-build": sync writes to `ghcr.io/<owner>/library/php` (shared upstream mirror path), while reachability probing targets `ghcr.io/<owner>/php` (project's published container). This ensures `REMOTE_CR` is injected only when the project-produced PHP image is available.
 
 | Component | Version | Source | Monitoring |
 |-----------|---------|--------|------------|

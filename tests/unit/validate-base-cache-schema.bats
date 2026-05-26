@@ -20,7 +20,11 @@
 #   VBC-11d: valid old-style with namespaced source (hashicorp/terraform) → PASS [regression lock]
 #   VBC-11e: valid new-style with non-library namespace (hashicorp/terraform) → PASS
 #   VBC-12: container dir name with slash → REJECT (defensive invariant)
-#   VBC-13: new-style source with leading slash → REJECT (empty path component)
+#   VBC-13: new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)
+#   VBC-13b: new-style source with leading slash (multi-segment /library/postgres) → PASS
+#   VBC-13c: wordpress-real: source: /php → PASS (regression lock for #531)
+#   VBC-13d: source: /php/ (trailing slash after leading slash) → REJECT
+#   VBC-13e: source: //php (double slash) → REJECT
 #   VBC-14: new-style source with trailing slash → REJECT (empty path component)
 #   VBC-R7C-GLOB-01: build_args value with glob * → REJECT (R7c allowlist)
 #   VBC-R7C-GLOB-02: build_args value with glob ? → REJECT (R7c allowlist)
@@ -287,10 +291,58 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "VBC-13: new-style source with leading slash → REJECT" {
+@test "VBC-13: new-style source with leading slash (single segment /php) → PASS (chained-on-own marker)" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: /php
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+@test "VBC-13b: new-style source with leading slash (multi-segment /library/postgres) → PASS" {
     make_container "myapp" "$(cat <<'EOF'
 base_image_cache:
   - source: /library/postgres
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -eq 0 ]
+}
+
+@test "VBC-13c: wordpress real config — source: /php → PASS (regression lock #531)" {
+    make_container "wordpress" "$(cat <<'EOF'
+base_image: "${REMOTE_CR}/php:${PHP_TAG}"
+base_image_cache:
+  - source: /php
+    tags: ["latest"]
+build_args:
+  PHP_TAG: "latest"
+EOF
+)"
+    run validate_container_base_cache_schema "wordpress"
+    [ "$status" -eq 0 ]
+}
+
+@test "VBC-13d: new-style source with trailing slash after leading slash (/php/) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: /php/
+    tags: ["latest"]
+EOF
+)"
+    run validate_container_base_cache_schema "myapp"
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "myapp" ]]
+}
+
+@test "VBC-13e: new-style source with double slash (//php) → REJECT" {
+    make_container "myapp" "$(cat <<'EOF'
+base_image_cache:
+  - source: //php
     tags: ["latest"]
 EOF
 )"

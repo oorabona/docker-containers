@@ -1,16 +1,16 @@
 # WordPress container configuration
 # Base image and third-party dependency versions
 
-base_image: "${PHP_IMAGE}"
+base_image: "${REMOTE_CR}/php:${PHP_TAG}"
+base_image_cache:
+  - source: /php          # chained-on-own marker: sync upstream PHP into library/php cache,
+                          # but probe ghcr.io/<owner>/php (our customized published container)
+    tags: ["latest"]
 build_args:
-  PHP_IMAGE: "ghcr.io/oorabona/php:latest"
+  PHP_TAG: "latest"
   WPCLI_VERSION: "2.12.0"
   SQLITE_PLUGIN_VERSION: "2.2.23"
 dependency_sources:
-  PHP_IMAGE:
-    monitor: false
-    lifecycle: untracked
-    reason: "Base image fallback, not a version to track"
   WPCLI_VERSION:
     lifecycle: tracked
     type: github-release
@@ -21,4 +21,8 @@ dependency_sources:
     type: github-release
     repo: WordPress/sqlite-database-integration
     strip_v: true
+  PHP_TAG:
+    monitor: false
+    lifecycle: untracked
+    reason: "Base image tag for chained-base wordpress; follows project php container's latest stable PHP."
 value_proposition: WordPress with PHP-FPM, multi-version retention, ARM-native. Pre-built and SBOM-attested.
