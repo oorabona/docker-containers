@@ -544,3 +544,97 @@ YAML
         return 1
     }
 }
+
+# =============================================================================
+# Finding #1 (gate r9 codex MEDIUM): Delimiter-bound version glob in fallback
+# Pre-fix: -name "${container}-${latest_version}*.json" — matches version
+#   prefix without a delimiter, so "1.0" matches "1.0.1-alpine.json" (collision).
+# Post-fix: -name "${container}-${latest_version}.json" -o
+#            -name "${container}-${latest_version}-*.json"
+#   The hyphen delimiter ensures "1.0" only matches "1.0.json" or "1.0-*.json",
+#   not "1.0.1-alpine.json".
+# =============================================================================
+
+@test "DRDV-18: Version prefix-collision — '1.0' must NOT match '1.0.1-alpine.json' in fallback glob" {
+    # Scenario: latest_version="1.0" in variants.yaml.
+    # .build-lineage/ has foo-1.0.1-alpine.json (NEXT major patch, NOT the latest 1.0).
+    # Pre-fix glob: "${container}-${latest_version}*.json" matches "1.0.1-alpine.json"
+    #   because "1.0.1-alpine.json" starts with "1.0".
+    # Post-fix: delimiter-bound pattern requires hyphen after version → no match → empty returned.
+    #
+    # The default variant resolution path (variant_image_tag) also returns empty
+    # because foo/variants.yaml has no variants[] — so code falls into the
+    # "fallback within per-tag resolution" glob path being tested here.
+
+    # Only file present: the WRONG version (1.0.1, NOT 1.0)
+    make_lineage "foo-1.0.1-alpine" "alpine:3.21"
+
+    make_variants_yaml "$TEST_TEMP_DIR/foo" "$(cat <<'YAML'
+versions:
+  - tag: "1.0"
+YAML
+)"
+
+    run resolve_lineage_file "foo"
+    [ "$status" -eq 0 ]
+    # Post-fix: must return empty — "1.0.1-alpine.json" is NOT a valid match for version "1.0"
+    [[ -z "$output" ]] || {
+        echo "FAIL: prefix collision — version '1.0' matched '1.0.1-alpine.json' (wrong version)"
+        echo "  Got: '$output'"
+        echo "  (pre-fix: glob '1.0*.json' matches '1.0.1-alpine.json' — no delimiter boundary)"
+        return 1
+    }
+}
+
+# =============================================================================
+# Finding #2 (gate r9 copilot HIGH): Guarded yq assignment under set -e
+# Pre-fix: latest_version=$(yq ...) ; _yq_rc=$?
+#   Under set -euo pipefail, when yq exits non-zero the assignment line aborts
+#   the bash shell BEFORE _yq_rc=$? is evaluated — the guard is dead code.
+# Post-fix: if ! latest_version=$(yq ...); then ... fi
+#   The if-form suppresses set -e on the command substitution exit code,
+#   so the guard branch runs correctly.
+# =============================================================================
+
+@test "DRDV-19: Guarded yq assignment — malformed YAML does not abort parent shell under set -e" {
+    # This test asserts that resolve_lineage_file is callable from a set -e
+    # context without killing the parent shell on a yq parse failure.
+    # Technique: invoke the function from within an explicit set -e subshell,
+    # and verify the subshell exits 0 (function returns cleanly, not crashed).
+
+    # Create real lineage files that would be found if the guard were absent
+    make_lineage "grd-1.0-alpine" "alpine:3.21"
+
+    # Deliberately malformed YAML
+    make_variants_yaml "$TEST_TEMP_DIR/grd" "$(printf 'versions:\n  - tag: [\nnot: valid: yaml')"
+
+    # Run in a subshell with set -e to detect abort-vs-return distinction.
+    # If the fix is NOT applied: the yq assignment aborts the subshell → exit non-zero.
+    # If the fix IS applied: resolve_lineage_file returns 0 → subshell exits 0.
+    run bash -c "
+        set -euo pipefail
+        # Re-source the helpers and extract resolve_lineage_file exactly as setup() does
+        source '${PROJECT_ROOT_REAL}/helpers/logging.sh'
+        source '${PROJECT_ROOT_REAL}/helpers/build-args-utils.sh'
+        source '${PROJECT_ROOT_REAL}/helpers/variant-utils.sh'
+        _fn_defs=\$(
+            cd '${PROJECT_ROOT_REAL}'
+            source '${PROJECT_ROOT_REAL}/generate-dashboard.sh' 2>/dev/null || true
+            declare -f resolve_lineage_file
+        )
+        eval \"\$_fn_defs\"
+        SCRIPT_DIR='${TEST_TEMP_DIR}'
+        export SCRIPT_DIR
+        # Call the function — must return 0 (not abort the shell)
+        resolve_lineage_file 'grd' >/dev/null 2>&1
+        # If we reach here, the function did NOT abort the shell
+        echo 'SHELL_CONTINUED'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SHELL_CONTINUED"* ]] || {
+        echo "FAIL: subshell did not continue after resolve_lineage_file returned"
+        echo "  Status: $status, output: '$output'"
+        echo "  (pre-fix: yq failure aborted the shell; SHELL_CONTINUED never printed)"
+        return 1
+    }
+}

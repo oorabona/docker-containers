@@ -57,11 +57,9 @@ resolve_lineage_file() {
         # Validate YAML and get the latest version tag (versions[0].tag).
         # Detect yq parse failure explicitly: malformed variants.yaml must cause an
         # early return with no fallback to the legacy rollup — operator must fix the YAML.
-        local latest_version _yq_rc
-        latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null)
-        _yq_rc=$?
-        if [[ $_yq_rc -ne 0 ]]; then
-            log_warning "resolve_lineage_file: variants.yaml parse error for $container (yq rc=$_yq_rc) — returning empty"
+        local latest_version
+        if ! latest_version=$(yq -r '.versions[0].tag // ""' "$variants_file" 2>/dev/null); then
+            log_warning "resolve_lineage_file: variants.yaml parse error for $container — returning empty"
             return 0
         fi
 
@@ -88,8 +86,9 @@ resolve_lineage_file() {
             # version (when default variant file missing, or for versions-only containers).
             # Excludes .sbom.json, .history.json, .changelog.json to avoid false-positive matches.
             if [[ -z "$found_file" ]]; then
-                found_file=$(find "$lineage_dir" -maxdepth 1 \
-                    -name "${container}-${latest_version}*.json" \
+                found_file=$(find "$lineage_dir" -maxdepth 1 \( \
+                    -name "${container}-${latest_version}.json" \
+                    -o -name "${container}-${latest_version}-*.json" \) \
                     -not -name "*.sbom.json" \
                     -not -name "*.history.json" \
                     -not -name "*.changelog.json" \
