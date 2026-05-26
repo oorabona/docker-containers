@@ -243,8 +243,8 @@ EOF
     [[ "$output" == *'"probe_image":"ghcr.io/myowner/library/postgres:18-alpine"'* ]]
 }
 
-# BCU-15b: sync_base_images_to_ghcr with leading-slash source — source_ref normalised (no double slash)
-@test "BCU-15b: sync_base_images_to_ghcr leading-slash source — source_ref has no double slash" {
+# BCU-15b: sync_base_images_to_ghcr with leading-slash source — source_ref has explicit library/ prefix
+@test "BCU-15b: sync_base_images_to_ghcr leading-slash source — source_ref has explicit library/ prefix" {
     docker() {
         if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
             echo "MOCK_DOCKER_ARGS: $*"
@@ -254,15 +254,35 @@ EOF
     }
     export -f docker
 
-    # Leading-slash source /php: sync target is library/php, source field is /php
+    # Leading-slash source /php must produce docker.io/library/php:latest (not docker.io/php:latest).
+    # The Docker daemon silently aliases docker.io/php → docker.io/library/php, but skopeo and
+    # imagetools do not; the explicit prefix is required for idempotent mirroring.
     local input='[{"source":"/php","tag":"latest","sync_image":"ghcr.io/myowner/library/php:latest","probe_image":"ghcr.io/myowner/php:latest"}]'
     run sync_base_images_to_ghcr "$input"
     [ "$status" -eq 0 ]
-    # Source ref must be docker.io/php:latest (// normalized to /), NOT docker.io//php:latest
-    [[ "$output" == *"docker.io/php:latest"* ]]
+    # Source ref must carry the explicit library/ segment
+    [[ "$output" == *"docker.io/library/php:latest"* ]]
     [[ "$output" != *"docker.io//php:latest"* ]]
+    [[ "$output" != *"docker.io/php:latest "* ]]
     # Dest must be the sync_image (library/php path)
     [[ "$output" == *"ghcr.io/myowner/library/php:latest"* ]]
+}
+
+# BCU-15d: mutation guard — single-segment chained source must never produce an alias-only ref
+@test "BCU-15d: sync_base_images_to_ghcr single-segment chained source — no bare alias (library/ always explicit)" {
+    docker() { return 0; }
+    export -f docker
+
+    # /debian is another single-segment chained marker.  The constructed source_ref
+    # must be docker.io/library/debian:bullseye, not docker.io/debian:bullseye.
+    # Revert the leading-slash strip in sync_base_images_to_ghcr and this test fails.
+    local input='[{"source":"/debian","tag":"bullseye","sync_image":"ghcr.io/myowner/library/debian:bullseye","probe_image":"ghcr.io/myowner/debian:bullseye"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"docker.io/library/debian:bullseye"* ]]
+    # The bare alias form must be absent (no double-slash collapse residue either)
+    [[ "$output" != *"docker.io/debian:bullseye"* ]]
+    [[ "$output" != *"docker.io//debian:bullseye"* ]]
 }
 
 # BCU-15c: dedup by sync_image — entries with same sync_image path are deduplicated

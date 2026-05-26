@@ -546,13 +546,22 @@ sync_base_images_to_ghcr() {
             continue
         fi
 
-        if [[ "$source_img" == */* ]]; then
-            # Normalize double slash: leading-slash source (e.g. /php) concatenated with
-            # source_registry produces "docker.io//php" — collapse // → / in the path.
-            source_ref="${source_registry}/${source_img}:${tag}"
-            source_ref="${source_ref//\/\//\/}"
+        # Strip leading slash for chained-on-own markers (e.g. source: /php).
+        # This must happen BEFORE the slash-presence check so that single-segment
+        # chained sources (/php → php) route to the library/ branch, not the
+        # multi-segment branch. Without this strip, /php would match */* and
+        # produce docker.io/php:tag via double-slash collapse — which works for
+        # the Docker daemon (client-side aliasing) but NOT for skopeo or imagetools,
+        # breaking the idempotent-mirror goal.
+        local src="${source_img#/}"
+        if [[ "$src" == */* ]]; then
+            # Multi-segment path (e.g. library/postgres or /library/postgres after strip):
+            # use as-is — the caller has already provided the full registry path.
+            source_ref="${source_registry}/${src}:${tag}"
         else
-            source_ref="${source_registry}/library/${source_img}:${tag}"
+            # Single-segment (e.g. php, debian): prepend explicit library/ so the
+            # resulting ref is docker.io/library/php:tag, not docker.io/php:tag.
+            source_ref="${source_registry}/library/${src}:${tag}"
         fi
 
         echo ""
