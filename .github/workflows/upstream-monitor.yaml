@@ -1204,9 +1204,14 @@ jobs:
         continue-on-error: true
 
       - name: Install yq
-        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
-        with:
-          cmd: yq --version
+        shell: bash
+        run: |
+          # Install yq on PATH (mikefarah/yq action only runs yq inside the
+          # action itself, it does NOT put yq on PATH for subsequent steps).
+          # Mirror the pattern used in create-update-prs.
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       - name: Detect drift
         id: detect
@@ -1316,9 +1321,12 @@ jobs:
         continue-on-error: true
 
       - name: Install yq
-        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
-        with:
-          cmd: yq --version
+        shell: bash
+        run: |
+          # Install yq on PATH for list-builds calls.
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       - name: Re-detect drift for this container (idempotent)
         id: drift-data

@@ -272,43 +272,46 @@ for lineage_file in "${lineage_files[@]}"; do
     # Applied here so every downstream use of $variant_tag_safe is already clean.
     variant_tag_safe=$(_escape_gha_command "$variant_tag")
 
-    # Filter to active build-matrix tags only.
-    # Stale lineage files for dropped/non-retained tags persist in the cache after
-    # rotation.  Without this filter each cron run re-detects drift on them, opens a
-    # PR, the PR rebuild only updates current retained tags → stale lineage unchanged
-    # → next cron re-detects → infinite PR loop.
-    #
-    # _ACTIVE_TAGS_OVERRIDE_<container>: test hook — set to a newline-separated list
-    # of active tags for a container to bypass ./make list-builds in tests.
-    #
-    # Cache key: _active_tags_cache_<container> (associative array not available in
-    # bash <4.2 without namerefs; use indirect variable via printf '%s' trick).
-    _active_tags_var="_active_tags_cache_${container//-/_}"
-    if [[ -z "${!_active_tags_var+x}" ]]; then
-        # Check for per-container test hook first
-        _override_var="_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
-        if [[ -n "${!_override_var:-}" ]]; then
-            printf -v "$_active_tags_var" '%s' "${!_override_var}"
-        else
-            # list-builds must succeed; on failure abort rather than silently skip
-            # the stale-lineage filter (which would disable drift detection).
-            if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
-                printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
-                exit 2
+    # Filter to active build-matrix tags only (NORMAL MODE ONLY).
+    # In --baseline-only mode, we intentionally emit ALL pre-v2 entries including
+    # stale ones, so the stale-lineage filter is bypassed until baseline is complete.
+    # In normal (cron) mode: stale lineage files for dropped/non-retained tags persist
+    # in the cache after rotation. Without this filter each cron run re-detects drift
+    # on them, opens a PR, the PR rebuild only updates current retained tags → stale
+    # lineage unchanged → next cron re-detects → infinite PR loop.
+    if [[ "$BASELINE_ONLY" != "true" ]]; then
+        # _ACTIVE_TAGS_OVERRIDE_<container>: test hook — set to a newline-separated list
+        # of active tags for a container to bypass ./make list-builds in tests.
+        #
+        # Cache key: _active_tags_cache_<container> (associative array not available in
+        # bash <4.2 without namerefs; use indirect variable via printf '%s' trick).
+        _active_tags_var="_active_tags_cache_${container//-/_}"
+        if [[ -z "${!_active_tags_var+x}" ]]; then
+            # Check for per-container test hook first
+            _override_var="_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
+            if [[ -n "${!_override_var:-}" ]]; then
+                printf -v "$_active_tags_var" '%s' "${!_override_var}"
+            else
+                # list-builds must succeed; on failure abort rather than silently skip
+                # the stale-lineage filter (which would disable drift detection).
+                if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
+                    printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
+                    exit 2
+                fi
+                _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
+                if [[ -z "$_fetched" ]]; then
+                    printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
+                    exit 2
+                fi
+                printf -v "$_active_tags_var" '%s' "$_fetched"
             fi
-            _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
-            if [[ -z "$_fetched" ]]; then
-                printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
-                exit 2
-            fi
-            printf -v "$_active_tags_var" '%s' "$_fetched"
         fi
-    fi
-    _active_tags="${!_active_tags_var}"
-    if ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
-        printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
-            "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
-        continue
+        _active_tags="${!_active_tags_var}"
+        if ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+            printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
+                "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
+            continue
+        fi
     fi
 
     base_image_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
