@@ -696,3 +696,101 @@ CURL_IDX_BAD
     warning_count=$(echo "$output" | grep -c '::warning::' || true)
     [ "$warning_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# D2-test-15 (r2): degraded _ghcr_fetch_index — unwritable cache dir must not
+# prevent network fetch from returning data via out-vars.
+#
+# Root cause (#454 r2): mktemp "${GHCR_CACHE_DIR}/..." fails immediately when
+# the cache dir is unwritable, so _ghcr_fetch_index returned 1 BEFORE issuing
+# the curl call.  _ghcr_temp_file now falls back to system TMPDIR so the
+# fetch completes regardless of cache dir writability.
+# ---------------------------------------------------------------------------
+
+@test "degraded _ghcr_fetch_index: returns 0 and populates out-vars when cache dir unwritable" {
+    # Run in a subshell to isolate out-var mutation and TMPDIR state.
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        # Override curl shim is inherited via PATH from setup.
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+
+        # Invoke the function under test.
+        _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token"
+        rc=$?
+
+        # Emit markers readable by the test harness.
+        echo "RC=$rc"
+        if [[ -n "$_GHCR_IDX_BODY" ]]; then
+            echo "BODY_POPULATED"
+        else
+            echo "BODY_EMPTY"
+        fi
+        if [[ -n "$_GHCR_IDX_HDRS" ]]; then
+            echo "HDRS_POPULATED"
+        else
+            echo "HDRS_EMPTY"
+        fi
+    '
+    # Must succeed despite unwritable cache dir.
+    [ "$status" -eq 0 ]
+
+    # Out-vars must carry the fetched response data.
+    echo "$output" | grep -q 'RC=0'
+    echo "$output" | grep -q 'BODY_POPULATED'
+    echo "$output" | grep -q 'HDRS_POPULATED'
+
+    # Cache-dir warning must have been emitted (sentinel for degraded mode).
+    echo "$output" | grep -q '::warning::'
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-16 (r2): degraded ghcr_get_manifest_sizes — unwritable cache dir
+# must not prevent per-arch size computation from returning results.
+# ---------------------------------------------------------------------------
+
+@test "degraded ghcr_get_manifest_sizes: returns sizes when cache dir unwritable" {
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+
+        out=$(ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine")
+        rc=$?
+        echo "RC=$rc"
+        printf "%s\n" "$out"
+    '
+    # Must succeed and emit correct sizes for both arches.
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q 'RC=0'
+    echo "$output" | grep -qx 'amd64:600'
+    echo "$output" | grep -qx 'arm64:750'
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-17 (r2): fully unwritable (cache dir + system TMPDIR) — _ghcr_temp_file
+# returns 1 so _ghcr_fetch_index hard-fails with rc=1.  No writable temp
+# location = no safe way to capture curl output; fatal is the correct outcome.
+# ---------------------------------------------------------------------------
+
+@test "fully unwritable (cache + TMPDIR): _ghcr_fetch_index returns 1 (fatal as expected)" {
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        # TMPDIR=/proc/1 makes mktemp -t fail (directory is unwritable).
+        export TMPDIR="/proc/1"
+        unset _GHCR_CACHE_DIR_WARNED
+
+        _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token"
+        echo "RC=$?"
+    '
+    # Hard fail expected — no writable temp location available anywhere.
+    [ "$status" -eq 0 ]  # the bash -c subshell itself exits 0
+    echo "$output" | grep -q 'RC=1'
+}

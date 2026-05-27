@@ -77,6 +77,24 @@ _ghcr_verify_content_digest() {
     [[ -n "$actual" && "$actual" == "$expected" ]]
 }
 
+# Return a path to a writable temp file.
+# Prefers ${GHCR_CACHE_DIR} (same filesystem → atomic mv into cache is cheap).
+# Falls back to system TMPDIR when the cache dir is unwritable, enabling
+# degraded (uncached) mode to complete the fetch and return data to callers.
+# Usage: _ghcr_temp_file <suffix>   (prints path on stdout)
+# Returns 0 on success, 1 only when neither cache dir nor system TMPDIR is writable.
+_ghcr_temp_file() {
+    local suffix="${1:-tmp}"
+    local f
+    # Prefer cache dir (same FS → atomic mv works cheaply)
+    if [[ -d "${GHCR_CACHE_DIR}" && -w "${GHCR_CACHE_DIR}" ]]; then
+        f=$(mktemp "${GHCR_CACHE_DIR}/${suffix}.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+    fi
+    # Fallback: system TMPDIR
+    f=$(mktemp -t "ghcr-${suffix}.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # No EXIT trap registered here.
 # Cache dir is ${TMPDIR:-/tmp}/ghcr-cache-$$, intentionally left in place:
@@ -185,12 +203,16 @@ _ghcr_fetch_index() {
     # and ghcr_get_multi_arch_digests (needs Docker-Content-Digest header + body).
     local accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 
-    # Use mktemp for body/hdrs so curl writes raw bytes directly to file (no
-    # command-substitution stripping of trailing newlines, which would break
-    # the sha256 content-digest verification added below).
+    # Use _ghcr_temp_file for body/hdrs so curl writes raw bytes directly to
+    # file (no command-substitution stripping of trailing newlines, which would
+    # break the sha256 content-digest verification added below).
+    # _ghcr_temp_file prefers GHCR_CACHE_DIR (same FS → atomic mv is cheap)
+    # but falls back to system TMPDIR when the cache dir is unwritable, so
+    # degraded (uncached) mode can still complete the fetch and return data.
+    # Genuinely fatal only when neither location is writable.
     local body_tmp hdrs_tmp
-    body_tmp=$(mktemp "${GHCR_CACHE_DIR}/.idx-body.XXXXXX" 2>/dev/null) || { _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
-    hdrs_tmp=$(mktemp "${GHCR_CACHE_DIR}/.idx-hdrs.XXXXXX" 2>/dev/null) || { rm -f "$body_tmp" 2>/dev/null || true; _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+    body_tmp=$(_ghcr_temp_file ".idx-body") || { _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+    hdrs_tmp=$(_ghcr_temp_file ".idx-hdrs") || { rm -f "$body_tmp" 2>/dev/null || true; _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
 
     local curl_rc=0
     curl -sS -D "$hdrs_tmp" -o "$body_tmp" --connect-timeout 5 --max-time 10 \
@@ -249,8 +271,9 @@ _ghcr_fetch_index() {
     if [[ "$is_good" -eq 1 ]]; then
         # Content-digest verification: extract Docker-Content-Digest from response
         # headers and verify the stored body bytes hash to the same value.
-        # On mismatch: warn and skip caching (caller gets the body via out-vars,
-        # but it won't be admitted to the persistent cache).
+        # On mismatch: warn, clean up temps, and return 1.
+        # The caller already has data in _GHCR_IDX_BODY/_GHCR_IDX_HDRS but a
+        # digest mismatch signals a corrupt or tampered response — do not use it.
         local idx_digest_header idx_digest_hex
         idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:[[:space:]]*sha256:[a-f0-9]{64}' 2>/dev/null | head -1 | tr -d '\r' || true)
         if [[ -n "$idx_digest_header" ]]; then
@@ -265,8 +288,12 @@ _ghcr_fetch_index() {
             fi
         fi
 
-        # Atomic write: move verified tmp files into place.
-        # umask 077 already applied at mktemp creation; chmod 600 belt-and-suspenders.
+        # Best-effort cache write: move verified tmp files into place.
+        # When body_tmp/hdrs_tmp are in GHCR_CACHE_DIR (normal path), mv is
+        # atomic on the same filesystem.  When they are in system TMPDIR
+        # (degraded path), mv may cross filesystems and fail — that is fine:
+        # data has already been returned via out-vars above; caching is
+        # opportunistic.  chmod 600 belt-and-suspenders.
         chmod 600 "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
         mv -f "$body_tmp" "$body_file" 2>/dev/null || rm -f "$body_tmp" 2>/dev/null || true
         mv -f "$hdrs_tmp" "$hdrs_file" 2>/dev/null || rm -f "$hdrs_tmp" 2>/dev/null || true
@@ -387,11 +414,12 @@ ghcr_get_manifest_sizes() {
                 return 1
             fi
             # Admission: only cache on MISS after all 4 gates pass (object, not-errors, has-config|layers).
-            # mktemp (not .tmp.$): $ is the parent PID inside $(...) command substitution, not unique
-            # per concurrent caller; mktemp is race-proof and natively mode 0600.
+            # _ghcr_temp_file is race-proof (mktemp) and natively mode 0600.
+            # When cache dir is unwritable, _ghcr_temp_file falls back to system TMPDIR
+            # so the temp write succeeds; the subsequent mv into perarch/ is best-effort.
             if [[ "$pa_hit" -eq 0 ]]; then
                 local pa_tmp
-                if pa_tmp=$(mktemp "${GHCR_CACHE_DIR}/perarch/.tmp.XXXXXX" 2>/dev/null); then
+                if pa_tmp=$(_ghcr_temp_file "perarch-.tmp" 2>/dev/null); then
                     if printf '%s' "$platform_manifest" > "$pa_tmp" 2>/dev/null && chmod 600 "$pa_tmp" 2>/dev/null; then
                         # Content-digest verification: the cache key digest_hash is the
                         # registry's sha256 of the manifest bytes. Verify the body we
