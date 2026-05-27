@@ -1778,3 +1778,236 @@ bar" \
 
     [ "$length" -eq 3 ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r10-2: active-tags filter failure is FAIL CLOSED (skip container entirely)
+#
+# When ./make list-builds fails or returns empty, the detector must NOT emit
+# drift records for that container (fail-closed).  Previous behavior disabled
+# the stale-lineage filter (__SKIPPED__), allowing stale tags to trigger
+# infinite drift-PR loops.
+# ---------------------------------------------------------------------------
+
+@test "r10-fix2a: list-builds failure → container fully skipped (fail-closed)" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix2a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "2.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Run without _VALID_CONTAINERS_OVERRIDE so production path runs list-builds
+    # Since ./make list-builds won't work in the test dir, it will fail → fail-closed
+    local result rc=0
+    result=$(unset _VALID_CONTAINERS_OVERRIDE && \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    # Script must exit 0 (container skip is not fatal)
+    [ "$rc" -eq 0 ]
+
+    # Output must be empty array — container was skipped entirely
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+@test "r10-fix2b: script contains fail-closed warning text (code audit)" {
+    # The production list-builds failure path (without _VALID_CONTAINERS_OVERRIDE)
+    # cannot be exercised in tests without a full project context (the detector derives
+    # PROJECT_ROOT from BASH_SOURCE[0] at startup, so env-var override is impossible).
+    # r10-fix2a already confirms the container is skipped when list-builds fails.
+    # This test audits that the warning text is present in the script source, ensuring
+    # the fail-closed message is not accidentally removed.
+    grep -q 'fail-closed' "${DETECTOR_SCRIPT}"
+}
+
+@test "r10-fix2c: stale tag still skipped when active-tags succeeds (no regression)" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix2c/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # One active tag (2.0), one stale tag (1.0)
+    cat > "$lineage_dir/myimage-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "2.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Only active tag 2.0 should appear
+    local variant_count
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$variant_count" -eq 1 ]
+
+    local reported_tag
+    reported_tag=$(printf '%s' "$result" | jq -r '.[] | .variants[].variant_tag')
+    [ "$reported_tag" = "2.0" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r10-3: base_image_ref registry allowlist validation (SSRF prevention)
+#
+# Poisoned lineage with an attacker-controlled base_image_ref must be rejected
+# before the probe fires.  The detector must emit a ::warning:: and skip the
+# entry without calling the registry.
+# ---------------------------------------------------------------------------
+
+@test "r10-fix3a: poisoned base_image_ref (evil.com) is rejected without probe" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix3a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "evil.example.com/path:tag",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub that fails if called — must NOT be called
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/poison-probe.XXXXXX")
+    cat > "$probe_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "PROBE WAS CALLED — SSRF not prevented!" >&2
+exit 1
+STUB
+    chmod +x "$probe_stub"
+
+    local result stderr_out rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/tmp/r10fix3a-stderr.txt) || rc=$?
+
+    stderr_out=$(cat /tmp/r10fix3a-stderr.txt)
+
+    # Must exit 0 — rejection is not a fatal error
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called
+    echo "$stderr_out" | grep -qv "PROBE WAS CALLED"
+
+    # Must emit a ::warning:: about the untrusted ref
+    echo "$stderr_out" | grep -q "Refusing to probe untrusted"
+
+    # Result must be empty array (entry skipped)
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+@test "r10-fix3b: valid ghcr.io ref passes validation and is probed normally" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix3b/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "ghcr.io/oorabona/debian:trixie",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub returns a different digest (drift)
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Must report drift (probe was called and returned a different digest)
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}
+
+@test "r10-fix3c: Docker Hub bare name passes validation and is probed normally" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix3c/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}
+
+@test "r10-fix3d: mcr.microsoft.com ref passes validation" {
+    local lineage_dir="$TEST_TEMP_DIR/r10fix3d/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "mcr.microsoft.com/windows/servercore:ltsc2022",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}

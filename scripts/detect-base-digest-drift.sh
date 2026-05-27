@@ -179,6 +179,69 @@ _sanitize_for_json() {
 }
 
 # ---------------------------------------------------------------------------
+# Validate base_image_ref shape and registry allowlist (SSRF prevention).
+#
+# A poisoned lineage cache with an attacker-controlled base_image_ref could
+# cause the workflow to probe an untrusted registry with Docker credentials,
+# potentially leaking tokens or enabling SSRF abuse.
+#
+# Accepts:
+#   - Docker Hub bare names:  alpine:3.21, postgres:17-alpine, org/image:tag
+#   - Explicit GHCR refs:     ghcr.io/owner/image:tag[@digest]
+#   - Microsoft MCR refs:     mcr.microsoft.com/windows/servercore:ltsc2022
+#
+# Rejects anything whose registry component is not in the above set.
+#
+# Registry detection (per OCI Distribution Spec):
+#   An explicit registry is present only when the ref contains a '/' AND the
+#   first path segment (before the first '/') contains a '.' (FQDN) or a ':'
+#   (host:port pattern like localhost:5000).
+#   If the ref has no '/', it is always a Docker Hub bare name (image:tag).
+#   If the ref has '/' but the first segment has no '.' and no ':', the first
+#   segment is a Docker Hub org name (e.g., hashicorp/terraform:1.14.4).
+#
+# Returns 0 if valid, 1 if rejected.
+# ---------------------------------------------------------------------------
+_validate_image_ref() {
+    local ref="$1"
+
+    # Must be non-empty and free of whitespace/control chars
+    if [[ -z "$ref" || "$ref" =~ [[:space:][:cntrl:]] ]]; then
+        return 1
+    fi
+
+    # No '/' in ref → always a Docker Hub bare name (image:tag or image:version)
+    # e.g. alpine:3.21, postgres:17-alpine, ubuntu:latest
+    if [[ "$ref" != *"/"* ]]; then
+        return 0
+    fi
+
+    # Ref has at least one '/' — check if the first segment is an explicit registry.
+    # Per OCI spec, the first segment is a registry host only if it contains '.'
+    # (FQDN) or ':' (host:port).  Otherwise it is a Docker Hub org name.
+    local first_segment="${ref%%/*}"
+
+    # Docker Hub org/image pattern (e.g. hashicorp/terraform:1.14.4)
+    if [[ "$first_segment" != *"."* && "$first_segment" != *":"* ]]; then
+        return 0
+    fi
+
+    # Explicit registry FQDN or host:port — check against allowlist
+    local registry="$first_segment"
+    case "$registry" in
+        ghcr.io | \
+        registry-1.docker.io | \
+        index.docker.io | \
+        mcr.microsoft.com)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Walk lineage directory
 # ---------------------------------------------------------------------------
 if [[ ! -d "$LINEAGE_DIR" ]]; then
@@ -299,17 +362,21 @@ for lineage_file in "${lineage_files[@]}"; do
                 printf -v "$_active_tags_var" '%s' "__TEST_NO_FILTER__"
             else
                 # Production mode: list-builds may fail transiently (upstream discovery, version script timeout).
-                # Skip this container's variants (stale-lineage filter disabled) rather than
-                # aborting the entire drift detector, which would suppress drift reports
-                # for all subsequent containers.
-                if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
-                    printf '::warning::./make list-builds %s failed — skipping stale-lineage filter for this container (drift detection still active)\n' "$container" >&2
-                    printf -v "$_active_tags_var" '%s' "__SKIPPED__"
+                # FAIL CLOSED: skip ALL variants for this container (no drift detection) rather than
+                # disabling the stale-lineage filter.  Disabling the filter is worse — it allows stale
+                # lineage entries to re-trigger drift PRs on every cron run (infinite PR loop).
+                # A missed drift during a transient failure is recoverable; a runaway PR loop is not.
+                _lb_rc=0
+                _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null) || _lb_rc=$?
+                if [[ "$_lb_rc" -ne 0 ]]; then
+                    printf '::warning::./make list-builds %s failed (rc=%s) — skipping entire container (fail-closed; retry next cron run)\n' "$container" "$_lb_rc" >&2
+                    # Mark container as fully skipped so the outer loop continues to the next container
+                    printf -v "$_active_tags_var" '%s' "__CONTAINER_SKIP__"
                 else
                     _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
                     if [[ -z "$_fetched" ]]; then
-                        printf '::warning::./make list-builds %s returned no tags — skipping stale-lineage filter (drift detection still active)\n' "$container" >&2
-                        printf -v "$_active_tags_var" '%s' "__SKIPPED__"
+                        printf '::warning::./make list-builds %s returned no tags — skipping entire container (fail-closed; retry next cron run)\n' "$container" >&2
+                        printf -v "$_active_tags_var" '%s' "__CONTAINER_SKIP__"
                     else
                         printf -v "$_active_tags_var" '%s' "$_fetched"
                     fi
@@ -317,9 +384,13 @@ for lineage_file in "${lineage_files[@]}"; do
             fi
         fi
         _active_tags="${!_active_tags_var}"
-        # Skip filtering if: list-builds failed (__SKIPPED__), test-mode no-filter (__TEST_NO_FILTER__),
+        # Fail-closed: if list-builds failed for this container, skip ALL its variants
+        if [[ "$_active_tags" == "__CONTAINER_SKIP__" ]]; then
+            continue
+        fi
+        # Skip filtering if: test-mode no-filter (__TEST_NO_FILTER__),
         # empty override (backward compat), or tag matches active set
-        if [[ "$_active_tags" != "__SKIPPED__" && "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+        if [[ "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
             printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
                 "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
             continue
@@ -396,6 +467,16 @@ for lineage_file in "${lineage_files[@]}"; do
             '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
         # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
         _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+
+    # Validate base_image_ref before probing (SSRF prevention).
+    # Poisoned lineage with an attacker-controlled ref could cause the workflow
+    # to probe an untrusted registry with Docker credentials.
+    if ! _validate_image_ref "$base_image_ref"; then
+        printf '::warning::Refusing to probe untrusted base_image_ref for %s:%s: %s\n' \
+            "$(_escape_gha_command "$container")" "$variant_tag_safe" \
+            "$(_escape_gha_command "$base_image_ref")" >&2
         continue
     fi
 

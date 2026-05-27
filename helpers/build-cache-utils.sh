@@ -162,6 +162,24 @@ compute_build_digest() {
         _digest_log "  digest input: CUSTOM_BUILD_ARGS=${CUSTOM_BUILD_ARGS}"
     fi
 
+    # --- Input: LAST_REBUILD.md (if present) ---
+    # Including LAST_REBUILD.md in the digest ensures that any drift-PR merge
+    # (which appends a base-digest-drift section) invalidates the cached digest,
+    # forcing should_skip_build to return false and trigger a fresh rebuild.
+    # Without this, smart-skip would match the old digest and skip the build,
+    # leaving the base digest unchanged and causing an infinite drift-PR loop.
+    #
+    # compute_build_digest is always called with cwd = container directory
+    # (the make script does pushd <container> before invoking build_container).
+    # LAST_REBUILD.md lives at the container root, so $PWD/LAST_REBUILD.md is correct.
+    local last_rebuild_path="$PWD/LAST_REBUILD.md"
+    if [[ -f "$last_rebuild_path" ]]; then
+        local last_rebuild_hash
+        last_rebuild_hash=$(sha256sum "$last_rebuild_path" | awk '{print $1}')
+        digest_inputs+=("LAST_REBUILD.md=$last_rebuild_hash")
+        _digest_log "  digest input: LAST_REBUILD.md=$last_rebuild_hash"
+    fi
+
     # --- Compute hash ---
     local concatenated
     concatenated=$(printf '%s\n' "${digest_inputs[@]}")
