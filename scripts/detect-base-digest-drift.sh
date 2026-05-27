@@ -113,29 +113,28 @@ _probe_digest() {
     local safe_ref
     safe_ref=$(_escape_gha_command "$image_ref")
 
+    # Guarantee temp file cleanup on all return paths (including early returns
+    # for empty raw and missing digest below).
+    probe_stderr=$(mktemp)
+    trap 'rm -f "$probe_stderr"' RETURN
+
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
-        probe_stderr=$(mktemp)
         raw=$("${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
-            rm -f "$probe_stderr"
             [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             return 1
         fi
-        rm -f "$probe_stderr"
     else
-        probe_stderr=$(mktemp)
         raw=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
-            rm -f "$probe_stderr"
             printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             return 1
         fi
-        rm -f "$probe_stderr"
     fi
 
     if [[ -z "$raw" ]]; then

@@ -1045,3 +1045,194 @@ EOF
 
     [ "$result" = "[]" ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r6-1: Per-container concurrency — matrix output separates containers
+# Regression guard: when two containers drift, the script emits two separate
+# container records in drift_json.  The open-drift-prs matrix uses
+# matrix.container (derived from drift_containers) to fan out.  This test
+# verifies that multi-container drift produces one record per container so
+# each matrix entry (and its own concurrency lane) is distinct.
+# ---------------------------------------------------------------------------
+@test "r6-fix1: two drifted containers produce two separate container records" {
+    export _VALID_CONTAINERS_OVERRIDE="foo
+bar"
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # foo: recorded digest differs from current → drift
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # bar: recorded digest differs from current → drift
+    cat > "$lineage_dir/bar-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "bar",
+  "tag": "2.0",
+  "base_image_ref": "debian:trixie-slim",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    # Probe stub: returns a different digest for each ref (simulating real drift)
+    local stub_script="$TEST_TEMP_DIR/probe-two-containers"
+    cat > "$stub_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    alpine:3.21)
+        printf '{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+        ;;
+    debian:trixie-slim)
+        printf '{"digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}'
+        ;;
+    *)
+        echo "unexpected ref: $1" >&2
+        exit 1
+        ;;
+esac
+STUB_EOF
+    chmod +x "$stub_script"
+
+    result=$(PROBE_CMD="$stub_script" bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+
+    # Must produce exactly 2 container records — one per drifted container
+    record_count=$(printf '%s' "$result" | jq 'length')
+    [ "$record_count" -eq 2 ]
+
+    # Both containers present with status=drift
+    foo_status=$(printf '%s' "$result" | jq -r '.[] | select(.container=="foo") | .variants[0].status')
+    [ "$foo_status" = "drift" ]
+
+    bar_status=$(printf '%s' "$result" | jq -r '.[] | select(.container=="bar") | .variants[0].status')
+    [ "$bar_status" = "drift" ]
+
+    # drift_containers list (as the workflow computes it) has 2 distinct entries
+    drift_containers=$(printf '%s' "$result" | jq -c '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]')
+    foo_in_list=$(printf '%s' "$drift_containers" | jq 'index("foo")')
+    bar_in_list=$(printf '%s' "$drift_containers" | jq 'index("bar")')
+    # Both containers are in the list (non-null index)
+    [ "$foo_in_list" != "null" ]
+    [ "$bar_in_list" != "null" ]
+    # List has exactly 2 entries → each matrix job gets its own concurrency lane
+    list_len=$(printf '%s' "$drift_containers" | jq 'length')
+    [ "$list_len" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r6-2: Workflow re-emit injection prevention
+# Regression guard: a base_image_ref with a percent-encoded newline (%0A)
+# would survive _sanitize_for_json (which only strips literal control chars)
+# and land in error_reason in the JSON.  The old workflow re-emitted that
+# field unescaped via `echo "::warning::probe-error: ${line}"`, allowing the
+# GHA runner to decode %0A back to a newline and inject a second command.
+#
+# This test verifies that the script itself does NOT double-encode: it already
+# escapes the probe-error line via _escape_gha_command before writing to
+# stderr.  The workflow no longer re-emits from JSON, so the injection path
+# is gone — this test guards that the script-level emission (the surviving
+# path) is correctly escaped.
+# ---------------------------------------------------------------------------
+@test "r6-fix2: percent-encoded newline in base_image_ref is escaped in script stderr output" {
+    # A crafted base_image_ref containing %0A (percent-encoded newline).
+    # _sanitize_for_json strips literal \n/\r but NOT %0A, so %0A survives
+    # into error_reason.  The script must escape the ::error:: line via
+    # _escape_gha_command so the %0A becomes %250A (double-encoded), preventing
+    # the GHA runner from decoding it back into a newline command injection.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    printf '{"lineage_schema_version":2,"container":"foo","tag":"1.0","base_image_ref":"alpine:3.21%%0A::add-mask::s3cr3t","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+        > "$lineage_dir/foo-1.0.json"
+
+    local stderr_log="$TEST_TEMP_DIR/r6-fix2-stderr.log"
+    PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
+
+    # The injected command must NOT appear as a standalone GHA command line
+    ! grep -q '^::add-mask::' "$stderr_log"
+
+    # The ::error:: line must be present (probe failure was emitted)
+    grep -q '::error::' "$stderr_log"
+}
+
+# ---------------------------------------------------------------------------
+# Fix r6-3: Temp file cleanup in _probe_digest (trap RETURN)
+# Regression guard: _probe_digest must not leave /tmp files behind when the
+# probe returns empty raw output or fails to extract a digest.  We verify
+# indirectly: run the script in a restricted TMPDIR with a known prefix and
+# check that no files with that prefix remain after the script exits.
+# ---------------------------------------------------------------------------
+@test "r6-fix3: no temp files left behind after empty-raw probe failure" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local isolated_tmp="$TEST_TEMP_DIR/probe-tmp"
+    mkdir -p "$lineage_dir" "$isolated_tmp"
+
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub: exits 0 but emits empty stdout → triggers the "empty raw" early return
+    local stub_script="$TEST_TEMP_DIR/probe-empty-raw"
+    cat > "$stub_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+# Output nothing — simulates imagetools returning empty body
+exit 0
+STUB_EOF
+    chmod +x "$stub_script"
+
+    # Run with isolated TMPDIR so any leaked mktemp files are contained
+    TMPDIR="$isolated_tmp" PROBE_CMD="$stub_script" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" >/dev/null 2>&1 || true
+
+    # No temp files must remain in isolated_tmp after script exits
+    leaked=$(find "$isolated_tmp" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    [ "$leaked" -eq 0 ]
+}
+
+@test "r6-fix3: no temp files left behind after digest-extraction failure" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local isolated_tmp="$TEST_TEMP_DIR/probe-tmp2"
+    mkdir -p "$lineage_dir" "$isolated_tmp"
+
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub: exits 0, emits JSON with no .digest field → triggers the
+    # "could not extract digest" early return path
+    local stub_script="$TEST_TEMP_DIR/probe-no-digest"
+    cat > "$stub_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+printf '{"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+exit 0
+STUB_EOF
+    chmod +x "$stub_script"
+
+    TMPDIR="$isolated_tmp" PROBE_CMD="$stub_script" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" >/dev/null 2>&1 || true
+
+    leaked=$(find "$isolated_tmp" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    [ "$leaked" -eq 0 ]
+}

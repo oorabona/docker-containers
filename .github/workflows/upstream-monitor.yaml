@@ -1201,16 +1201,17 @@ jobs:
 
           echo "$drift_json" > /tmp/drift.json
 
-          # Surface any probe errors so supply-chain monitoring failures are visible
+          # Surface probe error count; per-variant ::error:: lines are already
+          # emitted by the script itself (escaped) and passed through via stderr below.
+          # Do NOT re-compose warning lines from drift_json fields here — those fields
+          # are untrusted lineage data and would reintroduce GHA command injection.
           error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
-            echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants"
-            while IFS= read -r line; do
-              echo "::warning::probe-error: ${line}"
-            done < <(echo "$drift_json" | jq -r '[.[] | .variants[] | select(.status == "error") | "\(.variant_tag): \(.error_reason // "unknown")"][]' 2>/dev/null || true)
+            echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants (see ::error:: lines above)"
           fi
 
-          # Also surface any ::error:: lines from the script's stderr
+          # Pass through script's stderr unchanged — it already contains escaped
+          # ::error::probe-error: lines for each failed probe.
           if [[ -s /tmp/drift-detect-stderr.log ]]; then
             while IFS= read -r line; do
               echo "$line"
@@ -1239,13 +1240,13 @@ jobs:
       needs.detect-digest-drift.outputs.drift_containers != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Fix 3: extend the concurrency lock that guards detect-digest-drift to
-    # cover open-drift-prs as well.  Without this a second cron/dispatch run
-    # could start open-drift-prs while the first run's open-drift-prs is still
-    # running, causing branch-name races, label conflicts, and duplicate PRs.
-    # Same group name serialises the whole detect→PR pipeline as a pair.
+    # Per-container concurrency lane: each matrix entry gets its own group so
+    # GitHub's 1-running-1-pending limit does not cancel pending drift PRs for
+    # other containers when multiple containers drift simultaneously.
+    # The broader digest-drift-detect group (on detect-digest-drift job) still
+    # serialises the detect phase across concurrent workflow runs.
     concurrency:
-      group: digest-drift-detect
+      group: digest-drift-${{ matrix.container }}
       cancel-in-progress: false
     strategy:
       matrix:
