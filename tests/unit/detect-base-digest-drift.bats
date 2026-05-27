@@ -1788,7 +1788,7 @@ bar" \
 # infinite drift-PR loops.
 # ---------------------------------------------------------------------------
 
-@test "r10-fix2a: list-builds failure → container fully skipped (fail-closed)" {
+@test "r10-fix2a: list-builds failure → container emits error record (r29 Finding 2)" {
     local lineage_dir="$TEST_TEMP_DIR/r10fix2a/.build-lineage"
     mkdir -p "$lineage_dir"
 
@@ -1802,20 +1802,31 @@ bar" \
 }
 EOF
 
-    # Run without _VALID_CONTAINERS_OVERRIDE so production path runs list-builds
-    # Since ./make list-builds won't work in the test dir, it will fail → fail-closed
+    # Simulate the __CONTAINER_SKIP__ path via test hook: set the per-container
+    # active-tags override to the sentinel value so the code exercises the
+    # error-record emission path without needing to invoke ./make list-builds.
+    # The _ACTIVE_TAGS_OVERRIDE_myimage passthrough is the existing test hook;
+    # __CONTAINER_SKIP__ is the same sentinel the production list-builds failure
+    # path sets when ./make fails (rc != 0 or returns no tags).
     local result rc=0
-    result=$(unset _VALID_CONTAINERS_OVERRIDE && \
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="__CONTAINER_SKIP__" \
         PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
 
-    # Script must exit 0 (container skip is not fatal)
+    # Script must exit 0 (container error is not fatal to the overall run)
     [ "$rc" -eq 0 ]
 
-    # Output must be empty array — container was skipped entirely
+    # r29 Finding 2: output must contain one error record for the known lineage entry
     local result_len
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+
+    local err_status err_reason
+    err_status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_status" = "error" ]
+    [ "$err_reason" = "active_tags_unavailable" ]
 }
 
 @test "r10-fix2b: script contains fail-closed warning text (code audit)" {
@@ -1917,13 +1928,19 @@ STUB
     # Probe must NOT have been called
     echo "$stderr_out" | grep -qv "PROBE WAS CALLED"
 
-    # Must emit a ::warning:: about the untrusted ref
+    # Must emit a ::warning:: about the untrusted ref (audit trail on stderr)
     echo "$stderr_out" | grep -q "Refusing to probe untrusted"
 
-    # Result must be empty array (entry skipped)
+    # r29 Finding 3: result must contain one error record (not empty array)
     local result_len
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+
+    local err_status err_reason
+    err_status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_status" = "error" ]
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 @test "r10-fix3b: valid ghcr.io ref passes validation and is probed normally" {
@@ -2182,10 +2199,12 @@ STUB
     # Probe must NOT have been called
     ! echo "$stderr_out" | grep -q "PROBE WAS CALLED"
 
-    # Entry must be skipped — result is empty array
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2323,10 +2342,12 @@ STUB
     run grep -c "PROBE CALLED on localhost ref" "$TEST_TEMP_DIR/r21c-stderr.txt"
     [ "$output" = "0" ]
 
-    # Result must be empty array (no drift report for rejected ref)
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 @test "r21-C: localhost:5000/foo:1.0 is rejected by _validate_image_ref (host:port localhost)" {
@@ -2360,10 +2381,12 @@ STUB
     run grep -c "PROBE CALLED on localhost:PORT ref" "$TEST_TEMP_DIR/r21c2-stderr.txt"
     [ "$output" = "0" ]
 
-    # Result must be empty
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2793,10 +2816,12 @@ _r27b_lineage_with_ref() {
     # Probe must NOT have been called (ref rejected before registry call)
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b1-stderr.txt"
     [ "$output" = "0" ]
-    # Result must be empty array (no drift record for rejected ref)
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 @test "r27-B2: _validate_image_ref rejects '--config' (long option injection)" {
@@ -2817,9 +2842,12 @@ _r27b_lineage_with_ref() {
     [ "$rc" -eq 0 ]
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b2-stderr.txt"
     [ "$output" = "0" ]
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
 }
 
 @test "r27-B3: _validate_image_ref rejects '-foo:1.0' (dash-prefix with tag)" {
@@ -2840,7 +2868,135 @@ _r27b_lineage_with_ref() {
     [ "$rc" -eq 0 ]
     run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b3-stderr.txt"
     [ "$output" = "0" ]
-    local result_len
+    # r29 Finding 3: rejected ref emits error record (not empty array)
+    local result_len err_reason
     result_len=$(printf '%s' "$result" | jq 'length')
-    [ "$result_len" -eq 0 ]
+    [ "$result_len" -eq 1 ]
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_reason" = "untrusted_ref" ]
+}
+
+# ---------------------------------------------------------------------------
+# r29-2: error records on list-builds failure (gate r29, Finding 2)
+#
+# When ./make list-builds fails or returns empty for a container, the
+# detector must emit one status:"error" record per known lineage entry
+# for that container (not silently skip them), so error_count in the
+# workflow surfaces the gap.
+# ---------------------------------------------------------------------------
+
+@test "r29-2: stub list-builds failure emits error record per lineage entry" {
+    local lineage_dir="$TEST_TEMP_DIR/r29-2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Two lineage entries for the same container (both should get error records).
+    # We use the __CONTAINER_SKIP__ test hook to simulate a list-builds failure
+    # without needing to invoke ./make: the production failure path sets the
+    # per-container cache to __CONTAINER_SKIP__; _ACTIVE_TAGS_OVERRIDE_* is a
+    # passthrough that injects exactly that sentinel value directly.
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/myimage-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "2.0",
+  "base_image_ref": "alpine:3.22",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="__CONTAINER_SKIP__" \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    # Script exits 0 (container error is not fatal)
+    [ "$rc" -eq 0 ]
+
+    # One container record in output
+    local container_count
+    container_count=$(printf '%s' "$result" | jq 'length')
+    [ "$container_count" -eq 1 ]
+
+    # Both lineage entries must appear as error records
+    local variant_count
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$variant_count" -eq 2 ]
+
+    # All statuses must be "error" with reason "active_tags_unavailable"
+    local err_count reason_count
+    err_count=$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error")] | length')
+    reason_count=$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.error_reason == "active_tags_unavailable")] | length')
+    [ "$err_count" -eq 2 ]
+    [ "$reason_count" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# r29-3: error record on rejected base_image_ref (gate r29, Finding 3)
+#
+# When _validate_image_ref rejects a base_image_ref (untrusted registry,
+# dash-prefix, etc.), the detector must emit a status:"error" record with
+# error_reason:"untrusted_ref" in addition to the ::warning:: on stderr.
+# Before r29, only the ::warning:: was emitted → error_count stayed at 0
+# → poisoned lineage left the workflow green.
+# ---------------------------------------------------------------------------
+
+@test "r29-3: untrusted registry base_image_ref emits error record with untrusted_ref reason" {
+    local lineage_dir="$TEST_TEMP_DIR/r29-3/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "evil.example.com/foo:1.0",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub that fails loudly if called — ref must be rejected before probe
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r29-3-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED — untrusted ref not blocked!" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result stderr_out rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/tmp/r29-3-stderr.txt) || rc=$?
+    stderr_out=$(cat /tmp/r29-3-stderr.txt)
+
+    # Must exit 0 — rejection is non-fatal
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called (SSRF prevention intact)
+    ! echo "$stderr_out" | grep -q "PROBE CALLED"
+
+    # ::warning:: must still be emitted on stderr (audit trail preserved)
+    echo "$stderr_out" | grep -q "Refusing to probe untrusted"
+
+    # One container record with one error variant
+    local container_count variant_count
+    container_count=$(printf '%s' "$result" | jq 'length')
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$container_count" -eq 1 ]
+    [ "$variant_count" -eq 1 ]
+
+    # Status and reason must be set correctly
+    local err_status err_reason
+    err_status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
+    [ "$err_status" = "error" ]
+    [ "$err_reason" = "untrusted_ref" ]
 }

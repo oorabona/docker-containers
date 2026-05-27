@@ -430,8 +430,28 @@ for lineage_file in "${lineage_files[@]}"; do
             fi
         fi
         _active_tags="${!_active_tags_var}"
-        # Fail-closed: if list-builds failed for this container, skip ALL its variants
+        # Fail-closed: if list-builds failed for this container, emit an explicit
+        # error record per lineage entry so error_count surfaces the gap (r29 Finding 2).
+        # Before r29, this path silently dropped the entry, leaving the workflow green
+        # even when an entire container's drift detection was unavailable.
         if [[ "$_active_tags" == "__CONTAINER_SKIP__" ]]; then
+            # Ensure container is registered in the output map before emitting
+            if [[ -z "${_container_variants[$container]+x}" ]]; then
+                _container_order+=("$container")
+                _container_variants["$container"]=""
+            fi
+            _err_base_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
+            _err_recorded=$(jq -re '.base_image_digest // empty' "$lineage_file" 2>/dev/null || true)
+            _err_base_safe=$(_sanitize_for_json "$_err_base_ref")
+            _err_recorded_safe=$(_sanitize_for_json "$_err_recorded")
+            variant_json=$(jq -cn \
+                --arg variant_tag     "$variant_tag" \
+                --arg base_ref        "$_err_base_safe" \
+                --arg recorded_digest "$_err_recorded_safe" \
+                --arg status          "error" \
+                --arg error_reason    "active_tags_unavailable" \
+                '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+            _container_variants["$container"]+="${variant_json}"$'\n'
             continue
         fi
         # Skip filtering if: test-mode no-filter (__TEST_NO_FILTER__),
@@ -544,6 +564,19 @@ for lineage_file in "${lineage_files[@]}"; do
         printf '::warning::Refusing to probe untrusted base_image_ref for %s:%s: %s\n' \
             "$(_escape_gha_command "$container")" "$variant_tag_safe" \
             "$(_escape_gha_command "$base_image_ref")" >&2
+        # r29 Finding 3: emit an explicit error record so error_count surfaces the
+        # rejection in workflow output.  The ::warning:: above is kept for the audit
+        # trail on stderr; the record here is the machine-readable signal.
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        variant_json=$(jq -cn \
+            --arg variant_tag     "$variant_tag" \
+            --arg base_ref        "$safe_ref" \
+            --arg recorded_digest "$safe_recorded" \
+            --arg status          "error" \
+            --arg error_reason    "untrusted_ref" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
 

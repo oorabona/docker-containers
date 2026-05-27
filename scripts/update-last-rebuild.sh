@@ -178,26 +178,42 @@ if [[ ! -d "${PROJECT_ROOT}/${CONTAINER}" ]]; then
 fi
 
 # Idempotency: content-hash dedupe (gate r27, Defect C — replaces r25 heading-only dedupe).
+# Run-id scope added in gate r29 (Finding 1 — cross-run recoverability).
 #
 # The r25 fix deduped on the `## base-digest-drift (YYYY-MM-DD)` heading alone.
 # False negative: if drift A merges in the morning → rebuild → then drift B
 # (different variants) occurs the same UTC day → the heading is already present →
 # script skipped → no file change → no PR/rebuild trigger for drift B.
 #
-# Fix: embed a SHA-256 content-hash of the drift section body as an HTML comment
+# r27 fix: embed a SHA-256 content-hash of the drift section body as an HTML comment
 # ABOVE the heading.  Two invocations with identical drift content (same variants,
 # same digests) share the same hash → idempotent skip preserved.  Two invocations
 # with different content (even on the same day) produce different hashes → both
 # sections are appended.
 #
+# r29 fix (run-id scope): a failed rebuild followed by the same drift in the NEXT
+# workflow run would match the r27 hash marker → no new section → no PR → drift
+# unrecoverable until lineage changes.  Fix: include GITHUB_RUN_ID in the marker
+# so identical content in a different run always appends fresh.
+#
+# Dedupe semantics:
+#   - Same hash AND same run_id → in-run retry → skip (preserves r25 retry invariant)
+#   - Same hash but different run_id → new run re-detecting same drift → append
+#   - Different hash → different drift content → always append
+#
 # Hash scope: variant_lines only (the stable, injected-safe content derived from
 # drift JSON).  16 hex characters is sufficient; collision probability per
 # container per day is negligible.
+#
+# This script targets GitHub Actions.  When GITHUB_RUN_ID is unset (local
+# invocation, unit tests) the literal "local" is used — same-run deduplication
+# still applies within a local session, but cross-run recovery requires GHA.
 drift_content_hash=$(printf '%s\n' "${variant_lines}" | sha256sum | cut -d' ' -f1 | head -c 16)
-hash_marker="<!-- drift-content-hash: ${drift_content_hash} -->"
+run_id="${GITHUB_RUN_ID:-local}"
+hash_marker="<!-- drift-content-hash: ${drift_content_hash} run:${run_id} -->"
 
 if grep -qF -- "$hash_marker" "$target_file" 2>/dev/null; then
-    echo "::notice::Same drift event already recorded (hash ${drift_content_hash}), skipping append" >&2
+    echo "::notice::Same drift event already recorded (hash ${drift_content_hash} run:${run_id}), skipping append" >&2
     exit 0
 fi
 

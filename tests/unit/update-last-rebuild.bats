@@ -260,3 +260,120 @@ _setup_r27c_project_b() {
     # Must NOT contain a line that starts with ::add-mask:: or similar injected command
     ! printf '%s' "$stderr_output" | grep -qE '^::add-mask::|^::set-env::|^::set-output::'
 }
+
+# ---------------------------------------------------------------------------
+# r29-1: run-id-scoped dedupe (gate r29, Finding 1 — cross-run recoverability)
+#
+# The r27 content-hash marker without run-id made identical-content drift
+# unrecoverable across runs: failed rebuild + same drift next run → hash
+# already in file → no new section → no PR/rebuild trigger.
+#
+# Fix: marker is now `<!-- drift-content-hash: <hash> run:<run_id> -->`.
+# Same hash + same run_id → in-run retry → skip (r25 invariant preserved).
+# Same hash + different run_id → new run re-detecting same drift → append.
+# ---------------------------------------------------------------------------
+
+@test "r29-1a: same hash same GITHUB_RUN_ID invoked twice → exactly one section" {
+    local fake_project
+    fake_project=$(_setup_r25b_project)
+
+    local kind="base-digest-drift"
+    local today
+    today="$(date -u +%Y-%m-%d)"
+    local heading="## ${kind} (${today})"
+
+    # First run with explicit run-id
+    GITHUB_RUN_ID="stub-run-1" \
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    # Second run — same run-id, same content → must dedupe (in-run retry)
+    GITHUB_RUN_ID="stub-run-1" \
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    local target="$fake_project/mycontainer/LAST_REBUILD.md"
+    [ -f "$target" ]
+
+    local count
+    count=$(grep -cxF -- "$heading" "$target")
+    [ "$count" -eq 1 ]
+}
+
+@test "r29-1b: same hash different GITHUB_RUN_ID → two sections (cross-run re-detection)" {
+    local fake_project
+    fake_project=$(_setup_r25b_project)
+
+    local kind="base-digest-drift"
+    local today
+    today="$(date -u +%Y-%m-%d)"
+    local heading="## ${kind} (${today})"
+
+    # First run
+    GITHUB_RUN_ID="stub-run-1" \
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    # Second run — different run-id, same content → must append (new run)
+    GITHUB_RUN_ID="stub-run-2" \
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    local target="$fake_project/mycontainer/LAST_REBUILD.md"
+    [ -f "$target" ]
+
+    # Both runs must have appended → 2 headings
+    local count
+    count=$(grep -cxF -- "$heading" "$target")
+    [ "$count" -eq 2 ]
+
+    # Two distinct run-id markers must be present
+    local r1_count r2_count
+    r1_count=$(grep -cF 'run:stub-run-1' "$target")
+    r2_count=$(grep -cF 'run:stub-run-2' "$target")
+    [ "$r1_count" -eq 1 ]
+    [ "$r2_count" -eq 1 ]
+}
+
+@test "r29-1c: unset GITHUB_RUN_ID falls back to run:local and dedupes within same local session" {
+    local fake_project
+    fake_project=$(_setup_r25b_project)
+
+    local kind="base-digest-drift"
+    local today
+    today="$(date -u +%Y-%m-%d)"
+    local heading="## ${kind} (${today})"
+
+    # First run — no GITHUB_RUN_ID set (local invocation)
+    unset GITHUB_RUN_ID
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    # Second run — still no GITHUB_RUN_ID → same "local" run_id → dedupe
+    unset GITHUB_RUN_ID
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    local target="$fake_project/mycontainer/LAST_REBUILD.md"
+    [ -f "$target" ]
+
+    # Must be exactly 1 section (local-session deduplication preserved)
+    local count
+    count=$(grep -cxF -- "$heading" "$target")
+    [ "$count" -eq 1 ]
+
+    # Marker must use "run:local" fallback
+    grep -qF 'run:local' "$target"
+}
