@@ -21,10 +21,11 @@
 #
 # Env:
 #   PROBE_CMD         Override probe command for testing. Must accept one arg
-#                     (image_ref) and print the image-index manifest digest to
-#                     stdout (sha256:... string).
+#                     (image_ref) and output JSON containing a `.digest` field
+#                     (the canonical multi-arch image-index digest). The script
+#                     extracts the digest via `jq -r '.digest // empty'`.
 #                     Defaults to: docker buildx imagetools inspect --format
-#                       '{{json .Manifest}}' <ref> | jq -r '.digest'
+#                       '{{json .Manifest}}' <ref>
 #                     (canonical multi-arch image-index digest via buildx
 #                     imagetools — order-independent, single source of truth,
 #                     matches scripts/build-container.sh digest extraction)

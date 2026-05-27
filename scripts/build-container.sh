@@ -17,6 +17,25 @@ source "$PROJECT_ROOT/helpers/extension-utils.sh"
 # shellcheck source=../helpers/extension-duration-utils.sh
 [[ -f "$PROJECT_ROOT/helpers/extension-duration-utils.sh" ]] && source "$PROJECT_ROOT/helpers/extension-duration-utils.sh"
 
+# ---------------------------------------------------------------------------
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command.  Without this, a %0A/%0D in the value could terminate
+# the command early and inject another workflow command.  Mapping per GitHub's
+# runner spec:  %→%25  \n→%0A  \r→%0D
+#
+# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
+# inlined here to avoid importing the full base-cache helper.
+# ---------------------------------------------------------------------------
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
     # Cache the result to avoid repeated checks
@@ -288,8 +307,9 @@ _resolve_base_image() {
                 # Fix r23: explicitly clear _BASE_DIGEST on shape-validation failure so
                 # _emit_build_lineage writes "unresolved" (treated as legacy by the
                 # detector) rather than a malformed value that poisons comparisons.
-                _safe_digest=$(printf '%s' "$_BASE_DIGEST" | tr -d '`|\n\r')
-                printf '::warning::Malformed base digest '\''%s'\'' from manifest probe; discarding\n' "$_safe_digest" >&2
+                # Fix r28: route through _escape_gha_command to prevent %0A/%0D in the
+                # malformed value from injecting additional GHA workflow commands.
+                printf '::warning::Malformed base digest '\''%s'\'' from manifest probe; discarding\n' "$(_escape_gha_command "$_BASE_DIGEST")" >&2
                 _BASE_DIGEST=""
             fi
         fi
