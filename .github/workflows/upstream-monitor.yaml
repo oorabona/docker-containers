@@ -1306,29 +1306,45 @@ jobs:
           CONTAINER: ${{ matrix.container }}
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
-          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/dev/null)
-          echo "$drift_json" > /tmp/drift.json
+          # Fix r7-3: unique temp paths per matrix entry — no cross-container contamination
+          # across sequential runs on the same runner.
+          drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
+          # Fix r7-2: stdout → file, stderr flows to GHA log (NOT discarded).
+          # Probe errors surface as ::error:: lines in the step log AND as
+          # status:error records in the JSON — both are now visible.
+          ./scripts/detect-base-digest-drift.sh > "$drift_file" || true
+          drift_json=$(cat "$drift_file")
+
+          # Fix r7-2: check for probe errors; distinguish from "no drift"
+          error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
+            exit 1
+          fi
 
           # Check if this container actually has actionable drift
           has_drift=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
             '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")] | length > 0')
           echo "has_drift=${has_drift}" >> "$GITHUB_OUTPUT"
+          echo "drift_file=${drift_file}" >> "$GITHUB_OUTPUT"
 
       - name: Update LAST_REBUILD.md tracker
         if: steps.drift-data.outputs.has_drift == 'true'
         env:
           CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
         run: |
           chmod +x scripts/update-last-rebuild.sh
-          < /tmp/drift.json ./scripts/update-last-rebuild.sh "$CONTAINER" "base-digest-drift"
+          < "$DRIFT_FILE" ./scripts/update-last-rebuild.sh "$CONTAINER" "base-digest-drift"
 
       - name: Build PR body
         if: steps.drift-data.outputs.has_drift == 'true'
         id: pr-body
         env:
           CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
         run: |
-          drift_json=$(cat /tmp/drift.json)
+          drift_json=$(cat "$DRIFT_FILE")
           today=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           variants=$(echo "$drift_json" | jq -c \
@@ -1339,7 +1355,10 @@ jobs:
           variants_total=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
             '[.[] | select(.container == $c) | .variants[]] | length')
 
-          pr_body_file="/tmp/pr-body-${CONTAINER}.md"
+          # Fix r7-3: unique per-matrix temp paths — no cross-container contamination
+          pr_body_file="/tmp/pr-body-${{ github.run_id }}-${CONTAINER}.md"
+          pr_frontmatter_file="/tmp/pr-frontmatter-${{ github.run_id }}-${CONTAINER}.txt"
+          pr_table_file="/tmp/pr-table-${{ github.run_id }}-${CONTAINER}.txt"
 
           # YAML frontmatter (machine-parseable for downstream tooling)
           {
@@ -1348,21 +1367,21 @@ jobs:
             printf 'detected_at: %s\n' "$today"
             printf 'variants_drifted: %s\n' "$variants_drifted"
             printf 'variants_total: %s\n' "$variants_total"
-          } > /tmp/pr-frontmatter.txt
+          } > "$pr_frontmatter_file"
 
           # Build variant table (injection-safe: values come from jq --arg)
-          printf '| Variant tag | Base image ref | Old digest | New digest |\n' > /tmp/pr-table.txt
-          printf '|-------------|----------------|------------|------------|\n' >> /tmp/pr-table.txt
+          printf '| Variant tag | Base image ref | Old digest | New digest |\n' > "$pr_table_file"
+          printf '|-------------|----------------|------------|------------|\n' >> "$pr_table_file"
           echo "$variants" | jq -r \
             '.[] | "| \(.variant_tag) | \(.base_image_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
-            >> /tmp/pr-table.txt
+            >> "$pr_table_file"
 
           {
             printf -- '---\n'
-            cat /tmp/pr-frontmatter.txt
+            cat "$pr_frontmatter_file"
             printf -- '---\n\n'
             printf '# Base image digest drift — %s\n\n' "$CONTAINER"
-            cat /tmp/pr-table.txt
+            cat "$pr_table_file"
             printf '\n## Action\n\n'
             printf 'Merging this PR appends a `## base-digest-drift` section to `%s/LAST_REBUILD.md`, which triggers `auto-build.yaml` via path filter. The rebuild captures the fresh base digest in the new lineage entry. Next-day cron sees match → no further drift PR.\n' "$CONTAINER"
             printf '\n## Chained-on-own note\n\n'

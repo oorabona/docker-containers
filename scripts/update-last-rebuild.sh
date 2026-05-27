@@ -54,7 +54,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-valid_containers=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null || true)
+valid_containers=$(cd "$PROJECT_ROOT" && ./make list)
+if [[ -z "$valid_containers" ]]; then
+    echo "::error::./make list returned empty — canonical container list unavailable" >&2
+    exit 2
+fi
 if ! grep -qxF "$CONTAINER" <<<"$valid_containers"; then
     echo "::warning::container '$CONTAINER' is not a valid container name (not in ./make list) — skipping" >&2
     exit 0

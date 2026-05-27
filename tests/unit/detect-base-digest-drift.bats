@@ -1236,3 +1236,272 @@ STUB_EOF
     leaked=$(find "$isolated_tmp" -maxdepth 1 -type f 2>/dev/null | wc -l)
     [ "$leaked" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r7-1: Digest shape validation before label_args embedding
+# Regression guard: a malformed _BASE_DIGEST value (spaces, injected flags,
+# non-hex chars) must be refused and NOT embedded in label_args.  Only
+# ^sha256:[a-f0-9]{64}$ passes.
+# ---------------------------------------------------------------------------
+@test "r7-fix1a: malformed digest (spaces/injection) is NOT added to label_args" {
+    # Exercise _resolve_base_image from build-container.sh with a docker stub that
+    # returns a malformed digest — verify label_args stays clean.
+    local test_container_dir="$TEST_TEMP_DIR/r7fix1a"
+    mkdir -p "$test_container_dir/bin"
+
+    # Docker stub: imagetools inspect returns a digest containing a space (injection vector)
+    cat > "$test_container_dir/bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+    printf '{"digest":"sha256:aabbcc --label org.opencontainers.image.extra=injected"}\n'
+    exit 0
+fi
+exit 1
+MOCK
+    chmod +x "$test_container_dir/bin/docker"
+
+    # Run _resolve_base_image in a subshell so PATH is scoped and globals don't leak
+    local label_args_val
+    label_args_val=$(
+        export PATH="$test_container_dir/bin:$PATH"
+        cd "$test_container_dir"
+        printf 'FROM alpine:3.21\n' > Dockerfile
+        # Source logging + build-container
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/logging.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/build-args-utils.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/variant-utils.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/template-utils.sh" 2>/dev/null || true
+        pushd "${SCRIPTS_DIR}" >/dev/null 2>&1
+        # shellcheck source=/dev/null
+        source "./build-container.sh" 2>/dev/null || true
+        popd >/dev/null 2>&1
+        declare -gA _BUILD_ARGS_RESOLVED=()
+        label_args=""
+        _resolve_base_image "Dockerfile" "3.21" "label_args" 2>/dev/null || true
+        printf '%s' "$label_args"
+    )
+
+    # label_args must NOT contain the malformed digest value
+    [[ "$label_args_val" != *"aabbcc"* ]] || {
+        echo "FAIL: malformed digest fragment 'aabbcc' appeared in label_args: '$label_args_val'"
+        return 1
+    }
+    [[ "$label_args_val" != *"--label org.opencontainers.image.extra"* ]] || {
+        echo "FAIL: injected extra label appeared in label_args: '$label_args_val'"
+        return 1
+    }
+}
+
+@test "r7-fix1b: well-formed sha256 digest is embedded in label_args" {
+    # Positive case: ^sha256:[a-f0-9]{64}$ must still be accepted.
+    local test_container_dir="$TEST_TEMP_DIR/r7fix1b"
+    mkdir -p "$test_container_dir/bin"
+
+    local valid_digest="sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+    cat > "$test_container_dir/bin/docker" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$1" == "buildx" && "\$2" == "imagetools" && "\$3" == "inspect" ]]; then
+    printf '{"digest":"${valid_digest}"}\n'
+    exit 0
+fi
+exit 1
+MOCK
+    chmod +x "$test_container_dir/bin/docker"
+
+    local label_args_val
+    label_args_val=$(
+        export PATH="$test_container_dir/bin:$PATH"
+        cd "$test_container_dir"
+        printf 'FROM alpine:3.21\n' > Dockerfile
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/logging.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/build-args-utils.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/variant-utils.sh" 2>/dev/null || true
+        # shellcheck source=/dev/null
+        source "${SCRIPTS_DIR}/../helpers/template-utils.sh" 2>/dev/null || true
+        pushd "${SCRIPTS_DIR}" >/dev/null 2>&1
+        # shellcheck source=/dev/null
+        source "./build-container.sh" 2>/dev/null || true
+        popd >/dev/null 2>&1
+        declare -gA _BUILD_ARGS_RESOLVED=()
+        label_args=""
+        _resolve_base_image "Dockerfile" "3.21" "label_args" 2>/dev/null || true
+        printf '%s' "$label_args"
+    )
+
+    [[ "$label_args_val" == *"org.opencontainers.image.base.digest=${valid_digest}"* ]] || {
+        echo "FAIL: valid digest not found in label_args: '$label_args_val'"
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fix r7-2: Re-detect step distinguishes status:error from no-drift
+# Regression guard: when every probe returns error (PROBE_CMD=/bin/false),
+# the JSON output contains status:error records — the workflow's error_count
+# check (jq '[.[] | .variants[] | select(.status == "error")] | length') is
+# non-zero, so the step exits non-zero rather than silently skipping.
+# This test verifies the script emits status:error that a downstream
+# error_count check can detect, not that the script itself exits non-zero.
+# ---------------------------------------------------------------------------
+@test "r7-fix2: probe failure emits status:error in JSON (re-detect error_count detectable)" {
+    local lineage_dir="$TEST_TEMP_DIR/r7fix2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # /bin/false simulates a probe that always fails (registry unreachable)
+    result=$(PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Must contain at least one status:error record — the workflow's error_count jq
+    # expression will be > 0, so the step exits 1 (not silently treats as no-drift).
+    error_count=$(printf '%s' "$result" | jq '[.[] | .variants[] | select(.status == "error")] | length')
+    [ "$error_count" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r7-4a: ./make list hard-fail in detect-base-digest-drift.sh
+# Regression guard: when _VALID_CONTAINERS_OVERRIDE is explicitly empty (not set
+# at all, so the script falls through to ./make list), and ./make list fails,
+# the script must exit 2 — NOT silently treat all containers as invalid and
+# return "[]" (false no-drift).
+# ---------------------------------------------------------------------------
+@test "r7-fix4a: detect script exits 2 when _VALID_CONTAINERS_OVERRIDE unset and make list fails" {
+    local fake_root="$TEST_TEMP_DIR/r7fix4a"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh — must exist in fake root
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+
+    cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # ./make list exits non-zero — simulates tooling failure
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "list" ]]; then
+    exit 1
+fi
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    # Unset the override so the script falls through to ./make list
+    cd "$fake_root" && unset _VALID_CONTAINERS_OVERRIDE && \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" >/dev/null 2>/dev/null || rc=$?
+
+    # Must exit with code 2 (tooling failure), NOT 0 (silent false no-drift)
+    [ "$rc" -eq 2 ]
+}
+
+@test "r7-fix4b: detect script exits 2 when make list returns empty string" {
+    # A make list that succeeds but prints nothing (empty output) is equally invalid.
+    local fake_root="$TEST_TEMP_DIR/r7fix4b"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+
+    cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # ./make list exits 0 but prints nothing — empty canonical list
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && { printf ''; exit 0; }
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    cd "$fake_root" && unset _VALID_CONTAINERS_OVERRIDE && \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" >/dev/null 2>/dev/null || rc=$?
+
+    # Empty make list is also a hard failure (exit 2)
+    [ "$rc" -eq 2 ]
+}
+
+@test "r7-fix4c: _VALID_CONTAINERS_OVERRIDE non-empty bypasses make list check" {
+    # Test hook: _VALID_CONTAINERS_OVERRIDE set to a non-empty value must bypass
+    # the ./make list call entirely (existing pre-r7 behavior preserved for tests).
+    local lineage_dir="$TEST_TEMP_DIR/r7fix4c/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # _VALID_CONTAINERS_OVERRIDE is set (non-empty) → ./make list never called
+    local rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    # Script must exit 0 (even with probe failure the detection itself runs)
+    # and must NOT exit 2 (make list was bypassed)
+    [ "$rc" -ne 2 ]
+    # result must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Fix r7-4d: update-last-rebuild.sh exits 2 when ./make list is empty
+# Regression guard: ./make list returning empty must cause exit 2, not
+# silently skip with exit 0 (which would hide the tooling failure).
+# ---------------------------------------------------------------------------
+@test "r7-fix4d: update-last-rebuild exits 2 when make list returns empty" {
+    local fake_root="$TEST_TEMP_DIR/r7fix4d"
+    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
+    mkdir -p "$fake_root/scripts"
+    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+
+    # ./make list succeeds but returns nothing
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && { printf ''; exit 0; }
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    cd "$fake_root" && \
+        bash scripts/update-last-rebuild.sh "mycontainer" "base-digest-drift" \
+        <<< '[]' 2>/dev/null || rc=$?
+
+    # Must exit 2 — tooling failure, NOT silent success
+    [ "$rc" -eq 2 ]
+}

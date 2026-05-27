@@ -230,7 +230,11 @@ for lineage_file in "${lineage_files[@]}"; do
         if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" ]]; then
             _valid_containers="$_VALID_CONTAINERS_OVERRIDE"
         else
-            _valid_containers=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null || true)
+            _valid_containers=$(cd "$PROJECT_ROOT" && ./make list) || _valid_containers=""
+            if [[ -z "$_valid_containers" ]]; then
+                printf '::error::./make list returned empty — canonical container list unavailable\n' >&2
+                exit 2
+            fi
         fi
     fi
     if ! grep -qxF "$container" <<<"$_valid_containers"; then

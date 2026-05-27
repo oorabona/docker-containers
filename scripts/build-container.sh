@@ -277,9 +277,16 @@ _resolve_base_image() {
     if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
         _BASE_DIGEST=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$_BASE_IMAGE_REF" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
         if [[ -n "$_BASE_DIGEST" ]]; then
-            # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
-            printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
-            log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
+            # Fix r7-1: validate digest shape before embedding in label_args.
+            # A malformed value (spaces, shell metacharacters, injected flags)
+            # must never reach --label or --build-arg.
+            if [[ "$_BASE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
+                printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
+                log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
+            else
+                log_warning "Refusing to embed malformed _BASE_DIGEST: ${_BASE_DIGEST}" >&2
+            fi
         fi
     fi
 }
