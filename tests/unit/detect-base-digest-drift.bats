@@ -2079,3 +2079,60 @@ EOF
     status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
     [ "$status" = "drift" ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r18: global RETURN trap crash in multi-entry probe sequence
+# Regression guard: bash RETURN traps are GLOBAL — the former
+# `trap 'rm -f "$probe_stderr"' RETURN` in _probe_digest fired on every
+# subsequent function return after the first _probe_digest call, referencing
+# an out-of-scope variable and crashing under set -u.
+# This test runs the detector against 3 lineage entries so _probe_digest is
+# called 3 times in sequence; it verifies (a) the script completes without
+# "unbound variable" error and (b) all 3 entries produce drift output.
+# ---------------------------------------------------------------------------
+@test "r18-fix: multi-entry probe sequence completes without unbound-variable crash" {
+    local lineage_dir="$TEST_TEMP_DIR/r18fix/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    local recorded_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local live_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    # Three independent containers, each with one lineage entry — forces
+    # _probe_digest to be called 3 times in sequence within the same shell.
+    for cname in alpha beta gamma; do
+        cat > "$lineage_dir/${cname}-1.0.json" <<EOF
+{
+  "lineage_schema_version": 2,
+  "container": "${cname}",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "${recorded_digest}"
+}
+EOF
+    done
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "$live_digest")
+
+    local stderr_out
+    stderr_out="$TEST_TEMP_DIR/r18fix-stderr.txt"
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="alpha
+beta
+gamma" \
+        _ACTIVE_TAGS_OVERRIDE_alpha="1.0" \
+        _ACTIVE_TAGS_OVERRIDE_beta="1.0" \
+        _ACTIVE_TAGS_OVERRIDE_gamma="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_out")
+
+    # No unbound-variable error must appear on stderr
+    run grep -c "unbound variable" "$stderr_out"
+    [ "$output" = "0" ]
+
+    # All 3 containers must appear in the output with drift status
+    local drift_count
+    drift_count=$(printf '%s' "$result" | jq -r '[.[] | .variants[].status] | map(select(. == "drift")) | length')
+    [ "$drift_count" -eq 3 ]
+}

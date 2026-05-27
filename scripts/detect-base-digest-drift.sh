@@ -113,10 +113,12 @@ _probe_digest() {
     local safe_ref
     safe_ref=$(_escape_gha_command "$image_ref")
 
-    # Guarantee temp file cleanup on all return paths (including early returns
-    # for empty raw and missing digest below).
+    # Explicit cleanup on every return path below.  We do NOT use
+    # `trap '...' RETURN` because bash RETURN traps are GLOBAL — they fire on
+    # every subsequent function return in the same shell, not just returns from
+    # the function that set them.  Under set -u that crashes the script after
+    # the first _probe_digest call when probe_stderr is out of scope.
     probe_stderr=$(mktemp)
-    trap 'rm -f "$probe_stderr"' RETURN
 
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
@@ -125,6 +127,7 @@ _probe_digest() {
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
+            rm -f "$probe_stderr"
             return 1
         fi
     else
@@ -133,12 +136,14 @@ _probe_digest() {
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
+            rm -f "$probe_stderr"
             return 1
         fi
     fi
 
     if [[ -z "$raw" ]]; then
         printf '::error::imagetools inspect returned empty output for %s\n' "$safe_ref" >&2
+        rm -f "$probe_stderr"
         return 1
     fi
 
@@ -148,9 +153,11 @@ _probe_digest() {
 
     if [[ -z "$digest" ]]; then
         printf '::error::could not extract digest from manifest for %s\n' "$safe_ref" >&2
+        rm -f "$probe_stderr"
         return 1
     fi
 
+    rm -f "$probe_stderr"
     printf '%s' "$digest"
     return 0
 }
