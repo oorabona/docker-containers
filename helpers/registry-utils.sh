@@ -50,10 +50,15 @@ _ghcr_ensure_cachedir() {
     # so callers do not interpret this as a fatal error.  The actual cache
     # writes will fail benignly downstream (best-effort) and force fresh
     # network fetches each call.
-    if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+    # Use a TMPDIR-based sentinel file keyed by the top-level PID so the
+    # "warn once" dedup works across $() subshells (env var exports don't
+    # propagate from child back to parent).
+    local _sentinel="${TMPDIR:-/tmp}/.ghcr_cache_warned.$$"
+    if [[ ! -f "$_sentinel" ]]; then
         echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; running in degraded (uncached, slow) mode" >&2
-        _GHCR_CACHE_DIR_WARNED=1
+        touch "$_sentinel" 2>/dev/null || true
     fi
+    export _GHCR_CACHE_DIR_WARNED=1
     return 0
 }
 
@@ -160,7 +165,7 @@ ghcr_get_token() {
     # umask 077 subshell ensures tmp is born 0600 even if chmod fails;
     # chmod kept as belt-and-suspenders; mv preserves mode.
     if [[ -n "$token" ]]; then
-        ( umask 077; printf '%s' "$token" > "${keyfile}.tmp.$$" ) && chmod 600 "${keyfile}.tmp.$$" 2>/dev/null && mv -f "${keyfile}.tmp.$$" "$keyfile" 2>/dev/null || true
+        ( umask 077; printf '%s' "$token" > "${keyfile}.tmp.$$" ) 2>/dev/null && chmod 600 "${keyfile}.tmp.$$" 2>/dev/null && mv -f "${keyfile}.tmp.$$" "$keyfile" 2>/dev/null || true
     fi
 
     echo "$token"
@@ -197,9 +202,12 @@ _ghcr_fetch_index() {
     # PID-reuse conflict, OOM mid-write, manual tampering).  A mismatch evicts
     # both cache files and falls through to the network fetch branch below.
     if [[ -s "$body_file" && -f "$hdrs_file" ]]; then
-        local cached_expected
-        cached_expected=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" \
-            | sed 's/.*sha256://i' | tr -d '\r\n ' | head -c 64)
+        local cached_expected hdr_line
+        hdr_line=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" 2>/dev/null || true)
+        cached_expected=""
+        if [[ -n "$hdr_line" ]]; then
+            cached_expected=$(printf '%s' "$hdr_line" | sed 's/.*sha256://i' | tr -d '\r\n ' | head -c 64)
+        fi
         # Only verify when we have a full 64-char lowercase hex digest.
         # A short/invalid value (e.g. the default shim's "sha256:idx") means
         # no real digest was stored — skip verification and trust the file.

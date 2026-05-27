@@ -1225,3 +1225,141 @@ CURL_PERARCH_FAIL
     # Neither arch must have triggered a network fetch.
     ! grep -q 'PERARCH_FETCHED_UNEXPECTEDLY' "$CALLS"
 }
+
+# ---------------------------------------------------------------------------
+# r6-test-1 (Defect A): _ghcr_fetch_index with digestless header cache file
+# must return 0 (trust cache) rather than aborting under set -euo pipefail.
+#
+# Regression guard: the grep|sed|tr|head pipeline on Docker-Content-Digest was
+# not guarded with || true.  Under set -euo pipefail an older cache file that
+# lacked the header caused grep to exit 1, aborting the function before the
+# "no verifiable digest → trust the cache" guard could run.
+# ---------------------------------------------------------------------------
+
+@test "r6: digestless cache header returns 0 under set -euo pipefail (Defect A)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed cache: body present, headers WITHOUT Docker-Content-Digest line
+    # (simulates a cache file written before the r4 verify-on-hit fix landed).
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    mkdir -p "$GHCR_CACHE_DIR"
+    printf '%s\n' "$_OCI_INDEX" > "$body_file"
+    # No Docker-Content-Digest header — digestless header file.
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n' \
+        > "$hdrs_file"
+
+    # Replace curl shim with a fail-fast one: if the cache hit path aborts and
+    # falls through to the network branch, this sentinel fires.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_NOSIG'
+#!/usr/bin/env bash
+echo "CURL_CALLED_UNEXPECTEDLY" >> "$CALLS"
+exit 1
+CURL_NOSIG
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    # Run under set -euo pipefail inside a subshell to isolate exit semantics.
+    run bash -c '
+        set -euo pipefail
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        # Inject the pre-seeded cache dir.
+        export GHCR_CACHE_DIR="'"$GHCR_CACHE_DIR"'"
+
+        _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token"
+        echo "RC=$?"
+        if [[ -n "$_GHCR_IDX_BODY" ]]; then echo "BODY_POPULATED"; fi
+    '
+
+    # Must exit 0: digestless header → trust cache → function returns 0.
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q 'RC=0'
+    echo "$output" | grep -q 'BODY_POPULATED'
+
+    # Curl must NOT have been called (cache hit path served the response).
+    ! grep -q 'CURL_CALLED_UNEXPECTEDLY' "$CALLS"
+}
+
+# ---------------------------------------------------------------------------
+# r6-test-2 (Defect B): cache-dir warning emitted exactly once across
+# ghcr_get_token (command-substitution subshell) + ghcr_get_manifest_sizes.
+#
+# Regression guard: _GHCR_CACHE_DIR_WARNED was set without export, so the
+# sentinel didn't propagate from the token subshell back to the caller.
+# The caller's next _ghcr_ensure_cachedir saw the variable unset and emitted
+# the warning a second time.
+# ---------------------------------------------------------------------------
+
+@test "r6: cache-dir warning emitted exactly once across token + manifest_sizes calls (Defect B)" {
+    # Run in a subshell; both stderr streams (token subshell + parent direct
+    # call) are merged to stdout so bats captures them in $output.
+    # NOTE: do NOT redirect the token subshell's stderr to the token variable —
+    # the warning must flow to the parent stderr (fd 2) so it's countable.
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+
+        # ghcr_get_token runs inside a $() subshell.  Without the TMPDIR
+        # sentinel file, the parent would emit the warning again on the next
+        # _ghcr_ensure_cachedir call because env-var exports do not propagate
+        # child→parent.
+        token=$(ghcr_get_token "oorabona/postgres") || true
+
+        # Subsequent call that internally calls _ghcr_ensure_cachedir in the
+        # parent context must NOT emit the warning a second time.
+        ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine" > /dev/null || true
+    ' 2>&1
+
+    # Must exit 0 overall.
+    [ "$status" -eq 0 ]
+
+    # Exactly 1 ::warning:: line must appear across both calls combined.
+    local warning_count
+    warning_count=$(echo "$output" | grep -c '::warning::' || true)
+    [ "$warning_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# r6-test-3 (Defect B): token cache write to unwritable dir must not leak
+# a shell-level redirect error ("No such file or directory") on stderr.
+#
+# Regression guard: the printf redirect inside the umask subshell was not
+# redirected to /dev/null.  An unwritable GHCR_CACHE_DIR caused bash to emit
+# "bash: <path>.tmp.$$: No such file or directory" on stderr BEFORE the
+# outer || true suppressor, leaking a confusing error line to CI logs.
+# ---------------------------------------------------------------------------
+
+@test "r6: token cache write to unwritable dir emits no shell redirect error (Defect B)" {
+    run --separate-stderr bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+
+        # ghcr_get_token calls _ghcr_ensure_cachedir then attempts to write
+        # the token to the unwritable cache dir.
+        ghcr_get_token "oorabona/postgres" >/dev/null
+    '
+    # Must exit 0 (degraded mode — token returned even when cache write fails).
+    [ "$status" -eq 0 ]
+
+    # stderr must contain the one-time ::warning:: for the unwritable dir.
+    echo "$stderr" | grep -q '::warning::'
+
+    # stderr must NOT contain any "No such file or directory" shell-level error.
+    ! echo "$stderr" | grep -qi 'No such file or directory'
+
+    # stderr must NOT contain any "cannot create" or similar write-failure message
+    # other than the expected ::warning:: line.
+    local non_warning_errors
+    non_warning_errors=$(echo "$stderr" | grep -v '::warning::' | grep -c 'error\|cannot\|failed' || true)
+    [ "$non_warning_errors" -eq 0 ]
+}
