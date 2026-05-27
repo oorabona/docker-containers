@@ -1153,13 +1153,12 @@ jobs:
     # detection is independent of dep-PR fanout.  Including it would silently
     # skip drift detection whenever skip_dep_fanout (or equivalent) is set.
     needs: [sync-base-images]
-    # Run only when sync-base-images truly succeeded (probes compare fresh GHCR
-    # state).  Checking the explicit output guards against continue-on-error
-    # swallowing real sync failures: result=='success' can be true even when the
-    # sync step exited non-zero; sync_succeeded=='true' is set only when the
-    # sync_base_images_to_ghcr call returns 0.  'skipped' is NOT allowed: if
-    # sync was skipped the mirror may be stale, producing silent misreports.
-    if: needs.sync-base-images.outputs.sync_succeeded == 'true'
+    # No `if:` gate on sync_succeeded: drift detection probes UPSTREAM via
+    # `buildx imagetools inspect` and does NOT read from the local GHCR mirror
+    # that sync-base-images populates.  The two jobs are orthogonal.  Gating on
+    # sync_succeeded caused one transient per-image 429/blip to skip drift
+    # detection for ALL containers — a silent miss repo-wide.  `needs` is kept
+    # for ordering (run after sync attempts), but outcome does not matter.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
