@@ -679,7 +679,7 @@ jobs:
           source ./helpers/base-cache-utils.sh
 
           # Discover all containers and their current versions
-          containers_json=$(./make list 2>/dev/null | jq -Rc '[inputs]' || echo '[]')
+          containers_json=$(./make list 2>/dev/null | jq -Rnc '[inputs]' || echo '[]')
 
           versions_json="{}"
           for c in $(echo "$containers_json" | jq -r '.[]'); do
@@ -1315,8 +1315,11 @@ jobs:
           ./scripts/detect-base-digest-drift.sh > "$drift_file" || true
           drift_json=$(cat "$drift_file")
 
-          # Fix r7-2: check for probe errors; distinguish from "no drift"
-          error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
+          # Fix r8-2: scope error_count to current matrix container only.
+          # Without the .container filter, a transient probe failure on any
+          # unrelated container blocks PR creation for every other container.
+          error_count=$(echo "$drift_json" | jq --arg c "${{ matrix.container }}" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
             echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
             exit 1

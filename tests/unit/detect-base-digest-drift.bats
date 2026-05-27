@@ -1505,3 +1505,84 @@ STUB
     # Must exit 2 — tooling failure, NOT silent success
     [ "$rc" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r8-1: jq -Rnc preserves alphabetically-first container
+# Regression guard: piping N lines through `jq -Rc '[inputs]'` drops the
+# first line because -R without -n consumes one line before [inputs] runs.
+# Adding -n makes jq use null as its initial input, so [inputs] sees all lines.
+# ---------------------------------------------------------------------------
+@test "r8-fix1: jq -Rnc collects all containers including alphabetically-first" {
+    # Simulate ./make list output: 3 containers in alphabetical order.
+    # The first one (ansible) was previously dropped by jq -Rc (no -n).
+    local make_output
+    make_output=$(printf 'ansible\nbeta\ngamma\n')
+
+    # Old broken form: jq -Rc '[inputs]' — drops first line
+    local broken
+    broken=$(echo "$make_output" | jq -Rc '[inputs]')
+    # ansible is missing from broken output
+    run bash -c "echo '$broken' | jq -r 'length'"
+    [ "$output" -eq 2 ]
+    run bash -c "echo '$broken' | jq -r '.[0]'"
+    [ "$output" = "beta" ]
+
+    # New correct form: jq -Rnc '[inputs]' — all lines present
+    local correct
+    correct=$(echo "$make_output" | jq -Rnc '[inputs]')
+    run bash -c "echo '$correct' | jq -r 'length'"
+    [ "$output" -eq 3 ]
+    run bash -c "echo '$correct' | jq -r '.[0]'"
+    [ "$output" = "ansible" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r8-2: error_count scoped to current matrix container
+# Regression guard: a transient probe error on container "bar" must NOT
+# prevent container "foo"'s matrix job from creating its drift PR.
+# The jq filter must restrict error counting to the matrix container only.
+# ---------------------------------------------------------------------------
+@test "r8-fix2: error_count scoped to matrix container — bar error does not block foo" {
+    # Synthetic drift JSON: foo has drift (clean), bar has an error variant
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {
+    "container": "foo",
+    "variants": [
+      {"tag": "foo:latest", "status": "drift", "cached_digest": "sha256:aaa", "live_digest": "sha256:bbb"}
+    ]
+  },
+  {
+    "container": "bar",
+    "variants": [
+      {"tag": "bar:latest", "status": "error", "error": "registry timeout"}
+    ]
+  }
+]
+EOF
+)
+
+    # Scoped filter for "foo" — should return 0 errors even though bar has 1
+    local foo_errors
+    foo_errors=$(echo "$drift_json" | jq --arg c "foo" \
+        '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length')
+    [ "$foo_errors" -eq 0 ]
+
+    # Scoped filter for "bar" — should return 1 error
+    local bar_errors
+    bar_errors=$(echo "$drift_json" | jq --arg c "bar" \
+        '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length')
+    [ "$bar_errors" -eq 1 ]
+
+    # The old unscoped filter — counts errors across ALL containers:
+    # foo's job would have seen 1 error from bar and exited 1 (wrong).
+    local unscoped_errors
+    unscoped_errors=$(echo "$drift_json" | jq \
+        '[.[] | .variants[] | select(.status == "error")] | length')
+    [ "$unscoped_errors" -eq 1 ]
+
+    # Cross-check: unscoped count is > 0 but foo-scoped count is 0,
+    # confirming the fix prevents foo from being incorrectly blocked.
+    [ "$unscoped_errors" -gt "$foo_errors" ]
+}
