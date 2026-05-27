@@ -581,7 +581,13 @@ if [[ "$URL" == *"/token"* ]]; then
 fi
 if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     # Return tampered body — sha256 will NOT match the digest in the OCI index.
-    echo "$_TAMPERED"; exit 0
+    # Production uses `curl -o $pa_tmp`, so write to $OFILE when present.
+    if [[ -n "$OFILE" ]]; then
+        printf '%s' "$_TAMPERED" > "$OFILE"
+    else
+        printf '%s' "$_TAMPERED"
+    fi
+    exit 0
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
     _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
