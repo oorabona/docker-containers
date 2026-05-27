@@ -204,6 +204,25 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # Validate container name against canonical list (Fix 1: poisoning prevention)
+    # A corrupted entry (e.g. container: "docs", container: ".github", or a path
+    # with "/") could otherwise cause the bot to act on non-container directories.
+    #
+    # _VALID_CONTAINERS_OVERRIDE: test hook — when set, use this newline-separated
+    # list instead of ./make list (avoids needing the full project context in tests).
+    if [[ -z "${_valid_containers+x}" ]]; then
+        # Cache the list on first use (avoids re-running ./make list per file)
+        if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" ]]; then
+            _valid_containers="$_VALID_CONTAINERS_OVERRIDE"
+        else
+            _valid_containers=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null || true)
+        fi
+    fi
+    if ! grep -qxF "$container" <<<"$_valid_containers"; then
+        echo "::warning::Skipping $basename_file: invalid container name '$container' (not in ./make list)" >&2
+        continue
+    fi
+
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
         echo "::warning::Skipping $basename_file: missing 'tag' field" >&2

@@ -638,6 +638,10 @@ jobs:
     # tag, and the per-image ::warning:: lines from the helper provide the
     # signal for maintainer attention.
     continue-on-error: true
+    # Fix 2: expose explicit sync status so detect-digest-drift can distinguish
+    # a real success from a continue-on-error-swallowed failure.
+    outputs:
+      sync_succeeded: ${{ steps.sync.outputs.success }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -666,6 +670,7 @@ jobs:
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Sync base images to GHCR (all containers)
+        id: sync
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
@@ -684,7 +689,16 @@ jobs:
           done
 
           images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
-          sync_base_images_to_ghcr "$images"
+          # Fix 2: capture real sync exit code so the output is accurate even
+          # when the job succeeds via continue-on-error swallowing failures.
+          sync_rc=0
+          sync_base_images_to_ghcr "$images" || sync_rc=$?
+          if [[ "$sync_rc" -eq 0 ]]; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            exit "$sync_rc"
+          fi
 
   # Check 3rd party dependency versions (runs in parallel with base image checks)
   check-dependency-updates:
@@ -1129,11 +1143,13 @@ jobs:
     # detection is independent of dep-PR fanout.  Including it would silently
     # skip drift detection whenever skip_dep_fanout (or equivalent) is set.
     needs: [sync-base-images]
-    # Run only when sync-base-images succeeded (probes compare fresh GHCR state).
-    # 'skipped' is NOT allowed: if sync was skipped the mirror may be stale,
-    # producing silent misreports.  Scheduled cron always runs sync; for manual
-    # workflow_dispatch runs, sync must also complete before drift detection runs.
-    if: needs.sync-base-images.result == 'success'
+    # Run only when sync-base-images truly succeeded (probes compare fresh GHCR
+    # state).  Checking the explicit output guards against continue-on-error
+    # swallowing real sync failures: result=='success' can be true even when the
+    # sync step exited non-zero; sync_succeeded=='true' is set only when the
+    # sync_base_images_to_ghcr call returns 0.  'skipped' is NOT allowed: if
+    # sync was skipped the mirror may be stale, producing silent misreports.
+    if: needs.sync-base-images.outputs.sync_succeeded == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
@@ -1223,6 +1239,14 @@ jobs:
       needs.detect-digest-drift.outputs.drift_containers != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Fix 3: extend the concurrency lock that guards detect-digest-drift to
+    # cover open-drift-prs as well.  Without this a second cron/dispatch run
+    # could start open-drift-prs while the first run's open-drift-prs is still
+    # running, causing branch-name races, label conflicts, and duplicate PRs.
+    # Same group name serialises the whole detect→PR pipeline as a pair.
+    concurrency:
+      group: digest-drift-detect
+      cancel-in-progress: false
     strategy:
       matrix:
         container: ${{ fromJson(needs.detect-digest-drift.outputs.drift_containers) }}

@@ -46,6 +46,20 @@ if [[ -z "$CONTAINER" ]]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Fix 1: Validate CONTAINER against canonical list (poisoning prevention)
+# A corrupted lineage entry (e.g. "docs", ".github", paths with "/") must
+# not cause the script to write outside the valid container set.
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+valid_containers=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null || true)
+if ! grep -qxF "$CONTAINER" <<<"$valid_containers"; then
+    echo "::warning::container '$CONTAINER' is not a valid container name (not in ./make list) — skipping" >&2
+    exit 0
+fi
+
 if [[ -z "$KIND" ]]; then
     echo "::error::kind argument is empty" >&2
     exit 1
@@ -99,12 +113,15 @@ fi
 # ---------------------------------------------------------------------------
 # Append section to LAST_REBUILD.md
 # ---------------------------------------------------------------------------
-target_file="${CONTAINER}/LAST_REBUILD.md"
+target_file="${PROJECT_ROOT}/${CONTAINER}/LAST_REBUILD.md"
 
-# Ensure container directory exists (it always should, but be safe)
-if [[ ! -d "$CONTAINER" ]]; then
-    echo "::error::Container directory '$CONTAINER' not found" >&2
-    exit 1
+# Fix 4: Gracefully skip when container directory is missing.
+# Defense-in-depth after Fix 1 validation: the container name is canonical
+# but the directory may have been deleted/renamed since the lineage cache was
+# written.  A stale entry must not break the entire workflow.
+if [[ ! -d "${PROJECT_ROOT}/${CONTAINER}" ]]; then
+    echo "::warning::container directory '${PROJECT_ROOT}/${CONTAINER}' missing — skipping LAST_REBUILD.md update" >&2
+    exit 0
 fi
 
 {

@@ -26,6 +26,14 @@ setup() {
     DETECTOR_SCRIPT="${SCRIPTS_DIR}/detect-base-digest-drift.sh"
     FIXTURES_DIR_DRIFT="${FIXTURES_DIR}/digest-drift"
 
+    # Pre-existing tests use synthetic container names (foo, bar, myimage) that
+    # are not in the real ./make list.  Expose the test-hook override so the
+    # validation check accepts them without spawning ./make in the project root.
+    # New container-validation tests explicitly unset this to exercise real logic.
+    export _VALID_CONTAINERS_OVERRIDE="foo
+bar
+myimage"
+
     export TEST_TEMP_DIR
     export DETECTOR_SCRIPT
     export FIXTURES_DIR_DRIFT
@@ -718,4 +726,182 @@ EOF
 
     # Must be empty — placeholder takes precedence over legacy classification
     [ "$result" = "[]" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r4-1: Container name validation — poisoning prevention
+# Lineage entries whose .container field is NOT in `./make list` output must
+# be skipped with a ::warning::, never processed.
+# Regression: a corrupted entry with container: "docs" (or ".github", or a
+# path with "/") would otherwise cause the bot to act on non-container dirs.
+# ---------------------------------------------------------------------------
+@test "container-validation: entry with invalid container name 'docs' is skipped" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Corrupted entry: container field is a real directory name but NOT a container
+    cat > "$lineage_dir/docs-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "docs",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Unset override: "docs" is not in the real ./make list
+    result=$(unset _VALID_CONTAINERS_OVERRIDE && PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Invalid container must be filtered out — output must be empty
+    [ "$result" = "[]" ]
+}
+
+@test "container-validation: entry with invalid container name 'docs' emits ::warning:: to stderr" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/docs-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "docs",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local stderr_log="$TEST_TEMP_DIR/invalid-container-stderr.log"
+    # Unset override: "docs" is not in the real ./make list
+    unset _VALID_CONTAINERS_OVERRIDE
+    PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
+
+    # stderr must contain ::warning:: about invalid container
+    grep -q '::warning::' "$stderr_log"
+}
+
+@test "container-validation: entry with container name containing slash is skipped" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Path traversal attempt
+    cat > "$lineage_dir/traversal-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "../docs",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Unset override: "../docs" is certainly not in ./make list
+    result=$(unset _VALID_CONTAINERS_OVERRIDE && PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Path-traversal container name must be filtered out
+    [ "$result" = "[]" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r4-4: update-last-rebuild.sh — missing container directory
+#
+# When the container directory does not exist (stale lineage cache entry),
+# update-last-rebuild.sh must exit 0 with a ::warning:: rather than exit 1.
+# A single stale entry must not break the entire open-drift-prs workflow.
+# ---------------------------------------------------------------------------
+
+# Helper: minimal drift JSON for a given container name
+_drift_json_for_container() {
+    local container="$1"
+    printf '%s' '[{"container":"'"$container"'","variants":[{"variant_tag":"1.0","base_image_ref":"alpine:3.21","recorded_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","current_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"drift"}]}]'
+}
+
+@test "update-last-rebuild: exits 0 when container directory does not exist" {
+    local fake_root="$TEST_TEMP_DIR/fake-root-r4"
+    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
+    mkdir -p "$fake_root/scripts"
+    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+
+    # Stub ./make list — "mycontainer" is valid, but directory is never created
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && printf 'mycontainer\n'
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    cd "$fake_root" && \
+        bash scripts/update-last-rebuild.sh "mycontainer" "base-digest-drift" \
+        <<< "$(_drift_json_for_container mycontainer)" 2>/dev/null || rc=$?
+
+    # Must exit 0 — graceful skip, not failure
+    [ "$rc" -eq 0 ]
+
+    # Must NOT have created the LAST_REBUILD.md
+    [ ! -f "$fake_root/mycontainer/LAST_REBUILD.md" ]
+}
+
+@test "update-last-rebuild: emits ::warning:: when container directory missing" {
+    local fake_root="$TEST_TEMP_DIR/fake-root-r4b"
+    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
+    mkdir -p "$fake_root/scripts"
+    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && printf 'mycontainer\n'
+STUB
+    chmod +x "$fake_root/make"
+
+    local stderr_log="$TEST_TEMP_DIR/missing-dir-stderr.log"
+    cd "$fake_root" && \
+        bash scripts/update-last-rebuild.sh "mycontainer" "base-digest-drift" \
+        <<< "$(_drift_json_for_container mycontainer)" 2>"$stderr_log" >/dev/null || true
+
+    grep -q '::warning::' "$stderr_log"
+}
+
+@test "update-last-rebuild: exits 0 for invalid container name not in make list" {
+    local fake_root="$TEST_TEMP_DIR/fake-root-r4c"
+    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
+    mkdir -p "$fake_root/scripts"
+    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+
+    # ./make list returns only "ansible"; "docs" is not valid
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && printf 'ansible\n'
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    cd "$fake_root" && \
+        bash scripts/update-last-rebuild.sh "docs" "base-digest-drift" \
+        <<< "$(_drift_json_for_container docs)" 2>/dev/null || rc=$?
+
+    [ "$rc" -eq 0 ]
+}
+
+@test "update-last-rebuild: normal path appends section when container dir exists" {
+    local fake_root="$TEST_TEMP_DIR/fake-root-r4d"
+    local update_script="${SCRIPTS_DIR}/update-last-rebuild.sh"
+    mkdir -p "$fake_root/scripts"
+    mkdir -p "$fake_root/mycontainer"
+    cp "$update_script" "$fake_root/scripts/update-last-rebuild.sh"
+
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && printf 'mycontainer\n'
+STUB
+    chmod +x "$fake_root/make"
+
+    cd "$fake_root" && \
+        bash scripts/update-last-rebuild.sh "mycontainer" "base-digest-drift" \
+        <<< "$(_drift_json_for_container mycontainer)" >/dev/null 2>&1
+
+    # LAST_REBUILD.md must exist and contain the section header
+    [ -f "$fake_root/mycontainer/LAST_REBUILD.md" ]
+    grep -q 'base-digest-drift' "$fake_root/mycontainer/LAST_REBUILD.md"
 }
