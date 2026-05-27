@@ -314,6 +314,58 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Fix 1 regression: probe errors surfaced on stderr (::error::) AND error_reason
+# in JSON record — supply-chain monitoring must not silently drop probe failures.
+# ---------------------------------------------------------------------------
+@test "probe-failure: emits ::error:: to stderr when probe fails" {
+    local fail_stub
+    fail_stub=$(_make_failing_probe_stub)
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0-alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local stderr_log="$TEST_TEMP_DIR/probe-failure-stderr.log"
+    PROBE_CMD="$fail_stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
+
+    # stderr must contain at least one ::error:: annotation
+    grep -q '::error::' "$stderr_log"
+}
+
+@test "probe-failure: error JSON record contains error_reason field" {
+    local fail_stub
+    fail_stub=$(_make_failing_probe_stub)
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-1.0-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0-alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    result=$(PROBE_CMD="$fail_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # error_reason must be a non-empty string (not null)
+    error_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason // "null"')
+    [ "$error_reason" != "null" ]
+    [ -n "$error_reason" ]
+}
+
+# ---------------------------------------------------------------------------
 # Scenario 4 (spec §4): Legacy lineage (no base_image_digest field)
 # ---------------------------------------------------------------------------
 @test "legacy: variant without base_image_digest gets status=legacy" {
@@ -494,13 +546,16 @@ EOF
 # ---------------------------------------------------------------------------
 # Scenario 5 (spec §4): Multi-arch index digest extraction
 # The probe returns a multi-arch manifest list. The script must extract the
-# INDEX digest (from .digest field at the top level), NOT a per-arch digest.
+# INDEX digest via the top-level .digest field (jq -r '.digest'), NOT a
+# per-arch entry digest from .manifests[].digest.
+#
+# Fix 2 regression guard: using grep-o head-1 is order-dependent; jq .digest
+# is explicit.  Both the fixture and a synthetic test cover this.
 # ---------------------------------------------------------------------------
 @test "multi-arch: script extracts the image-index digest, not per-arch" {
     # Fixture: alpine-3.21.json has .digest = ccc... (index)
-    # and .manifests[0].digest = ddd... (amd64)
-    # The probe stub reads the whole JSON and the script uses grep-o to find
-    # the first sha256 — which is the .digest field in the response body.
+    # and .manifests[0].digest = ddd... (amd64), .manifests[1].digest = eee... (arm64)
+    # The script must return ccc... (index), NOT ddd.../eee...
     local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-1"
     local probe_stub
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
@@ -525,6 +580,71 @@ EOF
 
     # The fixture alpine-3.21.json has .digest = ccc... (64 c's)
     # Per-arch digests are ddd... and eee... — must NOT be one of those
+    [ "$current_digest" = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" ]
+}
+
+# Fix 2 synthetic: manifest where per-arch digest appears FIRST in the JSON body
+# (before the top-level .digest).  grep-o head-1 would return the wrong digest;
+# jq -r '.digest' must return the correct index digest regardless of field order.
+@test "multi-arch: index digest extracted even when per-arch entry precedes .digest in JSON" {
+    # Synthetic fixture: .manifests[] listed before .digest at top level.
+    # grep-o '"sha256:[a-f0-9]*"' | head -1 would return amd64 digest (ddd...).
+    # jq -r '.digest' returns the index digest (ccc...) — order-independent.
+    local synthetic_dir="$TEST_TEMP_DIR/synthetic-probe"
+    mkdir -p "$synthetic_dir/responses"
+
+    # Write manifest JSON with per-arch entries BEFORE the top-level .digest field
+    cat > "$synthetic_dir/responses/myimage-latest.json" <<'EOF'
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+      "size": 1642,
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "platform": {"architecture": "amd64", "os": "linux"}
+    },
+    {
+      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+      "size": 1642,
+      "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "platform": {"architecture": "arm64", "os": "linux"}
+    }
+  ],
+  "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}
+EOF
+
+    local stub_script="$synthetic_dir/probe.sh"
+    cat > "$stub_script" <<STUB_EOF
+#!/usr/bin/env bash
+image_ref="\$1"
+key="\$(printf '%s' "\$image_ref" | tr ':/' '--')"
+response_file="${synthetic_dir}/responses/\${key}.json"
+[[ -f "\$response_file" ]] && { cat "\$response_file"; exit 0; }
+exit 1
+STUB_EOF
+    chmod +x "$stub_script"
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/myimage-latest.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "latest",
+  "base_image_ref": "myimage:latest",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    result=$(PROBE_CMD="$stub_script" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    current_digest=$(printf '%s' "$result" | jq -r '.[0].variants[0].current_digest')
+
+    # Must be the INDEX digest (ccc...), NOT the first per-arch entry (ddd...)
     [ "$current_digest" = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" ]
 }
 

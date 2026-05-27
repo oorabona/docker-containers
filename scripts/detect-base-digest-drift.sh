@@ -69,11 +69,19 @@ done
 # ---------------------------------------------------------------------------
 # Probe function — extract IMAGE-INDEX digest from a registry manifest
 #
-# Uses the same extraction logic as scripts/build-container.sh:272:
-#   docker manifest inspect <ref> | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"'
+# Extracts the authoritative image-index digest via the top-level `.digest`
+# field of the manifest JSON returned by `docker manifest inspect`.  For a
+# manifest list (multi-arch) this is the image-index digest, NOT a per-arch
+# entry digest from `.manifests[].digest`.
 #
-# This extracts the first SHA256 that appears in the manifest JSON, which for
-# a multi-arch image index is the index digest embedded in the response body.
+# Why jq instead of grep-o head-1: grep-o relies on JSON field ordering to
+# find the index digest before the per-arch entries.  jq -r '.digest' is
+# explicit and order-independent.
+#
+# If the top-level `.digest` field is absent (e.g., single-arch manifest
+# without an explicit digest field in the JSON body), we fall back to the
+# first sha256 found via grep-o — matching the writer in build-container.sh:272
+# for backward compatibility.
 #
 # For fixture-based testing, set PROBE_CMD to a function/script that reads
 # a pre-captured manifest JSON from a file named after the image ref.
@@ -81,22 +89,50 @@ done
 _probe_digest() {
     local image_ref="$1"
     local raw
+    local probe_stderr
+    local probe_exit=0
 
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
-        raw=$("${PROBE_CMD}" "${image_ref}" 2>/dev/null || true)
+        probe_stderr=$(mktemp)
+        raw=$("${PROBE_CMD}" "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        if [[ $probe_exit -ne 0 ]]; then
+            local err_detail
+            err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
+            rm -f "$probe_stderr"
+            [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$image_ref" "$err_detail" >&2
+            return 1
+        fi
+        rm -f "$probe_stderr"
     else
-        raw=$(docker manifest inspect "${image_ref}" 2>/dev/null || true)
+        probe_stderr=$(mktemp)
+        raw=$(docker manifest inspect "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        if [[ $probe_exit -ne 0 ]]; then
+            local err_detail
+            err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
+            rm -f "$probe_stderr"
+            printf '::error::docker manifest inspect failed for %s: %s\n' "$image_ref" "$err_detail" >&2
+            return 1
+        fi
+        rm -f "$probe_stderr"
     fi
 
     if [[ -z "$raw" ]]; then
+        printf '::error::docker manifest inspect returned empty output for %s\n' "$image_ref" >&2
         return 1
     fi
 
+    # Extract image-index digest: prefer top-level .digest (explicit, order-independent)
     local digest
-    digest=$(printf '%s' "$raw" | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+    digest=$(printf '%s' "$raw" | jq -r '.digest // empty' 2>/dev/null || true)
+
+    # Fallback: grep-o for single-arch manifests without top-level .digest
+    if [[ -z "$digest" ]]; then
+        digest=$(printf '%s' "$raw" | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+    fi
 
     if [[ -z "$digest" ]]; then
+        printf '::error::could not extract digest from manifest for %s\n' "$image_ref" >&2
         return 1
     fi
 
@@ -176,6 +212,7 @@ for lineage_file in "${lineage_files[@]}"; do
 
     base_image_ref=$(jq -re '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
     recorded_digest=$(jq -re '.base_image_digest // empty' "$lineage_file" 2>/dev/null || true)
+    error_reason=""
 
     # Track container ordering
     if [[ -z "${_container_variants[$container]+x}" ]]; then
@@ -231,15 +268,18 @@ for lineage_file in "${lineage_files[@]}"; do
     fi
 
     if [[ "$probe_failed" == "true" || -z "$current_digest" ]]; then
-        echo "::warning::Probe failed for $base_image_ref (container=$container tag=$variant_tag)" >&2
+        error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
+        printf '::error::probe-error: %s\n' "$error_reason" >&2
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        safe_error=$(_sanitize_for_json "$error_reason")
         variant_json=$(jq -cn \
             --arg variant_tag       "$variant_tag" \
             --arg base_ref          "$safe_ref" \
             --arg recorded_digest   "$safe_recorded" \
             --arg status            "error" \
-            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status}')
+            --arg error_reason      "$safe_error" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
         _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi

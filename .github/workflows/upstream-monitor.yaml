@@ -1121,7 +1121,11 @@ jobs:
 
   detect-digest-drift:
     name: Detect base image digest drift
-    needs: [create-dependency-update-prs]
+    # Wait for sync-base-images so probes compare against today's freshly-synced
+    # GHCR mirror rather than yesterday's copy.  Without this ordering, a real
+    # upstream rebase that happened since the previous sync would be invisible for
+    # the current day's run.
+    needs: [create-dependency-update-prs, sync-base-images]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1145,16 +1149,49 @@ jobs:
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
+      - name: Log in to Docker Hub
+        # Authenticated probes avoid 429 rate-limiting that would silently drop
+        # drift signals for busy Docker Hub images.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Log in to GitHub Container Registry
+        # GHCR login avoids rate-limiting for base_image_ref values pointing at
+        # the GHCR mirror (ghcr.io/owner/*).
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Detect drift
         id: detect
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
-          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/dev/null)
+          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log)
 
           echo "$drift_json" > /tmp/drift.json
+
+          # Surface any probe errors so supply-chain monitoring failures are visible
+          error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants"
+            while IFS= read -r line; do
+              echo "::warning::probe-error: ${line}"
+            done < <(echo "$drift_json" | jq -r '[.[] | .variants[] | select(.status == "error") | "\(.variant_tag): \(.error_reason // "unknown")"][]' 2>/dev/null || true)
+          fi
+
+          # Also surface any ::error:: lines from the script's stderr
+          if [[ -s /tmp/drift-detect-stderr.log ]]; then
+            while IFS= read -r line; do
+              echo "$line"
+            done < /tmp/drift-detect-stderr.log >&2
+          fi
 
           # Extract container names with actionable drift (drift or legacy status)
           drift_containers=$(echo "$drift_json" | jq -c \
@@ -1280,6 +1317,20 @@ jobs:
           } > "$pr_body_file"
 
           echo "pr_body_file=${pr_body_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Import GPG key
+        # Repo requires signed commits (SECURITY.md §branch-protection). Mirror the
+        # pattern used by the dep-monitor PR step (lines ~467, ~1008) to ensure
+        # drift PRs also satisfy the signed-commit requirement.
+        if: steps.drift-data.outputs.has_drift == 'true'
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
 
       - name: Open or update PR (branch-upsert)
         if: steps.drift-data.outputs.has_drift == 'true'
