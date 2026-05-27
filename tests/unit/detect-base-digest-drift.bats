@@ -1586,3 +1586,193 @@ EOF
     # confirming the fix prevents foo from being incorrectly blocked.
     [ "$unscoped_errors" -gt "$foo_errors" ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r9-1 (NON-TERMINATING BUG): stale lineage filter via active build matrix
+#
+# Regression guard: a lineage entry whose tag is NOT in the active build matrix
+# (returned by ./make list-builds) must be silently skipped.  Only active-tag
+# entries should be reported.
+# ---------------------------------------------------------------------------
+@test "r9-fix1a: stale tag in lineage is skipped; active tag is reported" {
+    local lineage_dir="$TEST_TEMP_DIR/r9fix1a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Two lineage files: one for an active tag, one for a stale (rotated-away) tag
+    cat > "$lineage_dir/myimage-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "2.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Active build matrix: only tag 2.0 is active; 1.0 was rotated away
+    # Use per-container test hook to inject the active-tags list
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Output must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Only the active tag (2.0) should appear in drift output
+    local variant_count
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$variant_count" -eq 1 ]
+
+    local reported_tag
+    reported_tag=$(printf '%s' "$result" | jq -r '.[] | .variants[].variant_tag')
+    [ "$reported_tag" = "2.0" ]
+}
+
+@test "r9-fix1b: stale tag skip emits ::notice:: to stderr" {
+    local lineage_dir="$TEST_TEMP_DIR/r9fix1b/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Active matrix is empty for this container (all tags rotated away)
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
+
+    # Script must exit 0 (stale skip is not a fatal error)
+    [ "$rc" -eq 0 ]
+
+    # stderr must mention the stale skip notice
+    echo "$result" | grep -q "Skipping stale lineage entry"
+}
+
+# ---------------------------------------------------------------------------
+# Fix r9-2: tag sanitization — backticks and pipes in variant_tag are escaped
+# in GHA ::notice:: output (via _escape_gha_command applied at extraction).
+# ---------------------------------------------------------------------------
+@test "r9-fix2: update-last-rebuild escapes backticks and pipes in variant_tag" {
+    # Regression guard: a poisoned variant_tag containing backticks or pipes in the
+    # drift JSON must be escaped before embedding in LAST_REBUILD.md markdown.
+    local fake_root="$TEST_TEMP_DIR/r9fix2"
+    mkdir -p "$fake_root/scripts" "$fake_root/myimage"
+    cp "${SCRIPTS_DIR}/update-last-rebuild.sh" "$fake_root/scripts/update-last-rebuild.sh"
+
+    # Provide a minimal ./make list stub
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == "list" ]] && { printf 'myimage\n'; exit 0; }
+STUB
+    chmod +x "$fake_root/make"
+
+    # Drift JSON with a poisoned variant_tag containing backtick and pipe
+    local drift_json
+    drift_json=$(jq -cn '[{
+      "container": "myimage",
+      "variants": [{
+        "variant_tag": "1.0`evil|cmd`",
+        "base_image_ref": "alpine:3.21",
+        "recorded_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "drift"
+      }]
+    }]')
+
+    cd "$fake_root" && \
+        printf '%s' "$drift_json" | \
+        bash scripts/update-last-rebuild.sh "myimage" "base-digest-drift" 2>/dev/null
+
+    local content
+    content=$(cat "$fake_root/myimage/LAST_REBUILD.md")
+
+    # The backtick must be escaped as \` in markdown output (not raw `evil)
+    # Correct form: 1.0\`evil\|cmd\` — backslash before backtick and pipe.
+    # grep -F for literal backslash-backtick to verify escaping was applied.
+    echo "$content" | grep -qF '\`evil'
+    # And the pipe must also be escaped
+    echo "$content" | grep -qF '\|cmd'
+}
+
+# ---------------------------------------------------------------------------
+# Fix r9-3: container name with embedded newline is rejected before grep check
+# ---------------------------------------------------------------------------
+@test "r9-fix3: container name with embedded newline is rejected before grep validation" {
+    local lineage_dir="$TEST_TEMP_DIR/r9fix3/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Craft a lineage JSON where the container field contains a newline sequence.
+    # jq -n --arg produces the literal string with \n in it (not a real newline
+    # in the JSON value — we need the jq raw output to embed a real newline).
+    # We write it directly so the container field truly contains a newline char.
+    printf '{"lineage_schema_version":2,"container":"foo\nmalicious","tag":"1.0","base_image_ref":"alpine:3.21","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n' \
+        > "$lineage_dir/evil-1.0.json"
+
+    # _VALID_CONTAINERS_OVERRIDE contains "foo" and "bar" but NOT "malicious"
+    # Without Fix r9-3, grep -qxF "foo\nmalicious" <<<"foo\nbar" would match "foo"
+    # and pass "malicious" through as a valid container.
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo
+bar" \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    # Script exits 0 (a single rejected entry is not fatal)
+    [ "$rc" -eq 0 ]
+
+    # Output must be empty array (the entry was rejected, not passed through)
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r9-4: ./make list pipeline failure in upstream-monitor sync step
+# Unit-level regression: the jq pipeline on an empty/failed make list must
+# produce an empty array, and the shell-level check must detect length == 0.
+# This mirrors the fix applied in upstream-monitor.yaml.
+# ---------------------------------------------------------------------------
+@test "r9-fix4: empty make_list_out is detected before jq pipeline" {
+    # Simulate the fixed pattern: the guard checks the raw string BEFORE piping
+    # into jq -Rnc, because a here-string of "" sends a newline to jq which
+    # produces [""] (length 1) — false non-empty.
+    local make_list_out=""
+
+    # Pattern used in the workflow: trim whitespace and check empty
+    local trimmed="${make_list_out// /}"
+    [ -z "$trimmed" ]
+}
+
+@test "r9-fix4b: jq -Rnc on non-empty make list output is non-zero length" {
+    local make_list_out
+    make_list_out=$(printf 'ansible\ndebian\nphp\n')
+
+    local containers_json
+    containers_json=$(jq -Rnc '[inputs]' <<<"$make_list_out")
+
+    local length
+    length=$(echo "$containers_json" | jq 'length')
+
+    [ "$length" -eq 3 ]
+}

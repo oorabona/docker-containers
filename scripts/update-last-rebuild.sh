@@ -104,9 +104,14 @@ fi
 today=$(date -u +"%Y-%m-%d")
 section_header="## ${KIND} (${today})"
 
-# Build variant lines using jq to safely extract field values
+# Build variant lines using jq to safely extract field values.
+# Fix 2 (gate r9): escape backticks and pipes in variant_tag and base_image_ref
+# before embedding in markdown — prevents injection via poisoned lineage entries.
 variant_lines=$(printf '%s' "$drifted_variants" | \
-    jq -r '.[] | "- Variant: \(.variant_tag), base \(.base_image_ref)\n  Old digest: \(.recorded_digest // "unknown")\n  New digest: \(.current_digest // "(legacy — no recorded digest)")"' \
+    jq -r '.[] |
+        (.variant_tag | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_tag |
+        (.base_image_ref | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_ref |
+        "- Variant: \($safe_tag), base \($safe_ref)\n  Old digest: \(.recorded_digest // "unknown")\n  New digest: \(.current_digest // "(legacy — no recorded digest)")"' \
     2>/dev/null || true)
 
 if [[ -z "$variant_lines" ]]; then

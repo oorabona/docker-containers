@@ -219,6 +219,16 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # Fix 3 (gate r9): Reject container names with control characters BEFORE the
+    # grep -qxF check.  A value like $'ansible\nmalicious' contains a newline which
+    # grep -xF treats as TWO patterns, so "ansible" matches and "malicious" passes
+    # validation silently.  Explicit cntrl-char rejection closes that bypass.
+    if [[ "$container" =~ [[:cntrl:]] ]]; then
+        printf '::warning::Rejecting lineage entry %s: container name contains control chars: %s\n' \
+            "$(_escape_gha_command "$basename_file")" "$(printf '%q' "$container")" >&2
+        continue
+    fi
+
     # Validate container name against canonical list (Fix 1: poisoning prevention)
     # A corrupted entry (e.g. container: "docs", container: ".github", or a path
     # with "/") could otherwise cause the bot to act on non-container directories.
@@ -246,6 +256,40 @@ for lineage_file in "${lineage_files[@]}"; do
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
         printf '::warning::Skipping %s: missing '\''tag'\'' field\n' "$(_escape_gha_command "$basename_file")" >&2
+        continue
+    fi
+
+    # Fix 2 (gate r9): sanitize tag for safe embedding in GHA commands / markdown.
+    # Applied here so every downstream use of $variant_tag_safe is already clean.
+    variant_tag_safe=$(_escape_gha_command "$variant_tag")
+
+    # Fix 1 (gate r9, NON-TERMINATING BUG): filter to active build-matrix tags only.
+    # Stale lineage files for dropped/non-retained tags persist in the cache after
+    # rotation.  Without this filter each cron run re-detects drift on them, opens a
+    # PR, the PR rebuild only updates current retained tags → stale lineage unchanged
+    # → next cron re-detects → infinite PR loop.
+    #
+    # _ACTIVE_TAGS_OVERRIDE_<container>: test hook — set to a newline-separated list
+    # of active tags for a container to bypass ./make list-builds in tests.
+    #
+    # Cache key: _active_tags_cache_<container> (associative array not available in
+    # bash <4.2 without namerefs; use indirect variable via printf '%s' trick).
+    _active_tags_var="_active_tags_cache_${container//-/_}"
+    if [[ -z "${!_active_tags_var+x}" ]]; then
+        # Check for per-container test hook first
+        _override_var="_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
+        if [[ -n "${!_override_var:-}" ]]; then
+            printf -v "$_active_tags_var" '%s' "${!_override_var}"
+        else
+            _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null \
+                | jq -r '.[].tag // empty' 2>/dev/null | sort -u || true)
+            printf -v "$_active_tags_var" '%s' "$_fetched"
+        fi
+    fi
+    _active_tags="${!_active_tags_var}"
+    if [[ -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+        printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
+            "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
         continue
     fi
 

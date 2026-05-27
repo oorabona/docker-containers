@@ -678,8 +678,19 @@ jobs:
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
 
-          # Discover all containers and their current versions
-          containers_json=$(./make list 2>/dev/null | jq -Rnc '[inputs]' || echo '[]')
+          # Discover all containers and their current versions.
+          # Fix 4 (gate r9): do not mask ./make list failures with '[]'.
+          # An empty set would cause sync to run against nothing and emit "success",
+          # hiding the real failure and leaving drift comparisons against stale state.
+          make_list_out=$(./make list 2>&1) || {
+            echo "::error::./make list failed: $make_list_out" >&2
+            exit 2
+          }
+          if [[ -z "${make_list_out// /}" ]]; then
+            echo "::error::./make list returned empty container set" >&2
+            exit 2
+          fi
+          containers_json=$(echo "$make_list_out" | jq -Rnc '[inputs]')
 
           versions_json="{}"
           for c in $(echo "$containers_json" | jq -r '.[]'); do
@@ -1372,11 +1383,16 @@ jobs:
             printf 'variants_total: %s\n' "$variants_total"
           } > "$pr_frontmatter_file"
 
-          # Build variant table (injection-safe: values come from jq --arg)
+          # Build variant table.
+          # Fix 2 (gate r9): escape backticks and pipes in variant_tag and base_image_ref
+          # before embedding in the markdown table to prevent injection via poisoned lineage.
           printf '| Variant tag | Base image ref | Old digest | New digest |\n' > "$pr_table_file"
           printf '|-------------|----------------|------------|------------|\n' >> "$pr_table_file"
           echo "$variants" | jq -r \
-            '.[] | "| \(.variant_tag) | \(.base_image_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
+            '.[] |
+              (.variant_tag | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_tag |
+              (.base_image_ref | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_ref |
+              "| \($safe_tag) | \($safe_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
             >> "$pr_table_file"
 
           {
