@@ -2011,3 +2011,71 @@ EOF
     status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
     [ "$status" = "drift" ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r17: docker.io FQDN allowlist (gate r17 REFUSE concordant finding)
+#
+# The build pipeline resolves ARG REMOTE_CR=docker.io into lineage refs of
+# the form docker.io/library/foo:bar or docker.io/oorabona/foo:tag.  The r10
+# allowlist included registry-1.docker.io and index.docker.io but omitted
+# the bare docker.io FQDN, causing silent drift detection failure for those
+# containers.
+# ---------------------------------------------------------------------------
+
+@test "r17-fix-a: docker.io/library/* ref passes validation and is probed normally" {
+    local lineage_dir="$TEST_TEMP_DIR/r17fixa/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "docker.io/library/alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Must report drift (probe was called, not silently skipped)
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}
+
+@test "r17-fix-b: docker.io/oorabona/* ref passes validation and is probed normally" {
+    local lineage_dir="$TEST_TEMP_DIR/r17fixb/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "docker.io/oorabona/php:latest",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Must report drift (probe was called, not silently skipped)
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}

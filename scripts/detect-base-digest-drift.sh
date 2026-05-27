@@ -229,6 +229,7 @@ _validate_image_ref() {
     # Explicit registry FQDN or host:port — check against allowlist
     local registry="$first_segment"
     case "$registry" in
+        docker.io | \
         ghcr.io | \
         registry-1.docker.io | \
         index.docker.io | \
