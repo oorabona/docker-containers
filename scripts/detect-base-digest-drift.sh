@@ -495,6 +495,27 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # Fix r23: validate recorded_digest shape before comparing.
+    # A malformed value (written by an older probe before the write-side guard)
+    # must not be treated as an authoritative baseline — comparing a corrupt
+    # hash against a valid probe result drives bogus drift PRs.
+    if [[ ! "$recorded_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
+        safe_recorded=$(_sanitize_for_json "$recorded_digest")
+        printf '::warning::Malformed recorded_digest for %s:%s ('\''%s'\''); treating as corrupt lineage\n' \
+            "$(_escape_gha_command "$container")" "$(_escape_gha_command "$variant_tag")" \
+            "$(_escape_gha_command "$recorded_digest")" >&2
+        variant_json=$(jq -cn \
+            --arg variant_tag       "$variant_tag" \
+            --arg base_ref          "$safe_ref" \
+            --arg recorded_digest   "$safe_recorded" \
+            --arg status            "error" \
+            --arg error_reason      "malformed_recorded_digest" \
+            '{variant_tag: $variant_tag, base_image_ref: $base_ref, recorded_digest: $recorded_digest, status: $status, error_reason: $error_reason}')
+        _container_variants["$container"]+="${variant_json}"$'\n'
+        continue
+    fi
+
     # Validate base_image_ref before probing (SSRF prevention).
     # Poisoned lineage with an attacker-controlled ref could cause the workflow
     # to probe an untrusted registry with Docker credentials.

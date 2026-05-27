@@ -2365,3 +2365,148 @@ STUB
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r23: malformed recorded_digest in lineage must not be treated as a
+# valid baseline for drift comparison.  A short hex value or a non-sha256
+# string must surface as status:error with error_reason:malformed_recorded_digest
+# so the operator sees the corruption explicitly rather than a bogus drift PR.
+# ---------------------------------------------------------------------------
+
+@test "r23-fix-a: short hex recorded_digest surfaces as error, not drift" {
+    local lineage_dir="$TEST_TEMP_DIR/r23a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Malformed: short hex string (not 64 hex chars after sha256:)
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "myimage",' \
+        '  "tag": "1.0",' \
+        '  "base_image_ref": "ghcr.io/library/alpine:3.21",' \
+        '  "base_image_digest": "deadbeef"' \
+        '}' > "$lineage_dir/myimage-1.0.json"
+
+    # Probe stub that must NOT be called (malformed recorded_digest should be
+    # caught before the probe fires)
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r23a-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE WAS CALLED" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result stderr_out rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r23a-stderr.txt") || rc=$?
+
+    stderr_out=$(cat "$TEST_TEMP_DIR/r23a-stderr.txt")
+
+    # Must exit 0 — corrupt lineage is non-fatal
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called
+    run grep -c "PROBE WAS CALLED" "$TEST_TEMP_DIR/r23a-stderr.txt"
+    [ "$output" = "0" ]
+
+    # Must emit a ::warning:: about the malformed digest
+    echo "$stderr_out" | grep -q "Malformed recorded_digest"
+
+    # Result must have one container record
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 1 ]
+
+    # Variant status must be "error"
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status" = "error" ]
+
+    # error_reason must be "malformed_recorded_digest"
+    local error_reason
+    error_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')
+    [ "$error_reason" = "malformed_recorded_digest" ]
+}
+
+@test "r23-fix-b: non-sha256 recorded_digest string surfaces as error, not drift" {
+    local lineage_dir="$TEST_TEMP_DIR/r23b/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Malformed: plain string (no sha256: prefix)
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "myimage",' \
+        '  "tag": "2.0",' \
+        '  "base_image_ref": "ghcr.io/library/debian:trixie-slim",' \
+        '  "base_image_digest": "sha256:short"' \
+        '}' > "$lineage_dir/myimage-2.0.json"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r23b-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE WAS CALLED" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result stderr_out rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r23b-stderr.txt") || rc=$?
+
+    stderr_out=$(cat "$TEST_TEMP_DIR/r23b-stderr.txt")
+
+    [ "$rc" -eq 0 ]
+
+    run grep -c "PROBE WAS CALLED" "$TEST_TEMP_DIR/r23b-stderr.txt"
+    [ "$output" = "0" ]
+
+    echo "$stderr_out" | grep -q "Malformed recorded_digest"
+
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status" = "error" ]
+
+    local error_reason
+    error_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')
+    [ "$error_reason" = "malformed_recorded_digest" ]
+}
+
+@test "r23-fix-c: well-formed recorded_digest still reaches probe and compares normally" {
+    local lineage_dir="$TEST_TEMP_DIR/r23c/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    local valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "myimage",' \
+        '  "tag": "3.0",' \
+        '  "base_image_ref": "ghcr.io/library/alpine:3.21",' \
+        "  \"base_image_digest\": \"${valid_digest}\"" \
+        '}' > "$lineage_dir/myimage-3.0.json"
+
+    # Probe stub that returns the same digest → unchanged.
+    # PROBE_CMD output is parsed by _probe_digest via `jq -r '.digest // empty'`,
+    # so the stub must emit imagetools-style JSON ({"digest":"sha256:..."}).
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r23c-probe.XXXXXX")
+    cat > "$probe_stub" <<STUB
+#!/usr/bin/env bash
+printf '{"digest":"%s"}\n' "${valid_digest}"
+STUB
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="3.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+
+    # Shape-valid recorded_digest must reach comparison and yield "unchanged"
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status" = "unchanged" ]
+}

@@ -285,9 +285,12 @@ _resolve_base_image() {
                 printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
                 log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
             else
-                # Escape the malformed digest for safe logging (may contain CR/LF)
+                # Fix r23: explicitly clear _BASE_DIGEST on shape-validation failure so
+                # _emit_build_lineage writes "unresolved" (treated as legacy by the
+                # detector) rather than a malformed value that poisons comparisons.
                 _safe_digest=$(printf '%s' "$_BASE_DIGEST" | tr -d '`|\n\r')
-                log_warning "Refusing to embed malformed _BASE_DIGEST: ${_safe_digest}" >&2
+                printf '::warning::Malformed base digest '\''%s'\'' from manifest probe; discarding\n' "$_safe_digest" >&2
+                _BASE_DIGEST=""
             fi
         fi
     fi
