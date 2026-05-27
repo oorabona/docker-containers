@@ -224,6 +224,15 @@ for lineage_file in "${lineage_files[@]}"; do
     # Determine status
     # ---------------------------------------------------------------------------
 
+    # Skip if base_image_ref is unresolved (placeholder from pre-#530 lineage).
+    # Must precede the legacy check: a file with ${...} in base_image_ref and
+    # no recorded digest would otherwise be mis-classified as "legacy" and
+    # generate a bogus drift PR.
+    if [[ "$base_image_ref" =~ \$ ]]; then
+        echo "::warning::Skipping $basename_file: base_image_ref contains unresolved placeholder: $base_image_ref" >&2
+        continue
+    fi
+
     # Legacy: lineage lacks base_image_digest field
     if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
         safe_ref=$(_sanitize_for_json "${base_image_ref:-unknown}")
@@ -240,12 +249,6 @@ for lineage_file in "${lineage_files[@]}"; do
             # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
             _container_variants["$container"]+="${variant_json}"$'\n'
         fi
-        continue
-    fi
-
-    # Skip if base_image_ref is unresolved (placeholder from pre-#530 lineage)
-    if [[ "$base_image_ref" =~ \$ ]]; then
-        echo "::warning::Skipping $basename_file: base_image_ref contains unresolved placeholder: $base_image_ref" >&2
         continue
     fi
 

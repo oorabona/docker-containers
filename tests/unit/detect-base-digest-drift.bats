@@ -113,7 +113,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     # Output must be valid JSON
     printf '%s' "$result" | jq '.' >/dev/null
@@ -163,7 +163,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     length=$(printf '%s' "$result" | jq 'length')
     [ "$length" -eq 1 ]
@@ -176,7 +176,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     debian_status=$(printf '%s' "$result" | \
         jq -r '.[0].variants[] | select(.variant_tag == "1.0-debian") | .status')
@@ -190,7 +190,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     foo_variants=$(printf '%s' "$result" | jq '.[0].variants | length')
     [ "$foo_variants" -eq 2 ]
@@ -203,7 +203,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     # Extract all digest fields and verify shape
     while IFS= read -r dgst; do
@@ -225,7 +225,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     printf '%s' "$result" | jq '.' >/dev/null
 
@@ -239,7 +239,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     foo_count=$(printf '%s' "$result" | \
         jq '[.[] | select(.container == "foo")] | .[0].variants | length')
@@ -252,7 +252,7 @@ STUB_EOF
     probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
 
     result=$(PROBE_CMD="$probe_stub" \
-        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/.build-lineage")
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
 
     bar_count=$(printf '%s' "$result" | \
         jq '[.[] | select(.container == "bar")] | .[0].variants | length')
@@ -692,5 +692,30 @@ EOF
     result=$(PROBE_CMD="/bin/false" \
         bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
 
+    [ "$result" = "[]" ]
+}
+
+# ---------------------------------------------------------------------------
+# Precedence guard: placeholder ref + missing digest must be skipped (not
+# classified as legacy).  Before Fix 3 the legacy check ran first and would
+# emit a bogus drift PR for pre-#530 lineage files.
+# ---------------------------------------------------------------------------
+@test "unresolved-ref: placeholder ref with missing digest is skipped, not emitted as legacy" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    # Simulates a pre-#530 lineage entry: placeholder ref AND no recorded digest
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 1,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
+}
+EOF
+
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    # Must be empty — placeholder takes precedence over legacy classification
     [ "$result" = "[]" ]
 }

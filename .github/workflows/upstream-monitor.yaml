@@ -1126,7 +1126,12 @@ jobs:
     # upstream rebase that happened since the previous sync would be invisible for
     # the current day's run.
     needs: [create-dependency-update-prs, sync-base-images]
-    if: always()
+    # Run when sync-base-images succeeded (probes compare fresh GHCR state) or
+    # was skipped (e.g. workflow_dispatch without sync step).  Do NOT run when
+    # sync-base-images failed: stale mirror would produce silent misreports.
+    if: |
+      needs.sync-base-images.result == 'success' ||
+      needs.sync-base-images.result == 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
@@ -1135,6 +1140,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      packages: read
     outputs:
       drift_containers: ${{ steps.detect.outputs.drift_containers }}
     steps:
@@ -1246,6 +1252,25 @@ jobs:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
+
+      - name: Log in to Docker Hub
+        # Re-detect probes registry anonymously without this; anonymous Docker Hub
+        # requests are rate-limited and can silently fail → false "no drift" result.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Log in to GitHub Container Registry
+        # Required when base_image_ref points to the GHCR mirror (ghcr.io/owner/*).
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
 
       - name: Re-detect drift for this container (idempotent)
         id: drift-data
