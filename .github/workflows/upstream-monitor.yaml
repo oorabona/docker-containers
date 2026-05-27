@@ -1125,13 +1125,15 @@ jobs:
     # GHCR mirror rather than yesterday's copy.  Without this ordering, a real
     # upstream rebase that happened since the previous sync would be invisible for
     # the current day's run.
-    needs: [create-dependency-update-prs, sync-base-images]
-    # Run when sync-base-images succeeded (probes compare fresh GHCR state) or
-    # was skipped (e.g. workflow_dispatch without sync step).  Do NOT run when
-    # sync-base-images failed: stale mirror would produce silent misreports.
-    if: |
-      needs.sync-base-images.result == 'success' ||
-      needs.sync-base-images.result == 'skipped'
+    # NOTE: create-dependency-update-prs is intentionally NOT in needs — drift
+    # detection is independent of dep-PR fanout.  Including it would silently
+    # skip drift detection whenever skip_dep_fanout (or equivalent) is set.
+    needs: [sync-base-images]
+    # Run only when sync-base-images succeeded (probes compare fresh GHCR state).
+    # 'skipped' is NOT allowed: if sync was skipped the mirror may be stale,
+    # producing silent misreports.  Scheduled cron always runs sync; for manual
+    # workflow_dispatch runs, sync must also complete before drift detection runs.
+    if: needs.sync-base-images.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
