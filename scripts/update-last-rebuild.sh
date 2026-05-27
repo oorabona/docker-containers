@@ -31,6 +31,27 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command.  A %0A in the value would terminate the command line and
+# inject the remainder as a new command.  Mapping per GitHub's runner spec:
+#   %  → %25
+#   \n → %0A
+#   \r → %0D
+#
+# Inlined from helpers/base-cache-utils.sh::_escape_gha_command to avoid
+# importing the full base-cache helper.
+# ---------------------------------------------------------------------------
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
 if [[ $# -lt 2 ]]; then
@@ -55,18 +76,35 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-make_exit=0
-valid_containers=$(cd "$PROJECT_ROOT" && ./make list) || make_exit=$?
-if [[ "$make_exit" -ne 0 ]]; then
-    echo "::error::./make list failed with exit $make_exit" >&2
-    exit 2
+# _ULR_PROJECT_ROOT_OVERRIDE: test hook — when set, use this path as PROJECT_ROOT
+# instead of deriving it from BASH_SOURCE[0].  Avoids needing the full project
+# context in unit tests that invoke update-last-rebuild.sh via bash "$UPDATE_SCRIPT".
+# Named with _ULR_ prefix to avoid collision with similarly-named vars in the
+# detect-base-digest-drift.sh test suite.
+if [[ -n "${_ULR_PROJECT_ROOT_OVERRIDE:-}" ]]; then
+    PROJECT_ROOT="$_ULR_PROJECT_ROOT_OVERRIDE"
 fi
-if [[ -z "$valid_containers" ]]; then
-    echo "::error::./make list returned empty — canonical container list unavailable" >&2
-    exit 2
+
+make_exit=0
+# _ULR_VALID_CONTAINERS_OVERRIDE: test hook — when set, use this newline-separated
+# list instead of ./make list (avoids needing the full project context in tests).
+# Named with _ULR_ prefix to avoid collision with _VALID_CONTAINERS_OVERRIDE used
+# by detect-base-digest-drift.sh (which is exported by its bats setup()).
+if [[ -n "${_ULR_VALID_CONTAINERS_OVERRIDE:-}" ]]; then
+    valid_containers="$_ULR_VALID_CONTAINERS_OVERRIDE"
+else
+    valid_containers=$(cd "$PROJECT_ROOT" && ./make list) || make_exit=$?
+    if [[ "$make_exit" -ne 0 ]]; then
+        echo "::error::./make list failed with exit $make_exit" >&2
+        exit 2
+    fi
+    if [[ -z "$valid_containers" ]]; then
+        echo "::error::./make list returned empty — canonical container list unavailable" >&2
+        exit 2
+    fi
 fi
 if ! grep -qxF -- "$CONTAINER" <<<"$valid_containers"; then
-    echo "::warning::container '$CONTAINER' is not a valid container name (not in ./make list) — skipping" >&2
+    echo "::warning::container '$(_escape_gha_command "$CONTAINER")' is not a valid container name (not in ./make list) — skipping" >&2
     exit 0
 fi
 
@@ -136,6 +174,17 @@ target_file="${PROJECT_ROOT}/${CONTAINER}/LAST_REBUILD.md"
 # written.  A stale entry must not break the entire workflow.
 if [[ ! -d "${PROJECT_ROOT}/${CONTAINER}" ]]; then
     echo "::warning::container directory '${PROJECT_ROOT}/${CONTAINER}' missing — skipping LAST_REBUILD.md update" >&2
+    exit 0
+fi
+
+# Idempotency: skip-if-present (gate r25, Defect B).
+# compute_build_digest hashes LAST_REBUILD.md; each duplicate section would
+# change the hash and retrigger smoke CI on workflow retries.  If today's
+# heading already exists, we no-op rather than append a duplicate.
+# Strategy chosen: skip-if-present (simpler than replace-in-place; body
+# content is informational and mid-day changes are rare operator-edit cases).
+if grep -qxF -- "$section_header" "$target_file" 2>/dev/null; then
+    echo "::notice::Same-day ${KIND} section already present in $target_file, skipping append" >&2
     exit 0
 fi
 

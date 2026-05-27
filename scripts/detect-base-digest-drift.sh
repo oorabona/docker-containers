@@ -313,7 +313,7 @@ for lineage_file in "${lineage_files[@]}"; do
     # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
         printf '::warning::Rejecting lineage entry %s: container name contains control chars: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(printf '%q' "$container")" >&2
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
         continue
     fi
 
@@ -352,7 +352,7 @@ for lineage_file in "${lineage_files[@]}"; do
     # reach markdown with incomplete escaping. Validate early to close bypass.
     if [[ "$variant_tag" =~ [[:cntrl:]] ]]; then
         printf '::warning::Rejecting lineage entry %s: tag contains control chars: %s\n' \
-            "$(_escape_gha_command "$basename_file")" "$(printf '%q' "$variant_tag")" >&2
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$variant_tag")" >&2
         continue
     fi
 

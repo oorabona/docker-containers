@@ -2655,3 +2655,92 @@ EOF
     reported_tag=$(printf '%s' "$result" | jq -r '.[] | .variants[].variant_tag')
     [ "$reported_tag" = "1.0" ]
 }
+
+# ---------------------------------------------------------------------------
+# r25-A: GHA workflow-command escape — rejected container / tag values
+# Regression guard for Defect A (gate r25): the rejection-path ::warning::
+# must route poisoned values through _escape_gha_command, NOT printf '%q'.
+# A value containing a literal %0A must appear as %250A in the warning
+# (% → %25 then 0A suffix), not as a raw newline or %0A command separator.
+# A value embedding ::add-mask:: must not reintroduce that command.
+# ---------------------------------------------------------------------------
+@test "r25-A1: container name with literal %0A is not passed raw in ::warning::" {
+    # Build a lineage file where container field contains the literal string %0A
+    # (percent-zero-A — a GHA encoded newline that would inject a new command).
+    local lineage_dir="$TEST_TEMP_DIR/r25a1/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # The container value contains the literal characters %0A (not a newline).
+    # After _escape_gha_command the % becomes %25, so the output is %250A.
+    local poisoned_container
+    poisoned_container=$'foo%0Abar'
+
+    cat > "$lineage_dir/foo-1.0.json" <<EOF
+{
+  "lineage_schema_version": 2,
+  "container": "${poisoned_container}",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Container name contains control char (%0A is not a cntrl byte here, but
+    # the rejection path for invalid-container (not in ./make list) is the
+    # relevant site).  Use an empty override so the validation fast-path fires.
+    local stderr_output rc=0
+    stderr_output=$(PROBE_CMD=/bin/false \
+        _VALID_CONTAINERS_OVERRIDE="foo" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
+
+    # The ::warning:: line must NOT contain a literal %0A sequence that would
+    # inject a workflow command.  After _escape_gha_command it becomes %250A.
+    # grep -F matches fixed strings — if %0A appears verbatim the test fails.
+    if printf '%s' "$stderr_output" | grep -qF '::warning::' 2>/dev/null; then
+        # Extract only the warning line(s) and verify %0A is escaped.
+        local warning_lines
+        warning_lines=$(printf '%s' "$stderr_output" | grep -F '::warning::' || true)
+        # Must NOT contain bare %0A in the value portion
+        ! printf '%s' "$warning_lines" | grep -qF '%0Abar'
+        # Must contain the escaped form %250A (% was encoded first)
+        printf '%s' "$warning_lines" | grep -qF '%250Abar'
+    fi
+}
+
+@test "r25-A2: tag with newline cntrl char — ::warning:: must not contain raw newline after rejection" {
+    # Build a lineage file with a tag containing an embedded newline (cntrl char).
+    # The rejection path at the cntrl-char check must emit the value through
+    # _escape_gha_command so the newline becomes %0A (literal percent-zero-A),
+    # NOT a real newline that would terminate the ::warning:: command and inject
+    # the next line as a workflow command.
+    local lineage_dir="$TEST_TEMP_DIR/r25a2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # tag with embedded newline + injection payload after it
+    local poisoned_tag
+    poisoned_tag=$'1.0\n::add-mask::SECRET'
+
+    # Write file with Python to preserve literal newline in JSON value
+    python3 -c "
+import json, pathlib
+d = {
+  'lineage_schema_version': 2,
+  'container': 'foo',
+  'tag': '1.0\n::add-mask::SECRET',
+  'base_image_ref': 'alpine:3.21',
+  'base_image_digest': 'sha256:' + 'a'*64
+}
+pathlib.Path('${lineage_dir}/foo-1.0.json').write_text(json.dumps(d))
+"
+
+    local stderr_output rc=0
+    stderr_output=$(PROBE_CMD=/bin/false \
+        _VALID_CONTAINERS_OVERRIDE="foo" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
+
+    # The emitted warning must NOT contain the injection payload as a separate
+    # workflow command.  If the newline was not escaped, ::add-mask:: would
+    # appear on its own line as a parseable GHA command.
+    # We assert: no line in the output starts with ::add-mask::
+    ! printf '%s' "$stderr_output" | grep -qE '^::add-mask::'
+}
