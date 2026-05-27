@@ -1222,25 +1222,34 @@ jobs:
         id: detect
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
-          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log)
+          detect_rc=0
+          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log) || detect_rc=$?
+
+          # Always replay buffered stderr — per-variant ::error:: diagnostics must
+          # be visible regardless of whether the detector succeeded or failed.
+          # Under bash -e, the bare command substitution above would abort the step
+          # immediately on non-zero exit, leaving the replay block unreachable.
+          # Capturing the exit code first ensures the replay always runs.
+          if [[ -s /tmp/drift-detect-stderr.log ]]; then
+            while IFS= read -r line; do
+              printf '%s\n' "$line"
+            done < /tmp/drift-detect-stderr.log >&2
+          fi
+
+          if [[ $detect_rc -ne 0 ]]; then
+            echo "::error::Drift detector failed with exit code $detect_rc" >&2
+            exit $detect_rc
+          fi
 
           echo "$drift_json" > /tmp/drift.json
 
           # Surface probe error count; per-variant ::error:: lines are already
-          # emitted by the script itself (escaped) and passed through via stderr below.
+          # emitted by the script itself (escaped) and passed through via stderr above.
           # Do NOT re-compose warning lines from drift_json fields here — those fields
           # are untrusted lineage data and would reintroduce GHA command injection.
           error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
             echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants (see ::error:: lines above)"
-          fi
-
-          # Pass through script's stderr unchanged — it already contains escaped
-          # ::error::probe-error: lines for each failed probe.
-          if [[ -s /tmp/drift-detect-stderr.log ]]; then
-            while IFS= read -r line; do
-              printf '%s\n' "$line"
-            done < /tmp/drift-detect-stderr.log >&2
           fi
 
           # Validate drift_json shape before downstream use.  An invalid JSON
