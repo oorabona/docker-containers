@@ -193,10 +193,31 @@ _ghcr_fetch_index() {
 
     # HIT: both files present and body non-empty (no TTL — runs are short,
     # tags don't change mid-run).
+    # Verify content-digest on hit to catch post-admit corruption (disk error,
+    # PID-reuse conflict, OOM mid-write, manual tampering).  A mismatch evicts
+    # both cache files and falls through to the network fetch branch below.
     if [[ -s "$body_file" && -f "$hdrs_file" ]]; then
-        _GHCR_IDX_BODY="$(cat "$body_file")"
-        _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
-        return 0
+        local cached_expected
+        cached_expected=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" \
+            | sed 's/.*sha256://i' | tr -d '\r\n ' | head -c 64)
+        # Only verify when we have a full 64-char lowercase hex digest.
+        # A short/invalid value (e.g. the default shim's "sha256:idx") means
+        # no real digest was stored — skip verification and trust the file.
+        if [[ "${#cached_expected}" -eq 64 ]]; then
+            if _ghcr_verify_content_digest "$body_file" "$cached_expected"; then
+                _GHCR_IDX_BODY="$(cat "$body_file")"
+                _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
+                return 0
+            fi
+            # Digest present but mismatch → evict and fall through to network fetch.
+            rm -f "$body_file" "$hdrs_file" 2>/dev/null || true
+            echo "::warning::Cached index body content-digest mismatch; evicted, refetching ${image_path}:${tag}" >&2
+        else
+            # No verifiable digest → trust the cached file (same as original behavior).
+            _GHCR_IDX_BODY="$(cat "$body_file")"
+            _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
+            return 0
+        fi
     fi
 
     # Full Accept union satisfying both ghcr_get_manifest_sizes (needs body with .manifests)
@@ -407,12 +428,23 @@ ghcr_get_manifest_sizes() {
             # with a trailing newline would hash differently after $() stripping,
             # causing legitimate images to be rejected as "tampered".
             local pa_src pa_tmp
+            pa_src=""
             pa_tmp=""
             if [[ -s "$pa_file" ]]; then
-                pa_src="$pa_file"
-                pa_hit=1
-            else
-                # Allocate temp file for the raw curl fetch.
+                # Cache HIT: verify content-digest before trusting the file.
+                # Evict on mismatch to catch post-admit corruption (disk error,
+                # PID-reuse conflict, OOM mid-write, manual tampering), then
+                # fall through to the network-fetch branch below (pa_hit stays 0).
+                if _ghcr_verify_content_digest "$pa_file" "$digest_hash"; then
+                    pa_src="$pa_file"
+                    pa_hit=1
+                else
+                    rm -f "$pa_file" 2>/dev/null || true
+                    echo "::warning::Cached per-arch body content-digest mismatch; evicted ${image_path}@sha256:${digest_hash}" >&2
+                fi
+            fi
+            if [[ "$pa_hit" -eq 0 ]]; then
+                # Cache MISS (or eviction above): allocate temp file and fetch.
                 # _ghcr_temp_file is race-proof (mktemp, mode 0600).
                 # When cache dir is unwritable it falls back to system TMPDIR.
                 pa_tmp=$(_ghcr_temp_file "perarch-.tmp" 2>/dev/null) || {

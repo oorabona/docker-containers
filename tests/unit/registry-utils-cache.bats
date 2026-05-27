@@ -1009,3 +1009,213 @@ CURL_NL
     # unknown platform must NOT appear in output.
     ! echo "$out" | grep -q 'unknown'
 }
+
+# ---------------------------------------------------------------------------
+# r4-test-1: _ghcr_fetch_index — tampered cache body evicted and refetched
+# Pre-populate idx-*.body with bytes that don't match the Docker-Content-Digest
+# in idx-*.hdrs.  The valid body + headers come from curl.  The function must
+# evict the tampered file, emit ::warning::, and return the FRESH body.
+# ---------------------------------------------------------------------------
+
+@test "index cache hit: tampered body evicted and refetched (verify-on-hit)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # The shim writes the real index body (printf '%s\n') so the sha256 is:
+    #   eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2
+    # Pre-seed the cache with a tampered body whose sha256 does NOT match.
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    mkdir -p "$GHCR_CACHE_DIR"
+    # Tampered body: sha256 will NOT be the real index digest.
+    printf '%s' 'TAMPERED_INDEX_BODY' > "$body_file"
+    # Headers carry the real Docker-Content-Digest for the untampered body.
+    printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2\r\n\r\n' \
+        > "$hdrs_file"
+
+    # The default curl shim returns the real OCI index body, so after eviction
+    # the re-fetch will populate _GHCR_IDX_BODY with the real content.
+    # Call directly (not via `run`) so globals are visible in this scope.
+    # Capture stderr to a temp file (not $()) so the call stays in the current
+    # process and _GHCR_IDX_BODY is propagated to the surrounding scope.
+    local fetch_rc=0
+    local stderr_log="${WORK_DIR}/fetch_stderr.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
+
+    # Function must succeed (network re-fetch fills the globals).
+    [ "$fetch_rc" -eq 0 ]
+
+    # ::warning:: must have been emitted for the eviction.
+    grep -q '::warning::.*evicted' "$stderr_log"
+
+    # _GHCR_IDX_BODY must contain the fresh (real) body — not the tampered bytes.
+    [[ "$_GHCR_IDX_BODY" != 'TAMPERED_INDEX_BODY' ]]
+    [[ -n "$_GHCR_IDX_BODY" ]]
+
+    # A network INDEX fetch must have been logged (the evicted cache forced a re-fetch).
+    grep -q '^INDEX' "$CALLS"
+
+    # The re-cached body file must NOT contain the tampered bytes.
+    [ -f "$body_file" ]
+    local cached_body
+    cached_body=$(cat "$body_file")
+    [[ "$cached_body" != 'TAMPERED_INDEX_BODY' ]]
+}
+
+# ---------------------------------------------------------------------------
+# r4-test-2: _ghcr_fetch_index — valid cache hit uses fast path (no curl)
+# Pre-populate with a body that MATCHES its Docker-Content-Digest.  The curl
+# shim is replaced with one that fails — it must not be called.
+# ---------------------------------------------------------------------------
+
+@test "index cache hit: valid digest → fast path (curl not called)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed cache with a body that matches its recorded digest.
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    mkdir -p "$GHCR_CACHE_DIR"
+
+    # Body: the real OCI index (printf '%s\n') → sha256 eecd94bb...
+    # We store it exactly as the shim would write it (with trailing newline).
+    printf '%s\n' "$_OCI_INDEX" > "$body_file"
+    printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2\r\n\r\n' \
+        > "$hdrs_file"
+
+    # Replace curl shim with one that logs and fails for any call.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_FAIL'
+#!/usr/bin/env bash
+echo "CURL_CALLED_UNEXPECTEDLY" >> "$CALLS"
+exit 1
+CURL_FAIL
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    # Call directly (not via `run`) so _GHCR_IDX_BODY global is visible.
+    local fetch_rc=0
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" || fetch_rc=$?
+
+    # Must succeed using the cached file.
+    [ "$fetch_rc" -eq 0 ]
+
+    # _GHCR_IDX_BODY must be populated from the cache.
+    [[ -n "$_GHCR_IDX_BODY" ]]
+
+    # Curl must NOT have been called.
+    ! grep -q 'CURL_CALLED_UNEXPECTEDLY' "$CALLS"
+}
+
+# ---------------------------------------------------------------------------
+# r4-test-3: per-arch cache hit — tampered body evicted and refetched
+# Pre-populate perarch/<key>.body with bytes whose sha256 doesn't match
+# digest_hash.  The curl shim returns the valid body.  Function must succeed
+# with correct sizes, emit ::warning::, and replace the tampered file.
+# ---------------------------------------------------------------------------
+
+@test "per-arch cache hit: tampered body evicted and refetched (verify-on-hit)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed the amd64 per-arch cache file with tampered bytes.
+    # The digest in the OCI index is c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57
+    # which is the sha256 of _PER_ARCH_MANIFEST_AMD64 (no trailing newline).
+    local pa_key
+    pa_key="$(_ghcr_keyfile "oorabona/postgres@sha256:c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57")"
+    local pa_file="${GHCR_CACHE_DIR}/perarch/${pa_key}.body"
+    mkdir -p "${GHCR_CACHE_DIR}/perarch"
+    printf '%s' 'TAMPERED_PERARCH_BODY' > "$pa_file"
+
+    # The default curl shim will be called for the evicted amd64 entry and
+    # return the real per-arch manifest.
+
+    run --separate-stderr ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+
+    # Function must succeed (network re-fetch delivers correct sizes).
+    [ "$status" -eq 0 ]
+
+    # ::warning:: must have been emitted for the eviction.
+    echo "$stderr" | grep -q '::warning::.*evicted'
+
+    # Output must contain correct amd64 size (re-fetched).
+    echo "$output" | grep -qx 'amd64:600'
+
+    # The tampered file must have been replaced with the real content.
+    [ -f "$pa_file" ]
+    local cached
+    cached=$(cat "$pa_file")
+    [[ "$cached" != 'TAMPERED_PERARCH_BODY' ]]
+}
+
+# ---------------------------------------------------------------------------
+# r4-test-4: per-arch cache hit — valid digest → fast path (curl not called)
+# Pre-populate BOTH per-arch cache files with valid matching bytes.
+# Replace per-arch curl with a shim that fails on any sha256: request —
+# proving that neither cached arch triggers a network round-trip.
+# (The index itself has no cache yet, so the default index branch is kept.)
+# ---------------------------------------------------------------------------
+
+@test "per-arch cache hit: valid digest → fast path (curl not called for cached archs)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed BOTH per-arch cache files with bytes whose sha256 match the
+    # digests recorded in _OCI_INDEX (c3dcb... for amd64, 13fe... for arm64).
+    local pa_key_amd64 pa_key_arm64
+    pa_key_amd64="$(_ghcr_keyfile "oorabona/postgres@sha256:c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57")"
+    pa_key_arm64="$(_ghcr_keyfile "oorabona/postgres@sha256:13fe4dc6162b562798c5b0b086a021e4169a4f546ff9159de84a5a7837d23439")"
+    mkdir -p "${GHCR_CACHE_DIR}/perarch"
+    # Write exact bytes (no trailing newline) — sha256 must match the OCI index digest.
+    printf '%s' "$_PER_ARCH_MANIFEST_AMD64" > "${GHCR_CACHE_DIR}/perarch/${pa_key_amd64}.body"
+    printf '%s' "$_PER_ARCH_MANIFEST_ARM64" > "${GHCR_CACHE_DIR}/perarch/${pa_key_arm64}.body"
+
+    # Override shim: any sha256: per-arch request is a test failure.
+    # The index branch (non-sha256 /manifests/<tag>) is kept working so
+    # _ghcr_fetch_index can populate _GHCR_IDX_BODY on the first call.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_PERARCH_FAIL'
+#!/usr/bin/env bash
+URL="${!#}"
+
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+if [[ "$URL" == *"/token"* ]]; then
+    echo '{"token":"x"}'; exit 0
+fi
+if [[ "$URL" == *"/manifests/sha256:"* ]]; then
+    # Any per-arch network request → log failure sentinel and fail.
+    echo "PERARCH_FETCHED_UNEXPECTEDLY" >> "$CALLS"
+    exit 1
+fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_PERARCH_FAIL
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    out=$(ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine")
+    rc=$?
+
+    # Function must succeed.
+    [ "$rc" -eq 0 ]
+
+    # Both arch:size lines must appear (both served from cache).
+    echo "$out" | grep -qx 'amd64:600'
+    echo "$out" | grep -qx 'arm64:750'
+
+    # Neither arch must have triggered a network fetch.
+    ! grep -q 'PERARCH_FETCHED_UNEXPECTEDLY' "$CALLS"
+}
