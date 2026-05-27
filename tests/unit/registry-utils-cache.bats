@@ -1355,11 +1355,111 @@ CURL_NOSIG
     echo "$stderr" | grep -q '::warning::'
 
     # stderr must NOT contain any "No such file or directory" shell-level error.
-    ! echo "$stderr" | grep -qi 'No such file or directory'
+    # Use direct string assertion (not `! cmd | grep`) — bash `!` negation is
+    # only reliably set -e safe as the terminal command in a function.
+    [[ "$stderr" != *"No such file or directory"* ]] || {
+        echo "FAIL: stderr leaked shell redirect error: $stderr" >&2
+        return 1
+    }
 
     # stderr must NOT contain any "cannot create" or similar write-failure message
     # other than the expected ::warning:: line.
     local non_warning_errors
     non_warning_errors=$(echo "$stderr" | grep -v '::warning::' | grep -c 'error\|cannot\|failed' || true)
     [ "$non_warning_errors" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# r7-A: strict digest parse — malformed multi-sha256 header rejected
+#
+# Regression guard: the old greedy sed 's/.*sha256://i' | head -c 64 would
+# extract the LAST sha256 token from a header like:
+#   Docker-Content-Digest: sha256:<good>sha256:<bad>
+# and verify the body against <bad> — effectively bypassing integrity.
+#
+# The fix uses an anchored BASH_REMATCH that accepts exactly ONE sha256 token.
+# A malformed header must yield cached_expected="" so the length guard skips
+# verification and falls through to the trust-cache path (same behaviour as
+# "no header stored").
+# ---------------------------------------------------------------------------
+
+@test "r7-A: malformed multi-sha256 header rejected — cache hit falls through to trust-cache" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed cache: body with known sha256, headers carry a MALFORMED digest
+    # containing two sha256 tokens — the old greedy parser would extract the
+    # second (attacker-controlled) token; the strict parser must reject it.
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    mkdir -p "$GHCR_CACHE_DIR"
+
+    # Body content doesn't matter for this test — we just need a non-empty file.
+    printf '%s\n' "$_OCI_INDEX" > "$body_file"
+
+    # Malformed header: two sha256 tokens.  The second token is all-zeros and
+    # would NOT match the body's real sha256.  With the old greedy parser this
+    # would extract the all-zeros token and the length-64 guard would pass,
+    # leading to a mismatch and spurious eviction.  With the strict parser,
+    # the whole header is rejected (cached_expected="") and verification is
+    # skipped — the file is served directly (trust-cache path).
+    printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2sha256:0000000000000000000000000000000000000000000000000000000000000000\r\n\r\n' \
+        > "$hdrs_file"
+
+    # Replace curl with a shim that fails — it must NOT be called because the
+    # strict parser falls through to trust-cache (not to a network re-fetch).
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_FAIL_R7A'
+#!/usr/bin/env bash
+echo "CURL_CALLED_UNEXPECTEDLY_R7A" >> "$CALLS"
+exit 1
+CURL_FAIL_R7A
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local fetch_rc=0
+    local stderr_log="${WORK_DIR}/r7a_stderr.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
+
+    # Must succeed: malformed header → no verification → trust cache.
+    [ "$fetch_rc" -eq 0 ]
+
+    # Curl must NOT have been called (trust-cache path, not network re-fetch).
+    ! grep -q 'CURL_CALLED_UNEXPECTEDLY_R7A' "$CALLS"
+
+    # No eviction warning — malformed header means we skip verification entirely.
+    ! grep -q 'evicted' "$stderr_log"
+
+    # _GHCR_IDX_BODY must be populated from the cached file.
+    [[ -n "$_GHCR_IDX_BODY" ]]
+}
+
+# ---------------------------------------------------------------------------
+# r7-B: bats assertion correctness — direct string check catches "No such file"
+#
+# Regression guard for Defect B: the original test used `! echo "$stderr" | grep`
+# which is unreliable under set -e when followed by other statements.  This test
+# PROVES that the corrected [[ "$stderr" != *"..."* ]] assertion actually catches
+# a synthesized stderr containing the forbidden phrase.
+# ---------------------------------------------------------------------------
+
+@test "r7-B: direct string assertion catches synthesized 'No such file or directory' in stderr" {
+    # Synthesize a stderr that contains the forbidden phrase.
+    local synthetic_stderr
+    synthetic_stderr="bash: /proc/1/cannot-create: No such file or directory"
+
+    # The corrected assertion style must detect the phrase and trigger the fail
+    # branch.  We invert the expectation here to assert that the check fires.
+    local caught=0
+    [[ "$synthetic_stderr" != *"No such file or directory"* ]] || caught=1
+
+    [ "$caught" -eq 1 ]
+
+    # Confirm the converse: a clean stderr must NOT trigger the check.
+    local clean_stderr
+    clean_stderr="::warning:: cache dir not writable, running in degraded mode"
+    local clean_caught=0
+    [[ "$clean_stderr" != *"No such file or directory"* ]] || clean_caught=1
+
+    [ "$clean_caught" -eq 0 ]
 }

@@ -206,7 +206,17 @@ _ghcr_fetch_index() {
         hdr_line=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" 2>/dev/null || true)
         cached_expected=""
         if [[ -n "$hdr_line" ]]; then
-            cached_expected=$(printf '%s' "$hdr_line" | sed 's/.*sha256://i' | tr -d '\r\n ' | head -c 64)
+            # Strict single-token extraction: reject headers with multiple sha256:
+            # tokens (e.g. sha256:<good>sha256:<bad>) which greedy patterns would
+            # silently parse to the last token, bypassing digest verification.
+            local _hdr_norm
+            _hdr_norm=$(printf '%s' "$hdr_line" | tr -d '\r\n')
+            if [[ "$_hdr_norm" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+                cached_expected="${BASH_REMATCH[1]}"
+            fi
+            # If pattern doesn't match exactly (malformed, multiple tokens, wrong
+            # length), cached_expected stays "" → length guard below skips
+            # verification → falls through to trust-cache path (same as no header).
         fi
         # Only verify when we have a full 64-char lowercase hex digest.
         # A short/invalid value (e.g. the default shim's "sha256:idx") means
@@ -304,10 +314,16 @@ _ghcr_fetch_index() {
         # The caller already has data in _GHCR_IDX_BODY/_GHCR_IDX_HDRS but a
         # digest mismatch signals a corrupt or tampered response — do not use it.
         local idx_digest_header idx_digest_hex
-        idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:[[:space:]]*sha256:[a-f0-9]{64}' 2>/dev/null | head -1 | tr -d '\r' || true)
+        idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:' 2>/dev/null | head -1 | tr -d '\r' || true)
         if [[ -n "$idx_digest_header" ]]; then
-            idx_digest_hex="${idx_digest_header##*sha256:}"
-            idx_digest_hex="${idx_digest_hex%%[^a-f0-9]*}"
+            # Strict single-token extraction: anchored regex rejects headers with
+            # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
+            # ##*sha256: would silently parse to the last token.
+            if [[ "$idx_digest_header" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+                idx_digest_hex="${BASH_REMATCH[1]}"
+            else
+                idx_digest_hex=""
+            fi
             if [[ "${#idx_digest_hex}" -eq 64 ]]; then
                 if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
                     echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
