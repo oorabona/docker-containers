@@ -1208,8 +1208,10 @@ jobs:
         run: |
           # Install yq on PATH (mikefarah/yq action only runs yq inside the
           # action itself, it does NOT put yq on PATH for subsequent steps).
-          # Mirror the pattern used in create-update-prs.
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64
+          # Use checksum-verified version from create-update-prs to prevent tampering.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
@@ -1323,8 +1325,11 @@ jobs:
       - name: Install yq
         shell: bash
         run: |
-          # Install yq on PATH for list-builds calls.
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64
+          # Install yq on PATH for list-builds calls. Use checksum-verified
+          # version to prevent tampering in this write-capable workflow.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
           yq --version
 

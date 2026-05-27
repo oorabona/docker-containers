@@ -292,22 +292,28 @@ for lineage_file in "${lineage_files[@]}"; do
             if [[ -n "${!_override_var:-}" ]]; then
                 printf -v "$_active_tags_var" '%s' "${!_override_var}"
             else
-                # list-builds must succeed; on failure abort rather than silently skip
-                # the stale-lineage filter (which would disable drift detection).
+                # list-builds may fail transiently (upstream discovery, version script timeout).
+                # Skip this container's variants (stale-lineage filter disabled) rather than
+                # aborting the entire drift detector, which would suppress drift reports
+                # for all subsequent containers.
                 if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
-                    printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
-                    exit 2
+                    printf '::warning::./make list-builds %s failed — skipping stale-lineage filter for this container (drift detection still active)\n' "$container" >&2
+                    printf -v "$_active_tags_var" '%s' "__SKIPPED__"
+                else
+                    _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
+                    if [[ -z "$_fetched" ]]; then
+                        printf '::warning::./make list-builds %s returned no tags — skipping stale-lineage filter (drift detection still active)\n' "$container" >&2
+                        printf -v "$_active_tags_var" '%s' "__SKIPPED__"
+                    else
+                        printf -v "$_active_tags_var" '%s' "$_fetched"
+                    fi
                 fi
-                _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
-                if [[ -z "$_fetched" ]]; then
-                    printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
-                    exit 2
-                fi
-                printf -v "$_active_tags_var" '%s' "$_fetched"
             fi
         fi
         _active_tags="${!_active_tags_var}"
-        if ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+        # Skip filtering if: list-builds failed (__SKIPPED__), override empty string (test mode no-filter),
+        # or tag matches active set
+        if [[ "$_active_tags" != "__SKIPPED__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
             printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
                 "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
             continue
