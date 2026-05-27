@@ -19,8 +19,11 @@
 # Fixture constants
 # ---------------------------------------------------------------------------
 
-# Per-arch manifest bodies with known sha256 digests (no trailing newline
-# since the code captures via $() and writes via printf '%s').
+# Per-arch manifest bodies with known sha256 digests.
+# The code now uses curl -o <file> (no $() command substitution) so the exact
+# bytes written to disk — including any trailing newline — are what get hashed.
+# The shim writes these bodies via printf '%s' "$body" (no trailing newline),
+# matching the digests below.
 #   amd64: config 100 + layers 200+300 = total 600
 #     sha256: c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57
 #   arm64: config 150 + layers 250+350 = total 750
@@ -52,6 +55,10 @@ _OCI_INDEX='{
     }
   ]
 }'
+
+# run --separate-stderr requires bats >= 1.5.0 (used in tests that check
+# stdout-only emptiness while expecting ::warning:: on stderr).
+bats_require_minimum_version 1.5.0
 
 # ---------------------------------------------------------------------------
 # setup / teardown
@@ -141,15 +148,23 @@ fi
 
 if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     echo "PERARCH" >> "$CALLS"
-    # Per-arch is still captured via $() — just write to stdout.
-    # Return per-arch body matching the digest in the URL.
+    # Per-arch now uses curl -o <file>; write body to OFILE when present,
+    # else stdout (for tests that don't pass -o).
+    # Use printf '%s' (no trailing newline) so the body bytes match the
+    # sha256 digests declared in the fixture constants above.
+    local _pa_body
     if [[ "$URL" == *"/manifests/sha256:c3d"* ]]; then
-        echo "$_PER_ARCH_MANIFEST_AMD64"
+        _pa_body="$_PER_ARCH_MANIFEST_AMD64"
     elif [[ "$URL" == *"/manifests/sha256:13f"* ]]; then
-        echo "$_PER_ARCH_MANIFEST_ARM64"
+        _pa_body="$_PER_ARCH_MANIFEST_ARM64"
     else
         # Fallback: return default per-arch manifest (for tests that override _OCI_INDEX).
-        echo "$_PER_ARCH_MANIFEST"
+        _pa_body="$_PER_ARCH_MANIFEST"
+    fi
+    if [[ -n "$OFILE" ]]; then
+        printf '%s' "$_pa_body" > "$OFILE"
+    else
+        printf '%s' "$_pa_body"
     fi
     exit 0
 fi
@@ -239,7 +254,14 @@ if [[ "$URL" == *"/token"* ]]; then
     echo '{"token":"x"}'; exit 0
 fi
 if [[ "$URL" == *"/manifests/sha256:"* ]]; then
-    echo "$_POISON_BODY"; exit 0
+    # Write poison body to OFILE when present (new -o file-based fetch path);
+    # fall back to stdout for callers that don't pass -o.
+    if [[ -n "$OFILE" ]]; then
+        printf '%s' "$_POISON_BODY" > "$OFILE"
+    else
+        echo "$_POISON_BODY"
+    fi
+    exit 0
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
     _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
@@ -255,7 +277,9 @@ CURL_POISON
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
-    run ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+    # --separate-stderr isolates the ::warning:: diagnostic from stdout so that
+    # the all-or-nothing stdout check is not confused by stderr output.
+    run --separate-stderr ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
 
     # Must fail (return 1).
     [ "$status" -eq 1 ]
@@ -296,13 +320,15 @@ fi
 
 if [[ "$URL" == *"/manifests/sha256:c3d"* ]]; then
     echo "PERARCH" >> "$CALLS"
-    echo '{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
+    _pa='{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_pa" > "$OFILE"; else printf '%s' "$_pa"; fi
     exit 0
 fi
 
 if [[ "$URL" == *"/manifests/sha256:13f"* ]]; then
     echo "PERARCH" >> "$CALLS"
-    echo '{"errors":[{"code":"MANIFEST_UNKNOWN","message":"not found"}]}'
+    _pa='{"errors":[{"code":"MANIFEST_UNKNOWN","message":"not found"}]}'
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_pa" > "$OFILE"; else printf '%s' "$_pa"; fi
     exit 0
 fi
 
@@ -323,7 +349,9 @@ CURL_MIXED
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
-    run ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+    # --separate-stderr isolates the ::warning:: diagnostic from stdout so that
+    # the all-or-nothing stdout check is not confused by stderr output.
+    run --separate-stderr ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
 
     # Must fail.
     [ "$status" -eq 1 ]
@@ -793,4 +821,191 @@ CURL_IDX_BAD
     # Hard fail expected — no writable temp location available anywhere.
     [ "$status" -eq 0 ]  # the bash -c subshell itself exits 0
     echo "$output" | grep -q 'RC=1'
+}
+
+# ---------------------------------------------------------------------------
+# D3-test-1 (r3): trailing-newline-safe per-arch fetch
+# A manifest body served with a trailing newline has a different sha256 than
+# the same body without the newline.  The previous $()-based fetch silently
+# stripped the newline, causing the sha256 to mismatch the cache key digest →
+# legitimate images rejected.  The file-based fetch preserves exact bytes so
+# the hash computed from the file matches the digest advertised by the registry.
+# ---------------------------------------------------------------------------
+
+@test "per-arch trailing-newline-safe: manifest with trailing newline is accepted when digest matches" {
+    # Fixture: amd64 body WITH a trailing newline.
+    # sha256("${AMD64_BODY}\n") = a40220b4839d6a73e099913142835aaf89c59327338d2157cf4050e687127728
+    local NL_BODY NL_DIGEST
+    NL_BODY='{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
+    NL_DIGEST='a40220b4839d6a73e099913142835aaf89c59327338d2157cf4050e687127728'
+
+    # Override the OCI index so it references the trailing-newline digest.
+    export _OCI_INDEX='{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:'"$NL_DIGEST"'",
+      "platform": { "architecture": "amd64", "os": "linux" }
+    }
+  ]
+}'
+
+    # Override the per-arch body to write the body WITH a trailing newline
+    # to the OFILE (simulating a real GHCR response with trailing whitespace).
+    export _PER_ARCH_MANIFEST="$NL_BODY"
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_NL'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+if [[ "$URL" == *"/token"* ]]; then
+    echo "TOKEN" >> "$CALLS"
+    echo '{"token":"x"}'
+    exit 0
+fi
+if [[ "$URL" == *"/manifests/sha256:"* ]]; then
+    echo "PERARCH" >> "$CALLS"
+    # Write body WITH trailing newline — this is the regression case.
+    if [[ -n "$OFILE" ]]; then
+        printf '%s\n' "$_PER_ARCH_MANIFEST" > "$OFILE"
+    else
+        printf '%s\n' "$_PER_ARCH_MANIFEST"
+    fi
+    exit 0
+fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    echo "INDEX" >> "$CALLS"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s' "$_hdrs"; printf '%s' "$_body"; fi
+    exit 0
+fi
+echo "UNKNOWN_URL: $URL" >&2
+exit 1
+CURL_NL
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    out=$(ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine")
+    rc=$?
+
+    # Must succeed: the file-based fetch preserves the trailing newline so the
+    # sha256 of the on-disk bytes matches NL_DIGEST.
+    [ "$rc" -eq 0 ]
+    echo "$out" | grep -qx 'amd64:600'
+}
+
+# ---------------------------------------------------------------------------
+# D3-test-2 (r3): strict digest_prefix — non-sha256 prefix → hard return 1
+# A manifest list with digest_prefix=sha512 for amd64 must cause the function
+# to return 1 rather than silently continuing.  The old code would match the
+# hex regex (sha512 hashes are 128 chars, not 64, so actually wouldn't pass
+# the hex check — but a sha256b/sha256a variant would slip through if the
+# prefix check was absent).  The new code explicitly validates prefix first.
+# ---------------------------------------------------------------------------
+
+@test "per-arch strict digest_prefix: sha512 prefix causes return 1" {
+    # Inject an OCI index where amd64 uses sha512: prefix with a 64-char hex
+    # value (to pass the hash-length check if it were reached).
+    export _OCI_INDEX='{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha512:c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57",
+      "platform": { "architecture": "amd64", "os": "linux" }
+    }
+  ]
+}'
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # --separate-stderr isolates the ::warning:: diagnostic from stdout.
+    run --separate-stderr ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# D3-test-3 (r3): strict digest_hash — non-hex chars → hard return 1
+# A manifest list entry with a malformed hash (contains 'zz') must cause the
+# function to return 1, not silently skip the platform.
+# ---------------------------------------------------------------------------
+
+@test "per-arch strict digest_hash: non-hex chars in hash causes return 1" {
+    export _OCI_INDEX='{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:zz0cb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57",
+      "platform": { "architecture": "amd64", "os": "linux" }
+    }
+  ]
+}'
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # --separate-stderr isolates the ::warning:: diagnostic from stdout.
+    run --separate-stderr ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# D3-test-4 (r3): unknown platform with malformed digest — silent skip preserved
+# The "unknown" platform (OCI provenance attestation entry) must still be
+# silently skipped even if its digest is malformed or uses a non-sha256 prefix.
+# Only real arch platforms are subject to the strict validation.
+# ---------------------------------------------------------------------------
+
+@test "per-arch unknown platform with malformed digest: silently skipped, function succeeds" {
+    # OCI index: one "unknown" platform (provenance) with a malformed digest,
+    # plus one valid amd64 entry.  The unknown entry must be skipped; the
+    # valid amd64 entry must succeed.
+    export _OCI_INDEX='{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57",
+      "platform": { "architecture": "amd64", "os": "linux" }
+    },
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha512:notahexatall!!",
+      "platform": { "architecture": "unknown", "os": "unknown" }
+    }
+  ]
+}'
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    out=$(ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine")
+    rc=$?
+
+    # Must succeed — the unknown platform is skipped, amd64 succeeds.
+    [ "$rc" -eq 0 ]
+    echo "$out" | grep -qx 'amd64:600'
+    # unknown platform must NOT appear in output.
+    ! echo "$out" | grep -q 'unknown'
 }

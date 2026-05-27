@@ -378,66 +378,105 @@ ghcr_get_manifest_sizes() {
         while IFS=':' read -r arch digest_prefix digest_hash; do
             [[ -z "$arch" || -z "$digest_hash" ]] && continue
             [[ "$arch" == "unknown" ]] && continue
-            # Shape-validate digest_hash: must be exactly 64 lowercase hex chars.
-            # Rejects path-injection attempts via a poisoned digest field.
-            [[ "$digest_hash" =~ ^[a-f0-9]{64}$ ]] || continue
+            # Strict digest validation BEFORE any network attempt.
+            # digest_prefix must be "sha256" — non-sha256 algorithms (sha512, etc.)
+            # are not supported and a malformed/unexpected prefix is a hard error,
+            # not a silent skip, to preserve the all-or-nothing contract.
+            # digest_hash must be exactly 64 lowercase hex chars.
+            # Both checks apply to all non-"unknown" platforms; a partially-valid
+            # manifest list (valid arm64, malformed amd64) must fail hard.
+            if [[ "$digest_prefix" != "sha256" ]]; then
+                echo "::warning::GHCR per-arch refusing non-sha256 digest prefix '${digest_prefix}' for platform '${arch}' (${image_path})" >&2
+                return 1
+            fi
+            if ! [[ "$digest_hash" =~ ^[a-f0-9]{64}$ ]]; then
+                echo "::warning::GHCR per-arch malformed digest hash for platform '${arch}' (${image_path}): ${digest_hash}" >&2
+                return 1
+            fi
 
             local pa_file pa_hit
             pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
             pa_hit=0
 
-            local platform_manifest
+            # pa_src is the file whose bytes are used for validation AND jq parsing.
+            # For cache hits, pa_src=pa_file (existing body on disk).
+            # For cache misses, pa_src=pa_tmp (curl writes raw bytes directly here).
+            # Using a file as the source of truth for both verification and parsing
+            # avoids $() command-substitution, which strips trailing newlines.
+            # OCI/Docker digests are over EXACT raw bytes — a valid manifest served
+            # with a trailing newline would hash differently after $() stripping,
+            # causing legitimate images to be rejected as "tampered".
+            local pa_src pa_tmp
+            pa_tmp=""
             if [[ -s "$pa_file" ]]; then
-                platform_manifest="$(cat "$pa_file")"
+                pa_src="$pa_file"
                 pa_hit=1
             else
-                platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
-                    -H "Authorization: Bearer $token" \
-                    -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                    "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
+                # Allocate temp file for the raw curl fetch.
+                # _ghcr_temp_file is race-proof (mktemp, mode 0600).
+                # When cache dir is unwritable it falls back to system TMPDIR.
+                pa_tmp=$(_ghcr_temp_file "perarch-.tmp" 2>/dev/null) || {
+                    echo "::warning::GHCR per-arch cannot allocate temp file for ${image_path}@${digest_prefix}:${digest_hash}" >&2
+                    return 1
+                }
+                # curl -o writes raw network bytes directly to file — no $() stripping.
+                if ! curl -sS -fL --connect-timeout 5 --max-time "${CURL_MAX_TIME:-30}" \
+                        -H "Authorization: Bearer $token" \
+                        -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                        -o "$pa_tmp" \
+                        "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null; then
+                    rm -f "$pa_tmp" 2>/dev/null || true
+                    echo "::warning::GHCR per-arch fetch failed for ${image_path}@${digest_prefix}:${digest_hash}" >&2
+                    return 1
+                fi
+                # Content-digest verification on raw bytes BEFORE any parsing.
+                # The cache key digest_hash is the registry's sha256 of the manifest
+                # bytes. A mismatch means corruption or tampered response — abort.
+                if ! _ghcr_verify_content_digest "$pa_tmp" "$digest_hash"; then
+                    echo "::warning::GHCR per-arch content-digest mismatch for ${image_path}@${digest_prefix}:${digest_hash}; rejecting body" >&2
+                    rm -f "$pa_tmp" 2>/dev/null || true
+                    return 1
+                fi
+                pa_src="$pa_tmp"
             fi
 
             # Validate: body must be non-empty, parse as a JSON object, not an
             # .errors envelope, and carry size-bearing structure (config or layers).
             # An invalid body → abort the whole function (return 1, zero stdout).
             # These gates also defensively re-validate cached bodies (free, no network).
-            if [[ -z "$platform_manifest" ]]; then
+            # All jq reads come from $pa_src (file), not from a $()-captured string.
+            if [[ ! -s "$pa_src" ]]; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if ! printf '%s' "$platform_manifest" | jq -e 'type=="object"' >/dev/null 2>&1; then
+            if ! jq -e 'type=="object"' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if printf '%s' "$platform_manifest" | jq -e 'type=="object" and has("errors")' >/dev/null 2>&1; then
+            if jq -e 'type=="object" and has("errors")' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if ! printf '%s' "$platform_manifest" | jq -e 'has("config") or has("layers")' >/dev/null 2>&1; then
+            if ! jq -e 'has("config") or has("layers")' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            # Admission: only cache on MISS after all 4 gates pass (object, not-errors, has-config|layers).
-            # _ghcr_temp_file is race-proof (mktemp) and natively mode 0600.
-            # When cache dir is unwritable, _ghcr_temp_file falls back to system TMPDIR
-            # so the temp write succeeds; the subsequent mv into perarch/ is best-effort.
-            if [[ "$pa_hit" -eq 0 ]]; then
-                local pa_tmp
-                if pa_tmp=$(_ghcr_temp_file "perarch-.tmp" 2>/dev/null); then
-                    if printf '%s' "$platform_manifest" > "$pa_tmp" 2>/dev/null && chmod 600 "$pa_tmp" 2>/dev/null; then
-                        # Content-digest verification: the cache key digest_hash is the
-                        # registry's sha256 of the manifest bytes. Verify the body we
-                        # are about to cache hashes to the same value before admission.
-                        if ! _ghcr_verify_content_digest "$pa_tmp" "$digest_hash"; then
-                            echo "::warning::GHCR per-arch cache content-digest mismatch for ${image_path}@${digest_prefix}:${digest_hash}; rejecting body" >&2
-                            rm -f "$pa_tmp" 2>/dev/null || true
-                            return 1
-                        fi
-                        mv -f "$pa_tmp" "$pa_file" 2>/dev/null || rm -f "$pa_tmp" 2>/dev/null || true
-                    else
-                        rm -f "$pa_tmp" 2>/dev/null || true
-                    fi
+
+            # Admission: promote pa_tmp → pa_file after all 4 gates pass.
+            # Cache hits (pa_hit=1) already live at pa_file; no mv needed.
+            if [[ "$pa_hit" -eq 0 && -n "$pa_tmp" ]]; then
+                chmod 600 "$pa_tmp" 2>/dev/null || true
+                if mv -f "$pa_tmp" "$pa_file" 2>/dev/null; then
+                    pa_src="$pa_file"
                 fi
+                # mv failed (cross-FS fallback) — pa_src stays as pa_tmp;
+                # data is returned but not persisted; temp cleaned up below.
             fi
 
             local total_size
-            total_size=$(printf '%s' "$platform_manifest" | jq '[.config.size // 0] + [.layers[]?.size // 0] | add // 0' 2>/dev/null)
+            total_size=$(jq '[.config.size // 0] + [.layers[]?.size // 0] | add // 0' < "$pa_src" 2>/dev/null)
+            # Clean up pa_tmp if mv failed (pa_src still points to it).
+            [[ "$pa_src" == "$pa_tmp" && -n "$pa_tmp" ]] && rm -f "$pa_tmp" 2>/dev/null || true
             # Append to buffer (valid parse → emit even if arithmetic yields 0).
             size_buffer="${size_buffer}${arch}:${total_size:-0}"$'\n'
         done <<< "$manifests_data"
