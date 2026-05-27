@@ -679,11 +679,10 @@ jobs:
           source ./helpers/base-cache-utils.sh
 
           # Discover all containers and their current versions.
-          # Fix 4 (gate r9): do not mask ./make list failures with '[]'.
-          # An empty set would cause sync to run against nothing and emit "success",
-          # hiding the real failure and leaving drift comparisons against stale state.
-          make_list_out=$(./make list 2>&1) || {
-            echo "::error::./make list failed: $make_list_out" >&2
+          # Capture stdout and stderr separately to avoid docker-compose status
+          # line on stderr being mixed with container names.
+          make_list_out=$(./make list 2>/dev/null) || {
+            echo "::error::./make list failed" >&2
             exit 2
           }
           if [[ -z "${make_list_out// /}" ]]; then
@@ -1204,6 +1203,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Install yq
+        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
+        with:
+          cmd: yq --version
+
       - name: Detect drift
         id: detect
         run: |
@@ -1310,6 +1314,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+
+      - name: Install yq
+        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
+        with:
+          cmd: yq --version
 
       - name: Re-detect drift for this container (idempotent)
         id: drift-data
