@@ -2510,3 +2510,148 @@ STUB
     status=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
     [ "$status" = "unchanged" ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r24 (gate r24 — Copilot M): active-tag filter must use `current` semantics
+#
+# Regression guard: when an upstream-version PR is pending (upstream has released
+# X.Y but variants.yaml still points at X.Y-1), ./make list-builds with the
+# default `latest` would resolve to X.Y (future state) and return tags built
+# from that version.  The lineage files on disk, however, reference tags from the
+# currently-published X.Y-1 state.  The stale-lineage filter would then reject
+# the published tags as "stale" → drift on the live container silently undetected
+# until the version PR merges.
+#
+# Fix: pass `current` explicitly so the active-tag set reflects published state.
+# The _ACTIVE_TAGS_OVERRIDE_ test seam is used to inject the "current" active set
+# (simulating what `./make list-builds <container> current` returns post-fix).
+# ---------------------------------------------------------------------------
+
+@test "r24-fix1a: upstream-pending scenario — lineage tag matches current published; drift detected" {
+    # Simulate: upstream just released 2.0 (future), but currently published is 1.0.
+    # Lineage file records tag 1.0 (currently published).
+    # _ACTIVE_TAGS_OVERRIDE_ is set to "1.0" (what `list-builds current` returns).
+    # The drift probe returns a different digest → drift must be reported.
+    local lineage_dir="$TEST_TEMP_DIR/r24fix1a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe returns a DIFFERENT digest (simulating base image updated upstream)
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    # Active-tag override = "1.0" (current published); mirrors what `list-builds current` returns.
+    # With the pre-fix bug (default `latest`), the caller would have used tag "2.0" here,
+    # causing 1.0 to be rejected as stale.  With the fix, 1.0 is active → drift detected.
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+
+    # Must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Drift must be detected for tag 1.0 (the currently-published tag)
+    local variant_count
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$variant_count" -eq 1 ]
+
+    local reported_tag
+    reported_tag=$(printf '%s' "$result" | jq -r '.[] | .variants[].variant_tag')
+    [ "$reported_tag" = "1.0" ]
+
+    local status
+    status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
+    [ "$status" = "drift" ]
+}
+
+@test "r24-fix1b: upstream-pending scenario — pre-fix simulation: tag 2.0 active rejects 1.0 as stale (no false-positive)" {
+    # Validate the opposite: if active tags were set to "2.0" (the future/upstream state,
+    # which is what the pre-fix `latest` resolution would have returned), then the 1.0
+    # lineage entry is treated as stale and skipped — this is the false-negative the fix
+    # corrects.  This test documents the bug behavior to pin the fix semantics.
+    local lineage_dir="$TEST_TEMP_DIR/r24fix1b/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    # Active-tag override = "2.0" (upstream-newest, NOT currently published) — this is what
+    # the pre-fix code would have produced via `./make list-builds <container>` (default latest).
+    local stderr_output rc=0
+    stderr_output=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="2.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>&1 >/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+
+    # With active=2.0 and lineage=1.0, the entry is skipped as stale
+    echo "$stderr_output" | grep -q "Skipping stale lineage entry"
+}
+
+@test "r24-fix2: empty-override (backward compat) bypasses stale filter — entry reaches probe stage" {
+    # When _ACTIVE_TAGS_OVERRIDE_myimage is set to an empty string, the filter logic
+    # short-circuits (empty _active_tags → -n check fails → condition is false) and the
+    # entry is NOT skipped.  This is the backward-compat path documented in the filter code.
+    # In production the equivalent is a list-builds call that fails (rc!=0), which uses
+    # __CONTAINER_SKIP__ (a different path).  The empty-override path is retained for
+    # test-rig convenience; it must not discard lineage entries silently.
+    # Verify: entry reaches the probe, probe returns different digest → drift reported.
+    local lineage_dir="$TEST_TEMP_DIR/r24fix2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe returns different digest → drift
+    local probe_stub
+    probe_stub=$(_make_digest_probe_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    # Empty override → filter bypassed → probe runs
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null) || rc=$?
+
+    [ "$rc" -eq 0 ]
+
+    # Entry must NOT have been silently discarded — drift is reported
+    local variant_count
+    variant_count=$(printf '%s' "$result" | jq '[.[] | .variants[]] | length')
+    [ "$variant_count" -eq 1 ]
+
+    local reported_tag
+    reported_tag=$(printf '%s' "$result" | jq -r '.[] | .variants[].variant_tag')
+    [ "$reported_tag" = "1.0" ]
+}

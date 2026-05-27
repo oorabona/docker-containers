@@ -391,8 +391,18 @@ for lineage_file in "${lineage_files[@]}"; do
                 # disabling the stale-lineage filter.  Disabling the filter is worse — it allows stale
                 # lineage entries to re-trigger drift PRs on every cron run (infinite PR loop).
                 # A missed drift during a transient failure is recoverable; a runaway PR loop is not.
+                #
+                # Pass `current` (not the default `latest`) so the active-tag filter operates on the
+                # currently-published version rather than the upstream-newest version.  Without this,
+                # when an upstream-version PR is pending (upstream X.Y released but variants.yaml still
+                # at X.Y-1), list-builds returns tags from the future state while lineage files hold
+                # tags from the currently-published state — the filter rejects them as "stale" and
+                # drift on the live container is silently undetected until the version PR merges.
+                # When `current` resolves to empty (new container, never built), get_build_version
+                # returns "unknown", list_container_builds emits empty output, and the existing
+                # fail-closed path below handles it with a ::warning:: (no new code needed).
                 _lb_rc=0
-                _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null) || _lb_rc=$?
+                _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" current 2>/dev/null) || _lb_rc=$?
                 if [[ "$_lb_rc" -ne 0 ]]; then
                     printf '::warning::./make list-builds %s failed (rc=%s) — skipping entire container (fail-closed; retry next cron run)\n' "$container" "$_lb_rc" >&2
                     # Mark container as fully skipped so the outer loop continues to the next container
