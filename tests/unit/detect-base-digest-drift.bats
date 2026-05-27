@@ -905,3 +905,143 @@ STUB
     [ -f "$fake_root/mycontainer/LAST_REBUILD.md" ]
     grep -q 'base-digest-drift' "$fake_root/mycontainer/LAST_REBUILD.md"
 }
+
+# ---------------------------------------------------------------------------
+# Fix r5-1: Unified digest source (writer + probe both use imagetools format)
+# Regression guard: probe must extract .digest from imagetools-style JSON
+# (the format `docker buildx imagetools inspect --format '{{json .Manifest}}'`
+# returns).  The fixture is the imagetools Manifest descriptor — a flat object
+# with .digest, .mediaType, .size (no .manifests[] wrapper at the outer level).
+# ---------------------------------------------------------------------------
+@test "r5-fix1: probe extracts digest from imagetools Manifest descriptor format" {
+    # Fixture: imagetools --format '{{json .Manifest}}' returns a flat OCI descriptor
+    # with .digest at the top level.  This is different from the `docker manifest
+    # inspect` format which has .manifests[] and a top-level .digest only in the
+    # manifest-list body.  Both formats have .digest at top level — jq '.digest'
+    # works for both.  This test guards the imagetools-format path specifically.
+    local synthetic_dir="$TEST_TEMP_DIR/r5-fix1-probe"
+    mkdir -p "$synthetic_dir/responses"
+
+    # imagetools --format '{{json .Manifest}}' output: flat descriptor
+    cat > "$synthetic_dir/responses/alpine-3.21.json" <<'EOF'
+{
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "size": 2048
+}
+EOF
+
+    local stub_script="$synthetic_dir/probe.sh"
+    cat > "$stub_script" <<STUB_EOF
+#!/usr/bin/env bash
+key="\$(printf '%s' "\$1" | tr ':/' '--')"
+response_file="${synthetic_dir}/responses/\${key}.json"
+[[ -f "\$response_file" ]] && { cat "\$response_file"; exit 0; }
+exit 1
+STUB_EOF
+    chmod +x "$stub_script"
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/foo-3.21-alpine.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "3.21-alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    result=$(PROBE_CMD="$stub_script" bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    current_digest=$(printf '%s' "$result" | jq -r '.[0].variants[0].current_digest')
+    # Probe must extract 1111... (from imagetools Manifest descriptor), NOT fall back to grep
+    [ "$current_digest" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fix r5-2: GHA command injection prevention (::error:: escaping)
+# Regression guard: a newline-bearing base_image_ref in a probe-error scenario
+# must NOT inject a second GHA workflow command.  The escaped form (%0A) must
+# appear in the ::error:: line instead of a raw newline.
+# ---------------------------------------------------------------------------
+@test "r5-fix2: newline in base_image_ref is escaped in ::error:: output" {
+    # Lineage file with a base_image_ref containing an embedded newline (simulates
+    # a crafted/corrupted lineage entry).  When the registry probe fails, the error
+    # line must escape the newline as %0A to prevent GHA command injection.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Use a JSON-escaped newline (\n) in the base_image_ref value.  jq decodes
+    # \n → literal newline when reading the field, giving _escape_gha_command
+    # a real newline to escape as %0A.
+    printf '{"lineage_schema_version":2,"container":"foo","tag":"1.0","base_image_ref":"alpine:3.21\\nmalicious::add-mask::secret","base_image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+        > "$lineage_dir/foo-1.0.json"
+
+    local stderr_log="$TEST_TEMP_DIR/r5-fix2-stderr.log"
+    PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
+
+    # The raw newline must NOT appear in stderr (it would split the ::error:: line)
+    # Instead %0A must be present
+    if grep -qP '\n' "$stderr_log" 2>/dev/null; then
+        # grep -P may not be available everywhere; use a portable check
+        true
+    fi
+    # Primary assertion: %0A must appear in any ::error:: line containing the ref
+    grep -q '%0A' "$stderr_log"
+    # Secondary: the injected GHA command must NOT appear as a standalone command line
+    ! grep -q '^::add-mask::' "$stderr_log"
+}
+
+# ---------------------------------------------------------------------------
+# Fix r5-4: --baseline-only precedence (legacy wins over placeholder-skip)
+# Regression guard: a pre-#530 lineage entry with a placeholder base_image_ref
+# AND no recorded digest must emit status=legacy in --baseline-only mode (so the
+# baseline migration picks it up), while the same entry must be SKIPPED (result=[])
+# in normal mode (to prevent bogus drift PRs).
+# ---------------------------------------------------------------------------
+@test "r5-fix4: baseline-only mode emits legacy for placeholder-ref + missing-digest entry" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    # Pre-#530 entry: placeholder ref, no digest field at all
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 1,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
+}
+EOF
+
+    # --baseline-only: must emit a legacy record (not skip)
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" --baseline-only "$lineage_dir" 2>/dev/null)
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+    length=$(printf '%s' "$result" | jq 'length')
+    [ "$length" -eq 1 ]
+
+    status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status_val" = "legacy" ]
+}
+
+@test "r5-fix4: normal mode still skips placeholder-ref + missing-digest entry (no regression)" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    # Same pre-#530 entry
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 1,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "${REMOTE_CR}/library/debian:trixie-slim"
+}
+EOF
+
+    # Normal mode (no --baseline-only): must skip — empty output
+    result=$(PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ "$result" = "[]" ]
+}

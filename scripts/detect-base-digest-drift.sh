@@ -44,6 +44,28 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 
 # ---------------------------------------------------------------------------
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command.  Without this, a newline/CR/`%` in the value could
+# terminate the command early and inject another (e.g. `::add-mask::`,
+# `::stop-commands::`).  Mapping per GitHub's runner spec:
+#   %  → %25
+#   \n → %0A
+#   \r → %0D
+#
+# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
+# inlined here to avoid importing the full base-cache helper.
+# ---------------------------------------------------------------------------
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 BASELINE_ONLY=false
@@ -69,28 +91,27 @@ done
 # ---------------------------------------------------------------------------
 # Probe function — extract IMAGE-INDEX digest from a registry manifest
 #
-# Extracts the authoritative image-index digest via the top-level `.digest`
-# field of the manifest JSON returned by `docker manifest inspect`.  For a
-# manifest list (multi-arch) this is the image-index digest, NOT a per-arch
-# entry digest from `.manifests[].digest`.
+# Uses `docker buildx imagetools inspect --format '{{json .Manifest}}'` to
+# obtain the IMAGE-INDEX (manifest-list) digest.  This is the same method
+# used by the writer in build-container.sh, so writer and probe always agree
+# on multi-arch images.
 #
-# Why jq instead of grep-o head-1: grep-o relies on JSON field ordering to
-# find the index digest before the per-arch entries.  jq -r '.digest' is
-# explicit and order-independent.
+# The previous `docker manifest inspect | jq -r '.digest'` approach was
+# unreliable: `docker manifest inspect` does NOT include a top-level `.digest`
+# field in its JSON body (the digest is only in the HTTP response Content-Digest
+# header).  imagetools inspect --format '{{json .Manifest}}' exposes the
+# authoritative OCI index descriptor including `.digest`.
 #
-# If the top-level `.digest` field is absent (e.g., single-arch manifest
-# without an explicit digest field in the JSON body), we fall back to the
-# first sha256 found via grep-o — matching the writer in build-container.sh:272
-# for backward compatibility.
-#
-# For fixture-based testing, set PROBE_CMD to a function/script that reads
-# a pre-captured manifest JSON from a file named after the image ref.
+# For fixture-based testing, set PROBE_CMD to a function/script that accepts
+# image_ref as $1 and outputs the `{{json .Manifest}}` JSON on stdout.
 # ---------------------------------------------------------------------------
 _probe_digest() {
     local image_ref="$1"
     local raw
     local probe_stderr
     local probe_exit=0
+    local safe_ref
+    safe_ref=$(_escape_gha_command "$image_ref")
 
     if [[ -n "${PROBE_CMD:-}" ]]; then
         # Stub: PROBE_CMD is a function/path that accepts image_ref as $1
@@ -100,39 +121,34 @@ _probe_digest() {
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             rm -f "$probe_stderr"
-            [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$image_ref" "$err_detail" >&2
+            [[ -n "$err_detail" ]] && printf '::error::probe-cmd-error for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             return 1
         fi
         rm -f "$probe_stderr"
     else
         probe_stderr=$(mktemp)
-        raw=$(docker manifest inspect "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        raw=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
             rm -f "$probe_stderr"
-            printf '::error::docker manifest inspect failed for %s: %s\n' "$image_ref" "$err_detail" >&2
+            printf '::error::imagetools inspect failed for %s: %s\n' "$safe_ref" "$(_escape_gha_command "$err_detail")" >&2
             return 1
         fi
         rm -f "$probe_stderr"
     fi
 
     if [[ -z "$raw" ]]; then
-        printf '::error::docker manifest inspect returned empty output for %s\n' "$image_ref" >&2
+        printf '::error::imagetools inspect returned empty output for %s\n' "$safe_ref" >&2
         return 1
     fi
 
-    # Extract image-index digest: prefer top-level .digest (explicit, order-independent)
+    # Extract image-index digest: .digest from the OCI index descriptor JSON
     local digest
     digest=$(printf '%s' "$raw" | jq -r '.digest // empty' 2>/dev/null || true)
 
-    # Fallback: grep-o for single-arch manifests without top-level .digest
     if [[ -z "$digest" ]]; then
-        digest=$(printf '%s' "$raw" | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
-    fi
-
-    if [[ -z "$digest" ]]; then
-        printf '::error::could not extract digest from manifest for %s\n' "$image_ref" >&2
+        printf '::error::could not extract digest from manifest for %s\n' "$safe_ref" >&2
         return 1
     fi
 
@@ -200,7 +216,7 @@ for lineage_file in "${lineage_files[@]}"; do
     # Parse required fields
     container=$(jq -re '.container // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$container" ]]; then
-        echo "::warning::Skipping $basename_file: missing 'container' field" >&2
+        printf '::warning::Skipping %s: missing '\''container'\'' field\n' "$(_escape_gha_command "$basename_file")" >&2
         continue
     fi
 
@@ -219,13 +235,14 @@ for lineage_file in "${lineage_files[@]}"; do
         fi
     fi
     if ! grep -qxF "$container" <<<"$_valid_containers"; then
-        echo "::warning::Skipping $basename_file: invalid container name '$container' (not in ./make list)" >&2
+        printf '::warning::Skipping %s: invalid container name '\''%s'\'' (not in ./make list)\n' \
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
         continue
     fi
 
     variant_tag=$(jq -re '.tag // empty' "$lineage_file" 2>/dev/null || true)
     if [[ -z "$variant_tag" ]]; then
-        echo "::warning::Skipping $basename_file: missing 'tag' field" >&2
+        printf '::warning::Skipping %s: missing '\''tag'\'' field\n' "$(_escape_gha_command "$basename_file")" >&2
         continue
     fi
 
@@ -243,12 +260,42 @@ for lineage_file in "${lineage_files[@]}"; do
     # Determine status
     # ---------------------------------------------------------------------------
 
-    # Skip if base_image_ref is unresolved (placeholder from pre-#530 lineage).
-    # Must precede the legacy check: a file with ${...} in base_image_ref and
-    # no recorded digest would otherwise be mis-classified as "legacy" and
-    # generate a bogus drift PR.
+    # Fix 4 (baseline-only precedence):
+    # In --baseline-only mode the goal is to baseline ALL pre-v2 entries, including
+    # ones where base_image_ref still contains a placeholder.  So legacy-emit takes
+    # precedence over the placeholder-skip in baseline mode.
+    #
+    # In normal (cron) mode the placeholder-skip MUST run first: a file with ${...}
+    # in base_image_ref and no recorded digest must not be mis-classified as legacy
+    # and trigger a bogus drift PR.
+    if [[ "$BASELINE_ONLY" == "true" ]]; then
+        # Baseline mode: emit legacy first (even for placeholder refs)
+        if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
+            safe_ref=$(_sanitize_for_json "${base_image_ref:-unknown}")
+            variant_json=$(jq -cn \
+                --arg variant_tag  "$variant_tag" \
+                --arg base_ref     "$safe_ref" \
+                --arg status       "legacy" \
+                '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
+            _container_variants["$container"]+="${variant_json}"$'\n'
+            continue
+        fi
+
+        # Skip if base_image_ref is a placeholder (non-legacy entry with unresolved ref)
+        if [[ "$base_image_ref" =~ \$ ]]; then
+            printf '::warning::Skipping %s: base_image_ref contains unresolved placeholder: %s\n' \
+                "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$base_image_ref")" >&2
+            continue
+        fi
+
+        # In baseline-only mode, suppress real drift records for fully-resolved entries
+        continue
+    fi
+
+    # Normal mode: placeholder-skip runs before legacy check to prevent mis-classification
     if [[ "$base_image_ref" =~ \$ ]]; then
-        echo "::warning::Skipping $basename_file: base_image_ref contains unresolved placeholder: $base_image_ref" >&2
+        printf '::warning::Skipping %s: base_image_ref contains unresolved placeholder: %s\n' \
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$base_image_ref")" >&2
         continue
     fi
 
@@ -260,25 +307,14 @@ for lineage_file in "${lineage_files[@]}"; do
             --arg base_ref     "$safe_ref" \
             --arg status       "legacy" \
             '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
-
-        if [[ "$BASELINE_ONLY" == "true" ]]; then
-            # In baseline mode, emit legacy records
-            _container_variants["$container"]+="${variant_json}"$'\n'
-        else
-            # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
-            _container_variants["$container"]+="${variant_json}"$'\n'
-        fi
+        # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
+        _container_variants["$container"]+="${variant_json}"$'\n'
         continue
     fi
 
     # Skip if no base_image_ref
     if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
-        echo "::warning::Skipping $basename_file: base_image_ref is unknown" >&2
-        continue
-    fi
-
-    # In baseline-only mode, suppress real drift records
-    if [[ "$BASELINE_ONLY" == "true" ]]; then
+        printf '::warning::Skipping %s: base_image_ref is unknown\n' "$(_escape_gha_command "$basename_file")" >&2
         continue
     fi
 
@@ -291,7 +327,7 @@ for lineage_file in "${lineage_files[@]}"; do
 
     if [[ "$probe_failed" == "true" || -z "$current_digest" ]]; then
         error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
-        printf '::error::probe-error: %s\n' "$error_reason" >&2
+        printf '::error::probe-error: %s\n' "$(_escape_gha_command "$error_reason")" >&2
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
         safe_error=$(_sanitize_for_json "$error_reason")
@@ -308,7 +344,8 @@ for lineage_file in "${lineage_files[@]}"; do
 
     # Validate digest shape (injection prevention)
     if ! _validate_digest_shape "$current_digest"; then
-        echo "::error::Registry returned malformed digest for $base_image_ref: '$current_digest' — refusing to emit record" >&2
+        printf '::error::Registry returned malformed digest for %s: '\''%s'\'' — refusing to emit record\n' \
+            "$(_escape_gha_command "$base_image_ref")" "$(_escape_gha_command "$current_digest")" >&2
         exit 1
     fi
 
@@ -367,7 +404,8 @@ for container in "${_container_order[@]}"; do
 
     # Validate the variants array is valid JSON
     if ! printf '%s' "$variants_array" | jq '.' >/dev/null 2>&1; then
-        echo "::warning::Skipping container '$container': could not build valid variants JSON" >&2
+        printf '::warning::Skipping container '\''%s'\'': could not build valid variants JSON\n' \
+            "$(_escape_gha_command "$container")" >&2
         continue
     fi
 

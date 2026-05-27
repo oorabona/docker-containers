@@ -267,9 +267,15 @@ _resolve_base_image() {
     fi
 
     # Resolve digest if we have a concrete image reference
+    # Use `docker buildx imagetools inspect --format '{{json .Manifest}}'` to obtain
+    # the IMAGE-INDEX (manifest-list) digest.  This is the same digest that
+    # detect-base-digest-drift.sh probes, so writer and probe always agree on
+    # multi-arch images.  The previous `docker manifest inspect | grep sha256 | head -1`
+    # pattern was order-dependent and could return a per-arch child digest instead
+    # of the index digest — causing a perpetual drift-PR loop.
     _BASE_DIGEST=""
     if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
-        _BASE_DIGEST=$(docker manifest inspect "$_BASE_IMAGE_REF" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+        _BASE_DIGEST=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$_BASE_IMAGE_REF" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
         if [[ -n "$_BASE_DIGEST" ]]; then
             # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
             printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
