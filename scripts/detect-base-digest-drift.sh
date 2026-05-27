@@ -219,17 +219,17 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Fix 3 (gate r9): Reject container names with control characters BEFORE the
-    # grep -qxF check.  A value like $'ansible\nmalicious' contains a newline which
-    # grep -xF treats as TWO patterns, so "ansible" matches and "malicious" passes
-    # validation silently.  Explicit cntrl-char rejection closes that bypass.
+    # Control-character rejection — MUST be BEFORE any validation or caching.
+    # A value like $'ansible\nmalicious' contains a newline which grep -xF treats
+    # as TWO patterns, so "ansible" matches and "malicious" passes validation silently.
+    # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
         printf '::warning::Rejecting lineage entry %s: container name contains control chars: %s\n' \
             "$(_escape_gha_command "$basename_file")" "$(printf '%q' "$container")" >&2
         continue
     fi
 
-    # Validate container name against canonical list (Fix 1: poisoning prevention)
+    # Validate container name against canonical list (poisoning prevention)
     # A corrupted entry (e.g. container: "docs", container: ".github", or a path
     # with "/") could otherwise cause the bot to act on non-container directories.
     #
@@ -263,7 +263,7 @@ for lineage_file in "${lineage_files[@]}"; do
     # Applied here so every downstream use of $variant_tag_safe is already clean.
     variant_tag_safe=$(_escape_gha_command "$variant_tag")
 
-    # Fix 1 (gate r9, NON-TERMINATING BUG): filter to active build-matrix tags only.
+    # Filter to active build-matrix tags only.
     # Stale lineage files for dropped/non-retained tags persist in the cache after
     # rotation.  Without this filter each cron run re-detects drift on them, opens a
     # PR, the PR rebuild only updates current retained tags → stale lineage unchanged
@@ -281,13 +281,23 @@ for lineage_file in "${lineage_files[@]}"; do
         if [[ -n "${!_override_var:-}" ]]; then
             printf -v "$_active_tags_var" '%s' "${!_override_var}"
         else
-            _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null \
-                | jq -r '.[].tag // empty' 2>/dev/null | sort -u || true)
+            # list-builds must succeed; on failure abort rather than silently skip
+            # the stale-lineage filter (which would disable drift detection for all
+            # variants of this container).
+            if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
+                printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
+                exit 2
+            fi
+            _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
+            if [[ -z "$_fetched" ]]; then
+                printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
+                exit 2
+            fi
             printf -v "$_active_tags_var" '%s' "$_fetched"
         fi
     fi
     _active_tags="${!_active_tags_var}"
-    if [[ -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+    if ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
         printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
             "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
         continue
