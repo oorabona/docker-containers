@@ -1013,7 +1013,7 @@ CURL_NL
     [ "$rc" -eq 0 ]
     echo "$out" | grep -qx 'amd64:600'
     # unknown platform must NOT appear in output.
-    ! echo "$out" | grep -q 'unknown'
+    if echo "$out" | grep -q 'unknown'; then echo "FAIL: 'unknown' found in output"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1112,7 +1112,7 @@ CURL_FAIL
     [[ -n "$_GHCR_IDX_BODY" ]]
 
     # Curl must NOT have been called.
-    ! grep -q 'CURL_CALLED_UNEXPECTEDLY' "$CALLS"
+    if grep -q 'CURL_CALLED_UNEXPECTEDLY' "$CALLS"; then echo "FAIL: curl called unexpectedly"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1223,65 +1223,92 @@ CURL_PERARCH_FAIL
     echo "$out" | grep -qx 'arm64:750'
 
     # Neither arch must have triggered a network fetch.
-    ! grep -q 'PERARCH_FETCHED_UNEXPECTEDLY' "$CALLS"
+    if grep -q 'PERARCH_FETCHED_UNEXPECTEDLY' "$CALLS"; then echo "FAIL: per-arch fetch triggered unexpectedly"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
-# r6-test-1 (Defect A): _ghcr_fetch_index with digestless header cache file
-# must return 0 (trust cache) rather than aborting under set -euo pipefail.
+# r6-test-1 (r8 update): _ghcr_fetch_index with digestless header cache file
+# must evict the stale entry and refetch from the network (new security
+# invariant: cache entries without a verifiable Docker-Content-Digest are
+# treated as stale/unverifiable — not trusted).
 #
-# Regression guard: the grep|sed|tr|head pipeline on Docker-Content-Digest was
-# not guarded with || true.  Under set -euo pipefail an older cache file that
-# lacked the header caused grep to exit 1, aborting the function before the
-# "no verifiable digest → trust the cache" guard could run.
+# Regression guard: confirms the r8 fix handles the "no digest = evict +
+# refetch" path correctly under set -euo pipefail, and that the function still
+# returns 0 (data available from network) rather than failing.
 # ---------------------------------------------------------------------------
 
-@test "r6: digestless cache header returns 0 under set -euo pipefail (Defect A)" {
+@test "r6: digestless cache header evicts and refetches under set -euo pipefail (r8 security fix)" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
     # Pre-seed cache: body present, headers WITHOUT Docker-Content-Digest line
-    # (simulates a cache file written before the r4 verify-on-hit fix landed).
+    # (simulates a legacy cache file written before the r4 verify-on-hit fix).
     local idx_key
     idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
     local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
     local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
     mkdir -p "$GHCR_CACHE_DIR"
-    printf '%s\n' "$_OCI_INDEX" > "$body_file"
+    printf 'STALE_DIGESTLESS_BODY\n' > "$body_file"
     # No Docker-Content-Digest header — digestless header file.
     printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n' \
         > "$hdrs_file"
 
-    # Replace curl shim with a fail-fast one: if the cache hit path aborts and
-    # falls through to the network branch, this sentinel fires.
-    cat > "${WORK_DIR}/bin/curl" << 'CURL_NOSIG'
+    # Replace curl shim with one that records it was called and returns a
+    # fresh valid response (with a short non-64-char digest so the network
+    # path caches successfully without triggering verification).
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_FRESH'
 #!/usr/bin/env bash
-echo "CURL_CALLED_UNEXPECTEDLY" >> "$CALLS"
+echo "CURL_CALLED_R6" >> "$CALLS"
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
 exit 1
-CURL_NOSIG
+CURL_FRESH
     chmod +x "${WORK_DIR}/bin/curl"
 
     # Run under set -euo pipefail inside a subshell to isolate exit semantics.
-    run bash -c '
+    local r6_stdout_log="${WORK_DIR}/r6_stdout.log"
+    local r6_stderr_log="${WORK_DIR}/r6_stderr.log"
+    bash -c '
         set -euo pipefail
         source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
         source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
 
-        # Inject the pre-seeded cache dir.
+        # Inject the pre-seeded cache dir and CALLS file.
         export GHCR_CACHE_DIR="'"$GHCR_CACHE_DIR"'"
+        export CALLS="'"$CALLS"'"
 
         _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token"
         echo "RC=$?"
         if [[ -n "$_GHCR_IDX_BODY" ]]; then echo "BODY_POPULATED"; fi
-    '
+        if [[ "$_GHCR_IDX_BODY" != *"STALE_DIGESTLESS_BODY"* ]]; then echo "FRESH_BODY_USED"; fi
+    ' > "$r6_stdout_log" 2> "$r6_stderr_log"
+    local r6_rc=$?
 
-    # Must exit 0: digestless header → trust cache → function returns 0.
-    [ "$status" -eq 0 ]
-    echo "$output" | grep -q 'RC=0'
-    echo "$output" | grep -q 'BODY_POPULATED'
+    # Must exit 0: digestless header → evict + refetch → fresh body returned.
+    [ "$r6_rc" -eq 0 ]
+    grep -q 'RC=0' "$r6_stdout_log"
+    grep -q 'BODY_POPULATED' "$r6_stdout_log"
+    grep -q 'FRESH_BODY_USED' "$r6_stdout_log"
 
-    # Curl must NOT have been called (cache hit path served the response).
-    ! grep -q 'CURL_CALLED_UNEXPECTEDLY' "$CALLS"
+    # Curl MUST have been called (evict + refetch path, not trust-cache).
+    if ! grep -q 'CURL_CALLED_R6' "$CALLS"; then echo "FAIL: curl was not called — stale cache was trusted"; return 1; fi
+
+    # Eviction warning must have been emitted on stderr.
+    if ! grep -q 'evicted' "$r6_stderr_log"; then echo "FAIL: no eviction warning emitted"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1383,13 +1410,15 @@ CURL_NOSIG
 # "no header stored").
 # ---------------------------------------------------------------------------
 
-@test "r7-A: malformed multi-sha256 header rejected — cache hit falls through to trust-cache" {
+@test "r7-A: malformed multi-sha256 header rejected — strict parser evicts and refetches (r8 security fix)" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
     # Pre-seed cache: body with known sha256, headers carry a MALFORMED digest
     # containing two sha256 tokens — the old greedy parser would extract the
-    # second (attacker-controlled) token; the strict parser must reject it.
+    # second (attacker-controlled) token; the strict parser must reject it
+    # (cached_expected="").  Under the r8 security invariant, a rejected
+    # (unverifiable) digest is treated the same as missing: evict + refetch.
     local idx_key
     idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
     local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
@@ -1399,38 +1428,50 @@ CURL_NOSIG
     # Body content doesn't matter for this test — we just need a non-empty file.
     printf '%s\n' "$_OCI_INDEX" > "$body_file"
 
-    # Malformed header: two sha256 tokens.  The second token is all-zeros and
-    # would NOT match the body's real sha256.  With the old greedy parser this
-    # would extract the all-zeros token and the length-64 guard would pass,
-    # leading to a mismatch and spurious eviction.  With the strict parser,
-    # the whole header is rejected (cached_expected="") and verification is
-    # skipped — the file is served directly (trust-cache path).
+    # Malformed header: two sha256 tokens concatenated without space separator.
+    # The strict regex rejects this (cached_expected="") → unverifiable → evict.
     printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2sha256:0000000000000000000000000000000000000000000000000000000000000000\r\n\r\n' \
         > "$hdrs_file"
 
-    # Replace curl with a shim that fails — it must NOT be called because the
-    # strict parser falls through to trust-cache (not to a network re-fetch).
-    cat > "${WORK_DIR}/bin/curl" << 'CURL_FAIL_R7A'
+    # Replace curl shim with one that records it was called and returns a fresh
+    # valid response (short non-64-char digest so caching succeeds).
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_FRESH_R7A'
 #!/usr/bin/env bash
-echo "CURL_CALLED_UNEXPECTEDLY_R7A" >> "$CALLS"
+echo "CURL_CALLED_R7A" >> "$CALLS"
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
 exit 1
-CURL_FAIL_R7A
+CURL_FRESH_R7A
     chmod +x "${WORK_DIR}/bin/curl"
 
     local fetch_rc=0
     local stderr_log="${WORK_DIR}/r7a_stderr.log"
     _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
 
-    # Must succeed: malformed header → no verification → trust cache.
+    # Must succeed: malformed header → strict parser rejects → evict + refetch → fresh body.
     [ "$fetch_rc" -eq 0 ]
 
-    # Curl must NOT have been called (trust-cache path, not network re-fetch).
-    ! grep -q 'CURL_CALLED_UNEXPECTEDLY_R7A' "$CALLS"
+    # Curl MUST have been called (evict + refetch, not trust-cache).
+    if ! grep -q 'CURL_CALLED_R7A' "$CALLS"; then echo "FAIL: curl was not called — malformed cache was trusted"; return 1; fi
 
-    # No eviction warning — malformed header means we skip verification entirely.
-    ! grep -q 'evicted' "$stderr_log"
+    # Eviction warning must have been emitted.
+    if ! grep -q 'evicted' "$stderr_log"; then echo "FAIL: no eviction warning emitted"; return 1; fi
 
-    # _GHCR_IDX_BODY must be populated from the cached file.
+    # _GHCR_IDX_BODY must be populated from the fresh network response.
     [[ -n "$_GHCR_IDX_BODY" ]]
 }
 
@@ -1462,4 +1503,87 @@ CURL_FAIL_R7A
     [[ "$clean_stderr" != *"No such file or directory"* ]] || clean_caught=1
 
     [ "$clean_caught" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# r8: corrupted-hdrs poison-eviction regression
+#
+# Security regression guard for Defect A (r8 fix): an attacker who can write
+# to GHCR_CACHE_DIR pre-populates the body with poisoned bytes and removes the
+# Docker-Content-Digest line from the headers file.  The r8 fix must:
+#   1. Detect the missing digest in the cached headers.
+#   2. Evict both cache files.
+#   3. Emit an ::warning:: to stderr.
+#   4. Fall through to a network refetch and return the FRESH (non-poisoned) body.
+#
+# This proves the attack vector is closed: missing digest ≠ trust cache.
+# ---------------------------------------------------------------------------
+
+@test "r8: corrupted-hdrs (no digest) → evict + refetch, poison not served" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-seed cache with a poisoned body and a headers file missing the
+    # Docker-Content-Digest line (simulates attacker-controlled cache dir).
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    mkdir -p "$GHCR_CACHE_DIR"
+    printf 'POISONED_CONTENT_INJECTED_BY_ATTACKER\n' > "$body_file"
+    # Headers deliberately lack Docker-Content-Digest — the attack relies on
+    # the old code's "no digest → trust" branch.
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n' \
+        > "$hdrs_file"
+
+    # Fresh-response curl shim: records it was called, returns valid OCI index.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_FRESH_R8'
+#!/usr/bin/env bash
+echo "CURL_CALLED_R8" >> "$CALLS"
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_FRESH_R8
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local fetch_rc=0
+    local stderr_log="${WORK_DIR}/r8_stderr.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
+
+    # Must succeed overall — fresh data available from network.
+    [ "$fetch_rc" -eq 0 ]
+
+    # Network refetch MUST have occurred — poisoned cache was evicted.
+    if ! grep -q 'CURL_CALLED_R8' "$CALLS"; then echo "FAIL: curl was not called — poisoned cache was trusted"; return 1; fi
+
+    # Eviction warning must have been emitted on stderr.
+    if ! grep -q 'evicted' "$stderr_log"; then echo "FAIL: no eviction warning emitted"; return 1; fi
+
+    # Returned body must be the FRESH response, NOT the poisoned bytes.
+    if [[ "$_GHCR_IDX_BODY" == *"POISONED_CONTENT_INJECTED_BY_ATTACKER"* ]]; then
+        echo "FAIL: poisoned body was served to caller"; return 1
+    fi
+    [[ -n "$_GHCR_IDX_BODY" ]]
+
+    # Cache files must have been evicted (replaced by the fresh network write).
+    # The body file will be rewritten with fresh content; verify it's not poison.
+    if [[ -f "$body_file" ]]; then
+        if grep -q 'POISONED_CONTENT_INJECTED_BY_ATTACKER' "$body_file"; then
+            echo "FAIL: poisoned body still in cache after refetch"; return 1
+        fi
+    fi
 }

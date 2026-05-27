@@ -218,9 +218,12 @@ _ghcr_fetch_index() {
             # length), cached_expected stays "" → length guard below skips
             # verification → falls through to trust-cache path (same as no header).
         fi
-        # Only verify when we have a full 64-char lowercase hex digest.
-        # A short/invalid value (e.g. the default shim's "sha256:idx") means
-        # no real digest was stored — skip verification and trust the file.
+        # Only trust the cache when we have a full 64-char lowercase hex digest to
+        # verify against.  A missing, malformed, or short digest (e.g. the default
+        # shim's "sha256:idx", or a tampered/truncated hdrs file) means the entry
+        # is unverifiable — treat as stale, evict, and fall through to a network
+        # refetch.  Self-healing: legacy cache files written before the r4 verify
+        # fix refetch once and become verifiable on the next hit.
         if [[ "${#cached_expected}" -eq 64 ]]; then
             if _ghcr_verify_content_digest "$body_file" "$cached_expected"; then
                 _GHCR_IDX_BODY="$(cat "$body_file")"
@@ -231,10 +234,11 @@ _ghcr_fetch_index() {
             rm -f "$body_file" "$hdrs_file" 2>/dev/null || true
             echo "::warning::Cached index body content-digest mismatch; evicted, refetching ${image_path}:${tag}" >&2
         else
-            # No verifiable digest → trust the cached file (same as original behavior).
-            _GHCR_IDX_BODY="$(cat "$body_file")"
-            _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
-            return 0
+            # No verifiable digest (missing, malformed, or short) → evict and refetch.
+            # Trusting an unverifiable entry would let an attacker who can write to
+            # GHCR_CACHE_DIR serve poisoned content by simply removing the digest line.
+            rm -f "$body_file" "$hdrs_file" 2>/dev/null || true
+            echo "::warning::Cached index lacks verifiable Docker-Content-Digest; evicted, refetching ${image_path}:${tag}" >&2
         fi
     fi
 
