@@ -1260,6 +1260,19 @@ jobs:
             exit 1
           fi
 
+          # Scope to requested container when workflow_dispatch.inputs.container is set.
+          # Older jobs in this workflow already honor this input; apply the same
+          # filter here so a manual run for one container does not fan out drift
+          # PRs across all drifting containers.
+          if [[ -n "${{ inputs.container }}" ]]; then
+            drift_json=$(echo "$drift_json" | jq --arg c "${{ inputs.container }}" '[.[] | select(.container == $c)]')
+            if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
+              echo "::notice::No drift detected for requested container ${{ inputs.container }}"
+              echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           # Extract container names with actionable drift (drift or legacy status)
           drift_containers=$(echo "$drift_json" | jq -c \
             '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
