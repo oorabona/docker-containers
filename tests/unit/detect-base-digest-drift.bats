@@ -2744,3 +2744,103 @@ pathlib.Path('${lineage_dir}/foo-1.0.json').write_text(json.dumps(d))
     # We assert: no line in the output starts with ::add-mask::
     ! printf '%s' "$stderr_output" | grep -qE '^::add-mask::'
 }
+
+# ---------------------------------------------------------------------------
+# r27-B: dash-prefix option injection in _validate_image_ref
+#
+# A base_image_ref starting with '-' must be rejected by _validate_image_ref.
+# Without the guard, refs like '-h', '--config /tmp/x', or '-foo:1.0' flow to
+# `docker buildx imagetools inspect ... "${image_ref}"` (or the PROBE_CMD stub)
+# as positional arguments that begin with '-' — option injection.
+# Belt-and-suspenders: the validation guard rejects these before the probe call;
+# the `--` separator at the call site provides the second defence layer.
+# Mutation guard: removing `[[ "$ref" == -* ]] && return 1` from
+# _validate_image_ref → probe would be called → test fails.
+# ---------------------------------------------------------------------------
+
+_r27b_lineage_with_ref() {
+    # Write a lineage file with the given base_image_ref into a scratch dir.
+    # Args: <lineage_dir> <ref_value>
+    local lineage_dir="$1"
+    local ref="$2"
+    mkdir -p "$lineage_dir"
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "foo",' \
+        '  "tag": "1.0",' \
+        "  \"base_image_ref\": \"${ref}\"," \
+        '  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        '}' > "$lineage_dir/foo-1.0.json"
+}
+
+@test "r27-B1: _validate_image_ref rejects '-h' (short option injection)" {
+    local lineage_dir="$TEST_TEMP_DIR/r27b1/.build-lineage"
+    _r27b_lineage_with_ref "$lineage_dir" "-h"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r27b1-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on dash-prefix ref" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r27b1-stderr.txt") || rc=$?
+
+    [ "$rc" -eq 0 ]
+    # Probe must NOT have been called (ref rejected before registry call)
+    run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b1-stderr.txt"
+    [ "$output" = "0" ]
+    # Result must be empty array (no drift record for rejected ref)
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+@test "r27-B2: _validate_image_ref rejects '--config' (long option injection)" {
+    local lineage_dir="$TEST_TEMP_DIR/r27b2/.build-lineage"
+    _r27b_lineage_with_ref "$lineage_dir" "--config"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r27b2-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on --config ref" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r27b2-stderr.txt") || rc=$?
+
+    [ "$rc" -eq 0 ]
+    run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b2-stderr.txt"
+    [ "$output" = "0" ]
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+@test "r27-B3: _validate_image_ref rejects '-foo:1.0' (dash-prefix with tag)" {
+    local lineage_dir="$TEST_TEMP_DIR/r27b3/.build-lineage"
+    _r27b_lineage_with_ref "$lineage_dir" "-foo:1.0"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r27b3-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on -foo:1.0 ref" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r27b3-stderr.txt") || rc=$?
+
+    [ "$rc" -eq 0 ]
+    run grep -c "PROBE CALLED" "$TEST_TEMP_DIR/r27b3-stderr.txt"
+    [ "$output" = "0" ]
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}

@@ -64,20 +64,27 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# r25-B: idempotent same-day section — skip-if-present (gate r25, Defect B)
-# Running the script twice for the same container on the same day must not
-# produce duplicate ## base-digest-drift sections in LAST_REBUILD.md, because
-# compute_build_digest hashes the file and each duplicate would retrigger CI.
+# r25-B / r27-C: idempotent same-day section — content-hash dedupe
+#
+# Gate r25, Defect B introduced skip-if-present on the section heading.
+# Gate r27, Defect C replaces heading-only dedupe with content-hash dedupe:
+# the heading alone caused a false negative when a second legitimate drift
+# event (different variants) occurred on the same UTC day after the first
+# drift PR had already been merged → script skipped → no rebuild trigger.
+#
+# Fix: embed <!-- drift-content-hash: <16-hex> --> above the heading.
+# Same content → same hash → idempotent skip preserved.
+# Different content → different hash → both sections appended.
 # ---------------------------------------------------------------------------
 
-# Helper: build a hermetic fake project directory for r25-B tests.
+# Helper: build a hermetic fake project directory for r25-B / r27-C tests.
 # Uses _ULR_PROJECT_ROOT_OVERRIDE and _ULR_VALID_CONTAINERS_OVERRIDE test hooks to
 # avoid spawning the real ./make or writing into the real project tree.
 _setup_r25b_project() {
     local base="$TEST_TEMP_DIR/r25b"
     mkdir -p "$base/mycontainer"
 
-    # Drift JSON for mycontainer with one drifted variant
+    # Drift JSON for mycontainer with one drifted variant (content-A)
     printf '%s' '[
       {
         "container": "mycontainer",
@@ -96,7 +103,27 @@ _setup_r25b_project() {
     printf '%s' "$base"
 }
 
-@test "r25-B1: running script twice same day produces exactly one section in LAST_REBUILD.md" {
+# Helper: second distinct drift JSON (content-B) for same container + same day.
+# Uses a different variant tag and digests to produce a different content-hash.
+_setup_r27c_project_b() {
+    local base="$1"
+    printf '%s' '[
+      {
+        "container": "mycontainer",
+        "variants": [
+          {
+            "variant_tag": "2.0",
+            "base_image_ref": "alpine:3.21",
+            "recorded_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "current_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "status": "drift"
+          }
+        ]
+      }
+    ]' > "$base/drift-b.json"
+}
+
+@test "r25-B1: running script twice same day with IDENTICAL drift produces exactly one section" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -111,7 +138,7 @@ _setup_r25b_project() {
         bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
         < "$fake_project/drift.json" 2>/dev/null
 
-    # Second run (simulates workflow retry)
+    # Second run (simulates workflow retry with same content)
     _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
     _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
         bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
@@ -120,13 +147,13 @@ _setup_r25b_project() {
     local target="$fake_project/mycontainer/LAST_REBUILD.md"
     [ -f "$target" ]
 
-    # Count occurrences of the heading — must be exactly 1
+    # Count occurrences of the heading — must be exactly 1 (idempotency preserved)
     local count
     count=$(grep -cxF -- "$heading" "$target")
     [ "$count" -eq 1 ]
 }
 
-@test "r25-B1-notice: second run emits ::notice:: about skipping" {
+@test "r25-B1-notice: second run with same content emits ::notice:: about skipping" {
     local fake_project
     fake_project=$(_setup_r25b_project)
 
@@ -148,7 +175,70 @@ _setup_r25b_project() {
     ) || rc=$?
 
     [ "$rc" -eq 0 ]
-    printf '%s' "$stderr_output" | grep -qF "already present"
+    # r27-C: skip message changed from "already present" to "already recorded"
+    printf '%s' "$stderr_output" | grep -qF "already recorded"
+}
+
+# ---------------------------------------------------------------------------
+# r27-C: two invocations same day with DIFFERENT drift content → 2 sections
+# Regression test for the false-negative path Copilot identified:
+# drift A merges in the morning → LAST_REBUILD.md updated → rebuild →
+# drift B (different variants) occurs same day → r25 heading-only dedupe
+# would skip → no file change → no PR trigger → silent false negative.
+# With content-hash dedupe the different-content event appends a new section.
+# ---------------------------------------------------------------------------
+@test "r27-C1: same day different drift content produces two distinct sections" {
+    local fake_project
+    fake_project=$(_setup_r25b_project)
+    _setup_r27c_project_b "$fake_project"
+
+    local kind="base-digest-drift"
+    local today
+    today="$(date -u +%Y-%m-%d)"
+    local heading="## ${kind} (${today})"
+
+    # First run — drift event A (variant 1.0)
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    # Second run — drift event B (variant 2.0, different digests)
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift-b.json" 2>/dev/null
+
+    local target="$fake_project/mycontainer/LAST_REBUILD.md"
+    [ -f "$target" ]
+
+    # Both headings must be present (2 sections for same-day different events)
+    local count
+    count=$(grep -cxF -- "$heading" "$target")
+    [ "$count" -eq 2 ]
+
+    # Two distinct hash markers must be present
+    local hash_count
+    hash_count=$(grep -c 'drift-content-hash:' "$target")
+    [ "$hash_count" -eq 2 ]
+}
+
+@test "r27-C2: first section contains hash marker above the heading" {
+    local fake_project
+    fake_project=$(_setup_r25b_project)
+
+    local kind="base-digest-drift"
+
+    _ULR_PROJECT_ROOT_OVERRIDE="$fake_project" \
+    _ULR_VALID_CONTAINERS_OVERRIDE="mycontainer" \
+        bash "$UPDATE_SCRIPT" "mycontainer" "$kind" \
+        < "$fake_project/drift.json" 2>/dev/null
+
+    local target="$fake_project/mycontainer/LAST_REBUILD.md"
+    [ -f "$target" ]
+
+    # File must contain an HTML comment with the hash marker
+    grep -qF '<!-- drift-content-hash:' "$target"
 }
 
 @test "r25-B2: warning emission for invalid container escapes %0A via _escape_gha_command" {

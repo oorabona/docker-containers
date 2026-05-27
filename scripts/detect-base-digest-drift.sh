@@ -137,7 +137,9 @@ _probe_digest() {
             return 1
         fi
     else
-        raw=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        # `--` separates options from the image ref: belt-and-suspenders against
+        # dash-prefix option injection if a poisoned ref slips past _validate_image_ref.
+        raw=$(docker buildx imagetools inspect --format '{{json .Manifest}}' -- "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
@@ -217,6 +219,14 @@ _sanitize_for_json() {
 # ---------------------------------------------------------------------------
 _validate_image_ref() {
     local ref="$1"
+
+    # Reject refs starting with '-' — a dash-prefix ref would be treated as a
+    # CLI option by `docker buildx imagetools inspect` (and similar tools) even
+    # with quoted expansion, unless a `--` separator is present at the call site.
+    # Belt-and-suspenders: reject here AND use `--` at the call site (line ~140).
+    # Without this guard, `-h` triggers help output and `--config /tmp/x` swaps
+    # the Docker config — option injection via poisoned lineage entries.
+    [[ "$ref" == -* ]] && return 1
 
     # Reject refs starting with '/' — first_segment would be empty, which
     # falls through the OCI registry-host check with no meaningful value.

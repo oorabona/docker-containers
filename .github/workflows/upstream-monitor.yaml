@@ -1220,6 +1220,11 @@ jobs:
 
       - name: Detect drift
         id: detect
+        env:
+          # SECURITY: user-supplied workflow_dispatch input exposed via env-block
+          # to prevent GHA expression injection in the run: shell body.
+          # Never reference ${{ inputs.container }} inside run: directly.
+          REQUESTED_CONTAINER: ${{ inputs.container }}
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
           detect_rc=0
@@ -1264,10 +1269,22 @@ jobs:
           # Older jobs in this workflow already honor this input; apply the same
           # filter here so a manual run for one container does not fan out drift
           # PRs across all drifting containers.
-          if [[ -n "${{ inputs.container }}" ]]; then
-            drift_json=$(echo "$drift_json" | jq --arg c "${{ inputs.container }}" '[.[] | select(.container == $c)]')
+          #
+          # SECURITY: inputs.container is a workflow_dispatch user-supplied string.
+          # Interpolating ${{ inputs.container }} directly inside the shell body of
+          # a `run:` block allows injection — a value like `foo" ]]; then cmd; #`
+          # is substituted BEFORE bash parses the script.  Canonical GHA mitigation:
+          # expose via `env:` (set above as REQUESTED_CONTAINER) so the value is
+          # treated as data, never as code.  See OWASP / GitHub security hardening
+          # docs on "Untrusted input in workflow expressions".
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
             if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
-              echo "::notice::No drift detected for requested container ${{ inputs.container }}"
+              # Escape for GHA ::notice:: — %0A in value would inject a new command.
+              _escaped_container="${REQUESTED_CONTAINER//%/%25}"
+              _escaped_container="${_escaped_container//$'\n'/%0A}"
+              _escaped_container="${_escaped_container//$'\r'/%0D}"
+              echo "::notice::No drift detected for requested container ${_escaped_container}"
               echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
               exit 0
             fi

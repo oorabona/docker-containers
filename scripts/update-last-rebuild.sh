@@ -177,19 +177,33 @@ if [[ ! -d "${PROJECT_ROOT}/${CONTAINER}" ]]; then
     exit 0
 fi
 
-# Idempotency: skip-if-present (gate r25, Defect B).
-# compute_build_digest hashes LAST_REBUILD.md; each duplicate section would
-# change the hash and retrigger smoke CI on workflow retries.  If today's
-# heading already exists, we no-op rather than append a duplicate.
-# Strategy chosen: skip-if-present (simpler than replace-in-place; body
-# content is informational and mid-day changes are rare operator-edit cases).
-if grep -qxF -- "$section_header" "$target_file" 2>/dev/null; then
-    echo "::notice::Same-day ${KIND} section already present in $target_file, skipping append" >&2
+# Idempotency: content-hash dedupe (gate r27, Defect C — replaces r25 heading-only dedupe).
+#
+# The r25 fix deduped on the `## base-digest-drift (YYYY-MM-DD)` heading alone.
+# False negative: if drift A merges in the morning → rebuild → then drift B
+# (different variants) occurs the same UTC day → the heading is already present →
+# script skipped → no file change → no PR/rebuild trigger for drift B.
+#
+# Fix: embed a SHA-256 content-hash of the drift section body as an HTML comment
+# ABOVE the heading.  Two invocations with identical drift content (same variants,
+# same digests) share the same hash → idempotent skip preserved.  Two invocations
+# with different content (even on the same day) produce different hashes → both
+# sections are appended.
+#
+# Hash scope: variant_lines only (the stable, injected-safe content derived from
+# drift JSON).  16 hex characters is sufficient; collision probability per
+# container per day is negligible.
+drift_content_hash=$(printf '%s\n' "${variant_lines}" | sha256sum | cut -d' ' -f1 | head -c 16)
+hash_marker="<!-- drift-content-hash: ${drift_content_hash} -->"
+
+if grep -qF -- "$hash_marker" "$target_file" 2>/dev/null; then
+    echo "::notice::Same drift event already recorded (hash ${drift_content_hash}), skipping append" >&2
     exit 0
 fi
 
 {
     printf '\n'
+    printf '%s\n' "$hash_marker"
     printf '%s\n' "$section_header"
     printf '\n'
     printf '%s\n' "$variant_lines"
