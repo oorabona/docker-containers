@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Tests for the per-arch manifest file-cache tier in ghcr_get_manifest_sizes
-# (helpers/registry-utils.sh).
+# and the content-digest verification layer in helpers/registry-utils.sh.
 #
 # All tests run offline: curl and gh are intercepted via a PATH shim that
 # emits canned bodies and appends a classification line to a CALLS counter
@@ -19,28 +19,39 @@
 # Fixture constants
 # ---------------------------------------------------------------------------
 
-# OCI index body: two arches, two deterministic digests.
-# NOTE: the loop splits on ':' so the digest is read as
-#   arch=amd64, digest_prefix=sha256, digest_hash=aaa...
+# Per-arch manifest bodies with known sha256 digests (no trailing newline
+# since the code captures via $() and writes via printf '%s').
+#   amd64: config 100 + layers 200+300 = total 600
+#     sha256: c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57
+#   arm64: config 150 + layers 250+350 = total 750
+#     sha256: 13fe4dc6162b562798c5b0b086a021e4169a4f546ff9159de84a5a7837d23439
+_PER_ARCH_MANIFEST_AMD64='{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
+_PER_ARCH_MANIFEST_ARM64='{"schemaVersion":2,"config":{"size":150},"layers":[{"size":250},{"size":350}]}'
+
+# Keep _PER_ARCH_MANIFEST as the amd64 body for backward compat with existing tests
+# that override it to inject a poison body.
+_PER_ARCH_MANIFEST="$_PER_ARCH_MANIFEST_AMD64"
+
+# OCI index body: two arches with 64-char hex digests matching the sha256 of
+# each per-arch manifest body above (required by content-digest verification).
+# NOTE: the per-arch loop splits on ':' so the digest is read as
+#   arch=amd64, digest_prefix=sha256, digest_hash=c3dcb...
 _OCI_INDEX='{
   "schemaVersion": 2,
   "mediaType": "application/vnd.oci.image.index.v1+json",
   "manifests": [
     {
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "digest": "sha256:aaa000000000000000000000000000000000000000000000000000000000",
+      "digest": "sha256:c3dcb30ac02018335b76e7619cbd56c644122cd6357ba6ad92515e7a6f74ef57",
       "platform": { "architecture": "amd64", "os": "linux" }
     },
     {
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "digest": "sha256:bbb000000000000000000000000000000000000000000000000000000000",
+      "digest": "sha256:13fe4dc6162b562798c5b0b086a021e4169a4f546ff9159de84a5a7837d23439",
       "platform": { "architecture": "arm64", "os": "linux" }
     }
   ]
 }'
-
-# Per-arch manifest body: config 100 + layers 200+300 = total 600.
-_PER_ARCH_MANIFEST='{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
 
 # ---------------------------------------------------------------------------
 # setup / teardown
@@ -59,7 +70,7 @@ setup() {
     export CALLS
 
     # Per-arch manifest bodies (keyed by digest suffix for the shim).
-    export _OCI_INDEX _PER_ARCH_MANIFEST
+    export _OCI_INDEX _PER_ARCH_MANIFEST _PER_ARCH_MANIFEST_AMD64 _PER_ARCH_MANIFEST_ARM64
 
     # Wire up the PATH shim directory.
     mkdir -p "${WORK_DIR}/bin"
@@ -85,10 +96,42 @@ teardown() {
 
 _install_shims() {
     # ---- curl shim ----
+    # Handles three URL classes:
+    #   TOKEN   — /token (auth, writes JSON to stdout)
+    #   INDEX   — /manifests/<tag> (index fetch; may use -D <hfile> -o <bfile>)
+    #   PERARCH — /manifests/sha256:<hex> (per-arch; always stdout, no -D/-o)
+    #
+    # The INDEX endpoint is now called with "-D <hdrs_file> -o <body_file>" by
+    # _ghcr_fetch_index. The shim parses these flags and writes to the supplied
+    # files, falling back to stdout if they are absent (for callers that don't
+    # use the file-based form).
     cat > "${WORK_DIR}/bin/curl" << 'CURL_SHIM'
 #!/usr/bin/env bash
 # Classify the request URL, append to $CALLS, return canned body.
 URL="${!#}"   # last argument
+
+# Parse -D <file> and -o <file> from the argument list.
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+# Helper: write headers to DFILE (or stdout) and body to OFILE (or stdout).
+_write_response() {
+    local _hdrs="$1" _body="$2"
+    if [[ -n "$DFILE" ]]; then
+        printf '%s' "$_hdrs" > "$DFILE"
+    fi
+    if [[ -n "$OFILE" ]]; then
+        printf '%s' "$_body" > "$OFILE"
+    else
+        printf '%s' "$_hdrs"
+        printf '%s' "$_body"
+    fi
+}
 
 if [[ "$URL" == *"/token"* ]]; then
     echo "TOKEN" >> "$CALLS"
@@ -98,21 +141,28 @@ fi
 
 if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     echo "PERARCH" >> "$CALLS"
-    # -D - path: if -D is present output fake headers then body.
-    if printf '%s\n' "$@" | grep -qx -- '-D'; then
-        printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:perarch\r\n\r\n'
+    # Per-arch is still captured via $() — just write to stdout.
+    # Return per-arch body matching the digest in the URL.
+    if [[ "$URL" == *"/manifests/sha256:c3d"* ]]; then
+        echo "$_PER_ARCH_MANIFEST_AMD64"
+    elif [[ "$URL" == *"/manifests/sha256:13f"* ]]; then
+        echo "$_PER_ARCH_MANIFEST_ARM64"
+    else
+        # Fallback: return default per-arch manifest (for tests that override _OCI_INDEX).
+        echo "$_PER_ARCH_MANIFEST"
     fi
-    echo "$_PER_ARCH_MANIFEST"
     exit 0
 fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    # -D - path: output headers + body together.
-    if printf '%s\n' "$@" | grep -qx -- '-D'; then
-        printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:idx\r\n\r\n'
-    fi
-    echo "$_OCI_INDEX"
+    # Index fetch now uses -D <hfile> -o <bfile>; the shim must write to those
+    # files when present. Docker-Content-Digest uses a short non-64-char value
+    # so that content-digest verification is skipped in the default shim (tests
+    # that need real sha256 verification install a custom shim).
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _write_response "$_hdrs" "$_body"
     exit 0
 fi
 
@@ -156,7 +206,7 @@ GH_SHIM
 
     # Output must contain correct arch:size lines.
     echo "$out1" | grep -qx 'amd64:600'
-    echo "$out1" | grep -qx 'arm64:600'
+    echo "$out1" | grep -qx 'arm64:750'
 
     # PROOF: only 2 PERARCH lines in the call log (first call only).
     # A value of 4 here means the cache was not used on the 2nd call.
@@ -170,8 +220,37 @@ GH_SHIM
 # ---------------------------------------------------------------------------
 
 @test "poisoned per-arch body (.errors) returns 1 and writes no cache file" {
-    # Override _PER_ARCH_MANIFEST to an .errors envelope.
-    export _PER_ARCH_MANIFEST='{"errors":[{"code":"NAME_UNKNOWN","message":"poison"}]}'
+    # Install a shim that returns a poison .errors envelope for all per-arch requests.
+    local _POISON_BODY='{"errors":[{"code":"NAME_UNKNOWN","message":"poison"}]}'
+    export _POISON_BODY
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_POISON'
+#!/usr/bin/env bash
+URL="${!#}"
+
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+if [[ "$URL" == *"/token"* ]]; then
+    echo '{"token":"x"}'; exit 0
+fi
+if [[ "$URL" == *"/manifests/sha256:"* ]]; then
+    echo "$_POISON_BODY"; exit 0
+fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_POISON
+    chmod +x "${WORK_DIR}/bin/curl"
 
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
@@ -195,10 +274,19 @@ GH_SHIM
 # ---------------------------------------------------------------------------
 
 @test "all-or-nothing: valid 1st arch + errored 2nd arch returns 1 with zero stdout" {
-    # Override the curl shim: aaa digest returns good manifest, bbb returns .errors.
+    # Override the curl shim: amd64 digest (c3d...) returns good manifest,
+    # arm64 digest (13f...) returns .errors.
     cat > "${WORK_DIR}/bin/curl" << 'CURL_MIXED'
 #!/usr/bin/env bash
 URL="${!#}"
+
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
 
 if [[ "$URL" == *"/token"* ]]; then
     echo "TOKEN" >> "$CALLS"
@@ -206,13 +294,13 @@ if [[ "$URL" == *"/token"* ]]; then
     exit 0
 fi
 
-if [[ "$URL" == *"/manifests/sha256:aaa"* ]]; then
+if [[ "$URL" == *"/manifests/sha256:c3d"* ]]; then
     echo "PERARCH" >> "$CALLS"
     echo '{"schemaVersion":2,"config":{"size":100},"layers":[{"size":200},{"size":300}]}'
     exit 0
 fi
 
-if [[ "$URL" == *"/manifests/sha256:bbb"* ]]; then
+if [[ "$URL" == *"/manifests/sha256:13f"* ]]; then
     echo "PERARCH" >> "$CALLS"
     echo '{"errors":[{"code":"MANIFEST_UNKNOWN","message":"not found"}]}'
     exit 0
@@ -220,10 +308,10 @@ fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    if printf '%s\n' "$@" | grep -qx -- '-D'; then
-        printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:idx\r\n\r\n'
-    fi
-    echo "$_OCI_INDEX"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
 fi
 
@@ -258,6 +346,14 @@ CURL_MIXED
 #!/usr/bin/env bash
 URL="${!#}"
 
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
 if [[ "$URL" == *"/token"* ]]; then
     echo "TOKEN" >> "$CALLS"
     echo '{"token":"x"}'
@@ -266,10 +362,10 @@ fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    if printf '%s\n' "$@" | grep -qx -- '-D'; then
-        printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:single\r\n\r\n'
-    fi
-    echo "$_SINGLE_MANIFEST"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:single\r\n\r\n')"
+    _body="$(printf '%s\n' "$_SINGLE_MANIFEST")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
 fi
 
@@ -358,4 +454,207 @@ CURL_SINGLE
     local idx_key
     idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
     [ ! -f "${GHCR_CACHE_DIR}/idx-${idx_key}.body" ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-7: _ghcr_verify_content_digest — matching sha256 returns 0
+# ---------------------------------------------------------------------------
+
+@test "content-digest verify: matching sha256 admits cache" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    _ghcr_ensure_cachedir
+    local f="${GHCR_CACHE_DIR}/test-verify.tmp"
+    printf '%s' 'hello world' > "$f"
+    # sha256('hello world') = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+    run _ghcr_verify_content_digest "$f" "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-8: _ghcr_verify_content_digest — mismatched sha256 returns 1
+# ---------------------------------------------------------------------------
+
+@test "content-digest verify: mismatched sha256 rejects" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    _ghcr_ensure_cachedir
+    local f="${GHCR_CACHE_DIR}/test-verify-bad.tmp"
+    printf '%s' 'hello world' > "$f"
+    # Pass wrong hex — must return 1.
+    run _ghcr_verify_content_digest "$f" "0000000000000000000000000000000000000000000000000000000000000000"
+    [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-9: _ghcr_verify_content_digest — missing file returns 1
+# ---------------------------------------------------------------------------
+
+@test "content-digest verify: missing file returns 1" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    run _ghcr_verify_content_digest "/nonexistent/path/file.tmp" "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-10: _ghcr_verify_content_digest — trailing-newline-safe
+# Verifies that sha256sum operates on exact file bytes (no stripping).
+# ---------------------------------------------------------------------------
+
+@test "content-digest verify: trailing-newline-safe (file bytes are exact)" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    _ghcr_ensure_cachedir
+
+    # Write bytes WITH trailing newline and verify sha256 of the full content.
+    local f="${GHCR_CACHE_DIR}/test-newline.tmp"
+    printf '%s\n' 'hello world' > "$f"
+    # sha256 of "hello world\n" (12 bytes):
+    local expected
+    expected=$(sha256sum -- "$f" | cut -d' ' -f1)
+    run _ghcr_verify_content_digest "$f" "$expected"
+    [ "$status" -eq 0 ]
+
+    # Verify that the no-newline hash does NOT match (they are different files).
+    run _ghcr_verify_content_digest "$f" "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-11: per-arch cache — tampered body (sha256 mismatch) is rejected
+# The OCI index carries the real digest; shim returns a different body.
+# ---------------------------------------------------------------------------
+
+@test "per-arch cache: tampered body rejected (content-digest mismatch)" {
+    # The OCI index digest for amd64 is the sha256 of _PER_ARCH_MANIFEST_AMD64.
+    # Inject a shim that returns a DIFFERENT body for that digest → mismatch → reject.
+    local _TAMPERED='{"schemaVersion":2,"config":{"size":99},"layers":[{"size":1}]}'
+    export _TAMPERED
+
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_TAMPER'
+#!/usr/bin/env bash
+URL="${!#}"
+
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+if [[ "$URL" == *"/token"* ]]; then
+    echo '{"token":"x"}'; exit 0
+fi
+if [[ "$URL" == *"/manifests/sha256:"* ]]; then
+    # Return tampered body — sha256 will NOT match the digest in the OCI index.
+    echo "$_TAMPERED"; exit 0
+fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_TAMPER
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    run ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine"
+
+    # Must fail: tampered per-arch body rejected → function returns 1.
+    [ "$status" -eq 1 ]
+
+    # No per-arch cache file written for the tampered body.
+    local count
+    count=$(find "${GHCR_CACHE_DIR}/perarch" -name '*.body' 2>/dev/null | wc -l || echo 0)
+    [ "$count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-12: index cache — Docker-Content-Digest mismatch → body not cached
+# ---------------------------------------------------------------------------
+
+@test "index cache: Docker-Content-Digest mismatch body not cached" {
+    # Shim returns an index body with a Docker-Content-Digest header that does
+    # NOT match the sha256 of the body bytes → cache admission blocked.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_IDX_BAD'
+#!/usr/bin/env bash
+URL="${!#}"
+
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+
+if [[ "$URL" == *"/token"* ]]; then
+    echo '{"token":"x"}'; exit 0
+fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    # Use a real 64-char hex but one that does NOT match the body sha256.
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_IDX_BAD
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    run _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token"
+
+    # Mismatch: function returns 1 (body not admitted to cache).
+    [ "$status" -eq 1 ]
+
+    # No idx-*.body file written.
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    [ ! -f "${GHCR_CACHE_DIR}/idx-${idx_key}.body" ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-13: cache-dir warning emitted exactly once per run
+# ---------------------------------------------------------------------------
+
+@test "cache-dir warning emitted once when cache dir cannot be created" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Use an unwritable path as cache dir.
+    export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+    unset _GHCR_CACHE_DIR_WARNED
+
+    # First call: should emit a warning to stderr and return 1.
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+        _ghcr_ensure_cachedir
+        _ghcr_ensure_cachedir
+        _ghcr_ensure_cachedir
+    '
+    # All three calls should return 1 (failure to create).
+    [ "$status" -eq 1 ]
+
+    # Warning must appear in stderr exactly once (sentinel suppresses repeats).
+    local warning_count
+    warning_count=$(echo "$output" | grep -c '::warning::' || true)
+    [ "$warning_count" -eq 1 ]
 }

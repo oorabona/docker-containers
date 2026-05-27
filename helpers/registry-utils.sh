@@ -41,7 +41,13 @@ _GHCR_IDX_HDRS=""
 # no-ops (exotic FS, restricted env) — chmod kept as belt-and-suspenders to
 # fix a pre-existing looser directory from an older run.
 _ghcr_ensure_cachedir() {
-    ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null || true
+    if ! ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
+        if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+            echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; degraded (uncached, slow) mode" >&2
+            _GHCR_CACHE_DIR_WARNED=1
+        fi
+        return 1
+    fi
     chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
 }
 
@@ -50,6 +56,19 @@ _ghcr_ensure_cachedir() {
 # Usage: _ghcr_keyfile <string>   (prints result)
 _ghcr_keyfile() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# Verify that a cached file's sha256 matches an expected digest hex.
+# Usage: _ghcr_verify_content_digest <file> <expected_sha256_hex>
+# Returns 0 on match, 1 on mismatch or invalid input.
+# expected_sha256_hex must be the bare 64-char lowercase hex — NOT prefixed
+# with "sha256:". Callers strip the prefix from registry-provided digests.
+_ghcr_verify_content_digest() {
+    local file="$1" expected="$2"
+    [[ -f "$file" && -n "$expected" ]] || return 1
+    local actual
+    actual=$(sha256sum -- "$file" 2>/dev/null | cut -d' ' -f1)
+    [[ -n "$actual" && "$actual" == "$expected" ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -68,6 +87,12 @@ _ghcr_keyfile() {
 # Tries authenticated (gh auth) first, falls back to anonymous.
 # Usage: ghcr_get_token "owner/repo"
 # Output: bearer token string or ""
+#
+# Note: tokens have no content-addressable digest (they are opaque bearer
+# tokens). The cache safety bound is the existing TTL guard — verified by
+# the token's embedded expiry, not by content hashing. This tier is
+# explicitly EXEMPT from the content-digest verification applied to the
+# index and per-arch tiers.
 ghcr_get_token() {
     local image_path="$1"  # owner/repo (without ghcr.io/ prefix)
 
@@ -154,29 +179,34 @@ _ghcr_fetch_index() {
     # and ghcr_get_multi_arch_digests (needs Docker-Content-Digest header + body).
     local accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 
-    local raw
-    raw=$(curl -sS -D - --connect-timeout 5 --max-time 10 \
+    # Use mktemp for body/hdrs so curl writes raw bytes directly to file (no
+    # command-substitution stripping of trailing newlines, which would break
+    # the sha256 content-digest verification added below).
+    local body_tmp hdrs_tmp
+    body_tmp=$(mktemp "${GHCR_CACHE_DIR}/.idx-body.XXXXXX" 2>/dev/null) || { _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+    hdrs_tmp=$(mktemp "${GHCR_CACHE_DIR}/.idx-hdrs.XXXXXX" 2>/dev/null) || { rm -f "$body_tmp" 2>/dev/null || true; _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+
+    local curl_rc=0
+    curl -sS -D "$hdrs_tmp" -o "$body_tmp" --connect-timeout 5 --max-time 10 \
         -H "Authorization: Bearer $token" \
         -H "Accept: $accept" \
-        "https://ghcr.io/v2/${image_path}/manifests/${tag}" 2>/dev/null || true)
+        "https://ghcr.io/v2/${image_path}/manifests/${tag}" 2>/dev/null || curl_rc=$?
 
-    if [[ -z "$raw" ]]; then
+    if [[ "$curl_rc" -ne 0 || ! -s "$body_tmp" ]]; then
+        rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
         _GHCR_IDX_BODY=""
         _GHCR_IDX_HDRS=""
         return 1
     fi
 
-    # Split headers / body at the first blank line.
+    # Populate out-vars for callers (read even on partial success below).
     local hdrs body
-    hdrs=$(printf '%s' "$raw" | sed -n '1,/^\r\?$/p')
-    body=$(printf '%s' "$raw" | sed -n '/^\r\?$/,$p' | sed '1d')
-
-    # Populate out-vars regardless (callers read them even on partial success).
+    hdrs=$(cat "$hdrs_tmp" 2>/dev/null || true)
+    body=$(cat "$body_tmp" 2>/dev/null || true)
     _GHCR_IDX_BODY="$body"
     _GHCR_IDX_HDRS="$hdrs"
 
     # Classify the response before deciding whether to cache.
-    # Extract the HTTP status code from the first status line in headers.
     local http_status
     http_status=$(printf '%s' "$hdrs" | grep -m1 -oE '^HTTP/[^ ]+ [0-9]+' | grep -oE '[0-9]+$' || true)
 
@@ -209,15 +239,35 @@ _ghcr_fetch_index() {
         esac
     fi
 
-    # Only cache genuinely good responses (atomic write).
-    # umask 077 subshell ensures each tmp is born 0600 even if chmod fails;
-    # chmod kept as belt-and-suspenders; mv preserves mode.
+    # Only cache genuinely good responses.
     if [[ "$is_good" -eq 1 ]]; then
-        ( umask 077; printf '%s' "$body" > "${body_file}.tmp.$$" ) && chmod 600 "${body_file}.tmp.$$" 2>/dev/null && mv -f "${body_file}.tmp.$$" "$body_file" 2>/dev/null || true
-        ( umask 077; printf '%s' "$hdrs" > "${hdrs_file}.tmp.$$" ) && chmod 600 "${hdrs_file}.tmp.$$" 2>/dev/null && mv -f "${hdrs_file}.tmp.$$" "$hdrs_file" 2>/dev/null || true
+        # Content-digest verification: extract Docker-Content-Digest from response
+        # headers and verify the stored body bytes hash to the same value.
+        # On mismatch: warn and skip caching (caller gets the body via out-vars,
+        # but it won't be admitted to the persistent cache).
+        local idx_digest_header idx_digest_hex
+        idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:[[:space:]]*sha256:[a-f0-9]{64}' 2>/dev/null | head -1 | tr -d '\r' || true)
+        if [[ -n "$idx_digest_header" ]]; then
+            idx_digest_hex="${idx_digest_header##*sha256:}"
+            idx_digest_hex="${idx_digest_hex%%[^a-f0-9]*}"
+            if [[ "${#idx_digest_hex}" -eq 64 ]]; then
+                if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
+                    echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
+                    rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+                    return 1
+                fi
+            fi
+        fi
+
+        # Atomic write: move verified tmp files into place.
+        # umask 077 already applied at mktemp creation; chmod 600 belt-and-suspenders.
+        chmod 600 "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+        mv -f "$body_tmp" "$body_file" 2>/dev/null || rm -f "$body_tmp" 2>/dev/null || true
+        mv -f "$hdrs_tmp" "$hdrs_file" 2>/dev/null || rm -f "$hdrs_tmp" 2>/dev/null || true
         return 0
     fi
 
+    rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
     return 1
 }
 
@@ -295,6 +345,9 @@ ghcr_get_manifest_sizes() {
         while IFS=':' read -r arch digest_prefix digest_hash; do
             [[ -z "$arch" || -z "$digest_hash" ]] && continue
             [[ "$arch" == "unknown" ]] && continue
+            # Shape-validate digest_hash: must be exactly 64 lowercase hex chars.
+            # Rejects path-injection attempts via a poisoned digest field.
+            [[ "$digest_hash" =~ ^[a-f0-9]{64}$ ]] || continue
 
             local pa_file pa_hit
             pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
@@ -334,6 +387,14 @@ ghcr_get_manifest_sizes() {
                 local pa_tmp
                 if pa_tmp=$(mktemp "${GHCR_CACHE_DIR}/perarch/.tmp.XXXXXX" 2>/dev/null); then
                     if printf '%s' "$platform_manifest" > "$pa_tmp" 2>/dev/null && chmod 600 "$pa_tmp" 2>/dev/null; then
+                        # Content-digest verification: the cache key digest_hash is the
+                        # registry's sha256 of the manifest bytes. Verify the body we
+                        # are about to cache hashes to the same value before admission.
+                        if ! _ghcr_verify_content_digest "$pa_tmp" "$digest_hash"; then
+                            echo "::warning::GHCR per-arch cache content-digest mismatch for ${image_path}@${digest_prefix}:${digest_hash}; rejecting body" >&2
+                            rm -f "$pa_tmp" 2>/dev/null || true
+                            return 1
+                        fi
                         mv -f "$pa_tmp" "$pa_file" 2>/dev/null || rm -f "$pa_tmp" 2>/dev/null || true
                     else
                         rm -f "$pa_tmp" 2>/dev/null || true
