@@ -27,12 +27,19 @@ setup() {
     FIXTURES_DIR_DRIFT="${FIXTURES_DIR}/digest-drift"
 
     # Pre-existing tests use synthetic container names (foo, bar, myimage) that
-    # are not in the real ./make list.  Expose the test-hook override so the
-    # validation check accepts them without spawning ./make in the project root.
-    # New container-validation tests explicitly unset this to exercise real logic.
+    # are not in the real ./make list.  Expose the test-hook overrides so the
+    # validation and active-tag checks accept them without spawning ./make.
+    # New container-validation tests explicitly unset these to exercise real logic.
     export _VALID_CONTAINERS_OVERRIDE="foo
 bar
 myimage"
+
+    # Active tags for each test container (fixture tags from lineage files)
+    export _ACTIVE_TAGS_OVERRIDE_foo="1.0-alpine
+1.0-debian"
+    export _ACTIVE_TAGS_OVERRIDE_bar="2.0-rocky
+2.0-ubuntu"
+    export _ACTIVE_TAGS_OVERRIDE_myimage=""
 
     export TEST_TEMP_DIR
     export DETECTOR_SCRIPT

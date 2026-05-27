@@ -1326,14 +1326,28 @@ jobs:
           CONTAINER: ${{ matrix.container }}
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
-          # Fix r7-3: unique temp paths per matrix entry — no cross-container contamination
+          # Unique temp paths per matrix entry — no cross-container contamination
           # across sequential runs on the same runner.
           drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
-          # Fix r7-2: stdout → file, stderr flows to GHA log (NOT discarded).
-          # Probe errors surface as ::error:: lines in the step log AND as
-          # status:error records in the JSON — both are now visible.
-          ./scripts/detect-base-digest-drift.sh > "$drift_file" || true
+          # Detector emits ::error:: lines to stderr for visibility; capture stdout
+          # and check exit code + JSON validity before processing.
+          detect_rc=0
+          ./scripts/detect-base-digest-drift.sh > "$drift_file" || detect_rc=$?
+          if [[ $detect_rc -ne 0 ]]; then
+            echo "::error::detect-base-digest-drift.sh exited with $detect_rc — aborting PR" >&2
+            exit 1
+          fi
           drift_json=$(cat "$drift_file")
+          if [[ -z "$drift_json" || "$drift_json" == "[]" ]]; then
+            echo "::warning::detect-base-digest-drift.sh output empty — skipping (no drift)" >&2
+            echo "has_drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Validate JSON structure before downstream jq queries
+          if ! jq -e '.[0] | has("container")' >/dev/null 2>&1 <<<"$drift_json"; then
+            echo "::error::detect-base-digest-drift.sh output is invalid JSON — aborting PR" >&2
+            exit 1
+          fi
 
           # Fix r8-2: scope error_count to current matrix container only.
           # Without the .container filter, a transient probe failure on any

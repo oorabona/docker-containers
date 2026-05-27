@@ -290,25 +290,18 @@ for lineage_file in "${lineage_files[@]}"; do
         if [[ -n "${!_override_var:-}" ]]; then
             printf -v "$_active_tags_var" '%s' "${!_override_var}"
         else
-            # In test mode (when _VALID_CONTAINERS_OVERRIDE is set), generate stub
-            # active tags for the container to avoid calling real ./make list-builds.
-            # Outside tests, list-builds must succeed; on failure abort.
-            if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" ]]; then
-                # Test mode: construct minimal tag from container name for stale-check
-                # (tests validate container name, but don't care about tag matching)
-                printf -v "$_active_tags_var" '%s' "test-tag-for-$container"
-            else
-                if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
-                    printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
-                    exit 2
-                fi
-                _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
-                if [[ -z "$_fetched" ]]; then
-                    printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
-                    exit 2
-                fi
-                printf -v "$_active_tags_var" '%s' "$_fetched"
+            # list-builds must succeed; on failure abort rather than silently skip
+            # the stale-lineage filter (which would disable drift detection).
+            if ! _fetched=$(cd "$PROJECT_ROOT" && ./make list-builds "$container" 2>/dev/null); then
+                printf '::error::./make list-builds %s failed — cannot determine active tags for drift filtering, aborting\n' "$container" >&2
+                exit 2
             fi
+            _fetched=$(printf '%s' "$_fetched" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
+            if [[ -z "$_fetched" ]]; then
+                printf '::error::./make list-builds %s returned no tags — drift filter broken for %s, aborting\n' "$container" "$container" >&2
+                exit 2
+            fi
+            printf -v "$_active_tags_var" '%s' "$_fetched"
         fi
     fi
     _active_tags="${!_active_tags_var}"
