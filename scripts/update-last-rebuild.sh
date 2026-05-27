@@ -65,7 +65,7 @@ if [[ -z "$valid_containers" ]]; then
     echo "::error::./make list returned empty — canonical container list unavailable" >&2
     exit 2
 fi
-if ! grep -qxF "$CONTAINER" <<<"$valid_containers"; then
+if ! grep -qxF -- "$CONTAINER" <<<"$valid_containers"; then
     echo "::warning::container '$CONTAINER' is not a valid container name (not in ./make list) — skipping" >&2
     exit 0
 fi

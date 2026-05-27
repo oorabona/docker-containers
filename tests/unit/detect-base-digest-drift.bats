@@ -2187,3 +2187,181 @@ STUB
     result_len=$(printf '%s' "$result" | jq 'length')
     [ "$result_len" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Gate r21 regression tests
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# r21-A: grep option injection — variant tag '--help'
+# A lineage tag value of '--help' must NOT be treated as a grep option.
+# The stale-tag filter must reject/skip the entry (not match as active),
+# not print grep help text and exit 0 (which would accept the tag).
+# Mutation guard: if `--` is removed from `grep -qxF -- "$variant_tag"`,
+# grep treats '--help' as an option → prints help and exits 0 → probe is
+# called → this test fails.
+# ---------------------------------------------------------------------------
+@test "r21-A: variant tag '--help' is treated as literal string, not grep option" {
+    local lineage_dir="$TEST_TEMP_DIR/r21a/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "foo",' \
+        '  "tag": "--help",' \
+        '  "base_image_ref": "alpine:3.21",' \
+        '  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        '}' > "$lineage_dir/foo---help.json"
+
+    # Active tags override does NOT include '--help' → must be treated as stale
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r21a-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on option-injection tag" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r21a-stderr.txt") || rc=$?
+
+    # Must exit 0 (stale-skip is non-fatal)
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called (tag correctly filtered as stale)
+    run grep -c "PROBE CALLED on option-injection tag" "$TEST_TEMP_DIR/r21a-stderr.txt"
+    [ "$output" = "0" ]
+
+    # Result must be empty array (no drift report for poisoned tag)
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# r21-A2: grep option injection — container name '--help' in lineage JSON
+# A container field of '--help' in the lineage must be rejected as not in
+# ./make list, not accepted because grep printed help text and exited 0.
+# Mutation guard: removing `--` from `grep -qxF -- "$container"` causes
+# grep to treat '--help' as an option → exits 0 → probe would be called.
+# ---------------------------------------------------------------------------
+@test "r21-A2: container name '--help' in lineage is rejected as invalid (not a grep option)" {
+    local lineage_dir="$TEST_TEMP_DIR/r21a2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "--help",' \
+        '  "tag": "1.0",' \
+        '  "base_image_ref": "alpine:3.21",' \
+        '  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        '}' > "$lineage_dir/---help-1.0.json"
+
+    # Valid containers override does NOT include '--help'
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r21a2-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on --help container" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r21a2-stderr.txt") || rc=$?
+
+    # Must exit 0 (invalid container is a warning, not fatal)
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called
+    run grep -c "PROBE CALLED on --help container" "$TEST_TEMP_DIR/r21a2-stderr.txt"
+    [ "$output" = "0" ]
+
+    # Result is empty
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# r21-C: localhost allowlist bypass
+# 'localhost/foo:1.0' must be rejected by _validate_image_ref: Docker/OCI
+# treats bare 'localhost' as an explicit registry host (not a Docker Hub org),
+# so it must hit the allowlist check and be denied.
+# Mutation guard: removing the localhost guard causes first_segment="localhost"
+# to fall through to the "no dot, no colon → Docker Hub org" path → return 0
+# → probe would be called.
+# ---------------------------------------------------------------------------
+@test "r21-C: localhost/foo:1.0 is rejected by _validate_image_ref (not a Docker Hub org)" {
+    local lineage_dir="$TEST_TEMP_DIR/r21c/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "foo",' \
+        '  "tag": "1.0",' \
+        '  "base_image_ref": "localhost/foo:1.0",' \
+        '  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        '}' > "$lineage_dir/foo-1.0.json"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r21c-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on localhost ref" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r21c-stderr.txt") || rc=$?
+
+    # Must exit 0 — invalid ref is non-fatal (probe-error path)
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called (ref rejected before registry call)
+    run grep -c "PROBE CALLED on localhost ref" "$TEST_TEMP_DIR/r21c-stderr.txt"
+    [ "$output" = "0" ]
+
+    # Result must be empty array (no drift report for rejected ref)
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
+
+@test "r21-C: localhost:5000/foo:1.0 is rejected by _validate_image_ref (host:port localhost)" {
+    local lineage_dir="$TEST_TEMP_DIR/r21c2/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    printf '%s\n' \
+        '{' \
+        '  "lineage_schema_version": 2,' \
+        '  "container": "foo",' \
+        '  "tag": "1.0",' \
+        '  "base_image_ref": "localhost:5000/foo:1.0",' \
+        '  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        '}' > "$lineage_dir/foo-1.0.json"
+
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/r21c2-probe.XXXXXX")
+    printf '%s\n' '#!/usr/bin/env bash' 'echo "PROBE CALLED on localhost:PORT ref" >&2' 'exit 1' > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local result rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="foo" \
+        _ACTIVE_TAGS_OVERRIDE_foo="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$TEST_TEMP_DIR/r21c2-stderr.txt") || rc=$?
+
+    # Must exit 0 — invalid ref is non-fatal
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called
+    run grep -c "PROBE CALLED on localhost:PORT ref" "$TEST_TEMP_DIR/r21c2-stderr.txt"
+    [ "$output" = "0" ]
+
+    # Result must be empty
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}

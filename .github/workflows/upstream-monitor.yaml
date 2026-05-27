@@ -1243,6 +1243,14 @@ jobs:
             done < /tmp/drift-detect-stderr.log >&2
           fi
 
+          # Validate drift_json shape before downstream use.  An invalid JSON
+          # payload (e.g. from a poisoned lineage entry) must fail loudly rather
+          # than silently masking drift as "no containers need rebuild".
+          if ! jq_err=$(jq -e . <<<"$drift_json" 2>&1 >/dev/null); then
+            echo "::error::Drift JSON is invalid; lineage may be corrupted: ${jq_err}" >&2
+            exit 1
+          fi
+
           # Extract container names with actionable drift (drift or legacy status)
           drift_containers=$(echo "$drift_json" | jq -c \
             '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \

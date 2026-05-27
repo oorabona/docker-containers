@@ -238,6 +238,13 @@ _validate_image_ref() {
     # (FQDN) or ':' (host:port).  Otherwise it is a Docker Hub org name.
     local first_segment="${ref%%/*}"
 
+    # Reject localhost-as-registry: Docker/OCI treats bare 'localhost' (and
+    # 'localhost:PORT') as an explicit registry host, not a Docker Hub namespace.
+    # Allowing it would bypass the registry allowlist on self-hosted runners.
+    if [[ "$first_segment" == "localhost" || "$first_segment" == localhost:* ]]; then
+        return 1
+    fi
+
     # Docker Hub org/image pattern (e.g. hashicorp/terraform:1.14.4)
     if [[ "$first_segment" != *"."* && "$first_segment" != *":"* ]]; then
         return 0
@@ -328,7 +335,7 @@ for lineage_file in "${lineage_files[@]}"; do
             fi
         fi
     fi
-    if ! grep -qxF "$container" <<<"$_valid_containers"; then
+    if ! grep -qxF -- "$container" <<<"$_valid_containers"; then
         printf '::warning::Skipping %s: invalid container name '\''%s'\'' (not in ./make list)\n' \
             "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
         continue
@@ -408,7 +415,7 @@ for lineage_file in "${lineage_files[@]}"; do
         fi
         # Skip filtering if: test-mode no-filter (__TEST_NO_FILTER__),
         # empty override (backward compat), or tag matches active set
-        if [[ "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+        if [[ "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF -- "$variant_tag" <<<"$_active_tags"; then
             printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
                 "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
             continue
