@@ -26,6 +26,7 @@
 # Exit codes:
 #   0  — Section appended (or container has no drifted variants — no-op)
 #   1  — Fatal error (invalid args, missing jq, etc.)
+#   2  — Tooling failure (./make list unavailable or returned empty)
 
 set -euo pipefail
 
@@ -54,7 +55,12 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-valid_containers=$(cd "$PROJECT_ROOT" && ./make list)
+make_exit=0
+valid_containers=$(cd "$PROJECT_ROOT" && ./make list) || make_exit=$?
+if [[ "$make_exit" -ne 0 ]]; then
+    echo "::error::./make list failed with exit $make_exit" >&2
+    exit 2
+fi
 if [[ -z "$valid_containers" ]]; then
     echo "::error::./make list returned empty — canonical container list unavailable" >&2
     exit 2

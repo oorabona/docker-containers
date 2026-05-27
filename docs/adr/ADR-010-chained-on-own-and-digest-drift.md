@@ -30,7 +30,7 @@ Containers built on top of other project-produced images (e.g., `wordpress` on `
 
 1. Restores the GHA lineage cache (`.build-lineage/` is gitignored; cache is the authoritative store).
 2. Walks all non-sidecar `*.json` files via `is_lineage_sidecar()` helper (single source of truth in `helpers/lineage-utils.sh`).
-3. For each entry, probes current digest via `docker manifest inspect <base_image_ref>` using the same extraction as the writer (`build-container.sh:272`).
+3. For each entry, probes current digest via `docker buildx imagetools inspect --format '{{json .Manifest}}' <ref> | jq -r '.digest'` — canonical multi-arch image-index digest, same extraction as the writer (`build-container.sh`).
 4. Emits tri-state per variant: `drift` / `unchanged` / `error` / `legacy`.
 5. Groups by container name; matrix-fans out to `open-drift-prs` job.
 
@@ -52,6 +52,7 @@ Containers built on top of other project-produced images (e.g., `wordpress` on `
 - Cache miss on first run: if the lineage cache expired or was never populated (new repo setup), the cron emits a warning and opens no PRs. Self-heals on next build.
 - 2-day cascade for chained-on-own containers: if A depends on B and both drift, two cron runs are needed to fully propagate. Mitigated by documenting in PR bodies.
 - `--baseline-only` operator action required once after #532 merge to baseline pre-#530 legacy lineage files.
+- Probe requires `docker buildx` on the cron runner. If absent, the detector emits `status: error` for affected entries (degrades safely; no drift is reported on probe failure).
 
 ### Deferred
 

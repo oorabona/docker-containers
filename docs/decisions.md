@@ -62,7 +62,7 @@ After #530 began recording `base_image_digest` in lineage files, there was no au
 
 ### Decision
 
-Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base_image_digest` from the GHA lineage cache against the current registry digest via `docker manifest inspect`. Drift opens one PR per drifted container listing all affected variants. Merging the PR updates `LAST_REBUILD.md` → `auto-build.yaml` path filter triggers rebuild → new lineage written → next-day cron sees match → no further PR.
+Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base_image_digest` from the GHA lineage cache against the current registry digest via `docker buildx imagetools inspect --format '{{json .Manifest}}' | jq -r '.digest'` (canonical multi-arch image-index digest — order-independent, single source of truth matching `scripts/build-container.sh`). Drift opens one PR per drifted container listing all affected variants. Merging the PR updates `LAST_REBUILD.md` → `auto-build.yaml` path filter triggers rebuild → new lineage written → next-day cron sees match → no further PR.
 
 ### Key design choices
 
@@ -78,7 +78,7 @@ Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base
 
 **`--baseline-only` flag**: suppresses real drift records, emits only `legacy` entries. Operator runs ONCE after #532 merge to baseline pre-#530 lineage files without flooding CI with drift PRs.
 
-**Multi-arch index digest**: the same extraction as `scripts/build-container.sh:272` — `docker manifest inspect <ref> | grep -o '"sha256:[a-f0-9]*"' | head -1`. This is the image-index manifest digest, not a per-arch digest.
+**Multi-arch index digest**: `docker buildx imagetools inspect --format '{{json .Manifest}}' <ref> | jq -r '.digest'` — same extraction as `scripts/build-container.sh`. Returns the image-index manifest digest, not a per-arch digest.
 
 ### Cascade pattern (chained-on-own)
 

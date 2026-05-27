@@ -21,12 +21,18 @@
 #
 # Env:
 #   PROBE_CMD         Override probe command for testing. Must accept one arg
-#                     (image_ref) and output a JSON manifest on stdout.
-#                     Defaults to: docker manifest inspect <ref>
+#                     (image_ref) and print the image-index manifest digest to
+#                     stdout (sha256:... string).
+#                     Defaults to: docker buildx imagetools inspect --format
+#                       '{{json .Manifest}}' <ref> | jq -r '.digest'
+#                     (canonical multi-arch image-index digest via buildx
+#                     imagetools — order-independent, single source of truth,
+#                     matches scripts/build-container.sh digest extraction)
 #
 # Exit codes:
 #   0   — Success (drift/unchanged/legacy/error records emitted; drift itself is NOT an error)
 #   1   — Fatal script error (e.g., invalid digest shape passed to emit)
+#   2   — Tooling failure (./make list unavailable or returned empty)
 #
 # Digest shape validation (injection prevention):
 #   Every digest extracted from the registry is validated against
@@ -211,6 +217,10 @@ _sanitize_for_json() {
 # ---------------------------------------------------------------------------
 _validate_image_ref() {
     local ref="$1"
+
+    # Reject refs starting with '/' — first_segment would be empty, which
+    # falls through the OCI registry-host check with no meaningful value.
+    [[ "$ref" == /* ]] && return 1
 
     # Must be non-empty and free of whitespace/control chars
     if [[ -z "$ref" || "$ref" =~ [[:space:][:cntrl:]] ]]; then

@@ -2136,3 +2136,54 @@ gamma" \
     drift_count=$(printf '%s' "$result" | jq -r '[.[] | .variants[].status] | map(select(. == "drift")) | length')
     [ "$drift_count" -eq 3 ]
 }
+
+# ---------------------------------------------------------------------------
+# Fix #537-s1: leading-slash ref bypass in _validate_image_ref
+# Regression guard: a ref like /alpine:3.21 has an empty first_segment after
+# the leading '/' is split off.  The former code fell through to the
+# "Docker Hub org name" path with first_segment="", accepting the ref.
+# The fix adds an explicit leading-slash guard at function entry.
+# ---------------------------------------------------------------------------
+
+@test "s1-fix: leading-slash ref /alpine:3.21 is rejected by _validate_image_ref" {
+    local lineage_dir="$TEST_TEMP_DIR/s1fix/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/myimage-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myimage",
+  "tag": "1.0",
+  "base_image_ref": "/alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe stub that fails loudly if called — must NOT be called
+    local probe_stub
+    probe_stub=$(mktemp "$TEST_TEMP_DIR/slash-probe.XXXXXX")
+    cat > "$probe_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "PROBE WAS CALLED on leading-slash ref — validation bypass!" >&2
+exit 1
+STUB
+    chmod +x "$probe_stub"
+
+    local result stderr_out rc=0
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/tmp/s1fix-stderr.txt) || rc=$?
+    stderr_out=$(cat /tmp/s1fix-stderr.txt)
+
+    # Script must exit 0 — rejection is not fatal
+    [ "$rc" -eq 0 ]
+
+    # Probe must NOT have been called
+    ! echo "$stderr_out" | grep -q "PROBE WAS CALLED"
+
+    # Entry must be skipped — result is empty array
+    local result_len
+    result_len=$(printf '%s' "$result" | jq 'length')
+    [ "$result_len" -eq 0 ]
+}
