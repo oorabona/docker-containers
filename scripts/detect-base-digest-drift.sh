@@ -282,6 +282,8 @@ for lineage_file in "${lineage_files[@]}"; do
     if [[ "$BASELINE_ONLY" != "true" ]]; then
         # _ACTIVE_TAGS_OVERRIDE_<container>: test hook — set to a newline-separated list
         # of active tags for a container to bypass ./make list-builds in tests.
+        # If _VALID_CONTAINERS_OVERRIDE is set (test mode) and _ACTIVE_TAGS_OVERRIDE_*
+        # is NOT set, disable filtering for that container (test-mode default).
         #
         # Cache key: _active_tags_cache_<container> (associative array not available in
         # bash <4.2 without namerefs; use indirect variable via printf '%s' trick).
@@ -290,9 +292,13 @@ for lineage_file in "${lineage_files[@]}"; do
             # Check for per-container test hook first
             _override_var="_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
             if [[ -n "${!_override_var:-}" ]]; then
+                # Override is explicitly set (even if empty) — use it as-is
                 printf -v "$_active_tags_var" '%s' "${!_override_var}"
+            elif [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" ]]; then
+                # Test mode detected but no per-container override — disable filtering
+                printf -v "$_active_tags_var" '%s' "__TEST_NO_FILTER__"
             else
-                # list-builds may fail transiently (upstream discovery, version script timeout).
+                # Production mode: list-builds may fail transiently (upstream discovery, version script timeout).
                 # Skip this container's variants (stale-lineage filter disabled) rather than
                 # aborting the entire drift detector, which would suppress drift reports
                 # for all subsequent containers.
@@ -311,9 +317,9 @@ for lineage_file in "${lineage_files[@]}"; do
             fi
         fi
         _active_tags="${!_active_tags_var}"
-        # Skip filtering if: list-builds failed (__SKIPPED__), override empty string (test mode no-filter),
-        # or tag matches active set
-        if [[ "$_active_tags" != "__SKIPPED__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
+        # Skip filtering if: list-builds failed (__SKIPPED__), test-mode no-filter (__TEST_NO_FILTER__),
+        # empty override (backward compat), or tag matches active set
+        if [[ "$_active_tags" != "__SKIPPED__" && "$_active_tags" != "__TEST_NO_FILTER__" && -n "$_active_tags" ]] && ! grep -qxF "$variant_tag" <<<"$_active_tags"; then
             printf '::notice::Skipping stale lineage entry: %s:%s (no longer in active build matrix)\n' \
                 "$(_escape_gha_command "$container")" "$variant_tag_safe" >&2
             continue
@@ -373,9 +379,16 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Legacy: lineage lacks base_image_digest field
+    # Skip if base_image_ref is unknown or missing (must run BEFORE legacy check
+    # which would otherwise emit a legacy record for a corrupt/unknown entry).
+    if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
+        printf '::warning::Skipping %s: base_image_ref is unknown or missing\n' "$(_escape_gha_command "$basename_file")" >&2
+        continue
+    fi
+
+    # Legacy: lineage lacks base_image_digest field (known base_image_ref only)
     if [[ -z "$recorded_digest" || "$recorded_digest" == "unresolved" ]]; then
-        safe_ref=$(_sanitize_for_json "${base_image_ref:-unknown}")
+        safe_ref=$(_sanitize_for_json "$base_image_ref")
         variant_json=$(jq -cn \
             --arg variant_tag  "$variant_tag" \
             --arg base_ref     "$safe_ref" \
@@ -383,12 +396,6 @@ for lineage_file in "${lineage_files[@]}"; do
             '{variant_tag: $variant_tag, base_image_ref: $base_ref, status: $status, legacy: true}')
         # Normal mode: legacy is treated as drift-equivalent (will trigger PR)
         _container_variants["$container"]+="${variant_json}"$'\n'
-        continue
-    fi
-
-    # Skip if no base_image_ref
-    if [[ -z "$base_image_ref" || "$base_image_ref" == "unknown" ]]; then
-        printf '::warning::Skipping %s: base_image_ref is unknown\n' "$(_escape_gha_command "$basename_file")" >&2
         continue
     fi
 
