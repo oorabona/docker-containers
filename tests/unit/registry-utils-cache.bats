@@ -640,7 +640,8 @@ CURL_IDX_BAD
     export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
     unset _GHCR_CACHE_DIR_WARNED
 
-    # First call: should emit a warning to stderr and return 1.
+    # Degraded mode: function must return 0 (non-fatal) even when dir creation
+    # fails.  Warning must appear exactly once across N calls (sentinel).
     run bash -c '
         source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
         source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
@@ -650,10 +651,47 @@ CURL_IDX_BAD
         _ghcr_ensure_cachedir
         _ghcr_ensure_cachedir
     '
-    # All three calls should return 1 (failure to create).
-    [ "$status" -eq 1 ]
+    # All three calls must return 0 (degraded mode is non-fatal).
+    [ "$status" -eq 0 ]
 
     # Warning must appear in stderr exactly once (sentinel suppresses repeats).
+    local warning_count
+    warning_count=$(echo "$output" | grep -c '::warning::' || true)
+    [ "$warning_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# D2-test-14: graceful degrade — unwritable cache dir must not prevent
+# network fetches in _ghcr_fetch_index
+# ---------------------------------------------------------------------------
+
+@test "unwritable cache dir: _ghcr_ensure_cachedir is non-fatal (rc=0, warning once)" {
+    # Direct test of the fix: _ghcr_ensure_cachedir must ALWAYS return 0.
+    # When the cache dir cannot be created it emits a single ::warning:: and
+    # returns 0 so that callers (running under set -e) do not abort.
+    # This is the regression guard for the gate r1 finding.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    run bash -c '
+        source "'"$REPO_ROOT"'/helpers/logging.sh" 2>/dev/null || true
+        source "'"$REPO_ROOT"'/helpers/registry-utils.sh"
+        export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
+        unset _GHCR_CACHE_DIR_WARNED
+        # Simulate a caller using set -e: if _ghcr_ensure_cachedir returned 1
+        # the subshell would exit with rc=1 here.
+        set -e
+        _ghcr_ensure_cachedir
+        _ghcr_ensure_cachedir
+        echo "REACHED_AFTER_BOTH_CALLS"
+    '
+    # Must exit 0: degraded mode is non-fatal even under set -e.
+    [ "$status" -eq 0 ]
+
+    # Must have printed the continuation sentinel (not aborted early).
+    echo "$output" | grep -q 'REACHED_AFTER_BOTH_CALLS'
+
+    # Warning must appear exactly once (not suppressed, not repeated).
     local warning_count
     warning_count=$(echo "$output" | grep -c '::warning::' || true)
     [ "$warning_count" -eq 1 ]

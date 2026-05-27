@@ -41,14 +41,20 @@ _GHCR_IDX_HDRS=""
 # no-ops (exotic FS, restricted env) — chmod kept as belt-and-suspenders to
 # fix a pre-existing looser directory from an older run.
 _ghcr_ensure_cachedir() {
-    if ! ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
-        if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
-            echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; degraded (uncached, slow) mode" >&2
-            _GHCR_CACHE_DIR_WARNED=1
-        fi
-        return 1
+    if ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
+        chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+        return 0
     fi
-    chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+    # Cache directory creation failed → run in degraded (uncached) mode.
+    # Emit a one-time ::warning:: for CI diagnostics, then return success
+    # so callers do not interpret this as a fatal error.  The actual cache
+    # writes will fail benignly downstream (best-effort) and force fresh
+    # network fetches each call.
+    if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+        echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; running in degraded (uncached, slow) mode" >&2
+        _GHCR_CACHE_DIR_WARNED=1
+    fi
+    return 0
 }
 
 # Sanitize a string into a filesystem-safe filename component.
