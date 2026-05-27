@@ -51,3 +51,43 @@ Affected containers (sslh, web-shell, wordpress) currently have v1 lineage files
 ### Integration smoke origin
 
 `tests/unit/dashboard-integration-smoke.bats` was added per `feedback_perf_integration_smoke_test.md`: a layer-shifting refactor (base_image written at build time, read at dashboard-regen time) requires an end-to-end mutation guard. Unit tests of each individual function are insufficient because the bug manifests at the seam between the write phase and the read phase. The smoke's SMOKE-01 and SMOKE-07 tests guard Fix A1 specifically: disabling the `_BUILD_ARGS_RESOLVED` substitution loop causes `base_image_ref` to read `${OS_IMAGE_BASE}:${OS_IMAGE_TAG}` in the written lineage file, which SMOKE-01 catches via a concrete-value assertion.
+
+## #532 — Universal base-image digest drift detection cron
+
+**Issue:** #532. Completes the 3-issue architectural series (#530 → #531 → #532).
+
+### Problem
+
+After #530 began recording `base_image_digest` in lineage files, there was no automated mechanism to detect when a container's base image had been updated upstream without the container being rebuilt. Stale base images accumulate security patches silently.
+
+### Decision
+
+Daily cron (via `upstream-monitor.yaml`) compares each container/variant's `base_image_digest` from the GHA lineage cache against the current registry digest via `docker buildx imagetools inspect --format '{{json .Manifest}}' | jq -r '.digest'` (canonical multi-arch image-index digest — order-independent, single source of truth matching `scripts/build-container.sh`). Drift opens one PR per drifted container listing all affected variants. Merging the PR updates `LAST_REBUILD.md` → `auto-build.yaml` path filter triggers rebuild → new lineage written → next-day cron sees match → no further PR.
+
+### Key design choices
+
+**Tri-state output** (`drift` / `unchanged` / `error` / `legacy`): probe failures are not collapsed to drift to avoid false-positive rebuilds. `legacy` status handles pre-#530 lineage without `base_image_digest`.
+
+**Per-container grouping**: output is `[{container, variants[]}]` rather than one record per variant. This enables one PR per container (not one per variant), reducing PR noise.
+
+**`is_lineage_sidecar()` helper** (`helpers/lineage-utils.sh`): single source of truth for identifying `.sbom.json`, `.changelog.json`, `.history.json`, `ext-*.json` files that should not be treated as container lineage. Eliminates regex scatter across consumers.
+
+**`LAST_REBUILD.md` reuse**: the existing `<container>/LAST_REBUILD.md` pattern (written by upstream-monitor for version updates, watched by auto-build path filter) is reused with a distinct `## base-digest-drift (YYYY-MM-DD)` section header. No new marker file needed.
+
+**Branch-upsert dedup** (`update/base-digest-<container>` — no date suffix): peter-evans/create-pull-request upserts the branch on re-run. N cron firings produce 1 open PR with the latest digest delta, not N PRs.
+
+**`--baseline-only` flag**: suppresses real drift records, emits only `legacy` entries. Operator runs ONCE after #532 merge to baseline pre-#530 lineage files without flooding CI with drift PRs.
+
+**Multi-arch index digest**: `docker buildx imagetools inspect --format '{{json .Manifest}}' <ref> | jq -r '.digest'` — same extraction as `scripts/build-container.sh`. Returns the image-index manifest digest, not a per-arch digest.
+
+### Cascade pattern (chained-on-own)
+
+If container A's base is container B (also project-produced), and both drift, two PRs open. Merging B's PR first avoids a 2-day cascade. PR body documents this. The `parent_lineage_digest` field for cascade-suppression is deferred to a follow-up issue.
+
+### Rejected alternatives
+
+**(a) Per-variant PRs.** Rejected: N variants per container would open N PRs, most for minor digest-only refreshes. Per-container grouping keeps PR volume manageable.
+
+**(b) Auto-merge for digest-only drifts.** Deferred: requires explicit policy decision about risk tolerance for unreviewed base image changes.
+
+**(c) Event-driven detection (registry webhooks).** Deferred: webhook infrastructure cost exceeds benefit at current project scale; daily cron is sufficient.

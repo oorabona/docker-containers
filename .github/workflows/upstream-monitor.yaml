@@ -638,6 +638,10 @@ jobs:
     # tag, and the per-image ::warning:: lines from the helper provide the
     # signal for maintainer attention.
     continue-on-error: true
+    # Fix 2: expose explicit sync status so detect-digest-drift can distinguish
+    # a real success from a continue-on-error-swallowed failure.
+    outputs:
+      sync_succeeded: ${{ steps.sync.outputs.success }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -666,6 +670,7 @@ jobs:
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Sync base images to GHCR (all containers)
+        id: sync
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
@@ -673,8 +678,18 @@ jobs:
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
 
-          # Discover all containers and their current versions
-          containers_json=$(./make list 2>/dev/null | jq -Rc '[inputs]' || echo '[]')
+          # Discover all containers and their current versions.
+          # Capture stdout and stderr separately to avoid docker-compose status
+          # line on stderr being mixed with container names.
+          make_list_out=$(./make list 2>/dev/null) || {
+            echo "::error::./make list failed" >&2
+            exit 2
+          }
+          if [[ -z "${make_list_out// /}" ]]; then
+            echo "::error::./make list returned empty container set" >&2
+            exit 2
+          fi
+          containers_json=$(echo "$make_list_out" | jq -Rnc '[inputs]')
 
           versions_json="{}"
           for c in $(echo "$containers_json" | jq -r '.[]'); do
@@ -684,7 +699,16 @@ jobs:
           done
 
           images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
-          sync_base_images_to_ghcr "$images"
+          # Fix 2: capture real sync exit code so the output is accurate even
+          # when the job succeeds via continue-on-error swallowing failures.
+          sync_rc=0
+          sync_base_images_to_ghcr "$images" || sync_rc=$?
+          if [[ "$sync_rc" -eq 0 ]]; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            exit "$sync_rc"
+          fi
 
   # Check 3rd party dependency versions (runs in parallel with base image checks)
   check-dependency-updates:
@@ -1118,3 +1142,397 @@ jobs:
           echo "   Updates: $UPDATE_COUNT"
           echo "   Max severity: $MAX_SEVERITY"
           echo "   Branch: update/${CONTAINER}-deps"
+
+  detect-digest-drift:
+    name: Detect base image digest drift
+    # Wait for sync-base-images so probes compare against today's freshly-synced
+    # GHCR mirror rather than yesterday's copy.  Without this ordering, a real
+    # upstream rebase that happened since the previous sync would be invisible for
+    # the current day's run.
+    # NOTE: create-dependency-update-prs is intentionally NOT in needs — drift
+    # detection is independent of dep-PR fanout.  Including it would silently
+    # skip drift detection whenever skip_dep_fanout (or equivalent) is set.
+    needs: [sync-base-images]
+    # No `if:` gate on sync_succeeded: drift detection probes UPSTREAM via
+    # `buildx imagetools inspect` and does NOT read from the local GHCR mirror
+    # that sync-base-images populates.  The two jobs are orthogonal.  Gating on
+    # sync_succeeded caused one transient per-image 429/blip to skip drift
+    # detection for ALL containers — a silent miss repo-wide.  `needs` is kept
+    # for ordering (run after sync attempts), but outcome does not matter.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
+    concurrency:
+      group: digest-drift-detect
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      drift_containers: ${{ steps.detect.outputs.drift_containers }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Restore lineage cache
+        # Cache miss is acceptable — script handles empty dir gracefully (emits warning)
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
+
+      - name: Log in to Docker Hub
+        # Authenticated probes avoid 429 rate-limiting that would silently drop
+        # drift signals for busy Docker Hub images.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Log in to GitHub Container Registry
+        # GHCR login avoids rate-limiting for base_image_ref values pointing at
+        # the GHCR mirror (ghcr.io/owner/*).
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Install yq
+        shell: bash
+        run: |
+          # Install yq on PATH (mikefarah/yq action only runs yq inside the
+          # action itself, it does NOT put yq on PATH for subsequent steps).
+          # Use checksum-verified version from create-update-prs to prevent tampering.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Detect drift
+        id: detect
+        env:
+          # SECURITY: user-supplied workflow_dispatch input exposed via env-block
+          # to prevent GHA expression injection in the run: shell body.
+          # Never reference ${{ inputs.container }} inside run: directly.
+          REQUESTED_CONTAINER: ${{ inputs.container }}
+        run: |
+          chmod +x scripts/detect-base-digest-drift.sh
+          detect_rc=0
+          drift_json=$(./scripts/detect-base-digest-drift.sh 2>/tmp/drift-detect-stderr.log) || detect_rc=$?
+
+          # Always replay buffered stderr — per-variant ::error:: diagnostics must
+          # be visible regardless of whether the detector succeeded or failed.
+          # Under bash -e, the bare command substitution above would abort the step
+          # immediately on non-zero exit, leaving the replay block unreachable.
+          # Capturing the exit code first ensures the replay always runs.
+          if [[ -s /tmp/drift-detect-stderr.log ]]; then
+            while IFS= read -r line; do
+              printf '%s\n' "$line"
+            done < /tmp/drift-detect-stderr.log >&2
+          fi
+
+          if [[ $detect_rc -ne 0 ]]; then
+            echo "::error::Drift detector failed with exit code $detect_rc" >&2
+            exit $detect_rc
+          fi
+
+          echo "$drift_json" > /tmp/drift.json
+
+          # Surface probe error count; per-variant ::error:: lines are already
+          # emitted by the script itself (escaped) and passed through via stderr above.
+          # Do NOT re-compose warning lines from drift_json fields here — those fields
+          # are untrusted lineage data and would reintroduce GHA command injection.
+          error_count=$(echo "$drift_json" | jq '[.[] | .variants[] | select(.status == "error")] | length' || echo 0)
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::warning::${error_count} digest probe(s) failed — drift may be undetected for those variants (see ::error:: lines above)"
+          fi
+
+          # Validate drift_json shape before downstream use.  An invalid JSON
+          # payload (e.g. from a poisoned lineage entry) must fail loudly rather
+          # than silently masking drift as "no containers need rebuild".
+          if ! jq_err=$(jq -e . <<<"$drift_json" 2>&1 >/dev/null); then
+            echo "::error::Drift JSON is invalid; lineage may be corrupted: ${jq_err}" >&2
+            exit 1
+          fi
+
+          # Scope to requested container when workflow_dispatch.inputs.container is set.
+          # Older jobs in this workflow already honor this input; apply the same
+          # filter here so a manual run for one container does not fan out drift
+          # PRs across all drifting containers.
+          #
+          # SECURITY: inputs.container is a workflow_dispatch user-supplied string.
+          # Interpolating ${{ inputs.container }} directly inside the shell body of
+          # a `run:` block allows injection — a value like `foo" ]]; then cmd; #`
+          # is substituted BEFORE bash parses the script.  Canonical GHA mitigation:
+          # expose via `env:` (set above as REQUESTED_CONTAINER) so the value is
+          # treated as data, never as code.  See OWASP / GitHub security hardening
+          # docs on "Untrusted input in workflow expressions".
+          if [[ -n "$REQUESTED_CONTAINER" ]]; then
+            drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
+            if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
+              # Escape for GHA ::notice:: — %0A in value would inject a new command.
+              _escaped_container="${REQUESTED_CONTAINER//%/%25}"
+              _escaped_container="${_escaped_container//$'\n'/%0A}"
+              _escaped_container="${_escaped_container//$'\r'/%0D}"
+              echo "::notice::No drift detected for requested container ${_escaped_container}"
+              echo "drift_containers=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          # Extract container names with actionable drift (drift or legacy status)
+          drift_containers=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+            || echo "[]")
+          echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
+
+          count=$(echo "$drift_containers" | jq 'length')
+          if [[ "$count" -gt 0 ]]; then
+            echo "::notice::Digest drift detected for ${count} container(s): ${drift_containers}"
+          else
+            echo "::notice::No base image digest drift detected"
+          fi
+
+  open-drift-prs:
+    name: Open drift PR for ${{ matrix.container }}
+    needs: [detect-digest-drift]
+    if: |
+      needs.detect-digest-drift.result == 'success' &&
+      needs.detect-digest-drift.outputs.drift_containers != '[]' &&
+      needs.detect-digest-drift.outputs.drift_containers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Per-container concurrency lane: each matrix entry gets its own group so
+    # GitHub's 1-running-1-pending limit does not cancel pending drift PRs for
+    # other containers when multiple containers drift simultaneously.
+    # The broader digest-drift-detect group (on detect-digest-drift job) still
+    # serialises the detect phase across concurrent workflow runs.
+    concurrency:
+      group: digest-drift-${{ matrix.container }}
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        container: ${{ fromJson(needs.detect-digest-drift.outputs.drift_containers) }}
+      max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
+      fail-fast: false  # One container's transient failure must not block others
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read  # Required: detect-base-digest-drift.sh re-runs inside this job and probes GHCR digests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # App token required: GITHUB_TOKEN-authored PRs do not trigger downstream
+      # workflows (auto-build smoke check) by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Restore lineage cache
+        # Separate restore per matrix job: detect-digest-drift ran on a different runner.
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
+
+      - name: Log in to Docker Hub
+        # Re-detect probes registry anonymously without this; anonymous Docker Hub
+        # requests are rate-limited and can silently fail → false "no drift" result.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Log in to GitHub Container Registry
+        # Required when base_image_ref points to the GHCR mirror (ghcr.io/owner/*).
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Install yq
+        shell: bash
+        run: |
+          # Install yq on PATH for list-builds calls. Use checksum-verified
+          # version to prevent tampering in this write-capable workflow.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Re-detect drift for this container (idempotent)
+        id: drift-data
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          chmod +x scripts/detect-base-digest-drift.sh
+          # Unique temp paths per matrix entry — no cross-container contamination
+          # across sequential runs on the same runner.
+          drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
+          # Detector emits ::error:: lines to stderr for visibility; capture stdout
+          # and check exit code + JSON validity before processing.
+          detect_rc=0
+          ./scripts/detect-base-digest-drift.sh > "$drift_file" || detect_rc=$?
+          if [[ $detect_rc -ne 0 ]]; then
+            echo "::error::detect-base-digest-drift.sh exited with $detect_rc — aborting PR" >&2
+            exit 1
+          fi
+          drift_json=$(cat "$drift_file")
+          if [[ -z "$drift_json" || "$drift_json" == "[]" ]]; then
+            echo "::warning::detect-base-digest-drift.sh output empty — skipping (no drift)" >&2
+            echo "has_drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Validate JSON structure before downstream jq queries
+          if ! jq -e '.[0] | has("container")' >/dev/null 2>&1 <<<"$drift_json"; then
+            echo "::error::detect-base-digest-drift.sh output is invalid JSON — aborting PR" >&2
+            exit 1
+          fi
+
+          # Fix r8-2: scope error_count to current matrix container only.
+          # Without the .container filter, a transient probe failure on any
+          # unrelated container blocks PR creation for every other container.
+          error_count=$(echo "$drift_json" | jq --arg c "${{ matrix.container }}" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
+            exit 1
+          fi
+
+          # Check if this container actually has actionable drift
+          has_drift=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")] | length > 0')
+          echo "has_drift=${has_drift}" >> "$GITHUB_OUTPUT"
+          echo "drift_file=${drift_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Update LAST_REBUILD.md tracker
+        if: steps.drift-data.outputs.has_drift == 'true'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
+        run: |
+          chmod +x scripts/update-last-rebuild.sh
+          < "$DRIFT_FILE" ./scripts/update-last-rebuild.sh "$CONTAINER" "base-digest-drift"
+
+      - name: Build PR body
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: pr-body
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
+        run: |
+          drift_json=$(cat "$DRIFT_FILE")
+          today=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          variants=$(echo "$drift_json" | jq -c \
+            --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")]')
+
+          variants_drifted=$(echo "$variants" | jq 'length')
+          variants_total=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[]] | length')
+
+          # Fix r7-3: unique per-matrix temp paths — no cross-container contamination
+          pr_body_file="/tmp/pr-body-${{ github.run_id }}-${CONTAINER}.md"
+          pr_frontmatter_file="/tmp/pr-frontmatter-${{ github.run_id }}-${CONTAINER}.txt"
+          pr_table_file="/tmp/pr-table-${{ github.run_id }}-${CONTAINER}.txt"
+
+          # YAML frontmatter (machine-parseable for downstream tooling)
+          {
+            printf 'drift_kind: base-digest\n'
+            printf 'container: %s\n' "$CONTAINER"
+            printf 'detected_at: %s\n' "$today"
+            printf 'variants_drifted: %s\n' "$variants_drifted"
+            printf 'variants_total: %s\n' "$variants_total"
+          } > "$pr_frontmatter_file"
+
+          # Build variant table.
+          # Fix 2 (gate r9): escape backticks and pipes in variant_tag and base_image_ref
+          # before embedding in the markdown table to prevent injection via poisoned lineage.
+          printf '| Variant tag | Base image ref | Old digest | New digest |\n' > "$pr_table_file"
+          printf '|-------------|----------------|------------|------------|\n' >> "$pr_table_file"
+          echo "$variants" | jq -r \
+            '.[] |
+              (.variant_tag | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_tag |
+              (.base_image_ref | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_ref |
+              "| \($safe_tag) | \($safe_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
+            >> "$pr_table_file"
+
+          {
+            printf -- '---\n'
+            cat "$pr_frontmatter_file"
+            printf -- '---\n\n'
+            printf '# Base image digest drift — %s\n\n' "$CONTAINER"
+            cat "$pr_table_file"
+            printf '\n## Action\n\n'
+            printf 'Merging this PR appends a `## base-digest-drift` section to `%s/LAST_REBUILD.md`, which triggers `auto-build.yaml` via path filter. The rebuild captures the fresh base digest in the new lineage entry. Next-day cron sees match → no further drift PR.\n' "$CONTAINER"
+            printf '\n## Chained-on-own note\n\n'
+            printf "If \`%s\`'s base image is another project-produced container with an open base-digest-drift PR, prefer merging the upstream PR first to avoid a 2-day cascade.\n" "$CONTAINER"
+          } > "$pr_body_file"
+
+          echo "pr_body_file=${pr_body_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Import GPG key
+        # Repo requires signed commits (SECURITY.md §branch-protection). Mirror the
+        # pattern used by the dep-monitor PR step (lines ~467, ~1008) to ensure
+        # drift PRs also satisfy the signed-commit requirement.
+        if: steps.drift-data.outputs.has_drift == 'true'
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
+
+      - name: Open or update PR (branch-upsert)
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
+          branch: update/base-digest-${{ matrix.container }}
+          delete-branch: true
+          commit-message: "build(${{ matrix.container }}): base image digest drift — trigger rebuild"
+          committer: Olivier ORABONA <oorabona@users.noreply.github.com>
+          title: "📦 base-digest-drift(${{ matrix.container }}): upstream base image rebase"
+          body-path: ${{ steps.pr-body.outputs.pr_body_file }}
+
+      # Labels applied separately — peter-evans/create-pull-request has a race condition
+      # where addLabels fails with "Could not resolve to a node" on fresh PRs
+      - name: Apply labels
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          sleep 2
+          gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}"

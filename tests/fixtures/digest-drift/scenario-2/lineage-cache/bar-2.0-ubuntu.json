@@ -1,0 +1,15 @@
+{
+  "lineage_schema_version": 2,
+  "container": "bar",
+  "version": "2.0",
+  "tag": "2.0-ubuntu",
+  "flavor": "ubuntu",
+  "base_image_ref": "ubuntu:24.04",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "built_at": "2026-05-01T00:00:00Z",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "bar:2.0-ubuntu",
+    "ghcr": "ghcr.io/oorabona/bar:2.0-ubuntu"
+  }
+}

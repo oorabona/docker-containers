@@ -17,6 +17,25 @@ source "$PROJECT_ROOT/helpers/extension-utils.sh"
 # shellcheck source=../helpers/extension-duration-utils.sh
 [[ -f "$PROJECT_ROOT/helpers/extension-duration-utils.sh" ]] && source "$PROJECT_ROOT/helpers/extension-duration-utils.sh"
 
+# ---------------------------------------------------------------------------
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command.  Without this, a %0A/%0D in the value could terminate
+# the command early and inject another workflow command.  Mapping per GitHub's
+# runner spec:  %→%25  \n→%0A  \r→%0D
+#
+# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
+# inlined here to avoid importing the full base-cache helper.
+# ---------------------------------------------------------------------------
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
 # Function to check if multi-platform builds are supported (QEMU emulation)
 check_multiplatform_support() {
     # Cache the result to avoid repeated checks
@@ -267,13 +286,32 @@ _resolve_base_image() {
     fi
 
     # Resolve digest if we have a concrete image reference
+    # Use `docker buildx imagetools inspect --format '{{json .Manifest}}'` to obtain
+    # the IMAGE-INDEX (manifest-list) digest.  This is the same digest that
+    # detect-base-digest-drift.sh probes, so writer and probe always agree on
+    # multi-arch images.  The previous `docker manifest inspect | grep sha256 | head -1`
+    # pattern was order-dependent and could return a per-arch child digest instead
+    # of the index digest — causing a perpetual drift-PR loop.
     _BASE_DIGEST=""
     if [[ -n "$_BASE_IMAGE_REF" && ! "$_BASE_IMAGE_REF" =~ \$ ]]; then
-        _BASE_DIGEST=$(docker manifest inspect "$_BASE_IMAGE_REF" 2>/dev/null | grep -o '"sha256:[a-f0-9]*"' | head -1 | tr -d '"' || true)
+        _BASE_DIGEST=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$_BASE_IMAGE_REF" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
         if [[ -n "$_BASE_DIGEST" ]]; then
-            # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
-            printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
-            log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
+            # Fix r7-1: validate digest shape before embedding in label_args.
+            # A malformed value (spaces, shell metacharacters, injected flags)
+            # must never reach --label or --build-arg.
+            if [[ "$_BASE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                # Fix D: printf -v replaces eval; no shell-metacharacter injection vector
+                printf -v "$label_args_var" '%s --label org.opencontainers.image.base.digest=%s' "${!label_args_var}" "$_BASE_DIGEST"
+                log_info "Base image $_BASE_IMAGE_REF pinned: ${_BASE_DIGEST:0:19}..."
+            else
+                # Fix r23: explicitly clear _BASE_DIGEST on shape-validation failure so
+                # _emit_build_lineage writes "unresolved" (treated as legacy by the
+                # detector) rather than a malformed value that poisons comparisons.
+                # Fix r28: route through _escape_gha_command to prevent %0A/%0D in the
+                # malformed value from injecting additional GHA workflow commands.
+                printf '::warning::Malformed base digest '\''%s'\'' from manifest probe; discarding\n' "$(_escape_gha_command "$_BASE_DIGEST")" >&2
+                _BASE_DIGEST=""
+            fi
         fi
     fi
 }

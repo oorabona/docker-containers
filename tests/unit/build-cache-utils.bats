@@ -582,3 +582,94 @@ EOF
 
     [[ "$_BASE_IMAGE_REF" == "ghcr.io/second/library/postgres:17-alpine" ]]
 }
+
+# ---------------------------------------------------------------------------
+# Fix r10-1: LAST_REBUILD.md included in compute_build_digest
+#
+# Regression guard: modifying LAST_REBUILD.md must change the digest, so that
+# should_skip_build returns false after a drift PR modifies the file.
+# Without this fix, smart-skip would match the pre-PR digest and skip the
+# rebuild, leaving base digest unchanged → infinite drift-PR loop.
+# ---------------------------------------------------------------------------
+
+@test "r10-fix1a: LAST_REBUILD.md absent — digest is stable (baseline)" {
+    echo "FROM alpine:3.21" > Dockerfile
+
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-9a-f]{12}$ ]]
+    local digest_without="$output"
+
+    # Running a second time without LAST_REBUILD.md must return same digest
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    [ "$output" = "$digest_without" ]
+}
+
+@test "r10-fix1b: LAST_REBUILD.md present changes digest vs absent" {
+    echo "FROM alpine:3.21" > Dockerfile
+
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local digest_without="$output"
+
+    # Create LAST_REBUILD.md — digest must change
+    cat > LAST_REBUILD.md <<'EOF'
+## base-digest-drift
+
+Drift detected for alpine:3.21 on 2026-05-27.
+EOF
+
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local digest_with="$output"
+
+    # Must differ from the no-file digest
+    [ "$digest_with" != "$digest_without" ]
+}
+
+@test "r10-fix1c: modifying LAST_REBUILD.md changes digest (invalidates cache)" {
+    echo "FROM alpine:3.21" > Dockerfile
+
+    echo "## base-digest-drift v1" > LAST_REBUILD.md
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local digest_v1="$output"
+
+    # Append new content to LAST_REBUILD.md (simulates second drift PR)
+    echo "## base-digest-drift v2" >> LAST_REBUILD.md
+    run compute_build_digest "Dockerfile" ""
+    [ "$status" -eq 0 ]
+    local digest_v2="$output"
+
+    # Digest must change after modification
+    [ "$digest_v2" != "$digest_v1" ]
+}
+
+@test "r10-fix1d: LAST_REBUILD.md included in digest with postgres-style flavor" {
+    mkdir -p flavors extensions
+    cat > flavors/vector.yaml <<'EOF'
+name: vector
+extensions:
+  - pgvector
+EOF
+    cat > extensions/config.yaml <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.1"
+EOF
+    echo "FROM postgres:17-alpine" > Dockerfile
+
+    run compute_build_digest "Dockerfile" "vector"
+    [ "$status" -eq 0 ]
+    local digest_without="$output"
+
+    echo "## base-digest-drift" > LAST_REBUILD.md
+
+    run compute_build_digest "Dockerfile" "vector"
+    [ "$status" -eq 0 ]
+    local digest_with="$output"
+
+    # Digest must change even for postgres-style flavor
+    [ "$digest_with" != "$digest_without" ]
+}

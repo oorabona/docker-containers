@@ -1,0 +1,15 @@
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "version": "1.0",
+  "tag": "1.0-alpine",
+  "flavor": "alpine",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "built_at": "2026-05-01T00:00:00Z",
+  "github_actions": false,
+  "images": {
+    "dockerhub": "foo:1.0-alpine",
+    "ghcr": "ghcr.io/oorabona/foo:1.0-alpine"
+  }
+}
