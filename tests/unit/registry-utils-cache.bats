@@ -1336,7 +1336,7 @@ CURL_FRESH
 # the warning a second time.
 # ---------------------------------------------------------------------------
 
-@test "r6: cache-dir warning emitted exactly once across token + manifest_sizes calls (Defect B)" {
+@test "r6: cache-dir warning emitted at least once across token + manifest_sizes calls (Defect B)" {
     # Run in a subshell; both stderr streams (token subshell + parent direct
     # call) are merged to stdout so bats captures them in $output.
     # NOTE: do NOT redirect the token subshell's stderr to the token variable —
@@ -1348,27 +1348,26 @@ CURL_FRESH
         export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-$$"
         unset _GHCR_CACHE_DIR_WARNED
 
-        # ghcr_get_token runs inside a $() subshell.  Without the TMPDIR
-        # sentinel file, the parent would emit the warning again on the next
-        # _ghcr_ensure_cachedir call because env-var exports do not propagate
-        # child→parent.
+        # ghcr_get_token runs inside a $() subshell.  The env-var sentinel
+        # (_GHCR_CACHE_DIR_WARNED) does not propagate from child $() to parent,
+        # so each subshell invocation may re-emit the warning.  This is an
+        # acceptable cosmetic duplicate (no flake risk, unlike the former
+        # PID-keyed file sentinel which caused test flakes in shared /tmp).
         token=$(ghcr_get_token "oorabona/postgres") || true
 
-        # Subsequent call that internally calls _ghcr_ensure_cachedir in the
-        # parent context must NOT emit the warning a second time.
+        # Subsequent call that internally calls _ghcr_ensure_cachedir.
         ghcr_get_manifest_sizes "oorabona/postgres" "18-alpine" > /dev/null || true
     ' 2>&1
 
     # Must exit 0 overall.
     [ "$status" -eq 0 ]
 
-    # The cache-dir warning must appear exactly once (sentinel dedup working).
-    # Additional ::warning:: lines from Defect-B (fresh response without a
-    # verifiable Docker-Content-Digest) are expected and acceptable — the
-    # test's regression guard is specifically about the cache-dir warning.
+    # The cache-dir warning must appear at least once (degraded mode triggered).
+    # Duplicate warnings from $() subshells are acceptable — the regression
+    # guard is that degraded mode is announced, not that it is announced once.
     local cachedir_warning_count
     cachedir_warning_count=$(echo "$output" | grep -c 'degraded (uncached' || true)
-    [ "$cachedir_warning_count" -eq 1 ]
+    [ "$cachedir_warning_count" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1746,22 +1745,16 @@ CURL_NODIGEST
 }
 
 # ---------------------------------------------------------------------------
-# r9: Defect C — sentinel file cleanup (stale .ghcr_cache_warned.* files)
+# r9: Defect B (r12) — env-var sentinel; no file sentinel created
 # ---------------------------------------------------------------------------
 
-@test "r9-C: stale sentinel files older than 24h are cleaned up on degraded-mode entry" {
-    # A PID-keyed sentinel from a prior run that was never cleaned up must be
-    # removed when _ghcr_ensure_cachedir runs in degraded mode.
+@test "r9-C: degraded mode uses env-var sentinel only — no .ghcr_cache_warned file created" {
+    # r12: the file-based PID sentinel (${TMPDIR:-/tmp}/.ghcr_cache_warned.$$)
+    # was replaced by a pure env-var sentinel (_GHCR_CACHE_DIR_WARNED) to fix
+    # PID-reuse flakes in shared /tmp environments. Verify: after degraded-mode
+    # entry, no .ghcr_cache_warned.* file is created in TMPDIR.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
-
-    # Plant a "stale" sentinel in TMPDIR with a fake old PID.
-    local old_sentinel="${TMPDIR:-/tmp}/.ghcr_cache_warned.99999"
-    touch "$old_sentinel"
-    # Back-date it to 25 hours ago so the find -mmin +1440 threshold applies.
-    touch -d '25 hours ago' "$old_sentinel" 2>/dev/null || \
-        touch -t "$(date -d '25 hours ago' +'%Y%m%d%H%M' 2>/dev/null || date -v-25H +'%Y%m%d%H%M' 2>/dev/null)" \
-              "$old_sentinel" 2>/dev/null || true
 
     # Use an unwritable cache dir to trigger degraded mode.
     export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-r9c-$$"
@@ -1769,12 +1762,19 @@ CURL_NODIGEST
 
     _ghcr_ensure_cachedir 2>/dev/null || true
 
-    # Stale sentinel (>24h) must have been deleted.
-    if [ -f "$old_sentinel" ]; then
-        echo "FAIL: stale sentinel file was not cleaned up" >&2
-        rm -f "$old_sentinel"
+    # No file sentinel must be created.
+    local file_count
+    file_count=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".ghcr_cache_warned.$$" 2>/dev/null | wc -l)
+    [ "$file_count" -eq 0 ] || {
+        echo "FAIL: file sentinel was created (should use env-var only)" >&2
         return 1
-    fi
+    }
+
+    # Env-var sentinel must be set.
+    [ "${_GHCR_CACHE_DIR_WARNED:-}" = "1" ] || {
+        echo "FAIL: _GHCR_CACHE_DIR_WARNED not set after degraded mode" >&2
+        return 1
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -2057,6 +2057,81 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     # A warning must have been emitted about the untrusted dir.
     grep -q '::warning::' "$stderr_log" || {
         echo "FAIL: no ::warning:: emitted for symlink cache dir" >&2
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# r12: Defect A regression — invalidate must not delete through a symlinked
+# cache dir (_ghcr_cache_enabled now calls _ghcr_validate_cachedir).
+# ---------------------------------------------------------------------------
+
+@test "r12-A: ghcr_invalidate_token does not delete through a symlinked cache dir" {
+    # Regression: _ghcr_cache_enabled only checked non-empty + dir + writable,
+    # so a symlinked GHCR_CACHE_DIR would pass the guard.  ghcr_invalidate_token
+    # would then rm -f a path under the symlink, potentially deleting files in
+    # an attacker-controlled target directory.
+    #
+    # Fix: _ghcr_cache_enabled now calls _ghcr_validate_cachedir, which rejects
+    # symlinks.  invalidate must be a silent no-op when the symlink guard fires.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Create a symlinked cache dir pointing to an attacker-controlled target.
+    local target_dir="${WORK_DIR}/attacker-target"
+    local symlink_path="${WORK_DIR}/symlink-cache-r12a"
+    mkdir -p "$target_dir"
+    chmod 700 "$target_dir"
+    ln -s "$target_dir" "$symlink_path"
+
+    # Pre-plant a file in the target that invalidate should NOT delete.
+    local keyfile
+    keyfile="token-$(_ghcr_keyfile "oorabona/postgres")"
+    touch "${target_dir}/${keyfile}"
+
+    export GHCR_CACHE_DIR="$symlink_path"
+    unset _GHCR_CACHE_DIR_WARNED
+
+    # Call invalidate — must be a no-op (symlink fails _ghcr_cache_enabled).
+    ghcr_invalidate_token "oorabona/postgres" 2>/dev/null
+
+    # Target file must NOT have been deleted.
+    [ -f "${target_dir}/${keyfile}" ] || {
+        echo "FAIL: ghcr_invalidate_token deleted file through symlinked cache dir" >&2
+        return 1
+    }
+}
+
+@test "r12-B: _ghcr_invalidate_index does not delete through a symlinked cache dir" {
+    # Companion to r12-A for the index invalidation path.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    local target_dir="${WORK_DIR}/attacker-target-r12b"
+    local symlink_path="${WORK_DIR}/symlink-cache-r12b"
+    mkdir -p "$target_dir"
+    chmod 700 "$target_dir"
+    ln -s "$target_dir" "$symlink_path"
+
+    # Pre-plant body+hdrs files in the target that invalidate should NOT delete.
+    local k
+    k="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    touch "${target_dir}/idx-${k}.body"
+    touch "${target_dir}/idx-${k}.hdrs"
+
+    export GHCR_CACHE_DIR="$symlink_path"
+    unset _GHCR_CACHE_DIR_WARNED
+
+    # Call invalidate — must be a no-op.
+    _ghcr_invalidate_index "oorabona/postgres" "18-alpine" 2>/dev/null
+
+    # Target files must NOT have been deleted.
+    [ -f "${target_dir}/idx-${k}.body" ] || {
+        echo "FAIL: _ghcr_invalidate_index deleted body through symlinked cache dir" >&2
+        return 1
+    }
+    [ -f "${target_dir}/idx-${k}.hdrs" ] || {
+        echo "FAIL: _ghcr_invalidate_index deleted hdrs through symlinked cache dir" >&2
         return 1
     }
 }

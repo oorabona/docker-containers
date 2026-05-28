@@ -44,7 +44,11 @@ _GHCR_IDX_HDRS=""
 # invalidates are silent no-ops.  The functional API (token fetch, manifest
 # fetch) still operates end-to-end in degraded mode.
 _ghcr_cache_enabled() {
-    [[ -n "${GHCR_CACHE_DIR:-}" ]] && [[ -d "${GHCR_CACHE_DIR}" ]] && [[ -w "${GHCR_CACHE_DIR}" ]]
+    [[ -n "${GHCR_CACHE_DIR:-}" ]] || return 1
+    [[ -d "${GHCR_CACHE_DIR}" ]] || return 1
+    [[ -w "${GHCR_CACHE_DIR}" ]] || return 1
+    _ghcr_validate_cachedir "${GHCR_CACHE_DIR}" || return 1
+    return 0
 }
 
 # Validate that a cache directory is safe to trust: must be a real directory
@@ -148,22 +152,15 @@ _ghcr_ensure_cachedir() {
     # writes will fail benignly downstream (best-effort) and force fresh
     # network fetches each call.
     #
-    # Child→parent: `export` does NOT propagate from a $() subshell back to
-    # the parent process (empirically verified: each $() is a fork; env changes
-    # in the child are invisible to the parent).  Use a TMPDIR-keyed sentinel
-    # file so the "warn once" dedup works when _ghcr_ensure_cachedir is called
-    # from both a $() subshell (e.g. ghcr_get_token) AND the parent directly.
-    #
-    # Sentinel hygiene: the file is cleaned up via a best-effort find sweep of
-    # sentinels older than 24 h on first call, preventing accumulation from
-    # prior runs whose PIDs have been recycled.
-    local _sentinel="${TMPDIR:-/tmp}/.ghcr_cache_warned.$$"
-    if [[ ! -f "$_sentinel" ]]; then
+    # Dedup: use an exported env var only.  A prior file-based sentinel
+    # (${TMPDIR:-/tmp}/.ghcr_cache_warned.$$) was removed because PID reuse
+    # in shared /tmp environments caused stale sentinels from prior runs to
+    # suppress the first warning of a new run, causing test flakes.  The env
+    # var is sufficient for dedup within a single process tree; child→parent
+    # propagation is not needed (a child subshell re-emitting the warning is
+    # an acceptable cosmetic duplicate, far cheaper than test flakiness).
+    if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
         echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; running in degraded (uncached, slow) mode" >&2
-        touch "$_sentinel" 2>/dev/null || true
-        # Best-effort cleanup of stale sentinels from previous runs (>24h old).
-        find "${TMPDIR:-/tmp}" -maxdepth 1 -name '.ghcr_cache_warned.*' -mmin +1440 \
-            -delete 2>/dev/null || true
     fi
     export _GHCR_CACHE_DIR_WARNED=1
     return 0
