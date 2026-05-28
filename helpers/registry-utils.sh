@@ -35,12 +35,61 @@ _GHCR_IDX_HDRS=""
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Validate that a cache directory is safe to trust: must be a real directory
+# (not a symlink to an attacker-controlled path) and owned by the current UID.
+# A dir with loose permissions (e.g. 0755) that is OWNED by us is fixable via
+# chmod — the risk is directory-listing only, not write poisoning.
+# A dir owned by another UID is unrecoverable: an attacker controls the content.
+# A symlink is unrecoverable: the target could point to hostile storage.
+# Returns:
+#   0 — safe (and permissions corrected to 0700 if they were loose)
+#   1 — symlink or wrong owner — caller MUST switch to a private mktemp dir
+_ghcr_validate_cachedir() {
+    local d="$1"
+    # Must exist as a directory.
+    [[ -d "$d" ]] || return 1
+    # Reject symlinks: the target could be a hostile location.
+    [[ ! -L "$d" ]] || return 1
+    # Owner must be the current process UID.
+    local owner
+    owner=$(stat -c '%u' "$d" 2>/dev/null) || return 1
+    [[ "$owner" == "$(id -u)" ]] || return 1
+    # Mode may be looser than 0700 (e.g. created by an older version or test
+    # fixtures that use plain mkdir).  We own the dir, so chmod it closed.
+    chmod 700 "$d" 2>/dev/null || true
+    return 0
+}
+
 # Create the cache directory lazily (idempotent; silent under set -e).
 # 700 so token files are not world-readable on multi-user systems.
 # umask 077 subshell ensures the dir is born 0700 even if the trailing chmod
 # no-ops (exotic FS, restricted env) — chmod kept as belt-and-suspenders to
 # fix a pre-existing looser directory from an older run.
+#
+# Security: if GHCR_CACHE_DIR already exists as a symlink or is owned by
+# another UID, it is untrusted.  A warning is emitted and GHCR_CACHE_DIR is
+# overridden to a fresh per-process mktemp directory for the rest of this run.
+# Dirs with loose permissions that we own are silently fixed (chmod 700) and
+# reused — the "attacker" must control the inode, not just list the directory.
 _ghcr_ensure_cachedir() {
+    # If the directory already exists, validate it before trusting it.
+    if [[ -e "${GHCR_CACHE_DIR}" ]]; then
+        if ! _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
+            # Symlink or wrong owner — untrusted; switch to a private mktemp dir.
+            if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+                echo "::warning::GHCR cache dir ${GHCR_CACHE_DIR} owner/mode untrusted; switching to private mktemp dir" >&2
+                export _GHCR_CACHE_DIR_WARNED=1
+            fi
+            GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null) || {
+                export _GHCR_CACHE_DIR_WARNED=1
+                return 0
+            }
+            chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+            return 0
+        fi
+        return 0
+    fi
+    # Directory does not exist yet — create with safe mode.
     if ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
         chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
         return 0
@@ -50,13 +99,23 @@ _ghcr_ensure_cachedir() {
     # so callers do not interpret this as a fatal error.  The actual cache
     # writes will fail benignly downstream (best-effort) and force fresh
     # network fetches each call.
-    # Use a TMPDIR-based sentinel file keyed by the top-level PID so the
-    # "warn once" dedup works across $() subshells (env var exports don't
-    # propagate from child back to parent).
+    #
+    # Child→parent: `export` does NOT propagate from a $() subshell back to
+    # the parent process (empirically verified: each $() is a fork; env changes
+    # in the child are invisible to the parent).  Use a TMPDIR-keyed sentinel
+    # file so the "warn once" dedup works when _ghcr_ensure_cachedir is called
+    # from both a $() subshell (e.g. ghcr_get_token) AND the parent directly.
+    #
+    # Sentinel hygiene: the file is cleaned up via a best-effort find sweep of
+    # sentinels older than 24 h on first call, preventing accumulation from
+    # prior runs whose PIDs have been recycled.
     local _sentinel="${TMPDIR:-/tmp}/.ghcr_cache_warned.$$"
     if [[ ! -f "$_sentinel" ]]; then
         echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; running in degraded (uncached, slow) mode" >&2
         touch "$_sentinel" 2>/dev/null || true
+        # Best-effort cleanup of stale sentinels from previous runs (>24h old).
+        find "${TMPDIR:-/tmp}" -maxdepth 1 -name '.ghcr_cache_warned.*' -mmin +1440 \
+            -delete 2>/dev/null || true
     fi
     export _GHCR_CACHE_DIR_WARNED=1
     return 0
@@ -319,22 +378,35 @@ _ghcr_fetch_index() {
         # digest mismatch signals a corrupt or tampered response — do not use it.
         local idx_digest_header idx_digest_hex
         idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:' 2>/dev/null | head -1 | tr -d '\r' || true)
-        if [[ -n "$idx_digest_header" ]]; then
-            # Strict single-token extraction: anchored regex rejects headers with
-            # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
-            # ##*sha256: would silently parse to the last token.
-            if [[ "$idx_digest_header" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
-                idx_digest_hex="${BASH_REMATCH[1]}"
-            else
-                idx_digest_hex=""
-            fi
-            if [[ "${#idx_digest_hex}" -eq 64 ]]; then
-                if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
-                    echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
-                    rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
-                    return 1
-                fi
-            fi
+        if [[ -z "$idx_digest_header" ]]; then
+            # Fresh response carries no Docker-Content-Digest header — the body
+            # cannot be cryptographically verified.  Return the data best-effort
+            # (already in _GHCR_IDX_BODY/_GHCR_IDX_HDRS) but DO NOT memoize to
+            # the cache.  Security invariant: only verifiable content is admitted
+            # to the cache; on-the-fly serving without memoization is allowed.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} lacks Docker-Content-Digest; not caching" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            return 0
+        fi
+        # Strict single-token extraction: anchored regex rejects headers with
+        # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
+        # ##*sha256: would silently parse to the last token.
+        if [[ "$idx_digest_header" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+            idx_digest_hex="${BASH_REMATCH[1]}"
+        else
+            idx_digest_hex=""
+        fi
+        if [[ "${#idx_digest_hex}" -ne 64 ]]; then
+            # Header present but malformed (wrong length, non-hex, multiple tokens).
+            # Same treatment as missing: serve body, skip cache admission.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} has malformed Docker-Content-Digest; not caching" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            return 0
+        fi
+        if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
+            echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            return 1
         fi
 
         # Best-effort cache write: move verified tmp files into place.

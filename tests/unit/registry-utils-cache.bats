@@ -1063,11 +1063,17 @@ CURL_NL
     # A network INDEX fetch must have been logged (the evicted cache forced a re-fetch).
     grep -q '^INDEX' "$CALLS"
 
-    # The re-cached body file must NOT contain the tampered bytes.
-    [ -f "$body_file" ]
-    local cached_body
-    cached_body=$(cat "$body_file")
-    [[ "$cached_body" != 'TAMPERED_INDEX_BODY' ]]
+    # The default shim emits 'Docker-Content-Digest: sha256:idx' (13 chars —
+    # not a full 64-char hex).  The Defect-B fix (fresh response with
+    # unverifiable digest → skip cache admission, still return body) means the
+    # body file is NOT re-populated on this path.  The tampered bytes must
+    # still have been evicted, but the new body was not re-cached.
+    # If the body file exists it must not contain the tampered bytes.
+    if [ -f "$body_file" ]; then
+        local cached_body
+        cached_body=$(cat "$body_file")
+        [[ "$cached_body" != 'TAMPERED_INDEX_BODY' ]]
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1347,10 +1353,13 @@ CURL_FRESH
     # Must exit 0 overall.
     [ "$status" -eq 0 ]
 
-    # Exactly 1 ::warning:: line must appear across both calls combined.
-    local warning_count
-    warning_count=$(echo "$output" | grep -c '::warning::' || true)
-    [ "$warning_count" -eq 1 ]
+    # The cache-dir warning must appear exactly once (sentinel dedup working).
+    # Additional ::warning:: lines from Defect-B (fresh response without a
+    # verifiable Docker-Content-Digest) are expected and acceptable — the
+    # test's regression guard is specifically about the cache-dir warning.
+    local cachedir_warning_count
+    cachedir_warning_count=$(echo "$output" | grep -c 'degraded (uncached' || true)
+    [ "$cachedir_warning_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1585,5 +1594,159 @@ CURL_FRESH_R8
         if grep -q 'POISONED_CONTENT_INJECTED_BY_ATTACKER' "$body_file"; then
             echo "FAIL: poisoned body still in cache after refetch"; return 1
         fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# r9: Defect A — cache dir trust validation
+# ---------------------------------------------------------------------------
+
+@test "r9-A1: world-writable cache dir is silently fixed (chmod 700, same dir reused)" {
+    # A dir owned by the current user but with mode 0777 must be fixed in-place
+    # (chmod to 0700) rather than switched to a mktemp dir — the content is ours.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Create the cache dir with loose permissions.
+    mkdir -p "$GHCR_CACHE_DIR"
+    chmod 777 "$GHCR_CACHE_DIR"
+    local original_dir="$GHCR_CACHE_DIR"
+
+    local stderr_log="${WORK_DIR}/r9a1_stderr.log"
+    _ghcr_ensure_cachedir 2>"$stderr_log"
+
+    # GHCR_CACHE_DIR must still point to the original directory (not a mktemp).
+    [ "$GHCR_CACHE_DIR" = "$original_dir" ]
+
+    # The directory must now be mode 0700.
+    local mode
+    mode=$(stat -c '%a' "$GHCR_CACHE_DIR")
+    [ "$mode" = "700" ]
+
+    # No warning must have been emitted (loose-mode-but-owned → silent fix).
+    [ ! -s "$stderr_log" ] || ! grep -q '::warning::' "$stderr_log"
+}
+
+@test "r9-A2: symlink cache dir is rejected — warning emitted and private mktemp used" {
+    # A symlink at GHCR_CACHE_DIR could point to attacker-controlled storage.
+    # _ghcr_ensure_cachedir must detect the symlink and switch to a fresh dir.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Create the real target and a symlink pointing to it.
+    local real_target="${WORK_DIR}/real_cache_target"
+    mkdir -p "$real_target"
+    ln -s "$real_target" "$GHCR_CACHE_DIR"
+    local original_dir="$GHCR_CACHE_DIR"
+
+    local stderr_log="${WORK_DIR}/r9a2_stderr.log"
+    _ghcr_ensure_cachedir 2>"$stderr_log"
+
+    # GHCR_CACHE_DIR must have been switched away from the symlink.
+    [ "$GHCR_CACHE_DIR" != "$original_dir" ]
+
+    # The new dir must be a real directory (not a symlink) and must be writable.
+    [[ -d "$GHCR_CACHE_DIR" && ! -L "$GHCR_CACHE_DIR" ]]
+
+    # A ::warning:: must have been emitted about the untrusted dir.
+    grep -q '::warning::.*untrusted' "$stderr_log"
+}
+
+# ---------------------------------------------------------------------------
+# r9: Defect B — fresh-fetch no-digest = skip-cache-but-return-body
+# ---------------------------------------------------------------------------
+
+@test "r9-B: fresh response without Docker-Content-Digest — body returned, NOT cached" {
+    # When a fresh GHCR response carries no Docker-Content-Digest header the
+    # content cannot be cryptographically verified.  The body is returned to
+    # the caller (best-effort), but the cache files must NOT be written.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Override curl shim: returns a valid OCI index body with NO digest header.
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_NODIGEST'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    echo "INDEX_NODIGEST" >> "$CALLS"
+    # Headers: no Docker-Content-Digest line.
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_NODIGEST
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local fetch_rc=0
+    local stderr_log="${WORK_DIR}/r9b_stderr.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
+
+    # Function must succeed — body data is returned best-effort.
+    [ "$fetch_rc" -eq 0 ]
+
+    # Body must be populated in the out-var.
+    [[ -n "$_GHCR_IDX_BODY" ]]
+
+    # Network fetch DID occur (not a cache hit).
+    grep -q 'INDEX_NODIGEST' "$CALLS"
+
+    # ::warning:: must indicate the response was not cached.
+    grep -q '::warning::.*not caching' "$stderr_log"
+
+    # Cache files must NOT have been written (nothing verifiable to admit).
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    local hdrs_file="${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    [ ! -f "$body_file" ] || {
+        echo "FAIL: body cache file was created despite missing digest header" >&2
+        return 1
+    }
+    [ ! -f "$hdrs_file" ] || {
+        echo "FAIL: hdrs cache file was created despite missing digest header" >&2
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# r9: Defect C — sentinel file cleanup (stale .ghcr_cache_warned.* files)
+# ---------------------------------------------------------------------------
+
+@test "r9-C: stale sentinel files older than 24h are cleaned up on degraded-mode entry" {
+    # A PID-keyed sentinel from a prior run that was never cleaned up must be
+    # removed when _ghcr_ensure_cachedir runs in degraded mode.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Plant a "stale" sentinel in TMPDIR with a fake old PID.
+    local old_sentinel="${TMPDIR:-/tmp}/.ghcr_cache_warned.99999"
+    touch "$old_sentinel"
+    # Back-date it to 25 hours ago so the find -mmin +1440 threshold applies.
+    touch -d '25 hours ago' "$old_sentinel" 2>/dev/null || \
+        touch -t "$(date -d '25 hours ago' +'%Y%m%d%H%M' 2>/dev/null || date -v-25H +'%Y%m%d%H%M' 2>/dev/null)" \
+              "$old_sentinel" 2>/dev/null || true
+
+    # Use an unwritable cache dir to trigger degraded mode.
+    export GHCR_CACHE_DIR="/proc/1/cannot-create-this-dir-r9c-$$"
+    unset _GHCR_CACHE_DIR_WARNED
+
+    _ghcr_ensure_cachedir 2>/dev/null || true
+
+    # Stale sentinel (>24h) must have been deleted.
+    if [ -f "$old_sentinel" ]; then
+        echo "FAIL: stale sentinel file was not cleaned up" >&2
+        rm -f "$old_sentinel"
+        return 1
     fi
 }
