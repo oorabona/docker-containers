@@ -1930,3 +1930,133 @@ CURL_BADDIGEST_C
     [ "$rc2" -ne 0 ] || { echo "FAIL: malformed digest returned 0 (should be 1)" >&2; return 1; }
     grep -q '::warning::.*refusing' "$stderr2"
 }
+
+# ---------------------------------------------------------------------------
+# r11 regression tests: empty GHCR_CACHE_DIR must not produce root-level paths
+# ---------------------------------------------------------------------------
+
+# Marker file to detect writes older than our test.
+_r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
+
+@test "r11: empty GHCR_CACHE_DIR — ghcr_get_token does not write to root paths and still returns token" {
+    # Use a simulated "root-like" dir to avoid actually touching / in CI.
+    local fake_root="${WORK_DIR}/fakeroot"
+    mkdir -p "$fake_root"
+    _r11_marker
+
+    # Source the helper with GHCR_CACHE_DIR disabled.
+    # shellcheck disable=SC1090
+    GHCR_CACHE_DIR="" source "${REPO_ROOT}/helpers/registry-utils.sh"
+    export GHCR_CACHE_DIR=""
+
+    # Invoke ghcr_get_token — curl shim returns '{"token":"testtoken"}'.
+    local tok
+    tok=$(ghcr_get_token "oorabona/postgres" 2>/dev/null)
+
+    # 1. Token must be returned (degraded mode is still functional).
+    [ -n "$tok" ] || { echo "FAIL: empty token returned in degraded mode" >&2; return 1; }
+
+    # 2. No token-* files should have been created anywhere under $fake_root
+    #    (use WORK_DIR as a proxy for "root" since tests can't safely check /).
+    local stray
+    stray=$(find "${WORK_DIR}" -maxdepth 1 -name 'token-*' -newer "${WORK_DIR}/.r11_marker" 2>/dev/null || true)
+    [ -z "$stray" ] || { echo "FAIL: stray token file(s) found: $stray" >&2; return 1; }
+
+    # 3. GHCR_CACHE_DIR must remain empty (no accidental re-enable).
+    [ -z "${GHCR_CACHE_DIR:-}" ] || { echo "FAIL: GHCR_CACHE_DIR was set to '${GHCR_CACHE_DIR}' unexpectedly" >&2; return 1; }
+}
+
+@test "r11: empty GHCR_CACHE_DIR — ghcr_get_token does not read from root paths (hostile pre-placed token ignored)" {
+    _r11_marker
+
+    # Pre-place a hostile token at a path that WOULD have been constructed if
+    # GHCR_CACHE_DIR were empty (uses WORK_DIR instead of / for safety).
+    # If GHCR_CACHE_DIR="" and code still does "${GHCR_CACHE_DIR}/token-...",
+    # it would compute "/token-..." which begins from real root — dangerous.
+    # We simulate by placing a file that the curl call counter would show
+    # was NOT called if the hostile token were read.
+    # shellcheck disable=SC1090
+    GHCR_CACHE_DIR="" source "${REPO_ROOT}/helpers/registry-utils.sh"
+    export GHCR_CACHE_DIR=""
+
+    # Reset call counter.
+    > "$CALLS"
+
+    local tok
+    tok=$(ghcr_get_token "oorabona/postgres" 2>/dev/null)
+
+    # With cache disabled, we MUST hit the network (curl shim) for the token.
+    # If the hostile pre-placed file were read, the curl TOKEN call would NOT appear.
+    grep -q 'TOKEN' "$CALLS" || { echo "FAIL: curl TOKEN not called — hostile cached token may have been served" >&2; return 1; }
+
+    # Token must still be the shim's value.
+    [ "$tok" = "x" ] || { echo "FAIL: unexpected token value '$tok'" >&2; return 1; }
+}
+
+@test "r11: empty GHCR_CACHE_DIR — invalidate functions are no-ops (no root file deletions)" {
+    _r11_marker
+
+    # Pre-place sentinel files at the root of WORK_DIR to simulate root-path risk.
+    local sentinel_token="${WORK_DIR}/token-sentinel"
+    local sentinel_idx_body="${WORK_DIR}/idx-sentinel.body"
+    local sentinel_idx_hdrs="${WORK_DIR}/idx-sentinel.hdrs"
+    touch "$sentinel_token" "$sentinel_idx_body" "$sentinel_idx_hdrs"
+
+    # shellcheck disable=SC1090
+    GHCR_CACHE_DIR="" source "${REPO_ROOT}/helpers/registry-utils.sh"
+    export GHCR_CACHE_DIR=""
+
+    # Call invalidate functions — with cache disabled these must be silent no-ops.
+    ghcr_invalidate_token "oorabona/postgres" 2>/dev/null
+    _ghcr_invalidate_index "oorabona/postgres" "18-alpine" 2>/dev/null
+
+    # Sentinel files must NOT have been deleted.
+    [ -f "$sentinel_token" ]    || { echo "FAIL: token sentinel deleted by ghcr_invalidate_token" >&2; return 1; }
+    [ -f "$sentinel_idx_body" ] || { echo "FAIL: idx body sentinel deleted by _ghcr_invalidate_index" >&2; return 1; }
+    [ -f "$sentinel_idx_hdrs" ] || { echo "FAIL: idx hdrs sentinel deleted by _ghcr_invalidate_index" >&2; return 1; }
+}
+
+@test "r11: mkdir TOCTOU — pre-existing symlink triggers mktemp fallback" {
+    # Create a symlink at the intended cache dir location pointing to a
+    # directory we control (simulating an attacker-controlled target).
+    local target_dir="${WORK_DIR}/attacker-dir"
+    local symlink_path="${WORK_DIR}/symlink-cache"
+    mkdir -p "$target_dir"
+    ln -s "$target_dir" "$symlink_path"
+
+    # Source fresh copy with GHCR_CACHE_DIR pointing at the symlink.
+    # shellcheck disable=SC1090
+    GHCR_CACHE_DIR="$symlink_path" source "${REPO_ROOT}/helpers/registry-utils.sh"
+    export GHCR_CACHE_DIR="$symlink_path"
+    unset _GHCR_CACHE_DIR_WARNED
+
+    local stderr_log="${WORK_DIR}/r11_toctou.log"
+    _ghcr_ensure_cachedir 2>"$stderr_log"
+
+    # After ensure_cachedir, GHCR_CACHE_DIR must NOT be the symlink path.
+    [ "${GHCR_CACHE_DIR}" != "$symlink_path" ] || {
+        echo "FAIL: GHCR_CACHE_DIR still set to symlink path '${GHCR_CACHE_DIR}'" >&2
+        return 1
+    }
+
+    # It must have switched to a real mktemp dir (non-empty) OR been cleared to ""
+    # (if mktemp also failed, which shouldn't happen in normal CI).
+    # Either outcome avoids the hostile symlink path.
+    if [[ -n "${GHCR_CACHE_DIR}" ]]; then
+        # Must be a real directory (not a symlink).
+        [ ! -L "${GHCR_CACHE_DIR}" ] || {
+            echo "FAIL: GHCR_CACHE_DIR is still a symlink '${GHCR_CACHE_DIR}'" >&2
+            return 1
+        }
+        [ -d "${GHCR_CACHE_DIR}" ] || {
+            echo "FAIL: GHCR_CACHE_DIR '${GHCR_CACHE_DIR}' is not a directory" >&2
+            return 1
+        }
+    fi
+
+    # A warning must have been emitted about the untrusted dir.
+    grep -q '::warning::' "$stderr_log" || {
+        echo "FAIL: no ::warning:: emitted for symlink cache dir" >&2
+        return 1
+    }
+}

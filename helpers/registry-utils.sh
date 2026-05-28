@@ -35,6 +35,18 @@ _GHCR_IDX_HDRS=""
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Returns 0 iff the cache is enabled and usable: GHCR_CACHE_DIR is set to a
+# non-empty string, the path exists as a real directory, and is writable.
+# All cache read/write/invalidate sites MUST call this guard before building
+# any "${GHCR_CACHE_DIR}/..." path.  When disabled (e.g. mktemp fallback
+# failed and _ghcr_ensure_cachedir cleared GHCR_CACHE_DIR to ""), callers
+# skip the cache entirely: reads return miss (forcing network), writes and
+# invalidates are silent no-ops.  The functional API (token fetch, manifest
+# fetch) still operates end-to-end in degraded mode.
+_ghcr_cache_enabled() {
+    [[ -n "${GHCR_CACHE_DIR:-}" ]] && [[ -d "${GHCR_CACHE_DIR}" ]] && [[ -w "${GHCR_CACHE_DIR}" ]]
+}
+
 # Validate that a cache directory is safe to trust: must be a real directory
 # (not a symlink to an attacker-controlled path), owned by the current UID,
 # AND have mode 0700 (no loose permissions).
@@ -105,8 +117,29 @@ _ghcr_ensure_cachedir() {
         return 0
     fi
     # Directory does not exist yet — create with safe mode.
+    # TOCTOU fix: after mkdir -p succeeds, re-validate (owner/symlink/mode)
+    # before trusting the result.  Between the [[ -e ]] check above and mkdir,
+    # an attacker with write to the parent could race and plant an attacker-
+    # controlled directory; mkdir -p would succeed on that hostile dir.
+    # Post-validation detects the race and falls back to a private mktemp dir.
     if ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
         chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+        # Post-validate: did we end up with a trusted dir (owner + mode + no symlink)?
+        if _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
+            return 0
+        fi
+        # Race condition detected — created dir is not fully trusted; switch to mktemp.
+        if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+            echo "::warning::GHCR cache dir ${GHCR_CACHE_DIR} post-mkdir validation failed (TOCTOU?); switching to private mktemp dir" >&2
+            export _GHCR_CACHE_DIR_WARNED=1
+        fi
+        if GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null); then
+            chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+            return 0
+        fi
+        echo "::warning::Cannot allocate private cache dir after TOCTOU; running fully uncached" >&2
+        export GHCR_CACHE_DIR=""
+        export _GHCR_CACHE_DIR_WARNED=1
         return 0
     fi
     # Cache directory creation failed → run in degraded (uncached) mode.
@@ -201,18 +234,23 @@ ghcr_get_token() {
 
     _ghcr_ensure_cachedir
 
-    local keyfile
-    keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${image_path}")"
+    local keyfile=""
 
-    # HIT: file exists, non-empty, AND modified < TTL seconds ago.
-    # find -mmin -<N> uses minutes; 240 s = 4 min.
-    # We use find to avoid GNU-stat dependency.
-    if [[ -s "$keyfile" ]]; then
-        local fresh
-        fresh=$(find "$keyfile" -mmin "-4" -print -quit 2>/dev/null)
-        if [[ -n "$fresh" ]]; then
-            cat "$keyfile"
-            return 0
+    # Cache read: only when cache is enabled (GHCR_CACHE_DIR set, dir exists, writable).
+    # When disabled (empty GHCR_CACHE_DIR), skip to network fetch directly.
+    if _ghcr_cache_enabled; then
+        keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${image_path}")"
+
+        # HIT: file exists, non-empty, AND modified < TTL seconds ago.
+        # find -mmin -<N> uses minutes; 240 s = 4 min.
+        # We use find to avoid GNU-stat dependency.
+        if [[ -s "$keyfile" ]]; then
+            local fresh
+            fresh=$(find "$keyfile" -mmin "-4" -print -quit 2>/dev/null)
+            if [[ -n "$fresh" ]]; then
+                cat "$keyfile"
+                return 0
+            fi
         fi
     fi
 
@@ -235,10 +273,11 @@ ghcr_get_token() {
             jq -r '.token // empty' 2>/dev/null)
     fi
 
-    # Cache only non-empty tokens (atomic write to avoid torn reads).
-    # umask 077 subshell ensures tmp is born 0600 even if chmod fails;
-    # chmod kept as belt-and-suspenders; mv preserves mode.
-    if [[ -n "$token" ]]; then
+    # Cache write: only non-empty tokens and only when cache is enabled.
+    # When cache is disabled, token is returned but not persisted (degraded mode).
+    # (atomic write to avoid torn reads; umask 077 subshell ensures tmp is born
+    # 0600 even if chmod fails; chmod kept as belt-and-suspenders; mv preserves mode.)
+    if [[ -n "$token" && -n "$keyfile" ]] && _ghcr_cache_enabled; then
         ( umask 077; printf '%s' "$token" > "${keyfile}.tmp.$$" ) 2>/dev/null && chmod 600 "${keyfile}.tmp.$$" 2>/dev/null && mv -f "${keyfile}.tmp.$$" "$keyfile" 2>/dev/null || true
     fi
 
@@ -246,9 +285,11 @@ ghcr_get_token() {
 }
 
 # Invalidate the cached token for an image_path (call after auth-failure detected).
+# No-op when cache is disabled (_ghcr_cache_enabled returns false).
 # Usage: ghcr_invalidate_token "owner/repo"
 ghcr_invalidate_token() {
     local ip="$1"
+    _ghcr_cache_enabled || return 0
     local keyfile
     keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${ip}")"
     rm -f "$keyfile" 2>/dev/null || true
@@ -267,8 +308,11 @@ _ghcr_fetch_index() {
 
     local key_safe
     key_safe="$(_ghcr_keyfile "${image_path}:${tag}")"
-    local body_file="${GHCR_CACHE_DIR}/idx-${key_safe}.body"
-    local hdrs_file="${GHCR_CACHE_DIR}/idx-${key_safe}.hdrs"
+    local body_file="" hdrs_file=""
+    if _ghcr_cache_enabled; then
+        body_file="${GHCR_CACHE_DIR}/idx-${key_safe}.body"
+        hdrs_file="${GHCR_CACHE_DIR}/idx-${key_safe}.hdrs"
+    fi
 
     # HIT: both files present and body non-empty (no TTL — runs are short,
     # tags don't change mid-run).
@@ -426,14 +470,19 @@ _ghcr_fetch_index() {
         fi
 
         # Best-effort cache write: move verified tmp files into place.
+        # Only when cache is enabled (body_file/hdrs_file are non-empty paths).
         # When body_tmp/hdrs_tmp are in GHCR_CACHE_DIR (normal path), mv is
         # atomic on the same filesystem.  When they are in system TMPDIR
         # (degraded path), mv may cross filesystems and fail — that is fine:
         # data has already been returned via out-vars above; caching is
         # opportunistic.  chmod 600 belt-and-suspenders.
         chmod 600 "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
-        mv -f "$body_tmp" "$body_file" 2>/dev/null || rm -f "$body_tmp" 2>/dev/null || true
-        mv -f "$hdrs_tmp" "$hdrs_file" 2>/dev/null || rm -f "$hdrs_tmp" 2>/dev/null || true
+        if [[ -n "$body_file" ]] && _ghcr_cache_enabled; then
+            mv -f "$body_tmp" "$body_file" 2>/dev/null || rm -f "$body_tmp" 2>/dev/null || true
+            mv -f "$hdrs_tmp" "$hdrs_file" 2>/dev/null || rm -f "$hdrs_tmp" 2>/dev/null || true
+        else
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+        fi
         return 0
     fi
 
@@ -443,8 +492,10 @@ _ghcr_fetch_index() {
 
 # Invalidate the cached index for an image_path:tag (call before retrying after
 # an auth failure, to force a genuine network re-fetch instead of a cached-401 hit).
+# No-op when cache is disabled (_ghcr_cache_enabled returns false).
 # Usage: _ghcr_invalidate_index "owner/repo" "tag"
 _ghcr_invalidate_index() {
+    _ghcr_cache_enabled || return 0
     local k
     k="$(_ghcr_keyfile "${1}:${2}")"
     rm -f "${GHCR_CACHE_DIR}/idx-${k}.body" "${GHCR_CACHE_DIR}/idx-${k}.hdrs" 2>/dev/null || true
@@ -508,9 +559,12 @@ ghcr_get_manifest_sizes() {
         # removed by _ghcr_invalidate_index (different directory depth; exact-path
         # rm -f "${GHCR_CACHE_DIR}/idx-${k}.body" can never reach a subdir entry).
         # Create cache root + subdir once before the loop (not per-iteration).
+        # Only when cache is enabled — skip mkdir/chmod when GHCR_CACHE_DIR is empty.
         _ghcr_ensure_cachedir
-        ( umask 077; mkdir -p "${GHCR_CACHE_DIR}/perarch" ) 2>/dev/null || true
-        chmod 700 "${GHCR_CACHE_DIR}/perarch" 2>/dev/null || true
+        if _ghcr_cache_enabled; then
+            ( umask 077; mkdir -p "${GHCR_CACHE_DIR}/perarch" ) 2>/dev/null || true
+            chmod 700 "${GHCR_CACHE_DIR}/perarch" 2>/dev/null || true
+        fi
         local size_buffer=""
         while IFS=':' read -r arch digest_prefix digest_hash; do
             [[ -z "$arch" || -z "$digest_hash" ]] && continue
@@ -532,7 +586,14 @@ ghcr_get_manifest_sizes() {
             fi
 
             local pa_file pa_hit
-            pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
+            # Build pa_file path only when cache is enabled; empty string disables
+            # the cache hit branch below ([[ -s "" ]] is false) and prevents writing
+            # a path rooted at / when GHCR_CACHE_DIR is empty.
+            if _ghcr_cache_enabled; then
+                pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
+            else
+                pa_file=""
+            fi
             pa_hit=0
 
             # pa_src is the file whose bytes are used for validation AND jq parsing.
