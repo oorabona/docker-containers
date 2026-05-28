@@ -494,13 +494,18 @@ _eval_parent_state() {
     return 0
   fi
   local recent_sha
-  recent_sha=$(git log origin/master --max-count=10 --pretty=%H -- "${parent}/LAST_REBUILD.md" 2>/dev/null | head -1)
+  local _repo="${GITHUB_REPOSITORY:-owner/repo}"
+  local commit_info
+  if ! commit_info=$(gh api "repos/${_repo}/commits?path=${parent}/LAST_REBUILD.md&sha=master&per_page=1" 2>&1); then
+    echo "::error::Failed to query commits for ${parent}/LAST_REBUILD.md"
+    return 2
+  fi
+  recent_sha=$(echo "$commit_info" | jq -r '"'"'.[0].sha // empty'"'"')
   if [[ -z "$recent_sha" ]]; then
     echo "ready"
     return 0
   fi
   local run_info
-  local _repo="${GITHUB_REPOSITORY:-owner/repo}"
   if ! run_info=$(gh api "repos/${_repo}/actions/runs?head_sha=${recent_sha}&per_page=10" \
     --jq '"'"'.workflow_runs[] | select(.name == "Auto Build & Push") | {status, conclusion}'"'"' 2>&1); then
     echo "::error::Failed to query auto-build runs for ${parent} commit ${recent_sha}. Aborting."
@@ -535,26 +540,29 @@ _eval_parent_state() {
 _eval_parent_state "$PARENT_ARG"
 '
 
-# Writes a mock gh + git pair for three-state tests.
+# Writes a mock gh for three-state tests.
 # $1 = mode:
-#   open-pr           — pr list returns PR #10 (State 1: in_flux)
-#   pr-closed-inprog  — pr list empty; gh api returns in_progress run (State 2: in_flux)
-#   pr-closed-success — pr list empty; gh api returns completed/success (State 3: ready)
-#   pr-closed-failed  — pr list empty; gh api returns completed/failure (State 5: ready+warning)
-#   run-not-found     — pr list empty; gh api returns empty (no match) (State 6: in_flux conservative)
-#   run-api-error     — pr list empty; gh api exits 1 (fail-closed)
-#   run-multi         — pr list empty; gh api returns 2 runs for same SHA (re-run scenario)
-# GIT_LAST_SHA env controls what git log returns (empty = no commit).
+#   open-pr             — pr list returns PR #10 (State 1: in_flux)
+#   pr-closed-inprog    — pr list empty; commits API returns SHA; runs API returns in_progress (State 2: in_flux)
+#   pr-closed-success   — pr list empty; commits API returns SHA; runs API returns completed/success (State 3: ready)
+#   pr-closed-failed    — pr list empty; commits API returns SHA; runs API returns completed/failure (State 5: ready+warning)
+#   run-not-found       — pr list empty; commits API returns SHA; runs API returns empty (State 6: in_flux conservative)
+#   run-api-error       — pr list empty; commits API returns SHA; runs API exits 1 (fail-closed)
+#   run-multi           — pr list empty; commits API returns SHA; runs API returns 2 runs (re-run scenario)
+#   no-last-rebuild     — pr list empty; commits API returns empty array [] (State 4: ready, never drifted)
+#   commits-api-error   — pr list empty; commits API exits 1 (fail-closed on commits lookup)
+# COMMITS_SHA env controls SHA returned by the commits API (default: abc123def456).
 _setup_three_state_mock() {
     local mode="$1"
-    local git_sha="${GIT_LAST_SHA:-}"
+    local commits_sha="${COMMITS_SHA:-abc123def456}"
     mkdir -p "$TEST_TEMP_DIR/bin"
     local calls_log="$TEST_TEMP_DIR/gh_calls.log"
     touch "$calls_log"
 
-    # Write mock gh
+    # Write mock gh — routes on URL pattern to distinguish commits API vs runs API
     local mock_gh="$TEST_TEMP_DIR/bin/gh"
-    printf '#!/usr/bin/env bash\nMODE="%s"\necho "$@" >> "%s"\n' "$mode" "$calls_log" > "$mock_gh"
+    printf '#!/usr/bin/env bash\nMODE="%s"\nCOMMITS_SHA="%s"\necho "$@" >> "%s"\n' \
+        "$mode" "$commits_sha" "$calls_log" > "$mock_gh"
     cat >> "$mock_gh" << 'GH_MOCK'
 case "$1 $2" in
   "pr list")
@@ -564,50 +572,58 @@ case "$1 $2" in
     # all other modes: print nothing (no open PR)
     ;;
   "api repos"*)
-    # gh api "repos/.../actions/runs?head_sha=...&per_page=10" --jq '...'
-    # The --jq flag is passed as additional args; mock returns pre-filtered JSON objects
-    case "$MODE" in
-      run-api-error)
-        echo "API failure simulated" >&2
-        exit 1
-        ;;
-      pr-closed-inprog)
-        printf '{"status":"in_progress","conclusion":null}\n'
-        ;;
-      pr-closed-success)
-        printf '{"status":"completed","conclusion":"success"}\n'
-        ;;
-      pr-closed-failed)
-        printf '{"status":"completed","conclusion":"failure"}\n'
-        ;;
-      run-not-found)
-        # Empty output — no matching workflow runs
-        ;;
-      run-multi)
-        # Two runs for the same SHA (re-run scenario): most recent first
-        printf '{"status":"completed","conclusion":"success"}\n'
-        printf '{"status":"completed","conclusion":"failure"}\n'
-        ;;
-    esac
+    # Route on URL: commits?path= (commits API) vs actions/runs (runs API)
+    # $1=api $2=<url> (the full URL is $2 regardless of additional flags like --jq)
+    # Note: local is not valid outside a function; use plain assignment
+    _url="$2"
+    if [[ "$_url" == *"commits?"* && "$_url" == *"path="* ]]; then
+      # Commits API: gh api "repos/.../commits?path=.../LAST_REBUILD.md&sha=master&per_page=1"
+      case "$MODE" in
+        commits-api-error)
+          echo "commits API failure simulated" >&2
+          exit 1
+          ;;
+        no-last-rebuild)
+          # No commit found for LAST_REBUILD.md
+          printf '[]\n'
+          ;;
+        *)
+          # All other modes: return a commit with the configured SHA
+          printf '[{"sha":"%s"}]\n' "$COMMITS_SHA"
+          ;;
+      esac
+    else
+      # Runs API: gh api "repos/.../actions/runs?head_sha=...&per_page=10" --jq '...'
+      # The --jq flag is passed as additional args; mock returns pre-filtered JSON objects
+      case "$MODE" in
+        run-api-error)
+          echo "runs API failure simulated" >&2
+          exit 1
+          ;;
+        pr-closed-inprog)
+          printf '{"status":"in_progress","conclusion":null}\n'
+          ;;
+        pr-closed-success)
+          printf '{"status":"completed","conclusion":"success"}\n'
+          ;;
+        pr-closed-failed)
+          printf '{"status":"completed","conclusion":"failure"}\n'
+          ;;
+        run-not-found)
+          # Empty output — no matching workflow runs
+          ;;
+        run-multi)
+          # Two runs for the same SHA (re-run scenario): most recent first
+          printf '{"status":"completed","conclusion":"success"}\n'
+          printf '{"status":"completed","conclusion":"failure"}\n'
+          ;;
+      esac
+    fi
     ;;
 esac
 exit 0
 GH_MOCK
     chmod +x "$mock_gh"
-
-    # Write mock git — returns GIT_LAST_SHA when set, empty otherwise
-    local mock_git="$TEST_TEMP_DIR/bin/git"
-    local sha_val="${GIT_LAST_SHA:-}"
-    printf '#!/usr/bin/env bash\nSHA_VAL="%s"\n' "$sha_val" > "$mock_git"
-    cat >> "$mock_git" << 'GIT_MOCK'
-if [[ "$1" == "log" ]]; then
-  if [[ -n "$SHA_VAL" ]]; then
-    echo "$SHA_VAL"
-  fi
-fi
-exit 0
-GIT_MOCK
-    chmod +x "$mock_git"
 
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
@@ -624,7 +640,7 @@ _run_eval_parent_state() {
 # State 1: open drift PR → in_flux
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: open drift PR → in_flux (cascade label must be applied)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "open-pr"
+    _setup_three_state_mock "open-pr"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     # Last output token must be in_flux
@@ -636,7 +652,7 @@ _run_eval_parent_state() {
 # State 2: no open PR, recent commit, auto-build in_progress → in_flux
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: master rebuild in_progress → in_flux (no premature auto-merge)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-inprog"
+    _setup_three_state_mock "pr-closed-inprog"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -647,7 +663,7 @@ _run_eval_parent_state() {
 # State 3: no open PR, recent commit, auto-build completed/success → ready
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: master rebuild success → ready (safe to auto-merge)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-success"
+    _setup_three_state_mock "pr-closed-success"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -658,7 +674,7 @@ _run_eval_parent_state() {
 # State 4: no open PR, no LAST_REBUILD.md commit ever → ready
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: no LAST_REBUILD.md commit → ready (parent never drifted)" {
-    GIT_LAST_SHA="" _setup_three_state_mock "pr-closed-success"
+    _setup_three_state_mock "no-last-rebuild"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -669,7 +685,7 @@ _run_eval_parent_state() {
 # State 5: no open PR, recent commit, auto-build failed → ready + warning
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: master rebuild failed → ready with warning (child CI detects)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-failed"
+    _setup_three_state_mock "pr-closed-failed"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -681,7 +697,7 @@ _run_eval_parent_state() {
 # State 6: no open PR, recent commit, gh api returns empty (SHA outside window) → in_flux (conservative)
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: gh api returns empty for SHA → in_flux (conservative)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-not-found"
+    _setup_three_state_mock "run-not-found"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
@@ -692,8 +708,8 @@ _run_eval_parent_state() {
 # ---------------------------------------------------------------------------
 # API error on gh api → fail-closed (exit non-zero)
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: gh api error → fail-closed (exit 1)" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-api-error"
+@test "eval_parent_state: runs gh api error → fail-closed (exit 1)" {
+    _setup_three_state_mock "run-api-error"
     _run_eval_parent_state "debian"
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
@@ -703,12 +719,40 @@ _run_eval_parent_state() {
 # Re-run scenario: gh api returns 2 runs for same SHA → take most recent (first)
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: gh api returns multiple runs for same SHA → takes most recent" {
-    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-multi"
+    _setup_three_state_mock "run-multi"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     # Most recent run is completed/success → ready
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
+}
+
+# ---------------------------------------------------------------------------
+# Defect A fix: commits API failure → fail-closed (exit non-zero)
+# Stale local origin/master replaced by GitHub API; API unavailability must
+# be fail-closed so a transient outage does not bypass cascade gating.
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: commits API failure → fail-closed (exit 1, no cascade bypass)" {
+    _setup_three_state_mock "commits-api-error"
+    _run_eval_parent_state "debian"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"LAST_REBUILD.md"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Defect A fix: commits API returns empty array → ready (no rebuild ever)
+# Verifies the jq '.[0].sha // empty' extraction on [] returns empty string,
+# which maps to State 4 (parent never drifted).
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: commits API returns [] → ready (parent never rebuilt via LAST_REBUILD.md)" {
+    _setup_three_state_mock "no-last-rebuild"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+    # Must NOT have called the runs API (no SHA to query)
+    ! grep -q "actions/runs" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 # ---------------------------------------------------------------------------

@@ -1344,6 +1344,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write   # Required: gh label create in cascade-labels step (label creation is issues-scoped)
       packages: read  # Required: detect-base-digest-drift.sh re-runs inside this job and probes GHCR digests
     steps:
       - name: Checkout repository
@@ -1602,14 +1603,22 @@ jobs:
               return 0
             fi
             # No open PR: check if parent's master rebuild is still in flight.
+            # Query GitHub API directly so we always see fresh master state even if the
+            # local origin/master ref is stale (cron checkout taken at job start; a parent
+            # drift PR can merge while later matrix entries are still processing).
             local recent_sha
-            recent_sha=$(git log origin/master --max-count=10 --pretty=%H -- "${parent}/LAST_REBUILD.md" 2>/dev/null | head -1)
+            local _repo="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||')}"
+            local commit_info
+            if ! commit_info=$(gh api "repos/${_repo}/commits?path=${parent}/LAST_REBUILD.md&sha=master&per_page=1" 2>&1); then
+              echo "::error::Failed to query commits for ${parent}/LAST_REBUILD.md"
+              return 2
+            fi
+            recent_sha=$(echo "$commit_info" | jq -r '.[0].sha // empty')
             if [[ -z "$recent_sha" ]]; then
               echo "ready"
               return 0
             fi
             local run_info
-            local _repo="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||')}"
             if ! run_info=$(gh api "repos/${_repo}/actions/runs?head_sha=${recent_sha}&per_page=10" \
               --jq '.workflow_runs[] | select(.name == "Auto Build & Push") | {status, conclusion}' 2>&1); then
               echo "::error::Failed to query auto-build runs for ${parent} commit ${recent_sha}. Aborting."
