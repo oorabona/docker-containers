@@ -154,7 +154,7 @@ if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     # else stdout (for tests that don't pass -o).
     # Use printf '%s' (no trailing newline) so the body bytes match the
     # sha256 digests declared in the fixture constants above.
-    local _pa_body
+    _pa_body=""
     if [[ "$URL" == *"/manifests/sha256:c3d"* ]]; then
         _pa_body="$_PER_ARCH_MANIFEST_AMD64"
     elif [[ "$URL" == *"/manifests/sha256:13f"* ]]; then
@@ -2132,6 +2132,148 @@ _r11_marker() { touch "${WORK_DIR}/.r11_marker"; }
     }
     [ -f "${target_dir}/idx-${k}.hdrs" ] || {
         echo "FAIL: _ghcr_invalidate_index deleted hdrs through symlinked cache dir" >&2
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# r13 regression tests: _ghcr_fetch_index globals cleared on all fail-closed paths
+# ---------------------------------------------------------------------------
+
+@test "r13-A: globals cleared when fresh response lacks Docker-Content-Digest" {
+    # Finding 3: _GHCR_IDX_BODY/_GHCR_IDX_HDRS must be empty after fail-closed
+    # return on missing digest header — prevents caller from trusting stale data.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Pre-populate globals to simulate a prior successful call.
+    _GHCR_IDX_BODY="stale-body"
+    _GHCR_IDX_HDRS="stale-hdrs"
+
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_NODIGEST_R13A'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_NODIGEST_R13A
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local rc=0
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>/dev/null || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "FAIL: expected return 1, got 0" >&2; return 1; }
+    [ -z "${_GHCR_IDX_BODY}" ] || {
+        echo "FAIL: _GHCR_IDX_BODY not cleared after missing-digest fail-closed (value: ${_GHCR_IDX_BODY})" >&2
+        return 1
+    }
+    [ -z "${_GHCR_IDX_HDRS}" ] || {
+        echo "FAIL: _GHCR_IDX_HDRS not cleared after missing-digest fail-closed" >&2
+        return 1
+    }
+}
+
+@test "r13-B: globals cleared when fresh response has malformed Docker-Content-Digest" {
+    # Finding 3: malformed digest (non-64-char) must clear globals before return 1.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    _GHCR_IDX_BODY="stale-body"
+    _GHCR_IDX_HDRS="stale-hdrs"
+
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_BADDIGEST_R13B'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:tooshort\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_BADDIGEST_R13B
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local rc=0
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>/dev/null || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "FAIL: expected return 1, got 0" >&2; return 1; }
+    [ -z "${_GHCR_IDX_BODY}" ] || {
+        echo "FAIL: _GHCR_IDX_BODY not cleared after malformed-digest fail-closed (value: ${_GHCR_IDX_BODY})" >&2
+        return 1
+    }
+    [ -z "${_GHCR_IDX_HDRS}" ] || {
+        echo "FAIL: _GHCR_IDX_HDRS not cleared after malformed-digest fail-closed" >&2
+        return 1
+    }
+}
+
+@test "r13-C: globals cleared when content-digest mismatch on fresh body" {
+    # Finding 3: sha256 body-hash mismatch must clear globals before return 1.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    _GHCR_IDX_BODY="stale-body"
+    _GHCR_IDX_HDRS="stale-hdrs"
+
+    # Return a valid-format digest header but mismatched body bytes.
+    local wrong_digest
+    wrong_digest="$(printf '%s' "wrong-body" | sha256sum | cut -c1-64)"
+
+    cat > "${WORK_DIR}/bin/curl" << CURL_MISMATCH_R13C
+#!/usr/bin/env bash
+URL="\${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "\$@"; do
+    if [[ "\$_prev" == "-D" ]]; then DFILE="\$_arg"; fi
+    if [[ "\$_prev" == "-o" ]]; then OFILE="\$_arg"; fi
+    _prev="\$_arg"
+done
+if [[ "\$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "\$URL" == *"/manifests/"* ]]; then
+    _hdrs="\$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:${wrong_digest}\r\n\r\n')"
+    _body="\$(printf '%s\n' "\$_OCI_INDEX")"
+    if [[ -n "\$DFILE" ]]; then printf '%s' "\$_hdrs" > "\$DFILE"; fi
+    if [[ -n "\$OFILE" ]]; then printf '%s' "\$_body" > "\$OFILE"; else printf '%s%s' "\$_hdrs" "\$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_MISMATCH_R13C
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local rc=0
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>/dev/null || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "FAIL: expected return 1, got 0" >&2; return 1; }
+    [ -z "${_GHCR_IDX_BODY}" ] || {
+        echo "FAIL: _GHCR_IDX_BODY not cleared after digest-mismatch fail-closed (value: ${_GHCR_IDX_BODY})" >&2
+        return 1
+    }
+    [ -z "${_GHCR_IDX_HDRS}" ] || {
+        echo "FAIL: _GHCR_IDX_HDRS not cleared after digest-mismatch fail-closed" >&2
         return 1
     }
 }

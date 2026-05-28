@@ -99,6 +99,11 @@ _ghcr_validate_cachedir() {
 # so the hostile original path is structurally unreachable; _ghcr_temp_file's
 # TMPDIR-fallback handles transient files in degraded mode.
 _ghcr_ensure_cachedir() {
+    # Already in disabled state (set by a prior call's mktemp fallback);
+    # nothing to ensure.
+    if [[ -z "${GHCR_CACHE_DIR:-}" ]]; then
+        return 0
+    fi
     # If the directory already exists, validate it before trusting it.
     if [[ -e "${GHCR_CACHE_DIR}" ]]; then
         if ! _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
@@ -195,8 +200,8 @@ _ghcr_verify_content_digest() {
 _ghcr_temp_file() {
     local suffix="${1:-tmp}"
     local f
-    # Prefer cache dir (same FS → atomic mv works cheaply)
-    if [[ -d "${GHCR_CACHE_DIR}" && -w "${GHCR_CACHE_DIR}" ]]; then
+    # Prefer cache dir (same FS → atomic mv works cheaply); use single trust gate.
+    if _ghcr_cache_enabled; then
         f=$(mktemp "${GHCR_CACHE_DIR}/${suffix}.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
     fi
     # Fallback: system TMPDIR
@@ -443,6 +448,8 @@ _ghcr_fetch_index() {
             # current run even without cache admission.
             echo "::warning::Fresh GHCR response for ${image_path}:${tag} lacks Docker-Content-Digest; refusing" >&2
             rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
             return 1
         fi
         # Strict single-token extraction: anchored regex rejects headers with
@@ -458,11 +465,15 @@ _ghcr_fetch_index() {
             # Same fail-closed treatment as missing: refuse unverified body.
             echo "::warning::Fresh GHCR response for ${image_path}:${tag} has malformed Docker-Content-Digest; refusing" >&2
             rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
             return 1
         fi
         if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
             echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
             rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
             return 1
         fi
 
@@ -484,6 +495,8 @@ _ghcr_fetch_index() {
     fi
 
     rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+    _GHCR_IDX_BODY=""
+    _GHCR_IDX_HDRS=""
     return 1
 }
 
@@ -670,13 +683,19 @@ ghcr_get_manifest_sizes() {
 
             # Admission: promote pa_tmp → pa_file after all 4 gates pass.
             # Cache hits (pa_hit=1) already live at pa_file; no mv needed.
+            # When cache is disabled (pa_file=""), skip mv entirely; pa_src
+            # stays as pa_tmp and is cleaned up by the post-jq rm below.
             if [[ "$pa_hit" -eq 0 && -n "$pa_tmp" ]]; then
                 chmod 600 "$pa_tmp" 2>/dev/null || true
-                if mv -f "$pa_tmp" "$pa_file" 2>/dev/null; then
-                    pa_src="$pa_file"
+                if _ghcr_cache_enabled && [[ -n "$pa_file" ]]; then
+                    if mv -f "$pa_tmp" "$pa_file" 2>/dev/null; then
+                        pa_src="$pa_file"
+                    fi
+                    # mv failed (cross-FS fallback) — pa_src stays as pa_tmp;
+                    # data is returned but not persisted; temp cleaned up below.
                 fi
-                # mv failed (cross-FS fallback) — pa_src stays as pa_tmp;
-                # data is returned but not persisted; temp cleaned up below.
+                # Cache disabled: pa_src stays as pa_tmp; cleanup handled by
+                # the post-jq [[ pa_src == pa_tmp ]] guard below.
             fi
 
             local total_size
