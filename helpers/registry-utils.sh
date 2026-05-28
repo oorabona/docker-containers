@@ -36,14 +36,18 @@ _GHCR_IDX_HDRS=""
 # ---------------------------------------------------------------------------
 
 # Validate that a cache directory is safe to trust: must be a real directory
-# (not a symlink to an attacker-controlled path) and owned by the current UID.
-# A dir with loose permissions (e.g. 0755) that is OWNED by us is fixable via
-# chmod — the risk is directory-listing only, not write poisoning.
+# (not a symlink to an attacker-controlled path), owned by the current UID,
+# AND have mode 0700 (no loose permissions).
+# A dir with loose permissions — even one we own — must be treated as untrusted:
+# a prior loose mode may have let an attacker plant body+hdrs files with a
+# matching digest before we arrived. Silent chmod-to-700 only closes future
+# writes; it cannot purge pre-existing poisoned content.  Reject and switch to a
+# fresh mktemp dir instead — same response as symlink/foreign-owner.
 # A dir owned by another UID is unrecoverable: an attacker controls the content.
 # A symlink is unrecoverable: the target could point to hostile storage.
 # Returns:
-#   0 — safe (and permissions corrected to 0700 if they were loose)
-#   1 — symlink or wrong owner — caller MUST switch to a private mktemp dir
+#   0 — safe (exists as a real dir, owned by us, mode 0700)
+#   1 — symlink, wrong owner, or loose mode — caller MUST switch to fresh mktemp
 _ghcr_validate_cachedir() {
     local d="$1"
     # Must exist as a directory.
@@ -54,36 +58,47 @@ _ghcr_validate_cachedir() {
     local owner
     owner=$(stat -c '%u' "$d" 2>/dev/null) || return 1
     [[ "$owner" == "$(id -u)" ]] || return 1
-    # Mode may be looser than 0700 (e.g. created by an older version or test
-    # fixtures that use plain mkdir).  We own the dir, so chmod it closed.
-    chmod 700 "$d" 2>/dev/null || true
+    # Mode must be exactly 0700. A looser mode (e.g. 0755) signals that an older
+    # code path or test fixture created this dir; its pre-existing content cannot
+    # be trusted (attacker could have planted files before we chmod'd).  Reject
+    # so the caller switches to a fresh mktemp dir with no prior content.
+    local mode
+    mode=$(stat -c '%a' "$d" 2>/dev/null) || return 1
+    [[ "$mode" == "700" ]] || return 1
     return 0
 }
 
 # Create the cache directory lazily (idempotent; silent under set -e).
 # 700 so token files are not world-readable on multi-user systems.
 # umask 077 subshell ensures the dir is born 0700 even if the trailing chmod
-# no-ops (exotic FS, restricted env) — chmod kept as belt-and-suspenders to
-# fix a pre-existing looser directory from an older run.
+# no-ops (exotic FS, restricted env).
 #
-# Security: if GHCR_CACHE_DIR already exists as a symlink or is owned by
-# another UID, it is untrusted.  A warning is emitted and GHCR_CACHE_DIR is
-# overridden to a fresh per-process mktemp directory for the rest of this run.
-# Dirs with loose permissions that we own are silently fixed (chmod 700) and
-# reused — the "attacker" must control the inode, not just list the directory.
+# Security: if GHCR_CACHE_DIR already exists in any untrusted state (symlink,
+# wrong owner, or loose mode != 0700), a warning is emitted and GHCR_CACHE_DIR
+# is overridden to a fresh per-process mktemp directory.  This covers all three
+# attack vectors uniformly: a loose-mode dir may already contain attacker-planted
+# body+hdrs files; silent chmod-to-700 does not purge that content.
+#
+# If the private mktemp allocation itself fails, GHCR_CACHE_DIR is set to empty
+# so the hostile original path is structurally unreachable; _ghcr_temp_file's
+# TMPDIR-fallback handles transient files in degraded mode.
 _ghcr_ensure_cachedir() {
     # If the directory already exists, validate it before trusting it.
     if [[ -e "${GHCR_CACHE_DIR}" ]]; then
         if ! _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
-            # Symlink or wrong owner — untrusted; switch to a private mktemp dir.
+            # Symlink, wrong owner, or loose mode — untrusted; switch to fresh mktemp.
             if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
                 echo "::warning::GHCR cache dir ${GHCR_CACHE_DIR} owner/mode untrusted; switching to private mktemp dir" >&2
                 export _GHCR_CACHE_DIR_WARNED=1
             fi
-            GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null) || {
+            if ! GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null); then
+                # mktemp failed — clear GHCR_CACHE_DIR so the hostile path is never used;
+                # _ghcr_temp_file's TMPDIR-fallback handles transient files in degraded mode.
+                echo "::warning::Cannot allocate private cache dir; running fully uncached" >&2
+                export GHCR_CACHE_DIR=""
                 export _GHCR_CACHE_DIR_WARNED=1
                 return 0
-            }
+            fi
             chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
             return 0
         fi
@@ -379,14 +394,15 @@ _ghcr_fetch_index() {
         local idx_digest_header idx_digest_hex
         idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:' 2>/dev/null | head -1 | tr -d '\r' || true)
         if [[ -z "$idx_digest_header" ]]; then
-            # Fresh response carries no Docker-Content-Digest header — the body
-            # cannot be cryptographically verified.  Return the data best-effort
-            # (already in _GHCR_IDX_BODY/_GHCR_IDX_HDRS) but DO NOT memoize to
-            # the cache.  Security invariant: only verifiable content is admitted
-            # to the cache; on-the-fly serving without memoization is allowed.
-            echo "::warning::Fresh GHCR response for ${image_path}:${tag} lacks Docker-Content-Digest; not caching" >&2
+            # Fresh response carries no Docker-Content-Digest header.  GHCR is
+            # documented to always send this header on manifest responses; its
+            # absence signals a stripped/tampered response or a non-compliant
+            # registry path.  Fail-closed: do not return unverified data to the
+            # caller, as that would allow a digest-stripping bypass for the
+            # current run even without cache admission.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} lacks Docker-Content-Digest; refusing" >&2
             rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
-            return 0
+            return 1
         fi
         # Strict single-token extraction: anchored regex rejects headers with
         # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
@@ -398,10 +414,10 @@ _ghcr_fetch_index() {
         fi
         if [[ "${#idx_digest_hex}" -ne 64 ]]; then
             # Header present but malformed (wrong length, non-hex, multiple tokens).
-            # Same treatment as missing: serve body, skip cache admission.
-            echo "::warning::Fresh GHCR response for ${image_path}:${tag} has malformed Docker-Content-Digest; not caching" >&2
+            # Same fail-closed treatment as missing: refuse unverified body.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} has malformed Docker-Content-Digest; refusing" >&2
             rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
-            return 0
+            return 1
         fi
         if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
             echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2

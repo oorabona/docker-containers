@@ -85,8 +85,10 @@ setup() {
 
     export PATH="${WORK_DIR}/bin:$PATH"
 
-    # Isolated cache dir for each test.
+    # Isolated cache dir for each test — created 0700 so _ghcr_validate_cachedir
+    # accepts it immediately (r10: loose-mode dirs are now rejected, not silently fixed).
     export GHCR_CACHE_DIR="${WORK_DIR}/cache"
+    ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" )
 
     # gh must fail fast so ghcr_get_token falls through to anonymous path.
     # The anonymous token path issues a curl call to */token*, which the shim
@@ -171,12 +173,14 @@ fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    # Index fetch now uses -D <hfile> -o <bfile>; the shim must write to those
-    # files when present. Docker-Content-Digest uses a short non-64-char value
-    # so that content-digest verification is skipped in the default shim (tests
-    # that need real sha256 verification install a custom shim).
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
+    # Index fetch uses -D <hfile> -o <bfile>; the shim writes to those files.
+    # Docker-Content-Digest is computed dynamically from the body so that
+    # content-digest verification always passes, even when tests override
+    # _OCI_INDEX with a custom fixture (r10 Defect C: fail-closed on missing
+    # or malformed digest).
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     _write_response "$_hdrs" "$_body"
     exit 0
 fi
@@ -264,8 +268,9 @@ if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     exit 0
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -334,8 +339,9 @@ fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -390,8 +396,9 @@ fi
 
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:single\r\n\r\n')"
     _body="$(printf '%s\n' "$_SINGLE_MANIFEST")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -590,8 +597,9 @@ if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     exit 0
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -889,8 +897,9 @@ if [[ "$URL" == *"/manifests/sha256:"* ]]; then
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
     echo "INDEX" >> "$CALLS"
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s' "$_hdrs"; printf '%s' "$_body"; fi
     exit 0
@@ -1027,9 +1036,10 @@ CURL_NL
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
-    # The shim writes the real index body (printf '%s\n') so the sha256 is:
-    #   eecd94bb8a87c4ce52dca17a203c8516909a4c4939d5878915d077c1757937c2
-    # Pre-seed the cache with a tampered body whose sha256 does NOT match.
+    # Pre-seed the cache with a tampered body whose sha256 does NOT match the
+    # pre-seeded header digest (eecd94... = sha256 of the real body with newline).
+    # The mismatch triggers eviction; the fresh shim serves a self-consistent
+    # (body, digest) pair that passes _ghcr_verify_content_digest.
     local idx_key
     idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
     local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
@@ -1063,17 +1073,13 @@ CURL_NL
     # A network INDEX fetch must have been logged (the evicted cache forced a re-fetch).
     grep -q '^INDEX' "$CALLS"
 
-    # The default shim emits 'Docker-Content-Digest: sha256:idx' (13 chars —
-    # not a full 64-char hex).  The Defect-B fix (fresh response with
-    # unverifiable digest → skip cache admission, still return body) means the
-    # body file is NOT re-populated on this path.  The tampered bytes must
-    # still have been evicted, but the new body was not re-cached.
-    # If the body file exists it must not contain the tampered bytes.
-    if [ -f "$body_file" ]; then
-        local cached_body
-        cached_body=$(cat "$body_file")
-        [[ "$cached_body" != 'TAMPERED_INDEX_BODY' ]]
-    fi
+    # The default shim now emits a verifiable 64-char Docker-Content-Digest.
+    # After eviction + re-fetch + digest verification, the body IS re-cached.
+    # Assert: the re-cached body file is not the tampered bytes.
+    [ -f "$body_file" ] || { echo "FAIL: body not re-cached after successful re-fetch"; return 1; }
+    local cached_body
+    cached_body=$(cat "$body_file")
+    [[ "$cached_body" != 'TAMPERED_INDEX_BODY' ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -1208,8 +1214,9 @@ if [[ "$URL" == *"/manifests/sha256:"* ]]; then
     exit 1
 fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -1260,8 +1267,9 @@ CURL_PERARCH_FAIL
         > "$hdrs_file"
 
     # Replace curl shim with one that records it was called and returns a
-    # fresh valid response (with a short non-64-char digest so the network
-    # path caches successfully without triggering verification).
+    # fresh valid response with a verifiable Docker-Content-Digest header.
+    # The digest is computed dynamically from the body bytes written to OFILE
+    # (printf '%s' strips trailing newline via command substitution).
     cat > "${WORK_DIR}/bin/curl" << 'CURL_FRESH'
 #!/usr/bin/env bash
 echo "CURL_CALLED_R6" >> "$CALLS"
@@ -1275,8 +1283,9 @@ for _arg in "$@"; do
 done
 if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -1443,7 +1452,8 @@ CURL_FRESH
         > "$hdrs_file"
 
     # Replace curl shim with one that records it was called and returns a fresh
-    # valid response (short non-64-char digest so caching succeeds).
+    # valid response with a verifiable Docker-Content-Digest header.
+    # Digest: sha256 of printf '%s\n' "$_OCI_INDEX" (exact bytes shim writes).
     cat > "${WORK_DIR}/bin/curl" << 'CURL_FRESH_R7A'
 #!/usr/bin/env bash
 echo "CURL_CALLED_R7A" >> "$CALLS"
@@ -1457,8 +1467,9 @@ for _arg in "$@"; do
 done
 if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -1559,8 +1570,9 @@ for _arg in "$@"; do
 done
 if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
 if [[ "$URL" == *"/manifests/"* ]]; then
-    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:idx\r\n\r\n')"
     _body="$(printf '%s\n' "$_OCI_INDEX")"
+    _digest="$(printf '%s' "$_body" | sha256sum | cut -c1-64)"
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:%s\r\n\r\n' "$_digest")"
     if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
     if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
     exit 0
@@ -1601,30 +1613,42 @@ CURL_FRESH_R8
 # r9: Defect A — cache dir trust validation
 # ---------------------------------------------------------------------------
 
-@test "r9-A1: world-writable cache dir is silently fixed (chmod 700, same dir reused)" {
-    # A dir owned by the current user but with mode 0777 must be fixed in-place
-    # (chmod to 0700) rather than switched to a mktemp dir — the content is ours.
+@test "r9-A1: loose-mode cache dir (0777) is rejected — switches to private mktemp (not reused)" {
+    # r10 fix: a dir owned by us but with mode != 0700 must be treated as
+    # untrusted.  It may contain attacker-planted body+hdrs files with matching
+    # digests written before we arrived; silent chmod-to-700 only closes future
+    # writes but cannot purge that pre-existing poisoned content.
+    # Expected behaviour: same response as symlink/foreign-owner — switch to a
+    # fresh private mktemp dir and emit ::warning::.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
-    # Create the cache dir with loose permissions.
+    # Plant a poisoned body file in the loose-mode dir before _ghcr_ensure_cachedir.
     mkdir -p "$GHCR_CACHE_DIR"
     chmod 777 "$GHCR_CACHE_DIR"
+    echo "POISONED_CONTENT" > "${GHCR_CACHE_DIR}/poison.body"
     local original_dir="$GHCR_CACHE_DIR"
 
     local stderr_log="${WORK_DIR}/r9a1_stderr.log"
     _ghcr_ensure_cachedir 2>"$stderr_log"
 
-    # GHCR_CACHE_DIR must still point to the original directory (not a mktemp).
-    [ "$GHCR_CACHE_DIR" = "$original_dir" ]
+    # GHCR_CACHE_DIR must have been switched away from the loose-mode dir.
+    [ "$GHCR_CACHE_DIR" != "$original_dir" ]
 
-    # The directory must now be mode 0700.
+    # The new dir must be a real directory (not a symlink) and mode 0700.
+    [[ -d "$GHCR_CACHE_DIR" && ! -L "$GHCR_CACHE_DIR" ]]
     local mode
     mode=$(stat -c '%a' "$GHCR_CACHE_DIR")
     [ "$mode" = "700" ]
 
-    # No warning must have been emitted (loose-mode-but-owned → silent fix).
-    [ ! -s "$stderr_log" ] || ! grep -q '::warning::' "$stderr_log"
+    # The poisoned content must NOT be visible in the new cache dir.
+    [ ! -f "${GHCR_CACHE_DIR}/poison.body" ] || {
+        echo "FAIL: poisoned file visible in switched-to cache dir" >&2
+        return 1
+    }
+
+    # A ::warning:: must have been emitted about the untrusted dir.
+    grep -q '::warning::.*untrusted' "$stderr_log"
 }
 
 @test "r9-A2: symlink cache dir is rejected — warning emitted and private mktemp used" {
@@ -1634,8 +1658,11 @@ CURL_FRESH_R8
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
     # Create the real target and a symlink pointing to it.
+    # setup() pre-creates GHCR_CACHE_DIR as a real directory; remove it first
+    # so that ln -s creates the symlink AT that path (not inside it).
     local real_target="${WORK_DIR}/real_cache_target"
     mkdir -p "$real_target"
+    rm -rf "$GHCR_CACHE_DIR"
     ln -s "$real_target" "$GHCR_CACHE_DIR"
     local original_dir="$GHCR_CACHE_DIR"
 
@@ -1656,10 +1683,12 @@ CURL_FRESH_R8
 # r9: Defect B — fresh-fetch no-digest = skip-cache-but-return-body
 # ---------------------------------------------------------------------------
 
-@test "r9-B: fresh response without Docker-Content-Digest — body returned, NOT cached" {
-    # When a fresh GHCR response carries no Docker-Content-Digest header the
-    # content cannot be cryptographically verified.  The body is returned to
-    # the caller (best-effort), but the cache files must NOT be written.
+@test "r9-B: fresh response without Docker-Content-Digest — returns 1 (fail-closed, no body served)" {
+    # r10 fix: when a fresh GHCR response carries no Docker-Content-Digest header
+    # the content cannot be cryptographically verified.  Returning the body to
+    # the caller even "best-effort" allows a digest-stripping bypass for the
+    # current run (not just cache admission).  Fail-closed: return 1 so the
+    # caller's retry/error-handling kicks in.  Cache files must NOT be written.
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"
 
@@ -1692,19 +1721,16 @@ CURL_NODIGEST
     local stderr_log="${WORK_DIR}/r9b_stderr.log"
     _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr_log" || fetch_rc=$?
 
-    # Function must succeed — body data is returned best-effort.
-    [ "$fetch_rc" -eq 0 ]
-
-    # Body must be populated in the out-var.
-    [[ -n "$_GHCR_IDX_BODY" ]]
+    # Function must fail — unverified body must not be served (fail-closed).
+    [ "$fetch_rc" -ne 0 ]
 
     # Network fetch DID occur (not a cache hit).
     grep -q 'INDEX_NODIGEST' "$CALLS"
 
-    # ::warning:: must indicate the response was not cached.
-    grep -q '::warning::.*not caching' "$stderr_log"
+    # ::warning:: must indicate the response was refused.
+    grep -q '::warning::.*refusing' "$stderr_log"
 
-    # Cache files must NOT have been written (nothing verifiable to admit).
+    # Cache files must NOT have been written.
     local idx_key
     idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
     local body_file="${GHCR_CACHE_DIR}/idx-${idx_key}.body"
@@ -1749,4 +1775,158 @@ CURL_NODIGEST
         rm -f "$old_sentinel"
         return 1
     fi
+}
+
+# ---------------------------------------------------------------------------
+# r10: New regression tests
+# ---------------------------------------------------------------------------
+
+@test "r10-A: loose-mode dir with pre-planted body+hdrs — switched to fresh mktemp, poison not visible" {
+    # Regression: r9 silently chmod'd a loose-mode dir we own, leaving any
+    # pre-existing attacker-planted files accessible. r10 switches to a fresh
+    # mktemp dir so the pre-existing content is structurally unreachable.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Plant poisoned body+hdrs in the loose-mode dir before calling ensure.
+    mkdir -p "$GHCR_CACHE_DIR"
+    chmod 755 "$GHCR_CACHE_DIR"
+    local idx_key
+    idx_key="$(_ghcr_keyfile "oorabona/postgres:18-alpine")"
+    echo "POISON_BODY" > "${GHCR_CACHE_DIR}/idx-${idx_key}.body"
+    echo "POISON_HDRS" > "${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs"
+    local hostile_dir="$GHCR_CACHE_DIR"
+
+    local stderr_log="${WORK_DIR}/r10a_stderr.log"
+    _ghcr_ensure_cachedir 2>"$stderr_log"
+
+    # Must have switched to a fresh dir.
+    [ "$GHCR_CACHE_DIR" != "$hostile_dir" ]
+    [[ -d "$GHCR_CACHE_DIR" && ! -L "$GHCR_CACHE_DIR" ]]
+
+    # Poisoned files must NOT be visible in the new dir.
+    [ ! -f "${GHCR_CACHE_DIR}/idx-${idx_key}.body" ] || {
+        echo "FAIL: poisoned body visible in new cache dir" >&2; return 1
+    }
+    [ ! -f "${GHCR_CACHE_DIR}/idx-${idx_key}.hdrs" ] || {
+        echo "FAIL: poisoned hdrs visible in new cache dir" >&2; return 1
+    }
+
+    # Warning must have been emitted.
+    grep -q '::warning::.*untrusted' "$stderr_log"
+}
+
+@test "r10-B: mktemp-d failure after untrusted dir — GHCR_CACHE_DIR cleared, hostile path not used" {
+    # Regression: when mktemp -d fails in the untrusted-dir path, the old code
+    # left GHCR_CACHE_DIR pointing at the hostile original. r10 sets
+    # GHCR_CACHE_DIR="" so _ghcr_temp_file falls back to TMPDIR, never touching
+    # the hostile path.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # Create the hostile (loose-mode) dir.
+    mkdir -p "$GHCR_CACHE_DIR"
+    chmod 777 "$GHCR_CACHE_DIR"
+    local hostile_dir="$GHCR_CACHE_DIR"
+
+    # Override mktemp to fail for the "ghcr-cache-private" pattern.
+    cat > "${WORK_DIR}/bin/mktemp" << 'MKTEMP_FAIL'
+#!/usr/bin/env bash
+# Fail if creating a ghcr-cache-private dir; forward everything else.
+if [[ "$*" == *"ghcr-cache-private"* ]]; then
+    echo "mktemp: cannot create temp dir" >&2
+    exit 1
+fi
+exec /usr/bin/mktemp "$@"
+MKTEMP_FAIL
+    chmod +x "${WORK_DIR}/bin/mktemp"
+
+    local stderr_log="${WORK_DIR}/r10b_stderr.log"
+    unset _GHCR_CACHE_DIR_WARNED
+    _ghcr_ensure_cachedir 2>"$stderr_log"
+
+    # GHCR_CACHE_DIR must be empty (hostile path cleared).
+    [ -z "$GHCR_CACHE_DIR" ] || {
+        echo "FAIL: GHCR_CACHE_DIR not cleared; still '$GHCR_CACHE_DIR'" >&2
+        [ "$GHCR_CACHE_DIR" != "$hostile_dir" ] || { echo "FAIL: hostile path still in use" >&2; return 1; }
+    }
+
+    # _ghcr_temp_file must return a path NOT under the hostile dir.
+    local tmp_path
+    tmp_path=$(_ghcr_temp_file "test-suffix")
+    [[ "$tmp_path" != "${hostile_dir}"* ]] || {
+        echo "FAIL: _ghcr_temp_file returned path under hostile dir: $tmp_path" >&2; return 1
+    }
+    rm -f "$tmp_path" 2>/dev/null || true
+
+    # Warning about uncached mode must have been emitted.
+    grep -q '::warning::' "$stderr_log"
+}
+
+@test "r10-C: fresh fetch missing Docker-Content-Digest returns 1, malformed also returns 1" {
+    # Regression guard for Defect C: both missing and malformed digest must
+    # return 1 (fail-closed), not 0 with unverified body.
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    # ---- Case 1: no digest header ----
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_NODIGEST_C'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_NODIGEST_C
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    local rc1=0
+    local stderr1="${WORK_DIR}/r10c_no_digest.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr1" || rc1=$?
+    [ "$rc1" -ne 0 ] || { echo "FAIL: missing digest returned 0 (should be 1)" >&2; return 1; }
+    grep -q '::warning::.*refusing' "$stderr1"
+
+    # ---- Case 2: malformed digest (non-64-char) ----
+    cat > "${WORK_DIR}/bin/curl" << 'CURL_BADDIGEST_C'
+#!/usr/bin/env bash
+URL="${!#}"
+DFILE="" OFILE=""
+_prev=""
+for _arg in "$@"; do
+    if [[ "$_prev" == "-D" ]]; then DFILE="$_arg"; fi
+    if [[ "$_prev" == "-o" ]]; then OFILE="$_arg"; fi
+    _prev="$_arg"
+done
+if [[ "$URL" == *"/token"* ]]; then echo '{"token":"x"}'; exit 0; fi
+if [[ "$URL" == *"/manifests/"* ]]; then
+    _hdrs="$(printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:tooshort\r\n\r\n')"
+    _body="$(printf '%s\n' "$_OCI_INDEX")"
+    if [[ -n "$DFILE" ]]; then printf '%s' "$_hdrs" > "$DFILE"; fi
+    if [[ -n "$OFILE" ]]; then printf '%s' "$_body" > "$OFILE"; else printf '%s%s' "$_hdrs" "$_body"; fi
+    exit 0
+fi
+exit 1
+CURL_BADDIGEST_C
+    chmod +x "${WORK_DIR}/bin/curl"
+
+    # Reset state for second call.
+    _GHCR_IDX_BODY=""
+    _GHCR_IDX_HDRS=""
+    local rc2=0
+    local stderr2="${WORK_DIR}/r10c_bad_digest.log"
+    _ghcr_fetch_index "oorabona/postgres" "18-alpine" "token" 2>"$stderr2" || rc2=$?
+    [ "$rc2" -ne 0 ] || { echo "FAIL: malformed digest returned 0 (should be 1)" >&2; return 1; }
+    grep -q '::warning::.*refusing' "$stderr2"
 }
