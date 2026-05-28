@@ -538,7 +538,9 @@ jobs:
           assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '' }}
 
       # Labels applied separately — peter-evans/create-pull-request has a race condition
-      # where addLabels fails with "Could not resolve to a node" (issue #4321)
+      # where addLabels fails with "Could not resolve to a node" (issue #4321).
+      # Failure tolerance: if any label is missing from the repo (or transient gh
+      # error), emit a ::warning:: and continue — PR is the authoritative signal.
       - name: Apply labels
         if: steps.create_pr.outputs.pull-request-number
         env:
@@ -546,7 +548,9 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           sleep 2
-          gh pr edit "$PR_NUMBER" --add-label "automation,${{ steps.resolve.outputs.container_name }},${{ steps.classify.outputs.change_type }}-update"
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,${{ steps.resolve.outputs.container_name }},${{ steps.classify.outputs.change_type }}-update" 2>&1; then
+            echo "::warning::Failed to apply version-update labels to PR #${PR_NUMBER}; PR created successfully — continuing"
+          fi
 
       - name: Auto-merge minor updates
         id: merge_pr
@@ -1062,7 +1066,9 @@ jobs:
           assignees: ${{ steps.prepare.outputs.max_severity == 'major' && github.repository_owner || '' }}
 
       # Labels applied separately — peter-evans/create-pull-request has a race condition
-      # where addLabels fails with "Could not resolve to a node" (issue #4321)
+      # where addLabels fails with "Could not resolve to a node" (issue #4321).
+      # Failure tolerance: if any label is missing from the repo (or transient gh
+      # error), emit a ::warning:: and continue — PR is the authoritative signal.
       - name: Apply labels
         if: steps.create_pr.outputs.pull-request-number
         env:
@@ -1070,7 +1076,9 @@ jobs:
           PR_NUMBER: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           sleep 2
-          gh pr edit "$PR_NUMBER" --add-label "automation,dependencies,${{ matrix.container }},${{ steps.prepare.outputs.max_severity }}-update"
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,dependencies,${{ matrix.container }},${{ steps.prepare.outputs.max_severity }}-update" 2>&1; then
+            echo "::warning::Failed to apply deps labels to PR #${PR_NUMBER}; PR created successfully — continuing"
+          fi
 
       - name: Auto-merge minor/patch updates
         id: merge_dep_pr
@@ -1526,7 +1534,10 @@ jobs:
           body-path: ${{ steps.pr-body.outputs.pr_body_file }}
 
       # Labels applied separately — peter-evans/create-pull-request has a race condition
-      # where addLabels fails with "Could not resolve to a node" on fresh PRs
+      # where addLabels fails with "Could not resolve to a node" on fresh PRs.
+      # Failure tolerance: if any label is missing from the repo (or transient gh
+      # error), emit a ::warning:: and continue.  The PR is the authoritative
+      # signal of drift; labels are nice-to-have triage metadata, not gating.
       - name: Apply labels
         if: steps.create-pr.outputs.pull-request-number
         env:
@@ -1535,4 +1546,6 @@ jobs:
           CONTAINER: ${{ matrix.container }}
         run: |
           sleep 2
-          gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}"
+          if ! gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}" 2>&1; then
+            echo "::warning::Failed to apply labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created successfully — continuing"
+          fi
