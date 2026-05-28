@@ -40,6 +40,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Required: gh pr edit --remove-label and gh pr comment are issues-scoped operations
+      issues: write
     steps:
       - name: Identify parent container from associated PR
         id: parent
