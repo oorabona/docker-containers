@@ -1179,6 +1179,7 @@ jobs:
     outputs:
       drift_containers: ${{ steps.detect.outputs.drift_containers }}
       drift_matrix: ${{ steps.detect.outputs.drift_matrix }}
+      drift_containers_csv: ${{ steps.detect.outputs.drift_containers_csv }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1304,6 +1305,13 @@ jobs:
             || echo "[]")
           echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
 
+          # CSV form used by open-drift-prs to detect matrix-ordering races:
+          # if a parent container is also drifting in this same cron run, a child's
+          # matrix iteration may execute before the parent's — _eval_parent_state
+          # needs to know the full current drift set, not just open PRs.
+          drift_containers_csv=$(echo "$drift_containers" | jq -r 'join(",")')
+          echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
+
           # Build enriched matrix for open-drift-prs: include internal_deps_csv per container
           drift_matrix=$(echo "$drift_json" | jq -c \
             '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
@@ -1341,6 +1349,12 @@ jobs:
         include: ${{ fromJson(needs.detect-digest-drift.outputs.drift_matrix) }}
       max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
       fail-fast: false  # One container's transient failure must not block others
+    # CURRENT_DRIFT_SET: CSV of all containers drifting in this cron run.
+    # Used by _eval_parent_state (State 0) to detect the matrix-ordering race:
+    # if a parent container is also in this run's drift set, its matrix entry
+    # may not have executed yet — treat it as in_flux regardless of PR/build state.
+    env:
+      CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
     permissions:
       contents: write
       pull-requests: write
@@ -1543,21 +1557,43 @@ jobs:
           title: "📦 base-digest-drift(${{ matrix.container }}): upstream base image rebase"
           body-path: ${{ steps.pr-body.outputs.pr_body_file }}
 
-      # Labels applied separately — peter-evans/create-pull-request has a race condition
+      # Labels applied in two steps — peter-evans/create-pull-request has a race condition
       # where addLabels fails with "Could not resolve to a node" on fresh PRs.
-      # Failure tolerance: if any label is missing from the repo (or transient gh
-      # error), emit a ::warning:: and continue.  The PR is the authoritative
-      # signal of drift; labels are nice-to-have triage metadata, not gating.
-      - name: Apply labels
+      #
+      # Step 1 (strict): applies the cascade-critical base-digest-drift label with retry.
+      # The cascade logic (_eval_parent_state, cascade-resolver.yaml) depends on this
+      # label as the canonical drift PR marker.  A transient gh failure here would leave
+      # the parent PR unlabelled, causing _eval_parent_state to miss it and the child to
+      # either merge too early or remain stuck permanently.  Fail-fast after 3 attempts.
+      #
+      # Step 2 (tolerant): applies triage-only labels (automation, container:<name>).
+      # These are nice-to-have metadata; the PR is the authoritative drift signal.
+      - name: Apply cascade-critical labels (strict)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          for attempt in 1 2 3; do
+            sleep $((attempt * 2))
+            if gh pr edit "$PR_NUMBER" --add-label "base-digest-drift" 2>&1; then
+              echo "::notice::Applied base-digest-drift label to PR #${PR_NUMBER} (attempt ${attempt})"
+              exit 0
+            fi
+            echo "::warning::Failed to apply base-digest-drift label to PR #${PR_NUMBER}, attempt ${attempt}"
+          done
+          echo "::error::Failed to apply base-digest-drift label to PR #${PR_NUMBER} after 3 attempts. Cascade detection requires this label. Aborting."
+          exit 1
+
+      - name: Apply labels (tolerant — triage metadata)
         if: steps.create-pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           CONTAINER: ${{ matrix.container }}
         run: |
-          sleep 2
-          if ! gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}" 2>&1; then
-            echo "::warning::Failed to apply labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created successfully — continuing"
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,container:${CONTAINER}" 2>&1; then
+            echo "::warning::Failed to apply triage labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created and cascade label set — continuing"
           fi
 
       # Strict cascade label application — separate from the tolerant "Apply labels"
@@ -1578,6 +1614,11 @@ jobs:
           #
           # State 1: open drift PR → in_flux (parent is still being integrated)
           # State 2: no open PR + recent LAST_REBUILD.md commit + auto-build in_progress/queued → in_flux
+          # State 0: parent is in the CURRENT cron's drift set → in_flux
+          #   (matrix ordering race: the parent's matrix entry may not have run yet,
+          #    so there is no open PR yet — but one will appear shortly)
+          # State 1: open drift PR → in_flux (parent is still being integrated)
+          # State 2: no open PR + recent LAST_REBUILD.md commit + auto-build in_progress/queued → in_flux
           # State 3: no open PR + recent commit + auto-build completed/success → ready
           # State 4: no open PR + no LAST_REBUILD.md commit ever → ready (never drifted)
           # State 5: no open PR + recent commit + auto-build failed/cancelled → in_flux (operator must fix parent)
@@ -1589,6 +1630,19 @@ jobs:
           # creates a single invalid label name — that bug is precisely what this loop avoids.
           _eval_parent_state() {
             local parent="$1"
+            # State 0: is parent in the current cron's drift set?
+            # If yes, treat as in_flux regardless of PR/build state.  The parent's
+            # own matrix entry may not have executed yet (max-parallel:1 serializes
+            # but does not define order), so no open PR exists yet — but one will
+            # appear when that entry runs.  Checking only open PRs (State 1) misses
+            # this race entirely.
+            for _current_drift in ${CURRENT_DRIFT_SET//,/ }; do
+              if [[ "$_current_drift" == "$parent" ]]; then
+                echo "::notice::Parent ${parent} is in the current cron's drift set; treating as in_flux (matrix-ordering race guard)"
+                echo "in_flux"
+                return 0
+              fi
+            done
             local parent_pr
             if ! parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \

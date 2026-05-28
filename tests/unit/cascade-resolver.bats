@@ -511,9 +511,17 @@ _run_identify_parent() {
 
 # Body of _eval_parent_state extracted verbatim from the workflow step.
 # Variables on the calling side: parent=$1; git and gh are mocked.
+# CURRENT_DRIFT_SET env must be set in the caller for State 0 tests.
 EVAL_PARENT_STATE_BODY='
 _eval_parent_state() {
   local parent="$1"
+  for _current_drift in ${CURRENT_DRIFT_SET//,/ }; do
+    if [[ "$_current_drift" == "$parent" ]]; then
+      echo "::notice::Parent ${parent} is in the current cron'"'"'s drift set; treating as in_flux (matrix-ordering race guard)"
+      echo "in_flux"
+      return 0
+    fi
+  done
   local parent_pr
   if ! parent_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
@@ -682,10 +690,13 @@ GH_MOCK
 
 _run_eval_parent_state() {
     local parent="$1"
+    # Optional: CURRENT_DRIFT_SET can be set in caller for State 0 tests.
+    # Default to empty so existing State 1-6 tests are unaffected.
+    local drift_set="${CURRENT_DRIFT_SET:-}"
     local script="$TEST_TEMP_DIR/eval_parent_state.sh"
     printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$EVAL_PARENT_STATE_BODY" > "$script"
     chmod +x "$script"
-    PARENT_ARG="$parent" run "$script"
+    PARENT_ARG="$parent" CURRENT_DRIFT_SET="$drift_set" run "$script"
 }
 
 # ---------------------------------------------------------------------------
@@ -980,4 +991,46 @@ MOCK_BODY
     # Container not identified → name= (empty)
     grep -q "name=" "$output_file"
     [[ "$output" == *"Nothing to unblock"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Gate r10 — Defect A fix: State 0 — matrix-ordering race guard
+#
+# CURRENT_DRIFT_SET is a CSV of all containers drifting in the current cron run.
+# If a parent is in that set, _eval_parent_state must return in_flux immediately
+# (before consulting the PR/build state) because the parent's own matrix entry
+# may not have executed yet — no PR exists yet but one will appear shortly.
+# ---------------------------------------------------------------------------
+
+@test "eval_parent_state: State 0 — parent in CURRENT_DRIFT_SET → in_flux (no gh call needed)" {
+    # No gh mock: any gh call would fail (binary not on PATH).
+    # State 0 must short-circuit before reaching the gh pr list call.
+    CURRENT_DRIFT_SET="parent_a,parent_b" _run_eval_parent_state "parent_a"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    # Confirm the notice was emitted so operators can trace the decision
+    [[ "$output" == *"current cron"* ]] || [[ "$output" == *"drift set"* ]]
+}
+
+@test "eval_parent_state: State 0 — parent NOT in CURRENT_DRIFT_SET → falls through to State 1+ logic" {
+    # parent_x is NOT in the drift set; the function must continue to the gh pr list call.
+    # Use the open-pr mock so State 1 fires (open PR → in_flux) — proving fall-through happened.
+    _setup_three_state_mock "open-pr"
+    CURRENT_DRIFT_SET="parent_a,parent_b" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    # Must NOT have the State 0 notice (reached State 1 via gh pr list)
+    [[ "$output" != *"current cron"* ]]
+}
+
+@test "eval_parent_state: State 0 — CURRENT_DRIFT_SET empty → no change to existing behavior" {
+    # Empty drift set: State 0 loop is a no-op; State 1+ logic is unchanged.
+    # Use no-last-rebuild mock so function reaches State 4 (ready).
+    _setup_three_state_mock "no-last-rebuild"
+    CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
 }

@@ -1132,6 +1132,87 @@ STUB_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Gate r10 — Defect A: drift_containers_csv output
+#
+# The workflow emits drift_containers_csv (comma-separated) alongside the JSON
+# drift_containers output so open-drift-prs can pass it as CURRENT_DRIFT_SET
+# env to _eval_parent_state for the matrix-ordering race guard (State 0).
+# This test verifies the CSV is derivable from the detector output and contains
+# all drifted containers separated by commas (no spaces, no brackets).
+# ---------------------------------------------------------------------------
+@test "r10: drift_containers_csv derivable from detector output — CSV form matches JSON list" {
+    export _VALID_CONTAINERS_OVERRIDE="foo
+bar"
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Two containers: foo drifted, bar drifted (different base images)
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/bar-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "bar",
+  "tag": "2.0",
+  "base_image_ref": "debian:trixie-slim",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    # Probe stub: returns a different digest for each ref (simulating real drift)
+    local stub_script="$TEST_TEMP_DIR/probe-r10"
+    cat > "$stub_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    alpine:3.21)
+        printf '{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+        ;;
+    debian:trixie-slim)
+        printf '{"digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}'
+        ;;
+    *)
+        echo "unexpected ref: $1" >&2
+        exit 1
+        ;;
+esac
+STUB_EOF
+    chmod +x "$stub_script"
+
+    result=$(PROBE_CMD="$stub_script" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+
+    # Derive drift_containers JSON (as the workflow does)
+    drift_containers=$(printf '%s' "$result" | jq -c '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]')
+
+    # Derive drift_containers_csv (as the workflow does: jq -r 'join(",")')
+    drift_containers_csv=$(printf '%s' "$drift_containers" | jq -r 'join(",")')
+
+    # CSV must contain both containers, no JSON brackets, no spaces around commas
+    [[ "$drift_containers_csv" == *"foo"* ]]
+    [[ "$drift_containers_csv" == *"bar"* ]]
+    [[ "$drift_containers_csv" != *"["* ]]
+    [[ "$drift_containers_csv" != *" "* ]]
+
+    # CSV must parse back to the same set as the JSON list
+    csv_foo=$(printf '%s' "$drift_containers_csv" | tr ',' '\n' | grep -c '^foo$')
+    csv_bar=$(printf '%s' "$drift_containers_csv" | tr ',' '\n' | grep -c '^bar$')
+    [ "$csv_foo" -eq 1 ]
+    [ "$csv_bar" -eq 1 ]
+
+    # An empty drift set produces an empty CSV (not "null" or "[]")
+    empty_csv=$(printf '[]' | jq -r 'join(",")')
+    [ "$empty_csv" = "" ]
+}
+
+# ---------------------------------------------------------------------------
 # Fix r6-2: Workflow re-emit injection prevention
 # Regression guard: a base_image_ref with a percent-encoded newline (%0A)
 # would survive _sanitize_for_json (which only strips literal control chars)
