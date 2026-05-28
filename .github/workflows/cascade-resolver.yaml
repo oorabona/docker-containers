@@ -8,11 +8,11 @@ name: Cascade Resolver
 # fired before the parent image was in GHCR, so child master rebuilds could still
 # pull the stale parent digest (race condition).
 #
-# Parent container identification: the squash-merge commit that auto-build.yaml ran
-# on follows the pattern set by upstream-monitor.yaml:
-#   📦 base-digest-drift(<container>): upstream base image rebase (#NNN)
-# The container name is extracted via regex from the commit subject.
-# Non-drift commits (e.g. feat/, fix/) match nothing and the job exits cleanly.
+# Parent container identification: gh api commits/{sha}/pulls returns the PR(s)
+# associated with the triggering commit.  A PR whose headRefName matches
+# update/base-digest-<container> (the canonical branch set by peter-evans/create-pull-request)
+# identifies the drift PR.  The PR's merged_at is cross-verified.
+# Commits with no associated drift PR exit cleanly (nothing to unblock).
 #
 # Multi-parent gating: a child container may depend on several project-internal
 # parents, each generating a separate drift PR.  The child PR carries one
@@ -41,26 +41,49 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Identify parent container from head commit
+      - name: Identify parent container from associated PR
         id: parent
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # The auto-build run completed on master.  The triggering commit is the
-          # squash-merge of a drift PR, whose subject follows the pattern:
-          #   📦 base-digest-drift(<container>): upstream base image rebase (#NNN)
-          # Non-drift commits produce no output and the downstream step is skipped.
-          subject=$(gh api \
-            "repos/${{ github.repository }}/commits/${HEAD_SHA}" \
-            --jq '.commit.message' | head -1)
-          if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-            echo "::notice::Commit ${HEAD_SHA} is not a base-digest-drift squash; nothing to unblock"
+          # Verify the triggering commit is a squash-merge of a drift PR by consulting
+          # PR metadata — NOT the commit subject alone (which is spoofable by merge-right
+          # holders crafting a commit matching the base-digest-drift(<name>) pattern).
+          #
+          # Verification chain:
+          #   1. workflow_run conclusion=success is already gated above.
+          #   2. Commits/{sha}/pulls returns the PR(s) associated with this commit.
+          #   3. A PR whose headRefName starts with update/base-digest- identifies a drift PR.
+          #   4. merged_at must be set (extra defence for non-PR pushes if branch-protection allows).
+          if ! pr_json=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls"); then
+            echo "::error::Failed to query PRs for commit ${HEAD_SHA}"
+            exit 1
+          fi
+          # Extract container name from the first matching PR's head branch name.
+          container=$(echo "$pr_json" | jq -r \
+            '.[] | select(.head.ref | startswith("update/base-digest-")) | .head.ref' \
+            | head -1 | sed 's#^update/base-digest-##')
+          if [[ -z "$container" ]]; then
+            echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
             echo "name=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          container="${BASH_REMATCH[1]}"
-          echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA})"
+          # Validate format (defence in depth — rejects path traversal and injection).
+          if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+            echo "::error::Invalid container name extracted from PR branch: ${container}"
+            exit 1
+          fi
+          # Cross-verify the PR was actually merged.
+          is_merged=$(echo "$pr_json" | jq -r \
+            --arg ref "update/base-digest-${container}" \
+            '.[] | select(.head.ref == $ref) | .merged_at // empty' \
+            | head -1)
+          if [[ -z "$is_merged" ]]; then
+            echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
+            exit 1
+          fi
+          echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA}, verified via PR metadata)"
           echo "name=${container}" >> "$GITHUB_OUTPUT"
 
       - name: Unblock children

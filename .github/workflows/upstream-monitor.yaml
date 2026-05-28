@@ -1583,11 +1583,14 @@ jobs:
           # creates a single invalid label name — that bug is precisely what this loop avoids.
           has_waiting=0
           for parent in ${INTERNAL_DEPS//,/ }; do
-            parent_pr=$(gh pr list \
+            if ! parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --state open \
               --json number \
-              --jq '.[0].number // empty' 2>/dev/null || true)
+              --jq '.[0].number // empty'); then
+              echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+              exit 1
+            fi
             if [[ -z "$parent_pr" ]]; then
               continue
             fi
@@ -1631,11 +1634,14 @@ jobs:
           # canonical and stable; label-based detection is fragile (labels can fail to apply).
           waiting_for=""
           for parent in ${INTERNAL_DEPS//,/ }; do
-            parent_pr=$(gh pr list \
+            if ! parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --state open \
               --json number \
-              --jq '.[0].number // empty' 2>/dev/null || true)
+              --jq '.[0].number // empty'); then
+              echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+              exit 1
+            fi
             if [[ -n "$parent_pr" ]]; then
               waiting_for="${waiting_for}${parent},"
             fi

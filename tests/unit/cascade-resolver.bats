@@ -15,8 +15,8 @@
 # Trigger invariant (Defect B):
 #   The resolver triggers on workflow_run of "Auto Build & Push" (conclusion=success),
 #   NOT on pull_request:closed.  This ensures the parent image is in GHCR before
-#   child auto-merge is enabled.  The container is extracted from the squash-merge
-#   commit subject via the base-digest-drift(<container>) regex.
+#   child auto-merge is enabled.  The container is identified via PR metadata
+#   (gh api commits/{sha}/pulls), NOT via the commit subject (which is spoofable).
 #
 # Error-swallowing invariant (Defect C):
 #   gh pr view failures must skip the child (continue), not silently return "0"
@@ -261,14 +261,15 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 6 — branch name extraction (OLD trigger): resolver identifies container
-# from HEAD_REF.  Tests kept for the "Identify parent container" step fallback
-# (the validator logic is reused in both trigger styles).
+# Scenario 6 — branch name extraction: validator rejects path traversal and
+# non-conforming names.  The same [a-z0-9_-]+ guard is applied in the
+# "Identify parent container from associated PR" step after extracting the
+# container name from the PR's headRefName.
 # ---------------------------------------------------------------------------
 @test "resolver: branch extraction — update/base-digest-debian → debian" {
     run bash -c '
-        HEAD_REF="update/base-digest-debian"
-        container="${HEAD_REF#update/base-digest-}"
+        head_ref="update/base-digest-debian"
+        container="${head_ref#update/base-digest-}"
         [[ "$container" =~ ^[a-z0-9_-]+$ ]] || { echo "INVALID: $container"; exit 1; }
         echo "$container"
     '
@@ -278,8 +279,8 @@ teardown() {
 
 @test "resolver: branch extraction — update/base-digest-web-shell → web-shell" {
     run bash -c '
-        HEAD_REF="update/base-digest-web-shell"
-        container="${HEAD_REF#update/base-digest-}"
+        head_ref="update/base-digest-web-shell"
+        container="${head_ref#update/base-digest-}"
         [[ "$container" =~ ^[a-z0-9_-]+$ ]] || { echo "INVALID: $container"; exit 1; }
         echo "$container"
     '
@@ -289,8 +290,8 @@ teardown() {
 
 @test "resolver: branch extraction — path-traversal rejected by validator" {
     run bash -c '
-        HEAD_REF="update/base-digest-../../etc/passwd"
-        container="${HEAD_REF#update/base-digest-}"
+        head_ref="update/base-digest-../../etc/passwd"
+        container="${head_ref#update/base-digest-}"
         if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
             echo "INVALID: $container" >&2
             exit 1
@@ -301,68 +302,144 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 7 — commit message regex extraction (Defect B: workflow_run trigger)
-# The "Identify parent container from head commit" step uses this regex to extract
-# the container name from the squash-merge commit subject.
+# Scenario 7 — PR-metadata trigger verification (Defect B fix)
+# The "Identify parent container from associated PR" step resolves the container
+# via gh api commits/{sha}/pulls, NOT from the commit subject alone.
+#
+# Tests use a shell fragment that mirrors the step logic with a mock gh command.
 # ---------------------------------------------------------------------------
 
-# Shell function mirroring the regex extraction in cascade-resolver.yaml step
-_extract_container_from_commit() {
-    local subject="$1"
-    if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-        echo ""
-        return 1
-    fi
-    echo "${BASH_REMATCH[1]}"
+# Writes a mock gh whose "api .../commits/.../pulls" output is controlled by the test.
+# $1 = mode: drift-pr | no-pr | wrong-branch | not-merged | api-fails
+_setup_pr_metadata_mock() {
+    local mode="$1"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local mock="$TEST_TEMP_DIR/bin/gh"
+    printf '#!/usr/bin/env bash\nMODE="%s"\n' "$mode" > "$mock"
+    cat >> "$mock" << 'MOCK_BODY'
+# Only handle "gh api .../commits/.../pulls"
+if [[ "$1" == "api" && "$2" == *"/commits/"*"/pulls" ]]; then
+    case "$MODE" in
+        drift-pr)
+            # PR with matching branch, merged
+            echo '[{"number":42,"head":{"ref":"update/base-digest-debian"},"merged_at":"2026-05-28T10:00:00Z"}]'
+            ;;
+        drift-pr-web-shell)
+            echo '[{"number":43,"head":{"ref":"update/base-digest-web-shell"},"merged_at":"2026-05-28T10:00:00Z"}]'
+            ;;
+        no-pr)
+            # No PRs associated — empty array
+            echo '[]'
+            ;;
+        wrong-branch)
+            # PR exists but branch does not match drift pattern
+            echo '[{"number":44,"head":{"ref":"feat/some-feature"},"merged_at":"2026-05-28T10:00:00Z"}]'
+            ;;
+        not-merged)
+            # PR branch matches but merged_at is null
+            echo '[{"number":45,"head":{"ref":"update/base-digest-debian"},"merged_at":null}]'
+            ;;
+        api-fails)
+            echo "API error" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
+# Other gh calls: succeed silently
+exit 0
+MOCK_BODY
+    chmod +x "$mock"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
 
-@test "resolver: commit regex — debian drift commit extracts debian" {
-    run bash -c '
-        subject="📦 base-digest-drift(debian): upstream base image rebase (#542)"
-        if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-            echo "no match" >&2; exit 1
-        fi
-        echo "${BASH_REMATCH[1]}"
-    '
-    [ "$status" -eq 0 ]
-    [ "$output" = "debian" ]
+# Shell fragment mirroring the "Identify parent container from associated PR" step.
+# Accepts HEAD_SHA as $1; uses GITHUB_REPOSITORY env var.
+IDENTIFY_PARENT_BODY='
+HEAD_SHA="${1:?HEAD_SHA required}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-owner/repo}"
+GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
+if ! pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls"); then
+    echo "::error::Failed to query PRs for commit ${HEAD_SHA}"
+    exit 1
+fi
+container=$(echo "$pr_json" | jq -r \
+    '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | .head.ref'"'"' \
+    | head -1 | sed '"'"'s#^update/base-digest-##'"'"')
+if [[ -z "$container" ]]; then
+    echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
+    echo "name=" >> "$GITHUB_OUTPUT"
+    exit 0
+fi
+if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "::error::Invalid container name extracted from PR branch: ${container}"
+    exit 1
+fi
+is_merged=$(echo "$pr_json" | jq -r \
+    --arg ref "update/base-digest-${container}" \
+    '"'"'.[] | select(.head.ref == $ref) | .merged_at // empty'"'"' \
+    | head -1)
+if [[ -z "$is_merged" ]]; then
+    echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
+    exit 1
+fi
+echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA}, verified via PR metadata)"
+echo "name=${container}" >> "$GITHUB_OUTPUT"
+'
+
+_run_identify_parent() {
+    local head_sha="$1"
+    local script="$TEST_TEMP_DIR/identify_parent.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$IDENTIFY_PARENT_BODY" > "$script"
+    chmod +x "$script"
+    local output_file="$TEST_TEMP_DIR/github_output"
+    touch "$output_file"
+    GITHUB_OUTPUT="$output_file" GITHUB_REPOSITORY="owner/repo" run "$script" "$head_sha"
 }
 
-@test "resolver: commit regex — web-shell drift commit extracts web-shell" {
-    run bash -c '
-        subject="📦 base-digest-drift(web-shell): upstream base image rebase (#543)"
-        if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-            echo "no match" >&2; exit 1
-        fi
-        echo "${BASH_REMATCH[1]}"
-    '
+@test "resolver: PR-metadata — drift PR with update/base-digest-debian extracts debian" {
+    _setup_pr_metadata_mock "drift-pr"
+    _run_identify_parent "abc1234"
     [ "$status" -eq 0 ]
-    [ "$output" = "web-shell" ]
+    [[ "$output" == *"::notice::"* ]]
+    grep -q "name=debian" "$TEST_TEMP_DIR/github_output"
 }
 
-@test "resolver: commit regex — unrelated commit produces no match, exits 0" {
-    run bash -c '
-        subject="feat(ci): unrelated commit"
-        if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-            echo "name="
-            exit 0
-        fi
-        echo "name=${BASH_REMATCH[1]}"
-    '
+@test "resolver: PR-metadata — drift PR with update/base-digest-web-shell extracts web-shell" {
+    _setup_pr_metadata_mock "drift-pr-web-shell"
+    _run_identify_parent "abc1234"
     [ "$status" -eq 0 ]
-    [ "$output" = "name=" ]
+    grep -q "name=web-shell" "$TEST_TEMP_DIR/github_output"
 }
 
-@test "resolver: commit regex — path-traversal in commit subject rejected by anchored regex" {
-    run bash -c '
-        subject="base-digest-drift(../etc/passwd): malicious commit"
-        if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
-            echo "no match"
-            exit 0
-        fi
-        echo "MATCHED: ${BASH_REMATCH[1]}"
-    '
+@test "resolver: PR-metadata — no associated PR exits 0 with name= (nothing to unblock)" {
+    _setup_pr_metadata_mock "no-pr"
+    _run_identify_parent "abc1234"
     [ "$status" -eq 0 ]
-    # The anchored [a-z0-9_-]+ pattern rejects ".." — no match
-    [ "$output" = "no match" ]
+    [[ "$output" == *"Nothing to unblock"* ]]
+    grep -q "name=" "$TEST_TEMP_DIR/github_output"
+}
+
+@test "resolver: PR-metadata — PR with wrong branch exits 0 with name= (not a drift PR)" {
+    _setup_pr_metadata_mock "wrong-branch"
+    _run_identify_parent "abc1234"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Nothing to unblock"* ]]
+    grep -q "name=" "$TEST_TEMP_DIR/github_output"
+}
+
+@test "resolver: PR-metadata — PR not merged exits 1 (fail-closed)" {
+    _setup_pr_metadata_mock "not-merged"
+    _run_identify_parent "abc1234"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"not merged"* ]]
+}
+
+@test "resolver: PR-metadata — gh api failure exits 1 (fail-closed)" {
+    _setup_pr_metadata_mock "api-fails"
+    _run_identify_parent "abc1234"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"Failed to query PRs"* ]]
 }
