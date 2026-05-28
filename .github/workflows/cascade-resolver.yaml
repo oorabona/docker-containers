@@ -116,36 +116,43 @@ jobs:
 
           for child in $children; do
             echo "::notice::Processing child PR #${child} (was waiting for ${PARENT})"
-            # 1) Remove ONLY this parent's wait label.
-            if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1; then
-              echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
-              continue
-            fi
-            # 2) Re-fetch the child's remaining cascade:waiting-for-* labels.
-            #    STRICT: API errors must not silently collapse to "0 waits remaining" —
-            #    that would trigger premature auto-merge.  Skip this child on error; the
-            #    next parent's master rebuild (or a manual workflow re-run) will retry.
-            if ! remaining=$(gh pr view "$child" \
+            # 1) Snapshot ALL cascade:waiting-for-* labels BEFORE any mutation.
+            #    STRICT: if the snapshot fails we cannot safely determine remaining count,
+            #    so skip this child entirely.  A gh pr view failure after removal would
+            #    leave the child with no wait labels AND no auto-merge — stranded.
+            #    Taking the snapshot first means: if removal later fails, we continue
+            #    (retry on next event); if removal succeeds, we already know the answer.
+            if ! labels_snapshot=$(gh pr view "$child" \
               --json labels \
-              --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | length' \
+              --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")' \
               2>/dev/null); then
               echo "::error::Cannot fetch labels for PR #${child}; skipping (will retry on next parent image publish)"
               continue
             fi
-            if [[ "$remaining" -gt 0 ]]; then
+            # Compute which wait labels would remain AFTER removing the current parent's label.
+            remaining_labels=""
+            while IFS= read -r _label; do
+              [[ -n "$_label" ]] || continue
+              [[ "$_label" == "cascade:waiting-for-${PARENT}" ]] && continue
+              remaining_labels="${remaining_labels} ${_label}"
+            done <<< "$labels_snapshot"
+            remaining_labels="${remaining_labels# }"  # strip leading space
+
+            # 2) Remove ONLY this parent's wait label.
+            if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1; then
+              echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
+              continue
+            fi
+            # 3) Decide based on the pre-removal snapshot (atomic: we know the answer already).
+            if [[ -n "$remaining_labels" ]]; then
               # Still waiting on other parents — do NOT enable auto-merge yet.
-              if ! still_waiting=$(gh pr view "$child" \
-                --json labels \
-                --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")' \
-                2>/dev/null); then
-                still_waiting="(label fetch failed)"
-              fi
+              still_waiting="${remaining_labels// /, }"
               echo "::notice::PR #${child} still waiting on: ${still_waiting}"
               gh pr comment "$child" \
                 --body "Parent **${PARENT}** drift PR's master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
                 2>&1 || true
             else
-              # All parent wait labels removed — enable auto-merge.
+              # All parent wait labels cleared — enable auto-merge.
               if gh pr merge "$child" --squash --auto 2>&1; then
                 gh pr comment "$child" \
                   --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — will merge once CI passes." \

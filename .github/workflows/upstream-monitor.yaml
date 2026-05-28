@@ -1774,3 +1774,110 @@ jobs:
               echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
             fi
           fi
+
+  cleanup-orphaned-cascade-waits:
+    name: Clean up orphaned cascade:waiting-for-* labels
+    # Run after ALL open-drift-prs matrix iterations complete (success or failure).
+    # Purpose: State 0 (_eval_parent_state) applies cascade:waiting-for-<parent>
+    # labels BEFORE the parent's own matrix entry runs.  If that entry later
+    # finds has_drift=false or fails PR creation, no parent drift PR is ever opened
+    # and cascade-resolver (triggered by parent build completion) never fires —
+    # child PRs remain permanently labeled.  This cleanup job detects and removes
+    # those orphaned wait labels so children are not stranded.
+    needs: [detect-digest-drift, open-drift-prs]
+    if: always() && needs.detect-digest-drift.outputs.drift_containers_csv != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Clean up orphaned cascade waits
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
+        run: |
+          # For each container in the current drift set, verify a drift PR was actually
+          # created by the open-drift-prs matrix iteration.  If no drift PR exists, any
+          # child PR carrying cascade:waiting-for-<container> is orphaned: the parent's
+          # matrix entry resolved to no-drift or failed PR creation, so cascade-resolver
+          # will never fire for it.
+          for parent in ${CURRENT_DRIFT_SET//,/ }; do
+            parent_pr=$(gh pr list \
+              --head "update/base-digest-${parent}" \
+              --label "base-digest-drift" \
+              --state open \
+              --base master \
+              --json number,isCrossRepository \
+              --jq '.[] | select(.isCrossRepository == false) | .number' \
+              | head -1) || {
+              echo "::warning::Failed to query drift PR for ${parent}; skipping orphan check for this container"
+              continue
+            }
+            if [[ -n "$parent_pr" ]]; then
+              echo "::notice::Parent ${parent} has open drift PR #${parent_pr} — wait labels are legitimate"
+              continue
+            fi
+            echo "::notice::Parent ${parent} has no open drift PR; scanning for orphaned cascade:waiting-for-${parent} labels"
+            children=$(gh pr list \
+              --label "cascade:waiting-for-${parent}" \
+              --label "base-digest-drift" \
+              --state open \
+              --json number,isCrossRepository \
+              --jq '.[] | select(.isCrossRepository == false) | .number') || {
+              echo "::error::Failed to query children waiting for ${parent}"
+              exit 1
+            }
+            if [[ -z "$children" ]]; then
+              echo "::notice::No children waiting for ${parent}"
+              continue
+            fi
+            for child in $children; do
+              echo "::notice::Removing orphaned cascade:waiting-for-${parent} from PR #${child}"
+              # Snapshot remaining labels before removal (same atomic pattern as cascade-resolver).
+              if ! labels_snapshot=$(gh pr view "$child" \
+                --json labels \
+                --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")' \
+                2>/dev/null); then
+                echo "::warning::Cannot fetch labels for #${child}; skipping orphan cleanup for this PR"
+                continue
+              fi
+              remaining_labels=""
+              while IFS= read -r _label; do
+                [[ -n "$_label" ]] || continue
+                [[ "$_label" == "cascade:waiting-for-${parent}" ]] && continue
+                remaining_labels="${remaining_labels} ${_label}"
+              done <<< "$labels_snapshot"
+              remaining_labels="${remaining_labels# }"
+
+              if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${parent}" 2>&1; then
+                echo "::warning::Failed to remove orphaned cascade:waiting-for-${parent} from #${child}"
+                continue
+              fi
+              if [[ -n "$remaining_labels" ]]; then
+                still="${remaining_labels// /, }"
+                gh pr comment "$child" \
+                  --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR (drift resolved or PR creation failed between detection and matrix processing). The cascade:waiting-for-${parent} label has been removed. ${still} other cascade wait(s) remain." \
+                  2>&1 || true
+              else
+                if gh pr merge "$child" --squash --auto 2>&1; then
+                  gh pr comment "$child" \
+                    --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR. All cascade labels cleared; auto-merge enabled — will merge once CI passes." \
+                    2>&1 || true
+                else
+                  gh pr comment "$child" \
+                    --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR. All cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+                    2>&1 || true
+                  echo "::warning::auto-merge failed for #${child} during orphan cleanup"
+                fi
+              fi
+            done
+          done

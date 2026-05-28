@@ -51,24 +51,26 @@ if [[ -z "$children" ]]; then
 fi
 for child in $children; do
   echo "::notice::Processing child PR #${child} (was waiting for ${PARENT})"
-  if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1; then
-    echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
-    continue
-  fi
-  if ! remaining=$(gh pr view "$child" \
+  if ! labels_snapshot=$(gh pr view "$child" \
     --json labels \
-    --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | length'"'"' \
+    --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")'"'"' \
     2>/dev/null); then
     echo "::error::Cannot fetch labels for PR #${child}; skipping (will retry on next parent image publish)"
     continue
   fi
-  if [[ "$remaining" -gt 0 ]]; then
-    if ! still_waiting=$(gh pr view "$child" \
-      --json labels \
-      --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")'"'"' \
-      2>/dev/null); then
-      still_waiting="(label fetch failed)"
-    fi
+  remaining_labels=""
+  while IFS= read -r _label; do
+    [[ -n "$_label" ]] || continue
+    [[ "$_label" == "cascade:waiting-for-${PARENT}" ]] && continue
+    remaining_labels="${remaining_labels} ${_label}"
+  done <<< "$labels_snapshot"
+  remaining_labels="${remaining_labels# }"
+  if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1; then
+    echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
+    continue
+  fi
+  if [[ -n "$remaining_labels" ]]; then
+    still_waiting="${remaining_labels// /, }"
     echo "::notice::PR #${child} still waiting on: ${still_waiting}"
     gh pr comment "$child" \
       --body "Parent **${PARENT}** drift PR'"'"'s master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
@@ -101,8 +103,8 @@ _run_resolver() {
 # Mock gh factory: writes $TEST_TEMP_DIR/bin/gh based on the given mode.
 #   single-parent  — remaining labels = 0 → auto-merge expected
 #   multi-parent   — remaining labels = 1 → no auto-merge
-#   remove-fails   — --remove-label exits 1 → child skipped
-#   view-fails     — pr view exits 1 → child skipped (Defect C: no silent "0")
+#   remove-fails   — --remove-label exits 1 → child skipped (snapshot taken first, no stranding)
+#   view-fails     — pr view exits 1 BEFORE removal → child skipped (Defect B: snapshot-first)
 #   no-children    — pr list returns empty
 #   list-fails     — pr list exits 1 → fail-closed (Defect B fix)
 #   merge-fails    — pr merge exits 1 → failure comment posted, not success
@@ -150,14 +152,11 @@ case "$1 $2" in
       echo "simulated API error" >&2
       exit 1
     elif [[ "$MODE" == "single-parent" ]] || [[ "$MODE" == "merge-fails" ]]; then
-      # No remaining wait labels
-      echo "0"
+      # No remaining wait labels — snapshot returns empty string (newline-joined list is empty)
+      echo ""
     elif [[ "$MODE" == "multi-parent" ]]; then
-      if echo "$@" | grep -q "length"; then
-        echo "1"
-      else
-        echo "cascade:waiting-for-php"
-      fi
+      # One remaining wait label besides the parent being resolved
+      echo "cascade:waiting-for-php"
     fi
     ;;
   "pr merge")
@@ -1033,4 +1032,62 @@ MOCK_BODY
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
+}
+
+# ---------------------------------------------------------------------------
+# Gate r12 — Defect B fix: snapshot-first ordering in resolver (atomicity)
+#
+# The resolver must snapshot ALL cascade:waiting-for-* labels BEFORE any
+# mutation.  If the snapshot fails, the child is skipped before removal —
+# this prevents the child from being left with no wait labels AND no
+# auto-merge (the stranding scenario from the old remove-first order).
+#
+# Key invariants:
+#   IV1: snapshot failure → skip before removal (no stranding)
+#   IV2: snapshot succeeds, removal fails → child skipped; snapshot count irrelevant
+#         (retry on next event; child still has the wait label so it is not stranded)
+#   IV3: snapshot succeeds, removal succeeds, remaining > 0 → comment only, no auto-merge
+#   IV4: snapshot succeeds, removal succeeds, remaining == 0 → auto-merge enabled
+# ---------------------------------------------------------------------------
+
+@test "resolver: Defect B — snapshot failure skips child BEFORE removal (no stranding)" {
+    # view-fails mock: gh pr view exits 1 → snapshot fails → child must be skipped
+    # before gh pr edit --remove-label is ever called.
+    _setup_mock_gh "view-fails"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # --remove-label must NOT have been called (snapshot failed first)
+    ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+    # auto-merge must NOT have been called
+    ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+    # error annotation must appear
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"skipping"* ]]
+}
+
+@test "resolver: Defect B — removal failure after successful snapshot leaves child with label (retryable, not stranded)" {
+    # remove-fails mock: gh pr view (snapshot) succeeds; gh pr edit --remove-label fails.
+    # Child still has the wait label → not stranded; cascade-resolver retries on next event.
+    _setup_mock_gh "remove-fails"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # auto-merge must NOT have been called
+    ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+    # warning annotation must appear in output
+    [[ "$output" == *"::warning::"* ]]
+    # pr view (snapshot) must have been called before the remove attempt
+    grep -q "pr view" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "resolver: Defect B — snapshot succeeds, removal succeeds, remaining > 0 → comment only" {
+    # multi-parent mock: snapshot returns cascade:waiting-for-php (one remaining after removal)
+    _setup_mock_gh "multi-parent"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # auto-merge must NOT have been called (IV3)
+    ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+    # "Still waiting on" comment must be posted
+    grep -q "Still waiting on" "$TEST_TEMP_DIR/gh_comments.log"
+    # pr view (snapshot) must have been called before removal
+    grep -q "pr view" "$TEST_TEMP_DIR/gh_calls.log"
 }
