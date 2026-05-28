@@ -61,8 +61,9 @@ jobs:
             exit 1
           fi
           # Extract container name from the first matching PR's head branch name.
+          # Also require the base-digest-drift label so only bot-created drift PRs are recognised.
           container=$(echo "$pr_json" | jq -r \
-            '.[] | select(.head.ref | startswith("update/base-digest-")) | .head.ref' \
+            '.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | .head.ref' \
             | head -1 | sed 's#^update/base-digest-##')
           if [[ -z "$container" ]]; then
             echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
@@ -95,11 +96,13 @@ jobs:
         run: |
           # Find all open drift PRs waiting for this parent.
           # gh pr list --label is an exact label match — no injection surface.
+          # Also require base-digest-drift label and exclude cross-repository PRs.
           if ! children=$(gh pr list \
             --label "cascade:waiting-for-${PARENT}" \
+            --label "base-digest-drift" \
             --state open \
-            --json number \
-            --jq '.[].number'); then
+            --json number,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository == false) | .number'); then
             echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
             exit 1
           fi

@@ -38,9 +38,10 @@ RESOLVER_BODY='
 PARENT="${1:?PARENT required}"
 if ! children=$(gh pr list \
   --label "cascade:waiting-for-${PARENT}" \
+  --label "base-digest-drift" \
   --state open \
-  --json number \
-  --jq '"'"'.[].number'"'"'); then
+  --json number,isCrossRepository \
+  --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"'); then
   echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
   exit 1
 fi
@@ -405,6 +406,39 @@ echo "::notice::Parent container image published: ${container} (commit ${HEAD_SH
 echo "name=${container}" >> "$GITHUB_OUTPUT"
 '
 
+# Updated body mirroring Defect B fix: also requires base-digest-drift label.
+IDENTIFY_PARENT_BODY_LABELED='
+HEAD_SHA="${1:?HEAD_SHA required}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-owner/repo}"
+GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
+if ! pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls"); then
+    echo "::error::Failed to query PRs for commit ${HEAD_SHA}"
+    exit 1
+fi
+container=$(echo "$pr_json" | jq -r \
+    '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | .head.ref'"'"' \
+    | head -1 | sed '"'"'s#^update/base-digest-##'"'"')
+if [[ -z "$container" ]]; then
+    echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
+    echo "name=" >> "$GITHUB_OUTPUT"
+    exit 0
+fi
+if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "::error::Invalid container name extracted from PR branch: ${container}"
+    exit 1
+fi
+is_merged=$(echo "$pr_json" | jq -r \
+    --arg ref "update/base-digest-${container}" \
+    '"'"'.[] | select(.head.ref == $ref) | .merged_at // empty'"'"' \
+    | head -1)
+if [[ -z "$is_merged" ]]; then
+    echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
+    exit 1
+fi
+echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA}, verified via PR metadata)"
+echo "name=${container}" >> "$GITHUB_OUTPUT"
+'
+
 _run_identify_parent() {
     local head_sha="$1"
     local script="$TEST_TEMP_DIR/identify_parent.sh"
@@ -483,9 +517,12 @@ _eval_parent_state() {
   local parent_pr
   if ! parent_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
+    --label "base-digest-drift" \
+    --base master \
     --state open \
-    --json number \
-    --jq '"'"'.[0].number // empty'"'"'); then
+    --json number,isCrossRepository \
+    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' \
+    | head -1); then
     echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
     return 2
   fi
@@ -569,7 +606,14 @@ _setup_three_state_mock() {
 case "$1 $2" in
   "pr list")
     if [[ "$MODE" == "open-pr" ]]; then
+      # Simulate post-jq output: isCrossRepository=false PR → number emitted
       echo "10"
+    elif [[ "$MODE" == "open-pr-fork" ]]; then
+      # Simulate post-jq output: isCrossRepository=true PR → jq select emits nothing
+      : # print nothing
+    elif [[ "$MODE" == "open-pr-no-label" ]]; then
+      # gh returns empty because --label "base-digest-drift" not matched (server-side)
+      : # print nothing
     fi
     # all other modes: print nothing (no open PR)
     ;;
@@ -585,8 +629,8 @@ case "$1 $2" in
           echo "commits API failure simulated" >&2
           exit 1
           ;;
-        no-last-rebuild)
-          # No commit found for LAST_REBUILD.md
+        no-last-rebuild|open-pr-fork|open-pr-no-label)
+          # No commit found for LAST_REBUILD.md → State 4: parent never drifted → ready
           printf '[]\n'
           ;;
         *)
@@ -814,4 +858,126 @@ _run_eval_parent_state() {
     grep -q "auto-merge enable failed" "$TEST_TEMP_DIR/gh_comments.log"
     # Success comment must NOT appear
     ! grep -q "Auto-merge enabled" "$TEST_TEMP_DIR/gh_comments.log"
+}
+
+# ---------------------------------------------------------------------------
+# Gate r8 — Defect A fix: trust boundaries on _eval_parent_state parent PR identity
+# ---------------------------------------------------------------------------
+
+# PR from fork (isCrossRepository=true): jq filter excludes it → parent_pr empty → no in_flux
+@test "eval_parent_state: PR from fork (isCrossRepository=true) → NOT in_flux (excluded by jq filter)" {
+    _setup_three_state_mock "open-pr-fork"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    # pr list returns a fork PR; jq filter drops isCrossRepository=true → parent_pr=""
+    # No commits/runs mock needed for no-last-rebuild fallback (returns ready)
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+# PR has correct branch but no base-digest-drift label: gh server returns empty → not in_flux
+@test "eval_parent_state: PR with no base-digest-drift label (gh returns empty) → NOT in_flux" {
+    _setup_three_state_mock "open-pr-no-label"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    # pr list returns [] (label filter excluded the PR server-side) → parent_pr=""
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+# Existing open-pr mode still works: non-fork PR with label → in_flux
+@test "eval_parent_state: PR from same repo with base-digest-drift label → in_flux (trust boundary OK)" {
+    _setup_three_state_mock "open-pr"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+# ---------------------------------------------------------------------------
+# Gate r8 — Defect B fix: children identity — jq filter for isCrossRepository
+# Tests the jq selector logic embedded in the resolver body
+# ---------------------------------------------------------------------------
+
+# Verify the jq selector used in the children query excludes cross-repo PRs
+@test "resolver: children jq selector — isCrossRepository=true excluded from unblock list" {
+    run bash -c '
+        json='"'"'[{"number":10,"isCrossRepository":false},{"number":11,"isCrossRepository":true}]'"'"'
+        result=$(echo "$json" | jq -r '"'"'.[] | select(.isCrossRepository == false) | .number'"'"')
+        echo "$result"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == "10" ]]
+    [[ "$output" != *"11"* ]]
+}
+
+# Verify the jq selector returns empty for a purely fork-owned children list
+@test "resolver: children jq selector — all isCrossRepository=true → empty unblock list" {
+    run bash -c '
+        json='"'"'[{"number":11,"isCrossRepository":true},{"number":12,"isCrossRepository":true}]'"'"'
+        result=$(echo "$json" | jq -r '"'"'.[] | select(.isCrossRepository == false) | .number'"'"')
+        echo "${#result}"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+# ---------------------------------------------------------------------------
+# Gate r8 — Defect B fix: parent PR identification in cascade-resolver
+# The IDENTIFY_PARENT_BODY jq filter now also requires base-digest-drift label
+# ---------------------------------------------------------------------------
+
+# Parent PR has correct branch + base-digest-drift label → identified
+@test "resolver: PR-metadata — drift PR with base-digest-drift label → parent identified" {
+    # Mock returns PR with the label
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local mock="$TEST_TEMP_DIR/bin/gh"
+    printf '#!/usr/bin/env bash\n' > "$mock"
+    cat >> "$mock" << 'MOCK_BODY'
+if [[ "$1" == "api" && "$2" == *"/commits/"*"/pulls" ]]; then
+    echo '[{"number":42,"head":{"ref":"update/base-digest-debian"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'
+    exit 0
+fi
+exit 0
+MOCK_BODY
+    chmod +x "$mock"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    # Use updated IDENTIFY_PARENT_BODY that filters on base-digest-drift label
+    local output_file="$TEST_TEMP_DIR/github_output"
+    touch "$output_file"
+    local script="$TEST_TEMP_DIR/identify_parent_labeled.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$IDENTIFY_PARENT_BODY_LABELED" > "$script"
+    chmod +x "$script"
+    GITHUB_OUTPUT="$output_file" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
+    [ "$status" -eq 0 ]
+    grep -q "name=debian" "$output_file"
+}
+
+# Parent PR has correct branch but NO base-digest-drift label → not identified
+@test "resolver: PR-metadata — drift PR without base-digest-drift label → not identified (trust boundary)" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local mock="$TEST_TEMP_DIR/bin/gh"
+    printf '#!/usr/bin/env bash\n' > "$mock"
+    cat >> "$mock" << 'MOCK_BODY'
+if [[ "$1" == "api" && "$2" == *"/commits/"*"/pulls" ]]; then
+    # PR has correct branch but only unrelated labels
+    echo '[{"number":42,"head":{"ref":"update/base-digest-debian"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"some-other-label"}]}]'
+    exit 0
+fi
+exit 0
+MOCK_BODY
+    chmod +x "$mock"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    local output_file="$TEST_TEMP_DIR/github_output"
+    touch "$output_file"
+    local script="$TEST_TEMP_DIR/identify_parent_labeled.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$IDENTIFY_PARENT_BODY_LABELED" > "$script"
+    chmod +x "$script"
+    GITHUB_OUTPUT="$output_file" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
+    [ "$status" -eq 0 ]
+    # Container not identified → name= (empty)
+    grep -q "name=" "$output_file"
+    [[ "$output" == *"Nothing to unblock"* ]]
 }

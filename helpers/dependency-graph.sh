@@ -64,13 +64,47 @@ _depgraph_valid_containers() {
 }
 
 # ---------------------------------------------------------------------------
+# _depgraph_project_owner
+#
+# Outputs the project owner (GitHub username / org) used to scope internal refs.
+# Resolution order:
+#   1. _DEPGRAPH_OWNER_OVERRIDE   — test hook
+#   2. GITHUB_REPOSITORY_OWNER   — set by GitHub Actions
+#   3. git remote origin URL      — fallback for local runs
+#
+# Returns non-zero (fail-closed) when the owner cannot be determined.
+# ---------------------------------------------------------------------------
+_depgraph_project_owner() {
+    if [[ -n "${_DEPGRAPH_OWNER_OVERRIDE:-}" ]]; then
+        printf '%s' "$_DEPGRAPH_OWNER_OVERRIDE"
+        return 0
+    fi
+    if [[ -n "${GITHUB_REPOSITORY_OWNER:-}" ]]; then
+        printf '%s' "$GITHUB_REPOSITORY_OWNER"
+        return 0
+    fi
+    local remote_url
+    if ! remote_url=$(cd "$PROJECT_ROOT" && git remote get-url origin 2>/dev/null); then
+        echo "::error::Cannot determine project owner (no GITHUB_REPOSITORY_OWNER and git remote get-url origin failed)" >&2
+        return 1
+    fi
+    # Match: github.com/OWNER/REPO  or  git@github.com:OWNER/REPO(.git)
+    if [[ "$remote_url" =~ github\.com[:/]([^/]+)/ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    echo "::error::Cannot parse project owner from git remote URL: ${remote_url}" >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # _depgraph_is_internal_ref <base_image_ref> <valid_containers_space_sep>
 #
 # Outputs the parent container name if the ref is project-internal; empty otherwise.
-# Matches patterns:
+# Matches patterns (only when <owner> == project owner):
 #   ghcr.io/<owner>/<X>:<tag>
-#   ${REMOTE_CR}/<X>:<tag>
 #   hub.docker.io/<owner>/<X>:<tag>
+#   ${REMOTE_CR}/<X>:<tag>    (CI-controlled variable — always trusted)
 # ---------------------------------------------------------------------------
 _depgraph_is_internal_ref() {
     local ref="$1"
@@ -93,21 +127,33 @@ _depgraph_is_internal_ref() {
         return 0
     fi
 
-    # Match: after optional owner-prefix path, extract container name before : or @ or end
+    # Resolve project owner (fail-closed: if undetermined, treat ref as external)
+    local owner
+    if ! owner=$(_depgraph_project_owner 2>/dev/null); then
+        return 1
+    fi
+
+    # Match: after owner-prefix path, extract container name before : or @ or end
     # Patterns:
-    #   ghcr.io/<owner>/<name>:<tag>   → after ghcr.io/owner/, take <name>
-    #   hub.docker.io/<owner>/<name>:<tag> → after hub.docker.io/owner/, take <name>
+    #   ghcr.io/<owner>/<name>:<tag>   → after ghcr.io/<owner>/, take <name>
+    #   hub.docker.io/<owner>/<name>:<tag> → after hub.docker.io/<owner>/, take <name>
     #   ${REMOTE_CR}/<name>:<tag>      → normalized_ref is already <name>:<tag> here
-    if [[ "$normalized_ref" =~ ^ghcr\.io/[^/]+/([^:/@ ]+) ]]; then
-        parent="${BASH_REMATCH[1]}"
-    elif [[ "$normalized_ref" =~ ^hub\.docker\.io/[^/]+/([^:/@ ]+) ]]; then
-        parent="${BASH_REMATCH[1]}"
+    if [[ "$normalized_ref" =~ ^ghcr\.io/([^/]+)/([^:/@ ]+) ]]; then
+        if [[ "${BASH_REMATCH[1]}" == "$owner" ]]; then
+            parent="${BASH_REMATCH[2]}"
+        fi
+    elif [[ "$normalized_ref" =~ ^hub\.docker\.io/([^/]+)/([^:/@ ]+) ]]; then
+        if [[ "${BASH_REMATCH[1]}" == "$owner" ]]; then
+            parent="${BASH_REMATCH[2]}"
+        fi
     elif [[ "$ref" == "${remote_cr_prefix}"* && "$normalized_ref" =~ ^([^:/@ ]+) ]]; then
-        # ${REMOTE_CR}/name:tag after stripping prefix
+        # ${REMOTE_CR}/name:tag after stripping prefix — CI-controlled, always trusted
         parent="${BASH_REMATCH[1]}"
     else
         return 0
     fi
+
+    [[ -n "$parent" ]] || return 0
 
     # Verify the extracted name is in the valid container set
     if [[ " $valid_containers " == *" $parent "* ]]; then

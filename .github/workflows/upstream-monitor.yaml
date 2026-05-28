@@ -1592,9 +1592,12 @@ jobs:
             local parent_pr
             if ! parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
+              --label "base-digest-drift" \
+              --base master \
               --state open \
-              --json number \
-              --jq '.[0].number // empty'); then
+              --json number,isCrossRepository \
+              --jq '.[] | select(.isCrossRepository == false) | .number' \
+              | head -1); then
               echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
               return 2
             fi

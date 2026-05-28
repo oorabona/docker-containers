@@ -285,3 +285,126 @@ _write_lineage() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Defect C fix: _depgraph_project_owner — test hook and fail-closed
+# ---------------------------------------------------------------------------
+
+@test "depgraph: project_owner — _DEPGRAPH_OWNER_OVERRIDE returned verbatim" {
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='$PROJECT_ROOT'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_project_owner
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "testowner" ]
+}
+
+@test "depgraph: project_owner — GITHUB_REPOSITORY_OWNER returned verbatim" {
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        export GITHUB_REPOSITORY_OWNER=myorg
+        PROJECT_ROOT='$PROJECT_ROOT'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_project_owner
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "myorg" ]
+}
+
+@test "depgraph: project_owner — no env var, no git remote → non-zero (fail-closed)" {
+    # Use a temp dir with no git remote as PROJECT_ROOT
+    local isolated_dir="$TEST_TEMP_DIR/isolated"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_project_owner
+    "
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Defect C fix: owner-scoped matching — ghcr.io/other-owner rejected
+# ---------------------------------------------------------------------------
+
+@test "depgraph: ghcr.io with project owner → internal dep detected" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "ghcr.io/oorabona/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: ghcr.io with other-owner → NOT an internal dep (owner mismatch)" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "ghcr.io/other-owner/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "depgraph: hub.docker.io with project owner → internal dep detected" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "hub.docker.io/oorabona/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: hub.docker.io with other-owner → NOT an internal dep (owner mismatch)" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "hub.docker.io/other-owner/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "depgraph: \${REMOTE_CR}/php:latest always internal (CI-controlled prefix)" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" '${REMOTE_CR}/php:latest'
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: library/php is external even with owner override set" {
+    _write_lineage "wordpress" "latest" "library/php:8.4-fpm-alpine"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
