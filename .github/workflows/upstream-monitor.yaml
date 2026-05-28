@@ -1574,6 +1574,12 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
         run: |
+          # Auto-create the canonical drift label if it doesn't exist yet.
+          # Idempotent: "already exists" is the success path, swallowed silently.
+          gh label create "base-digest-drift" \
+              --color "ff6b35" \
+              --description "Auto-detected base image digest drift (cron-opened PR)" 2>&1 \
+              | grep -v "already exists" || true
           for attempt in 1 2 3; do
             sleep $((attempt * 2))
             if gh pr edit "$PR_NUMBER" --add-label "base-digest-drift" 2>&1; then
