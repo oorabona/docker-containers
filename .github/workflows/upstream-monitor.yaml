@@ -1559,6 +1559,53 @@ jobs:
             echo "::warning::Failed to apply labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created successfully — continuing"
           fi
 
+      # Strict cascade label application — separate from the tolerant "Apply labels"
+      # step above.  cascade:waiting-for-<parent> labels are consumed by the
+      # cascade-resolver workflow to find children when a parent merges.  If these
+      # labels fail to apply, the child PR will never be unblocked automatically.
+      # Therefore: fail this step (not just warn) if cascade labels cannot be applied.
+      # Labels are auto-created on first use so the repo does not need pre-seeded labels.
+      - name: Apply cascade labels (strict)
+        if: steps.create-pr.outputs.pull-request-number && matrix.internal_deps_csv != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+        run: |
+          # Determine which parents have an open drift PR right now.
+          # Parent detection uses branch name (update/base-digest-<parent>) — more
+          # reliable than label-based detection because branch name is always set by
+          # peter-evans/create-pull-request, whereas labels can fail to apply.
+          waiting=""
+          for parent in ${INTERNAL_DEPS//,/ }; do
+            parent_pr=$(gh pr list \
+              --head "update/base-digest-${parent}" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+            if [[ -n "$parent_pr" ]]; then
+              waiting="${waiting} cascade:waiting-for-${parent}"
+            fi
+          done
+          if [[ -z "$waiting" ]]; then
+            # No open parent drift PRs — no cascade labels needed; auto-merge step handles it.
+            exit 0
+          fi
+          # Auto-create each cascade label (idempotent; "already exists" is not an error).
+          for label in $waiting; do
+            gh label create "$label" \
+              --color "fbca04" \
+              --description "Cascade-aware drift wait: child PR is blocked on a parent drift PR" \
+              2>&1 | grep -v "already exists" || true
+          done
+          # STRICT: fail the step if labels cannot be applied.
+          # The cascade-resolver workflow depends on these labels to unblock the child later.
+          if ! gh pr edit "$PR_NUMBER" --add-label "${waiting# }" 2>&1; then
+            echo "::error::Failed to apply cascade labels '${waiting# }' to PR #${PR_NUMBER} — required for cascade-resolver workflow"
+            exit 1
+          fi
+          echo "::notice::Applied cascade labels '${waiting# }' to PR #${PR_NUMBER}"
+
       - name: Auto-merge with cascade-awareness
         if: steps.create-pr.outputs.pull-request-number
         env:
@@ -1574,17 +1621,18 @@ jobs:
             fi
             exit 0
           fi
-          # Check if any parent PR is currently open (drift PR for same parent container)
+          # Check if any parent PR is currently open.
+          # Use branch-name-based detection (update/base-digest-<parent>) — branch name is
+          # canonical and stable; label-based detection is fragile (labels can fail to apply).
           waiting_for=""
           for parent in ${INTERNAL_DEPS//,/ }; do
             parent_pr=$(gh pr list \
-              --label "base-digest-drift,container:${parent}" \
+              --head "update/base-digest-${parent}" \
               --state open \
               --json number \
               --jq '.[0].number // empty' 2>/dev/null || true)
             if [[ -n "$parent_pr" ]]; then
               waiting_for="${waiting_for}${parent},"
-              gh pr edit "$PR_NUMBER" --add-label "cascade:waiting-for-${parent}" 2>&1 || true
             fi
           done
           if [[ -n "$waiting_for" ]]; then
