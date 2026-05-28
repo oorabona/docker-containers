@@ -49,6 +49,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # shellcheck source=../helpers/lineage-utils.sh
 source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
+# shellcheck source=../helpers/dependency-graph.sh
+source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 
 # ---------------------------------------------------------------------------
 # _escape_gha_command <value>
@@ -671,10 +673,20 @@ for container in "${_container_order[@]}"; do
         continue
     fi
 
+    # Compute project-internal deps for this container.
+    # _depgraph_get_deps returns space-separated names; convert to JSON array.
+    _container_internal_deps=$(_depgraph_get_deps "$container" 2>/dev/null || true)
+    _internal_deps_json="[]"
+    if [[ -n "$_container_internal_deps" ]]; then
+        _internal_deps_json=$(printf '%s' "$_container_internal_deps" | \
+            jq -Rc 'split(" ") | map(select(length > 0))' 2>/dev/null || echo "[]")
+    fi
+
     container_json=$(jq -cn \
         --arg container "$container" \
         --argjson variants "$variants_array" \
-        '{container: $container, variants: $variants}')
+        --argjson internal_deps "$_internal_deps_json" \
+        '{container: $container, internal_deps: $internal_deps, variants: $variants}')
 
     if [[ "$first_container" == "true" ]]; then
         first_container=false

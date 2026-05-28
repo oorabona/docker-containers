@@ -1178,6 +1178,7 @@ jobs:
       packages: read
     outputs:
       drift_containers: ${{ steps.detect.outputs.drift_containers }}
+      drift_matrix: ${{ steps.detect.outputs.drift_matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1303,6 +1304,14 @@ jobs:
             || echo "[]")
           echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
 
+          # Build enriched matrix for open-drift-prs: include internal_deps_csv per container
+          drift_matrix=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
+              {container: .container,
+               internal_deps_csv: ((.internal_deps // []) | join(","))}]' \
+            || echo "[]")
+          echo "drift_matrix=${drift_matrix}" >> "$GITHUB_OUTPUT"
+
           count=$(echo "$drift_containers" | jq 'length')
           if [[ "$count" -gt 0 ]]; then
             echo "::notice::Digest drift detected for ${count} container(s): ${drift_containers}"
@@ -1329,7 +1338,7 @@ jobs:
       cancel-in-progress: false
     strategy:
       matrix:
-        container: ${{ fromJson(needs.detect-digest-drift.outputs.drift_containers) }}
+        include: ${{ fromJson(needs.detect-digest-drift.outputs.drift_matrix) }}
       max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
       fail-fast: false  # One container's transient failure must not block others
     permissions:
@@ -1548,4 +1557,42 @@ jobs:
           sleep 2
           if ! gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}" 2>&1; then
             echo "::warning::Failed to apply labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created successfully — continuing"
+          fi
+
+      - name: Auto-merge with cascade-awareness
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+          INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+        run: |
+          if [[ -z "$INTERNAL_DEPS" ]]; then
+            # No project-internal deps — safe to auto-merge immediately
+            if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
+              echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
+            fi
+            exit 0
+          fi
+          # Check if any parent PR is currently open (drift PR for same parent container)
+          waiting_for=""
+          for parent in ${INTERNAL_DEPS//,/ }; do
+            parent_pr=$(gh pr list \
+              --label "base-digest-drift,container:${parent}" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+            if [[ -n "$parent_pr" ]]; then
+              waiting_for="${waiting_for}${parent},"
+              gh pr edit "$PR_NUMBER" --add-label "cascade:waiting-for-${parent}" 2>&1 || true
+            fi
+          done
+          if [[ -n "$waiting_for" ]]; then
+            gh pr comment "$PR_NUMBER" --body "Cascade-aware merge: waiting for parent drift PRs to resolve first: ${waiting_for%,}. The cascade-resolver workflow will enable auto-merge once parent(s) merge and their rebuild completes." 2>&1 || true
+            echo "::notice::PR #${PR_NUMBER} (${CONTAINER}) cascade-waiting for: ${waiting_for%,}"
+          else
+            # Parents already merged or never drifted — safe to auto-merge
+            if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
+              echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
+            fi
           fi

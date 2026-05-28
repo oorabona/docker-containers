@@ -1,0 +1,80 @@
+name: Cascade Resolver
+# Unblocks downstream drift PRs when an upstream (parent) drift PR merges.
+#
+# Trigger: any PR closed on master that carries the base-digest-drift label.
+# The merged parent PR carries a container:<name> label — this workflow finds
+# all open drift PRs labelled cascade:waiting-for-<name> and enables auto-merge
+# on them (their CI must still pass before GitHub merges).
+#
+# If the parent PR was closed WITHOUT merging (abandoned), child PRs retain
+# their cascade:waiting-for-<parent> labels — a human must re-run the
+# upstream-monitor or manually remove the cascade:waiting-for-<parent> label.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+jobs:
+  unblock-children:
+    name: Unblock cascade-waiting drift PRs
+    # Only runs when a drift PR merges — skip closed-without-merge and non-drift PRs
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(toJSON(github.event.pull_request.labels), '"base-digest-drift"')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Identify parent container
+        id: parent
+        env:
+          # Safe: PR_LABELS is passed via env, not interpolated directly into run:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          # Extract container:<name> label from the merged PR.
+          # Pattern is anchored (^container:[a-z0-9_-]+$) — no shell injection risk.
+          container=$(printf '%s' "$PR_LABELS" | \
+            jq -r '.[].name' | \
+            grep -oE '^container:[a-z0-9_-]+$' | \
+            head -1 | cut -d: -f2 || true)
+          if [[ -z "$container" ]]; then
+            echo "::notice::Merged PR has no container:<name> label — nothing to unblock"
+            echo "name=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Parent container merged: ${container}"
+            echo "name=${container}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Unblock children
+        if: steps.parent.outputs.name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Safe: PARENT comes from the output of the previous step (pattern-validated above)
+          PARENT: ${{ steps.parent.outputs.name }}
+        run: |
+          # Find all open drift PRs waiting for this parent.
+          # gh pr list --label is an exact label match — no injection surface.
+          children=$(gh pr list \
+            --label "cascade:waiting-for-${PARENT}" \
+            --state open \
+            --json number \
+            --jq '.[].number' 2>/dev/null || true)
+
+          if [[ -z "$children" ]]; then
+            echo "::notice::No cascade-waiting PRs for parent ${PARENT}"
+            exit 0
+          fi
+
+          for child in $children; do
+            echo "::notice::Unblocking PR #${child} (was waiting for ${PARENT})"
+            # Enable auto-merge — CI must still pass before GitHub merges
+            gh pr merge "$child" --squash --auto 2>&1 || \
+              echo "::warning::auto-merge failed for #${child} — may already be enabled or not eligible"
+            # Remove the cascade-waiting label (best-effort)
+            gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1 || true
+            # Comment explaining the unblock
+            gh pr comment "$child" \
+              --body "Parent **${PARENT}** drift PR merged. Auto-merge enabled — this PR will merge once CI passes." \
+              2>&1 || true
+          done

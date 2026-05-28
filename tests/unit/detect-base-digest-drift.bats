@@ -1390,8 +1390,9 @@ EOF
     local fake_root="$TEST_TEMP_DIR/r7fix4a"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
-    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh — must exist in fake root
+    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh and dependency-graph.sh — must exist in fake root
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -1427,6 +1428,7 @@ STUB
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -2999,4 +3001,167 @@ EOF
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
     [ "$err_status" = "error" ]
     [ "$err_reason" = "untrusted_ref" ]
+}
+
+# ---------------------------------------------------------------------------
+# internal_deps field — cascade-aware drift detection
+# ---------------------------------------------------------------------------
+
+# Helper: create a probe stub returning a specific digest for all refs
+_make_internal_deps_probe() {
+    local digest="$1"
+    local stub_path="$TEST_TEMP_DIR/bin/probe-internal-deps-$$"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$stub_path" << STUBEOF
+#!/usr/bin/env bash
+printf '{"digest":"%s"}' "${digest}"
+exit 0
+STUBEOF
+    chmod +x "$stub_path"
+    printf '%s' "$stub_path"
+}
+
+@test "internal_deps: drift JSON contains internal_deps field per container" {
+    # Container "myapp" drifts; its base ref points to our "baseimg" container
+    local lineage_dir="$TEST_TEMP_DIR/lineage-intdeps"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/oorabona/baseimg:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0.json"
+
+    local fresh_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    result=$(export _VALID_CONTAINERS_OVERRIDE; _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseimg')" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myapp baseimg" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myapp="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    # Output is valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Container record has internal_deps field
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
+
+    # internal_deps includes baseimg
+    deps=$(printf '%s' "$result" | jq -r '.[0].internal_deps[]')
+    [ "$deps" = "baseimg" ]
+}
+
+@test "internal_deps: external-only drift container has empty internal_deps array" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-extonly"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myimage-1.0.json"
+
+    local fresh_digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
+
+    # External-only: array is empty
+    deps_len=$(printf '%s' "$result" | jq '.[0].internal_deps | length')
+    [ "$deps_len" -eq 0 ]
+}
+
+@test "internal_deps: multi-dep container lists all internal deps" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-multidep"
+    mkdir -p "$lineage_dir"
+
+    # myapp depends on both baseA and baseB
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0-a" \
+        --arg base_ref "ghcr.io/oorabona/baseA:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0-a.json"
+
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0-b" \
+        --arg base_ref "ghcr.io/oorabona/baseB:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0-b.json"
+
+    local fresh_digest="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    # Multi-line _ACTIVE_TAGS_OVERRIDE requires explicit export in subshell
+    result=$(
+        export _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseA\nbaseB')"
+        export _DEPGRAPH_CONTAINERS_OVERRIDE="myapp baseA baseB"
+        export _DEPGRAPH_LINEAGE_DIR="$lineage_dir"
+        export _ACTIVE_TAGS_OVERRIDE_myapp
+        _ACTIVE_TAGS_OVERRIDE_myapp="$(printf '1.0-a\n1.0-b')"
+        export PROBE_CMD="$probe_stub"
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir"
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    deps_len=$(printf '%s' "$result" | jq '.[0].internal_deps | length')
+    [ "$deps_len" -eq 2 ]
+
+    # Both baseA and baseB present
+    deps_sorted=$(printf '%s' "$result" | jq -r '.[0].internal_deps | sort | .[]')
+    [[ "$deps_sorted" == *"baseA"* ]]
+    [[ "$deps_sorted" == *"baseB"* ]]
+}
+
+@test "internal_deps: unchanged container still has internal_deps field" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-unchanged"
+    mkdir -p "$lineage_dir"
+
+    local same_digest="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "$same_digest" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myimage-1.0.json"
+
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$same_digest")
+
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
 }
