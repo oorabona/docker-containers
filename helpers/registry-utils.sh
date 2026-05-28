@@ -64,6 +64,12 @@ _ghcr_cache_enabled() {
 # Returns:
 #   0 — safe (exists as a real dir, owned by us, mode 0700)
 #   1 — symlink, wrong owner, or loose mode — caller MUST switch to fresh mktemp
+#
+# Portability: uses GNU coreutils `stat -c FORMAT` syntax. Linux-only.
+# This codebase targets Linux CI runners exclusively (see CI matrix in
+# .github/workflows); macOS local dev is not a supported runtime.  If
+# macOS support is ever needed, probe via `stat --version 2>/dev/null`
+# and fall back to `stat -f` (BSD syntax: '%u' for owner, '%Lp' for mode).
 _ghcr_validate_cachedir() {
     local d="$1"
     # Must exist as a directory.
