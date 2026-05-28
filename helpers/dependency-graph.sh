@@ -50,7 +50,16 @@ _depgraph_valid_containers() {
     if [[ -n "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
         printf '%s' "$_DEPGRAPH_CONTAINERS_OVERRIDE"
     else
-        cd "$PROJECT_ROOT" && ./make list 2>/dev/null | tr '\n' ' '
+        local _make_out
+        if ! _make_out=$(cd "$PROJECT_ROOT" && ./make list 2>&1); then
+            echo "::error::Failed to enumerate project containers via './make list'" >&2
+            return 1
+        fi
+        if [[ -z "$_make_out" ]]; then
+            echo "::error::'./make list' returned empty container set" >&2
+            return 1
+        fi
+        printf '%s' "$(echo "$_make_out" | tr '\n' ' ')"
     fi
 }
 
@@ -117,7 +126,15 @@ _depgraph_get_deps() {
     local container="$1"
     local deps=""
     local valid_containers
-    valid_containers="$(_depgraph_valid_containers)"
+    # Explicit error check required: set -e is disabled inside command
+    # substitutions used as conditional operands (bash §3.7.5), so a simple
+    # `if ! var=$(cmd)` or `var=$(cmd) || ...` will not propagate failures from
+    # nested helpers.  We must check the exit code explicitly.
+    valid_containers="$(_depgraph_valid_containers 2>&1)" || {
+        # Re-emit the error (already contains ::error:: from _depgraph_valid_containers)
+        printf '%s\n' "$valid_containers" >&2
+        return 1
+    }
     local lineage_dir="${_DEPGRAPH_LINEAGE_DIR:-${PROJECT_ROOT}/.build-lineage}"
 
     shopt -s nullglob

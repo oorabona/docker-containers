@@ -1580,7 +1580,7 @@ jobs:
           # State 2: no open PR + recent LAST_REBUILD.md commit + auto-build in_progress/queued → in_flux
           # State 3: no open PR + recent commit + auto-build completed/success → ready
           # State 4: no open PR + no LAST_REBUILD.md commit ever → ready (never drifted)
-          # State 5: no open PR + recent commit + auto-build failed → ready (warning; child CI detects)
+          # State 5: no open PR + recent commit + auto-build failed/cancelled → in_flux (operator must fix parent)
           # State 6: no open PR + recent commit + run not found (pruned) → in_flux (conservative)
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
@@ -1640,13 +1640,17 @@ jobs:
                 if [[ "$run_conclusion" == "success" ]]; then
                   echo "ready"
                 else
-                  echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (failure will surface in child CI)"
-                  echo "ready"
+                  # Failed/cancelled: child builds against OLD parent image already in GHCR.
+                  # Child CI would succeed (stale digest captured in lineage) → cascade NOT resolved.
+                  # Operator must fix the parent build; child waits.
+                  echo "::warning::Parent ${parent} auto-build conclusion=${run_conclusion}; treating as in_flux (operator must fix parent build)"
+                  echo "in_flux"
                 fi
                 ;;
               *)
-                echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (unknown status)"
-                echo "ready"
+                # Unknown status (race / API quirk) → conservative
+                echo "::notice::Parent ${parent} auto-build status=${run_status}; treating as in_flux (conservative)"
+                echo "in_flux"
                 ;;
             esac
           }

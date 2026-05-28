@@ -675,7 +675,27 @@ for container in "${_container_order[@]}"; do
 
     # Compute project-internal deps for this container.
     # _depgraph_get_deps returns space-separated names; convert to JSON array.
-    _container_internal_deps=$(_depgraph_get_deps "$container" 2>/dev/null || true)
+    # Failure is fatal: a dep-graph error must not silently produce internal_deps=[]
+    # and bypass cascade gating.
+    #
+    # NOTE: use a temp file for stderr capture + explicit exit-code check instead
+    # of `if ! var=$(cmd 2>&1)`.  The `if !` construct disables set -e inside the
+    # command substitution subshell (bash spec §3.7.5), so failures in nested
+    # helpers would not propagate.  Explicit `|| exit 1` is the portable fix.
+    _depgraph_err_tmp=$(mktemp)
+    _container_internal_deps=$(_depgraph_get_deps "$container" 2>"$_depgraph_err_tmp") || {
+        _depgraph_err_msg=$(cat "$_depgraph_err_tmp" 2>/dev/null || true)
+        rm -f "$_depgraph_err_tmp"
+        if [[ -n "$_depgraph_err_msg" ]]; then
+            printf '::error::dep-graph failed for %s: %s\n' \
+                "$(_escape_gha_command "$container")" "$(_escape_gha_command "$_depgraph_err_msg")" >&2
+        else
+            printf '::error::Failed to compute internal_deps for %s; cannot make cascade decision\n' \
+                "$(_escape_gha_command "$container")" >&2
+        fi
+        exit 1
+    }
+    rm -f "$_depgraph_err_tmp"
     _internal_deps_json="[]"
     if [[ -n "$_container_internal_deps" ]]; then
         _internal_deps_json=$(printf '%s' "$_container_internal_deps" | \

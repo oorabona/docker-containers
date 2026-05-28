@@ -3165,3 +3165,47 @@ STUBEOF
     has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
     [ "$has_field" = "true" ]
 }
+
+# ---------------------------------------------------------------------------
+# Defect B.1 fix: _depgraph_get_deps failure → detect script exits non-zero (fail-closed)
+#
+# When _DEPGRAPH_CONTAINERS_OVERRIDE is unset and _depgraph_valid_containers
+# (which calls ./make list) fails, the dep-graph helper returns non-zero.
+# The detect script must propagate this as a non-zero exit rather than silently
+# producing internal_deps=[] and bypassing cascade gating.
+# ---------------------------------------------------------------------------
+@test "internal_deps: dep-graph helper failure → detect script exits non-zero (fail-closed)" {
+    local fake_root="$TEST_TEMP_DIR/depgraph-fail"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+
+    # A container with an internal-looking ref so _depgraph_get_deps must be called
+    cat > "$fake_root/.build-lineage/myapp-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myapp",
+  "tag": "1.0",
+  "base_image_ref": "ghcr.io/oorabona/baseimg:latest",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # ./make list fails — dep-graph cannot enumerate containers
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    # _VALID_CONTAINERS_OVERRIDE set so detect script's own validation passes (only myapp processed),
+    # but _DEPGRAPH_CONTAINERS_OVERRIDE unset so _depgraph_valid_containers hits the failing ./make list.
+    cd "$fake_root" && \
+        _VALID_CONTAINERS_OVERRIDE="myapp" \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" >/dev/null 2>/dev/null || rc=$?
+
+    # Must exit non-zero — cannot silently produce cascade-blind output
+    [ "$rc" -ne 0 ]
+}

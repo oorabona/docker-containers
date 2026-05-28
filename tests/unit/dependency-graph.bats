@@ -249,3 +249,39 @@ _write_lineage() {
     [ "$status" -eq 0 ]
     [ "$output" = "wordpress" ]
 }
+
+# ---------------------------------------------------------------------------
+# Defect B.2 fix: _depgraph_valid_containers fail-closed on './make list' failure
+# ---------------------------------------------------------------------------
+@test "depgraph: valid_containers — './make list' failure → non-zero exit (fail-closed)" {
+    # Unset the override so the code takes the ./make list path.
+    # Place a failing make stub in PATH.
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TEST_TEMP_DIR/bin/make"
+    chmod +x "$TEST_TEMP_DIR/bin/make"
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE PATH="$TEST_TEMP_DIR/bin:$PATH" \
+        bash -c "
+            PROJECT_ROOT='$TEST_TEMP_DIR'
+            source '${HELPERS_DIR}/dependency-graph.sh'
+            _depgraph_valid_containers
+        "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "depgraph: valid_containers — './make list' returns empty → non-zero exit (fail-closed)" {
+    # Place a stub that exits 0 but prints nothing.
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_TEMP_DIR/bin/make"
+    chmod +x "$TEST_TEMP_DIR/bin/make"
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE PATH="$TEST_TEMP_DIR/bin:$PATH" \
+        bash -c "
+            PROJECT_ROOT='$TEST_TEMP_DIR'
+            source '${HELPERS_DIR}/dependency-graph.sh'
+            _depgraph_valid_containers
+        "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}

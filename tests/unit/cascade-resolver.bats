@@ -527,13 +527,13 @@ _eval_parent_state() {
       if [[ "$run_conclusion" == "success" ]]; then
         echo "ready"
       else
-        echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (failure will surface in child CI)"
-        echo "ready"
+        echo "::warning::Parent ${parent} auto-build conclusion=${run_conclusion}; treating as in_flux (operator must fix parent build)"
+        echo "in_flux"
       fi
       ;;
     *)
-      echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (unknown status)"
-      echo "ready"
+      echo "::notice::Parent ${parent} auto-build status=${run_status}; treating as in_flux (conservative)"
+      echo "in_flux"
       ;;
   esac
 }
@@ -542,15 +542,17 @@ _eval_parent_state "$PARENT_ARG"
 
 # Writes a mock gh for three-state tests.
 # $1 = mode:
-#   open-pr             — pr list returns PR #10 (State 1: in_flux)
-#   pr-closed-inprog    — pr list empty; commits API returns SHA; runs API returns in_progress (State 2: in_flux)
-#   pr-closed-success   — pr list empty; commits API returns SHA; runs API returns completed/success (State 3: ready)
-#   pr-closed-failed    — pr list empty; commits API returns SHA; runs API returns completed/failure (State 5: ready+warning)
-#   run-not-found       — pr list empty; commits API returns SHA; runs API returns empty (State 6: in_flux conservative)
-#   run-api-error       — pr list empty; commits API returns SHA; runs API exits 1 (fail-closed)
-#   run-multi           — pr list empty; commits API returns SHA; runs API returns 2 runs (re-run scenario)
-#   no-last-rebuild     — pr list empty; commits API returns empty array [] (State 4: ready, never drifted)
-#   commits-api-error   — pr list empty; commits API exits 1 (fail-closed on commits lookup)
+#   open-pr              — pr list returns PR #10 (State 1: in_flux)
+#   pr-closed-inprog     — pr list empty; commits API returns SHA; runs API returns in_progress (State 2: in_flux)
+#   pr-closed-success    — pr list empty; commits API returns SHA; runs API returns completed/success (State 3: ready)
+#   pr-closed-failed     — pr list empty; commits API returns SHA; runs API returns completed/failure (State 5: in_flux)
+#   pr-closed-cancelled  — pr list empty; commits API returns SHA; runs API returns completed/cancelled (State 5: in_flux)
+#   run-not-found        — pr list empty; commits API returns SHA; runs API returns empty (State 6: in_flux conservative)
+#   run-api-error        — pr list empty; commits API returns SHA; runs API exits 1 (fail-closed)
+#   run-multi            — pr list empty; commits API returns SHA; runs API returns 2 runs (re-run scenario)
+#   run-unknown-status   — pr list empty; commits API returns SHA; runs API returns unknown status (in_flux conservative)
+#   no-last-rebuild      — pr list empty; commits API returns empty array [] (State 4: ready, never drifted)
+#   commits-api-error    — pr list empty; commits API exits 1 (fail-closed on commits lookup)
 # COMMITS_SHA env controls SHA returned by the commits API (default: abc123def456).
 _setup_three_state_mock() {
     local mode="$1"
@@ -608,6 +610,12 @@ case "$1 $2" in
           ;;
         pr-closed-failed)
           printf '{"status":"completed","conclusion":"failure"}\n'
+          ;;
+        pr-closed-cancelled)
+          printf '{"status":"completed","conclusion":"cancelled"}\n'
+          ;;
+        run-unknown-status)
+          printf '{"status":"waiting_for_operator","conclusion":null}\n'
           ;;
         run-not-found)
           # Empty output — no matching workflow runs
@@ -682,15 +690,41 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# State 5: no open PR, recent commit, auto-build failed → ready + warning
+# State 5: no open PR, recent commit, auto-build failed → in_flux (Defect A fix)
+# Child builds against OLD parent image in GHCR → child succeeds → stale digest captured.
+# Operator must fix the parent build before cascade can proceed.
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: master rebuild failed → ready with warning (child CI detects)" {
+@test "eval_parent_state: master rebuild failed → in_flux (operator must fix parent)" {
     _setup_three_state_mock "pr-closed-failed"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "ready" ]
+    [ "$state_token" = "in_flux" ]
     [[ "$output" == *"::warning::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# State 5 (cancelled): no open PR, recent commit, auto-build cancelled → in_flux
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: master rebuild cancelled → in_flux (operator must fix parent)" {
+    _setup_three_state_mock "pr-closed-cancelled"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    [[ "$output" == *"::warning::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Unknown run status: gh api returns unrecognised status string → in_flux (conservative)
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: unknown run status → in_flux (conservative, ::notice::)" {
+    _setup_three_state_mock "run-unknown-status"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    [[ "$output" == *"::notice::"* ]]
 }
 
 # ---------------------------------------------------------------------------
