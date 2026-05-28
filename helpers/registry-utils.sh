@@ -35,14 +35,140 @@ _GHCR_IDX_HDRS=""
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Returns 0 iff the cache is enabled and usable: GHCR_CACHE_DIR is set to a
+# non-empty string, the path exists as a real directory, and is writable.
+# All cache read/write/invalidate sites MUST call this guard before building
+# any "${GHCR_CACHE_DIR}/..." path.  When disabled (e.g. mktemp fallback
+# failed and _ghcr_ensure_cachedir cleared GHCR_CACHE_DIR to ""), callers
+# skip the cache entirely: reads return miss (forcing network), writes and
+# invalidates are silent no-ops.  The functional API (token fetch, manifest
+# fetch) still operates end-to-end in degraded mode.
+_ghcr_cache_enabled() {
+    [[ -n "${GHCR_CACHE_DIR:-}" ]] || return 1
+    [[ -d "${GHCR_CACHE_DIR}" ]] || return 1
+    [[ -w "${GHCR_CACHE_DIR}" ]] || return 1
+    _ghcr_validate_cachedir "${GHCR_CACHE_DIR}" || return 1
+    return 0
+}
+
+# Validate that a cache directory is safe to trust: must be a real directory
+# (not a symlink to an attacker-controlled path), owned by the current UID,
+# AND have mode 0700 (no loose permissions).
+# A dir with loose permissions — even one we own — must be treated as untrusted:
+# a prior loose mode may have let an attacker plant body+hdrs files with a
+# matching digest before we arrived. Silent chmod-to-700 only closes future
+# writes; it cannot purge pre-existing poisoned content.  Reject and switch to a
+# fresh mktemp dir instead — same response as symlink/foreign-owner.
+# A dir owned by another UID is unrecoverable: an attacker controls the content.
+# A symlink is unrecoverable: the target could point to hostile storage.
+# Returns:
+#   0 — safe (exists as a real dir, owned by us, mode 0700)
+#   1 — symlink, wrong owner, or loose mode — caller MUST switch to fresh mktemp
+_ghcr_validate_cachedir() {
+    local d="$1"
+    # Must exist as a directory.
+    [[ -d "$d" ]] || return 1
+    # Reject symlinks: the target could be a hostile location.
+    [[ ! -L "$d" ]] || return 1
+    # Owner must be the current process UID.
+    local owner
+    owner=$(stat -c '%u' "$d" 2>/dev/null) || return 1
+    [[ "$owner" == "$(id -u)" ]] || return 1
+    # Mode must be exactly 0700. A looser mode (e.g. 0755) signals that an older
+    # code path or test fixture created this dir; its pre-existing content cannot
+    # be trusted (attacker could have planted files before we chmod'd).  Reject
+    # so the caller switches to a fresh mktemp dir with no prior content.
+    local mode
+    mode=$(stat -c '%a' "$d" 2>/dev/null) || return 1
+    [[ "$mode" == "700" ]] || return 1
+    return 0
+}
+
 # Create the cache directory lazily (idempotent; silent under set -e).
 # 700 so token files are not world-readable on multi-user systems.
 # umask 077 subshell ensures the dir is born 0700 even if the trailing chmod
-# no-ops (exotic FS, restricted env) — chmod kept as belt-and-suspenders to
-# fix a pre-existing looser directory from an older run.
+# no-ops (exotic FS, restricted env).
+#
+# Security: if GHCR_CACHE_DIR already exists in any untrusted state (symlink,
+# wrong owner, or loose mode != 0700), a warning is emitted and GHCR_CACHE_DIR
+# is overridden to a fresh per-process mktemp directory.  This covers all three
+# attack vectors uniformly: a loose-mode dir may already contain attacker-planted
+# body+hdrs files; silent chmod-to-700 does not purge that content.
+#
+# If the private mktemp allocation itself fails, GHCR_CACHE_DIR is set to empty
+# so the hostile original path is structurally unreachable; _ghcr_temp_file's
+# TMPDIR-fallback handles transient files in degraded mode.
 _ghcr_ensure_cachedir() {
-    ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null || true
-    chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+    # Already in disabled state (set by a prior call's mktemp fallback);
+    # nothing to ensure.
+    if [[ -z "${GHCR_CACHE_DIR:-}" ]]; then
+        return 0
+    fi
+    # If the directory already exists, validate it before trusting it.
+    if [[ -e "${GHCR_CACHE_DIR}" ]]; then
+        if ! _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
+            # Symlink, wrong owner, or loose mode — untrusted; switch to fresh mktemp.
+            if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+                echo "::warning::GHCR cache dir ${GHCR_CACHE_DIR} owner/mode untrusted; switching to private mktemp dir" >&2
+                export _GHCR_CACHE_DIR_WARNED=1
+            fi
+            if ! GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null); then
+                # mktemp failed — clear GHCR_CACHE_DIR so the hostile path is never used;
+                # _ghcr_temp_file's TMPDIR-fallback handles transient files in degraded mode.
+                echo "::warning::Cannot allocate private cache dir; running fully uncached" >&2
+                export GHCR_CACHE_DIR=""
+                export _GHCR_CACHE_DIR_WARNED=1
+                return 0
+            fi
+            chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+            return 0
+        fi
+        return 0
+    fi
+    # Directory does not exist yet — create with safe mode.
+    # TOCTOU fix: after mkdir -p succeeds, re-validate (owner/symlink/mode)
+    # before trusting the result.  Between the [[ -e ]] check above and mkdir,
+    # an attacker with write to the parent could race and plant an attacker-
+    # controlled directory; mkdir -p would succeed on that hostile dir.
+    # Post-validation detects the race and falls back to a private mktemp dir.
+    if ( umask 077; mkdir -p "${GHCR_CACHE_DIR}" ) 2>/dev/null; then
+        chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+        # Post-validate: did we end up with a trusted dir (owner + mode + no symlink)?
+        if _ghcr_validate_cachedir "${GHCR_CACHE_DIR}"; then
+            return 0
+        fi
+        # Race condition detected — created dir is not fully trusted; switch to mktemp.
+        if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+            echo "::warning::GHCR cache dir ${GHCR_CACHE_DIR} post-mkdir validation failed (TOCTOU?); switching to private mktemp dir" >&2
+            export _GHCR_CACHE_DIR_WARNED=1
+        fi
+        if GHCR_CACHE_DIR=$(mktemp -d -t ghcr-cache-private.XXXXXX 2>/dev/null); then
+            chmod 700 "${GHCR_CACHE_DIR}" 2>/dev/null || true
+            return 0
+        fi
+        echo "::warning::Cannot allocate private cache dir after TOCTOU; running fully uncached" >&2
+        export GHCR_CACHE_DIR=""
+        export _GHCR_CACHE_DIR_WARNED=1
+        return 0
+    fi
+    # Cache directory creation failed → run in degraded (uncached) mode.
+    # Emit a one-time ::warning:: for CI diagnostics, then return success
+    # so callers do not interpret this as a fatal error.  The actual cache
+    # writes will fail benignly downstream (best-effort) and force fresh
+    # network fetches each call.
+    #
+    # Dedup: use an exported env var only.  A prior file-based sentinel
+    # (${TMPDIR:-/tmp}/.ghcr_cache_warned.$$) was removed because PID reuse
+    # in shared /tmp environments caused stale sentinels from prior runs to
+    # suppress the first warning of a new run, causing test flakes.  The env
+    # var is sufficient for dedup within a single process tree; child→parent
+    # propagation is not needed (a child subshell re-emitting the warning is
+    # an acceptable cosmetic duplicate, far cheaper than test flakiness).
+    if [[ -z "${_GHCR_CACHE_DIR_WARNED:-}" ]]; then
+        echo "::warning::Cannot create GHCR cache dir ${GHCR_CACHE_DIR}; running in degraded (uncached, slow) mode" >&2
+    fi
+    export _GHCR_CACHE_DIR_WARNED=1
+    return 0
 }
 
 # Sanitize a string into a filesystem-safe filename component.
@@ -50,6 +176,37 @@ _ghcr_ensure_cachedir() {
 # Usage: _ghcr_keyfile <string>   (prints result)
 _ghcr_keyfile() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# Verify that a cached file's sha256 matches an expected digest hex.
+# Usage: _ghcr_verify_content_digest <file> <expected_sha256_hex>
+# Returns 0 on match, 1 on mismatch or invalid input.
+# expected_sha256_hex must be the bare 64-char lowercase hex — NOT prefixed
+# with "sha256:". Callers strip the prefix from registry-provided digests.
+_ghcr_verify_content_digest() {
+    local file="$1" expected="$2"
+    [[ -f "$file" && -n "$expected" ]] || return 1
+    local actual
+    actual=$(sha256sum -- "$file" 2>/dev/null | cut -d' ' -f1)
+    [[ -n "$actual" && "$actual" == "$expected" ]]
+}
+
+# Return a path to a writable temp file.
+# Prefers ${GHCR_CACHE_DIR} (same filesystem → atomic mv into cache is cheap).
+# Falls back to system TMPDIR when the cache dir is unwritable, enabling
+# degraded (uncached) mode to complete the fetch and return data to callers.
+# Usage: _ghcr_temp_file <suffix>   (prints path on stdout)
+# Returns 0 on success, 1 only when neither cache dir nor system TMPDIR is writable.
+_ghcr_temp_file() {
+    local suffix="${1:-tmp}"
+    local f
+    # Prefer cache dir (same FS → atomic mv works cheaply); use single trust gate.
+    if _ghcr_cache_enabled; then
+        f=$(mktemp "${GHCR_CACHE_DIR}/${suffix}.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+    fi
+    # Fallback: system TMPDIR
+    f=$(mktemp -t "ghcr-${suffix}.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -68,23 +225,34 @@ _ghcr_keyfile() {
 # Tries authenticated (gh auth) first, falls back to anonymous.
 # Usage: ghcr_get_token "owner/repo"
 # Output: bearer token string or ""
+#
+# Note: tokens have no content-addressable digest (they are opaque bearer
+# tokens). The cache safety bound is the existing TTL guard — verified by
+# the token's embedded expiry, not by content hashing. This tier is
+# explicitly EXEMPT from the content-digest verification applied to the
+# index and per-arch tiers.
 ghcr_get_token() {
     local image_path="$1"  # owner/repo (without ghcr.io/ prefix)
 
     _ghcr_ensure_cachedir
 
-    local keyfile
-    keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${image_path}")"
+    local keyfile=""
 
-    # HIT: file exists, non-empty, AND modified < TTL seconds ago.
-    # find -mmin -<N> uses minutes; 240 s = 4 min.
-    # We use find to avoid GNU-stat dependency.
-    if [[ -s "$keyfile" ]]; then
-        local fresh
-        fresh=$(find "$keyfile" -mmin "-4" -print -quit 2>/dev/null)
-        if [[ -n "$fresh" ]]; then
-            cat "$keyfile"
-            return 0
+    # Cache read: only when cache is enabled (GHCR_CACHE_DIR set, dir exists, writable).
+    # When disabled (empty GHCR_CACHE_DIR), skip to network fetch directly.
+    if _ghcr_cache_enabled; then
+        keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${image_path}")"
+
+        # HIT: file exists, non-empty, AND modified < TTL seconds ago.
+        # find -mmin -<N> uses minutes; 240 s = 4 min.
+        # We use find to avoid GNU-stat dependency.
+        if [[ -s "$keyfile" ]]; then
+            local fresh
+            fresh=$(find "$keyfile" -mmin "-4" -print -quit 2>/dev/null)
+            if [[ -n "$fresh" ]]; then
+                cat "$keyfile"
+                return 0
+            fi
         fi
     fi
 
@@ -107,20 +275,23 @@ ghcr_get_token() {
             jq -r '.token // empty' 2>/dev/null)
     fi
 
-    # Cache only non-empty tokens (atomic write to avoid torn reads).
-    # umask 077 subshell ensures tmp is born 0600 even if chmod fails;
-    # chmod kept as belt-and-suspenders; mv preserves mode.
-    if [[ -n "$token" ]]; then
-        ( umask 077; printf '%s' "$token" > "${keyfile}.tmp.$$" ) && chmod 600 "${keyfile}.tmp.$$" 2>/dev/null && mv -f "${keyfile}.tmp.$$" "$keyfile" 2>/dev/null || true
+    # Cache write: only non-empty tokens and only when cache is enabled.
+    # When cache is disabled, token is returned but not persisted (degraded mode).
+    # (atomic write to avoid torn reads; umask 077 subshell ensures tmp is born
+    # 0600 even if chmod fails; chmod kept as belt-and-suspenders; mv preserves mode.)
+    if [[ -n "$token" && -n "$keyfile" ]] && _ghcr_cache_enabled; then
+        ( umask 077; printf '%s' "$token" > "${keyfile}.tmp.$$" ) 2>/dev/null && chmod 600 "${keyfile}.tmp.$$" 2>/dev/null && mv -f "${keyfile}.tmp.$$" "$keyfile" 2>/dev/null || true
     fi
 
     echo "$token"
 }
 
 # Invalidate the cached token for an image_path (call after auth-failure detected).
+# No-op when cache is disabled (_ghcr_cache_enabled returns false).
 # Usage: ghcr_invalidate_token "owner/repo"
 ghcr_invalidate_token() {
     local ip="$1"
+    _ghcr_cache_enabled || return 0
     local keyfile
     keyfile="${GHCR_CACHE_DIR}/token-$(_ghcr_keyfile "${ip}")"
     rm -f "$keyfile" 2>/dev/null || true
@@ -139,44 +310,94 @@ _ghcr_fetch_index() {
 
     local key_safe
     key_safe="$(_ghcr_keyfile "${image_path}:${tag}")"
-    local body_file="${GHCR_CACHE_DIR}/idx-${key_safe}.body"
-    local hdrs_file="${GHCR_CACHE_DIR}/idx-${key_safe}.hdrs"
+    local body_file="" hdrs_file=""
+    if _ghcr_cache_enabled; then
+        body_file="${GHCR_CACHE_DIR}/idx-${key_safe}.body"
+        hdrs_file="${GHCR_CACHE_DIR}/idx-${key_safe}.hdrs"
+    fi
 
     # HIT: both files present and body non-empty (no TTL — runs are short,
     # tags don't change mid-run).
+    # Verify content-digest on hit to catch post-admit corruption (disk error,
+    # PID-reuse conflict, OOM mid-write, manual tampering).  A mismatch evicts
+    # both cache files and falls through to the network fetch branch below.
     if [[ -s "$body_file" && -f "$hdrs_file" ]]; then
-        _GHCR_IDX_BODY="$(cat "$body_file")"
-        _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
-        return 0
+        local cached_expected hdr_line
+        hdr_line=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" 2>/dev/null || true)
+        cached_expected=""
+        if [[ -n "$hdr_line" ]]; then
+            # Strict single-token extraction: reject headers with multiple sha256:
+            # tokens (e.g. sha256:<good>sha256:<bad>) which greedy patterns would
+            # silently parse to the last token, bypassing digest verification.
+            local _hdr_norm
+            _hdr_norm=$(printf '%s' "$hdr_line" | tr -d '\r\n')
+            if [[ "$_hdr_norm" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+                cached_expected="${BASH_REMATCH[1]}"
+            fi
+            # If pattern doesn't match exactly (malformed, multiple tokens, wrong
+            # length), cached_expected stays "" → length guard below skips
+            # verification → falls through to trust-cache path (same as no header).
+        fi
+        # Only trust the cache when we have a full 64-char lowercase hex digest to
+        # verify against.  A missing, malformed, or short digest (e.g. the default
+        # shim's "sha256:idx", or a tampered/truncated hdrs file) means the entry
+        # is unverifiable — treat as stale, evict, and fall through to a network
+        # refetch.  Self-healing: legacy cache files written before the r4 verify
+        # fix refetch once and become verifiable on the next hit.
+        if [[ "${#cached_expected}" -eq 64 ]]; then
+            if _ghcr_verify_content_digest "$body_file" "$cached_expected"; then
+                _GHCR_IDX_BODY="$(cat "$body_file")"
+                _GHCR_IDX_HDRS="$(cat "$hdrs_file")"
+                return 0
+            fi
+            # Digest present but mismatch → evict and fall through to network fetch.
+            rm -f "$body_file" "$hdrs_file" 2>/dev/null || true
+            echo "::warning::Cached index body content-digest mismatch; evicted, refetching ${image_path}:${tag}" >&2
+        else
+            # No verifiable digest (missing, malformed, or short) → evict and refetch.
+            # Trusting an unverifiable entry would let an attacker who can write to
+            # GHCR_CACHE_DIR serve poisoned content by simply removing the digest line.
+            rm -f "$body_file" "$hdrs_file" 2>/dev/null || true
+            echo "::warning::Cached index lacks verifiable Docker-Content-Digest; evicted, refetching ${image_path}:${tag}" >&2
+        fi
     fi
 
     # Full Accept union satisfying both ghcr_get_manifest_sizes (needs body with .manifests)
     # and ghcr_get_multi_arch_digests (needs Docker-Content-Digest header + body).
     local accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 
-    local raw
-    raw=$(curl -sS -D - --connect-timeout 5 --max-time 10 \
+    # Use _ghcr_temp_file for body/hdrs so curl writes raw bytes directly to
+    # file (no command-substitution stripping of trailing newlines, which would
+    # break the sha256 content-digest verification added below).
+    # _ghcr_temp_file prefers GHCR_CACHE_DIR (same FS → atomic mv is cheap)
+    # but falls back to system TMPDIR when the cache dir is unwritable, so
+    # degraded (uncached) mode can still complete the fetch and return data.
+    # Genuinely fatal only when neither location is writable.
+    local body_tmp hdrs_tmp
+    body_tmp=$(_ghcr_temp_file ".idx-body") || { _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+    hdrs_tmp=$(_ghcr_temp_file ".idx-hdrs") || { rm -f "$body_tmp" 2>/dev/null || true; _GHCR_IDX_BODY=""; _GHCR_IDX_HDRS=""; return 1; }
+
+    local curl_rc=0
+    curl -sS -D "$hdrs_tmp" -o "$body_tmp" --connect-timeout 5 --max-time 10 \
         -H "Authorization: Bearer $token" \
         -H "Accept: $accept" \
-        "https://ghcr.io/v2/${image_path}/manifests/${tag}" 2>/dev/null || true)
+        "https://ghcr.io/v2/${image_path}/manifests/${tag}" 2>/dev/null || curl_rc=$?
 
-    if [[ -z "$raw" ]]; then
+    if [[ "$curl_rc" -ne 0 || ! -s "$body_tmp" ]]; then
+        rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
         _GHCR_IDX_BODY=""
         _GHCR_IDX_HDRS=""
         return 1
     fi
 
-    # Split headers / body at the first blank line.
+    # Populate out-vars for callers (read even on partial success below).
     local hdrs body
-    hdrs=$(printf '%s' "$raw" | sed -n '1,/^\r\?$/p')
-    body=$(printf '%s' "$raw" | sed -n '/^\r\?$/,$p' | sed '1d')
-
-    # Populate out-vars regardless (callers read them even on partial success).
+    hdrs=$(cat "$hdrs_tmp" 2>/dev/null || true)
+    body=$(cat "$body_tmp" 2>/dev/null || true)
     _GHCR_IDX_BODY="$body"
     _GHCR_IDX_HDRS="$hdrs"
 
     # Classify the response before deciding whether to cache.
-    # Extract the HTTP status code from the first status line in headers.
     local http_status
     http_status=$(printf '%s' "$hdrs" | grep -m1 -oE '^HTTP/[^ ]+ [0-9]+' | grep -oE '[0-9]+$' || true)
 
@@ -209,22 +430,82 @@ _ghcr_fetch_index() {
         esac
     fi
 
-    # Only cache genuinely good responses (atomic write).
-    # umask 077 subshell ensures each tmp is born 0600 even if chmod fails;
-    # chmod kept as belt-and-suspenders; mv preserves mode.
+    # Only cache genuinely good responses.
     if [[ "$is_good" -eq 1 ]]; then
-        ( umask 077; printf '%s' "$body" > "${body_file}.tmp.$$" ) && chmod 600 "${body_file}.tmp.$$" 2>/dev/null && mv -f "${body_file}.tmp.$$" "$body_file" 2>/dev/null || true
-        ( umask 077; printf '%s' "$hdrs" > "${hdrs_file}.tmp.$$" ) && chmod 600 "${hdrs_file}.tmp.$$" 2>/dev/null && mv -f "${hdrs_file}.tmp.$$" "$hdrs_file" 2>/dev/null || true
+        # Content-digest verification: extract Docker-Content-Digest from response
+        # headers and verify the stored body bytes hash to the same value.
+        # On mismatch: warn, clean up temps, and return 1.
+        # The caller already has data in _GHCR_IDX_BODY/_GHCR_IDX_HDRS but a
+        # digest mismatch signals a corrupt or tampered response — do not use it.
+        local idx_digest_header idx_digest_hex
+        idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:' 2>/dev/null | head -1 | tr -d '\r' || true)
+        if [[ -z "$idx_digest_header" ]]; then
+            # Fresh response carries no Docker-Content-Digest header.  GHCR is
+            # documented to always send this header on manifest responses; its
+            # absence signals a stripped/tampered response or a non-compliant
+            # registry path.  Fail-closed: do not return unverified data to the
+            # caller, as that would allow a digest-stripping bypass for the
+            # current run even without cache admission.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} lacks Docker-Content-Digest; refusing" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
+            return 1
+        fi
+        # Strict single-token extraction: anchored regex rejects headers with
+        # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
+        # ##*sha256: would silently parse to the last token.
+        if [[ "$idx_digest_header" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+            idx_digest_hex="${BASH_REMATCH[1]}"
+        else
+            idx_digest_hex=""
+        fi
+        if [[ "${#idx_digest_hex}" -ne 64 ]]; then
+            # Header present but malformed (wrong length, non-hex, multiple tokens).
+            # Same fail-closed treatment as missing: refuse unverified body.
+            echo "::warning::Fresh GHCR response for ${image_path}:${tag} has malformed Docker-Content-Digest; refusing" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
+            return 1
+        fi
+        if ! _ghcr_verify_content_digest "$body_tmp" "$idx_digest_hex"; then
+            echo "::warning::GHCR index cache content-digest mismatch for ${image_path}:${tag}; body not cached" >&2
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+            _GHCR_IDX_BODY=""
+            _GHCR_IDX_HDRS=""
+            return 1
+        fi
+
+        # Best-effort cache write: move verified tmp files into place.
+        # Only when cache is enabled (body_file/hdrs_file are non-empty paths).
+        # When body_tmp/hdrs_tmp are in GHCR_CACHE_DIR (normal path), mv is
+        # atomic on the same filesystem.  When they are in system TMPDIR
+        # (degraded path), mv may cross filesystems and fail — that is fine:
+        # data has already been returned via out-vars above; caching is
+        # opportunistic.  chmod 600 belt-and-suspenders.
+        chmod 600 "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+        if [[ -n "$body_file" ]] && _ghcr_cache_enabled; then
+            mv -f "$body_tmp" "$body_file" 2>/dev/null || rm -f "$body_tmp" 2>/dev/null || true
+            mv -f "$hdrs_tmp" "$hdrs_file" 2>/dev/null || rm -f "$hdrs_tmp" 2>/dev/null || true
+        else
+            rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+        fi
         return 0
     fi
 
+    rm -f "$body_tmp" "$hdrs_tmp" 2>/dev/null || true
+    _GHCR_IDX_BODY=""
+    _GHCR_IDX_HDRS=""
     return 1
 }
 
 # Invalidate the cached index for an image_path:tag (call before retrying after
 # an auth failure, to force a genuine network re-fetch instead of a cached-401 hit).
+# No-op when cache is disabled (_ghcr_cache_enabled returns false).
 # Usage: _ghcr_invalidate_index "owner/repo" "tag"
 _ghcr_invalidate_index() {
+    _ghcr_cache_enabled || return 0
     local k
     k="$(_ghcr_keyfile "${1}:${2}")"
     rm -f "${GHCR_CACHE_DIR}/idx-${k}.body" "${GHCR_CACHE_DIR}/idx-${k}.hdrs" 2>/dev/null || true
@@ -288,61 +569,139 @@ ghcr_get_manifest_sizes() {
         # removed by _ghcr_invalidate_index (different directory depth; exact-path
         # rm -f "${GHCR_CACHE_DIR}/idx-${k}.body" can never reach a subdir entry).
         # Create cache root + subdir once before the loop (not per-iteration).
+        # Only when cache is enabled — skip mkdir/chmod when GHCR_CACHE_DIR is empty.
         _ghcr_ensure_cachedir
-        ( umask 077; mkdir -p "${GHCR_CACHE_DIR}/perarch" ) 2>/dev/null || true
-        chmod 700 "${GHCR_CACHE_DIR}/perarch" 2>/dev/null || true
+        if _ghcr_cache_enabled; then
+            ( umask 077; mkdir -p "${GHCR_CACHE_DIR}/perarch" ) 2>/dev/null || true
+            chmod 700 "${GHCR_CACHE_DIR}/perarch" 2>/dev/null || true
+        fi
         local size_buffer=""
         while IFS=':' read -r arch digest_prefix digest_hash; do
             [[ -z "$arch" || -z "$digest_hash" ]] && continue
             [[ "$arch" == "unknown" ]] && continue
+            # Strict digest validation BEFORE any network attempt.
+            # digest_prefix must be "sha256" — non-sha256 algorithms (sha512, etc.)
+            # are not supported and a malformed/unexpected prefix is a hard error,
+            # not a silent skip, to preserve the all-or-nothing contract.
+            # digest_hash must be exactly 64 lowercase hex chars.
+            # Both checks apply to all non-"unknown" platforms; a partially-valid
+            # manifest list (valid arm64, malformed amd64) must fail hard.
+            if [[ "$digest_prefix" != "sha256" ]]; then
+                echo "::warning::GHCR per-arch refusing non-sha256 digest prefix '${digest_prefix}' for platform '${arch}' (${image_path})" >&2
+                return 1
+            fi
+            if ! [[ "$digest_hash" =~ ^[a-f0-9]{64}$ ]]; then
+                echo "::warning::GHCR per-arch malformed digest hash for platform '${arch}' (${image_path}): ${digest_hash}" >&2
+                return 1
+            fi
 
             local pa_file pa_hit
-            pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
+            # Build pa_file path only when cache is enabled; empty string disables
+            # the cache hit branch below ([[ -s "" ]] is false) and prevents writing
+            # a path rooted at / when GHCR_CACHE_DIR is empty.
+            if _ghcr_cache_enabled; then
+                pa_file="${GHCR_CACHE_DIR}/perarch/$(_ghcr_keyfile "${image_path}@${digest_prefix}:${digest_hash}").body"
+            else
+                pa_file=""
+            fi
             pa_hit=0
 
-            local platform_manifest
+            # pa_src is the file whose bytes are used for validation AND jq parsing.
+            # For cache hits, pa_src=pa_file (existing body on disk).
+            # For cache misses, pa_src=pa_tmp (curl writes raw bytes directly here).
+            # Using a file as the source of truth for both verification and parsing
+            # avoids $() command-substitution, which strips trailing newlines.
+            # OCI/Docker digests are over EXACT raw bytes — a valid manifest served
+            # with a trailing newline would hash differently after $() stripping,
+            # causing legitimate images to be rejected as "tampered".
+            local pa_src pa_tmp
+            pa_src=""
+            pa_tmp=""
             if [[ -s "$pa_file" ]]; then
-                platform_manifest="$(cat "$pa_file")"
-                pa_hit=1
-            else
-                platform_manifest=$(curl -s --connect-timeout 5 --max-time 10 \
-                    -H "Authorization: Bearer $token" \
-                    -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                    "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null)
+                # Cache HIT: verify content-digest before trusting the file.
+                # Evict on mismatch to catch post-admit corruption (disk error,
+                # PID-reuse conflict, OOM mid-write, manual tampering), then
+                # fall through to the network-fetch branch below (pa_hit stays 0).
+                if _ghcr_verify_content_digest "$pa_file" "$digest_hash"; then
+                    pa_src="$pa_file"
+                    pa_hit=1
+                else
+                    rm -f "$pa_file" 2>/dev/null || true
+                    echo "::warning::Cached per-arch body content-digest mismatch; evicted ${image_path}@sha256:${digest_hash}" >&2
+                fi
+            fi
+            if [[ "$pa_hit" -eq 0 ]]; then
+                # Cache MISS (or eviction above): allocate temp file and fetch.
+                # _ghcr_temp_file is race-proof (mktemp, mode 0600).
+                # When cache dir is unwritable it falls back to system TMPDIR.
+                pa_tmp=$(_ghcr_temp_file "perarch-.tmp" 2>/dev/null) || {
+                    echo "::warning::GHCR per-arch cannot allocate temp file for ${image_path}@${digest_prefix}:${digest_hash}" >&2
+                    return 1
+                }
+                # curl -o writes raw network bytes directly to file — no $() stripping.
+                if ! curl -sS -fL --connect-timeout 5 --max-time "${CURL_MAX_TIME:-30}" \
+                        -H "Authorization: Bearer $token" \
+                        -H "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                        -o "$pa_tmp" \
+                        "https://ghcr.io/v2/${image_path}/manifests/${digest_prefix}:${digest_hash}" 2>/dev/null; then
+                    rm -f "$pa_tmp" 2>/dev/null || true
+                    echo "::warning::GHCR per-arch fetch failed for ${image_path}@${digest_prefix}:${digest_hash}" >&2
+                    return 1
+                fi
+                # Content-digest verification on raw bytes BEFORE any parsing.
+                # The cache key digest_hash is the registry's sha256 of the manifest
+                # bytes. A mismatch means corruption or tampered response — abort.
+                if ! _ghcr_verify_content_digest "$pa_tmp" "$digest_hash"; then
+                    echo "::warning::GHCR per-arch content-digest mismatch for ${image_path}@${digest_prefix}:${digest_hash}; rejecting body" >&2
+                    rm -f "$pa_tmp" 2>/dev/null || true
+                    return 1
+                fi
+                pa_src="$pa_tmp"
             fi
 
             # Validate: body must be non-empty, parse as a JSON object, not an
             # .errors envelope, and carry size-bearing structure (config or layers).
             # An invalid body → abort the whole function (return 1, zero stdout).
             # These gates also defensively re-validate cached bodies (free, no network).
-            if [[ -z "$platform_manifest" ]]; then
+            # All jq reads come from $pa_src (file), not from a $()-captured string.
+            if [[ ! -s "$pa_src" ]]; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if ! printf '%s' "$platform_manifest" | jq -e 'type=="object"' >/dev/null 2>&1; then
+            if ! jq -e 'type=="object"' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if printf '%s' "$platform_manifest" | jq -e 'type=="object" and has("errors")' >/dev/null 2>&1; then
+            if jq -e 'type=="object" and has("errors")' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            if ! printf '%s' "$platform_manifest" | jq -e 'has("config") or has("layers")' >/dev/null 2>&1; then
+            if ! jq -e 'has("config") or has("layers")' < "$pa_src" >/dev/null 2>&1; then
+                rm -f "$pa_tmp" 2>/dev/null || true
                 return 1
             fi
-            # Admission: only cache on MISS after all 4 gates pass (object, not-errors, has-config|layers).
-            # mktemp (not .tmp.$): $ is the parent PID inside $(...) command substitution, not unique
-            # per concurrent caller; mktemp is race-proof and natively mode 0600.
-            if [[ "$pa_hit" -eq 0 ]]; then
-                local pa_tmp
-                if pa_tmp=$(mktemp "${GHCR_CACHE_DIR}/perarch/.tmp.XXXXXX" 2>/dev/null); then
-                    if printf '%s' "$platform_manifest" > "$pa_tmp" 2>/dev/null && chmod 600 "$pa_tmp" 2>/dev/null; then
-                        mv -f "$pa_tmp" "$pa_file" 2>/dev/null || rm -f "$pa_tmp" 2>/dev/null || true
-                    else
-                        rm -f "$pa_tmp" 2>/dev/null || true
+
+            # Admission: promote pa_tmp → pa_file after all 4 gates pass.
+            # Cache hits (pa_hit=1) already live at pa_file; no mv needed.
+            # When cache is disabled (pa_file=""), skip mv entirely; pa_src
+            # stays as pa_tmp and is cleaned up by the post-jq rm below.
+            if [[ "$pa_hit" -eq 0 && -n "$pa_tmp" ]]; then
+                chmod 600 "$pa_tmp" 2>/dev/null || true
+                if _ghcr_cache_enabled && [[ -n "$pa_file" ]]; then
+                    if mv -f "$pa_tmp" "$pa_file" 2>/dev/null; then
+                        pa_src="$pa_file"
                     fi
+                    # mv failed (cross-FS fallback) — pa_src stays as pa_tmp;
+                    # data is returned but not persisted; temp cleaned up below.
                 fi
+                # Cache disabled: pa_src stays as pa_tmp; cleanup handled by
+                # the post-jq [[ pa_src == pa_tmp ]] guard below.
             fi
 
             local total_size
-            total_size=$(printf '%s' "$platform_manifest" | jq '[.config.size // 0] + [.layers[]?.size // 0] | add // 0' 2>/dev/null)
+            total_size=$(jq '[.config.size // 0] + [.layers[]?.size // 0] | add // 0' < "$pa_src" 2>/dev/null)
+            # Clean up pa_tmp if mv failed (pa_src still points to it).
+            [[ "$pa_src" == "$pa_tmp" && -n "$pa_tmp" ]] && rm -f "$pa_tmp" 2>/dev/null || true
             # Append to buffer (valid parse → emit even if arithmetic yields 0).
             size_buffer="${size_buffer}${arch}:${total_size:-0}"$'\n'
         done <<< "$manifests_data"
