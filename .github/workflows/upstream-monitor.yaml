@@ -1566,32 +1566,89 @@ jobs:
       # Therefore: fail this step (not just warn) if cascade labels cannot be applied.
       # Labels are auto-created on first use so the repo does not need pre-seeded labels.
       - name: Apply cascade labels (strict)
+        id: cascade-labels
         if: steps.create-pr.outputs.pull-request-number && matrix.internal_deps_csv != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
         run: |
-          # Determine which parents have an open drift PR right now.
-          # Parent detection uses branch name (update/base-digest-<parent>) — more
-          # reliable than label-based detection because branch name is always set by
-          # peter-evans/create-pull-request, whereas labels can fail to apply.
+          # Three-state parent evaluation: in_flux | ready
+          #
+          # State 1: open drift PR → in_flux (parent is still being integrated)
+          # State 2: no open PR + recent LAST_REBUILD.md commit + auto-build in_progress/queued → in_flux
+          # State 3: no open PR + recent commit + auto-build completed/success → ready
+          # State 4: no open PR + no LAST_REBUILD.md commit ever → ready (never drifted)
+          # State 5: no open PR + recent commit + auto-build failed → ready (warning; child CI detects)
+          # State 6: no open PR + recent commit + run not found (pruned) → in_flux (conservative)
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
           # list OR repeated flags, but passing a space-separated string as one argument
           # creates a single invalid label name — that bug is precisely what this loop avoids.
-          has_waiting=0
-          for parent in ${INTERNAL_DEPS//,/ }; do
+          _eval_parent_state() {
+            local parent="$1"
+            local parent_pr
             if ! parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --state open \
               --json number \
               --jq '.[0].number // empty'); then
               echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
-              exit 1
+              return 2
             fi
-            if [[ -z "$parent_pr" ]]; then
+            if [[ -n "$parent_pr" ]]; then
+              echo "in_flux"
+              return 0
+            fi
+            # No open PR: check if parent's master rebuild is still in flight.
+            local recent_sha
+            recent_sha=$(git log origin/master --max-count=10 --pretty=%H -- "${parent}/LAST_REBUILD.md" 2>/dev/null | head -1)
+            if [[ -z "$recent_sha" ]]; then
+              echo "ready"
+              return 0
+            fi
+            local run_info
+            if ! run_info=$(gh run list \
+              --workflow="Auto Build & Push" \
+              --branch=master \
+              --limit 20 \
+              --json databaseId,headSha,status,conclusion 2>&1); then
+              echo "::error::Failed to query auto-build runs for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+              return 2
+            fi
+            local run_status run_conclusion
+            run_status=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .status" | head -1)
+            run_conclusion=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .conclusion // empty" | head -1)
+            if [[ -z "$run_status" ]]; then
+              echo "::notice::No auto-build run found for parent ${parent} commit ${recent_sha}; treating as in_flux (conservative)"
+              echo "in_flux"
+              return 0
+            fi
+            case "$run_status" in
+              in_progress|queued|requested|waiting)
+                echo "in_flux"
+                ;;
+              completed)
+                if [[ "$run_conclusion" == "success" ]]; then
+                  echo "ready"
+                else
+                  echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (failure will surface in child CI)"
+                  echo "ready"
+                fi
+                ;;
+              *)
+                echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (unknown status)"
+                echo "ready"
+                ;;
+            esac
+          }
+          has_waiting=0
+          for parent in ${INTERNAL_DEPS//,/ }; do
+            parent_state=$(_eval_parent_state "$parent") || exit 1
+            # Extract only the last word of output (the state token); preceding lines are notices/warnings.
+            parent_state_token=$(echo "$parent_state" | grep -E '^(in_flux|ready)$' | tail -1)
+            if [[ "$parent_state_token" != "in_flux" ]]; then
               continue
             fi
             has_waiting=1
@@ -1610,8 +1667,9 @@ jobs:
             echo "::notice::Applied cascade label '${label}' to PR #${PR_NUMBER}"
           done
           if [[ "$has_waiting" -eq 0 ]]; then
-            # No open parent drift PRs — no cascade labels needed; auto-merge step handles it.
-            exit 0
+            echo "has_labels=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_labels=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Auto-merge with cascade-awareness
@@ -1621,6 +1679,7 @@ jobs:
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           CONTAINER: ${{ matrix.container }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+          CASCADE_LABELS_APPLIED: ${{ steps.cascade-labels.outputs.has_labels }}
         run: |
           if [[ -z "$INTERNAL_DEPS" ]]; then
             # No project-internal deps — safe to auto-merge immediately
@@ -1629,28 +1688,14 @@ jobs:
             fi
             exit 0
           fi
-          # Check if any parent PR is currently open.
-          # Use branch-name-based detection (update/base-digest-<parent>) — branch name is
-          # canonical and stable; label-based detection is fragile (labels can fail to apply).
-          waiting_for=""
-          for parent in ${INTERNAL_DEPS//,/ }; do
-            if ! parent_pr=$(gh pr list \
-              --head "update/base-digest-${parent}" \
-              --state open \
-              --json number \
-              --jq '.[0].number // empty'); then
-              echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
-              exit 1
-            fi
-            if [[ -n "$parent_pr" ]]; then
-              waiting_for="${waiting_for}${parent},"
-            fi
-          done
-          if [[ -n "$waiting_for" ]]; then
-            gh pr comment "$PR_NUMBER" --body "Cascade-aware merge: waiting for parent drift PRs to resolve first: ${waiting_for%,}. The cascade-resolver workflow will enable auto-merge once parent(s) merge and their rebuild completes." 2>&1 || true
-            echo "::notice::PR #${PR_NUMBER} (${CONTAINER}) cascade-waiting for: ${waiting_for%,}"
+          # cascade-labels step already evaluated parent states with three-state logic.
+          # If it applied labels, the cascade-resolver workflow handles unblocking.
+          # If it did not (has_labels=false or step was skipped), all parents are ready.
+          if [[ "$CASCADE_LABELS_APPLIED" == "true" ]]; then
+            gh pr comment "$PR_NUMBER" --body "Cascade-aware merge: waiting for parent(s) drift PRs and their master rebuilds to complete. The cascade-resolver workflow will enable auto-merge once all parents resolve." 2>&1 || true
+            echo "::notice::PR #${PR_NUMBER} (${CONTAINER}) cascade-waiting — cascade-resolver will unblock"
           else
-            # Parents already merged or never drifted — safe to auto-merge
+            # All parents are ready (ready state or no INTERNAL_DEPS cascade triggered)
             if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
               echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
             fi

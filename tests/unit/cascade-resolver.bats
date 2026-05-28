@@ -443,3 +443,235 @@ _run_identify_parent() {
     [[ "$output" == *"::error::"* ]]
     [[ "$output" == *"Failed to query PRs"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Three-state parent evaluation (_eval_parent_state) — gate r4 defect fix
+#
+# The _eval_parent_state function (defined in "Apply cascade labels (strict)"
+# in upstream-monitor.yaml) emits 'in_flux' or 'ready' on stdout, with
+# notices/warnings on stderr-equivalent lines.  These tests exercise the
+# six evaluation paths described in the fix spec.
+#
+# Mock strategy:
+#   - gh: controlled by MODE env var (set in each test)
+#   - git: controlled by GIT_LAST_SHA env var (empty = no commit)
+# ---------------------------------------------------------------------------
+
+# Body of _eval_parent_state extracted verbatim from the workflow step.
+# Variables on the calling side: parent=$1; git and gh are mocked.
+EVAL_PARENT_STATE_BODY='
+_eval_parent_state() {
+  local parent="$1"
+  local parent_pr
+  if ! parent_pr=$(gh pr list \
+    --head "update/base-digest-${parent}" \
+    --state open \
+    --json number \
+    --jq '"'"'.[0].number // empty'"'"'); then
+    echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+    return 2
+  fi
+  if [[ -n "$parent_pr" ]]; then
+    echo "in_flux"
+    return 0
+  fi
+  local recent_sha
+  recent_sha=$(git log origin/master --max-count=10 --pretty=%H -- "${parent}/LAST_REBUILD.md" 2>/dev/null | head -1)
+  if [[ -z "$recent_sha" ]]; then
+    echo "ready"
+    return 0
+  fi
+  local run_info
+  if ! run_info=$(gh run list \
+    --workflow="Auto Build & Push" \
+    --branch=master \
+    --limit 20 \
+    --json databaseId,headSha,status,conclusion 2>&1); then
+    echo "::error::Failed to query auto-build runs for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+    return 2
+  fi
+  local run_status run_conclusion
+  run_status=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .status" | head -1)
+  run_conclusion=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .conclusion // empty" | head -1)
+  if [[ -z "$run_status" ]]; then
+    echo "::notice::No auto-build run found for parent ${parent} commit ${recent_sha}; treating as in_flux (conservative)"
+    echo "in_flux"
+    return 0
+  fi
+  case "$run_status" in
+    in_progress|queued|requested|waiting)
+      echo "in_flux"
+      ;;
+    completed)
+      if [[ "$run_conclusion" == "success" ]]; then
+        echo "ready"
+      else
+        echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (failure will surface in child CI)"
+        echo "ready"
+      fi
+      ;;
+    *)
+      echo "::warning::Parent ${parent} auto-build status=${run_status} conclusion=${run_conclusion}; treating as ready (unknown status)"
+      echo "ready"
+      ;;
+  esac
+}
+_eval_parent_state "$PARENT_ARG"
+'
+
+# Writes a mock gh + git pair for three-state tests.
+# $1 = mode:
+#   open-pr           — pr list returns PR #10 (State 1: in_flux)
+#   pr-closed-inprog  — pr list empty; gh run list returns in_progress run (State 2: in_flux)
+#   pr-closed-success — pr list empty; gh run list returns completed/success (State 3: ready)
+#   pr-closed-failed  — pr list empty; gh run list returns completed/failure (State 5: ready+warning)
+#   run-not-found     — pr list empty; gh run list returns empty array (State 6: in_flux conservative)
+#   run-api-error     — pr list empty; gh run list exits 1 (fail-closed)
+# GIT_LAST_SHA env controls what git log returns (empty = no commit).
+_setup_three_state_mock() {
+    local mode="$1"
+    local git_sha="${GIT_LAST_SHA:-}"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local calls_log="$TEST_TEMP_DIR/gh_calls.log"
+    touch "$calls_log"
+
+    # Write mock gh
+    local mock_gh="$TEST_TEMP_DIR/bin/gh"
+    printf '#!/usr/bin/env bash\nMODE="%s"\necho "$@" >> "%s"\n' "$mode" "$calls_log" > "$mock_gh"
+    cat >> "$mock_gh" << 'GH_MOCK'
+SHA="abc123def456"
+case "$1 $2" in
+  "pr list")
+    if [[ "$MODE" == "open-pr" ]]; then
+      echo "10"
+    fi
+    # all other modes: print nothing (no open PR)
+    ;;
+  "run list")
+    case "$MODE" in
+      run-api-error)
+        echo "API failure simulated" >&2
+        exit 1
+        ;;
+      pr-closed-inprog)
+        printf '[{"databaseId":1,"headSha":"%s","status":"in_progress","conclusion":""}]\n' "$SHA"
+        ;;
+      pr-closed-success)
+        printf '[{"databaseId":2,"headSha":"%s","status":"completed","conclusion":"success"}]\n' "$SHA"
+        ;;
+      pr-closed-failed)
+        printf '[{"databaseId":3,"headSha":"%s","status":"completed","conclusion":"failure"}]\n' "$SHA"
+        ;;
+      run-not-found)
+        echo '[]'
+        ;;
+    esac
+    ;;
+esac
+exit 0
+GH_MOCK
+    chmod +x "$mock_gh"
+
+    # Write mock git — returns GIT_LAST_SHA when set, empty otherwise
+    local mock_git="$TEST_TEMP_DIR/bin/git"
+    local sha_val="${GIT_LAST_SHA:-}"
+    printf '#!/usr/bin/env bash\nSHA_VAL="%s"\n' "$sha_val" > "$mock_git"
+    cat >> "$mock_git" << 'GIT_MOCK'
+if [[ "$1" == "log" ]]; then
+  if [[ -n "$SHA_VAL" ]]; then
+    echo "$SHA_VAL"
+  fi
+fi
+exit 0
+GIT_MOCK
+    chmod +x "$mock_git"
+
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+_run_eval_parent_state() {
+    local parent="$1"
+    local script="$TEST_TEMP_DIR/eval_parent_state.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$EVAL_PARENT_STATE_BODY" > "$script"
+    chmod +x "$script"
+    PARENT_ARG="$parent" run "$script"
+}
+
+# ---------------------------------------------------------------------------
+# State 1: open drift PR → in_flux
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: open drift PR → in_flux (cascade label must be applied)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "open-pr"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    # Last output token must be in_flux
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+# ---------------------------------------------------------------------------
+# State 2: no open PR, recent commit, auto-build in_progress → in_flux
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: master rebuild in_progress → in_flux (no premature auto-merge)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-inprog"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+# ---------------------------------------------------------------------------
+# State 3: no open PR, recent commit, auto-build completed/success → ready
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: master rebuild success → ready (safe to auto-merge)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-success"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+# ---------------------------------------------------------------------------
+# State 4: no open PR, no LAST_REBUILD.md commit ever → ready
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: no LAST_REBUILD.md commit → ready (parent never drifted)" {
+    GIT_LAST_SHA="" _setup_three_state_mock "pr-closed-success"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+# ---------------------------------------------------------------------------
+# State 5: no open PR, recent commit, auto-build failed → ready + warning
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: master rebuild failed → ready with warning (child CI detects)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "pr-closed-failed"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+    [[ "$output" == *"::warning::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# State 6: no open PR, recent commit, run not findable (pruned) → in_flux (conservative)
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: auto-build run not found (pruned) → in_flux (conservative)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-not-found"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    [[ "$output" == *"::notice::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# API error on gh run list → fail-closed (exit non-zero)
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: gh run list API error → fail-closed (exit 1)" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-api-error"
+    _run_eval_parent_state "debian"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
