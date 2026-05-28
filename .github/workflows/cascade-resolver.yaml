@@ -38,7 +38,7 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - name: Identify parent container from associated PR
@@ -95,11 +95,14 @@ jobs:
         run: |
           # Find all open drift PRs waiting for this parent.
           # gh pr list --label is an exact label match — no injection surface.
-          children=$(gh pr list \
+          if ! children=$(gh pr list \
             --label "cascade:waiting-for-${PARENT}" \
             --state open \
             --json number \
-            --jq '.[].number' 2>/dev/null || true)
+            --jq '.[].number'); then
+            echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
+            exit 1
+          fi
 
           if [[ -z "$children" ]]; then
             echo "::notice::No cascade-waiting PRs for parent ${PARENT}"
@@ -138,10 +141,15 @@ jobs:
                 2>&1 || true
             else
               # All parent wait labels removed — enable auto-merge.
-              gh pr merge "$child" --squash --auto 2>&1 || \
-                echo "::warning::auto-merge failed for #${child} — may already be enabled or not eligible"
-              gh pr comment "$child" \
-                --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — this PR will merge once CI passes." \
-                2>&1 || true
+              if gh pr merge "$child" --squash --auto 2>&1; then
+                gh pr comment "$child" \
+                  --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — will merge once CI passes." \
+                  2>&1 || true
+              else
+                gh pr comment "$child" \
+                  --body "::warning:: Parent **${PARENT}** drift PR resolved, all cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+                  2>&1 || true
+                echo "::warning::auto-merge failed for #${child}"
+              fi
             fi
           done

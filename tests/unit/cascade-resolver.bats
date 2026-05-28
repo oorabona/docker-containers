@@ -36,11 +36,14 @@ load "../test_helper"
 
 RESOLVER_BODY='
 PARENT="${1:?PARENT required}"
-children=$(gh pr list \
+if ! children=$(gh pr list \
   --label "cascade:waiting-for-${PARENT}" \
   --state open \
   --json number \
-  --jq '"'"'.[].number'"'"' 2>/dev/null || true)
+  --jq '"'"'.[].number'"'"'); then
+  echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
+  exit 1
+fi
 if [[ -z "$children" ]]; then
   echo "::notice::No cascade-waiting PRs for parent ${PARENT}"
   exit 0
@@ -70,11 +73,16 @@ for child in $children; do
       --body "Parent **${PARENT}** drift PR'"'"'s master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
       2>&1 || true
   else
-    gh pr merge "$child" --squash --auto 2>&1 || \
-      echo "::warning::auto-merge failed for #${child} — may already be enabled or not eligible"
-    gh pr comment "$child" \
-      --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — this PR will merge once CI passes." \
-      2>&1 || true
+    if gh pr merge "$child" --squash --auto 2>&1; then
+      gh pr comment "$child" \
+        --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — will merge once CI passes." \
+        2>&1 || true
+    else
+      gh pr comment "$child" \
+        --body "::warning:: Parent **${PARENT}** drift PR resolved, all cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+        2>&1 || true
+      echo "::warning::auto-merge failed for #${child}"
+    fi
   fi
 done
 '
@@ -95,6 +103,8 @@ _run_resolver() {
 #   remove-fails   — --remove-label exits 1 → child skipped
 #   view-fails     — pr view exits 1 → child skipped (Defect C: no silent "0")
 #   no-children    — pr list returns empty
+#   list-fails     — pr list exits 1 → fail-closed (Defect B fix)
+#   merge-fails    — pr merge exits 1 → failure comment posted, not success
 # Calls are recorded to $TEST_TEMP_DIR/gh_calls.log.
 # Comments are recorded to $TEST_TEMP_DIR/gh_comments.log.
 # ---------------------------------------------------------------------------
@@ -117,6 +127,10 @@ echo "$@" >> "$CALLS_LOG"
 
 case "$1 $2" in
   "pr list")
+    if [[ "$MODE" == "list-fails" ]]; then
+      echo "simulated API list failure" >&2
+      exit 1
+    fi
     # Return PR #42 for any cascade:waiting-for-* label query
     if echo "$@" | grep -q "cascade:waiting-for-"; then
       echo "42"
@@ -134,7 +148,7 @@ case "$1 $2" in
     if [[ "$MODE" == "view-fails" ]]; then
       echo "simulated API error" >&2
       exit 1
-    elif [[ "$MODE" == "single-parent" ]]; then
+    elif [[ "$MODE" == "single-parent" ]] || [[ "$MODE" == "merge-fails" ]]; then
       # No remaining wait labels
       echo "0"
     elif [[ "$MODE" == "multi-parent" ]]; then
@@ -146,6 +160,10 @@ case "$1 $2" in
     fi
     ;;
   "pr merge")
+    if [[ "$MODE" == "merge-fails" ]]; then
+      echo "simulated merge failure" >&2
+      exit 1
+    fi
     : # succeed silently
     ;;
   "pr comment")
@@ -482,17 +500,15 @@ _eval_parent_state() {
     return 0
   fi
   local run_info
-  if ! run_info=$(gh run list \
-    --workflow="Auto Build & Push" \
-    --branch=master \
-    --limit 20 \
-    --json databaseId,headSha,status,conclusion 2>&1); then
-    echo "::error::Failed to query auto-build runs for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+  local _repo="${GITHUB_REPOSITORY:-owner/repo}"
+  if ! run_info=$(gh api "repos/${_repo}/actions/runs?head_sha=${recent_sha}&per_page=10" \
+    --jq '"'"'.workflow_runs[] | select(.name == "Auto Build & Push") | {status, conclusion}'"'"' 2>&1); then
+    echo "::error::Failed to query auto-build runs for ${parent} commit ${recent_sha}. Aborting."
     return 2
   fi
   local run_status run_conclusion
-  run_status=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .status" | head -1)
-  run_conclusion=$(echo "$run_info" | jq -r ".[] | select(.headSha == \"$recent_sha\") | .conclusion // empty" | head -1)
+  run_status=$(echo "$run_info" | jq -r '"'"'.status'"'"' | head -1)
+  run_conclusion=$(echo "$run_info" | jq -r '"'"'.conclusion // empty'"'"' | head -1)
   if [[ -z "$run_status" ]]; then
     echo "::notice::No auto-build run found for parent ${parent} commit ${recent_sha}; treating as in_flux (conservative)"
     echo "in_flux"
@@ -522,11 +538,12 @@ _eval_parent_state "$PARENT_ARG"
 # Writes a mock gh + git pair for three-state tests.
 # $1 = mode:
 #   open-pr           — pr list returns PR #10 (State 1: in_flux)
-#   pr-closed-inprog  — pr list empty; gh run list returns in_progress run (State 2: in_flux)
-#   pr-closed-success — pr list empty; gh run list returns completed/success (State 3: ready)
-#   pr-closed-failed  — pr list empty; gh run list returns completed/failure (State 5: ready+warning)
-#   run-not-found     — pr list empty; gh run list returns empty array (State 6: in_flux conservative)
-#   run-api-error     — pr list empty; gh run list exits 1 (fail-closed)
+#   pr-closed-inprog  — pr list empty; gh api returns in_progress run (State 2: in_flux)
+#   pr-closed-success — pr list empty; gh api returns completed/success (State 3: ready)
+#   pr-closed-failed  — pr list empty; gh api returns completed/failure (State 5: ready+warning)
+#   run-not-found     — pr list empty; gh api returns empty (no match) (State 6: in_flux conservative)
+#   run-api-error     — pr list empty; gh api exits 1 (fail-closed)
+#   run-multi         — pr list empty; gh api returns 2 runs for same SHA (re-run scenario)
 # GIT_LAST_SHA env controls what git log returns (empty = no commit).
 _setup_three_state_mock() {
     local mode="$1"
@@ -539,7 +556,6 @@ _setup_three_state_mock() {
     local mock_gh="$TEST_TEMP_DIR/bin/gh"
     printf '#!/usr/bin/env bash\nMODE="%s"\necho "$@" >> "%s"\n' "$mode" "$calls_log" > "$mock_gh"
     cat >> "$mock_gh" << 'GH_MOCK'
-SHA="abc123def456"
 case "$1 $2" in
   "pr list")
     if [[ "$MODE" == "open-pr" ]]; then
@@ -547,23 +563,30 @@ case "$1 $2" in
     fi
     # all other modes: print nothing (no open PR)
     ;;
-  "run list")
+  "api repos"*)
+    # gh api "repos/.../actions/runs?head_sha=...&per_page=10" --jq '...'
+    # The --jq flag is passed as additional args; mock returns pre-filtered JSON objects
     case "$MODE" in
       run-api-error)
         echo "API failure simulated" >&2
         exit 1
         ;;
       pr-closed-inprog)
-        printf '[{"databaseId":1,"headSha":"%s","status":"in_progress","conclusion":""}]\n' "$SHA"
+        printf '{"status":"in_progress","conclusion":null}\n'
         ;;
       pr-closed-success)
-        printf '[{"databaseId":2,"headSha":"%s","status":"completed","conclusion":"success"}]\n' "$SHA"
+        printf '{"status":"completed","conclusion":"success"}\n'
         ;;
       pr-closed-failed)
-        printf '[{"databaseId":3,"headSha":"%s","status":"completed","conclusion":"failure"}]\n' "$SHA"
+        printf '{"status":"completed","conclusion":"failure"}\n'
         ;;
       run-not-found)
-        echo '[]'
+        # Empty output — no matching workflow runs
+        ;;
+      run-multi)
+        # Two runs for the same SHA (re-run scenario): most recent first
+        printf '{"status":"completed","conclusion":"success"}\n'
+        printf '{"status":"completed","conclusion":"failure"}\n'
         ;;
     esac
     ;;
@@ -655,9 +678,9 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# State 6: no open PR, recent commit, run not findable (pruned) → in_flux (conservative)
+# State 6: no open PR, recent commit, gh api returns empty (SHA outside window) → in_flux (conservative)
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: auto-build run not found (pruned) → in_flux (conservative)" {
+@test "eval_parent_state: gh api returns empty for SHA → in_flux (conservative)" {
     GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-not-found"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
@@ -667,11 +690,50 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# API error on gh run list → fail-closed (exit non-zero)
+# API error on gh api → fail-closed (exit non-zero)
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: gh run list API error → fail-closed (exit 1)" {
+@test "eval_parent_state: gh api error → fail-closed (exit 1)" {
     GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-api-error"
     _run_eval_parent_state "debian"
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Re-run scenario: gh api returns 2 runs for same SHA → take most recent (first)
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: gh api returns multiple runs for same SHA → takes most recent" {
+    GIT_LAST_SHA="abc123def456" _setup_three_state_mock "run-multi"
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    # Most recent run is completed/success → ready
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+# ---------------------------------------------------------------------------
+# Defect B fix: gh pr list failure → fail-closed (exit 1), no stranded PRs
+# ---------------------------------------------------------------------------
+@test "resolver: gh pr list failure — fail-closed, exits 1 with error annotation" {
+    _setup_mock_gh "list-fails"
+    _run_resolver "debian"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"Cascade resolution aborted"* ]]
+    ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+# ---------------------------------------------------------------------------
+# Defect A fix: gh pr merge failure → failure comment posted, NOT success comment
+# ---------------------------------------------------------------------------
+@test "resolver: gh pr merge failure — posts failure comment, not success comment" {
+    _setup_mock_gh "merge-fails"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # warning annotation must appear in output
+    [[ "$output" == *"::warning::"* ]]
+    # Failure comment must appear
+    grep -q "auto-merge enable failed" "$TEST_TEMP_DIR/gh_comments.log"
+    # Success comment must NOT appear
+    ! grep -q "Auto-merge enabled" "$TEST_TEMP_DIR/gh_comments.log"
 }
