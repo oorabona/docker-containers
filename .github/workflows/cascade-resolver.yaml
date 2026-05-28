@@ -1,59 +1,73 @@
 name: Cascade Resolver
-# Unblocks downstream drift PRs when an upstream (parent) drift PR merges.
+# Unblocks downstream drift PRs AFTER the upstream (parent) container's new image
+# is published to GHCR.
 #
-# Trigger: any drift PR closed on master.  A drift PR is identified by branch
-# name prefix "update/base-digest-" (set by peter-evans/create-pull-request in
-# upstream-monitor.yaml) — this is more robust than the label because the branch
-# name is always set by the PR creator, whereas labels can fail to apply.
+# Trigger: workflow_run of "Auto Build & Push" on master, conclusion=success.
+# This is the correct trigger — the parent image is only pushed by auto-build.yaml
+# running on master AFTER the drift PR merges.  The old pull_request:closed trigger
+# fired before the parent image was in GHCR, so child master rebuilds could still
+# pull the stale parent digest (race condition).
+#
+# Parent container identification: the squash-merge commit that auto-build.yaml ran
+# on follows the pattern set by upstream-monitor.yaml:
+#   📦 base-digest-drift(<container>): upstream base image rebase (#NNN)
+# The container name is extracted via regex from the commit subject.
+# Non-drift commits (e.g. feat/, fix/) match nothing and the job exits cleanly.
 #
 # Multi-parent gating: a child container may depend on several project-internal
 # parents, each generating a separate drift PR.  The child PR carries one
-# cascade:waiting-for-<parent> label per pending parent.  When a parent merges,
-# this workflow removes ONLY that parent's wait label, then checks whether any
-# other cascade:waiting-for-* labels remain.  Auto-merge is enabled only when
-# the child has no remaining wait labels (all parents resolved).
+# cascade:waiting-for-<parent> label per pending parent.  When a parent's master
+# rebuild succeeds, this workflow removes ONLY that parent's wait label, then
+# checks whether any other cascade:waiting-for-* labels remain.  Auto-merge is
+# enabled only when the child has no remaining wait labels (all parents resolved).
 #
 # If the parent PR was closed WITHOUT merging (abandoned), child PRs retain
 # their cascade:waiting-for-<parent> labels — a human must re-run the
 # upstream-monitor or manually remove the cascade:waiting-for-<parent> label.
 
 on:
-  pull_request:
-    types: [closed]
+  workflow_run:
+    workflows: ["Auto Build & Push"]
     branches: [master]
+    types: [completed]
 
 jobs:
   unblock-children:
     name: Unblock cascade-waiting drift PRs
-    # Only runs when a drift PR merges — identified by branch name prefix, not label.
-    # (Labels can fail to apply; branch name is always set by the PR creator.)
-    if: >
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'update/base-digest-')
+    # Only process successful auto-build runs on master.
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     steps:
-      - name: Identify parent container
+      - name: Identify parent container from head commit
         id: parent
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # Strip the "update/base-digest-" prefix to get the container name.
-          container="${HEAD_REF#update/base-digest-}"
-          # Validate: only lowercase alphanumeric, hyphens, underscores.
-          if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
-            echo "::error::Invalid container name extracted from branch '${HEAD_REF}': '${container}'"
-            exit 1
+          # The auto-build run completed on master.  The triggering commit is the
+          # squash-merge of a drift PR, whose subject follows the pattern:
+          #   📦 base-digest-drift(<container>): upstream base image rebase (#NNN)
+          # Non-drift commits produce no output and the downstream step is skipped.
+          subject=$(gh api \
+            "repos/${{ github.repository }}/commits/${HEAD_SHA}" \
+            --jq '.commit.message' | head -1)
+          if ! [[ "$subject" =~ base-digest-drift\(([a-z0-9_-]+)\) ]]; then
+            echo "::notice::Commit ${HEAD_SHA} is not a base-digest-drift squash; nothing to unblock"
+            echo "name=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "::notice::Parent container merged: ${container}"
+          container="${BASH_REMATCH[1]}"
+          echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA})"
           echo "name=${container}" >> "$GITHUB_OUTPUT"
 
       - name: Unblock children
         if: steps.parent.outputs.name != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Safe: PARENT comes from the output of the previous step (pattern-validated above)
+          # Safe: PARENT comes from the output of the previous step (regex-validated above)
           PARENT: ${{ steps.parent.outputs.name }}
         run: |
           # Find all open drift PRs waiting for this parent.
@@ -77,26 +91,34 @@ jobs:
               continue
             fi
             # 2) Re-fetch the child's remaining cascade:waiting-for-* labels.
-            remaining=$(gh pr view "$child" \
+            #    STRICT: API errors must not silently collapse to "0 waits remaining" —
+            #    that would trigger premature auto-merge.  Skip this child on error; the
+            #    next parent's master rebuild (or a manual workflow re-run) will retry.
+            if ! remaining=$(gh pr view "$child" \
               --json labels \
               --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | length' \
-              2>/dev/null || echo "0")
+              2>/dev/null); then
+              echo "::error::Cannot fetch labels for PR #${child}; skipping (will retry on next parent image publish)"
+              continue
+            fi
             if [[ "$remaining" -gt 0 ]]; then
               # Still waiting on other parents — do NOT enable auto-merge yet.
-              still_waiting=$(gh pr view "$child" \
+              if ! still_waiting=$(gh pr view "$child" \
                 --json labels \
                 --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")' \
-                2>/dev/null || echo "unknown")
+                2>/dev/null); then
+                still_waiting="(label fetch failed)"
+              fi
               echo "::notice::PR #${child} still waiting on: ${still_waiting}"
               gh pr comment "$child" \
-                --body "Parent **${PARENT}** drift PR merged. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
+                --body "Parent **${PARENT}** drift PR's master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
                 2>&1 || true
             else
               # All parent wait labels removed — enable auto-merge.
               gh pr merge "$child" --squash --auto 2>&1 || \
                 echo "::warning::auto-merge failed for #${child} — may already be enabled or not eligible"
               gh pr comment "$child" \
-                --body "All parent drift PRs resolved. Auto-merge enabled — this PR will merge once CI passes." \
+                --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — this PR will merge once CI passes." \
                 2>&1 || true
             fi
           done

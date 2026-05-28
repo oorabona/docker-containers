@@ -1576,35 +1576,40 @@ jobs:
           # Parent detection uses branch name (update/base-digest-<parent>) — more
           # reliable than label-based detection because branch name is always set by
           # peter-evans/create-pull-request, whereas labels can fail to apply.
-          waiting=""
+          #
+          # Labels are applied ONE PER gh-call (loop) so each label application is
+          # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
+          # list OR repeated flags, but passing a space-separated string as one argument
+          # creates a single invalid label name — that bug is precisely what this loop avoids.
+          has_waiting=0
           for parent in ${INTERNAL_DEPS//,/ }; do
             parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --state open \
               --json number \
               --jq '.[0].number // empty' 2>/dev/null || true)
-            if [[ -n "$parent_pr" ]]; then
-              waiting="${waiting} cascade:waiting-for-${parent}"
+            if [[ -z "$parent_pr" ]]; then
+              continue
             fi
-          done
-          if [[ -z "$waiting" ]]; then
-            # No open parent drift PRs — no cascade labels needed; auto-merge step handles it.
-            exit 0
-          fi
-          # Auto-create each cascade label (idempotent; "already exists" is not an error).
-          for label in $waiting; do
+            has_waiting=1
+            label="cascade:waiting-for-${parent}"
+            # Auto-create the label (idempotent; "already exists" is not an error).
             gh label create "$label" \
               --color "fbca04" \
               --description "Cascade-aware drift wait: child PR is blocked on a parent drift PR" \
               2>&1 | grep -v "already exists" || true
+            # STRICT: fail the step if this individual label cannot be applied.
+            # The cascade-resolver workflow depends on these labels to unblock the child later.
+            if ! gh pr edit "$PR_NUMBER" --add-label "$label" 2>&1; then
+              echo "::error::Failed to apply cascade label '${label}' to PR #${PR_NUMBER} — required for cascade-resolver workflow"
+              exit 1
+            fi
+            echo "::notice::Applied cascade label '${label}' to PR #${PR_NUMBER}"
           done
-          # STRICT: fail the step if labels cannot be applied.
-          # The cascade-resolver workflow depends on these labels to unblock the child later.
-          if ! gh pr edit "$PR_NUMBER" --add-label "${waiting# }" 2>&1; then
-            echo "::error::Failed to apply cascade labels '${waiting# }' to PR #${PR_NUMBER} — required for cascade-resolver workflow"
-            exit 1
+          if [[ "$has_waiting" -eq 0 ]]; then
+            # No open parent drift PRs — no cascade labels needed; auto-merge step handles it.
+            exit 0
           fi
-          echo "::notice::Applied cascade labels '${waiting# }' to PR #${PR_NUMBER}"
 
       - name: Auto-merge with cascade-awareness
         if: steps.create-pr.outputs.pull-request-number
