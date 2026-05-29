@@ -76,13 +76,15 @@ Public API:
 
 ### E — Open PRs + gate auto-merge on parent PR state
 
-**In `upstream-monitor.yaml` (`open-drift-prs` job)**:
-1. `detect-digest-drift` emits `drift_matrix` (enriched matrix including `internal_deps_csv`)
-2. For each drift PR: if `internal_deps_csv` is empty → enable auto-merge immediately
-3. If any parent has an open drift PR → add `cascade:waiting-for-<parent>` label + comment; defer auto-merge
-4. If all parents are already merged → enable auto-merge immediately
+**In `upstream-monitor.yaml` (two-job split)**:
+1. `detect-digest-drift` emits `drift_matrix_leaves` (no internal deps) and `drift_matrix_consumers` (have internal deps)
+2. `open-drift-prs-leaves` (job 1): processes leaf containers — no cascade gating needed, auto-merge immediately
+3. `open-drift-prs-consumers` (job 2): `needs: [open-drift-prs-leaves]` — by construction, all parent PRs are already created before any consumer matrix item starts
+4. Within job 2, `_eval_parent_state` (States 1-6) checks parent PR / build status; if in_flux → add `cascade:waiting-for-<parent>` label
 
-**In `cascade-resolver.yaml` (new workflow)**:
+**Topological ordering by construction**: the `needs:` chain replaces the former post-hoc cleanup approach (State 0 loop + reconciliation job). No race window exists — job 2 cannot start until job 1 finishes.
+
+**In `cascade-resolver.yaml` (workflow)**:
 - Trigger: `pull_request.closed` on master, filtered to `base-digest-drift` PRs
 - Extracts `container:<name>` label from merged parent PR
 - Finds all open PRs with `cascade:waiting-for-<name>` label
@@ -107,11 +109,19 @@ helpers/dependency-graph.sh          ←── single source of truth
     _depgraph_get_deps_transitive()
     _depgraph_validate_no_cycles()
          │
-         ├── ./make list-deps <container>     (CLI DX)
-         ├── detect-base-digest-drift.sh       (enriches JSON: internal_deps[])
-         └── upstream-monitor.yaml             (cascade gate in open-drift-prs)
+         ├── ./make list-deps <container>              (CLI DX)
+         ├── detect-base-digest-drift.sh               (enriches JSON: internal_deps[])
+         └── upstream-monitor.yaml
                    │
-                   └── cascade-resolver.yaml   (unblocks children when parent merges)
+                   ├── detect-digest-drift              (emits drift_matrix_leaves + drift_matrix_consumers)
+                   ├── open-drift-prs-leaves            (leaves: no internal deps; auto-merge immediately)
+                   │     ▲ needs: [detect-digest-drift]
+                   ├── open-drift-prs-consumers         (consumers: have internal deps)
+                   │     ▲ needs: [detect-digest-drift, open-drift-prs-leaves]
+                   │     │  → topological invariant true by construction
+                   │     └── _eval_parent_state (States 1-6)
+                   │
+                   └── cascade-resolver.yaml            (unblocks children when parent merges)
 ```
 
 ## Failure Modes
@@ -129,8 +139,11 @@ helpers/dependency-graph.sh          ←── single source of truth
 - `tests/unit/dependency-graph.bats` (14 tests): DAG inference, transitive closure, cycle detection,
   sidecar filtering, dedup, REMOTE_CR pattern, external namespace exclusion
 - `tests/unit/make-list-deps.bats` (6 tests): CLI output format, validation, no-deps case, order
-- `tests/unit/detect-base-digest-drift.bats` (+4 tests): `internal_deps` field presence, empty
-  for external-only, multi-dep arrays, unchanged container still has field
+- `tests/unit/detect-base-digest-drift.bats` (+4 tests for internal_deps, +3 tests for matrix split):
+  `internal_deps` field presence, empty for external-only, multi-dep arrays, unchanged container
+  still has field; two-phase split (leaves/consumers jq selectors), backwards-compat csv aggregation
+- `tests/unit/cascade-resolver.bats` (+2 tests): two-phase structural invariant — `_eval_parent_state`
+  body has no `CURRENT_DRIFT_SET` loop; State 1 reached directly via gh pr list
 - Manual validation: `./make list-deps <container>` for all 13 containers
 
 ## Current DAG (as of 2026-05-28)

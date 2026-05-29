@@ -3290,3 +3290,78 @@ STUB
     # Must exit non-zero — cannot silently produce cascade-blind output
     [ "$rc" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Two-phase matrix split (drift_matrix_leaves / drift_matrix_consumers)
+#
+# The detect-digest-drift job emits two matrix outputs split by whether
+# internal_deps_csv is empty.  The workflow derives them from drift_matrix
+# using jq selectors.  These tests verify the split logic is correct.
+# ---------------------------------------------------------------------------
+
+@test "matrix-split: container with empty internal_deps_csv lands in drift_matrix_leaves" {
+    export _VALID_CONTAINERS_OVERRIDE="alpine-app"
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/alpine-app-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "alpine-app",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    local stub="$TEST_TEMP_DIR/probe-matrix-split-leaf"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'"'"'\n' > "$stub"
+    chmod +x "$stub"
+
+    drift_matrix=$(PROBE_CMD="$stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null | \
+        jq -c '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
+          {container: .container, internal_deps_csv: ((.internal_deps // []) | join(","))}]')
+
+    drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+    drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+
+    # alpine-app has no internal deps → must appear in leaves, not consumers
+    leaves_count=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "alpine-app")] | length')
+    consumers_count=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "alpine-app")] | length')
+    [ "$leaves_count" -eq 1 ]
+    [ "$consumers_count" -eq 0 ]
+}
+
+@test "matrix-split: container with non-empty internal_deps_csv lands in drift_matrix_consumers" {
+    # Simulate a drift_matrix JSON entry with internal_deps_csv set (as if detect script emitted it).
+    drift_matrix='[{"container":"wordpress","internal_deps_csv":"php"},{"container":"debian","internal_deps_csv":""}]'
+
+    drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+    drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+
+    # wordpress has deps → consumers
+    wp_in_consumers=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "wordpress")] | length')
+    wp_in_leaves=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "wordpress")] | length')
+    [ "$wp_in_consumers" -eq 1 ]
+    [ "$wp_in_leaves" -eq 0 ]
+
+    # debian has no deps → leaves
+    deb_in_leaves=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "debian")] | length')
+    deb_in_consumers=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "debian")] | length')
+    [ "$deb_in_leaves" -eq 1 ]
+    [ "$deb_in_consumers" -eq 0 ]
+}
+
+@test "matrix-split: drift_containers_csv still aggregates both leaves and consumers" {
+    # Backwards compat: drift_containers_csv must cover all drifting containers,
+    # regardless of which job handles them.
+    drift_matrix='[{"container":"wordpress","internal_deps_csv":"php"},{"container":"debian","internal_deps_csv":""},{"container":"php","internal_deps_csv":""}]'
+
+    drift_containers=$(echo "$drift_matrix" | jq -c '[.[].container]')
+    drift_containers_csv=$(echo "$drift_containers" | jq -r 'join(",")')
+
+    [[ "$drift_containers_csv" == *"wordpress"* ]]
+    [[ "$drift_containers_csv" == *"debian"* ]]
+    [[ "$drift_containers_csv" == *"php"* ]]
+    # No JSON brackets, no spaces
+    [[ "$drift_containers_csv" != *"["* ]]
+    [[ "$drift_containers_csv" != *" "* ]]
+}
