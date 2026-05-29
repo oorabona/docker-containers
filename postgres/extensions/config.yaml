@@ -99,6 +99,8 @@ extensions:
       - openssl-dev
     shared_preload: true
     priority: 3
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
   pg_cron:
     version: "1.6.7"
     description: "Cron-based job scheduling inside PostgreSQL"
