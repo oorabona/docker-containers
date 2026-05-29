@@ -1182,6 +1182,7 @@ jobs:
       drift_matrix_leaves: ${{ steps.detect.outputs.drift_matrix_leaves }}
       drift_matrix_consumers: ${{ steps.detect.outputs.drift_matrix_consumers }}
       drift_containers_csv: ${{ steps.detect.outputs.drift_containers_csv }}
+      error_containers_csv: ${{ steps.detect.outputs.error_containers_csv }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1300,6 +1301,16 @@ jobs:
             || echo "[]")
           drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
           echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
+
+          # Compute repo-wide error_containers_csv from the UNFILTERED drift_json.
+          # Containers with ANY variant status == "error" are those whose probe FAILED
+          # this run — their actual drift state is UNKNOWN.  Plumbed as CURRENT_ERROR_SET
+          # into the cascade-labels step so _eval_parent_state can treat an errored parent
+          # as in_flux (conservative: wait rather than auto-merge against unknown state).
+          error_containers_csv=$(echo "$drift_json" | jq -r \
+            '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+            || echo "")
+          echo "error_containers_csv=${error_containers_csv}" >> "$GITHUB_OUTPUT"
 
           if [[ -n "$REQUESTED_CONTAINER" ]]; then
             drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
@@ -1631,15 +1642,23 @@ jobs:
   open-drift-prs-consumers:
     name: Open drift PR (consumer) for ${{ matrix.container }}
     needs: [detect-digest-drift, open-drift-prs-leaves]
-    # always() is required because open-drift-prs-leaves is SKIPPED when no leaf
-    # container has drift (matrix is empty).  Without always(), GitHub Actions would
-    # cascade-skip this consumer job too — dropping legitimate consumer-only drift
-    # runs on the floor.  Instead we explicitly check that leaves is not a hard
-    # failure (success or skipped is fine; cancelled is treated as failure here).
+    # always() is required for two reasons:
+    # 1. open-drift-prs-leaves is SKIPPED when no leaf container has drift (matrix
+    #    is empty). Without always(), GitHub Actions would cascade-skip this consumer
+    #    job too — dropping legitimate consumer-only drift runs on the floor.
+    # 2. open-drift-prs-leaves is a matrix job; its aggregate result is 'failure' if
+    #    ANY single entry fails (e.g. a transient API error on one leaf's PR creation).
+    #    Propagating that aggregate failure as a hard gate strands ALL consumer PRs,
+    #    including consumers that depend on entirely different leaves.  Per-container
+    #    correctness is enforced inside this job by State A (open PR check) and State
+    #    B0 (errored parent probe), so the aggregate leaves result is neither necessary
+    #    nor sufficient as a gate here.
+    # leaves result is not-cancelled is the right condition: success|skipped|failure all
+    # allow consumers to run; only cancellation (workflow abort) should stop them.
     if: |
       always() &&
       needs.detect-digest-drift.result == 'success' &&
-      (needs.open-drift-prs-leaves.result == 'success' || needs.open-drift-prs-leaves.result == 'skipped') &&
+      needs.open-drift-prs-leaves.result != 'cancelled' &&
       needs.detect-digest-drift.outputs.drift_matrix_consumers != '[]' &&
       needs.detect-digest-drift.outputs.drift_matrix_consumers != ''
     runs-on: ubuntu-latest
@@ -1918,8 +1937,10 @@ jobs:
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
+          CURRENT_ERROR_SET: ${{ needs.detect-digest-drift.outputs.error_containers_csv }}
         run: |
-          # Two-state parent evaluation: in_flux | ready
+          # Four-state parent evaluation: in_flux | ready
+          # Ordering: A → B0 → B → C
           #
           # STATE A: open drift PR → in_flux (parent is still being integrated)
           #   Ground truth for "is there pending parent work?" — queried FIRST because it
@@ -1928,18 +1949,21 @@ jobs:
           #   is now derived from the UNFILTERED drift_json (repo-wide truth), but State A
           #   runs first anyway for safety.
           #
+          # STATE B0: parent probe errored this run → in_flux (conservative)
+          #   A probe error means the parent's actual drift state is UNKNOWN — we cannot
+          #   distinguish "stable" from "drifting but unreachable".  Treating an unknown
+          #   parent as ready risks auto-merging a child against a stale parent image.
+          #   Conservative answer: wait (same as in_flux) until the next successful probe.
+          #
           # STATE B: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
-          #   Only safe AFTER the open-PR check above: no open PR means no pending parent
-          #   work regardless of whether the parent is in the drift set.
+          #   Only safe AFTER the open-PR check (A) and error check (B0): no open PR and
+          #   no probe error means the parent was cleanly stable this run.
           #   CURRENT_DRIFT_SET is now repo-wide (Defect E fix), so the scoped-dispatch
           #   false-negative that previously appeared here is eliminated.
           #
-          # STATE C (removed): the prior implementation compared GHCR package updated_at
-          #   against RUN_STARTED_AT, but RUN_STARTED_AT was never plumbed into the env
-          #   block, and the query targeted package-wide latest (not the specific tag the
-          #   child consumes).  When State A+B are both exhausted the parent IS drifting
-          #   this run but has no PR yet — the conservative answer is in_flux; wait for
-          #   the cascade-resolver to unblock when the parent rebuild lands.
+          # STATE C (conservative in_flux): parent IS drifting this run but no PR yet.
+          #   When A+B0+B are all exhausted the parent IS drifting; wait for its PR to
+          #   open and merge; the cascade-resolver unblocks when the parent rebuild lands.
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
@@ -1967,8 +1991,26 @@ jobs:
               echo "in_flux"
               return 0
             fi
-            # STATE B: Is the parent in the current drift set?
+            # STATE B0: Did the parent probe ERROR this run?
             # Only reached when there is no open drift PR (State A cleared above).
+            # An error means we genuinely don't know whether the parent's image matches
+            # what the child consumes; safer to wait than auto-merge against unknown state.
+            if [[ -n "${CURRENT_ERROR_SET:-}" ]]; then
+              local _parent_errored=0
+              for _c in ${CURRENT_ERROR_SET//,/ }; do
+                if [[ "$_c" == "$parent" ]]; then
+                  _parent_errored=1
+                  break
+                fi
+              done
+              if [[ $_parent_errored -eq 1 ]]; then
+                echo "::notice::Parent ${parent} probe errored this run — waiting conservatively"
+                echo "in_flux"
+                return 0
+              fi
+            fi
+            # STATE B: Is the parent in the current drift set?
+            # Only reached when there is no open drift PR (A) and no probe error (B0).
             # If the parent is absent from CURRENT_DRIFT_SET, it was rebuilt in a prior run —
             # GHCR already has the stable image. Short-circuit to ready.
             if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then

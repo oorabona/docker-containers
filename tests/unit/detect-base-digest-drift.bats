@@ -1461,6 +1461,77 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Defect L regression lock: error_containers_csv derivation
+#
+# The detect-digest-drift step must emit error_containers_csv alongside
+# drift_containers_csv.  The jq expression is:
+#   '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")'
+# This test verifies that a drift_json with mixed status:error / status:drift
+# entries correctly populates only the errored containers in the CSV output,
+# and that the drifting containers are NOT included in error_containers_csv.
+# ---------------------------------------------------------------------------
+@test "DefectL: error_containers_csv jq — error containers appear, drift containers do not" {
+    # Simulate the drift_json that the workflow step has in memory.
+    # foo = all variants errored; bar = drifting; baz = stable.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "foo", "variants": [{"status": "error"}, {"status": "error"}]},
+  {"container": "bar", "variants": [{"status": "drift"}, {"status": "stable"}]},
+  {"container": "baz", "variants": [{"status": "stable"}]}
+]
+EOF
+)
+
+    # This is the exact jq expression used in the workflow step.
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    # foo must appear (has error variant)
+    [[ "$error_csv" == *"foo"* ]]
+    # bar must NOT appear (only drift, no error)
+    ! [[ "$error_csv" == *"bar"* ]]
+    # baz must NOT appear (stable only)
+    ! [[ "$error_csv" == *"baz"* ]]
+}
+
+@test "DefectL: error_containers_csv jq — mixed error+drift container appears in error CSV" {
+    # A container with both error and drift variants must appear in error_containers_csv.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "php", "variants": [{"status": "error"}, {"status": "drift"}]}
+]
+EOF
+)
+
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    [[ "$error_csv" == *"php"* ]]
+}
+
+@test "DefectL: error_containers_csv jq — empty when no errors" {
+    # When all containers are stable or drifting (no errors), error_containers_csv is empty.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "bar", "variants": [{"status": "drift"}]},
+  {"container": "baz", "variants": [{"status": "stable"}]}
+]
+EOF
+)
+
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    [ -z "$error_csv" ]
+}
+
+# ---------------------------------------------------------------------------
 # Fix r7-4a: ./make list hard-fail in detect-base-digest-drift.sh
 # Regression guard: when _VALID_CONTAINERS_OVERRIDE is explicitly empty (not set
 # at all, so the script falls through to ./make list), and ./make list fails,
