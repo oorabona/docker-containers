@@ -137,3 +137,43 @@ _write_lineage() {
     # Must not silently report "(none)"
     ! [[ "$output" == *"(none"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Gate r24 — Defect I: _depgraph_valid_containers rc propagation
+#
+# When _depgraph_valid_containers fails (rc != 0), make list-deps must
+# propagate a non-zero exit with a clear error rather than comparing the
+# empty string against the container name and reporting "not a registered
+# container" (masking the real upstream failure).
+#
+# Mutation guard:
+#   MG-I: removing the _vc_rc check → an upstream failure masquerades as
+#         "not a registered container" (test fails: output would contain
+#         "not a registered container" instead of the upstream error)
+# ---------------------------------------------------------------------------
+
+@test "make list-deps: _depgraph_valid_containers failure propagates rc (not 'not a registered container')" {
+    # Test the list_deps() function body directly to avoid PROJECT_ROOT being reset
+    # by build-container.sh (which auto-detects from BASH_SOURCE at source time).
+    # Inject a _depgraph_valid_containers override that always fails with rc=1,
+    # then call list_deps() directly.  This directly exercises the new _vc_rc check
+    # without depending on subprocess PROJECT_ROOT isolation.
+    run bash -c "
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        # Override _depgraph_valid_containers to simulate upstream failure (rc=1).
+        _depgraph_valid_containers() {
+            echo '::error::Failed to enumerate project containers via mock' >&2
+            return 1
+        }
+        # Stub the other depgraph helpers so list_deps can run without full make context.
+        log_error() { echo \"\$*\" >&2; }
+        # Source the list_deps function body directly from make.
+        # Extract and eval only the list_deps function definition.
+        eval \"\$(grep -A 100 '^list_deps()' '${MAKE_SCRIPT}' | awk '/^list_deps\(\)/{found=1} found{print} /^}$/{if(found) exit}')\"
+        list_deps wordpress 2>&1
+        echo EXIT_CODE:\$?
+    "
+    # Output must contain our error message, NOT 'not a registered container'
+    ! [[ "$output" == *"not a registered container"* ]]
+    [[ "$output" == *"Failed to enumerate registered containers"* ]]
+}

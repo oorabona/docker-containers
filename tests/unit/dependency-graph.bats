@@ -465,6 +465,64 @@ _write_lineage() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate r24 — Defect J: ${REMOTE_CR} resolves BEFORE owner-resolution step
+#
+# In any environment without a usable owner source (_DEPGRAPH_OWNER_OVERRIDE="",
+# GITHUB_REPOSITORY_OWNER="", no git remote), a ${REMOTE_CR}/<name>:<tag> ref
+# must still resolve to the container name (rc=0) instead of returning rc=2
+# (owner-resolution failure).  The always-trusted REMOTE_CR check must run
+# BEFORE the owner-dependent registry branch.
+#
+# Mutation guard:
+#   MG-J: swapping the REMOTE_CR branch back after the owner-resolution call →
+#         _depgraph_is_internal_ref returns rc=2 instead of rc=0 + name
+# ---------------------------------------------------------------------------
+
+@test "depgraph: Defect J — \${REMOTE_CR}/php:latest resolves without owner source (no _DEPGRAPH_OWNER_OVERRIDE)" {
+    # No owner override, no GITHUB_REPOSITORY_OWNER, PROJECT_ROOT has no git remote.
+    # Pass the literal ref via a file to avoid bash -c quoting expansion of ${REMOTE_CR}.
+    # Redirect source stderr to /dev/null so only the function's stdout is captured.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_defectJ"
+    mkdir -p "$isolated_dir"
+    local ref_file="$TEST_TEMP_DIR/remote_cr_ref.txt"
+    printf '%s' '${REMOTE_CR}/php:latest' > "$ref_file"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        ref=\$(cat '${ref_file}')
+        _depgraph_is_internal_ref \"\$ref\" 'php wordpress'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: Defect J — \${REMOTE_CR}/php:latest via get_deps without owner source" {
+    # Same environment: no owner. _depgraph_get_deps must succeed and return 'php'.
+    # Redirect all stderr to /dev/null: source failures and is_lineage_sidecar errors
+    # (lineage-utils.sh not available in isolated dir) must not pollute $output.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_defectJ_get"
+    mkdir -p "$isolated_dir"
+    _write_lineage "wordpress" "latest" '${REMOTE_CR}/php:latest'
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        _depgraph_get_deps wordpress 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+# ---------------------------------------------------------------------------
 # Gate r13 — Defect B regression: found_any set after sidecar filter
 #
 # A container that has ONLY sidecar lineage files (e.g. *.sbom.json,

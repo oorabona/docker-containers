@@ -128,6 +128,19 @@ _depgraph_is_internal_ref() {
         return 0
     fi
 
+    # ${REMOTE_CR}/<name>:<tag> — always trusted; no owner resolution needed.
+    # Match BEFORE the owner-dependent registries so an environment without a
+    # usable owner source (CI fork, test fixture, local sandbox) still resolves
+    # the ref instead of returning rc=2 (owner-resolution failure).
+    if [[ "$ref" == "${remote_cr_prefix}"* && "$normalized_ref" =~ ^([^:/@ ]+) ]]; then
+        parent="${BASH_REMATCH[1]}"
+        [[ -n "$parent" ]] || return 0
+        if [[ " $valid_containers " == *" $parent "* ]]; then
+            printf '%s' "$parent"
+        fi
+        return 0
+    fi
+
     # Resolve project owner (fail-closed: if undetermined, treat ref as external)
     local owner
     if ! owner=$(_depgraph_project_owner 2>/dev/null); then
@@ -137,12 +150,11 @@ _depgraph_is_internal_ref() {
         return 2
     fi
 
-    # Match: after owner-prefix path, extract container name before : or @ or end
+    # Match owner-dependent registries.
     # Patterns:
     #   ghcr.io/<owner>/<name>:<tag>            → after ghcr.io/<owner>/, take <name>
     #   hub.docker.io/<owner>/<name>:<tag>      → after hub.docker.io/<owner>/, take <name>
     #   docker.io/<owner>/<name>:<tag>          → same registry as hub.docker.io, different alias
-    #   ${REMOTE_CR}/<name>:<tag>               → normalized_ref is already <name>:<tag> here
     if [[ "$normalized_ref" =~ ^ghcr\.io/([^/]+)/([^:/@ ]+) ]]; then
         if [[ "${BASH_REMATCH[1]}" == "$owner" ]]; then
             parent="${BASH_REMATCH[2]}"
@@ -152,9 +164,6 @@ _depgraph_is_internal_ref() {
         if [[ "${BASH_REMATCH[2]}" == "$owner" ]]; then
             parent="${BASH_REMATCH[3]}"
         fi
-    elif [[ "$ref" == "${remote_cr_prefix}"* && "$normalized_ref" =~ ^([^:/@ ]+) ]]; then
-        # ${REMOTE_CR}/name:tag after stripping prefix — CI-controlled, always trusted
-        parent="${BASH_REMATCH[1]}"
     else
         return 0
     fi

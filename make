@@ -90,8 +90,13 @@ list_deps() {
   # Validate container name: must be a known project container.
   # Use _depgraph_valid_containers which respects _DEPGRAPH_CONTAINERS_OVERRIDE
   # (test hook) and falls back to ./make list from PROJECT_ROOT.
-  local valid_containers
+  local valid_containers _vc_rc
   valid_containers=$(_depgraph_valid_containers)
+  _vc_rc=$?
+  if [[ $_vc_rc -ne 0 ]]; then
+    log_error "Failed to enumerate registered containers (rc=${_vc_rc})"
+    exit $_vc_rc
+  fi
   if [[ " $valid_containers " != *" $container "* ]]; then
     log_error "Error: '$container' is not a registered container. Run './make list' to see valid set."
     exit 1

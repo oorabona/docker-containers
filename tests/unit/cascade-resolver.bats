@@ -69,9 +69,28 @@ for child in $children; do
     echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
     continue
   fi
-  if [[ -n "$remaining_labels" ]]; then
-    still_waiting="${remaining_labels// /, }"
-    echo "::notice::PR #${child} still waiting on: ${still_waiting}"
+  if ! live_remaining=$(gh pr view "$child" \
+    --json labels \
+    --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | length'"'"' \
+    2>/dev/null); then
+    echo "::warning::Could not re-check labels for #${child} post-removal; falling back to snapshot decision"
+    live_remaining=""
+    if [[ -n "$remaining_labels" ]]; then
+      live_remaining=1
+    else
+      live_remaining=0
+    fi
+  fi
+  if [[ "$live_remaining" -gt 0 ]]; then
+    if still_waiting=$(gh pr view "$child" \
+      --json labels \
+      --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")'"'"' \
+      2>/dev/null) && [[ -n "$still_waiting" ]]; then
+      echo "::notice::PR #${child} still waiting on: ${still_waiting}"
+    else
+      still_waiting="other parent(s)"
+      echo "::notice::PR #${child} still waiting on additional parents (live label fetch failed)"
+    fi
     gh pr comment "$child" \
       --body "Parent **${PARENT}** drift PR'"'"'s master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
       2>&1 || true
@@ -101,13 +120,17 @@ _run_resolver() {
 
 # ---------------------------------------------------------------------------
 # Mock gh factory: writes $TEST_TEMP_DIR/bin/gh based on the given mode.
-#   single-parent  — remaining labels = 0 → auto-merge expected
-#   multi-parent   — remaining labels = 1 → no auto-merge
-#   remove-fails   — --remove-label exits 1 → child skipped (snapshot taken first, no stranding)
-#   view-fails     — pr view exits 1 BEFORE removal → child skipped (Defect B: snapshot-first)
-#   no-children    — pr list returns empty
-#   list-fails     — pr list exits 1 → fail-closed (Defect B fix)
-#   merge-fails    — pr merge exits 1 → failure comment posted, not success
+#   single-parent         — remaining labels = 0 → auto-merge expected
+#   multi-parent          — remaining labels = 1 → no auto-merge
+#   remove-fails          — --remove-label exits 1 → child skipped (snapshot taken first)
+#   view-fails            — pr view exits 1 BEFORE removal → child skipped (snapshot-first)
+#   no-children           — pr list returns empty
+#   list-fails            — pr list exits 1 → fail-closed
+#   merge-fails           — pr merge exits 1 → failure comment posted, not success
+#   live-recheck-fails    — snapshot succeeds; live recheck (length) fails → snapshot fallback
+#
+# The mock differentiates snapshot (join "\n") from live-recheck (length) by checking
+# whether the --jq argument contains "length" (live recheck) or not (snapshot/join).
 # Calls are recorded to $TEST_TEMP_DIR/gh_calls.log.
 # Comments are recorded to $TEST_TEMP_DIR/gh_comments.log.
 # ---------------------------------------------------------------------------
@@ -151,12 +174,32 @@ case "$1 $2" in
     if [[ "$MODE" == "view-fails" ]]; then
       echo "simulated API error" >&2
       exit 1
-    elif [[ "$MODE" == "single-parent" ]] || [[ "$MODE" == "merge-fails" ]]; then
-      # No remaining wait labels — snapshot returns empty string (newline-joined list is empty)
-      echo ""
-    elif [[ "$MODE" == "multi-parent" ]]; then
-      # One remaining wait label besides the parent being resolved
-      echo "cascade:waiting-for-php"
+    fi
+    # Differentiate snapshot (join — returns label names) from live recheck (length — returns int).
+    # The live recheck uses --jq '... | length'; snapshot uses --jq '... | join(...)'.
+    if echo "$@" | grep -q "length"; then
+      # Live recheck call (returns integer count of remaining wait labels).
+      if [[ "$MODE" == "live-recheck-fails" ]]; then
+        echo "simulated live recheck failure" >&2
+        exit 1
+      elif [[ "$MODE" == "single-parent" ]] || [[ "$MODE" == "merge-fails" ]]; then
+        echo "0"
+      elif [[ "$MODE" == "multi-parent" ]]; then
+        echo "1"
+      else
+        echo "0"
+      fi
+    else
+      # Snapshot call (returns newline-joined label names).
+      if [[ "$MODE" == "single-parent" ]] || [[ "$MODE" == "merge-fails" ]] || [[ "$MODE" == "live-recheck-fails" ]]; then
+        # No remaining wait labels in snapshot
+        echo ""
+      elif [[ "$MODE" == "multi-parent" ]]; then
+        # One remaining wait label besides the parent being resolved
+        echo "cascade:waiting-for-php"
+      else
+        echo ""
+      fi
     fi
     ;;
   "pr merge")
@@ -276,6 +319,58 @@ teardown() {
     [[ "$output" == *"::error::"* ]]
     # "skipping" message must appear
     [[ "$output" == *"skipping"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 5a — race-handling: live recheck returns 0 → auto-merge enabled
+# (r19 post-removal live recheck: even if snapshot showed remaining labels,
+# the live fetch is authoritative for the merge decision)
+# ---------------------------------------------------------------------------
+@test "resolver: live recheck returns 0 remaining → auto-merge enabled (race-safe last-finisher)" {
+    _setup_mock_gh "single-parent"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # auto-merge must have been called (live recheck confirms 0 remaining)
+    grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+    # "All parent drift PRs resolved" comment must appear
+    grep -q "All parent drift PRs resolved" "$TEST_TEMP_DIR/gh_comments.log"
+    # live recheck (length) must have been called after removal
+    grep -q "pr view" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 5b — race-handling: live recheck returns >0 → still waiting
+# (concurrent resolver run already removed another label; live fetch shows it
+# is STILL not zero; comment posted, no auto-merge)
+# ---------------------------------------------------------------------------
+@test "resolver: live recheck returns >0 remaining → still waiting, no auto-merge" {
+    _setup_mock_gh "multi-parent"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # auto-merge must NOT have been called
+    run ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+    [ "$status" -eq 0 ]
+    # "Still waiting on" comment must be posted
+    grep -q "Still waiting on" "$TEST_TEMP_DIR/gh_comments.log"
+    # live recheck (length) must have been called after removal
+    grep -q "pr view" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 5c — race-handling: live recheck fails → snapshot fallback decision
+# (network error after successful removal; resolver falls back to pre-removal
+# snapshot count; snapshot showed 0 remaining → auto-merge enabled)
+# ---------------------------------------------------------------------------
+@test "resolver: live recheck fails → falls back to snapshot decision (0 remaining → auto-merge)" {
+    # live-recheck-fails: snapshot returns empty (0 remaining after removing parent's label);
+    # live recheck (length) call exits 1 → fallback sets live_remaining=0 → auto-merge.
+    _setup_mock_gh "live-recheck-fails"
+    _run_resolver "debian"
+    [ "$status" -eq 0 ]
+    # warning annotation must appear (live recheck failure notice)
+    [[ "$output" == *"::warning::"* ]]
+    # auto-merge must be enabled (snapshot fallback said 0 remaining)
+    grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 # ---------------------------------------------------------------------------
