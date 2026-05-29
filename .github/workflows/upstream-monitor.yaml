@@ -1623,8 +1623,15 @@ jobs:
   open-drift-prs-consumers:
     name: Open drift PR (consumer) for ${{ matrix.container }}
     needs: [detect-digest-drift, open-drift-prs-leaves]
+    # always() is required because open-drift-prs-leaves is SKIPPED when no leaf
+    # container has drift (matrix is empty).  Without always(), GitHub Actions would
+    # cascade-skip this consumer job too — dropping legitimate consumer-only drift
+    # runs on the floor.  Instead we explicitly check that leaves is not a hard
+    # failure (success or skipped is fine; cancelled is treated as failure here).
     if: |
+      always() &&
       needs.detect-digest-drift.result == 'success' &&
+      (needs.open-drift-prs-leaves.result == 'success' || needs.open-drift-prs-leaves.result == 'skipped') &&
       needs.detect-digest-drift.outputs.drift_matrix_consumers != '[]' &&
       needs.detect-digest-drift.outputs.drift_matrix_consumers != ''
     runs-on: ubuntu-latest
@@ -1994,7 +2001,7 @@ jobs:
           for parent in ${INTERNAL_DEPS//,/ }; do
             parent_state=$(_eval_parent_state "$parent") || exit 1
             # Extract only the last word of output (the state token); preceding lines are notices/warnings.
-            parent_state_token=$(echo "$parent_state" | grep -E '^(in_flux|ready) | tail -1)
+            parent_state_token=$(echo "$parent_state" | grep -E '^(in_flux|ready)$' | tail -1)
             if [[ "$parent_state_token" != "in_flux" ]]; then
               continue
             fi
