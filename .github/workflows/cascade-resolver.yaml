@@ -143,16 +143,47 @@ jobs:
               echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
               continue
             fi
-            # 3) Decide based on the pre-removal snapshot (atomic: we know the answer already).
-            if [[ -n "$remaining_labels" ]]; then
-              # Still waiting on other parents — do NOT enable auto-merge yet.
-              still_waiting="${remaining_labels// /, }"
-              echo "::notice::PR #${child} still waiting on: ${still_waiting}"
+            # 3) Re-fetch labels POST-removal to detect concurrent removals by other
+            #    resolver runs (multiple parents completing close together can race:
+            #    each pre-removal snapshot shows "still waiting on the other", so
+            #    neither would enable auto-merge; the LIVE post-removal check sees
+            #    the actual remaining state and lets the last-finisher unblock).
+            if ! live_remaining=$(gh pr view "$child" \
+              --json labels \
+              --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | length' \
+              2>/dev/null); then
+              # Live check failed; fall back to the pre-removal snapshot decision.
+              # Conservative: if snapshot said "still waiting", that's still true; if
+              # snapshot said "all clear", trust it (we just removed the last label).
+              echo "::warning::Could not re-check labels for #${child} post-removal; falling back to snapshot decision"
+              live_remaining=""
+              # Convert snapshot-based string into a count for the decision branch below.
+              if [[ -n "$remaining_labels" ]]; then
+                live_remaining=1
+              else
+                live_remaining=0
+              fi
+            fi
+            if [[ "$live_remaining" -gt 0 ]]; then
+              # Still waiting on other parents (could be other labels from this run's
+              # snapshot, or labels added/remaining concurrently).
+              # Try to fetch the current label names for the comment body; ok if it fails.
+              if still_waiting=$(gh pr view "$child" \
+                --json labels \
+                --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")' \
+                2>/dev/null) && [[ -n "$still_waiting" ]]; then
+                echo "::notice::PR #${child} still waiting on: ${still_waiting}"
+              else
+                still_waiting="other parent(s)"
+                echo "::notice::PR #${child} still waiting on additional parents (live label fetch failed)"
+              fi
               gh pr comment "$child" \
                 --body "Parent **${PARENT}** drift PR's master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
                 2>&1 || true
             else
-              # All parent wait labels cleared — enable auto-merge.
+              # All parent wait labels cleared (LIVE check confirms) — enable auto-merge.
+              # Multi-parent race-safe: even if a concurrent resolver run was processing the same
+              # child, the LAST one to finish sees all wait labels gone and triggers auto-merge.
               if gh pr merge "$child" --squash --auto 2>&1; then
                 gh pr comment "$child" \
                   --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — will merge once CI passes." \
