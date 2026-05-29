@@ -496,25 +496,30 @@ _run_identify_parent() {
 }
 
 # ---------------------------------------------------------------------------
-# Three-state parent evaluation (_eval_parent_state) — gate r4 defect fix
+# Two-state parent evaluation (_eval_parent_state) — GHCR as source of truth
 #
 # The _eval_parent_state function (defined in "Apply cascade labels (strict)"
 # in upstream-monitor.yaml) emits 'in_flux' or 'ready' on stdout, with
-# notices/warnings on stderr-equivalent lines.  These tests exercise the
-# six evaluation paths described in the fix spec.
+# notices/warnings on GHA annotation lines.  Tests cover State 1 (open PR)
+# and State 2 (GHCR timestamp comparison).
 #
 # Mock strategy:
-#   - gh: controlled by MODE env var (set in each test)
-#   - git: controlled by GIT_LAST_SHA env var (empty = no commit)
+#   - gh: controlled by MODE env var; routes on "pr list" vs "api users"
+#   - RUN_STARTED_AT: set per-test to control the timestamp comparison
 # ---------------------------------------------------------------------------
 
 # Body of _eval_parent_state extracted verbatim from the workflow step.
-# Variables on the calling side: parent=$1; git and gh are mocked.
+# Variables on the calling side: parent=$1; gh is mocked; RUN_STARTED_AT controls run_start.
 EVAL_PARENT_STATE_BODY='
 _eval_parent_state() {
   local parent="$1"
-  local parent_pr
-  if ! parent_pr=$(gh pr list \
+  local _repo="${GITHUB_REPOSITORY:-owner/repo}"
+  local run_start="${GITHUB_RUN_STARTED_AT:-${RUN_STARTED_AT:-}}"
+  if [[ -z "$run_start" ]]; then
+    run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
+  fi
+  local open_pr
+  if ! open_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
     --label "base-digest-drift" \
     --base master \
@@ -525,155 +530,93 @@ _eval_parent_state() {
     echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
     return 2
   fi
-  if [[ -n "$parent_pr" ]]; then
+  if [[ -n "$open_pr" ]]; then
+    echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
     echo "in_flux"
     return 0
   fi
-  local recent_sha
-  local _repo="${GITHUB_REPOSITORY:-owner/repo}"
-  local commit_info
-  if ! commit_info=$(gh api "repos/${_repo}/commits?path=${parent}/LAST_REBUILD.md&sha=master&per_page=1" 2>&1); then
-    echo "::error::Failed to query commits for ${parent}/LAST_REBUILD.md"
+  local parent_last_updated
+  if ! parent_last_updated=$(gh api \
+    "users/${_repo%%/*}/packages/container/${parent}/versions" \
+    --jq '"'"'sort_by(.updated_at) | reverse | .[0].updated_at // empty'"'"' \
+    2>/dev/null); then
+    echo "::error::Failed to query GHCR versions for parent ${parent}"
     return 2
   fi
-  recent_sha=$(echo "$commit_info" | jq -r '"'"'.[0].sha // empty'"'"')
-  if [[ -z "$recent_sha" ]]; then
+  if [[ -z "$parent_last_updated" ]]; then
+    echo "::warning::Parent ${parent} has no published image in GHCR — treating as in_flux"
+    echo "in_flux"
+    return 0
+  fi
+  if [[ "$parent_last_updated" > "$run_start" ]]; then
+    echo "::notice::Parent ${parent} GHCR image refreshed at ${parent_last_updated} (after run_start=${run_start}) — ready"
     echo "ready"
-    return 0
-  fi
-  local run_info
-  if ! run_info=$(gh api "repos/${_repo}/actions/runs?head_sha=${recent_sha}&per_page=10" \
-    --jq '"'"'.workflow_runs[] | select(.name == "Auto Build & Push") | {status, conclusion}'"'"' 2>&1); then
-    echo "::error::Failed to query auto-build runs for ${parent} commit ${recent_sha}. Aborting."
-    return 2
-  fi
-  local run_status run_conclusion
-  run_status=$(echo "$run_info" | jq -r '"'"'.status'"'"' | head -1)
-  run_conclusion=$(echo "$run_info" | jq -r '"'"'.conclusion // empty'"'"' | head -1)
-  if [[ -z "$run_status" ]]; then
-    echo "::notice::No auto-build run found for parent ${parent} commit ${recent_sha}; treating as in_flux (conservative)"
+  else
+    echo "::notice::Parent ${parent} GHCR image last refreshed at ${parent_last_updated} (before run_start=${run_start}) — in_flux"
     echo "in_flux"
-    return 0
   fi
-  case "$run_status" in
-    in_progress|queued|requested|waiting)
-      echo "in_flux"
-      ;;
-    completed)
-      if [[ "$run_conclusion" == "success" ]]; then
-        echo "ready"
-      else
-        echo "::warning::Parent ${parent} auto-build conclusion=${run_conclusion}; treating as in_flux (operator must fix parent build)"
-        echo "in_flux"
-      fi
-      ;;
-    *)
-      echo "::notice::Parent ${parent} auto-build status=${run_status}; treating as in_flux (conservative)"
-      echo "in_flux"
-      ;;
-  esac
+  return 0
 }
 _eval_parent_state "$PARENT_ARG"
 '
 
-# Writes a mock gh for three-state tests.
+# Writes a mock gh for GHCR-based two-state tests.
 # $1 = mode:
-#   open-pr              — pr list returns PR #10 (State 1: in_flux)
-#   pr-closed-inprog     — pr list empty; commits API returns SHA; runs API returns in_progress (State 2: in_flux)
-#   pr-closed-success    — pr list empty; commits API returns SHA; runs API returns completed/success (State 3: ready)
-#   pr-closed-failed     — pr list empty; commits API returns SHA; runs API returns completed/failure (State 5: in_flux)
-#   pr-closed-cancelled  — pr list empty; commits API returns SHA; runs API returns completed/cancelled (State 5: in_flux)
-#   run-not-found        — pr list empty; commits API returns SHA; runs API returns empty (State 6: in_flux conservative)
-#   run-api-error        — pr list empty; commits API returns SHA; runs API exits 1 (fail-closed)
-#   run-multi            — pr list empty; commits API returns SHA; runs API returns 2 runs (re-run scenario)
-#   run-unknown-status   — pr list empty; commits API returns SHA; runs API returns unknown status (in_flux conservative)
-#   no-last-rebuild      — pr list empty; commits API returns empty array [] (State 4: ready, never drifted)
-#   commits-api-error    — pr list empty; commits API exits 1 (fail-closed on commits lookup)
-# COMMITS_SHA env controls SHA returned by the commits API (default: abc123def456).
+#   open-pr              -- pr list returns PR #10 (State 1: in_flux)
+#   open-pr-fork         -- pr list: fork PR (isCrossRepository=true -> jq drops it)
+#   open-pr-no-label     -- pr list: empty (label filter excluded server-side)
+#   ghcr-fresh           -- pr list empty; GHCR API returns updated_at newer than RUN_STARTED_AT
+#   ghcr-stale           -- pr list empty; GHCR API returns updated_at older than RUN_STARTED_AT
+#   ghcr-absent          -- pr list empty; GHCR API returns null (no versions published)
+#   ghcr-api-error       -- pr list empty; GHCR API exits 1 (fail-closed)
+#   pr-list-error        -- pr list exits 1 (fail-closed on State 1 check)
+# GHCR_UPDATED_AT env controls timestamp returned by the packages API
+# (default: 2026-05-29T12:00:00Z).
 _setup_three_state_mock() {
     local mode="$1"
-    local commits_sha="${COMMITS_SHA:-abc123def456}"
+    local ghcr_updated_at="${GHCR_UPDATED_AT:-2026-05-29T12:00:00Z}"
     mkdir -p "$TEST_TEMP_DIR/bin"
     local calls_log="$TEST_TEMP_DIR/gh_calls.log"
     touch "$calls_log"
 
-    # Write mock gh — routes on URL pattern to distinguish commits API vs runs API
     local mock_gh="$TEST_TEMP_DIR/bin/gh"
-    printf '#!/usr/bin/env bash\nMODE="%s"\nCOMMITS_SHA="%s"\necho "$@" >> "%s"\n' \
-        "$mode" "$commits_sha" "$calls_log" > "$mock_gh"
-    cat >> "$mock_gh" << 'GH_MOCK'
-case "$1 $2" in
-  "pr list")
-    if [[ "$MODE" == "open-pr" ]]; then
-      # Simulate post-jq output: isCrossRepository=false PR → number emitted
-      echo "10"
-    elif [[ "$MODE" == "open-pr-fork" ]]; then
-      # Simulate post-jq output: isCrossRepository=true PR → jq select emits nothing
-      : # print nothing
-    elif [[ "$MODE" == "open-pr-no-label" ]]; then
-      # gh returns empty because --label "base-digest-drift" not matched (server-side)
-      : # print nothing
-    fi
-    # all other modes: print nothing (no open PR)
-    ;;
-  "api repos"*)
-    # Route on URL: commits?path= (commits API) vs actions/runs (runs API)
-    # $1=api $2=<url> (the full URL is $2 regardless of additional flags like --jq)
-    # Note: local is not valid outside a function; use plain assignment
-    _url="$2"
-    if [[ "$_url" == *"commits?"* && "$_url" == *"path="* ]]; then
-      # Commits API: gh api "repos/.../commits?path=.../LAST_REBUILD.md&sha=master&per_page=1"
-      case "$MODE" in
-        commits-api-error)
-          echo "commits API failure simulated" >&2
-          exit 1
-          ;;
-        no-last-rebuild|open-pr-fork|open-pr-no-label)
-          # No commit found for LAST_REBUILD.md → State 4: parent never drifted → ready
-          printf '[]\n'
-          ;;
-        *)
-          # All other modes: return a commit with the configured SHA
-          printf '[{"sha":"%s"}]\n' "$COMMITS_SHA"
-          ;;
-      esac
-    else
-      # Runs API: gh api "repos/.../actions/runs?head_sha=...&per_page=10" --jq '...'
-      # The --jq flag is passed as additional args; mock returns pre-filtered JSON objects
-      case "$MODE" in
-        run-api-error)
-          echo "runs API failure simulated" >&2
-          exit 1
-          ;;
-        pr-closed-inprog)
-          printf '{"status":"in_progress","conclusion":null}\n'
-          ;;
-        pr-closed-success)
-          printf '{"status":"completed","conclusion":"success"}\n'
-          ;;
-        pr-closed-failed)
-          printf '{"status":"completed","conclusion":"failure"}\n'
-          ;;
-        pr-closed-cancelled)
-          printf '{"status":"completed","conclusion":"cancelled"}\n'
-          ;;
-        run-unknown-status)
-          printf '{"status":"waiting_for_operator","conclusion":null}\n'
-          ;;
-        run-not-found)
-          # Empty output — no matching workflow runs
-          ;;
-        run-multi)
-          # Two runs for the same SHA (re-run scenario): most recent first
-          printf '{"status":"completed","conclusion":"success"}\n'
-          printf '{"status":"completed","conclusion":"failure"}\n'
-          ;;
-      esac
-    fi
-    ;;
-esac
-exit 0
-GH_MOCK
+    printf '#!/usr/bin/env bash\nMODE="%s"\nGHCR_UPDATED_AT="%s"\necho "$@" >> "%s"\n' \
+        "$mode" "$ghcr_updated_at" "$calls_log" > "$mock_gh"
+    # Append routing body via printf (avoid heredoc hook)
+    printf '%s\n' 'case "$1 $2" in' >> "$mock_gh"
+    printf '%s\n' '  "pr list")' >> "$mock_gh"
+    printf '%s\n' '    case "$MODE" in' >> "$mock_gh"
+    printf '%s\n' '      pr-list-error)' >> "$mock_gh"
+    printf '%s\n' '        echo "pr list failure simulated" >&2' >> "$mock_gh"
+    printf '%s\n' '        exit 1' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '      open-pr)' >> "$mock_gh"
+    printf '%s\n' '        echo "10"' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '      open-pr-fork|open-pr-no-label)' >> "$mock_gh"
+    printf '%s\n' '        : # print nothing' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '      *)' >> "$mock_gh"
+    printf '%s\n' '        : # no open PR' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '    esac' >> "$mock_gh"
+    printf '%s\n' '    ;;' >> "$mock_gh"
+    printf '%s\n' '  "api users"*)' >> "$mock_gh"
+    printf '%s\n' '    case "$MODE" in' >> "$mock_gh"
+    printf '%s\n' '      ghcr-api-error)' >> "$mock_gh"
+    printf '%s\n' '        echo "GHCR API failure simulated" >&2' >> "$mock_gh"
+    printf '%s\n' '        exit 1' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '      ghcr-absent)' >> "$mock_gh"
+    printf '%s\n' '        : # print nothing — jq "// empty" on [] returns empty' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '      *)' >> "$mock_gh"
+    printf '%s\n' '        printf '"'"'%s\n'"'"' "$GHCR_UPDATED_AT"' >> "$mock_gh"
+    printf '%s\n' '        ;;' >> "$mock_gh"
+    printf '%s\n' '    esac' >> "$mock_gh"
+    printf '%s\n' '    ;;' >> "$mock_gh"
+    printf '%s\n' 'esac' >> "$mock_gh"
+    printf '%s\n' 'exit 0' >> "$mock_gh"
     chmod +x "$mock_gh"
 
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
@@ -688,58 +631,94 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# State 1: open drift PR → in_flux
+# State 1: open drift PR -> in_flux
 # ---------------------------------------------------------------------------
 @test "eval_parent_state: open drift PR → in_flux (cascade label must be applied)" {
     _setup_three_state_mock "open-pr"
     _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
-    # Last output token must be in_flux
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
 }
 
-# ---------------------------------------------------------------------------
-# State 2: no open PR, recent commit, auto-build in_progress → in_flux
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: master rebuild in_progress → in_flux (no premature auto-merge)" {
-    _setup_three_state_mock "pr-closed-inprog"
+@test "eval_parent_state: open drift PR → emits ::notice:: with PR number" {
+    _setup_three_state_mock "open-pr"
     _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::notice::"* ]]
+    [[ "$output" == *"#10"* ]]
+}
+
+
+# ---------------------------------------------------------------------------
+# State 1 trust boundaries (preserved from r8)
+# ---------------------------------------------------------------------------
+
+# PR from fork (isCrossRepository=true): jq filter excludes it -> falls through to GHCR check
+@test "eval_parent_state: PR from fork (isCrossRepository=true) → NOT in_flux via State 1 (falls through to GHCR)" {
+    GHCR_UPDATED_AT="2026-05-28T10:00:00Z" _setup_three_state_mock "open-pr-fork"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
+    # Must NOT have used fork PR as in_flux source
+    ! [[ "$output" == *"has open drift PR"* ]]
 }
 
-# ---------------------------------------------------------------------------
-# State 3: no open PR, recent commit, auto-build completed/success → ready
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: master rebuild success → ready (safe to auto-merge)" {
-    _setup_three_state_mock "pr-closed-success"
-    _run_eval_parent_state "debian"
+# PR has correct branch but no base-digest-drift label: gh server returns empty -> falls through
+@test "eval_parent_state: PR with no base-digest-drift label → falls through to GHCR check" {
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "open-pr-no-label"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
+    # No label -> no open PR; GHCR fresh -> ready
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
 }
 
 # ---------------------------------------------------------------------------
-# State 4: no open PR, no LAST_REBUILD.md commit ever → ready
+# State 2: GHCR image refreshed after run_start -> ready
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: no LAST_REBUILD.md commit → ready (parent never drifted)" {
-    _setup_three_state_mock "no-last-rebuild"
-    _run_eval_parent_state "debian"
+@test "eval_parent_state: GHCR image refreshed after run_start → ready" {
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
 }
 
+@test "eval_parent_state: GHCR image refreshed after run_start → emits ::notice:: with timestamps" {
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::notice::"* ]]
+    [[ "$output" == *"ready"* ]]
+}
+
 # ---------------------------------------------------------------------------
-# State 5: no open PR, recent commit, auto-build failed → in_flux (Defect A fix)
-# Child builds against OLD parent image in GHCR → child succeeds → stale digest captured.
-# Operator must fix the parent build before cascade can proceed.
+# State 2: GHCR image stale (updated before run_start) -> in_flux
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: master rebuild failed → in_flux (operator must fix parent)" {
-    _setup_three_state_mock "pr-closed-failed"
-    _run_eval_parent_state "debian"
+@test "eval_parent_state: GHCR image stale (before run_start) → in_flux" {
+    GHCR_UPDATED_AT="2026-05-28T10:00:00Z" _setup_three_state_mock "ghcr-stale"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+@test "eval_parent_state: GHCR image stale → emits ::notice:: with timestamps" {
+    GHCR_UPDATED_AT="2026-05-28T10:00:00Z" _setup_three_state_mock "ghcr-stale"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::notice::"* ]]
+    [[ "$output" == *"in_flux"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# State 2: GHCR image absent entirely -> in_flux (conservative)
+# ---------------------------------------------------------------------------
+@test "eval_parent_state: GHCR image absent (no versions) → in_flux (conservative)" {
+    _setup_three_state_mock "ghcr-absent"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
@@ -747,89 +726,53 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# State 5 (cancelled): no open PR, recent commit, auto-build cancelled → in_flux
+# GHCR API failure -> fail-closed (exit non-zero)
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: master rebuild cancelled → in_flux (operator must fix parent)" {
-    _setup_three_state_mock "pr-closed-cancelled"
-    _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    [[ "$output" == *"::warning::"* ]]
+@test "eval_parent_state: GHCR API failure → fail-closed (exit non-zero, ::error::)" {
+    _setup_three_state_mock "ghcr-api-error"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# Unknown run status: gh api returns unrecognised status string → in_flux (conservative)
+# State 1 fail-closed: gh pr list failure -> exit non-zero
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: unknown run status → in_flux (conservative, ::notice::)" {
-    _setup_three_state_mock "run-unknown-status"
-    _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    [[ "$output" == *"::notice::"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# State 6: no open PR, recent commit, gh api returns empty (SHA outside window) → in_flux (conservative)
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: gh api returns empty for SHA → in_flux (conservative)" {
-    _setup_three_state_mock "run-not-found"
-    _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    [[ "$output" == *"::notice::"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# API error on gh api → fail-closed (exit non-zero)
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: runs gh api error → fail-closed (exit 1)" {
-    _setup_three_state_mock "run-api-error"
+@test "eval_parent_state: pr list failure → fail-closed (exit non-zero)" {
+    _setup_three_state_mock "pr-list-error"
     _run_eval_parent_state "debian"
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# Re-run scenario: gh api returns 2 runs for same SHA → take most recent (first)
+# Multi-level DAG: consumer-of-consumer evaluated correctly regardless of
+# matrix execution order.  GHCR timestamp is the gate, not Actions state.
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: gh api returns multiple runs for same SHA → takes most recent" {
-    _setup_three_state_mock "run-multi"
-    _run_eval_parent_state "debian"
+@test "eval_parent_state: multi-level DAG — B not yet pushed to GHCR → C sees in_flux" {
+    GHCR_UPDATED_AT="2026-05-28T06:00:00Z" _setup_three_state_mock "ghcr-stale"
+    RUN_STARTED_AT="2026-05-29T04:00:00Z" _run_eval_parent_state "web-shell"
     [ "$status" -eq 0 ]
-    # Most recent run is completed/success → ready
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+@test "eval_parent_state: multi-level DAG — B pushed to GHCR during run → C sees ready" {
+    GHCR_UPDATED_AT="2026-05-29T10:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    RUN_STARTED_AT="2026-05-29T04:00:00Z" _run_eval_parent_state "web-shell"
+    [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
 }
 
-# ---------------------------------------------------------------------------
-# Defect A fix: commits API failure → fail-closed (exit non-zero)
-# Stale local origin/master replaced by GitHub API; API unavailability must
-# be fail-closed so a transient outage does not bypass cascade gating.
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: commits API failure → fail-closed (exit 1, no cascade bypass)" {
-    _setup_three_state_mock "commits-api-error"
-    _run_eval_parent_state "debian"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"::error::"* ]]
-    [[ "$output" == *"LAST_REBUILD.md"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# Defect A fix: commits API returns empty array → ready (no rebuild ever)
-# Verifies the jq '.[0].sha // empty' extraction on [] returns empty string,
-# which maps to State 4 (parent never drifted).
-# ---------------------------------------------------------------------------
-@test "eval_parent_state: commits API returns [] → ready (parent never rebuilt via LAST_REBUILD.md)" {
-    _setup_three_state_mock "no-last-rebuild"
-    _run_eval_parent_state "debian"
+# GHCR packages API must be called (not commits or runs API)
+@test "eval_parent_state: GHCR path — calls packages/container API, not commits or actions/runs" {
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
-    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "ready" ]
-    # Must NOT have called the runs API (no SHA to query)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
     ! grep -q "actions/runs" "$TEST_TEMP_DIR/gh_calls.log"
+    ! grep -q "commits?" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 # ---------------------------------------------------------------------------

@@ -1910,14 +1910,15 @@ jobs:
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
         run: |
-          # Three-state parent evaluation: in_flux | ready
+          # Two-state parent evaluation: in_flux | ready
           #
           # State 1: open drift PR → in_flux (parent is still being integrated)
-          # State 2: no open PR + recent LAST_REBUILD.md commit + auto-build in_progress/queued → in_flux
-          # State 3: no open PR + recent commit + auto-build completed/success → ready
-          # State 4: no open PR + no LAST_REBUILD.md commit ever → ready (never drifted)
-          # State 5: no open PR + recent commit + auto-build failed/cancelled → in_flux (operator must fix parent)
-          # State 6: no open PR + recent commit + run not found (pruned) → in_flux (conservative)
+          # State 2: no open PR + GHCR image refreshed after run_start → ready
+          #          no open PR + GHCR image NOT refreshed after run_start → in_flux
+          #
+          # GHCR is the source of truth: the parent image's updated_at timestamp
+          # directly answers "has the parent rebuild landed?" without any indirection
+          # through Actions runs retention (which ages out after 90 days).
           #
           # No State 0 needed: open-drift-prs-leaves has already completed before this
           # job starts (guaranteed by `needs: [open-drift-prs-leaves]`), so all parent
@@ -1929,8 +1930,15 @@ jobs:
           # creates a single invalid label name — that bug is precisely what this loop avoids.
           _eval_parent_state() {
             local parent="$1"
-            local parent_pr
-            if ! parent_pr=$(gh pr list \
+            local _repo="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#')}"
+            local run_start="${GITHUB_RUN_STARTED_AT:-${RUN_STARTED_AT:-}}"
+            if [[ -z "$run_start" ]]; then
+              # Conservative fallback: use yesterday so a recent push qualifies as "during this run"
+              run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
+            fi
+            # STATE 1: Is there an open drift PR for this parent?
+            local open_pr
+            if ! open_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --label "base-digest-drift" \
               --base master \
@@ -1941,61 +1949,36 @@ jobs:
               echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
               return 2
             fi
-            if [[ -n "$parent_pr" ]]; then
+            if [[ -n "$open_pr" ]]; then
+              echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
               echo "in_flux"
               return 0
             fi
-            # No open PR: check if parent's master rebuild is still in flight.
-            # Query GitHub API directly so we always see fresh master state even if the
-            # local origin/master ref is stale (cron checkout taken at job start; a parent
-            # drift PR can merge while later matrix entries are still processing).
-            local recent_sha
-            local _repo="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||')}"
-            local commit_info
-            if ! commit_info=$(gh api "repos/${_repo}/commits?path=${parent}/LAST_REBUILD.md&sha=master&per_page=1" 2>&1); then
-              echo "::error::Failed to query commits for ${parent}/LAST_REBUILD.md"
+            # STATE 2: Has parent's GHCR image been refreshed during this run?
+            # GHCR is the source of truth — no indirection through Actions retention.
+            local parent_last_updated
+            if ! parent_last_updated=$(gh api \
+              "users/${_repo%%/*}/packages/container/${parent}/versions" \
+              --jq 'sort_by(.updated_at) | reverse | .[0].updated_at // empty' \
+              2>/dev/null); then
+              echo "::error::Failed to query GHCR versions for parent ${parent}"
               return 2
             fi
-            recent_sha=$(echo "$commit_info" | jq -r '.[0].sha // empty')
-            if [[ -z "$recent_sha" ]]; then
+            if [[ -z "$parent_last_updated" ]]; then
+              # Parent image absent from GHCR entirely — treat conservatively.
+              echo "::warning::Parent ${parent} has no published image in GHCR — treating as in_flux"
+              echo "in_flux"
+              return 0
+            fi
+            # Compare lexicographically — ISO 8601 timestamps sort correctly as strings.
+            if [[ "$parent_last_updated" > "$run_start" ]]; then
+              echo "::notice::Parent ${parent} GHCR image refreshed at ${parent_last_updated} (after run_start=${run_start}) — ready"
               echo "ready"
-              return 0
-            fi
-            local run_info
-            if ! run_info=$(gh api "repos/${_repo}/actions/runs?head_sha=${recent_sha}&per_page=10" \
-              --jq '.workflow_runs[] | select(.name == "Auto Build & Push") | {status, conclusion}' 2>&1); then
-              echo "::error::Failed to query auto-build runs for ${parent} commit ${recent_sha}. Aborting."
-              return 2
-            fi
-            local run_status run_conclusion
-            run_status=$(echo "$run_info" | jq -r '.status' | head -1)
-            run_conclusion=$(echo "$run_info" | jq -r '.conclusion // empty' | head -1)
-            if [[ -z "$run_status" ]]; then
-              echo "::notice::No auto-build run found for parent ${parent} commit ${recent_sha}; treating as in_flux (conservative)"
+            else
+              echo "::notice::Parent ${parent} GHCR image last refreshed at ${parent_last_updated} (before run_start=${run_start}) — in_flux"
               echo "in_flux"
-              return 0
             fi
-            case "$run_status" in
-              in_progress|queued|requested|waiting)
-                echo "in_flux"
-                ;;
-              completed)
-                if [[ "$run_conclusion" == "success" ]]; then
-                  echo "ready"
-                else
-                  # Failed/cancelled: child builds against OLD parent image already in GHCR.
-                  # Child CI would succeed (stale digest captured in lineage) → cascade NOT resolved.
-                  # Operator must fix the parent build; child waits.
-                  echo "::warning::Parent ${parent} auto-build conclusion=${run_conclusion}; treating as in_flux (operator must fix parent build)"
-                  echo "in_flux"
-                fi
-                ;;
-              *)
-                # Unknown status (race / API quirk) → conservative
-                echo "::notice::Parent ${parent} auto-build status=${run_status}; treating as in_flux (conservative)"
-                echo "in_flux"
-                ;;
-            esac
+            return 0
           }
           has_waiting=0
           for parent in ${INTERNAL_DEPS//,/ }; do

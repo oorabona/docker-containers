@@ -80,7 +80,13 @@ Public API:
 1. `detect-digest-drift` emits `drift_matrix_leaves` (no internal deps) and `drift_matrix_consumers` (have internal deps)
 2. `open-drift-prs-leaves` (job 1): processes leaf containers — no cascade gating needed, auto-merge immediately
 3. `open-drift-prs-consumers` (job 2): `needs: [open-drift-prs-leaves]` — by construction, all parent PRs are already created before any consumer matrix item starts
-4. Within job 2, `_eval_parent_state` (States 1-6) checks parent PR / build status; if in_flux → add `cascade:waiting-for-<parent>` label
+4. Within job 2, `_eval_parent_state` checks parent PR state (State 1) and GHCR image freshness (State 2); if in_flux → add `cascade:waiting-for-<parent>` label
+
+**GHCR as source of truth (r20 simplification)**: the original implementation chained two GitHub API queries (`gh api commits?path=...` + `gh api actions/runs?head_sha=...`) to indirectly answer "is the parent's rebuild done?". This introduced two failure classes:
+- **M2 aged-out deadlock**: Actions runs vanish after 90-day retention → no run found → conservative `in_flux` → permanent cascade label.
+- **M1 multi-level matrix race**: matrix order is not a topological sort, so consumer-of-consumer scenarios (A→B→C) had ordering races where C evaluated B's state before B's run finished.
+
+The fix: GHCR IS the source of truth. `gh api users/<owner>/packages/container/<parent>/versions` returns the most-recent version's `updated_at` timestamp. Compared lexicographically against `GITHUB_RUN_STARTED_AT` (ISO 8601 sorts correctly as a string): newer → ready, older → in_flux. Both M1 and M2 dissolve because the signal is external (GHCR) and not coupled to matrix execution timing or Actions retention. Net: ~55 LOC removed, 5-state evaluation collapsed to 2 states, 1 API query per parent instead of 2.
 
 **Topological ordering by construction**: the `needs:` chain replaces the former post-hoc cleanup approach (State 0 loop + reconciliation job). No race window exists — job 2 cannot start until job 1 finishes.
 
@@ -119,7 +125,7 @@ helpers/dependency-graph.sh          ←── single source of truth
                    ├── open-drift-prs-consumers         (consumers: have internal deps)
                    │     ▲ needs: [detect-digest-drift, open-drift-prs-leaves]
                    │     │  → topological invariant true by construction
-                   │     └── _eval_parent_state (States 1-6)
+                   │     └── _eval_parent_state (State 1: open PR / State 2: GHCR timestamp)
                    │
                    └── cascade-resolver.yaml            (unblocks children when parent merges)
 ```
@@ -142,8 +148,10 @@ helpers/dependency-graph.sh          ←── single source of truth
 - `tests/unit/detect-base-digest-drift.bats` (+4 tests for internal_deps, +3 tests for matrix split):
   `internal_deps` field presence, empty for external-only, multi-dep arrays, unchanged container
   still has field; two-phase split (leaves/consumers jq selectors), backwards-compat csv aggregation
-- `tests/unit/cascade-resolver.bats` (+2 tests): two-phase structural invariant — `_eval_parent_state`
-  body has no `CURRENT_DRIFT_SET` loop; State 1 reached directly via gh pr list
+- `tests/unit/cascade-resolver.bats` (r20 GHCR-based tests): State 1 (open PR), State 2 (GHCR
+  fresh/stale/absent/api-error), trust boundaries (fork exclusion, label filter), multi-level DAG
+  simulation (matrix-order independence), packages/container API called (not commits/runs APIs),
+  two-phase structural invariants (no `CURRENT_DRIFT_SET` loop, State 1 via gh pr list)
 - Manual validation: `./make list-deps <container>` for all 13 containers
 
 ## Current DAG (as of 2026-05-28)
