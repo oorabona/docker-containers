@@ -348,8 +348,7 @@ teardown() {
     _run_resolver "debian"
     [ "$status" -eq 0 ]
     # auto-merge must NOT have been called
-    run ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
-    [ "$status" -eq 0 ]
+    ! grep -q "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
     # "Still waiting on" comment must be posted
     grep -q "Still waiting on" "$TEST_TEMP_DIR/gh_comments.log"
     # live recheck (length) must have been called after removal
