@@ -8,7 +8,7 @@ base_image_cache:
   - source: library/composer
     tags: ["${COMPOSER_VERSION}"]
 build_args:
-  COMPOSER_VERSION: "2.9.8"
+  COMPOSER_VERSION: "2.10.0"
   APCU_VERSION: "5.1.28"
 dependency_sources:
   COMPOSER_VERSION:
