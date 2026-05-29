@@ -1811,9 +1811,18 @@ jobs:
           # matrix entry resolved to no-drift or failed PR creation, so cascade-resolver
           # will never fire for it.
           for parent in ${CURRENT_DRIFT_SET//,/ }; do
+            # Orphan = "no drift PR was EVER created for this parent in this run".
+            # We must use --state all (not --state open) because:
+            #   - state=open misses PRs that already merged (resolver workflow will handle them)
+            #   - state=open misses PRs whose master Auto Build & Push is still running
+            #     after PR merge — the parent image is NOT yet published.  Removing the
+            #     child's wait label in that window would let it auto-merge against
+            #     the stale parent digest (exact race the cascade is meant to prevent).
+            # Branch name (update/base-digest-<container>) is set by peter-evans/create-pull-request
+            # and stays as the PR's recorded headRefName even after the branch is deleted on merge.
             parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
-              --state open \
+              --state all \
               --base master \
               --json number,isCrossRepository \
               --jq '.[] | select(.isCrossRepository == false) | .number' \
