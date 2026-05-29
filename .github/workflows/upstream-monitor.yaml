@@ -1804,26 +1804,36 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
+          RUN_STARTED_AT: ${{ github.event.repository.updated_at }}
         run: |
           # For each container in the current drift set, verify a drift PR was actually
-          # created by the open-drift-prs matrix iteration.  If no drift PR exists, any
-          # child PR carrying cascade:waiting-for-<container> is orphaned: the parent's
-          # matrix entry resolved to no-drift or failed PR creation, so cascade-resolver
-          # will never fire for it.
+          # created by the open-drift-prs matrix iteration in THIS run.  If no PR was
+          # created in this run, any child PR carrying cascade:waiting-for-<container>
+          # is orphaned: the parent's matrix entry resolved to no-drift or failed PR
+          # creation, so cascade-resolver will never fire for it.
+          #
+          # Use the workflow's started timestamp as the lower bound for the search.
+          # `github.run_started_at` is the canonical signal; `repository.updated_at`
+          # is a safe fallback approximation if the former isn't available in env.
+          run_start="${GITHUB_RUN_STARTED_AT:-${RUN_STARTED_AT}}"
+          if [[ -z "$run_start" ]]; then
+            # Conservative fallback: use yesterday so we ONLY catch very-recent PRs
+            run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
+          fi
+          echo "::notice::Orphan check using run_start=${run_start}"
           for parent in ${CURRENT_DRIFT_SET//,/ }; do
-            # Orphan = "no drift PR was EVER created for this parent in this run".
-            # We must use --state all (not --state open) because:
-            #   - state=open misses PRs that already merged (resolver workflow will handle them)
-            #   - state=open misses PRs whose master Auto Build & Push is still running
-            #     after PR merge — the parent image is NOT yet published.  Removing the
-            #     child's wait label in that window would let it auto-merge against
-            #     the stale parent digest (exact race the cascade is meant to prevent).
-            # Branch name (update/base-digest-<container>) is set by peter-evans/create-pull-request
-            # and stays as the PR's recorded headRefName even after the branch is deleted on merge.
+            # Orphan = "no drift PR was created in THIS run for this parent".
+            # The branch name `update/base-digest-<container>` is REUSED on every cron
+            # run, so an old merged PR from a previous run still matches `--head`.
+            # We must also filter by `created:>=<run-start>` so the match is restricted
+            # to PRs opened during the current run.
+            # `--state all` catches PRs already merged in this run AND PRs whose master
+            # rebuild is still pending (cascade-resolver will fire later).
             parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --state all \
               --base master \
+              --search "created:>=${run_start}" \
               --json number,isCrossRepository \
               --jq '.[] | select(.isCrossRepository == false) | .number' \
               | head -1) || {
@@ -1831,7 +1841,7 @@ jobs:
               continue
             }
             if [[ -n "$parent_pr" ]]; then
-              echo "::notice::Parent ${parent} has open drift PR #${parent_pr} — wait labels are legitimate"
+              echo "::notice::Parent ${parent} has drift PR #${parent_pr} created in this run — wait labels are legitimate"
               continue
             fi
             echo "::notice::Parent ${parent} has no open drift PR; scanning for orphaned cascade:waiting-for-${parent} labels"
