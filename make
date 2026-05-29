@@ -97,9 +97,19 @@ list_deps() {
     exit 1
   fi
 
-  local direct transitive
+  local direct transitive _rc
   direct=$(_depgraph_get_deps "$container")
+  _rc=$?
+  if [[ $_rc -eq 2 ]]; then
+    log_error "Error: dependency graph owner resolution failed for '${container}' — cannot list deps"
+    return 2
+  fi
   transitive=$(_depgraph_get_deps_transitive "$container")
+  _rc=$?
+  if [[ $_rc -eq 2 ]]; then
+    log_error "Error: dependency graph owner resolution failed for '${container}' during transitive scan"
+    return 2
+  fi
 
   echo "container: $container"
   if [[ -n "$direct" ]]; then

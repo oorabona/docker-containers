@@ -224,11 +224,15 @@ _depgraph_get_deps() {
         fi
     done
 
-    # Fallback: parse config.yaml build_args if no lineage exists
+    # Fallback: parse config.yaml build_args AND base_image if no lineage exists.
+    # Both fields can carry internal refs:
+    #   build_args: key-value pairs injected into docker build --build-arg
+    #   base_image: direct base image for Dockerfile FROM (e.g. wordpress, web-shell, github-runner)
+    # The same four-prefix recognition applies to both fields.
     if [[ "$found_any" == "false" ]]; then
         local config_file="${PROJECT_ROOT}/${container}/config.yaml"
         if [[ -f "$config_file" ]]; then
-            # Extract all string values from build_args that look like internal refs
+            # Extract all string values from build_args AND base_image that look like internal refs
             local build_args_refs
             build_args_refs=$(grep -oE '(ghcr\.io/[^/]+/[^:/ ]+|hub\.docker\.io/[^/]+/[^:/ ]+|docker\.io/[^/]+/[^:/ ]+|\$\{REMOTE_CR\}/[^:/ ]+)' \
                 "$config_file" 2>/dev/null || true)
@@ -285,12 +289,17 @@ _depgraph_get_deps_transitive() {
         done
 
         stack+=("$node")
-        local deps
+        local deps _deps_rc
         deps=$(_depgraph_get_deps "$node")
+        _deps_rc=$?
+        if [[ $_deps_rc -eq 2 ]]; then
+            echo "::error::Owner resolution failed for ${node} during transitive dep traversal" >&2
+            return 2
+        fi
         if [[ -n "$deps" ]]; then
             local dep
             for dep in $deps; do
-                _depgraph_dfs_topo "$dep"
+                _depgraph_dfs_topo "$dep" || return $?
             done
         fi
         stack=("${stack[@]:0:${#stack[@]}-1}")
@@ -310,7 +319,7 @@ _depgraph_get_deps_transitive() {
         fi
     }
 
-    _depgraph_dfs_topo "$container"
+    _depgraph_dfs_topo "$container" || return $?
     printf '%s' "${result[*]:-}"
 }
 
@@ -322,14 +331,21 @@ _depgraph_get_deps_transitive() {
 _depgraph_get_consumers() {
     local target="$1"
     local consumers=""
-    local valid_containers
+    local valid_containers _vc_rc
     valid_containers="$(_depgraph_valid_containers)"
+    _vc_rc=$?
+    [[ $_vc_rc -ne 0 ]] && return $_vc_rc
 
     local c
     for c in $valid_containers; do
         [[ "$c" == "$target" ]] && continue
-        local deps
+        local deps _deps_rc
         deps=$(_depgraph_get_deps "$c")
+        _deps_rc=$?
+        if [[ $_deps_rc -eq 2 ]]; then
+            echo "::error::Owner resolution failed for ${c} during consumer scan" >&2
+            return 2
+        fi
         if [[ " $deps " == *" $target "* ]]; then
             consumers="$consumers $c"
         fi
@@ -344,8 +360,10 @@ _depgraph_get_consumers() {
 # Exits 1 if any cycle is detected in the dependency graph.
 # ---------------------------------------------------------------------------
 _depgraph_validate_no_cycles() {
-    local valid_containers
+    local valid_containers _vc_rc
     valid_containers="$(_depgraph_valid_containers)"
+    _vc_rc=$?
+    [[ $_vc_rc -ne 0 ]] && return $_vc_rc
     local -A color  # 0=white, 1=gray (in-stack), 2=black (done)
     local cycle_found=false
     local cycle_path=""
@@ -355,8 +373,13 @@ _depgraph_validate_no_cycles() {
         local path="${2:-$node}"
 
         color["$node"]=1  # gray
-        local deps
+        local deps _deps_rc
         deps=$(_depgraph_get_deps "$node")
+        _deps_rc=$?
+        if [[ $_deps_rc -eq 2 ]]; then
+            echo "::error::Owner resolution failed for ${node} during cycle detection" >&2
+            return 2
+        fi
         local dep
         for dep in $deps; do
             if [[ "${color[$dep]:-0}" == "1" ]]; then
@@ -367,6 +390,10 @@ _depgraph_validate_no_cycles() {
             fi
             if [[ "${color[$dep]:-0}" == "0" ]]; then
                 _dfs_cycle "$dep" "${path} -> $dep"
+                local _dfs_rc=$?
+                if [[ $_dfs_rc -eq 2 ]]; then
+                    return 2
+                fi
                 if [[ "$cycle_found" == "true" ]]; then
                     return 0
                 fi
@@ -379,6 +406,10 @@ _depgraph_validate_no_cycles() {
     for c in $valid_containers; do
         if [[ "${color[$c]:-0}" == "0" ]]; then
             _dfs_cycle "$c"
+            local _top_rc=$?
+            if [[ $_top_rc -eq 2 ]]; then
+                return 2
+            fi
             if [[ "$cycle_found" == "true" ]]; then
                 printf '::error::Cycle detected in container dependency graph: %s\n' "$cycle_path" >&2
                 return 1

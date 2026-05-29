@@ -622,3 +622,128 @@ _write_lineage() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Defect G regression lock: rc=2 propagation through transitive helpers
+#
+# _depgraph_get_deps propagates rc=2 on owner failure (r21 fix).
+# _depgraph_get_deps_transitive, _depgraph_get_consumers, and
+# _depgraph_validate_no_cycles must ALL propagate it (r23 fix).
+# ---------------------------------------------------------------------------
+
+@test "depgraph: rc=2 propagates through _depgraph_get_deps_transitive" {
+    # wordpress → php dep chain; owner resolution fails → transitive must return rc=2.
+    _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/isolated_transitive_r23"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps_transitive wordpress
+    "
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "depgraph: rc=2 propagates through _depgraph_get_consumers" {
+    # container consumes a dep with an owner-ref; owner fails → consumers scan returns rc=2.
+    _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/isolated_consumers_r23"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_consumers php
+    "
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "depgraph: rc=2 propagates through _depgraph_validate_no_cycles" {
+    # Owner fails during DFS — cycle validator must propagate rc=2 not rc=0.
+    _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/isolated_cycles_r23"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_validate_no_cycles
+    "
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Defect H regression lock: base_image field recognized in config.yaml fallback
+#
+# The config.yaml no-lineage fallback must inspect base_image values in addition
+# to build_args.  Internal refs appear in base_image for wordpress, web-shell,
+# and github-runner.
+# ---------------------------------------------------------------------------
+
+@test "depgraph: base_image internal ref in config.yaml → recognized as dep (no lineage)" {
+    # Simulate wordpress/config.yaml pattern: base_image with ${REMOTE_CR}/php ref.
+    # No lineage files → falls through to config.yaml path.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_base_image_r23"
+    mkdir -p "$isolated_dir/mywp"
+    # Use ghcr.io/<owner>/php to avoid the ${REMOTE_CR} variable — owner override will match.
+    printf 'base_image: "ghcr.io/testowner/php:8.4-fpm-alpine"\n' \
+        > "$isolated_dir/mywp/config.yaml"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE='testowner'
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='mywp php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps mywp
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"php"* ]]
+}
+
+@test "depgraph: base_image external ref in config.yaml → NOT recognized as dep" {
+    # alpine:3.21 is an external ref — must not appear as internal dep.
+    # Use the real PROJECT_ROOT (needed for lineage-utils.sh sourcing) and
+    # a custom config dir override, with _DEPGRAPH_CONTAINERS_OVERRIDE restricting scope.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_base_image_ext_r23"
+    mkdir -p "$isolated_dir/myalpine"
+    printf 'base_image: "alpine:3.21"\n' \
+        > "$isolated_dir/myalpine/config.yaml"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE='testowner'
+        export _DEPGRAPH_OWNER_OVERRIDE
+        # Use real PROJECT_ROOT so helpers/lineage-utils.sh is available.
+        # Override the container set and lineage dir to isolate the test.
+        _DEPGRAPH_CONTAINERS_OVERRIDE='myalpine'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        # Override PROJECT_ROOT AFTER sourcing so config.yaml lookup uses isolated dir
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        PROJECT_ROOT='${isolated_dir}'
+        _depgraph_get_deps myalpine 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}

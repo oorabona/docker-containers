@@ -1288,6 +1288,19 @@ jobs:
           # expose via `env:` (set above as REQUESTED_CONTAINER) so the value is
           # treated as data, never as code.  See OWASP / GitHub security hardening
           # docs on "Untrusted input in workflow expressions".
+          # Compute repo-wide drift_containers_csv from the UNFILTERED drift_json.
+          # This must happen BEFORE the REQUESTED_CONTAINER filter below, so that
+          # _eval_parent_state always sees the full drift picture regardless of how
+          # workflow_dispatch was scoped.  Without this split a scoped dispatch
+          # (e.g. requested_container=wordpress) would produce drift_containers_csv
+          # containing only "wordpress", causing State B to mark a still-drifting
+          # "php" parent as stable and auto-merging the child against a stale image.
+          drift_containers_all=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+            || echo "[]")
+          drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
+          echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
+
           if [[ -n "$REQUESTED_CONTAINER" ]]; then
             drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
             if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
@@ -1302,17 +1315,12 @@ jobs:
           fi
 
           # Extract container names with actionable drift (drift or legacy status)
+          # from the (possibly scoped) drift_json.  Used to build the PR-opening matrix;
+          # cascade gating uses drift_containers_csv computed above from the unfiltered set.
           drift_containers=$(echo "$drift_json" | jq -c \
             '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
             || echo "[]")
           echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
-
-          # CSV form used by open-drift-prs to detect matrix-ordering races:
-          # if a parent container is also drifting in this same cron run, a child's
-          # matrix iteration may execute before the parent's — _eval_parent_state
-          # needs to know the full current drift set, not just open PRs.
-          drift_containers_csv=$(echo "$drift_containers" | jq -r 'join(",")')
-          echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
 
           # Build enriched matrix: include internal_deps_csv per container (used for leaf/consumer split)
           drift_matrix=$(echo "$drift_json" | jq -c \
@@ -1911,29 +1919,27 @@ jobs:
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
         run: |
-          # Three-state parent evaluation: in_flux | ready
+          # Two-state parent evaluation: in_flux | ready
           #
           # STATE A: open drift PR → in_flux (parent is still being integrated)
           #   Ground truth for "is there pending parent work?" — queried FIRST because it
           #   is independent of how CURRENT_DRIFT_SET was scoped.  On a scoped
           #   workflow_dispatch (e.g. requested_container=wordpress), drift_containers_csv
-          #   is filtered to the requested container before this step runs, so php would
-          #   be absent from CURRENT_DRIFT_SET even if its drift PR is still open.
-          #   Checking the open PR first prevents the child from auto-merging against the
-          #   stale parent image in that case.
+          #   is now derived from the UNFILTERED drift_json (repo-wide truth), but State A
+          #   runs first anyway for safety.
           #
           # STATE B: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
           #   Only safe AFTER the open-PR check above: no open PR means no pending parent
-          #   work regardless of whether the parent is in the (possibly scoped) drift set.
-          #   Stable parents (rebuilt in a prior run, not drifting today) must never gate
-          #   a child permanently: GHCR timestamp (State C) returns in_flux when
-          #   parent_last_updated < run_start, which is always true for a stable parent.
+          #   work regardless of whether the parent is in the drift set.
+          #   CURRENT_DRIFT_SET is now repo-wide (Defect E fix), so the scoped-dispatch
+          #   false-negative that previously appeared here is eliminated.
           #
-          # STATE C: no open PR + GHCR image refreshed after run_start → ready
-          #          no open PR + GHCR image NOT refreshed after run_start → in_flux
-          #   GHCR is the source of truth: the parent image's updated_at timestamp directly
-          #   answers "has the parent rebuild landed?" without any indirection through
-          #   Actions runs retention (which ages out after 90 days).
+          # STATE C (removed): the prior implementation compared GHCR package updated_at
+          #   against RUN_STARTED_AT, but RUN_STARTED_AT was never plumbed into the env
+          #   block, and the query targeted package-wide latest (not the specific tag the
+          #   child consumes).  When State A+B are both exhausted the parent IS drifting
+          #   this run but has no PR yet — the conservative answer is in_flux; wait for
+          #   the cascade-resolver to unblock when the parent rebuild lands.
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
@@ -1941,16 +1947,9 @@ jobs:
           # creates a single invalid label name — that bug is precisely what this loop avoids.
           _eval_parent_state() {
             local parent="$1"
-            local _repo="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#')}"
-            local run_start="${GITHUB_RUN_STARTED_AT:-${RUN_STARTED_AT:-}}"
-            if [[ -z "$run_start" ]]; then
-              # Conservative fallback: use yesterday so a recent push qualifies as "during this run"
-              run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
-            fi
             # STATE A: Is there an open drift PR for this parent?
-            # Must run BEFORE the drift-set check (State B): on a scoped workflow_dispatch,
-            # CURRENT_DRIFT_SET is filtered to the requested container, so a parent with an
-            # open drift PR would be absent from the set and incorrectly classified ready.
+            # Runs BEFORE the drift-set check (State B) — ground truth independent of
+            # how CURRENT_DRIFT_SET was scoped.
             local open_pr
             if ! open_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
@@ -1971,8 +1970,7 @@ jobs:
             # STATE B: Is the parent in the current drift set?
             # Only reached when there is no open drift PR (State A cleared above).
             # If the parent is absent from CURRENT_DRIFT_SET, it was rebuilt in a prior run —
-            # GHCR already has the stable image and State C's timestamp check would wrongly
-            # return in_flux. Short-circuit to ready.
+            # GHCR already has the stable image. Short-circuit to ready.
             if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
               local _parent_drifting=0
               for _c in ${CURRENT_DRIFT_SET//,/ }; do
@@ -1987,30 +1985,11 @@ jobs:
                 return 0
               fi
             fi
-            # STATE C: Has parent's GHCR image been refreshed during this run?
-            # GHCR is the source of truth — no indirection through Actions retention.
-            local parent_last_updated
-            if ! parent_last_updated=$(gh api \
-              "users/${_repo%%/*}/packages/container/${parent}/versions" \
-              --jq 'sort_by(.updated_at) | reverse | .[0].updated_at // empty' \
-              2>/dev/null); then
-              echo "::error::Failed to query GHCR versions for parent ${parent}"
-              return 2
-            fi
-            if [[ -z "$parent_last_updated" ]]; then
-              # Parent image absent from GHCR entirely — treat conservatively.
-              echo "::warning::Parent ${parent} has no published image in GHCR — treating as in_flux"
-              echo "in_flux"
-              return 0
-            fi
-            # Compare lexicographically — ISO 8601 timestamps sort correctly as strings.
-            if [[ "$parent_last_updated" > "$run_start" ]]; then
-              echo "::notice::Parent ${parent} GHCR image refreshed at ${parent_last_updated} (after run_start=${run_start}) — ready"
-              echo "ready"
-            else
-              echo "::notice::Parent ${parent} GHCR image last refreshed at ${parent_last_updated} (before run_start=${run_start}) — in_flux"
-              echo "in_flux"
-            fi
+            # STATE C (conservative in_flux): parent IS drifting this run but no PR yet.
+            # Wait for the parent's drift PR to open and be merged; the cascade-resolver
+            # will unblock this child when the parent rebuild lands on master.
+            echo "::notice::Parent ${parent} is drifting this run but has no open PR yet — waiting"
+            echo "in_flux"
             return 0
           }
           has_waiting=0

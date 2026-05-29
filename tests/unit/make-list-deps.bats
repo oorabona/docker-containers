@@ -110,3 +110,30 @@ _write_lineage() {
     run bash -c "'${MAKE_SCRIPT}' list-deps 2>&1"
     [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Defect G regression lock: rc=2 from owner resolution failure propagates to
+# operator via make list-deps (non-zero exit + clear stderr message).
+# Must NOT silently report "(none — only external upstream)".
+# ---------------------------------------------------------------------------
+@test "make list-deps: owner resolution failure exits non-zero with error message" {
+    export _DEPGRAPH_CONTAINERS_OVERRIDE="php wordpress"
+    # Write a lineage file with a ghcr.io ref; no owner override and no git remote
+    # means _depgraph_is_internal_ref returns rc=2 → must bubble to operator.
+    _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/isolated_owner_fail_r23"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='$TEST_TEMP_DIR/lineage'
+        export _DEPGRAPH_LINEAGE_DIR
+        '${MAKE_SCRIPT}' list-deps wordpress 2>&1
+    "
+    [ "$status" -ne 0 ]
+    # Must not silently report "(none)"
+    ! [[ "$output" == *"(none"* ]]
+}
