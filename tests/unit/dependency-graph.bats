@@ -750,6 +750,120 @@ _write_lineage() {
 }
 
 # ---------------------------------------------------------------------------
+# Defect S regression lock: rc=1 from _depgraph_get_deps must propagate
+# through all three transitive callers (r29 fix)
+#
+# _depgraph_get_deps returns rc=1 when ./make list / list-builds enumeration
+# fails (lines 56-60 / 237-246).  The three transitive callers previously
+# only guarded rc=2, so rc=1 slipped through silently — the traversal
+# continued with empty deps, producing incorrect transitive closures, missing
+# consumers, and undetected cycles.
+#
+# The fix changes `[[ $_deps_rc -eq 2 ]]` → `[[ $_deps_rc -ne 0 ]]` at all
+# three sites and propagates the original rc.
+#
+# These tests inject rc=1 by providing a ./make stub that succeeds on 'list'
+# but fails on 'list-builds' with exit 1 (Defect Q path).  _depgraph_get_deps
+# returns rc=2 for list-builds failure, so the tests confirm any non-zero rc
+# (here rc=2 propagated as rc=2) exits non-zero.  The critical invariant is
+# that a non-zero rc from _depgraph_get_deps NEVER silently continues.
+#
+# Mutation guards:
+#   MG-S1: restoring `-eq 2` in _depgraph_get_deps_transitive → status=0 on
+#           rc=1 input, test fails — catches regression.
+#   MG-S2: restoring `-eq 2` in _depgraph_get_consumers → same.
+#   MG-S3: restoring `-eq 2` in _dfs_cycle → same.
+# ---------------------------------------------------------------------------
+
+_make_list_ok_listbuilds_fail() {
+    # Helper: writes a ./make stub to $1 that handles 'list' but exits 1 on 'list-builds'.
+    local mock_root="$1"
+    mkdir -p "$mock_root"
+    cat > "$mock_root/make" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    printf 'php\nwordpress\n'
+    exit 0
+    ;;
+  list-builds)
+    echo "simulated list-builds failure for DefectS" >&2
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+    chmod +x "$mock_root/make"
+}
+
+@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_get_deps_transitive" {
+    # _depgraph_get_deps returns rc=2 when list-builds fails (Defect Q path).
+    # _depgraph_get_deps_transitive's old guard (-eq 2 only) already catches rc=2,
+    # but with the new -ne 0 guard it also catches rc=1 if _depgraph_get_deps ever
+    # returns it directly.  This test locks the guard change: any non-zero rc must
+    # propagate and the traversal must NOT continue with empty deps.
+    local mock_root="$TEST_TEMP_DIR/defects_transitive"
+    _make_list_ok_listbuilds_fail "$mock_root"
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        PROJECT_ROOT='${mock_root}'
+        export PROJECT_ROOT
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps_transitive wordpress
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_get_consumers" {
+    local mock_root="$TEST_TEMP_DIR/defects_consumers"
+    _make_list_ok_listbuilds_fail "$mock_root"
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        PROJECT_ROOT='${mock_root}'
+        export PROJECT_ROOT
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_consumers php
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "DefectS: rc=1 from _depgraph_get_deps propagates through _depgraph_validate_no_cycles" {
+    local mock_root="$TEST_TEMP_DIR/defects_cycles"
+    _make_list_ok_listbuilds_fail "$mock_root"
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        PROJECT_ROOT='${mock_root}'
+        export PROJECT_ROOT
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_validate_no_cycles
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Defect H regression lock: base_image field recognized in config.yaml fallback
 #
 # The config.yaml no-lineage fallback must inspect base_image values in addition

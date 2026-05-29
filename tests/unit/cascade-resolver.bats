@@ -614,18 +614,24 @@ _eval_parent_state() {
   local parent="$1"
   # STATE A: open drift PR → in_flux
   # Runs FIRST — ground truth independent of how CURRENT_DRIFT_SET was scoped.
-  local open_pr
-  if ! open_pr=$(gh pr list \
+  local open_pr _open_pr_raw _open_pr_rc
+  # Capture gh output separately so head cannot mask a gh API/auth failure —
+  # this step has no pipefail, so a pipeline'"'"'s exit status is the last
+  # command'"'"'s (head), not gh'"'"'s.  Splitting capture and head-1 makes gh rc
+  # the authoritative failure signal.
+  _open_pr_raw=$(gh pr list \
     --head "update/base-digest-${parent}" \
     --label "base-digest-drift" \
     --base master \
     --state open \
     --json number,isCrossRepository \
-    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' \
-    | head -1); then
-    echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' 2>&1)
+  _open_pr_rc=$?
+  if [[ $_open_pr_rc -ne 0 ]]; then
+    echo "::error::gh pr list failed while checking parent ${parent} open-PR state (rc=${_open_pr_rc}): ${_open_pr_raw}"
     return 2
   fi
+  open_pr=$(printf '"'"'%s\n'"'"' "$_open_pr_raw" | head -1)
   if [[ -n "$open_pr" ]]; then
     echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
     echo "in_flux"
@@ -828,6 +834,61 @@ _run_eval_parent_state() {
     _run_eval_parent_state "debian"
     [ "$status" -ne 0 ]
     [[ "$output" == *"::error::"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Defect R regression lock: gh pr list failure must NOT be masked by head -1
+#
+# Old code: `if ! open_pr=$(gh pr list ... | head -1)` — the pipeline exit
+# status is head's (always 0 on empty input), NOT gh's.  A transient API/auth
+# failure would produce open_pr="" and fall through to State B, potentially
+# classifying a drifting parent as "ready" and skipping the cascade label.
+#
+# Fix: capture gh output with an explicit rc check BEFORE applying head -1.
+# The mock below exits non-zero from gh even though it writes nothing to
+# stdout — head would have returned 0, making the old guard pass silently.
+#
+# Mutation guards:
+#   MG-R1: reverting to the piped form `$(gh ... | head -1)` in the if-guard
+#           makes the test pass (gh rc masked) — failing test catches regression.
+#   MG-R2: removing the rc check entirely → status=0, test catches it.
+# ---------------------------------------------------------------------------
+
+@test "DefectR: gh pr list exits non-zero (no stdout) → fail-closed, NOT silent empty open_pr" {
+    # This mode exits 1 with no stdout — head would return 0 (empty input is OK
+    # for head), masking the failure in the old piped form.
+    _setup_three_state_mock "pr-list-error"
+    _run_eval_parent_state "debian"
+    # Must exit non-zero: gh failure must propagate, not be masked by head.
+    [ "$status" -ne 0 ]
+    # Must emit an ::error:: annotation, not silently return ready/in_flux.
+    [[ "$output" == *"::error::"* ]]
+    # Must NOT emit a state token — the function must have aborted.
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ -z "$state_token" ]
+}
+
+@test "DefectR: gh pr list failure must NOT fall through to State B (capture-then-head structure)" {
+    # Structural invariant: the body must capture gh output into a variable
+    # (explicit rc check) BEFORE applying head -1.  The pipe-inside-if-guard
+    # anti-pattern is structurally absent.
+    local body="$EVAL_PARENT_STATE_BODY"
+    # New pattern: explicit rc variable present
+    [[ "$body" == *"_open_pr_rc"* ]]
+    # Old anti-pattern must be absent: gh pr list ... | head -1 inside the if guard
+    # (i.e. a single expression combining gh and head with a pipe before the rc check)
+    # We check that head -1 does NOT appear on the same logical line as gh pr list.
+    local gh_line head_line
+    gh_line=$(echo "$body" | grep -n 'gh pr list' | head -1 | cut -d: -f1)
+    head_line=$(echo "$body" | grep -n '| head -1' | head -1 | cut -d: -f1)
+    [[ -n "$gh_line" ]]
+    [[ -n "$head_line" ]]
+    # head -1 must appear AFTER the rc check, not before it
+    local rc_check_line
+    rc_check_line=$(echo "$body" | grep -n '_open_pr_rc' | grep -v '^[[:space:]]*#' | head -1 | cut -d: -f1)
+    [[ -n "$rc_check_line" ]]
+    # head line must come after the rc check line
+    [ "$head_line" -gt "$rc_check_line" ]
 }
 
 # ---------------------------------------------------------------------------

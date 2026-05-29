@@ -365,9 +365,9 @@ _depgraph_get_deps_transitive() {
         local deps _deps_rc
         deps=$(_depgraph_get_deps "$node")
         _deps_rc=$?
-        if [[ $_deps_rc -eq 2 ]]; then
-            echo "::error::Owner resolution failed for ${node} during transitive dep traversal" >&2
-            return 2
+        if [[ $_deps_rc -ne 0 ]]; then
+            echo "::error::_depgraph_get_deps failed for ${node} (rc=${_deps_rc}) during transitive dep traversal; aborting (fail-closed)" >&2
+            return $_deps_rc
         fi
         if [[ -n "$deps" ]]; then
             local dep
@@ -415,9 +415,9 @@ _depgraph_get_consumers() {
         local deps _deps_rc
         deps=$(_depgraph_get_deps "$c")
         _deps_rc=$?
-        if [[ $_deps_rc -eq 2 ]]; then
-            echo "::error::Owner resolution failed for ${c} during consumer scan" >&2
-            return 2
+        if [[ $_deps_rc -ne 0 ]]; then
+            echo "::error::_depgraph_get_deps failed for ${c} (rc=${_deps_rc}) during consumer scan; aborting (fail-closed)" >&2
+            return $_deps_rc
         fi
         if [[ " $deps " == *" $target "* ]]; then
             consumers="$consumers $c"
@@ -449,9 +449,9 @@ _depgraph_validate_no_cycles() {
         local deps _deps_rc
         deps=$(_depgraph_get_deps "$node")
         _deps_rc=$?
-        if [[ $_deps_rc -eq 2 ]]; then
-            echo "::error::Owner resolution failed for ${node} during cycle detection" >&2
-            return 2
+        if [[ $_deps_rc -ne 0 ]]; then
+            echo "::error::_depgraph_get_deps failed for ${node} (rc=${_deps_rc}) during cycle detection; aborting (fail-closed)" >&2
+            return $_deps_rc
         fi
         local dep
         for dep in $deps; do
@@ -464,8 +464,8 @@ _depgraph_validate_no_cycles() {
             if [[ "${color[$dep]:-0}" == "0" ]]; then
                 _dfs_cycle "$dep" "${path} -> $dep"
                 local _dfs_rc=$?
-                if [[ $_dfs_rc -eq 2 ]]; then
-                    return 2
+                if [[ $_dfs_rc -ne 0 ]]; then
+                    return $_dfs_rc
                 fi
                 if [[ "$cycle_found" == "true" ]]; then
                     return 0
@@ -480,8 +480,8 @@ _depgraph_validate_no_cycles() {
         if [[ "${color[$c]:-0}" == "0" ]]; then
             _dfs_cycle "$c"
             local _top_rc=$?
-            if [[ $_top_rc -eq 2 ]]; then
-                return 2
+            if [[ $_top_rc -ne 0 ]]; then
+                return $_top_rc
             fi
             if [[ "$cycle_found" == "true" ]]; then
                 printf '::error::Cycle detected in container dependency graph: %s\n' "$cycle_path" >&2

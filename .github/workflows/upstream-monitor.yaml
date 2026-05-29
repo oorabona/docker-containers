@@ -1974,18 +1974,24 @@ jobs:
             # STATE A: Is there an open drift PR for this parent?
             # Runs BEFORE the drift-set check (State B) — ground truth independent of
             # how CURRENT_DRIFT_SET was scoped.
-            local open_pr
-            if ! open_pr=$(gh pr list \
+            local open_pr _open_pr_raw _open_pr_rc
+            # Capture gh output separately so head cannot mask a gh API/auth failure —
+            # this step has no pipefail, so a pipeline's exit status is the last
+            # command's (head), not gh's.  Splitting capture and head-1 makes gh rc
+            # the authoritative failure signal.
+            _open_pr_raw=$(gh pr list \
               --head "update/base-digest-${parent}" \
               --label "base-digest-drift" \
               --base master \
               --state open \
               --json number,isCrossRepository \
-              --jq '.[] | select(.isCrossRepository == false) | .number' \
-              | head -1); then
-              echo "::error::Failed to query parent PR for ${parent} (cascade safety requires this lookup to succeed). Aborting."
+              --jq '.[] | select(.isCrossRepository == false) | .number' 2>&1)
+            _open_pr_rc=$?
+            if [[ $_open_pr_rc -ne 0 ]]; then
+              echo "::error::gh pr list failed while checking parent ${parent} open-PR state (rc=${_open_pr_rc}): ${_open_pr_raw}"
               return 2
             fi
+            open_pr=$(printf '%s\n' "$_open_pr_raw" | head -1)
             if [[ -n "$open_pr" ]]; then
               echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
               echo "in_flux"
