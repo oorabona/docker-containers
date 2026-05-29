@@ -387,6 +387,58 @@ _write_lineage() {
     [ "$output" = "" ]
 }
 
+@test "depgraph: docker.io with project owner → internal dep detected (Defect C regression)" {
+    # Lineage files emit resolved refs in docker.io/<owner>/... form.
+    # These must be classified as internal (same registry as hub.docker.io).
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "docker.io/oorabona/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: docker.io with other-owner → NOT an internal dep (owner mismatch)" {
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "docker.io/other-owner/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "depgraph: docker.io and hub.docker.io are symmetric for same owner and container" {
+    # Both aliases for the same registry — both must resolve to the same parent.
+    export _DEPGRAPH_OWNER_OVERRIDE=oorabona
+    _write_lineage "wordpress" "latest" "docker.io/oorabona/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    local docker_io_result="$output"
+    # Now test hub.docker.io
+    _write_lineage "wordpress" "latest" "hub.docker.io/oorabona/php:latest"
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+    [ "$docker_io_result" = "php" ]
+}
+
 @test "depgraph: \${REMOTE_CR}/php:latest always internal (CI-controlled prefix)" {
     export _DEPGRAPH_OWNER_OVERRIDE=oorabona
     _write_lineage "wordpress" "latest" '${REMOTE_CR}/php:latest'

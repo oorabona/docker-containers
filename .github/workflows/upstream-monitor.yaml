@@ -1913,20 +1913,27 @@ jobs:
         run: |
           # Three-state parent evaluation: in_flux | ready
           #
-          # State 0: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
-          #   Stable parents (rebuilt in a prior run, not drifting today) must never
-          #   gate a child permanently: GHCR timestamp (State 2) returns in_flux when
+          # STATE A: open drift PR → in_flux (parent is still being integrated)
+          #   Ground truth for "is there pending parent work?" — queried FIRST because it
+          #   is independent of how CURRENT_DRIFT_SET was scoped.  On a scoped
+          #   workflow_dispatch (e.g. requested_container=wordpress), drift_containers_csv
+          #   is filtered to the requested container before this step runs, so php would
+          #   be absent from CURRENT_DRIFT_SET even if its drift PR is still open.
+          #   Checking the open PR first prevents the child from auto-merging against the
+          #   stale parent image in that case.
+          #
+          # STATE B: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
+          #   Only safe AFTER the open-PR check above: no open PR means no pending parent
+          #   work regardless of whether the parent is in the (possibly scoped) drift set.
+          #   Stable parents (rebuilt in a prior run, not drifting today) must never gate
+          #   a child permanently: GHCR timestamp (State C) returns in_flux when
           #   parent_last_updated < run_start, which is always true for a stable parent.
-          #   Only cascade-gate when the parent is actively being processed by this cron.
           #
-          # State 1: open drift PR → in_flux (parent is still being integrated)
-          #
-          # State 2: no open PR + GHCR image refreshed after run_start → ready
+          # STATE C: no open PR + GHCR image refreshed after run_start → ready
           #          no open PR + GHCR image NOT refreshed after run_start → in_flux
-          #
-          # GHCR is the source of truth for State 2: the parent image's updated_at
-          # timestamp directly answers "has the parent rebuild landed?" without any
-          # indirection through Actions runs retention (which ages out after 90 days).
+          #   GHCR is the source of truth: the parent image's updated_at timestamp directly
+          #   answers "has the parent rebuild landed?" without any indirection through
+          #   Actions runs retention (which ages out after 90 days).
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
@@ -1940,24 +1947,10 @@ jobs:
               # Conservative fallback: use yesterday so a recent push qualifies as "during this run"
               run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
             fi
-            # STATE 0: Is the parent in the current drift set?
-            # If not, it was last rebuilt in a prior run — GHCR already has the stable
-            # image and State 2's timestamp check would wrongly return in_flux.
-            if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
-              local _parent_drifting=0
-              for _c in ${CURRENT_DRIFT_SET//,/ }; do
-                if [[ "$_c" == "$parent" ]]; then
-                  _parent_drifting=1
-                  break
-                fi
-              done
-              if [[ $_parent_drifting -eq 0 ]]; then
-                echo "::notice::Parent ${parent} is not in the current drift set — GHCR image is stable, ready"
-                echo "ready"
-                return 0
-              fi
-            fi
-            # STATE 1: Is there an open drift PR for this parent?
+            # STATE A: Is there an open drift PR for this parent?
+            # Must run BEFORE the drift-set check (State B): on a scoped workflow_dispatch,
+            # CURRENT_DRIFT_SET is filtered to the requested container, so a parent with an
+            # open drift PR would be absent from the set and incorrectly classified ready.
             local open_pr
             if ! open_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
@@ -1975,7 +1968,26 @@ jobs:
               echo "in_flux"
               return 0
             fi
-            # STATE 2: Has parent's GHCR image been refreshed during this run?
+            # STATE B: Is the parent in the current drift set?
+            # Only reached when there is no open drift PR (State A cleared above).
+            # If the parent is absent from CURRENT_DRIFT_SET, it was rebuilt in a prior run —
+            # GHCR already has the stable image and State C's timestamp check would wrongly
+            # return in_flux. Short-circuit to ready.
+            if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
+              local _parent_drifting=0
+              for _c in ${CURRENT_DRIFT_SET//,/ }; do
+                if [[ "$_c" == "$parent" ]]; then
+                  _parent_drifting=1
+                  break
+                fi
+              done
+              if [[ $_parent_drifting -eq 0 ]]; then
+                echo "::notice::Parent ${parent} has no open drift PR and is not in the current drift set — GHCR image is stable, ready"
+                echo "ready"
+                return 0
+              fi
+            fi
+            # STATE C: Has parent's GHCR image been refreshed during this run?
             # GHCR is the source of truth — no indirection through Actions retention.
             local parent_last_updated
             if ! parent_last_updated=$(gh api \

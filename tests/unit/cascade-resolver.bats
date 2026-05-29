@@ -496,12 +496,16 @@ _run_identify_parent() {
 }
 
 # ---------------------------------------------------------------------------
-# Two-state parent evaluation (_eval_parent_state) — GHCR as source of truth
+# Three-state parent evaluation (_eval_parent_state) — open PR first, GHCR as source of truth
 #
 # The _eval_parent_state function (defined in "Apply cascade labels (strict)"
 # in upstream-monitor.yaml) emits 'in_flux' or 'ready' on stdout, with
-# notices/warnings on GHA annotation lines.  Tests cover State 1 (open PR)
-# and State 2 (GHCR timestamp comparison).
+# notices/warnings on GHA annotation lines.
+#
+# Ordering (A → B → C):
+#   State A: open drift PR → in_flux  (ground truth — runs FIRST, independent of drift-set scope)
+#   State B: parent not in CURRENT_DRIFT_SET → ready  (only safe after A confirms no open PR)
+#   State C: GHCR timestamp comparison
 #
 # Mock strategy:
 #   - gh: controlled by MODE env var; routes on "pr list" vs "api users"
@@ -518,22 +522,8 @@ _eval_parent_state() {
   if [[ -z "$run_start" ]]; then
     run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
   fi
-  # STATE 0: parent not in CURRENT_DRIFT_SET → stable, ready
-  if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
-    local _parent_drifting=0
-    for _c in ${CURRENT_DRIFT_SET//,/ }; do
-      if [[ "$_c" == "$parent" ]]; then
-        _parent_drifting=1
-        break
-      fi
-    done
-    if [[ $_parent_drifting -eq 0 ]]; then
-      echo "::notice::Parent ${parent} is not in the current drift set — GHCR image is stable, ready"
-      echo "ready"
-      return 0
-    fi
-  fi
-  # STATE 1
+  # STATE A: open drift PR → in_flux
+  # Runs FIRST — ground truth independent of how CURRENT_DRIFT_SET was scoped.
   local open_pr
   if ! open_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
@@ -551,6 +541,23 @@ _eval_parent_state() {
     echo "in_flux"
     return 0
   fi
+  # STATE B: parent not in CURRENT_DRIFT_SET → stable, ready
+  # Only safe after State A confirmed no open PR.
+  if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
+    local _parent_drifting=0
+    for _c in ${CURRENT_DRIFT_SET//,/ }; do
+      if [[ "$_c" == "$parent" ]]; then
+        _parent_drifting=1
+        break
+      fi
+    done
+    if [[ $_parent_drifting -eq 0 ]]; then
+      echo "::notice::Parent ${parent} has no open drift PR and is not in the current drift set — GHCR image is stable, ready"
+      echo "ready"
+      return 0
+    fi
+  fi
+  # STATE C: GHCR timestamp comparison
   local parent_last_updated
   if ! parent_last_updated=$(gh api \
     "users/${_repo%%/*}/packages/container/${parent}/versions" \
@@ -576,9 +583,9 @@ _eval_parent_state() {
 _eval_parent_state "$PARENT_ARG"
 '
 
-# Writes a mock gh for GHCR-based two-state tests.
+# Writes a mock gh for three-state tests.
 # $1 = mode:
-#   open-pr              -- pr list returns PR #10 (State 1: in_flux)
+#   open-pr              -- pr list returns PR #10 (State A: in_flux)
 #   open-pr-fork         -- pr list: fork PR (isCrossRepository=true -> jq drops it)
 #   open-pr-no-label     -- pr list: empty (label filter excluded server-side)
 #   ghcr-fresh           -- pr list empty; GHCR API returns updated_at newer than RUN_STARTED_AT
@@ -667,11 +674,11 @@ _run_eval_parent_state() {
 
 
 # ---------------------------------------------------------------------------
-# State 1 trust boundaries (preserved from r8)
+# State A trust boundaries (preserved from r8)
 # ---------------------------------------------------------------------------
 
 # PR from fork (isCrossRepository=true): jq filter excludes it -> falls through to GHCR check
-@test "eval_parent_state: PR from fork (isCrossRepository=true) → NOT in_flux via State 1 (falls through to GHCR)" {
+@test "eval_parent_state: PR from fork (isCrossRepository=true) → NOT in_flux via State A (falls through to GHCR)" {
     GHCR_UPDATED_AT="2026-05-28T10:00:00Z" _setup_three_state_mock "open-pr-fork"
     RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
@@ -999,34 +1006,37 @@ MOCK_BODY
 }
 
 # ---------------------------------------------------------------------------
-# State 0: stable-parent deadlock fix
+# State B: stable-parent deadlock fix (formerly State 0)
 #
-# When CURRENT_DRIFT_SET is set and the parent is NOT in it, the parent was
-# rebuilt in a prior run — GHCR timestamp (State 2) would wrongly return
-# in_flux because parent_last_updated < run_start is always true for a stable
-# parent. State 0 short-circuits to "ready" before any gh call.
+# When CURRENT_DRIFT_SET is set and the parent is NOT in it AND there is no
+# open drift PR (State A cleared), the parent was rebuilt in a prior run —
+# GHCR timestamp (State C) would wrongly return in_flux because
+# parent_last_updated < run_start is always true for a stable parent.
+# State B short-circuits to "ready" after confirming no open PR.
 #
 # Mutation guards:
-#   MG-S0a: removing State 0 → stable parent with stale GHCR gets in_flux
-#            (test "stable parent not in drift set → ready without gh call")
-#   MG-S0b: checking _parent_drifting==1 instead of ==0 → inverted logic
-#            (test "parent IN drift set → falls through to State 1/2")
+#   MG-SBa: removing State B → stable parent with stale GHCR gets in_flux
+#            (test "stable parent not in drift set → ready without GHCR call")
+#   MG-SBb: checking _parent_drifting==1 instead of ==0 → inverted logic
+#            (test "parent IN drift set → falls through to State C")
 # ---------------------------------------------------------------------------
 
-@test "State0: parent not in CURRENT_DRIFT_SET → ready without any gh call" {
-    # php rebuilt yesterday (stable). wordpress drifts today.
+@test "StateB: parent not in CURRENT_DRIFT_SET → ready without GHCR call" {
+    # php rebuilt yesterday (stable, no open PR). wordpress drifts today.
     # CURRENT_DRIFT_SET contains wordpress, NOT php.
-    # State 0 must return ready for php without calling gh at all.
+    # State A (open-PR) returns empty → State B must return ready for php without
+    # calling the GHCR API.
     _setup_three_state_mock "ghcr-stale"
     CURRENT_DRIFT_SET="wordpress,ansible" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
-    # No gh call — State 0 short-circuited
-    [ ! -s "$TEST_TEMP_DIR/gh_calls.log" ] || ! grep -q "pr list\|api users" "$TEST_TEMP_DIR/gh_calls.log"
+    # pr list was called (State A), but GHCR API must NOT have been called (State B short-circuited)
+    grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "State0: parent not in drift set → emits ::notice:: with stable-parent message" {
+@test "StateB: parent not in drift set → emits ::notice:: with stable-parent message" {
     _setup_three_state_mock "ghcr-stale"
     CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
@@ -1034,41 +1044,88 @@ MOCK_BODY
     [[ "$output" == *"not in the current drift set"* ]]
 }
 
-@test "State0: parent IN CURRENT_DRIFT_SET → falls through to State 1 (gh pr list called)" {
-    # php is in the drift set → State 0 does not short-circuit → State 1 runs.
-    _setup_three_state_mock "open-pr"
-    CURRENT_DRIFT_SET="php,wordpress" _run_eval_parent_state "php"
+@test "StateB: parent IN CURRENT_DRIFT_SET → falls through to State C (GHCR API called)" {
+    # php is in the drift set → State B does not short-circuit → State C runs.
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    CURRENT_DRIFT_SET="php,wordpress" RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+    [ "$state_token" = "ready" ]
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "State0: CURRENT_DRIFT_SET unset → State 0 skipped, falls through to State 1" {
-    # Without CURRENT_DRIFT_SET, behavior is unchanged: go straight to State 1.
-    _setup_three_state_mock "open-pr"
-    CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
+@test "StateB: CURRENT_DRIFT_SET unset → State B skipped, falls through to State C" {
+    # Without CURRENT_DRIFT_SET, no short-circuit: go straight to State C.
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    CURRENT_DRIFT_SET="" RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    [ "$state_token" = "in_flux" ]
-    grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+    [ "$state_token" = "ready" ]
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "State0: single-entry drift set — parent matches exactly → falls through to State 2" {
+@test "StateB: single-entry drift set — parent matches exactly → falls through to State C" {
     # Only one container drifting, and it's the parent being evaluated.
     GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
     CURRENT_DRIFT_SET="debian" RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "ready" ]
-    # GHCR API must have been called (fell through to State 2)
+    # GHCR API must have been called (fell through to State C)
     grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "State0: body contains CURRENT_DRIFT_SET loop (State 0 is present)" {
-    # Inverse of the former two-phase test: State 0 MUST be present.
+@test "StateB: body contains CURRENT_DRIFT_SET loop (State B is present)" {
+    # State B MUST be present in the function body.
     local body="$EVAL_PARENT_STATE_BODY"
     [[ "$body" == *"CURRENT_DRIFT_SET"* ]]
     [[ "$body" == *"_parent_drifting"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Defect D regression lock: scoped workflow_dispatch
+#
+# On a scoped workflow_dispatch (requested_container=wordpress), drift_containers_csv
+# is filtered to the requested container before the cascade-labels step runs.
+# If php has an open drift PR but is absent from CURRENT_DRIFT_SET, State A
+# (open-PR check, now running FIRST) must catch it and return in_flux, preventing
+# the child from auto-merging against the stale php parent image.
+# ---------------------------------------------------------------------------
+
+@test "DefectD: scoped dispatch — parent absent from drift set but has open PR → in_flux" {
+    # Simulate scoped workflow_dispatch: CURRENT_DRIFT_SET=wordpress (php excluded).
+    # php has an open drift PR (#10) — State A must catch it before State B short-circuits.
+    _setup_three_state_mock "open-pr"
+    CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    # Must be in_flux — open PR is ground truth regardless of drift-set scope.
+    [ "$state_token" = "in_flux" ]
+    [[ "$output" == *"has open drift PR"* ]]
+    grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "DefectD: scoped dispatch — parent absent from drift set with no open PR → ready" {
+    # No open PR for php → State A returns empty → State B sees php absent from drift set
+    # → ready (correct: php was rebuilt in a prior run, no pending work).
+    _setup_three_state_mock "ghcr-stale"
+    CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+}
+
+@test "DefectD: State A runs before State B (open-PR check precedes drift-set loop in body)" {
+    # Structural invariant: the gh pr list call must appear before the CURRENT_DRIFT_SET
+    # iteration loop (_parent_drifting loop).
+    local body="$EVAL_PARENT_STATE_BODY"
+    local pr_list_pos drift_loop_pos
+    pr_list_pos=$(echo "$body" | grep -n "gh pr list" | head -1 | cut -d: -f1)
+    # Use the iteration variable assignment, not the if-condition (avoids matching comments)
+    drift_loop_pos=$(echo "$body" | grep -n "_parent_drifting=0" | head -1 | cut -d: -f1)
+    [[ -n "$pr_list_pos" ]]
+    [[ -n "$drift_loop_pos" ]]
+    # pr list must appear at an earlier line than the drift-set iteration loop
+    [ "$pr_list_pos" -lt "$drift_loop_pos" ]
 }
 

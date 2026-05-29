@@ -103,7 +103,8 @@ _depgraph_project_owner() {
 # Outputs the parent container name if the ref is project-internal; empty otherwise.
 # Matches patterns (only when <owner> == project owner):
 #   ghcr.io/<owner>/<X>:<tag>
-#   hub.docker.io/<owner>/<X>:<tag>
+#   hub.docker.io/<owner>/<X>:<tag>  (Docker Hub mirror — hub.docker.io alias)
+#   docker.io/<owner>/<X>:<tag>      (Docker Hub mirror — docker.io alias, same registry)
 #   ${REMOTE_CR}/<X>:<tag>    (CI-controlled variable — always trusted)
 # ---------------------------------------------------------------------------
 _depgraph_is_internal_ref() {
@@ -138,16 +139,18 @@ _depgraph_is_internal_ref() {
 
     # Match: after owner-prefix path, extract container name before : or @ or end
     # Patterns:
-    #   ghcr.io/<owner>/<name>:<tag>   → after ghcr.io/<owner>/, take <name>
-    #   hub.docker.io/<owner>/<name>:<tag> → after hub.docker.io/<owner>/, take <name>
-    #   ${REMOTE_CR}/<name>:<tag>      → normalized_ref is already <name>:<tag> here
+    #   ghcr.io/<owner>/<name>:<tag>            → after ghcr.io/<owner>/, take <name>
+    #   hub.docker.io/<owner>/<name>:<tag>      → after hub.docker.io/<owner>/, take <name>
+    #   docker.io/<owner>/<name>:<tag>          → same registry as hub.docker.io, different alias
+    #   ${REMOTE_CR}/<name>:<tag>               → normalized_ref is already <name>:<tag> here
     if [[ "$normalized_ref" =~ ^ghcr\.io/([^/]+)/([^:/@ ]+) ]]; then
         if [[ "${BASH_REMATCH[1]}" == "$owner" ]]; then
             parent="${BASH_REMATCH[2]}"
         fi
-    elif [[ "$normalized_ref" =~ ^hub\.docker\.io/([^/]+)/([^:/@ ]+) ]]; then
-        if [[ "${BASH_REMATCH[1]}" == "$owner" ]]; then
-            parent="${BASH_REMATCH[2]}"
+    elif [[ "$normalized_ref" =~ ^(hub\.docker\.io|docker\.io)/([^/]+)/([^:/@ ]+) ]]; then
+        # hub.docker.io and docker.io are aliases for the same registry
+        if [[ "${BASH_REMATCH[2]}" == "$owner" ]]; then
+            parent="${BASH_REMATCH[3]}"
         fi
     elif [[ "$ref" == "${remote_cr_prefix}"* && "$normalized_ref" =~ ^([^:/@ ]+) ]]; then
         # ${REMOTE_CR}/name:tag after stripping prefix — CI-controlled, always trusted
@@ -227,7 +230,7 @@ _depgraph_get_deps() {
         if [[ -f "$config_file" ]]; then
             # Extract all string values from build_args that look like internal refs
             local build_args_refs
-            build_args_refs=$(grep -oE '(ghcr\.io/[^/]+/[^:/ ]+|hub\.docker\.io/[^/]+/[^:/ ]+|\$\{REMOTE_CR\}/[^:/ ]+)' \
+            build_args_refs=$(grep -oE '(ghcr\.io/[^/]+/[^:/ ]+|hub\.docker\.io/[^/]+/[^:/ ]+|docker\.io/[^/]+/[^:/ ]+|\$\{REMOTE_CR\}/[^:/ ]+)' \
                 "$config_file" 2>/dev/null || true)
             while IFS= read -r ref; do
                 [[ -n "$ref" ]] || continue
