@@ -130,7 +130,10 @@ _depgraph_is_internal_ref() {
     # Resolve project owner (fail-closed: if undetermined, treat ref as external)
     local owner
     if ! owner=$(_depgraph_project_owner 2>/dev/null); then
-        return 1
+        # rc=2 distinguishes owner-resolution failure from "external ref" (rc=0+empty).
+        # Callers must check rc explicitly; treating this as "not internal" silently
+        # bypasses the internal-ref classification and is wrong.
+        return 2
     fi
 
     # Match: after owner-prefix path, extract container name before : or @ or end
@@ -202,8 +205,13 @@ _depgraph_get_deps() {
         base_ref=$(jq -r '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
         [[ -n "$base_ref" ]] || continue
 
-        local parent
+        local parent _iref_rc
         parent=$(_depgraph_is_internal_ref "$base_ref" "$valid_containers")
+        _iref_rc=$?
+        if [[ $_iref_rc -eq 2 ]]; then
+            echo "::error::Owner resolution failed; cannot classify '${base_ref}' — aborting dep scan" >&2
+            return 2
+        fi
         [[ -n "$parent" ]] || continue
         [[ "$parent" == "$container" ]] && continue  # no self-deps
 
@@ -223,8 +231,13 @@ _depgraph_get_deps() {
                 "$config_file" 2>/dev/null || true)
             while IFS= read -r ref; do
                 [[ -n "$ref" ]] || continue
-                local parent
+                local parent _iref_rc
                 parent=$(_depgraph_is_internal_ref "$ref" "$valid_containers")
+                _iref_rc=$?
+                if [[ $_iref_rc -eq 2 ]]; then
+                    echo "::error::Owner resolution failed; cannot classify '${ref}' — aborting dep scan" >&2
+                    return 2
+                fi
                 [[ -n "$parent" ]] || continue
                 [[ "$parent" == "$container" ]] && continue
                 if [[ " $deps " != *" $parent "* ]]; then

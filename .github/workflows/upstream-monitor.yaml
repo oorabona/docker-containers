@@ -1909,20 +1909,24 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+          CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
         run: |
-          # Two-state parent evaluation: in_flux | ready
+          # Three-state parent evaluation: in_flux | ready
+          #
+          # State 0: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
+          #   Stable parents (rebuilt in a prior run, not drifting today) must never
+          #   gate a child permanently: GHCR timestamp (State 2) returns in_flux when
+          #   parent_last_updated < run_start, which is always true for a stable parent.
+          #   Only cascade-gate when the parent is actively being processed by this cron.
           #
           # State 1: open drift PR → in_flux (parent is still being integrated)
+          #
           # State 2: no open PR + GHCR image refreshed after run_start → ready
           #          no open PR + GHCR image NOT refreshed after run_start → in_flux
           #
-          # GHCR is the source of truth: the parent image's updated_at timestamp
-          # directly answers "has the parent rebuild landed?" without any indirection
-          # through Actions runs retention (which ages out after 90 days).
-          #
-          # No State 0 needed: open-drift-prs-leaves has already completed before this
-          # job starts (guaranteed by `needs: [open-drift-prs-leaves]`), so all parent
-          # PRs are already created (or explicitly skipped) — State 1 finds them directly.
+          # GHCR is the source of truth for State 2: the parent image's updated_at
+          # timestamp directly answers "has the parent rebuild landed?" without any
+          # indirection through Actions runs retention (which ages out after 90 days).
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
@@ -1935,6 +1939,23 @@ jobs:
             if [[ -z "$run_start" ]]; then
               # Conservative fallback: use yesterday so a recent push qualifies as "during this run"
               run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
+            fi
+            # STATE 0: Is the parent in the current drift set?
+            # If not, it was last rebuilt in a prior run — GHCR already has the stable
+            # image and State 2's timestamp check would wrongly return in_flux.
+            if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
+              local _parent_drifting=0
+              for _c in ${CURRENT_DRIFT_SET//,/ }; do
+                if [[ "$_c" == "$parent" ]]; then
+                  _parent_drifting=1
+                  break
+                fi
+              done
+              if [[ $_parent_drifting -eq 0 ]]; then
+                echo "::notice::Parent ${parent} is not in the current drift set — GHCR image is stable, ready"
+                echo "ready"
+                return 0
+              fi
             fi
             # STATE 1: Is there an open drift PR for this parent?
             local open_pr

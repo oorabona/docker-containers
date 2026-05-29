@@ -496,3 +496,77 @@ _write_lineage() {
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 }
+
+# ---------------------------------------------------------------------------
+# Gate r21 — Defect B fix: _depgraph_is_internal_ref rc=2 propagation
+#
+# _depgraph_is_internal_ref returns rc=2 when owner-resolution fails.
+# _depgraph_get_deps must propagate rc=2 (not silently treat it as "external")
+# for both the lineage-file path and the config.yaml fallback path.
+#
+# Mutation guards:
+#   MG-D2a: checking [[ -n "$parent" ]] only (ignoring _iref_rc) → rc=2 swallowed
+#            (test "owner failure in lineage path → get_deps exits non-zero")
+#   MG-D2b: same for config.yaml fallback path
+#            (test "owner failure in config.yaml fallback path → get_deps exits non-zero")
+# ---------------------------------------------------------------------------
+
+@test "depgraph: _depgraph_is_internal_ref returns rc=2 on owner-resolution failure" {
+    # With no owner env and no git remote (isolated dir), _depgraph_project_owner
+    # fails → _depgraph_is_internal_ref must return rc=2.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_r21"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_is_internal_ref 'ghcr.io/someowner/php:latest' 'php wordpress'
+    "
+    [ "$status" -eq 2 ]
+}
+
+@test "depgraph: owner failure in lineage path → _depgraph_get_deps exits non-zero (fail-closed)" {
+    # Write a real lineage file with a ghcr.io ref. Remove owner resolution so
+    # _depgraph_is_internal_ref returns rc=2 — _depgraph_get_deps must propagate it.
+    _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
+    local isolated_dir="$TEST_TEMP_DIR/isolated_lineage_r21"
+    mkdir -p "$isolated_dir"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        # Override valid containers so the lineage dir is recognised but owner fails
+        _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}
+
+@test "depgraph: owner failure in config.yaml fallback path → _depgraph_get_deps exits non-zero (fail-closed)" {
+    # No lineage files for containerFallback → falls through to config.yaml path.
+    # Owner resolution fails there too — must propagate rc non-zero.
+    local isolated_dir="$TEST_TEMP_DIR/isolated_fallback_r21"
+    mkdir -p "$isolated_dir/containerFallback"
+    printf 'base_image_cache:\n  - image: ghcr.io/someowner/php:8.4-fpm-alpine\n' \
+        > "$isolated_dir/containerFallback/config.yaml"
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        # Use a temp PROJECT_ROOT that has the config.yaml but no git remote
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='containerFallback php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps containerFallback
+    "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"::error::"* ]]
+}

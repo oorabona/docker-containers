@@ -518,6 +518,22 @@ _eval_parent_state() {
   if [[ -z "$run_start" ]]; then
     run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
   fi
+  # STATE 0: parent not in CURRENT_DRIFT_SET → stable, ready
+  if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
+    local _parent_drifting=0
+    for _c in ${CURRENT_DRIFT_SET//,/ }; do
+      if [[ "$_c" == "$parent" ]]; then
+        _parent_drifting=1
+        break
+      fi
+    done
+    if [[ $_parent_drifting -eq 0 ]]; then
+      echo "::notice::Parent ${parent} is not in the current drift set — GHCR image is stable, ready"
+      echo "ready"
+      return 0
+    fi
+  fi
+  # STATE 1
   local open_pr
   if ! open_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
@@ -983,34 +999,76 @@ MOCK_BODY
 }
 
 # ---------------------------------------------------------------------------
-# Two-phase matrix invariant
+# State 0: stable-parent deadlock fix
 #
-# With the two-job split (open-drift-prs-leaves / open-drift-prs-consumers),
-# State 0 is no longer needed: open-drift-prs-leaves always completes before
-# open-drift-prs-consumers starts (enforced by `needs:`), so parent PRs are
-# guaranteed to be visible via State 1 when the consumer job runs.
+# When CURRENT_DRIFT_SET is set and the parent is NOT in it, the parent was
+# rebuilt in a prior run — GHCR timestamp (State 2) would wrongly return
+# in_flux because parent_last_updated < run_start is always true for a stable
+# parent. State 0 short-circuits to "ready" before any gh call.
 #
-# These tests verify that the consumers job's _eval_parent_state body
-# contains NO State 0 loop — the removed code path must not reappear.
+# Mutation guards:
+#   MG-S0a: removing State 0 → stable parent with stale GHCR gets in_flux
+#            (test "stable parent not in drift set → ready without gh call")
+#   MG-S0b: checking _parent_drifting==1 instead of ==0 → inverted logic
+#            (test "parent IN drift set → falls through to State 1/2")
 # ---------------------------------------------------------------------------
 
-@test "two-phase: _eval_parent_state body has no CURRENT_DRIFT_SET loop" {
-    # The consumers job _eval_parent_state must not iterate over CURRENT_DRIFT_SET.
-    # If State 0 is accidentally re-introduced, this test catches it.
-    local body="$EVAL_PARENT_STATE_BODY"
-    [[ "$body" != *"CURRENT_DRIFT_SET"* ]]
-    [[ "$body" != *"_current_drift"* ]]
+@test "State0: parent not in CURRENT_DRIFT_SET → ready without any gh call" {
+    # php rebuilt yesterday (stable). wordpress drifts today.
+    # CURRENT_DRIFT_SET contains wordpress, NOT php.
+    # State 0 must return ready for php without calling gh at all.
+    _setup_three_state_mock "ghcr-stale"
+    CURRENT_DRIFT_SET="wordpress,ansible" _run_eval_parent_state "php"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+    # No gh call — State 0 short-circuited
+    [ ! -s "$TEST_TEMP_DIR/gh_calls.log" ] || ! grep -q "pr list\|api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "two-phase: _eval_parent_state goes directly to gh pr list (State 1) when parent has open PR" {
-    # Verify State 1 is reached without any drift-set guard:
-    # use open-pr mock → function must return in_flux via gh pr list.
+@test "State0: parent not in drift set → emits ::notice:: with stable-parent message" {
+    _setup_three_state_mock "ghcr-stale"
+    CURRENT_DRIFT_SET="wordpress" _run_eval_parent_state "php"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"::notice::"* ]]
+    [[ "$output" == *"not in the current drift set"* ]]
+}
+
+@test "State0: parent IN CURRENT_DRIFT_SET → falls through to State 1 (gh pr list called)" {
+    # php is in the drift set → State 0 does not short-circuit → State 1 runs.
     _setup_three_state_mock "open-pr"
-    _run_eval_parent_state "debian"
+    CURRENT_DRIFT_SET="php,wordpress" _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
-    # gh pr list must have been called (State 1 path)
     grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "State0: CURRENT_DRIFT_SET unset → State 0 skipped, falls through to State 1" {
+    # Without CURRENT_DRIFT_SET, behavior is unchanged: go straight to State 1.
+    _setup_three_state_mock "open-pr"
+    CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+    grep -q "pr list" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "State0: single-entry drift set — parent matches exactly → falls through to State 2" {
+    # Only one container drifting, and it's the parent being evaluated.
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" _setup_three_state_mock "ghcr-fresh"
+    CURRENT_DRIFT_SET="debian" RUN_STARTED_AT="2026-05-29T08:00:00Z" _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+    # GHCR API must have been called (fell through to State 2)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "State0: body contains CURRENT_DRIFT_SET loop (State 0 is present)" {
+    # Inverse of the former two-phase test: State 0 MUST be present.
+    local body="$EVAL_PARENT_STATE_BODY"
+    [[ "$body" == *"CURRENT_DRIFT_SET"* ]]
+    [[ "$body" == *"_parent_drifting"* ]]
 }
 
