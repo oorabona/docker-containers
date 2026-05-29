@@ -678,6 +678,16 @@ for container in "${_container_order[@]}"; do
     # Failure is fatal: a dep-graph error must not silently produce internal_deps=[]
     # and bypass cascade gating.
     #
+    # Test-mode bridge: _VALID_CONTAINERS_OVERRIDE (detect-script test hook) signals
+    # that synthetic container names are in use.  _depgraph_get_deps uses a separate
+    # test hook (_DEPGRAPH_CONTAINERS_OVERRIDE) to bypass ./make list-builds.  Bridge
+    # the two here so scenario tests that only set _VALID_CONTAINERS_OVERRIDE do not
+    # inadvertently trigger ./make list-builds for synthetic containers.
+    if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" && -z "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
+        _DEPGRAPH_CONTAINERS_OVERRIDE="$(printf '%s' "${_VALID_CONTAINERS_OVERRIDE}" | tr '\n' ' ')"
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+    fi
+    #
     # NOTE: use a temp file for stderr capture + explicit exit-code check instead
     # of `if ! var=$(cmd 2>&1)`.  The `if !` construct disables set -e inside the
     # command substitution subshell (bash spec §3.7.5), so failures in nested
