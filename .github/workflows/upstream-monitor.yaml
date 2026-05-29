@@ -1938,6 +1938,7 @@ jobs:
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
           CURRENT_ERROR_SET: ${{ needs.detect-digest-drift.outputs.error_containers_csv }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           # Four-state parent evaluation: in_flux | ready
           # Ordering: A → B0 → B → C
@@ -2026,10 +2027,39 @@ jobs:
                 echo "ready"
                 return 0
               fi
+              # Parent IS in the drift snapshot, no open PR: race-window guard (Defect O fix).
+              #
+              # Race: parent drift PR merged AND master rebuild completed BETWEEN the
+              # detect-digest-drift snapshot and this evaluation.  Without the guard the
+              # child gets cascade:waiting-for-<parent>; cascade-resolver already fired
+              # for that parent rebuild (before the child existed) → child stranded until
+              # the next cron run.
+              #
+              # This GHCR check is narrower than the broad State C removed in r23.
+              # r23 ran the check for EVERY parent; that was unsound because
+              # RUN_STARTED_AT was never plumbed and queried package-wide latest rather
+              # than the specific tag.  Here: only when parent IS in the drift set AND
+              # no open PR — the one window where the snapshot could be stale.
+              local _ghcr_updated_at
+              _ghcr_updated_at=$(gh api \
+                "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${parent}/versions" \
+                --jq '.[0].updated_at' 2>/dev/null) || _ghcr_updated_at=""
+              if [[ -n "$_ghcr_updated_at" && -n "${RUN_STARTED_AT:-}" ]]; then
+                # ISO-8601 UTC strings (Z-suffix, same precision) compare correctly as
+                # lexicographic strings: a later timestamp sorts after an earlier one.
+                if [[ "$_ghcr_updated_at" > "$RUN_STARTED_AT" ]]; then
+                  echo "::notice::Parent ${parent} was rebuilt after run start (GHCR ${_ghcr_updated_at} > ${RUN_STARTED_AT}); marking ready"
+                  echo "ready"
+                  return 0
+                fi
+              fi
+              # GHCR check absent, failed, or image not yet refreshed — conservative wait.
+              echo "::notice::Parent ${parent} is drifting this run, no open PR, GHCR not refreshed after run start — waiting"
+              echo "in_flux"
+              return 0
             fi
-            # STATE C (conservative in_flux): parent IS drifting this run but no PR yet.
-            # Wait for the parent's drift PR to open and be merged; the cascade-resolver
-            # will unblock this child when the parent rebuild lands on master.
+            # STATE C (conservative in_flux): CURRENT_DRIFT_SET unset — no snapshot available.
+            # Cannot determine parent state; wait for the next successful cron run.
             echo "::notice::Parent ${parent} is drifting this run but has no open PR yet — waiting"
             echo "in_flux"
             return 0

@@ -610,6 +610,7 @@ _run_identify_parent() {
 
 # Body of _eval_parent_state extracted verbatim from the workflow step.
 # Variables on the calling side: parent=$1; gh is mocked; RUN_STARTED_AT controls run_start.
+# GITHUB_REPOSITORY_OWNER must be set for the GHCR packages API call in the race-window guard.
 EVAL_PARENT_STATE_BODY='
 _eval_parent_state() {
   local parent="$1"
@@ -665,12 +666,39 @@ _eval_parent_state() {
       echo "ready"
       return 0
     fi
+    # Parent IS in the drift snapshot, no open PR: race-window guard (Defect O fix).
+    #
+    # Race: parent drift PR merged AND master rebuild completed BETWEEN the
+    # detect-digest-drift snapshot and this evaluation.  Without the guard the
+    # child gets cascade:waiting-for-<parent>; cascade-resolver already fired
+    # for that parent rebuild (before the child existed) -> child stranded until
+    # the next cron run.
+    #
+    # This GHCR check is narrower than the broad State C removed in r23.
+    # r23 ran the check for EVERY parent; that was unsound because
+    # RUN_STARTED_AT was never plumbed and queried package-wide latest rather
+    # than the specific tag.  Here: only when parent IS in the drift set AND
+    # no open PR -- the one window where the snapshot could be stale.
+    local _ghcr_updated_at
+    _ghcr_updated_at=$(gh api \
+      "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${parent}/versions" \
+      --jq '"'"'.[0].updated_at'"'"' 2>/dev/null) || _ghcr_updated_at=""
+    if [[ -n "$_ghcr_updated_at" && -n "${RUN_STARTED_AT:-}" ]]; then
+      # ISO-8601 UTC strings (Z-suffix, same precision) compare correctly as
+      # lexicographic strings: a later timestamp sorts after an earlier one.
+      if [[ "$_ghcr_updated_at" > "$RUN_STARTED_AT" ]]; then
+        echo "::notice::Parent ${parent} was rebuilt after run start (GHCR ${_ghcr_updated_at} > ${RUN_STARTED_AT}); marking ready"
+        echo "ready"
+        return 0
+      fi
+    fi
+    # GHCR check absent, failed, or image not yet refreshed -- conservative wait.
+    echo "::notice::Parent ${parent} is drifting this run, no open PR, GHCR not refreshed after run start — waiting"
+    echo "in_flux"
+    return 0
   fi
-  # STATE C (conservative in_flux): parent IS drifting this run but no PR yet.
-  # Wait for the parent drift PR to open and merge; cascade-resolver unblocks this
-  # child when the parent rebuild lands.  The prior GHCR-timestamp implementation
-  # was unsound: RUN_STARTED_AT was never plumbed, and it queried package-wide
-  # latest rather than the specific tag the child consumes.
+  # STATE C (conservative in_flux): CURRENT_DRIFT_SET unset -- no snapshot available.
+  # Cannot determine parent state; wait for the next successful cron run.
   echo "::notice::Parent ${parent} is drifting this run but has no open PR yet — waiting"
   echo "in_flux"
   return 0
@@ -745,7 +773,9 @@ _run_eval_parent_state() {
     local script="$TEST_TEMP_DIR/eval_parent_state.sh"
     printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$EVAL_PARENT_STATE_BODY" > "$script"
     chmod +x "$script"
-    PARENT_ARG="$parent" run "$script"
+    # GITHUB_REPOSITORY_OWNER is required by the race-window GHCR check (Defect O fix).
+    # Default to "testowner" so tests that do not set it explicitly still pass.
+    PARENT_ARG="$parent" GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY_OWNER:-testowner}" run "$script"
 }
 
 # ---------------------------------------------------------------------------
@@ -795,34 +825,81 @@ _run_eval_parent_state() {
 }
 
 # ---------------------------------------------------------------------------
-# State C (simplified): parent drifting in this run, no PR yet → always in_flux
-# The prior implementation compared GHCR timestamps but RUN_STARTED_AT was
-# never plumbed and the query targeted package-wide latest.  Now: conservative.
+# State B race-window guard (Defect O fix): parent in drift set, no open PR
+#
+# When parent IS in CURRENT_DRIFT_SET and there is no open drift PR, the parent
+# may have been rebuilt between the detect-digest-drift snapshot and now.
+# The race-window guard queries GHCR; if the image was updated AFTER RUN_STARTED_AT
+# the rebuild landed during this run → ready.  Otherwise → in_flux (conservative).
+#
+# Mutation guards:
+#   MG-O1: removing the GHCR check → ghcr-fresh test gets in_flux (FAIL)
+#   MG-O2: inverting the timestamp comparison → ghcr-fresh gets in_flux (FAIL)
+#   MG-O3: removing RUN_STARTED_AT guard → missing-RUN_STARTED_AT test may get ready (FAIL)
 # ---------------------------------------------------------------------------
-@test "eval_parent_state: parent in drift set, no open PR → in_flux (conservative State C)" {
-    # Mock returns no open PR; CURRENT_DRIFT_SET includes the parent.
+@test "eval_parent_state: parent in drift set, GHCR fresh → ready (race-window resolved, Defect O)" {
+    # Parent is in drift set, no open PR, but GHCR was updated AFTER run start.
+    # Race-window guard detects the rebuild landed → ready.
+    _setup_three_state_mock "ghcr-fresh"
+    # GHCR_UPDATED_AT defaults to 2026-05-29T12:00:00Z; RUN_STARTED_AT is earlier.
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="2026-05-29T10:00:00Z" \
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "ready" ]
+    # GHCR API must have been called (the race-window guard is active)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "eval_parent_state: parent in drift set, GHCR stale → in_flux (conservative, Defect O)" {
+    # GHCR was updated BEFORE run start → rebuild not yet landed → in_flux.
     _setup_three_state_mock "ghcr-stale"
-    CURRENT_DRIFT_SET="debian" _run_eval_parent_state "debian"
+    # GHCR_UPDATED_AT default is 2026-05-29T12:00:00Z; RUN_STARTED_AT is AFTER that.
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="2026-05-29T14:00:00Z" \
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" \
+    _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
-    # GHCR API must NOT be called — State C no longer does a GHCR timestamp lookup
-    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
-}
-
-@test "eval_parent_state: State C conservative — emits ::notice:: with waiting message" {
-    _setup_three_state_mock "ghcr-stale"
-    CURRENT_DRIFT_SET="debian" _run_eval_parent_state "debian"
-    [ "$status" -eq 0 ]
+    # GHCR API was called (guard ran, determined stale)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
     [[ "$output" == *"::notice::"* ]]
     [[ "$output" == *"waiting"* ]]
 }
 
-@test "eval_parent_state: State C — GHCR API never called (no network calls in State C)" {
-    _setup_three_state_mock "ghcr-fresh"
-    CURRENT_DRIFT_SET="debian" _run_eval_parent_state "debian"
+@test "eval_parent_state: parent in drift set, GHCR API error → in_flux conservative (Defect O)" {
+    # GHCR API fails → _ghcr_updated_at is empty → conservative in_flux (no crash).
+    _setup_three_state_mock "ghcr-api-error"
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="2026-05-29T10:00:00Z" \
+    _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
-    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+@test "eval_parent_state: parent in drift set, RUN_STARTED_AT unset → in_flux conservative (Defect O)" {
+    # Missing RUN_STARTED_AT: timestamp comparison guard skips → conservative in_flux.
+    _setup_three_state_mock "ghcr-fresh"
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="" \
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
+}
+
+@test "eval_parent_state: parent in drift set, GHCR absent → in_flux conservative (Defect O)" {
+    # GHCR API returns empty (no versions published yet) → conservative in_flux.
+    _setup_three_state_mock "ghcr-absent"
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="2026-05-29T10:00:00Z" \
+    _run_eval_parent_state "debian"
+    [ "$status" -eq 0 ]
+    state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
+    [ "$state_token" = "in_flux" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1204,19 +1281,24 @@ MOCK_BODY
     [[ "$output" == *"not in the current drift set"* ]]
 }
 
-@test "StateB: parent IN CURRENT_DRIFT_SET → falls through to State C (conservative in_flux)" {
-    # php is in the drift set → State B does not short-circuit → State C returns in_flux.
-    # State C no longer calls the GHCR API; it conservatively waits.
-    _setup_three_state_mock "ghcr-fresh"
-    CURRENT_DRIFT_SET="php,wordpress" _run_eval_parent_state "php"
+@test "StateB: parent IN CURRENT_DRIFT_SET, GHCR stale → in_flux (race-window guard, conservative)" {
+    # php is in the drift set → State B race-window guard fires; GHCR stale → in_flux.
+    # Use RUN_STARTED_AT after the GHCR timestamp so the freshness check yields stale.
+    _setup_three_state_mock "ghcr-stale"
+    CURRENT_DRIFT_SET="php,wordpress" \
+    RUN_STARTED_AT="2026-05-29T14:00:00Z" \
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" \
+    _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
-    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+    # GHCR API must have been called (race-window guard is active for drifting parents)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 @test "StateB: CURRENT_DRIFT_SET unset → State B skipped, falls through to State C (conservative in_flux)" {
-    # Without CURRENT_DRIFT_SET, no short-circuit: go straight to State C (always in_flux).
+    # Without CURRENT_DRIFT_SET, State B block is skipped entirely → State C fires (always in_flux).
+    # GHCR API must NOT be called — State C is the no-snapshot conservative path.
     _setup_three_state_mock "ghcr-fresh"
     CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
@@ -1225,15 +1307,19 @@ MOCK_BODY
     ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "StateB: single-entry drift set — parent matches exactly → falls through to State C (in_flux)" {
+@test "StateB: single-entry drift set — parent matches exactly → race-window guard fires, GHCR stale → in_flux" {
     # Only one container drifting, and it's the parent being evaluated.
-    _setup_three_state_mock "ghcr-fresh"
-    CURRENT_DRIFT_SET="debian" _run_eval_parent_state "debian"
+    # Race-window guard runs; GHCR not refreshed after run start → in_flux.
+    _setup_three_state_mock "ghcr-stale"
+    CURRENT_DRIFT_SET="debian" \
+    RUN_STARTED_AT="2026-05-29T14:00:00Z" \
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" \
+    _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
     [ "$state_token" = "in_flux" ]
-    # GHCR API must NOT be called — State C is now conservative, no GHCR lookup
-    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+    # GHCR API IS called now (race-window guard for drifting parent)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 @test "StateB: body contains CURRENT_DRIFT_SET loop (State B is present)" {
@@ -1300,17 +1386,22 @@ MOCK_BODY
 # when it IS in the repo-wide drift set but has no open PR yet.
 # ---------------------------------------------------------------------------
 
-@test "DefectE: scoped dispatch — parent drifting repo-wide, no open PR → in_flux (State C, not State B ready)" {
+@test "DefectE: scoped dispatch — parent drifting repo-wide, no open PR → in_flux (race-window guard stale)" {
     # Scenario: workflow_dispatch for wordpress only.  php is also drifting repo-wide.
     # With the Defect E fix, CURRENT_DRIFT_SET contains BOTH wordpress and php.
-    # php has no open PR → State B does NOT short-circuit (php is in set) → State C → in_flux.
+    # php has no open PR → State B race-window guard fires; GHCR stale → in_flux.
+    # RUN_STARTED_AT set AFTER the GHCR timestamp to ensure stale comparison.
     _setup_three_state_mock "ghcr-stale"
-    CURRENT_DRIFT_SET="wordpress,php" _run_eval_parent_state "php"
+    CURRENT_DRIFT_SET="wordpress,php" \
+    RUN_STARTED_AT="2026-05-29T14:00:00Z" \
+    GHCR_UPDATED_AT="2026-05-29T12:00:00Z" \
+    _run_eval_parent_state "php"
     [ "$status" -eq 0 ]
     state_token=$(echo "$output" | grep -E '^(in_flux|ready)$' | tail -1)
-    # Must be in_flux — php is drifting in this run; State B must not return ready.
+    # Must be in_flux — php is drifting in this run and GHCR is not yet refreshed.
     [ "$state_token" = "in_flux" ]
-    ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
+    # GHCR API IS called (race-window guard is active for drifting parents)
+    grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
 @test "DefectE: scoped dispatch — parent NOT drifting repo-wide, no open PR → ready (State B)" {
@@ -1323,26 +1414,28 @@ MOCK_BODY
 }
 
 # ---------------------------------------------------------------------------
-# Defect F regression lock: State C simplification
+# Defect F regression lock (updated for Defect O)
 #
-# The prior State C compared GHCR package-wide updated_at against RUN_STARTED_AT,
-# but RUN_STARTED_AT was never plumbed into the env block and the GHCR query
-# targeted package-wide latest (not the tag the child consumes).  The simplified
-# State C always returns in_flux — conservative, no GHCR API call.
+# The original Defect F simplified State C to never call the GHCR API (r23).
+# Defect O (r26) re-introduces a narrow GHCR check INSIDE State B — only when
+# the parent IS in the drift set and there is no open PR (the race-window case).
+# State C (CURRENT_DRIFT_SET unset) still never calls GHCR.
+# The structural invariant: packages/container lookup IS present (for race-window guard).
 # ---------------------------------------------------------------------------
 
-@test "DefectF: State C never calls GHCR API (no users/ API path in any code path)" {
-    # With both ghcr-fresh and ghcr-stale mocks, State C must not make GHCR API calls.
-    # Use CURRENT_DRIFT_SET=parent so State B falls through.
+@test "DefectF (updated): CURRENT_DRIFT_SET unset → State C fires, GHCR API NOT called" {
+    # When CURRENT_DRIFT_SET is empty/unset the State B block is skipped entirely.
+    # State C fires (conservative in_flux) — no GHCR API call.
     _setup_three_state_mock "ghcr-fresh"
-    CURRENT_DRIFT_SET="debian" _run_eval_parent_state "debian"
+    CURRENT_DRIFT_SET="" _run_eval_parent_state "debian"
     [ "$status" -eq 0 ]
     ! grep -q "api users" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
-@test "DefectF: State C body — no GHCR package version lookup in function body" {
-    # Structural invariant: the simplified State C must not contain a GHCR versions API call.
+@test "DefectF (updated): State B race-window guard — packages/container lookup present in body" {
+    # Structural invariant: the GHCR versions API path must be present in the function
+    # body for the race-window guard (Defect O fix).
     local body="$EVAL_PARENT_STATE_BODY"
-    ! echo "$body" | grep -q "packages/container"
+    echo "$body" | grep -q "packages/container"
 }
 

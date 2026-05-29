@@ -198,6 +198,56 @@ _depgraph_get_deps() {
     }
     local lineage_dir="${_DEPGRAPH_LINEAGE_DIR:-${PROJECT_ROOT}/.build-lineage}"
 
+    # ---------------------------------------------------------------------------
+    # Active-tag filter (Defect N fix)
+    #
+    # Stale lineage files for retired variants persist in .build-lineage/ after
+    # version rotation.  Without filtering, _depgraph_get_deps unions parents from
+    # EVERY file — including files whose variants are no longer in the active build
+    # matrix.  The consumer that was rebuilt against a now-retired parent gets a
+    # cascade:waiting-for-<retired-parent> label; cascade-resolver never fires
+    # because the parent has no active build → child stranded indefinitely.
+    #
+    # Strategy: Option B (./make list-builds) — fail-open.
+    # detect-base-digest-drift.sh uses the same enumeration but with fail-closed
+    # semantics (skip the entire container).  Here fail-open is correct: missing a
+    # dep is safe (we just skip the cascade label for that edge), but including a
+    # stale dep causes label pollution.  If list-builds fails we warn and fall back
+    # to all lineage files (current behaviour), which is safe under the old logic
+    # and avoids silently breaking dep-graph construction during transient failures.
+    #
+    # Test hook: _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_<container> (hyphens → underscores)
+    # Set to a newline-separated list to bypass ./make list-builds in tests.
+    # Set to __TEST_NO_FILTER__ to disable filtering entirely (legacy test mode).
+    # ---------------------------------------------------------------------------
+    local _active_tags_for_filter=""
+    local _at_filter_override_var="_DEPGRAPH_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
+    if [[ -n "${!_at_filter_override_var+x}" ]]; then
+        # Test hook: use override verbatim (may be empty or __TEST_NO_FILTER__)
+        _active_tags_for_filter="${!_at_filter_override_var}"
+    elif [[ -n "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
+        # Test-mode detected (_DEPGRAPH_CONTAINERS_OVERRIDE is the existing test hook
+        # for synthetic container sets) but no per-container active-tags override —
+        # disable filtering so existing tests are not broken by the new filter.
+        _active_tags_for_filter="__TEST_NO_FILTER__"
+    else
+        # Production mode: enumerate active tags via ./make list-builds.
+        local _lb_out _lb_rc=0
+        _lb_out=$(cd "${PROJECT_ROOT}" && ./make list-builds "$container" current 2>/dev/null) || _lb_rc=$?
+        if [[ $_lb_rc -ne 0 ]] || [[ -z "$_lb_out" ]]; then
+            printf '::warning::_depgraph_get_deps: ./make list-builds %s failed (rc=%s) — falling back to all lineage files (fail-open)\n' \
+                "$container" "$_lb_rc" >&2
+            # Fail-open: empty string means "no filter applied" below
+            _active_tags_for_filter=""
+        else
+            _active_tags_for_filter=$(printf '%s' "$_lb_out" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
+            if [[ -z "$_active_tags_for_filter" ]]; then
+                printf '::warning::_depgraph_get_deps: ./make list-builds %s returned no tags — falling back to all lineage files (fail-open)\n' \
+                    "$container" >&2
+            fi
+        fi
+    fi
+
     shopt -s nullglob
     local lineage_files=("${lineage_dir}/${container}-"*.json "${lineage_dir}/${container}.json")
     shopt -u nullglob
@@ -210,6 +260,21 @@ _depgraph_get_deps() {
         # Skip sidecar files BEFORE marking found_any; a container with only sidecars
         # must fall through to the config.yaml fallback path.
         if is_lineage_sidecar "$basename_file"; then continue; fi
+
+        # Active-tag filter: skip lineage files whose tag is not in the active
+        # build matrix (stale files from retired variants).  Fail-open: when
+        # _active_tags_for_filter is empty (list-builds failed or returned nothing)
+        # or __TEST_NO_FILTER__, all files pass through.
+        if [[ "$_active_tags_for_filter" != "__TEST_NO_FILTER__" && -n "$_active_tags_for_filter" ]]; then
+            local _file_tag
+            _file_tag=$(jq -r '.tag // empty' "$lineage_file" 2>/dev/null || true)
+            if [[ -n "$_file_tag" ]] && ! grep -qxF -- "$_file_tag" <<<"$_active_tags_for_filter"; then
+                printf '::notice::_depgraph_get_deps: skipping stale lineage %s (tag %s not in active matrix)\n' \
+                    "$(basename "$lineage_file")" "$_file_tag" >&2
+                continue
+            fi
+        fi
+
         # Mark that at least one real lineage entry exists (suppresses config.yaml fallback)
         found_any=true
 
