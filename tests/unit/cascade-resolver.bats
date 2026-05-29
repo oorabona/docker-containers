@@ -1349,3 +1349,135 @@ MOCK_BODY
     ! echo "$body" | grep -q "packages/container"
 }
 
+# ---------------------------------------------------------------------------
+# Defect P regression lock: empty parent_state_token → fail-closed (exit 1)
+#
+# When _eval_parent_state returns output that contains no recognizable
+# in_flux|ready token (e.g. corrupted by a ::warning:: annotation, a future
+# state value, or a shell error), parent_state_token is empty.
+# The old code's "[[ "" != "in_flux" ]]" evaluated to TRUE → continue, silently
+# skipping cascade labeling and letting the child auto-merge without the safety label.
+# The fix adds an explicit empty-token guard that exits 1 with a diagnostic message.
+#
+# Mutation guard (MG-P1): removing the empty-token guard → the test that expects
+#   exit 1 gets exit 0, catching the regression immediately.
+# ---------------------------------------------------------------------------
+
+# CASCADE_LABEL_LOOP_BODY is the inner loop extracted from "Apply cascade labels
+# (strict)" in upstream-monitor.yaml.  It requires:
+#   _eval_parent_state  — function to mock
+#   INTERNAL_DEPS       — comma-separated parent list
+#   PR_NUMBER           — mock PR number (not used in the empty-token path)
+#   gh                  — mock binary (not reached in the fail-closed path)
+CASCADE_LABEL_LOOP_BODY='
+has_waiting=0
+for parent in ${INTERNAL_DEPS//,/ }; do
+  parent_state=$(_eval_parent_state "$parent") || exit 1
+  parent_state_token=$(echo "$parent_state" | grep -E '"'"'^(in_flux|ready)$'"'"' | tail -1)
+  if [[ -z "$parent_state_token" ]]; then
+    echo "::error::_eval_parent_state returned no recognizable state token for parent ${parent}; refusing to proceed (fail-closed)"
+    echo "Raw output: ${parent_state}"
+    exit 1
+  fi
+  if [[ "$parent_state_token" != "in_flux" ]]; then
+    continue
+  fi
+  has_waiting=1
+  label="cascade:waiting-for-${parent}"
+  gh label create "$label" --color "fbca04" --description "x" 2>&1 | grep -v "already exists" || true
+  if ! gh pr edit "$PR_NUMBER" --add-label "$label" 2>&1; then
+    echo "::error::Failed to apply cascade label"
+    exit 1
+  fi
+done
+echo "has_waiting=${has_waiting}"
+'
+
+_run_cascade_label_loop() {
+    local script="$TEST_TEMP_DIR/cascade_label_loop.sh"
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n%s\n' \
+        "$CASCADE_LABEL_LOOP_BODY" "" > "$script"
+    chmod +x "$script"
+    run bash "$script"
+}
+
+@test "DefectP: _eval_parent_state returns malformed output → cascade loop exits 1 (fail-closed)" {
+    # Simulate _eval_parent_state emitting a ::warning:: annotation but no state token.
+    # The grep -E '^(in_flux|ready)$' filter produces empty output.
+    # The fail-closed guard must catch this and exit 1.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    local script="$TEST_TEMP_DIR/cascade_label_loop.sh"
+    {
+        printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+        printf '_eval_parent_state() { echo "::warning::upstream fetch failed"; }\n'
+        printf 'INTERNAL_DEPS=debian\n'
+        printf 'PR_NUMBER=99\n'
+        printf '%s\n' "$CASCADE_LABEL_LOOP_BODY"
+    } > "$script"
+    chmod +x "$script"
+    run bash "$script"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"refusing to proceed (fail-closed)"* ]]
+    [[ "$output" == *"Raw output:"* ]]
+}
+
+@test "DefectP: _eval_parent_state returns empty string → cascade loop exits 1 (fail-closed)" {
+    # Edge case: function returns completely empty output.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    local script="$TEST_TEMP_DIR/cascade_label_loop2.sh"
+    {
+        printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+        printf '_eval_parent_state() { echo ""; }\n'
+        printf 'INTERNAL_DEPS=debian\n'
+        printf 'PR_NUMBER=99\n'
+        printf '%s\n' "$CASCADE_LABEL_LOOP_BODY"
+    } > "$script"
+    chmod +x "$script"
+    run bash "$script"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing to proceed (fail-closed)"* ]]
+}
+
+@test "DefectP: _eval_parent_state returns 'ready' → cascade loop continues, no label applied (regression-lock)" {
+    # Healthy path: ready state must not exit 1 (guard must not fire on valid tokens).
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << 'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    local script="$TEST_TEMP_DIR/cascade_label_loop3.sh"
+    {
+        printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+        printf '_eval_parent_state() { echo "ready"; }\n'
+        printf 'INTERNAL_DEPS=debian\n'
+        printf 'PR_NUMBER=99\n'
+        printf '%s\n' "$CASCADE_LABEL_LOOP_BODY"
+    } > "$script"
+    chmod +x "$script"
+    run bash "$script"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"has_waiting=0"* ]]
+    ! [[ "$output" == *"::error::"* ]]
+}
+

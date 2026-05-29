@@ -873,17 +873,12 @@ _write_lineage() {
     [ "$output" = "" ]
 }
 
-@test "depgraph: active-filter fail-open — when list-builds unavailable, all lineage used (Defect N)" {
+@test "depgraph: active-filter test-mode bypass — _DEPGRAPH_CONTAINERS_OVERRIDE set, no per-container override → __TEST_NO_FILTER__ (Defect N)" {
     # Write a lineage file for wordpress with a php parent.
     # _DEPGRAPH_CONTAINERS_OVERRIDE is set so _depgraph_valid_containers() succeeds.
     # _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_wordpress is NOT set, but _DEPGRAPH_CONTAINERS_OVERRIDE
     # IS set — so the active-tag filter code detects test-mode and sets __TEST_NO_FILTER__,
-    # which means NO filtering occurs and all lineage is processed.
-    #
-    # To test the production fail-open path directly we would need a working ./make
-    # but broken ./make list-builds — which is hard to arrange in unit tests.
-    # Instead, verify the weaker invariant: when filtering is disabled (no per-container
-    # override, test-mode detected), all lineage files contribute to deps (fail-open behavior).
+    # which means NO filtering occurs and all lineage is processed (legacy test-mode behavior).
     _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
 
     run bash -c "
@@ -894,11 +889,131 @@ _write_lineage() {
         _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
         export _DEPGRAPH_CONTAINERS_OVERRIDE
         # No _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_wordpress — test-mode detects __TEST_NO_FILTER__
-        # via _DEPGRAPH_CONTAINERS_OVERRIDE, so all lineage files are processed (fail-open).
+        # via _DEPGRAPH_CONTAINERS_OVERRIDE, so all lineage files are processed.
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress 2>/dev/null
     "
     [ "$status" -eq 0 ]
-    # All lineage processed (fail-open) → dep detected
+    # All lineage processed (test-mode bypass) → dep detected
+    [ "$output" = "php" ]
+}
+
+# ---------------------------------------------------------------------------
+# Defect Q regression lock: list-builds failure → fail-closed (rc=2)
+#
+# When _depgraph_get_deps calls ./make list-builds and the command fails
+# (yq glitch, missing binary, syntax error in variants.yaml), the old code
+# fell back to all lineage files (fail-open), potentially resurrecting
+# retired-variant lineage and misclassifying a leaf as a consumer.
+# The fix switches to fail-closed: return rc=2 on list-builds failure so
+# the caller skips this container for this cron run.
+#
+# Mutation guards:
+#   MG-Q1: restoring "return 0" on list-builds failure → test expecting rc=2
+#           gets rc=0, catching the regression immediately.
+#   MG-Q2: restoring ::warning:: instead of ::error:: → test checking stderr
+#           for "error" fails, catching the annotation severity regression.
+# ---------------------------------------------------------------------------
+
+@test "depgraph: list-builds fails (rc=1) → _depgraph_get_deps returns rc=2 (fail-closed, Defect Q)" {
+    # Production mode: no _DEPGRAPH_CONTAINERS_OVERRIDE, no per-container override.
+    # Provide a PROJECT_ROOT with a ./make that handles 'list' but fails on 'list-builds'.
+    local mock_root="$TEST_TEMP_DIR/mock_project_root"
+    mkdir -p "$mock_root"
+    cat > "$mock_root/make" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    printf 'php\nwordpress\n'
+    exit 0
+    ;;
+  list-builds)
+    echo "simulated list-builds failure" >&2
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+    chmod +x "$mock_root/make"
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        PROJECT_ROOT='${mock_root}'
+        export PROJECT_ROOT
+        # _DEPGRAPH_CONTAINERS_OVERRIDE unset → production mode, uses ./make list + list-builds
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    # Must exit 2 (fail-closed), NOT 0 (fail-open fallback to all lineage)
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"fail-closed"* ]]
+}
+
+@test "depgraph: list-builds returns empty JSON → _depgraph_get_deps returns rc=2 (fail-closed, Defect Q)" {
+    # list-builds exits 0 but jq extracts no tags — empty _active_tags_for_filter.
+    # The fail-closed guard must also catch this (no valid active tags = refuse).
+    local mock_root="$TEST_TEMP_DIR/mock_project_root2"
+    mkdir -p "$mock_root"
+    cat > "$mock_root/make" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    printf 'php\nwordpress\n'
+    exit 0
+    ;;
+  list-builds)
+    # Returns valid JSON but with no tag fields → jq extracts nothing
+    echo '[]'
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+    chmod +x "$mock_root/make"
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        PROJECT_ROOT='${mock_root}'
+        export PROJECT_ROOT
+        # _DEPGRAPH_CONTAINERS_OVERRIDE unset → production mode
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"::error::"* ]]
+    [[ "$output" == *"fail-closed"* ]]
+}
+
+@test "depgraph: active-filter test-mode short-circuit still applies (no regression from Defect Q fix)" {
+    # _DEPGRAPH_CONTAINERS_OVERRIDE is set → test-mode detected → __TEST_NO_FILTER__ path.
+    # The fail-closed guard is NOT in this path; all lineage must still be processed.
+    _write_lineage "wordpress" "6.9.4-alpine" "ghcr.io/oorabona/php:latest"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
     [ "$output" = "php" ]
 }

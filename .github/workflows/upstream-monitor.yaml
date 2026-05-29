@@ -2047,7 +2047,13 @@ jobs:
             parent_state=$(_eval_parent_state "$parent") || exit 1
             # Extract only the last word of output (the state token); preceding lines are notices/warnings.
             parent_state_token=$(echo "$parent_state" | grep -E '^(in_flux|ready)$' | tail -1)
+            if [[ -z "$parent_state_token" ]]; then
+              echo "::error::_eval_parent_state returned no recognizable state token for parent ${parent}; refusing to proceed (fail-closed)"
+              echo "Raw output: ${parent_state}"
+              exit 1
+            fi
             if [[ "$parent_state_token" != "in_flux" ]]; then
+              # parent_state is "ready" — no cascade label needed for this parent
               continue
             fi
             has_waiting=1
