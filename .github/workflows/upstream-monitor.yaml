@@ -1776,14 +1776,24 @@ jobs:
           fi
 
   cleanup-orphaned-cascade-waits:
-    name: Clean up orphaned cascade:waiting-for-* labels
+    name: Reconcile cascade label state
     # Run after ALL open-drift-prs matrix iterations complete (success or failure).
-    # Purpose: State 0 (_eval_parent_state) applies cascade:waiting-for-<parent>
-    # labels BEFORE the parent's own matrix entry runs.  If that entry later
-    # finds has_drift=false or fails PR creation, no parent drift PR is ever opened
-    # and cascade-resolver (triggered by parent build completion) never fires —
-    # child PRs remain permanently labeled.  This cleanup job detects and removes
-    # those orphaned wait labels so children are not stranded.
+    # Purpose: Three-state reconciliation of cascade:waiting-for-<parent> labels.
+    #
+    # State 1 — parent PR currently OPEN (including upserted PRs from previous cron
+    #   runs whose created_at predates this run): wait labels legitimate, leave alone.
+    #   (Fixes Defect A: created:>= filter skipped open upserted PRs with old timestamps.)
+    #
+    # State 2 — parent PR merged in this run AND master rebuild SUCCESS:
+    #   cascade-resolver may have fired before the child's label was applied (race).
+    #   Clean up stale labels so children can auto-merge.
+    #   (Fixes Defect B: same-run fully-resolved parent left late-labeled children stuck.)
+    #
+    # State 3 — parent PR merged in this run BUT rebuild pending/in-progress:
+    #   cascade-resolver will fire later when the rebuild completes; leave alone.
+    #
+    # State 4 — no PR exists for this parent in this run (true orphan):
+    #   parent entry resolved to no-drift or PR creation failed; clean up.
     needs: [detect-digest-drift, open-drift-prs]
     if: always() && needs.detect-digest-drift.outputs.drift_containers_csv != ''
     runs-on: ubuntu-latest
@@ -1800,72 +1810,107 @@ jobs:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
-      - name: Clean up orphaned cascade waits
+      - name: Reconcile cascade label state
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
           RUN_STARTED_AT: ${{ github.event.repository.updated_at }}
         run: |
-          # For each container in the current drift set, verify a drift PR was actually
-          # created by the open-drift-prs matrix iteration in THIS run.  If no PR was
-          # created in this run, any child PR carrying cascade:waiting-for-<container>
-          # is orphaned: the parent's matrix entry resolved to no-drift or failed PR
-          # creation, so cascade-resolver will never fire for it.
-          #
-          # Use the workflow's started timestamp as the lower bound for the search.
-          # `github.run_started_at` is the canonical signal; `repository.updated_at`
-          # is a safe fallback approximation if the former isn't available in env.
           run_start="${GITHUB_RUN_STARTED_AT:-${RUN_STARTED_AT}}"
           if [[ -z "$run_start" ]]; then
-            # Conservative fallback: use yesterday so we ONLY catch very-recent PRs
             run_start=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%SZ")
           fi
-          echo "::notice::Orphan check using run_start=${run_start}"
+          echo "::notice::Cleanup reconciling with run_start=${run_start}"
+
           for parent in ${CURRENT_DRIFT_SET//,/ }; do
-            # Orphan = "no drift PR was created in THIS run for this parent".
-            # The branch name `update/base-digest-<container>` is REUSED on every cron
-            # run, so an old merged PR from a previous run still matches `--head`.
-            # We must also filter by `created:>=<run-start>` so the match is restricted
-            # to PRs opened during the current run.
-            # `--state all` catches PRs already merged in this run AND PRs whose master
-            # rebuild is still pending (cascade-resolver will fire later).
-            parent_pr=$(gh pr list \
+            # CHECK 1: Is there an OPEN drift PR for this parent?
+            # Query by branch name only — no created: filter — so upserted PRs with old
+            # timestamps are found.  An open PR means wait labels are legitimate (State 1).
+            if ! open_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
-              --state all \
+              --state open \
               --base master \
-              --search "created:>=${run_start}" \
               --json number,isCrossRepository \
               --jq '.[] | select(.isCrossRepository == false) | .number' \
-              | head -1) || {
-              echo "::warning::Failed to query drift PR for ${parent}; skipping orphan check for this container"
-              continue
-            }
-            if [[ -n "$parent_pr" ]]; then
-              echo "::notice::Parent ${parent} has drift PR #${parent_pr} created in this run — wait labels are legitimate"
+              | head -1); then
+              echo "::warning::Failed to query open PRs for ${parent}; skipping reconciliation"
               continue
             fi
-            echo "::notice::Parent ${parent} has no open drift PR; scanning for orphaned cascade:waiting-for-${parent} labels"
-            children=$(gh pr list \
+            if [[ -n "$open_pr" ]]; then
+              echo "::notice::Parent ${parent} has open PR #${open_pr} — wait labels legitimate, leaving alone"
+              continue
+            fi
+
+            # CHECK 2: Was a PR merged for this parent in this run?
+            # Use created:>= so old merged PRs from previous cron runs are excluded.
+            if ! merged_pr=$(gh pr list \
+              --head "update/base-digest-${parent}" \
+              --state merged \
+              --base master \
+              --search "created:>=${run_start}" \
+              --json number,mergeCommit,isCrossRepository \
+              --jq '.[] | select(.isCrossRepository == false) | "\(.number):\(.mergeCommit.oid)"' \
+              | head -1); then
+              echo "::warning::Failed to query merged PRs for ${parent}; skipping"
+              continue
+            fi
+
+            if [[ -z "$merged_pr" ]]; then
+              # State 4: true orphan — no PR opened or merged in this run.
+              echo "::notice::Parent ${parent} has no PR in this run — treating as orphan"
+              action="orphan"
+            else
+              # Parent PR merged in this run.  Check whether master rebuild succeeded.
+              merge_sha="${merged_pr#*:}"
+              if [[ -z "$merge_sha" ]]; then
+                echo "::warning::Could not extract merge SHA for ${parent}; conservative leave-alone"
+                continue
+              fi
+              if ! build_info=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${merge_sha}&per_page=10" \
+                --jq '.workflow_runs[] | select(.name == "Auto Build & Push") | "\(.status):\(.conclusion // "")"' \
+                2>&1); then
+                echo "::warning::Failed to query auto-build status for ${parent}; conservative leave-alone"
+                continue
+              fi
+              run_line=$(echo "$build_info" | head -1)
+              run_status="${run_line%%:*}"
+              run_conclusion="${run_line#*:}"
+              if [[ "$run_status" == "completed" && "$run_conclusion" == "success" ]]; then
+                # State 2: merged + rebuild success.  Resolver may have fired before
+                # child label was applied — clean up to unstick late-labeled children.
+                echo "::notice::Parent ${parent} fully resolved (merged + rebuilt); cleaning up children labels"
+                action="resolved"
+              else
+                # State 3: merged but rebuild still pending/in-progress.
+                # cascade-resolver will fire when rebuild completes; leave alone.
+                echo "::notice::Parent ${parent} merged in this run, rebuild still pending (status=${run_status}); leaving labels"
+                continue
+              fi
+            fi
+
+            # Perform cleanup for State 2 (resolved) and State 4 (orphan).
+            if ! children=$(gh pr list \
               --label "cascade:waiting-for-${parent}" \
               --label "base-digest-drift" \
               --state open \
               --json number,isCrossRepository \
-              --jq '.[] | select(.isCrossRepository == false) | .number') || {
-              echo "::error::Failed to query children waiting for ${parent}"
-              exit 1
-            }
+              --jq '.[] | select(.isCrossRepository == false) | .number'); then
+              echo "::error::Failed to query children for ${parent}; cleanup aborted for this parent"
+              continue
+            fi
             if [[ -z "$children" ]]; then
               echo "::notice::No children waiting for ${parent}"
               continue
             fi
             for child in $children; do
-              echo "::notice::Removing orphaned cascade:waiting-for-${parent} from PR #${child}"
-              # Snapshot remaining labels before removal (same atomic pattern as cascade-resolver).
+              echo "::notice::Reconcile cascade:waiting-for-${parent} from PR #${child} (action=${action})"
+              # Snapshot labels first (atomic check before mutation, mirrors r12 resolver pattern).
               if ! labels_snapshot=$(gh pr view "$child" \
                 --json labels \
                 --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")' \
                 2>/dev/null); then
-                echo "::warning::Cannot fetch labels for #${child}; skipping orphan cleanup for this PR"
+                echo "::warning::Cannot fetch labels for #${child}; skipping"
                 continue
               fi
               remaining_labels=""
@@ -1877,24 +1922,24 @@ jobs:
               remaining_labels="${remaining_labels# }"
 
               if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${parent}" 2>&1; then
-                echo "::warning::Failed to remove orphaned cascade:waiting-for-${parent} from #${child}"
+                echo "::warning::Failed to remove cascade:waiting-for-${parent} from #${child}"
                 continue
               fi
               if [[ -n "$remaining_labels" ]]; then
                 still="${remaining_labels// /, }"
                 gh pr comment "$child" \
-                  --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR (drift resolved or PR creation failed between detection and matrix processing). The cascade:waiting-for-${parent} label has been removed. ${still} other cascade wait(s) remain." \
+                  --body "Cascade label reconciliation: parent **${parent}** (${action}). The cascade:waiting-for-${parent} label has been removed. Still waiting on: ${still}. Auto-merge activates when all parents resolve." \
                   2>&1 || true
               else
                 if gh pr merge "$child" --squash --auto 2>&1; then
                   gh pr comment "$child" \
-                    --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR. All cascade labels cleared; auto-merge enabled — will merge once CI passes." \
+                    --body "Cascade label reconciliation: parent **${parent}** (${action}). All cascade labels cleared; auto-merge enabled." \
                     2>&1 || true
                 else
                   gh pr comment "$child" \
-                    --body "Cascade orphan cleanup: parent **${parent}** has no open drift PR. All cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+                    --body "Cascade label reconciliation: parent **${parent}** (${action}). All cascade labels cleared, but auto-merge enable failed. Manual merge required." \
                     2>&1 || true
-                  echo "::warning::auto-merge failed for #${child} during orphan cleanup"
+                  echo "::warning::auto-merge failed for #${child} during cascade reconciliation"
                 fi
               fi
             done

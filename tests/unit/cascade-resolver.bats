@@ -1099,112 +1099,273 @@ MOCK_BODY
 # the label, the old code (--label "base-digest-drift") missed the parent PR
 # and wrongly treated children as orphaned, stripping wait labels prematurely.
 #
-# Key invariants:
-#   IV-OA1: parent PR exists (branch present) but NO base-digest-drift label
-#            → orphan cleanup must recognise the parent and leave children alone
-#   IV-OA2: parent PR exists with base-digest-drift label
-#            → same result as IV-OA1 (label presence must not matter)
-#   IV-OA3: parent PR genuinely absent (no branch)
-#            → orphan cleanup correctly identifies orphaned children
+# Gate r16 — three-state reconciliation extends the r13 fix with two new states:
+#   Defect A (r16): upserted PRs from a previous cron run keep their old
+#     created_at; the r15 `created:>=run_start` filter skipped them, causing
+#     an open parent PR to be treated as missing.  Fix: check OPEN state first
+#     (no created: filter) — an open PR is always legitimate regardless of age.
+#   Defect B (r16): parent that fully completes in the same run (PR merged +
+#     rebuild success + resolver fired) BEFORE child's matrix iteration applies
+#     its cascade label.  The resolver fires with no child to unblock; child is
+#     labeled after the fact; no future event fires resolver for this parent.
+#     Fix: after confirming no open PR, query merged PRs for this run.  If
+#     merged + rebuild success, clean up stale labels (covers the race).
 #
-# Mutation guard:
-#   MG-OA: re-adding "--label base-digest-drift" to the gh pr list call
-#          in orphan cleanup → IV-OA1 fails (test detects the regression)
+# Key invariants:
+#   IV-OA1: parent PR exists (branch present, OPEN) but NO base-digest-drift label
+#            → leave children alone (State 1; also covers upserted open PR, Defect A)
+#   IV-OA2: parent PR exists with base-digest-drift label (OPEN)
+#            → same result as IV-OA1
+#   IV-OA3: parent PR genuinely absent (no branch) → orphaned children get label removed (State 4)
+#   IV-OA4: parent PR open from previous cron run (old created_at) → children left alone (Defect A)
+#   IV-OA5: parent merged in this run AND rebuild success → children's labels cleaned up (Defect B)
+#   IV-OA6: parent merged in this run BUT rebuild still pending → children left alone (State 3)
+#
+# Mutation guards:
+#   MG-OA1: re-adding "--label base-digest-drift" to the open-PR query → IV-OA1 fails
+#   MG-OA2: replacing open-state query with created:>= filter → IV-OA4 fails (Defect A regresses)
+#   MG-OA3: removing the merged+rebuild-success branch → IV-OA5 fails (Defect B regresses)
 # ---------------------------------------------------------------------------
 
-ORPHAN_CLEANUP_BODY='
+# Body of the three-state reconcile script under test.
+# $1 = CURRENT_DRIFT_SET (comma-separated parent container names)
+# $2 = run_start timestamp (ISO-8601, used for merged PR filter)
+# GITHUB_REPOSITORY must be set in env for the API call path.
+RECONCILE_CLEANUP_BODY='
 set -uo pipefail
 CURRENT_DRIFT_SET="${1:?CURRENT_DRIFT_SET required}"
+run_start="${2:-2000-01-01T00:00:00Z}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-owner/repo}"
+
 for parent in ${CURRENT_DRIFT_SET//,/ }; do
-  parent_pr=$(gh pr list \
+  # CHECK 1: OPEN PR for parent? (no created: filter — catches upserted PRs with old timestamps)
+  if ! open_pr=$(gh pr list \
     --head "update/base-digest-${parent}" \
     --state open \
     --base master \
     --json number,isCrossRepository \
     --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' \
-    | head -1) || {
-    echo "::warning::Failed to query drift PR for ${parent}; skipping orphan check for this container"
-    continue
-  }
-  if [[ -n "$parent_pr" ]]; then
-    echo "::notice::Parent ${parent} has open drift PR #${parent_pr} — wait labels are legitimate"
+    | head -1); then
+    echo "::warning::Failed to query open PRs for ${parent}; skipping reconciliation"
     continue
   fi
-  echo "::notice::Parent ${parent} has no open drift PR; scanning for orphaned cascade:waiting-for-${parent} labels"
-  children=$(gh pr list \
+  if [[ -n "$open_pr" ]]; then
+    echo "::notice::Parent ${parent} has open PR #${open_pr} — wait labels legitimate, leaving alone"
+    continue
+  fi
+
+  # CHECK 2: PR merged in this run?
+  if ! merged_pr=$(gh pr list \
+    --head "update/base-digest-${parent}" \
+    --state merged \
+    --base master \
+    --search "created:>=${run_start}" \
+    --json number,mergeCommit,isCrossRepository \
+    --jq '"'"'.[] | select(.isCrossRepository == false) | "\(.number):\(.mergeCommit.oid)"'"'"' \
+    | head -1); then
+    echo "::warning::Failed to query merged PRs for ${parent}; skipping"
+    continue
+  fi
+
+  if [[ -z "$merged_pr" ]]; then
+    echo "::notice::Parent ${parent} has no PR in this run — treating as orphan"
+    action="orphan"
+  else
+    merge_sha="${merged_pr#*:}"
+    if [[ -z "$merge_sha" ]]; then
+      echo "::warning::Could not extract merge SHA for ${parent}; conservative leave-alone"
+      continue
+    fi
+    if ! build_info=$(gh api \
+      "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${merge_sha}&per_page=10" \
+      --jq '"'"'.workflow_runs[] | select(.name == "Auto Build & Push") | "\(.status):\(.conclusion // "")"'"'"' \
+      2>&1); then
+      echo "::warning::Failed to query auto-build status for ${parent}; conservative leave-alone"
+      continue
+    fi
+    run_line=$(echo "$build_info" | head -1)
+    run_status="${run_line%%:*}"
+    run_conclusion="${run_line#*:}"
+    if [[ "$run_status" == "completed" && "$run_conclusion" == "success" ]]; then
+      echo "::notice::Parent ${parent} fully resolved (merged + rebuilt); cleaning up children labels"
+      action="resolved"
+    else
+      echo "::notice::Parent ${parent} merged in this run, rebuild still pending (status=${run_status}); leaving labels"
+      continue
+    fi
+  fi
+
+  # Cleanup for State 2 (resolved) and State 4 (orphan).
+  if ! children=$(gh pr list \
     --label "cascade:waiting-for-${parent}" \
     --label "base-digest-drift" \
     --state open \
     --json number,isCrossRepository \
-    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"') || {
-    echo "::error::Failed to query children waiting for ${parent}"
-    exit 1
-  }
+    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"'); then
+    echo "::error::Failed to query children for ${parent}; cleanup aborted for this parent"
+    continue
+  fi
   if [[ -z "$children" ]]; then
     echo "::notice::No children waiting for ${parent}"
     continue
   fi
   for child in $children; do
-    echo "::notice::Removing orphaned cascade:waiting-for-${parent} from PR #${child}"
-    gh pr edit "$child" --remove-label "cascade:waiting-for-${parent}" 2>&1 || true
+    echo "::notice::Reconcile cascade:waiting-for-${parent} from PR #${child} (action=${action})"
+    if ! labels_snapshot=$(gh pr view "$child" \
+      --json labels \
+      --jq '"'"'[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")'"'"' \
+      2>/dev/null); then
+      echo "::warning::Cannot fetch labels for #${child}; skipping"
+      continue
+    fi
+    remaining_labels=""
+    while IFS= read -r _label; do
+      [[ -n "$_label" ]] || continue
+      [[ "$_label" == "cascade:waiting-for-${parent}" ]] && continue
+      remaining_labels="${remaining_labels} ${_label}"
+    done <<< "$labels_snapshot"
+    remaining_labels="${remaining_labels# }"
+
+    if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${parent}" 2>&1; then
+      echo "::warning::Failed to remove cascade:waiting-for-${parent} from #${child}"
+      continue
+    fi
+    if [[ -n "$remaining_labels" ]]; then
+      still="${remaining_labels// /, }"
+      gh pr comment "$child" \
+        --body "Cascade label reconciliation: parent **${parent}** (${action}). Still waiting on: ${still}. Auto-merge activates when all parents resolve." \
+        2>&1 || true
+    else
+      if gh pr merge "$child" --squash --auto 2>&1; then
+        gh pr comment "$child" \
+          --body "Cascade label reconciliation: parent **${parent}** (${action}). All cascade labels cleared; auto-merge enabled." \
+          2>&1 || true
+      else
+        gh pr comment "$child" \
+          --body "Cascade label reconciliation: parent **${parent}** (${action}). All cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+          2>&1 || true
+        echo "::warning::auto-merge failed for #${child} during cascade reconciliation"
+      fi
+    fi
   done
 done
 '
 
-_run_orphan_cleanup() {
+_run_reconcile_cleanup() {
     local drift_set="$1"
-    local script="$TEST_TEMP_DIR/orphan_cleanup.sh"
-    printf '#!/usr/bin/env bash\n%s\n' "$ORPHAN_CLEANUP_BODY" > "$script"
+    local run_start="${2:-2000-01-01T00:00:00Z}"
+    local script="$TEST_TEMP_DIR/reconcile_cleanup.sh"
+    printf '#!/usr/bin/env bash\n%s\n' "$RECONCILE_CLEANUP_BODY" > "$script"
     chmod +x "$script"
-    run "$script" "$drift_set"
+    GITHUB_REPOSITORY="owner/repo" run "$script" "$drift_set" "$run_start"
 }
 
-# Sets up a gh mock for orphan-cleanup tests.
-# Mode "branch-no-label":
-#   - gh pr list --head update/base-digest-debian (branch query, no label filter)
-#     → returns PR #42 (parent exists but has no base-digest-drift label)
-# Mode "branch-with-label":
-#   - same branch query → returns PR #42 (parent exists with label, identical behaviour)
-# Mode "no-branch":
-#   - branch query → returns empty (parent genuinely absent)
-#   - children query → returns PR #99
-_setup_orphan_mock() {
+# Alias kept for backward-compatibility with IV-OA1/2/3 tests.
+_run_orphan_cleanup() { _run_reconcile_cleanup "$@"; }
+
+# Sets up a gh mock for reconcile-cleanup tests.
+#
+# Modes:
+#   branch-no-label   — open-state branch query returns PR #42 (open, no label)
+#   branch-with-label — open-state branch query returns PR #42 (open, with label)
+#   no-branch         — open-state branch query empty; merged-state query empty; children → #99
+#   open-pr-old-ts    — open-state branch query returns PR #42 (simulates upserted PR with
+#                       old created_at — the branch is still OPEN; Defect A scenario)
+#   merged-rebuild-success — open: empty; merged: "55:abc123"; api runs: completed:success; children → #77
+#   merged-rebuild-pending — open: empty; merged: "55:abc123"; api runs: in_progress:; children → #77
+_setup_reconcile_mock() {
     local mode="$1"
     mkdir -p "$TEST_TEMP_DIR/bin"
     local calls_log="$TEST_TEMP_DIR/gh_calls.log"
-    touch "$calls_log"
+    local comments_log="$TEST_TEMP_DIR/gh_comments.log"
+    touch "$calls_log" "$comments_log"
 
     case "$mode" in
-      branch-no-label|branch-with-label)
-        # Parent PR exists; branch query returns it regardless of label state.
+      branch-no-label|branch-with-label|open-pr-old-ts)
+        # Open PR exists: CHECK 1 returns a number → leave alone.
         cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
-# Branch query for parent PR (no --label filter in fixed code)
 if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
     echo "42"
     exit 0
 fi
-# Should never be reached in IV-OA1/IV-OA2 (parent found, loop continues)
 exit 0
 MOCK
         ;;
       no-branch)
-        # Parent PR absent; branch query returns empty; children query returns PR #99.
+        # No open PR; no merged PR in this run; children query returns #99.
         cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
 if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
-    # No parent PR
-    echo ""
+    echo ""; exit 0
+fi
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state merged"* ]]; then
+    echo ""; exit 0
+fi
+if [[ "$*" == *"--label"*"cascade:waiting-for-"* ]]; then
+    echo "99"; exit 0
+fi
+if [[ "$*" == *"pr view"* ]]; then
+    echo "cascade:waiting-for-debian"; exit 0
+fi
+echo ""; exit 0
+MOCK
+        ;;
+      merged-rebuild-success)
+        # No open PR; merged PR #55 (SHA abc123); auto-build run completed+success;
+        # children query returns #77.
+        cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
+    echo ""; exit 0
+fi
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state merged"* ]]; then
+    echo "55:abc123"; exit 0
+fi
+if [[ "$*" == *"api"*"actions/runs"* ]]; then
+    # Emit completed:success for the auto-build run
+    printf '{"workflow_runs":[{"name":"Auto Build & Push","status":"completed","conclusion":"success"}]}' \
+      | jq -r '.workflow_runs[] | select(.name == "Auto Build & Push") | "\(.status):\(.conclusion // "")"'
     exit 0
 fi
 if [[ "$*" == *"--label"*"cascade:waiting-for-"* ]]; then
-    echo "99"
+    echo "77"; exit 0
+fi
+if [[ "$*" == *"pr view"* ]]; then
+    echo "cascade:waiting-for-debian"; exit 0
+fi
+if [[ "$*" == *"pr edit"* && "$*" == *"--remove-label"* ]]; then
     exit 0
 fi
-echo ""
-exit 0
+if [[ "$*" == *"pr merge"* ]]; then
+    exit 0
+fi
+if [[ "$*" == *"pr comment"* ]]; then
+    echo "$*" >> "$TEST_TEMP_DIR/gh_comments.log"; exit 0
+fi
+echo ""; exit 0
+MOCK
+        ;;
+      merged-rebuild-pending)
+        # No open PR; merged PR #55 (SHA abc123); auto-build run in_progress (no conclusion).
+        cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
+    echo ""; exit 0
+fi
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state merged"* ]]; then
+    echo "55:abc123"; exit 0
+fi
+if [[ "$*" == *"api"*"actions/runs"* ]]; then
+    printf '{"workflow_runs":[{"name":"Auto Build & Push","status":"in_progress","conclusion":null}]}' \
+      | jq -r '.workflow_runs[] | select(.name == "Auto Build & Push") | "\(.status):\(.conclusion // "")"'
+    exit 0
+fi
+echo ""; exit 0
 MOCK
         ;;
     esac
@@ -1213,18 +1374,27 @@ MOCK
     export PATH="$TEST_TEMP_DIR/bin:$PATH"
 }
 
+# Backward-compat alias for the three old orphan-cleanup modes.
+_setup_orphan_mock() {
+    local mode="$1"
+    case "$mode" in
+      branch-no-label|branch-with-label) _setup_reconcile_mock "$mode" ;;
+      no-branch)                         _setup_reconcile_mock "no-branch" ;;
+    esac
+}
+
 @test "orphan-cleanup: IV-OA1 — parent PR exists via branch (no base-digest-drift label) → children NOT orphaned" {
-    # Regression for Defect A: old code used --label "base-digest-drift" in parent
+    # Regression for r13 Defect A: old code used --label "base-digest-drift" in parent
     # PR query; if the label was missing the parent was invisible and children
-    # were wrongly stripped.  Fixed code queries by branch only.
+    # were wrongly stripped.  Fixed code queries by branch+open-state only.
     _setup_orphan_mock "branch-no-label"
     _run_orphan_cleanup "debian"
     [ "$status" -eq 0 ]
-    # Parent found via branch → "wait labels are legitimate" notice
-    [[ "$output" == *"wait labels are legitimate"* ]]
+    # Parent found via branch → "leaving alone" notice
+    [[ "$output" == *"leaving alone"* ]]
     # --remove-label must NOT have been called (children are NOT orphaned)
     ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
-    # The branch query must NOT have contained --label (that was the defect)
+    # The open-state branch query must NOT have contained --label (was the r13 defect)
     ! grep -qE -- "--head.*--label|--label.*--head" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
@@ -1233,7 +1403,7 @@ MOCK
     _setup_orphan_mock "branch-with-label"
     _run_orphan_cleanup "debian"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"wait labels are legitimate"* ]]
+    [[ "$output" == *"leaving alone"* ]]
     ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
 }
 
@@ -1243,8 +1413,54 @@ MOCK
     _setup_orphan_mock "no-branch"
     _run_orphan_cleanup "debian"
     [ "$status" -eq 0 ]
-    # "no open drift PR" notice must appear
-    [[ "$output" == *"no open drift PR"* ]]
+    # "treating as orphan" notice must appear
+    [[ "$output" == *"treating as orphan"* ]]
     # --remove-label must have been called for the orphaned child
     grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "reconcile-cleanup: IV-OA4 — parent PR open from previous cron run (upserted, old created_at) → children left alone (Defect A)" {
+    # Defect A (r16): peter-evans/create-pull-request UPSERTs on reused branch names.
+    # The reused PR keeps its old created_at.  The r15 fix's created:>= filter
+    # would have skipped this open PR, misclassifying it as missing and wrongly
+    # stripping child labels.  The r16 fix queries OPEN state first (no created: filter).
+    #
+    # MG-OA2: replacing open-state query with created:>= filter causes this test to fail.
+    _setup_reconcile_mock "open-pr-old-ts"
+    _run_reconcile_cleanup "debian" "2099-01-01T00:00:00Z"  # run_start far in future → old PR would fail created: filter
+    [ "$status" -eq 0 ]
+    # The OPEN check must find the PR and leave children alone
+    [[ "$output" == *"leaving alone"* ]]
+    ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+    # The open-state query must NOT include a --search flag (created: filter must be absent)
+    ! grep -qE -- "--state open.*--search|--search.*--state open" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "reconcile-cleanup: IV-OA5 — parent merged in this run + rebuild success → children labels cleaned up (Defect B)" {
+    # Defect B (r16): parent's matrix iteration fully completes (PR merged + rebuild
+    # success + resolver fired) BEFORE child applies its cascade label.  Resolver
+    # fired with no child to unblock; child label persists with no future event.
+    # Fix: detect merged+success parent in cleanup and remove the stale label.
+    #
+    # MG-OA3: removing the merged+rebuild-success branch causes this test to fail.
+    _setup_reconcile_mock "merged-rebuild-success"
+    _run_reconcile_cleanup "debian" "2000-01-01T00:00:00Z"
+    [ "$status" -eq 0 ]
+    # "fully resolved" notice must appear
+    [[ "$output" == *"fully resolved"* ]]
+    # --remove-label must have been called
+    grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+    # auto-merge must have been attempted
+    grep -q -- "pr merge" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "reconcile-cleanup: IV-OA6 — parent merged in this run, rebuild still pending → children left alone (State 3)" {
+    # Parent PR merged in this run but the master rebuild workflow is still in_progress.
+    # cascade-resolver will fire when the rebuild completes; cleanup must leave children alone.
+    _setup_reconcile_mock "merged-rebuild-pending"
+    _run_reconcile_cleanup "debian" "2000-01-01T00:00:00Z"
+    [ "$status" -eq 0 ]
+    # "rebuild still pending" notice must appear
+    [[ "$output" == *"rebuild still pending"* ]]
+    ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
 }
