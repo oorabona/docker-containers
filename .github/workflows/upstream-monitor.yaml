@@ -1938,7 +1938,6 @@ jobs:
           INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
           CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
           CURRENT_ERROR_SET: ${{ needs.detect-digest-drift.outputs.error_containers_csv }}
-          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           # Four-state parent evaluation: in_flux | ready
           # Ordering: A → B0 → B → C
@@ -1956,15 +1955,15 @@ jobs:
           #   parent as ready risks auto-merging a child against a stale parent image.
           #   Conservative answer: wait (same as in_flux) until the next successful probe.
           #
-          # STATE B: parent not in CURRENT_DRIFT_SET → GHCR image is stable (ready)
+          # STATE B: parent not in CURRENT_DRIFT_SET → stable (ready); OR parent IS in
+          #   CURRENT_DRIFT_SET but no open PR → conservative in_flux.
           #   Only safe AFTER the open-PR check (A) and error check (B0): no open PR and
           #   no probe error means the parent was cleanly stable this run.
           #   CURRENT_DRIFT_SET is now repo-wide (Defect E fix), so the scoped-dispatch
           #   false-negative that previously appeared here is eliminated.
-          #
-          # STATE C (conservative in_flux): parent IS drifting this run but no PR yet.
-          #   When A+B0+B are all exhausted the parent IS drifting; wait for its PR to
-          #   open and merge; the cascade-resolver unblocks when the parent rebuild lands.
+          #   NOTE: a GHCR-freshness check (r26, Defect O) was reverted in r27 because it
+          #   queried the most-recently-CREATED package version package-wide, which can be
+          #   a different tag from the one the child consumes.  See ADR-011 §Known Limitations.
           #
           # Labels are applied ONE PER gh-call (loop) so each label application is
           # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
@@ -2027,34 +2026,13 @@ jobs:
                 echo "ready"
                 return 0
               fi
-              # Parent IS in the drift snapshot, no open PR: race-window guard (Defect O fix).
-              #
-              # Race: parent drift PR merged AND master rebuild completed BETWEEN the
-              # detect-digest-drift snapshot and this evaluation.  Without the guard the
-              # child gets cascade:waiting-for-<parent>; cascade-resolver already fired
-              # for that parent rebuild (before the child existed) → child stranded until
-              # the next cron run.
-              #
-              # This GHCR check is narrower than the broad State C removed in r23.
-              # r23 ran the check for EVERY parent; that was unsound because
-              # RUN_STARTED_AT was never plumbed and queried package-wide latest rather
-              # than the specific tag.  Here: only when parent IS in the drift set AND
-              # no open PR — the one window where the snapshot could be stale.
-              local _ghcr_updated_at
-              _ghcr_updated_at=$(gh api \
-                "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${parent}/versions" \
-                --jq '.[0].updated_at' 2>/dev/null) || _ghcr_updated_at=""
-              if [[ -n "$_ghcr_updated_at" && -n "${RUN_STARTED_AT:-}" ]]; then
-                # ISO-8601 UTC strings (Z-suffix, same precision) compare correctly as
-                # lexicographic strings: a later timestamp sorts after an earlier one.
-                if [[ "$_ghcr_updated_at" > "$RUN_STARTED_AT" ]]; then
-                  echo "::notice::Parent ${parent} was rebuilt after run start (GHCR ${_ghcr_updated_at} > ${RUN_STARTED_AT}); marking ready"
-                  echo "ready"
-                  return 0
-                fi
-              fi
-              # GHCR check absent, failed, or image not yet refreshed — conservative wait.
-              echo "::notice::Parent ${parent} is drifting this run, no open PR, GHCR not refreshed after run start — waiting"
+              # Parent IS in the drift snapshot, no open PR → conservative in_flux.
+              # A tag-specific GHCR freshness check is not safe here: the package-wide
+              # /versions API returns the most-recently-CREATED version regardless of tag,
+              # so a concurrent push of a different tag (e.g. php:8.4 while child needs php:8.3)
+              # would yield a false-ready.  See ADR-011 §Known Limitations for the full
+              # race-window analysis and the per-tag label scheme required to resolve it.
+              echo "::notice::Parent ${parent} is drifting this run, no open PR yet — waiting conservatively"
               echo "in_flux"
               return 0
             fi

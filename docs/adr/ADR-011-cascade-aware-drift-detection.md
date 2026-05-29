@@ -140,6 +140,40 @@ helpers/dependency-graph.sh          ←── single source of truth
 | New container with no lineage | Config.yaml fallback; `list-deps` and detector work correctly |
 | `cascade:waiting-for-X` label missing from repo | `gh pr edit --add-label` creates it on-the-fly |
 
+## Known Limitations
+
+### Stale `cascade:waiting-for-<parent>` label on rare race window
+
+A consumer drift PR can be opened with a `cascade:waiting-for-<parent>` label even when the
+parent's rebuild has ALREADY landed, in the following narrow window:
+
+1. Parent's drift PR was merged AND its master rebuild completed between `detect-digest-drift`'s
+   snapshot and the consumer's evaluation in the same monitor run.
+2. Consumer evaluator's State A sees no open PR (correct: PR was merged) but State B sees the
+   parent in the stale `CURRENT_DRIFT_SET` snapshot (incorrect: parent is now rebuilt).
+3. Consumer PR is created with `cascade:waiting-for-<parent>`.
+4. `cascade-resolver` already fired for the parent's master rebuild before the consumer existed,
+   so it never fires for this consumer.
+
+The stranded label is cleared on the next monitor run OR by operator action
+(`gh pr edit <N> --remove-label cascade:waiting-for-<parent>`).
+
+A tag-specific cascade label scheme (`cascade:waiting-for-<parent>-<tag>`) combined with
+per-tag GHCR queries would eliminate this race window. That requires:
+- `detect-base-digest-drift` emitting per-variant drift records with `(container, tag)` granularity
+- Consumer label application using the parent's specific tag (resolved from child's lineage
+  `base_image_ref`)
+- `_eval_parent_state` querying GHCR for `<parent>:<tag>` directly
+
+A package-wide GHCR check was attempted (r26, Defect O) and reverted (r27): the
+`/packages/container/<parent>/versions` API returns the most-recently-CREATED version
+regardless of tag. A concurrent push of an unrelated tag (e.g. `php:8.4` while the child
+consumes `php:8.3`) makes `.[0].updated_at > RUN_STARTED_AT` return true, yielding a
+false-ready that allows the child to auto-merge against a stale parent image.
+
+The per-tag label scheme is tracked as a future improvement (open an issue if this race
+window produces repeated operator pain in practice).
+
 ## Test Strategy
 
 - `tests/unit/dependency-graph.bats` (14 tests): DAG inference, transitive closure, cycle detection,
