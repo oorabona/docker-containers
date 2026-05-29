@@ -1091,3 +1091,160 @@ MOCK_BODY
     # pr view (snapshot) must have been called before removal
     grep -q "pr view" "$TEST_TEMP_DIR/gh_calls.log"
 }
+
+# ---------------------------------------------------------------------------
+# Gate r13 — Defect A fix: orphan cleanup must query parent PR by branch,
+# not by label.  Regression: if create-pull-request succeeded but the
+# strict cascade-critical label step exhausted retries and failed to apply
+# the label, the old code (--label "base-digest-drift") missed the parent PR
+# and wrongly treated children as orphaned, stripping wait labels prematurely.
+#
+# Key invariants:
+#   IV-OA1: parent PR exists (branch present) but NO base-digest-drift label
+#            → orphan cleanup must recognise the parent and leave children alone
+#   IV-OA2: parent PR exists with base-digest-drift label
+#            → same result as IV-OA1 (label presence must not matter)
+#   IV-OA3: parent PR genuinely absent (no branch)
+#            → orphan cleanup correctly identifies orphaned children
+#
+# Mutation guard:
+#   MG-OA: re-adding "--label base-digest-drift" to the gh pr list call
+#          in orphan cleanup → IV-OA1 fails (test detects the regression)
+# ---------------------------------------------------------------------------
+
+ORPHAN_CLEANUP_BODY='
+set -uo pipefail
+CURRENT_DRIFT_SET="${1:?CURRENT_DRIFT_SET required}"
+for parent in ${CURRENT_DRIFT_SET//,/ }; do
+  parent_pr=$(gh pr list \
+    --head "update/base-digest-${parent}" \
+    --state open \
+    --base master \
+    --json number,isCrossRepository \
+    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"' \
+    | head -1) || {
+    echo "::warning::Failed to query drift PR for ${parent}; skipping orphan check for this container"
+    continue
+  }
+  if [[ -n "$parent_pr" ]]; then
+    echo "::notice::Parent ${parent} has open drift PR #${parent_pr} — wait labels are legitimate"
+    continue
+  fi
+  echo "::notice::Parent ${parent} has no open drift PR; scanning for orphaned cascade:waiting-for-${parent} labels"
+  children=$(gh pr list \
+    --label "cascade:waiting-for-${parent}" \
+    --label "base-digest-drift" \
+    --state open \
+    --json number,isCrossRepository \
+    --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"') || {
+    echo "::error::Failed to query children waiting for ${parent}"
+    exit 1
+  }
+  if [[ -z "$children" ]]; then
+    echo "::notice::No children waiting for ${parent}"
+    continue
+  fi
+  for child in $children; do
+    echo "::notice::Removing orphaned cascade:waiting-for-${parent} from PR #${child}"
+    gh pr edit "$child" --remove-label "cascade:waiting-for-${parent}" 2>&1 || true
+  done
+done
+'
+
+_run_orphan_cleanup() {
+    local drift_set="$1"
+    local script="$TEST_TEMP_DIR/orphan_cleanup.sh"
+    printf '#!/usr/bin/env bash\n%s\n' "$ORPHAN_CLEANUP_BODY" > "$script"
+    chmod +x "$script"
+    run "$script" "$drift_set"
+}
+
+# Sets up a gh mock for orphan-cleanup tests.
+# Mode "branch-no-label":
+#   - gh pr list --head update/base-digest-debian (branch query, no label filter)
+#     → returns PR #42 (parent exists but has no base-digest-drift label)
+# Mode "branch-with-label":
+#   - same branch query → returns PR #42 (parent exists with label, identical behaviour)
+# Mode "no-branch":
+#   - branch query → returns empty (parent genuinely absent)
+#   - children query → returns PR #99
+_setup_orphan_mock() {
+    local mode="$1"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local calls_log="$TEST_TEMP_DIR/gh_calls.log"
+    touch "$calls_log"
+
+    case "$mode" in
+      branch-no-label|branch-with-label)
+        # Parent PR exists; branch query returns it regardless of label state.
+        cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
+# Branch query for parent PR (no --label filter in fixed code)
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
+    echo "42"
+    exit 0
+fi
+# Should never be reached in IV-OA1/IV-OA2 (parent found, loop continues)
+exit 0
+MOCK
+        ;;
+      no-branch)
+        # Parent PR absent; branch query returns empty; children query returns PR #99.
+        cat > "$TEST_TEMP_DIR/bin/gh" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$TEST_TEMP_DIR/gh_calls.log"
+if [[ "$*" == *"--head"*"update/base-digest-"*"--state open"* ]]; then
+    # No parent PR
+    echo ""
+    exit 0
+fi
+if [[ "$*" == *"--label"*"cascade:waiting-for-"* ]]; then
+    echo "99"
+    exit 0
+fi
+echo ""
+exit 0
+MOCK
+        ;;
+    esac
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export TEST_TEMP_DIR
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+@test "orphan-cleanup: IV-OA1 — parent PR exists via branch (no base-digest-drift label) → children NOT orphaned" {
+    # Regression for Defect A: old code used --label "base-digest-drift" in parent
+    # PR query; if the label was missing the parent was invisible and children
+    # were wrongly stripped.  Fixed code queries by branch only.
+    _setup_orphan_mock "branch-no-label"
+    _run_orphan_cleanup "debian"
+    [ "$status" -eq 0 ]
+    # Parent found via branch → "wait labels are legitimate" notice
+    [[ "$output" == *"wait labels are legitimate"* ]]
+    # --remove-label must NOT have been called (children are NOT orphaned)
+    ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+    # The branch query must NOT have contained --label (that was the defect)
+    ! grep -qE -- "--head.*--label|--label.*--head" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "orphan-cleanup: IV-OA2 — parent PR exists via branch (with base-digest-drift label) → children NOT orphaned" {
+    # Confirm the fix also handles the normal case (label present) correctly.
+    _setup_orphan_mock "branch-with-label"
+    _run_orphan_cleanup "debian"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"wait labels are legitimate"* ]]
+    ! grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+}
+
+@test "orphan-cleanup: IV-OA3 — parent PR genuinely absent (no branch) → orphaned children get label removed" {
+    # When there is truly no parent PR (branch absent), orphan cleanup must
+    # identify waiting children and strip their wait labels.
+    _setup_orphan_mock "no-branch"
+    _run_orphan_cleanup "debian"
+    [ "$status" -eq 0 ]
+    # "no open drift PR" notice must appear
+    [[ "$output" == *"no open drift PR"* ]]
+    # --remove-label must have been called for the orphaned child
+    grep -q -- "--remove-label" "$TEST_TEMP_DIR/gh_calls.log"
+}

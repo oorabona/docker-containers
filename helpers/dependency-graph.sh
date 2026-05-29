@@ -190,11 +190,13 @@ _depgraph_get_deps() {
     local found_any=false
     for lineage_file in "${lineage_files[@]}"; do
         [[ -f "$lineage_file" ]] || continue
-        # Mark that at least one lineage entry exists (suppresses config.yaml fallback)
-        found_any=true
         local basename_file
         basename_file="$(basename "$lineage_file")"
+        # Skip sidecar files BEFORE marking found_any; a container with only sidecars
+        # must fall through to the config.yaml fallback path.
         if is_lineage_sidecar "$basename_file"; then continue; fi
+        # Mark that at least one real lineage entry exists (suppresses config.yaml fallback)
+        found_any=true
 
         local base_ref
         base_ref=$(jq -r '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)

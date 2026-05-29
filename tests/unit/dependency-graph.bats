@@ -137,13 +137,16 @@ _write_lineage() {
 # MG3: if sidecar skip removed, the sidecar would be parsed as a dep
 # ---------------------------------------------------------------------------
 @test "depgraph: sidecar skip — .sbom.json not parsed as lineage" {
-    # Write a sidecar file that references php — should NOT count
-    printf '{"container":"wordpress","tag":"6.9.1-alpine","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
-        > "${_DEPGRAPH_LINEAGE_DIR}/wordpress-6.9.1-alpine.sbom.json"
-    # No real lineage file — deps should be empty
+    # Write a sidecar file that references php — should NOT be read as a lineage
+    # source.  Uses containerC (no config.yaml in the project) so the config.yaml
+    # fallback also produces no deps, confirming the sidecar was skipped.
+    printf '{"container":"containerC","tag":"1.0","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
+        > "${_DEPGRAPH_LINEAGE_DIR}/containerC-1.0.sbom.json"
+    # No real lineage file — sidecar skipped, no config.yaml fallback → empty
+    rm -f "${PROJECT_ROOT}/containerC/config.yaml"
     run bash -c "
         source '${HELPERS_DIR}/dependency-graph.sh'
-        _depgraph_get_deps wordpress
+        _depgraph_get_deps containerC
     "
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
@@ -404,6 +407,91 @@ _write_lineage() {
         export _DEPGRAPH_OWNER_OVERRIDE
         source '${HELPERS_DIR}/dependency-graph.sh'
         _depgraph_get_deps wordpress
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+# ---------------------------------------------------------------------------
+# Gate r13 — Defect B regression: found_any set after sidecar filter
+#
+# A container that has ONLY sidecar lineage files (e.g. *.sbom.json,
+# *.changelog.json) must fall through to the config.yaml fallback path.
+# The old code set found_any=true BEFORE filtering out sidecars, so a
+# container with only sidecars returned empty deps and skipped config.yaml.
+#
+# Mutation guard:
+#   MG-B: moving found_any=true back BEFORE is_lineage_sidecar →
+#         this test fails (sidecar-only container returns empty deps
+#         instead of falling back to config.yaml)
+# ---------------------------------------------------------------------------
+
+@test "depgraph: sidecar-only lineage falls through to config.yaml fallback (Defect B regression)" {
+    # Write ONLY sidecar files for containerA — no real lineage JSON.
+    # The absence of a real lineage file (after sidecar filtering) must cause
+    # found_any to remain false, triggering the config.yaml fallback path.
+    printf '{"container":"containerA","tag":"1.0","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
+        > "${_DEPGRAPH_LINEAGE_DIR}/containerA-1.0.sbom.json"
+    printf '{"container":"containerA","tag":"1.0"}' \
+        > "${_DEPGRAPH_LINEAGE_DIR}/containerA-1.0.changelog.json"
+
+    # Place a config.yaml in the real PROJECT_ROOT/containerA/ that declares
+    # an internal base_image_cache ref.  This file is cleaned up below.
+    # Note: dependency-graph.sh sources helpers via PROJECT_ROOT so the real
+    # PROJECT_ROOT must be used; only the lineage dir is overridden via
+    # _DEPGRAPH_LINEAGE_DIR (set in setup()).
+    local cfg_dir="${PROJECT_ROOT}/containerA"
+    local cfg_file="${cfg_dir}/config.yaml"
+    local created_dir=false
+    if [[ ! -d "$cfg_dir" ]]; then
+        mkdir -p "$cfg_dir"
+        created_dir=true
+    fi
+    local prev_cfg=""
+    if [[ -f "$cfg_file" ]]; then
+        prev_cfg=$(< "$cfg_file")
+    fi
+    printf 'base_image_cache:\n  - image: ghcr.io/oorabona/php:8.4-fpm-alpine\n' \
+        > "$cfg_file"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps containerA
+    "
+
+    # Restore the original state before asserting (ensure cleanup on any failure path)
+    if [[ -n "$prev_cfg" ]]; then
+        printf '%s' "$prev_cfg" > "$cfg_file"
+    else
+        rm -f "$cfg_file"
+        if [[ "$created_dir" == "true" ]]; then
+            rmdir "$cfg_dir" 2>/dev/null || true
+        fi
+    fi
+
+    # config.yaml fallback must have fired: dep=php detected from config.yaml ref
+    [ "$status" -eq 0 ]
+    [ "$output" = "php" ]
+}
+
+@test "depgraph: sidecar-only + no config.yaml → empty deps (correct fallback behaviour)" {
+    # Sidecar-only, no config.yaml: sidecar filter leaves found_any=false but no
+    # config.yaml exists for this container, so deps remain empty.
+    # Uses containerC which has no config.yaml in the real project tree.
+    printf '{"container":"containerC","tag":"1.0","base_image_ref":"ghcr.io/oorabona/php:latest"}' \
+        > "${_DEPGRAPH_LINEAGE_DIR}/containerC-1.0.sbom.json"
+
+    # Ensure no config.yaml exists for containerC in PROJECT_ROOT (it's a synthetic
+    # container not present in the actual project)
+    rm -f "${PROJECT_ROOT}/containerC/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps containerC
     "
     [ "$status" -eq 0 ]
     [ "$output" = "" ]

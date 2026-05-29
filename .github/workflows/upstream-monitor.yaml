@@ -1813,7 +1813,6 @@ jobs:
           for parent in ${CURRENT_DRIFT_SET//,/ }; do
             parent_pr=$(gh pr list \
               --head "update/base-digest-${parent}" \
-              --label "base-digest-drift" \
               --state open \
               --base master \
               --json number,isCrossRepository \
