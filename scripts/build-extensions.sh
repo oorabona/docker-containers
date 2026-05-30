@@ -693,14 +693,22 @@ main() {
             log_error "Extension '$EXTENSION': no Dockerfile at $_explicit_dockerfile"
             exit 1
         fi
-        if _should_build_extension "$EXTENSION" "$config_file" "$major_ver" "$container_dir"; then
-            extensions_to_build=("$EXTENSION")
-        fi
+        local _rc=0
+        _should_build_extension "$EXTENSION" "$config_file" "$major_ver" "$container_dir" || _rc=$?
+        case "$_rc" in
+            0) extensions_to_build=("$EXTENSION") ;;
+            1) : ;;
+            *) log_error "$EXTENSION: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
+        esac
     else
         while IFS= read -r ext; do
-            if _should_build_extension "$ext" "$config_file" "$major_ver" "$container_dir"; then
-                extensions_to_build+=("$ext")
-            fi
+            local _rc=0
+            _should_build_extension "$ext" "$config_file" "$major_ver" "$container_dir" || _rc=$?
+            case "$_rc" in
+                0) extensions_to_build+=("$ext") ;;
+                1) : ;;
+                *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
+            esac
         done < <(list_extensions_by_priority "$config_file" "$major_ver")
     fi
 

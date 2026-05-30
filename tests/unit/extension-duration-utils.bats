@@ -192,13 +192,49 @@ _write_ext_lineage() {
     [ "$output" = "null" ]
 }
 
-# Case 6: ext_config returns empty version for all → all skipped, returns 0
-# (get_flavor_extensions still returns the 3 extensions, but ext_config yields no version)
-@test "6: ext_config returns empty version → all extensions skipped, returns 0" {
+# Case 7: backfill scenario — ceiling lineage file absent, older-version files present
+# Before the fix: function only looks up ext-<ext>-pg<major>-<ceiling>.json → 0
+# After the fix: function sums all ext-<ext>-pg<major>-*.json present → non-zero
+@test "7: backfill — ceiling absent, two older-version lineage files present → sum of older files" {
+    # pgvector's ceiling (0.8.0) was already in registry — no lineage written this run.
+    # But two older retained versions were backfilled and DID produce lineage files.
+    _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.7.0"  120
+    _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.7.4"  80
+    # NO ext-pgvector-pg17-0.8.0.json (ceiling skipped — already in registry)
+
+    # paradedb and pg_cron also absent (all cached)
+
+    run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
+    [ "$status" -eq 0 ]
+    # Must sum the two older-version files (120+80=200), NOT return 0
+    [ "$output" -eq 200 ]
+}
+
+# Case 8: versionset artifact file is excluded from duration sum (no duration_seconds field)
+@test "8: versionset artifact not counted in duration sum" {
+    # Write a normal lineage file and also a versionset artifact (no duration_seconds)
+    _write_ext_lineage "pgvector"  "$MAJOR_VER" "0.8.0"  150
+    # Write a versionset artifact (the kind written by build-extensions.sh for multi-version)
+    jq -nc \
+        --arg ext "pgvector" \
+        --arg pg_major "$MAJOR_VER" \
+        --arg ceiling "0.8.0" \
+        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:["0.8.0"], available:["0.8.0"], excluded:[]}' \
+        > "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-versionset.json"
+
+    run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
+    [ "$status" -eq 0 ]
+    # Must include the 150s lineage file, must NOT crash on versionset (no duration field)
+    [ "$output" -eq 150 ]
+}
+
+# Case 6: ext_config returns empty version for all → no lineage files exist → returns 0
+# (get_flavor_extensions still returns the 3 extensions, but no builds ran for them)
+@test "6: ext_config returns empty version → no lineage files → returns 0" {
     _mock_ext_config_no_version
-    # Even with lineage files present, they can't be looked up without a version
-    _write_ext_lineage "pgvector"  "$MAJOR_VER" "" 100  # wrong name, won't match
-    _write_ext_lineage "paradedb"  "$MAJOR_VER" "" 200
+    # No lineage files written — in practice, build-extensions.sh only writes
+    # ext-<ext>-pg<major>-<version>.json with a concrete version; empty-version
+    # extensions produce no lineage files at all.
 
     run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
     [ "$status" -eq 0 ]

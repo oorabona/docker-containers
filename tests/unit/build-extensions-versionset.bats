@@ -498,6 +498,93 @@ _count_log_lines() {
 # build_tag_push_extensions consume the result.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# A1: main() pre-filter fail-closed — resolver failure must propagate to exit 1
+# (not silently become "All extensions are up to date" / exit 0).
+# ---------------------------------------------------------------------------
+
+@test "main-fail-closed: resolver failure in main() pre-filter exits non-zero, not 'up to date'" {
+    # This test drives main() via a full subprocess invocation of build-extensions.sh.
+    # Before the fix: main() calls _should_build_extension with plain 'if', so rc=2
+    # is treated as "skip" → extensions_to_build stays empty → exit 0 + "up to date".
+    # After the fix: the caller distinguishes rc>=2 as a resolver error → exit 1.
+
+    # Restore bats' EXIT trap — setup() sources build-extensions.sh which installs
+    # a bare 'rm -rf' EXIT trap that overwrites bats' internal teardown trap. Without
+    # this restore, any failing assertion under set -e kills the bats process silently
+    # instead of printing "not ok". (Same pattern as resolver-failure-fatal test.)
+    # shellcheck disable=SC2064
+    trap "bats_teardown_trap as-exit-trap" EXIT
+
+    local tmpd="$TEST_TEMP_DIR"
+    local build_log="${tmpd}/main_build_calls.log"
+    local sd="$SCRIPTS_DIR"
+
+    # Write a minimal version.sh so detect_major_version can run if needed
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # The config + timescaledb.Dockerfile are already in place from setup()
+
+    run bash -c "
+        export ROOT_DIR='${tmpd}'
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+
+        cd '${sd}'
+        source ./build-extensions.sh
+
+        resolve_version_set() { echo 'simulated resolver failure' >&2; return 1; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker()               { return 1; }
+        export -f docker
+        build_ext_image()      { echo \"BUILD ext=\$1 ver=\$2\" >> '${build_log}'; return 0; }
+        export -f build_ext_image
+        tag_ext_image()        { return 0; }
+        export -f tag_ext_image
+        push_ext_image()       { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        # source resets CONTAINER="" — pass the container name as a positional arg
+        main postgres --major-version 18
+    "
+
+    # Before the fix: status=0 and output contains "up to date"  (RED)
+    # After the fix:  status!=0 and output does NOT contain "up to date" (GREEN)
+
+    # Must fail — fail-closed: resolver error is not a silent skip
+    [ "$status" -ne 0 ]
+
+    # Must NOT print "up to date" (that would be the fail-open bug behavior)
+    [[ "$output" != *"up to date"* ]]
+
+    # Must NOT have triggered any build (resolver failed before any build decision)
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
 @test "resolver-call-count: resolve_version_set called exactly once per (ext,major) across filter+build" {
     local counter_file="$TEST_TEMP_DIR/resolver_call_count"
     printf '0' > "$counter_file"

@@ -280,6 +280,12 @@ jobs:
           echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
 
+      - name: Install skopeo
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
       - name: Log in to container registries
         id: login
         uses: ./.github/actions/docker-login

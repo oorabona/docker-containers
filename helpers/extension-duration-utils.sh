@@ -54,26 +54,28 @@ sum_flavor_extension_durations() {
     while IFS= read -r ext; do
         [[ -z "$ext" ]] && continue
 
-        local ext_version
-        ext_version=$(ext_config "$ext" "version" "$config_file" 2>/dev/null || true)
-        if [[ -z "${ext_version:-}" ]]; then
-            # Extension declared but version unset — skip without breaking
-            continue
-        fi
-
-        local _ver_safe="${ext_version//[^a-zA-Z0-9.-]/_}"
-        local lineage_file="${root}/.build-lineage/ext-${ext}-pg${pg_major}-${_ver_safe}.json"
-        if [[ -f "$lineage_file" ]]; then
+        # Aggregate ALL per-version lineage files present for this extension+major.
+        # With version-set fan-out, the ceiling tag may already exist in the registry
+        # (no lineage written this run) while older retained versions were backfilled
+        # (their lineage files were written). Summing only the ceiling file would
+        # record 0 even though builds happened. Exclude the versionset artifact
+        # (ext-<ext>-pg<major>-versionset.json) — it has no duration_seconds field.
+        local lineage_glob="${root}/.build-lineage/ext-${ext}-pg${pg_major}-*.json"
+        # shellcheck disable=SC2086
+        for lineage_file in $lineage_glob; do
+            [[ -f "$lineage_file" ]] || continue
+            # Skip the versionset artifact — it contains no duration_seconds
+            [[ "$lineage_file" == *"-versionset.json" ]] && continue
             local d
             d=$(jq -r '.duration_seconds // 0' "$lineage_file" 2>/dev/null || echo 0)
-            # Guard against non-numeric output from jq
+            # Guard against non-numeric output from jq (e.g. "null" when field absent)
             if [[ "$d" =~ ^[0-9]+$ ]]; then
                 total=$(( total + d ))
             else
                 log_warning "$lineage_file: non-integer duration_seconds, treating as 0"
             fi
-        fi
-        # No lineage file → extension was skipped (cached); contributes 0 this run
+        done
+        # No lineage files for this ext → all versions were cached; contributes 0 this run
     done <<< "$ext_list"
 
     echo "$total"
