@@ -270,12 +270,31 @@ generate_dockerfile() {
             # ascending order so the ceiling version (highest) is COPIED LAST —
             # its timescaledb.control (default_version=<ceiling>) wins at
             # install time without needing an explicit override step.
-            local versionset_file="${ROOT_DIR:-.}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
+            # Resolve the lineage root robustly.
+            # Precedence: ROOT_DIR (build-extensions.sh sets it) → PROJECT_ROOT
+            # (build-container.sh sets it in the same shell scope) → git toplevel
+            # → pwd fallback.  This ensures the artifact is found when cwd is a
+            # container subdirectory (make pushd's into it) and ROOT_DIR is unset.
+            local _lineage_root="${ROOT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+            local versionset_file="${_lineage_root}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
             if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
                 local available_count
                 available_count=$(jq '.available | length' "$versionset_file" 2>/dev/null || echo 0)
 
                 if [[ "$available_count" -gt 0 ]]; then
+                    # Fail-closed: the configured ceiling version must be present in
+                    # available[].  If it is absent (e.g. build-side probe missed it
+                    # due to a ceiling-fatal error), shipping an older-only image
+                    # would silently violate the pinned version — abort instead.
+                    local ceiling_in_available
+                    ceiling_in_available=$(jq --arg ceiling "$ext_version" \
+                        '[.available[] | select(. == $ceiling)] | length' \
+                        "$versionset_file" 2>/dev/null || echo 0)
+                    if [[ "$ceiling_in_available" -eq 0 ]]; then
+                        log_error "generate_dockerfile: ceiling $ext_version for $ext_name is absent from available[] in $versionset_file — refusing to emit below-pin image"
+                        return 1
+                    fi
+
                     # Multi-version path: emit one FROM+COPY pair per available version.
                     local raw_versions
                     raw_versions=$(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)

@@ -319,3 +319,114 @@ EOF
 
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test Y: production cwd/PROJECT_ROOT path — artifact found via PROJECT_ROOT
+#         even when ROOT_DIR is unset and cwd is a container subdirectory.
+#
+# Models the REAL production invocation from scripts/build-container.sh:
+#   - PROJECT_ROOT = repo root (set by build-container.sh line 10)
+#   - ROOT_DIR is NOT set (build-container.sh never sets it)
+#   - cwd = <container>/ (make pushd's into it before calling build_container)
+#   - artifact lives at $PROJECT_ROOT/.build-lineage/ext-<name>-pg<major>-versionset.json
+#
+# RED before fix: uses ${ROOT_DIR:-.} → looks in cwd/.build-lineage → NOT FOUND
+#   → single-version fallback (1 FROM stage).
+# GREEN after fix: uses ${ROOT_DIR:-${PROJECT_ROOT:-...}} → finds artifact via
+#   PROJECT_ROOT → multi-version path (3 FROM stages).
+# ---------------------------------------------------------------------------
+@test "Y-production-cwd: artifact found via PROJECT_ROOT when ROOT_DIR unset and cwd is container subdir" {
+    # Simulate repo root in a DIFFERENT temp dir from the container subdir.
+    local fake_repo_root
+    fake_repo_root=$(mktemp -d)
+
+    # Place the versionset artifact at $fake_repo_root/.build-lineage/ (production location).
+    mkdir -p "$fake_repo_root/.build-lineage"
+    cat > "$fake_repo_root/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.25.0","2.27.1"],"available":["2.23.0","2.25.0","2.27.1"],"excluded":[]}
+EOF
+
+    # Place config and template in the temp dir (simulates the container's extensions/).
+    # (Already set up by setup() in TEST_TEMP_DIR.)
+
+    # Create a container subdirectory — this is where cwd will be.
+    local container_subdir
+    container_subdir=$(mktemp -d)
+
+    # Set PROJECT_ROOT to the fake repo root; UNSET ROOT_DIR.
+    local saved_project_root="${PROJECT_ROOT:-}"
+    unset ROOT_DIR
+    export PROJECT_ROOT="$fake_repo_root"
+
+    # cd into the container subdir to simulate the production cwd.
+    pushd "$container_subdir" > /dev/null
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    popd > /dev/null
+
+    # Restore
+    export ROOT_DIR="$TEST_TEMP_DIR"
+    if [[ -n "$saved_project_root" ]]; then
+        export PROJECT_ROOT="$saved_project_root"
+    else
+        unset PROJECT_ROOT
+    fi
+    rm -rf "$fake_repo_root" "$container_subdir"
+
+    [ "$status" -eq 0 ]
+
+    # Must find artifact via PROJECT_ROOT → 3 FROM stages (multi-version path).
+    # RED before fix: 1 FROM stage (single-version fallback because artifact not found).
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test Z: fail-closed when configured ceiling is ABSENT from a non-empty available[].
+#
+# A non-empty available[] that does not include the pinned ceiling version means
+# the build shipped BELOW the pinned version — generate_dockerfile must return
+# non-zero with an error rather than silently emitting older-only stages.
+#
+# RED before fix: emits older-only stages, exits 0.
+# GREEN after fix: exits non-zero with actionable error.
+# ---------------------------------------------------------------------------
+@test "Z-ceiling-absent: non-empty available[] without ceiling → generate_dockerfile exits non-zero" {
+    # Artifact: available has 2 older versions but ceiling (2.27.1) is MISSING.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.25.0","2.27.1"],"available":["2.23.0","2.25.0"],"excluded":[{"version":"2.27.1","reason":"not available"}]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits 2 older-only stages.
+    # GREEN after fix: exits non-zero.
+    [ "$status" -ne 0 ]
+}
+
+@test "Z-ceiling-present: ceiling in available[] → multi-version path succeeds" {
+    # Sanity: ceiling IS present → normal multi-version success, no error.
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}

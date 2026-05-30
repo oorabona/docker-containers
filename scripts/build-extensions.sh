@@ -537,6 +537,12 @@ build_tag_push_extensions() {
 
             log_success "$ext $version completed successfully"
 
+            # Record this version as built-this-run so _emit_versionset_artifact
+            # can union it with the registry probe (guards against GHCR lag).
+            if [[ "$DRY_RUN" != "true" ]]; then
+                printf '%s\n' "$version" >> "${_BUILT_THIS_RUN_DIR}/${ext}-${major_ver}"
+            fi
+
             # Write per-version lineage file with this version's own duration.
             # Dry runs must not mutate .build-lineage.
             if [[ "$DRY_RUN" != "true" ]]; then
@@ -584,6 +590,15 @@ build_tag_push_extensions() {
 # clobbers the caller's own EXIT trap.
 _RESOLVER_CACHE_DIR="$(mktemp -d)"
 export _RESOLVER_CACHE_DIR
+
+# Per-run tracking of successfully built+pushed versions to guard against
+# GHCR/Docker Hub propagation lag: a version whose push succeeded this run
+# is counted available regardless of what the post-push registry probe sees.
+# File layout: ${_BUILT_THIS_RUN_DIR}/<ext>-<major>  (one version per line)
+# Only versions that completed build + tag + push (do_push=true) or
+# build + tag (LOCAL_ONLY=true) without error are recorded.
+_BUILT_THIS_RUN_DIR="$(mktemp -d)"
+export _BUILT_THIS_RUN_DIR
 
 _resolve_cached() {
     local ext="$1" major="$2"
@@ -815,10 +830,23 @@ _emit_versionset_artifact() {
     local excluded_entries=()
     local ver
 
+    # Load built-this-run set for this (ext, major_ver) to union with the probe.
+    # Guards against GHCR/Docker Hub propagation lag: a version whose push succeeded
+    # this run is counted available even if the registry probe returns absent.
+    # Musl-failed versions are never recorded here (they never reach the
+    # built-this-run write in build_tag_push_extensions).
+    local _built_this_run_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
+    local -A _built_this_run_set=()
+    if [[ -f "$_built_this_run_file" ]]; then
+        while IFS= read -r _btr_ver; do
+            [[ -n "$_btr_ver" ]] && _built_this_run_set["$_btr_ver"]=1
+        done < "$_built_this_run_file"
+    fi
+
     while IFS= read -r ver; do
         local ver_image
         ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        if _image_present "$ver_image"; then
+        if _image_present "$ver_image" || [[ -n "${_built_this_run_set[$ver]:-}" ]]; then
             available_versions+=("$ver")
         else
             excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"not available\"}")
@@ -942,6 +970,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     # by unit tests) no trap is installed here so the caller's EXIT trap is
     # never clobbered. _RESOLVER_CACHE_DIR is already set at source time above.
     # shellcheck disable=SC2064
-    trap "rm -rf \"${_RESOLVER_CACHE_DIR}\"" EXIT
+    trap "rm -rf \"${_RESOLVER_CACHE_DIR}\" \"${_BUILT_THIS_RUN_DIR}\"" EXIT
     main "$@"
 fi
