@@ -4702,3 +4702,217 @@ EOF
     rc=$(_run_3state_probe "manifest unknown: manifest unknown")
     [ "$rc" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# WW: skip-without-write paths must delete a stale versionset artifact.
+#
+# When _emit_versionset_artifact cannot confirm a valid set (empty available[],
+# ceiling missing from available[], or probe ERROR) it skips writing the
+# artifact.  Before the fix a pre-existing artifact from a prior run would
+# survive, and the consumer would read its stale available[] — shipping wrong
+# retention sets or masking that the ceiling image is missing.
+#
+# After the fix every skip-without-write path removes any pre-existing
+# ext-<ext>-pg<major>-versionset.json so the consumer's self-heal triggers.
+# DRY_RUN=true must never delete (no filesystem mutation).
+# The happy path (confirmed set → write) is an unchanged regression check.
+# ---------------------------------------------------------------------------
+
+# Helper: drive _emit_versionset_artifact directly in a subprocess so each
+# test gets an isolated shell with exactly the mocks it needs.
+# Args: extra_vars_block (bash code to export mocks before the call)
+#       version_set_json ceiling dry_run
+# Prints the exit code of _emit_versionset_artifact.
+_run_emit_versionset() {
+    local extra_vars="$1" version_set_json="$2" ceiling="$3" dry_run="${4:-false}"
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    bash -c "
+        export FORCE=false LOCAL_ONLY=false CONTAINER=postgres
+        export ROOT_DIR=\"$tmpd\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        # Re-set ROOT_DIR and DRY_RUN after source — build-extensions.sh resets both
+        # to their defaults (ROOT_DIR to the real repo path; DRY_RUN=false).
+        export ROOT_DIR=\"$tmpd\"
+        export DRY_RUN=$dry_run
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_config() {
+            case \"\$2\" in
+                version) echo '$ceiling' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        $extra_vars
+
+        _emit_versionset_artifact timescaledb \"$CONTAINER_DIR/extensions/config.yaml\" 18 '$version_set_json' '$ceiling'
+        echo \"RC:\$?\"
+    " 2>/dev/null
+}
+
+@test "WW-empty-available-deletes-stale: empty available[] on skip path removes stale versionset artifact" {
+    # Arrange: stale artifact with available=[2.25.0,2.26.0,2.27.1] from prior run.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local stale="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale"
+    [ -f "$stale" ]
+
+    # All probes return ABSENT (rc 1 from _image_present_3state) so available[] is empty.
+    # image_exists_in_registry returns 1 (not present) → goes to manifest inspect.
+    # docker manifest inspect returns "manifest unknown" → ABSENT.
+    local mocks='
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() {
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                printf "manifest unknown: manifest unknown\n" >&2
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
+        export -f skopeo
+    '
+
+    # version_set has ceiling 2.27.1 but all probes return ABSENT → available empty → skip.
+    run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
+
+    # The stale artifact MUST be deleted (file absent) after the skip.
+    # RED before fix: file still present.
+    # GREEN after fix: file absent.
+    [ ! -f "$stale" ]
+}
+
+@test "WW-ceiling-missing-deletes-stale: ceiling absent from available[] removes stale versionset artifact" {
+    # Arrange: stale artifact pre-exists.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local stale="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale"
+    [ -f "$stale" ]
+
+    # Only 2.25.0 and 2.26.0 are PRESENT; 2.27.1 (ceiling) is definitively ABSENT.
+    # Result: available=[2.25.0,2.26.0] but ceiling (2.27.1) is not in available → skip.
+    local mocks='
+        image_exists_in_registry() {
+            [[ "$1" == *"2.25.0"* || "$1" == *"2.26.0"* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+        docker() {
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                printf "manifest unknown: manifest unknown\n" >&2
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
+        export -f skopeo
+    '
+
+    run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
+
+    # Stale artifact must be deleted because ceiling is absent from available[].
+    [ ! -f "$stale" ]
+}
+
+@test "WW-probe-error-deletes-stale: ambiguous probe ERROR (fail-closed) removes stale versionset artifact" {
+    # Arrange: stale artifact pre-exists.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local stale="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale"
+    [ -f "$stale" ]
+
+    # All probes return ERROR (rc 2 from _image_present_3state): toomanyrequests.
+    # image_exists_in_registry returns 1 → goes to manifest inspect.
+    # docker manifest inspect returns "toomanyrequests" → ambiguous → ERROR.
+    # _emit_versionset_artifact sets _probe_error=true → returns 1 (fail-closed skip).
+    local mocks='
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() {
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                printf "toomanyrequests: You have reached your pull rate limit\n" >&2
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() { printf "toomanyrequests: pull rate limit\n" >&2; return 1; }
+        export -f skopeo
+    '
+
+    run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
+
+    # Stale artifact must be deleted so consumer self-heals instead of reading stale data.
+    [ ! -f "$stale" ]
+}
+
+@test "WW-dry-run-preserves: DRY_RUN=true skip path must NOT delete the stale versionset artifact" {
+    # Arrange: stale artifact pre-exists.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local stale="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale"
+    [ -f "$stale" ]
+
+    # Under DRY_RUN=true, _emit_versionset_artifact returns 0 immediately without
+    # touching the filesystem — so the stale file must survive.
+    local mocks='
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+    '
+
+    run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1" "true"
+
+    # Stale artifact must still be present (no filesystem mutation under DRY_RUN).
+    [ -f "$stale" ]
+}
+
+@test "WW-happy-overwrites: confirmed set writes artifact with current available[]" {
+    # Regression: happy path (all probes PRESENT, ceiling in available) must write
+    # the artifact with the CURRENT available list, overwriting any stale content.
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+
+    # Write stale content with old versions.
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.24.0","resolved":["2.24.0"],"available":["2.24.0"],"excluded":[]}\n' \
+        > "$artifact"
+
+    # All three versions PRESENT in registry.
+    local mocks='
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+    '
+
+    run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
+
+    # Artifact must exist and reflect the CURRENT available list.
+    [ -f "$artifact" ]
+    local available_count ceiling_val
+    available_count=$(jq '.available | length' "$artifact")
+    ceiling_val=$(jq -r '.ceiling' "$artifact")
+    # All 3 current versions must be in available.
+    [ "$available_count" -eq 3 ]
+    # Ceiling must be the NEW ceiling (2.27.1), not the stale 2.24.0.
+    [ "$ceiling_val" = "2.27.1" ]
+    # The old stale version must NOT appear in available.
+    local old_in_available
+    old_in_available=$(jq '[.available[] | select(. == "2.24.0")] | length' "$artifact")
+    [ "$old_in_available" -eq 0 ]
+}

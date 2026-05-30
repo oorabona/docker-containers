@@ -967,6 +967,19 @@ _emit_final_versionset_pass() {
     fi
 }
 
+# Remove the versionset artifact for a specific (ext, major_ver) when a
+# skip-without-write path is taken, so any pre-existing stale artifact does not
+# mislead the consumer into using an out-of-date available[].
+# Only removes ext-<ext>-pg<major>-versionset.json — never touches per-version
+# duration lineage files or any other extension's artifacts.
+# Must only be called from non-DRY_RUN paths (callers check DRY_RUN before use).
+# Args: ext major_ver
+_delete_stale_versionset_artifact() {
+    local ext="$1" major_ver="$2"
+    local _vs_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+    rm -f "$_vs_file"
+}
+
 # Write (or refresh) the versionset artifact for a resolver-backed extension
 # using a pure presence-based pass — no build occurs.
 # Args: ext config_file major_ver version_set_json ceiling
@@ -1026,7 +1039,9 @@ _emit_versionset_artifact() {
 
     # Fail closed: if any probe returned ERROR, do not write a potentially-incomplete artifact.
     # A transient network blip must never silently drop a previously-published retained version.
+    # Remove any stale artifact so the consumer's self-heal triggers instead of reading old data.
     if [[ "$_probe_error" == "true" ]]; then
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
         return 1
     fi
 
@@ -1047,6 +1062,9 @@ _emit_versionset_artifact() {
 
     if [[ ${#available_versions[@]} -eq 0 ]] || [[ "$_ceiling_in_available" == "false" ]]; then
         log_info "$ext: skipping versionset artifact — available is empty or ceiling ($ceiling) not present"
+        # Remove any stale artifact from a prior run so the consumer's self-heal triggers
+        # instead of reading an out-of-date available[].
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
         return 0
     fi
 
