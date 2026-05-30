@@ -42,14 +42,17 @@ build_ext_image() {
 
     log_info "Building $ext_name $ext_version for PostgreSQL $pg_major (REMOTE_CR=${REMOTE_CR})"
 
-    $DOCKER build \
+    if ! $DOCKER build \
         -f "$dockerfile" \
         -t "$local_tag" \
         --build-arg REMOTE_CR="${REMOTE_CR}" \
         --build-arg MAJOR_VERSION="$pg_major" \
         --build-arg EXT_VERSION="$ext_version" \
         --build-arg EXT_REPO="$ext_repo" \
-        "$context_dir"
+        "$context_dir"; then
+        log_error "Docker build failed for $ext_name $ext_version (pg${pg_major})"
+        return 1
+    fi
 
     log_success "Built: $local_tag"
 }

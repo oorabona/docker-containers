@@ -167,13 +167,16 @@ build_ext_image() {
 
     log_info "Building $ext_name $ext_version for PostgreSQL $pg_major"
 
-    $DOCKER build \
+    if ! $DOCKER build \
         -f "$dockerfile" \
         -t "$local_tag" \
         --build-arg MAJOR_VERSION="$pg_major" \
         --build-arg EXT_VERSION="$ext_version" \
         --build-arg EXT_REPO="$ext_repo" \
-        "$context_dir"
+        "$context_dir"; then
+        log_error "Docker build failed for $ext_name $ext_version (pg${pg_major})"
+        return 1
+    fi
 
     log_success "Built: $local_tag"
 }
@@ -585,7 +588,10 @@ pull_ext_image() {
     remote_tag=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
 
     log_info "Pulling $remote_tag"
-    $DOCKER pull "$remote_tag"
+    if ! $DOCKER pull "$remote_tag"; then
+        log_error "Docker pull failed for $remote_tag"
+        return 1
+    fi
 
     log_success "Pulled: $remote_tag"
 }

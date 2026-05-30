@@ -3457,3 +3457,277 @@ EOF
     # The stale pgvector file SHOULD be cleaned (it belonged to the pgvector scope).
     [ ! -f "$stale_pv" ]
 }
+
+# ---------------------------------------------------------------------------
+# DEFECT-A tests: build_ext_image must propagate the docker build exit code.
+# These tests exercise the REAL build_ext_image (NOT mocked) — only $DOCKER
+# (the docker command) is mocked so that docker build returns non-zero.
+# This closes the mock-vs-production gap where the old unconditional
+# log_success+return-0 swallowed real docker build failures.
+# ---------------------------------------------------------------------------
+
+# DEFECT-A-1: REAL build_ext_image with docker build returning non-zero must
+# return non-zero (was: returned 0 + logged success).
+#
+# Before fix: RED — build_ext_image ran "$DOCKER build ..." then unconditionally
+#   called log_success and fell off the function → return 0.
+# After fix: GREEN — "if ! $DOCKER build ...; then return 1; fi" propagates failure.
+@test "DEFECT-A-1: real build_ext_image returns non-zero when docker build fails" {
+    # Restore the real build_ext_image from build-extensions.sh (setup() installs
+    # a mock via _setup_default_mocks; we need the production function here).
+    _source_build_extensions
+
+    # REMOTE_CR must be set: the build-extensions.sh override uses ${REMOTE_CR}.
+    export REMOTE_CR="docker.io"
+
+    # Override $DOCKER so "docker build" fails; other docker sub-commands pass.
+    # The real build_ext_image calls: $DOCKER build ...
+    export DOCKER="docker"
+    docker() {
+        if [[ "$1" == "build" ]]; then
+            echo "simulated docker build failure" >&2
+            return 1
+        fi
+        # docker image inspect (used by _image_needs_build) → image absent
+        return 1
+    }
+    export -f docker
+
+    # Provide the minimum filesystem structure build_ext_image expects.
+    local ext_name="timescaledb"
+    local ext_version="2.27.1"
+    local ext_repo="https://github.com/timescale/timescaledb"
+    local pg_major="18"
+    local dockerfile="$CONTAINER_DIR/extensions/build/${ext_name}.Dockerfile"
+    local context_dir="$CONTAINER_DIR/extensions"
+
+    run build_ext_image "$ext_name" "$ext_version" "$ext_repo" "$pg_major" "$dockerfile" "$context_dir"
+
+    # Must NOT return 0: a failed docker build must propagate as failure.
+    [ "$status" -ne 0 ]
+
+    # Must NOT log success (that was the lie).
+    [[ "$output" != *"Built:"* ]]
+}
+
+# DEFECT-A-2: integration — REAL build_ext_image + docker build failing for a
+# NON-CEILING version → build_tag_push_extensions TOLERATES it (exit 0, version
+# recorded in the failed-set but run continues).
+#
+# Before fix: RED — build_ext_image returned 0 even on failure, so compile_ok
+#   stayed true, non-ceiling tolerance logic never triggered, and no version was
+#   excluded. The run exited 0 but for the wrong reason (swallowed failure).
+# After fix: GREEN — build_ext_image returns 1, compile_ok=false is set,
+#   non-ceiling tolerance records it as excluded/skipped, run exits 0.
+@test "DEFECT-A-2: real build_ext_image docker-fail on non-ceiling version is tolerated (exit 0)" {
+    # Restore the real build_ext_image (setup installs a mock; we need production here).
+    _source_build_extensions
+    export REMOTE_CR="docker.io"
+    # Re-install required mocks after re-source (which resets everything from helpers).
+    image_exists_in_registry() { return 1; }
+    export -f image_exists_in_registry
+
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # ext_local_image_name used by the real build_ext_image
+    ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+    export -f ext_local_image_name
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    export -f ext_image_name
+
+    # docker: "build" fails only for 2.25.0 (non-ceiling).
+    # Inspect calls (used by _image_needs_build) return absent (1) so all versions
+    # are attempted.
+    # 2.27.1 build succeeds; 2.25.0 build fails.
+    local build_call_log="$TEST_TEMP_DIR/docker_build_calls.log"
+    export DOCKER="docker"
+    docker() {
+        if [[ "$1" == "build" ]]; then
+            # Detect which version from --build-arg EXT_VERSION=<ver>
+            local ver=""
+            local i
+            for (( i=1; i<=$#; i++ )); do
+                local arg="${!i}"
+                if [[ "$arg" == "--build-arg" ]]; then
+                    local next_i=$(( i + 1 ))
+                    local next_arg="${!next_i}"
+                    if [[ "$next_arg" == EXT_VERSION=* ]]; then
+                        ver="${next_arg#EXT_VERSION=}"
+                    fi
+                fi
+            done
+            echo "docker build called for ver=${ver}" >> "$build_call_log"
+            if [[ "$ver" == "2.25.0" ]]; then
+                echo "simulated musl build failure for $ver" >&2
+                return 1
+            fi
+            return 0
+        fi
+        # inspect / other sub-commands: image absent
+        return 1
+    }
+    export -f docker
+    export DOCKER
+
+    # tag_ext_image / push_ext_image must record calls for the ceiling version
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/tag_calls.log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    push_ext_image() {
+        echo "PUSH_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/push_calls.log"
+        return 0
+    }
+    export -f push_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Non-ceiling failure must be TOLERATED: run exits 0.
+    [ "$status" -eq 0 ]
+
+    # The ceiling (2.27.1) must have been tagged and pushed (it succeeded).
+    [ -f "$TEST_TEMP_DIR/tag_calls.log" ]
+    [[ "$(cat "$TEST_TEMP_DIR/tag_calls.log")"  == *"ver=2.27.1"* ]]
+    [ -f "$TEST_TEMP_DIR/push_calls.log" ]
+    [[ "$(cat "$TEST_TEMP_DIR/push_calls.log")" == *"ver=2.27.1"* ]]
+
+    # The non-ceiling (2.25.0) must NOT have been tagged (build failed before tag).
+    if [ -f "$TEST_TEMP_DIR/tag_calls.log" ]; then
+        [[ "$(cat "$TEST_TEMP_DIR/tag_calls.log")" != *"ver=2.25.0"* ]]
+    fi
+}
+
+# DEFECT-A-3: integration — REAL build_ext_image + docker build failing for the
+# CEILING version → build_tag_push_extensions is FATAL (exit non-zero).
+#
+# Before fix: RED — docker build failure swallowed → compile_ok stayed true →
+#   ceiling tag+push proceeded → run exited 0 (silently shipping a broken image).
+# After fix: GREEN — failure propagated → ceiling marked failed → exit 1.
+@test "DEFECT-A-3: real build_ext_image docker-fail on ceiling version is fatal (exit non-zero)" {
+    # Restore the real build_ext_image (setup installs a mock; we need production here).
+    _source_build_extensions
+    export REMOTE_CR="docker.io"
+    # Re-install required mocks after re-source.
+    image_exists_in_registry() { return 1; }
+    export -f image_exists_in_registry
+
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+    export -f ext_local_image_name
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    export -f ext_image_name
+
+    local build_call_log="$TEST_TEMP_DIR/docker_build_calls_a3.log"
+    export DOCKER="docker"
+    docker() {
+        if [[ "$1" == "build" ]]; then
+            local ver=""
+            local i
+            for (( i=1; i<=$#; i++ )); do
+                local arg="${!i}"
+                if [[ "$arg" == "--build-arg" ]]; then
+                    local next_i=$(( i + 1 ))
+                    local next_arg="${!next_i}"
+                    if [[ "$next_arg" == EXT_VERSION=* ]]; then
+                        ver="${next_arg#EXT_VERSION=}"
+                    fi
+                fi
+            done
+            echo "docker build called for ver=${ver}" >> "$build_call_log"
+            # Ceiling (2.27.1) fails
+            if [[ "$ver" == "2.27.1" ]]; then
+                echo "simulated ceiling build failure for $ver" >&2
+                return 1
+            fi
+            return 0
+        fi
+        return 1
+    }
+    export -f docker
+    export DOCKER
+
+    local tag_log="$TEST_TEMP_DIR/tag_calls.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Ceiling failure must be FATAL.
+    [ "$status" -ne 0 ]
+
+    # The ceiling must NOT have been tagged (build failed before tag).
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"ver=2.27.1"* ]]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# DEFECT-A-4: pull_ext_image must propagate docker pull exit code.
+# Exercises the REAL pull_ext_image (NOT mocked) — only $DOCKER/docker is mocked
+# so docker pull returns non-zero.
+#
+# Before fix: RED — pull_ext_image called "$DOCKER pull ..." then unconditionally
+#   called log_success → returned 0 even on failure.
+# After fix: GREEN — "if ! $DOCKER pull ...; then return 1; fi" propagates failure.
+# ---------------------------------------------------------------------------
+
+@test "DEFECT-A-4: real pull_ext_image returns non-zero when docker pull fails" {
+    # Restore real pull_ext_image from helpers/extension-utils.sh.
+    # setup() only sources build-extensions.sh (which sources extension-utils.sh),
+    # so pull_ext_image is already the real one — but _setup_default_mocks defines
+    # a pull_ext_image mock if any test does. Here setup() does NOT override
+    # pull_ext_image, so the real one is in scope.
+    # Re-source to be safe (also resets any prior mutation from other tests).
+    _source_build_extensions
+    export REMOTE_CR="docker.io"
+
+    # Override $DOCKER so docker pull fails.
+    export DOCKER="docker"
+    docker() {
+        if [[ "$1" == "pull" ]]; then
+            echo "simulated docker pull failure" >&2
+            return 1
+        fi
+        return 1
+    }
+    export -f docker
+
+    ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+    export -f ext_image_name
+
+    run pull_ext_image "timescaledb" "2.27.1" "18"
+
+    # Must NOT return 0: a failed docker pull must propagate as failure.
+    [ "$status" -ne 0 ]
+
+    # Must NOT log success (that was the lie).
+    [[ "$output" != *"Pulled:"* ]]
+}
