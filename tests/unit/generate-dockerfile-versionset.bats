@@ -1017,3 +1017,266 @@ EOF
     # Ceiling 2.27.1 must be present
     echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
 }
+
+# ---------------------------------------------------------------------------
+# OO-gd: _image_registry_probe_3state fail-closed polarity in generate_dockerfile.
+#
+# These tests verify that _image_registry_probe_3state (in extension-utils.sh)
+# uses the INVERTED polarity (fail-closed):
+#   ABSENT only for explicit not-found signals (manifest unknown, 404, etc.)
+#   ERROR (rc=2) for everything else non-zero (429, denied, unauthorized,
+#   no such host, network unreachable, EOF, context deadline, empty stderr)
+#
+# Mock strategy: mock `docker` to emit controlled stderr + return non-zero.
+# image_exists_in_registry returns 1 so the stderr-capturing probe is entered.
+# ---------------------------------------------------------------------------
+
+_run_registry_probe_3state() {
+    # Helper: run _image_registry_probe_3state in a subshell; capture its rc.
+    # Mocks both docker and skopeo so real network calls are never made.
+    # Skopeo is mocked to mirror the classification:
+    #   explicit not-found stderr → skopeo also confirms not-found (ABSENT preserved)
+    #   other stderr → skopeo returns transient (ERROR preserved)
+    local stderr_msg="$1"
+    (
+        docker() {
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                printf '%s\n' "$stderr_msg" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() {
+            local _not_found_pat='manifest unknown|not found|name unknown|no such manifest|no such image|404'
+            if printf '%s\n' "$stderr_msg" | grep -qiE "$_not_found_pat"; then
+                printf 'manifest unknown: manifest unknown\n' >&2
+                return 1
+            else
+                printf 'unauthorized: authentication required\n' >&2
+                return 1
+            fi
+        }
+        export -f skopeo
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        _image_registry_probe_3state "ghcr.io/testowner/ext-timescaledb:pg18-2.27.1"
+    )
+    printf '%d' $?
+}
+
+@test "OO-gd-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_registry_probe_3state "Error response from daemon: manifest unknown: manifest unknown")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-gd-404: '404 Not Found' → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_registry_probe_3state "Error: 404 Not Found")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-gd-name-unknown: 'name unknown' → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_registry_probe_3state "name unknown: repository name not known to registry")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-gd-no-such-manifest: 'no such manifest' → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_registry_probe_3state "no such manifest: ghcr.io/testowner/ext-timescaledb:pg18-2.27.1")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-gd-toomanyrequests-ERROR: 'toomanyrequests' → ERROR (rc 2, fail-closed)" {
+    # RED before fix: fell through to ABSENT (rc 1) — silently dropped retained version.
+    # GREEN after fix: → ERROR (rc 2).
+    local rc
+    rc=$(_run_registry_probe_3state "toomanyrequests: You have reached your pull rate limit")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-429-ERROR: '429' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "Error: 429 Too Many Requests")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-denied-ERROR: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "denied: access forbidden")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-unauthorized-ERROR: 'unauthorized' → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "unauthorized: authentication required")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-no-such-host-ERROR: 'no such host' → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "dial tcp: lookup ghcr.io: no such host")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-network-unreachable-ERROR: 'network is unreachable' → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "dial tcp: connect: network is unreachable")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-EOF-ERROR: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "unexpected EOF")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-context-deadline-ERROR: 'context deadline exceeded' → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_registry_probe_3state "context deadline exceeded")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-gd-empty-stderr-ERROR: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
+    # RED before fix: empty stderr fell through to ABSENT (rc 1) — fail-open.
+    # GREEN after fix: empty stderr + non-zero → ERROR (rc 2).
+    local rc
+    rc=$(_run_registry_probe_3state "")
+    [ "$rc" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# PP: _image_registry_probe_3state in generate_dockerfile self-heal path must
+# be MODE-AWARE: with LOCAL_ONLY=true or PULL_ONLY=true, probe the local
+# daemon (docker image inspect) instead of the registry.
+#
+# Scenario: local recovery build, extension images exist only in the LOCAL daemon.
+# The self-heal probe must find them locally, not via the registry.
+#
+# RED before fix: self-heal always probes registry, not local daemon. Fail-closed.
+# GREEN after fix: LOCAL_ONLY/PULL_ONLY routes to docker image inspect. Self-heals.
+# ---------------------------------------------------------------------------
+
+@test "PP-local-only-self-heal: LOCAL_ONLY=true + images present locally → generate_dockerfile self-heals" {
+    # No versionset artifact → forces the self-heal path.
+    # Images are present in LOCAL daemon but NOT in registry.
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=true PULL_ONLY=false
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            if [[ \"\$*\" == *'image inspect'* ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f docker
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+
+    # RED before fix: exits non-zero (registry probe fails, no local fallback).
+    # GREEN after fix: exits 0 (local daemon probe finds images, self-heals).
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
+
+@test "PP-pull-only-self-heal: PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=false PULL_ONLY=true
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            if [[ \"\$*\" == *'image inspect'* ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f docker
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
+
+@test "PP-local-only-image-absent-locally: LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
+    # In local mode, docker image inspect is 2-state (PRESENT/ABSENT).
+    # All images absent locally → no available versions → ceiling absent → fail closed.
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=true PULL_ONLY=false
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            return 1
+        }
+        export -f docker
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -ne 0 ]
+}

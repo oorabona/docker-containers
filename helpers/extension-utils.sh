@@ -114,23 +114,41 @@ image_exists_in_registry() {
 }
 
 # _image_registry_probe_3state <image>
-# 3-state registry presence probe for versionset availability computation.
+# 3-state presence probe for versionset availability computation.
 # Returns:
-#   0  PRESENT  — image confirmed present in registry
-#   1  ABSENT   — definitively absent (manifest unknown / not found / 404 / empty stderr)
-#   2  ERROR    — probe failed ambiguously (network blip, 429, auth, timeout)
+#   0  PRESENT  — image confirmed present in registry or local daemon
+#   1  ABSENT   — definitively absent (explicit not-found signal or local inspect returned 1)
+#   2  ERROR    — probe failed ambiguously (network blip, 429, auth, timeout, etc.)
 #
-# Fast-path: calls image_exists_in_registry first; if it returns 0 (PRESENT),
-# returns immediately without a second probe.  This preserves the established
-# mock surface for unit tests (image_exists_in_registry is the PRESENT oracle
-# in all existing self-heal tests).
+# Mode-aware routing (mirrors _image_present in build-extensions.sh):
+#   LOCAL_ONLY=true  OR  PULL_ONLY=true  → probe local daemon (docker image inspect).
+#     Local inspect is 2-state: present (0) or absent (1). A missing local image
+#     is always definitively absent — no ERROR state in local mode.
+#   else (push/CI path) → registry probe (fast-path + stderr-capturing fallback).
+#
+# Registry fast-path: calls image_exists_in_registry first; if it returns 0
+# (PRESENT), returns immediately without a second probe.  This preserves the
+# established mock surface for unit tests (image_exists_in_registry is the
+# PRESENT oracle in all existing self-heal tests).
 #
 # Only when image_exists_in_registry returns non-zero does the stderr-capturing
 # direct probe run to classify the failure as ABSENT vs transient ERROR.
 #
+# POLARITY (registry path): fail-closed (default ERROR).
+# ABSENT requires an explicit not-found signal; everything else → ERROR (rc=2).
+#
 # Does NOT replace image_exists_in_registry for any other callers.
 _image_registry_probe_3state() {
     local image="$1"
+
+    # Local-store path: docker image inspect is 2-state (present / not present).
+    # A missing local image is always definitively absent, not an error.
+    if [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]]; then
+        if docker image inspect "$image" &>/dev/null; then
+            return 0  # PRESENT
+        fi
+        return 1      # ABSENT (definitively — local store is authoritative)
+    fi
 
     # Fast-path: if image_exists_in_registry confirms present, return PRESENT.
     if image_exists_in_registry "$image" 2>/dev/null; then
@@ -139,6 +157,12 @@ _image_registry_probe_3state() {
 
     # image_exists_in_registry returned non-zero (not confirmed present).
     # Run a stderr-capturing probe to distinguish ABSENT from transient ERROR.
+    #
+    # POLARITY: fail-closed (default ERROR).
+    # ABSENT requires a POSITIVE explicit not-found signal in stderr.
+    # Everything else non-zero (including empty stderr, toomanyrequests, denied,
+    # unauthorized, no such host, network unreachable, EOF, context deadline,
+    # daemon errors) → ERROR (rc=2, fail-closed).
     local _probe_stderr
     local _probe_rc=0
 
@@ -147,27 +171,30 @@ _image_registry_probe_3state() {
         return 0  # PRESENT (image_exists_in_registry was a false negative)
     fi
 
-    # Transient-error patterns: network, auth, rate-limit, timeout.
-    # These are the signals that must trigger fail-closed (ERROR rc=2).
+    # Explicit not-found allow-list: only these signals confirm definitive absence.
     if echo "$_probe_stderr" | grep -qiE \
-        'connection refused|connection reset|connection timed out|timeout|timed out|429|too many requests|unauthorized|authentication|forbidden|403|server error|5[0-9][0-9]|unexpected status code|i/o timeout|TLS|certificate'; then
+        'manifest unknown|not found|name unknown|repository name not known|no such manifest|no such image|404'; then
         if command -v skopeo &>/dev/null; then
             local _skopeo_stderr
             local _skopeo_rc=0
             _skopeo_stderr=$(skopeo inspect "docker://${image}" 2>&1 >/dev/null) || _skopeo_rc=$?
             if [[ "$_skopeo_rc" -eq 0 ]]; then
-                return 0  # PRESENT (skopeo confirms)
+                return 0  # PRESENT (skopeo confirms presence despite docker not-found)
             fi
-            if echo "$_skopeo_stderr" | grep -qiE \
-                'manifest unknown|not found|no such manifest|name unknown|MANIFEST_UNKNOWN'; then
-                return 1  # ABSENT (skopeo confirms)
+            # skopeo also non-zero; if skopeo's error is NOT a definitive not-found,
+            # escalate to ERROR to avoid discarding the version on ambiguous signal.
+            if ! echo "$_skopeo_stderr" | grep -qiE \
+                'manifest unknown|not found|name unknown|no such manifest|MANIFEST_UNKNOWN|404'; then
+                return 2  # ERROR (docker said not-found but skopeo is ambiguous)
             fi
         fi
-        return 2  # ERROR (transient — caller must fail closed)
+        return 1  # ABSENT (definitive not-found confirmed)
     fi
 
-    # Definitive-not-found, empty stderr, or unrecognized → ABSENT.
-    return 1
+    # No explicit not-found signal → ambiguous/transient error (fail-closed).
+    # Covers: toomanyrequests, denied, unauthorized, no such host, network unreachable,
+    # EOF, context deadline exceeded, empty stderr, daemon errors, and anything else.
+    return 2  # ERROR
 }
 
 # Parse extension config using yq

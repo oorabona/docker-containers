@@ -77,9 +77,23 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 _setup_default_mocks() {
-    # docker image inspect: absent locally
-    docker() { return 1; }
+    # docker: image inspect absent locally; manifest inspect returns "manifest unknown"
+    # (models production: a non-existent registry image returns manifest unknown).
+    docker() {
+        if [[ "$*" == *"manifest inspect"* ]]; then
+            printf 'manifest unknown: manifest unknown\n' >&2
+        fi
+        return 1
+    }
     export -f docker
+
+    # skopeo: confirm not-found (production-faithful; avoids real network calls when
+    # skopeo binary is installed on the test host).
+    skopeo() {
+        printf 'manifest unknown: manifest unknown\n' >&2
+        return 1
+    }
+    export -f skopeo
 
     # registry: absent
     image_exists_in_registry() { return 1; }
@@ -1363,18 +1377,35 @@ _count_log_lines() {
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # Stateful presence check: consults the registry-present file.
-        # Image arg format: ghcr.io/test/ext-<name>:pg<major>-<ver>
-        # Tag (after the colon) matches entries written by push_ext_image.
-        # Seed: pg18-2.26.0 present. Successfully pushed versions are added by push_ext_image.
         image_exists_in_registry() {
             local tag=\"\${1##*:}\"
             grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() {
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
         export -f docker
+
+        skopeo() {
+            echo 'manifest unknown: manifest unknown' >&2
+            return 1
+        }
+        export -f skopeo
+
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 1 ;;
+                *pg18-2.26.0*) return 0 ;;
+                *pg18-2.27.1*) return 0 ;;
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
 
         # 2.25.0 fails to build (musl); others succeed.
         build_ext_image() {
@@ -2359,12 +2390,26 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # PROBE ALWAYS ABSENT — simulates GHCR propagation lag.
+        # PROBE ALWAYS ABSENT: simulates GHCR propagation lag.
+        # image_exists_in_registry returns 1 for all (simulates lag after push).
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() {
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
         export -f docker
+
+        skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        _image_present_3state() {
+            return 1
+        }
+        export -f _image_present_3state
 
         # 2.25.0 fails (musl); 2.26.0 and 2.27.1 succeed.
         build_ext_image() {
@@ -2453,8 +2498,26 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() {
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
         export -f docker
+
+        skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 1 ;;
+                *pg18-2.26.0*) return 0 ;;
+                *pg18-2.27.1*) return 0 ;;
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
 
         # 2.25.0 fails build (musl). 2.26.0 skipped (already in registry). 2.27.1 built+pushed.
         build_ext_image() {
@@ -3235,13 +3298,28 @@ EOF
     image_exists_in_registry() { return 1; }
     export -f image_exists_in_registry
 
-    docker() { return 1; }
+    # docker manifest inspect: emit "manifest unknown" (production-faithful absent signal).
+    docker() {
+        if [[ "$*" == *"manifest inspect"* ]]; then
+            printf 'manifest unknown: manifest unknown\n' >&2
+        fi
+        return 1
+    }
     export -f docker
+
+    # skopeo: confirm not-found (avoids real network call when skopeo binary is installed).
+    skopeo() {
+        printf 'manifest unknown: manifest unknown\n' >&2
+        return 1
+    }
+    export -f skopeo
 
     local version_set_json='["2.25.0","2.26.0","2.27.1"]'
     PULL_ONLY=false LOCAL_ONLY=false DRY_RUN=false
 
-    _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
+    # All versions are definitively absent (manifest unknown) → available=[] →
+    # ceiling absent → artifact NOT written (function returns 0, no file).
+    run _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
         "$version_set_json" "2.27.1"
 
     local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
@@ -3249,6 +3327,7 @@ EOF
     # available=[] → no ceiling in available → artifact must NOT be written.
     # RED before fix: file exists with available=[].
     # GREEN after fix: file absent.
+    [ "$status" -eq 0 ]
     [ ! -f "$artifact" ]
 }
 
@@ -3273,13 +3352,29 @@ EOF
     }
     export -f image_exists_in_registry
 
-    docker() { return 1; }
+    # docker manifest inspect: emit "manifest unknown" for absent images.
+    docker() {
+        if [[ "$*" == *"manifest inspect"* ]]; then
+            printf 'manifest unknown: manifest unknown\n' >&2
+        fi
+        return 1
+    }
     export -f docker
+
+    # skopeo: confirm not-found (avoids real network call when skopeo binary is installed).
+    skopeo() {
+        printf 'manifest unknown: manifest unknown\n' >&2
+        return 1
+    }
+    export -f skopeo
 
     local version_set_json='["2.25.0","2.26.0","2.27.1"]'
     PULL_ONLY=false LOCAL_ONLY=false DRY_RUN=false
 
-    _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
+    # 2.25.0 and 2.26.0: image_exists_in_registry returns 0 → PRESENT (fast-path, no probe).
+    # 2.27.1: image_exists_in_registry returns 1 → probe → "manifest unknown" → ABSENT.
+    # available=[2.25.0,2.26.0], ceiling 2.27.1 NOT in available → no artifact.
+    run _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
         "$version_set_json" "2.27.1"
 
     local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
@@ -3287,6 +3382,7 @@ EOF
     # available=[2.25.0,2.26.0] — ceiling 2.27.1 NOT in available.
     # RED before fix: artifact written despite missing ceiling.
     # GREEN after fix: artifact NOT written.
+    [ "$status" -eq 0 ]
     [ ! -f "$artifact" ]
 }
 
@@ -4190,4 +4286,154 @@ EOF
     local excluded_has_2_25
     excluded_has_2_25=$(jq '[.excluded[] | select(.version == "2.25.0")] | length' "$artifact")
     [ "$excluded_has_2_25" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# OO: _image_present_3state fail-closed polarity (inverted classification).
+#
+# BEFORE fix: default was ABSENT (fail-open). Ambiguous errors like
+#   toomanyrequests, denied, unauthorized, no such host, EOF, empty stderr
+#   all fell through to ABSENT → silently dropped retained published versions.
+#
+# AFTER fix: default is ERROR (fail-closed).
+#   ABSENT only when stderr contains an EXPLICIT not-found signal:
+#     manifest unknown | not found | name unknown | repository name not known |
+#     no such manifest | no such image | 404
+#   EVERYTHING ELSE non-zero → ERROR (rc=2, fail-closed).
+#
+# Mock strategy: mock `docker` to emit controlled stderr + return non-zero.
+# image_exists_in_registry returns 1 (not present) so the probe path is entered.
+# ---------------------------------------------------------------------------
+
+_run_3state_probe() {
+    # Helper: run _image_present_3state in a subshell; capture its rc.
+    # Usage: _run_3state_probe <docker_stderr> → prints rc (0=PRESENT,1=ABSENT,2=ERROR)
+    # Mocks both docker and skopeo so real network calls are never made.
+    # When the docker probe emits an explicit not-found signal, skopeo is also mocked
+    # to confirm not-found (so the double-check path also produces ABSENT, not ERROR).
+    # For non-not-found signals (toomanyrequests, etc.), skopeo is mocked to also
+    # return a non-not-found error — ensuring ERROR propagates.
+    local stderr_msg="$1"
+    (
+        docker() {
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                printf '%s\n' "$stderr_msg" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+        # skopeo mock: mirrors the classification so double-check doesn't flip it.
+        # For explicit not-found messages → return 1 with "manifest unknown" (confirm absent).
+        # For other messages → return 1 with "unauthorized" (non-not-found transient).
+        skopeo() {
+            local _not_found_pat='manifest unknown|not found|name unknown|no such manifest|no such image|404'
+            if printf '%s\n' "$stderr_msg" | grep -qiE "$_not_found_pat"; then
+                printf 'manifest unknown: manifest unknown\n' >&2
+                return 1  # confirm not-found
+            else
+                printf 'unauthorized: authentication required\n' >&2
+                return 1  # non-not-found transient
+            fi
+        }
+        export -f skopeo
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        LOCAL_ONLY=false PULL_ONLY=false
+        _image_present_3state "ghcr.io/test/ext-timescaledb:pg18-2.27.1"
+    )
+    printf '%d' $?
+}
+
+@test "OO-explicit-not-found-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_3state_probe "Error response from daemon: manifest unknown: manifest unknown")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-explicit-not-found-404: '404' in stderr → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_3state_probe "Error: 404 Not Found")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-explicit-not-found-name-unknown: 'name unknown' in stderr → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_3state_probe "Error: name unknown: repository name not known to registry")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-explicit-not-found-no-such-manifest: 'no such manifest' in stderr → ABSENT (rc 1)" {
+    local rc
+    rc=$(_run_3state_probe "no such manifest: ghcr.io/test/ext-timescaledb:pg18-2.27.1")
+    [ "$rc" -eq 1 ]
+}
+
+@test "OO-toomanyrequests-is-ERROR-not-ABSENT: 'toomanyrequests' stderr → ERROR (rc 2, fail-closed)" {
+    # RED before fix: fell through to ABSENT (rc 1) → silently dropped published version.
+    # GREEN after fix: classified as ERROR (rc 2) → fail-closed.
+    local rc
+    rc=$(_run_3state_probe "toomanyrequests: You have reached your pull rate limit")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-429-is-ERROR-not-ABSENT: '429' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_3state_probe "Error: 429 Too Many Requests")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-denied-is-ERROR-not-ABSENT: 'denied' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_3state_probe "denied: access forbidden")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-unauthorized-is-ERROR-not-ABSENT: 'unauthorized' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_3state_probe "unauthorized: authentication required")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-no-such-host-is-ERROR-not-ABSENT: 'no such host' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_3state_probe "dial tcp: lookup ghcr.io: no such host")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-network-unreachable-is-ERROR-not-ABSENT: 'network is unreachable' stderr → ERROR (rc 2)" {
+    local rc
+    rc=$(_run_3state_probe "dial tcp: connect: network is unreachable")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-EOF-is-ERROR-not-ABSENT: 'EOF' in stderr → ERROR (rc 2, fail-closed)" {
+    local rc
+    rc=$(_run_3state_probe "unexpected EOF")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-context-deadline-is-ERROR-not-ABSENT: 'context deadline exceeded' → ERROR (rc 2)" {
+    local rc
+    rc=$(_run_3state_probe "context deadline exceeded")
+    [ "$rc" -eq 2 ]
+}
+
+@test "OO-empty-stderr-non-zero-is-ERROR-not-ABSENT: empty stderr + rc≠0 → ERROR (rc 2, fail-closed)" {
+    # RED before fix: empty stderr → fell through to ABSENT (rc 1).
+    # GREEN after fix: empty stderr + non-zero → ERROR (rc 2, fail-closed).
+    # Rationale: test mocks with `docker() { return 1; }` (no stderr) represent
+    # controlled absent-image conditions in unit tests and are granted ABSENT via
+    # `image_exists_in_registry` returning 0 before this probe runs. In production,
+    # the registry probe with empty stderr and non-zero exit is always ambiguous
+    # (daemon not running, socket error) — must be fail-closed.
+    #
+    # NOTE: This test verifies the PRODUCTION polarity. Existing unit tests that use
+    # `docker() { return 1; }` (no stderr) as a controlled "absent" mock work because
+    # image_exists_in_registry is also mocked to return 1 (skip the fast-path), and
+    # those tests do NOT call _image_present_3state directly — they call higher-level
+    # functions that use _image_needs_build (which uses image_exists_in_registry).
+    local rc
+    rc=$(_run_3state_probe "")
+    [ "$rc" -eq 2 ]
 }

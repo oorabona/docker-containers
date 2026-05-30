@@ -679,27 +679,28 @@ _image_present() {
 # 3-state presence probe for versionset availability computation ONLY.
 # Returns:
 #   0  PRESENT          — image confirmed in registry / local store
-#   1  ABSENT           — definitively absent (registry returned "manifest unknown",
-#                         "not found", 404, or equivalent; local inspect returned 1)
-#   2  ERROR            — probe failed for an ambiguous reason (network blip, 429,
-#                         auth error, timeout) — caller must treat as unknown
+#   1  ABSENT           — definitively absent (explicit not-found signal from registry:
+#                         "manifest unknown", "not found", "name unknown", "404", etc.;
+#                         or local inspect returned 1 in LOCAL_ONLY/PULL_ONLY mode)
+#   2  ERROR            — probe failed ambiguously (toomanyrequests, denied, unauthorized,
+#                         no such host, network unreachable, EOF, context deadline, empty
+#                         stderr, etc.) — caller must treat as unknown (fail-closed)
 #
 # Decision table (same routing as _image_present):
 #   LOCAL_ONLY=true  OR  PULL_ONLY=true  → docker image inspect  (2-state: 0/1 only)
 #   else (push/CI path)                  → image_exists_in_registry fast-path (PRESENT if rc=0),
 #                                          then docker manifest inspect with stderr capture:
-#                                            transient-error stderr (network/429/auth/timeout)
-#                                            → ERROR (rc=2, fail-closed)
-#                                            definitive-not-found or empty stderr → ABSENT (rc=1)
+#                                            explicit not-found signal → ABSENT (rc=1)
+#                                            everything else non-zero → ERROR (rc=2, fail-closed)
+#
+# POLARITY: fail-closed (default ERROR).
+# ABSENT requires a POSITIVE explicit not-found signal; everything else → ERROR.
+# This prevents transient/ambiguous failures from silently dropping retained versions.
 #
 # The image_exists_in_registry fast-path is intentional:
 #   1. Existing tests mock image_exists_in_registry as the PRESENT oracle; this preserves that contract.
 #   2. Happy path (PRESENT) avoids a second probe.
 #   3. Only on non-present results does the stderr-capturing probe run to classify the failure.
-#
-# "Empty stderr + rc≠0" rule: test mocks that use `docker() { return 1; }` (no stderr)
-# represent controlled absent images and are correctly classified as ABSENT.  In production,
-# transient errors (network, 429, auth) always emit text and are classified as ERROR.
 #
 # NOT a replacement for _image_present for any other callers.
 # image_exists_in_registry's boolean contract is unchanged.
@@ -725,10 +726,13 @@ _image_present_3state() {
     # image_exists_in_registry returned non-zero (not confirmed present).
     # Run a stderr-capturing probe to distinguish ABSENT from transient ERROR.
     # rc=0 → PRESENT (image_exists_in_registry was a false negative, e.g. auth differences).
-    # rc≠0 with transient-error stderr (network/auth/429/timeout) → ERROR (fail-closed).
-    # rc≠0 with definitive-not-found stderr OR empty stderr → ABSENT.
-    #   (Empty stderr: test mocks / docker silently returning 1 = controlled absent;
-    #    in production, transient errors always emit text.)
+    # rc≠0 with an EXPLICIT not-found signal in stderr → ABSENT (rc=1).
+    # rc≠0 with NO explicit not-found signal (including empty stderr, 429, denied,
+    #   unauthorized, no such host, network errors, EOF, timeout, daemon errors) → ERROR (rc=2).
+    #
+    # POLARITY: fail-closed (default ERROR).
+    # ABSENT requires a POSITIVE not-found signal; everything else is ERROR.
+    # This prevents transient/ambiguous failures from silently dropping retained versions.
     local _probe_stderr
     local _probe_rc=0
 
@@ -737,29 +741,33 @@ _image_present_3state() {
         return 0  # PRESENT
     fi
 
-    # Transient-error patterns: network, auth, rate-limit, timeout.
-    # Only these promote to ERROR (rc=2); all other non-zero exits are ABSENT (rc=1).
+    # Explicit not-found allow-list: only these signals confirm definitive absence.
+    # Matches the actual strings docker/skopeo emit for a genuinely-missing tag.
     if echo "$_probe_stderr" | grep -qiE \
-        'connection refused|connection reset|connection timed out|timeout|timed out|429|too many requests|unauthorized|authentication|forbidden|403|server error|5[0-9][0-9]|unexpected status code|i/o timeout|TLS|certificate'; then
-        # docker returned a transient/ambiguous error — check skopeo for a second opinion.
+        'manifest unknown|not found|name unknown|repository name not known|no such manifest|no such image|404'; then
+        # docker returned a definitive not-found — check skopeo for a second opinion
+        # only when available, to confirm and not flip to ERROR on a skopeo transient.
         if command -v skopeo &>/dev/null; then
             local _skopeo_stderr
             local _skopeo_rc=0
             _skopeo_stderr=$(skopeo inspect "docker://${image}" 2>&1 >/dev/null) || _skopeo_rc=$?
             if [[ "$_skopeo_rc" -eq 0 ]]; then
-                return 0  # PRESENT (skopeo confirms)
+                return 0  # PRESENT (skopeo confirms presence despite docker not-found)
             fi
-            # skopeo definitive-not-found → ABSENT despite docker's transient error
-            if echo "$_skopeo_stderr" | grep -qiE \
-                'manifest unknown|not found|no such manifest|name unknown|MANIFEST_UNKNOWN'; then
-                return 1  # ABSENT
+            # skopeo also returned non-zero; if skopeo's error is transient (not a
+            # definitive not-found), escalate to ERROR to avoid discarding the version.
+            if ! echo "$_skopeo_stderr" | grep -qiE \
+                'manifest unknown|not found|name unknown|no such manifest|MANIFEST_UNKNOWN|404'; then
+                return 2  # ERROR (docker said not-found but skopeo is ambiguous)
             fi
         fi
-        return 2  # ERROR (transient — fail-closed)
+        return 1  # ABSENT (definitive not-found confirmed)
     fi
 
-    # Definitive-not-found or empty stderr → ABSENT.
-    return 1
+    # No explicit not-found signal → ambiguous/transient error (fail-closed).
+    # Covers: toomanyrequests, denied, unauthorized, no such host, network unreachable,
+    # EOF, context deadline exceeded, empty stderr, daemon errors, and anything else.
+    return 2  # ERROR
 }
 
 # Decide whether a given extension needs (re)building.
