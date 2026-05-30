@@ -798,6 +798,95 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
+# TT-1: empty-HA resolver failure + LOCAL_ONLY=true → degrade to ceiling, exit 0.
+# The mode-gated ceiling degrade lives in the CALLER (build_tag_push_extensions),
+# not in the resolver. The resolver now exits non-zero on empty HA; the caller
+# catches that and degrades to ceiling only when LOCAL_ONLY=true.
+# ---------------------------------------------------------------------------
+
+@test "TT-local-degrade: empty-HA resolver failure + LOCAL_ONLY=true → ceiling built, exit 0" {
+    export LOCAL_ONLY=true
+
+    # Simulate what the resolver now does on empty HA: exits non-zero, no stdout.
+    resolve_version_set() {
+        echo "::error::no HA tags found (empty response — fail-closed)" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/tt_local_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "false" "timescaledb"
+
+    # LOCAL_ONLY recovery path: must succeed with ceiling-only degrade.
+    [ "$status" -eq 0 ]
+
+    # Must have built exactly the ceiling version (degraded, not full set).
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 1 ]
+    [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# TT-2: empty-HA resolver failure + LOCAL_ONLY=false (publish path) → FATAL.
+# A transient HA-metadata outage on the publish path must exit non-zero so CI
+# does not silently publish a ceiling-only image that drops retained versions.
+# ---------------------------------------------------------------------------
+
+@test "TT-publish-fatal: empty-HA resolver failure + LOCAL_ONLY=false → exit non-zero (fail-closed)" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo "::error::no HA tags found (empty response — fail-closed)" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/tt_publish_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Publish path must remain fail-closed.
+    [ "$status" -ne 0 ]
+
+    # Must NOT have built anything (no silent ceiling fallback on publish path).
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # K: stale lineage files from a previous run must not persist across re-runs.
 # Before fix: build-extensions.sh never removes old per-version lineage files,
 # so ext-<ext>-pg<major>-<oldver>.json from the previous run survives and
@@ -4295,10 +4384,12 @@ EOF
 #   toomanyrequests, denied, unauthorized, no such host, EOF, empty stderr
 #   all fell through to ABSENT → silently dropped retained published versions.
 #
-# AFTER fix: default is ERROR (fail-closed).
-#   ABSENT only when stderr contains an EXPLICIT not-found signal:
-#     manifest unknown | not found | name unknown | repository name not known |
-#     no such manifest | no such image | 404
+# AFTER fix (OO) + UU tightening: default is ERROR (fail-closed).
+#   ABSENT only when stderr contains a REGISTRY-MANIFEST-SPECIFIC not-found signal:
+#     manifest unknown | name unknown | repository name not known | no such manifest
+#   Bare "not found", "no such image", and bare "404" are excluded (UU fix):
+#   they also appear in infra errors like "docker: command not found" and would
+#   mis-classify an infra failure as ABSENT.
 #   EVERYTHING ELSE non-zero → ERROR (rc=2, fail-closed).
 #
 # Mock strategy: mock `docker` to emit controlled stderr + return non-zero.
@@ -4309,10 +4400,11 @@ _run_3state_probe() {
     # Helper: run _image_present_3state in a subshell; capture its rc.
     # Usage: _run_3state_probe <docker_stderr> → prints rc (0=PRESENT,1=ABSENT,2=ERROR)
     # Mocks both docker and skopeo so real network calls are never made.
-    # When the docker probe emits an explicit not-found signal, skopeo is also mocked
-    # to confirm not-found (so the double-check path also produces ABSENT, not ERROR).
-    # For non-not-found signals (toomanyrequests, etc.), skopeo is mocked to also
-    # return a non-not-found error — ensuring ERROR propagates.
+    # Skopeo mock mirrors the tightened allow-list (registry-manifest-specific only):
+    #   manifest unknown, name unknown, repository name not known, no such manifest
+    #   → skopeo confirms not-found (ABSENT preserved)
+    #   everything else → skopeo returns transient (ERROR preserved)
+    # Note: bare "not found", "no such image", bare "404" are NOT in the allow-list.
     local stderr_msg="$1"
     (
         docker() {
@@ -4323,11 +4415,9 @@ _run_3state_probe() {
             return 1
         }
         export -f docker
-        # skopeo mock: mirrors the classification so double-check doesn't flip it.
-        # For explicit not-found messages → return 1 with "manifest unknown" (confirm absent).
-        # For other messages → return 1 with "unauthorized" (non-not-found transient).
+        # skopeo mock: mirrors the tightened classification.
         skopeo() {
-            local _not_found_pat='manifest unknown|not found|name unknown|no such manifest|no such image|404'
+            local _not_found_pat='manifest unknown|name unknown|repository name not known|no such manifest'
             if printf '%s\n' "$stderr_msg" | grep -qiE "$_not_found_pat"; then
                 printf 'manifest unknown: manifest unknown\n' >&2
                 return 1  # confirm not-found
@@ -4351,10 +4441,13 @@ _run_3state_probe() {
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-explicit-not-found-404: '404' in stderr → ABSENT (rc 1)" {
+@test "OO-explicit-not-found-404: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
+    # Before UU fix: bare "404" and "not found" matched → ABSENT (rc 1) — fail-open.
+    # After UU fix: "Error: 404 Not Found" is a generic HTTP error from a load-balancer
+    # or cred-helper, not a registry-manifest-specific signal → ERROR (rc 2).
     local rc
     rc=$(_run_3state_probe "Error: 404 Not Found")
-    [ "$rc" -eq 1 ]
+    [ "$rc" -eq 2 ]
 }
 
 @test "OO-explicit-not-found-name-unknown: 'name unknown' in stderr → ABSENT (rc 1)" {
@@ -4575,4 +4668,37 @@ EOF
     # The timescaledb versionset artifact (-versionset.json) must be preserved
     # (cleanup never touches versionset files).
     [ -f "$ts_vs_artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# UU-1: _image_present_3state — "docker: command not found" must be ERROR (rc=2),
+# not ABSENT. Before the allow-list tightening, bare "not found" matched, causing
+# infra errors to be mis-classified as definitive absence.
+# ---------------------------------------------------------------------------
+
+@test "UU-image-present-3state-cmd-not-found: 'docker: command not found' stderr → ERROR (rc=2)" {
+    # Use the same _run_3state_probe helper — it already handles the subshell/set-e
+    # correctly and is already updated to use the tightened skopeo pattern.
+    # "docker: command not found" contains "not found" which was in the OLD allow-list
+    # (ABSENT before UU fix) but is NOT in the tightened list (ERROR after UU fix).
+    local rc
+    rc=$(_run_3state_probe "docker: command not found")
+    # Must be ERROR (rc=2), not ABSENT (rc=1).
+    [ "$rc" -eq 2 ]
+}
+
+@test "UU-image-present-3state-cred-helper-not-found: cred-helper error → ERROR (rc=2)" {
+    # "docker-credential-desktop: executable file not found in PATH" contains "not found"
+    # which was in the OLD allow-list (ABSENT before UU fix) → now ERROR (rc=2).
+    local rc
+    rc=$(_run_3state_probe "docker-credential-desktop: executable file not found in PATH")
+    [ "$rc" -eq 2 ]
+}
+
+@test "UU-image-present-3state-manifest-unknown: 'manifest unknown' stderr → ABSENT (rc=1)" {
+    # After the UU tightening, "manifest unknown" is still in the allow-list
+    # (it is a genuine registry-manifest-specific not-found signal) → ABSENT (rc=1).
+    local rc
+    rc=$(_run_3state_probe "manifest unknown: manifest unknown")
+    [ "$rc" -eq 1 ]
 }

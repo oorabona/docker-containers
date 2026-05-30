@@ -99,11 +99,17 @@ main() {
             # HA response has data for other PG majors but none for PG_MAJOR.
             # This indicates an unsupported/unknown major — configuration error.
             _error "no HA tags found for PG${PG_MAJOR}"
-            exit 1
+        else
+            # HA response was empty or contained no recognisable tags at all
+            # (network outage, registry unavailable, garbled response).
+            # The resolver has lost its discovery basis and must NOT silently emit
+            # [ceiling]: on a publish run that would drop every retained older
+            # version, re-introducing the #558 breakage for existing databases.
+            # The ceiling-only degrade belongs to the CALLER under LOCAL_ONLY or
+            # PULL_ONLY recovery mode — not here.
+            _error "HA response is empty or contains no recognisable tags — fail-closed (use LOCAL_ONLY/PULL_ONLY for recovery)"
         fi
-        # HA response was empty or had no recognisable tags (network outage, empty
-        # fixture, garbage response). Degrade: return [ceiling] so that the build
-        # can still compile the configured pinned version.
+        exit 1
     fi
 
     # De-duplicate (multiple pg minors may carry the same TS X.Y.Z).

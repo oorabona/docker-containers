@@ -331,7 +331,7 @@ The ceiling — currently **2.27.1** — is the pinned version in `postgres/exte
 
 The `timescaledb.control` file sets `default_version` to the pinned ceiling, so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
 
-> **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres --flavor timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS).
+> **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres --flavor timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS). macOS also requires **GNU coreutils** (`brew install coreutils`) because the version-set resolution uses `sort -V`, which is not available in the BSD sort shipped with macOS.
 
 ### Moving an existing database to the pinned version
 

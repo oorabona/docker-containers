@@ -741,10 +741,16 @@ _image_present_3state() {
         return 0  # PRESENT
     fi
 
-    # Explicit not-found allow-list: only these signals confirm definitive absence.
-    # Matches the actual strings docker/skopeo emit for a genuinely-missing tag.
+    # Explicit not-found allow-list: only REGISTRY-MANIFEST-SPECIFIC signals confirm
+    # definitive absence. These are the exact strings docker/skopeo emit for a
+    # genuinely-missing tag as returned by the registry manifest API.
+    # Bare "not found", "no such image" (Docker local-store), and bare "404" are
+    # intentionally excluded: they also appear in infra errors like
+    # "docker: command not found" or "docker-credential-desktop: executable file
+    # not found in PATH", which would mis-classify an infra failure as ABSENT and
+    # silently drop retained versions from the artifact.
     if echo "$_probe_stderr" | grep -qiE \
-        'manifest unknown|not found|name unknown|repository name not known|no such manifest|no such image|404'; then
+        'manifest unknown|name unknown|repository name not known|no such manifest'; then
         # docker returned a definitive not-found — check skopeo for a second opinion
         # only when available, to confirm and not flip to ERROR on a skopeo transient.
         if command -v skopeo &>/dev/null; then
@@ -757,7 +763,7 @@ _image_present_3state() {
             # skopeo also returned non-zero; if skopeo's error is transient (not a
             # definitive not-found), escalate to ERROR to avoid discarding the version.
             if ! echo "$_skopeo_stderr" | grep -qiE \
-                'manifest unknown|not found|name unknown|no such manifest|MANIFEST_UNKNOWN|404'; then
+                'manifest unknown|name unknown|repository name not known|no such manifest|MANIFEST_UNKNOWN'; then
                 return 2  # ERROR (docker said not-found but skopeo is ambiguous)
             fi
         fi
@@ -766,7 +772,8 @@ _image_present_3state() {
 
     # No explicit not-found signal → ambiguous/transient error (fail-closed).
     # Covers: toomanyrequests, denied, unauthorized, no such host, network unreachable,
-    # EOF, context deadline exceeded, empty stderr, daemon errors, and anything else.
+    # EOF, context deadline exceeded, empty stderr, daemon errors, command not found,
+    # missing cred helpers, and anything else non-specific to the registry manifest API.
     return 2  # ERROR
 }
 

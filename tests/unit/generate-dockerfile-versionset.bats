@@ -1034,9 +1034,13 @@ EOF
 _run_registry_probe_3state() {
     # Helper: run _image_registry_probe_3state in a subshell; capture its rc.
     # Mocks both docker and skopeo so real network calls are never made.
-    # Skopeo is mocked to mirror the classification:
-    #   explicit not-found stderr → skopeo also confirms not-found (ABSENT preserved)
-    #   other stderr → skopeo returns transient (ERROR preserved)
+    # Skopeo mock mirrors the tightened allow-list (registry-manifest-specific signals only):
+    #   manifest unknown, name unknown, repository name not known, no such manifest
+    #   → skopeo also confirms not-found (ABSENT preserved)
+    #   everything else → skopeo returns transient (ERROR preserved)
+    # Note: bare "not found", "no such image", and bare "404" are NOT in the allow-list
+    # (UU fix: these can match infra errors like "docker: command not found" or
+    # "404 Not Found" from a load-balancer, not a registry manifest API response).
     local stderr_msg="$1"
     (
         docker() {
@@ -1048,7 +1052,7 @@ _run_registry_probe_3state() {
         }
         export -f docker
         skopeo() {
-            local _not_found_pat='manifest unknown|not found|name unknown|no such manifest|no such image|404'
+            local _not_found_pat='manifest unknown|name unknown|repository name not known|no such manifest'
             if printf '%s\n' "$stderr_msg" | grep -qiE "$_not_found_pat"; then
                 printf 'manifest unknown: manifest unknown\n' >&2
                 return 1
@@ -1071,10 +1075,13 @@ _run_registry_probe_3state() {
     [ "$rc" -eq 1 ]
 }
 
-@test "OO-gd-404: '404 Not Found' → ABSENT (rc 1)" {
+@test "OO-gd-404: '404 Not Found' → ERROR (rc 2, fail-closed after UU allow-list tightening)" {
+    # Before UU fix: bare "404" and "not found" matched → ABSENT (rc 1) — fail-open.
+    # After UU fix: only registry-manifest-specific signals are ABSENT; a generic
+    # "404 Not Found" (e.g. from a load-balancer or cred-helper) is ERROR (rc 2).
     local rc
     rc=$(_run_registry_probe_3state "Error: 404 Not Found")
-    [ "$rc" -eq 1 ]
+    [ "$rc" -eq 2 ]
 }
 
 @test "OO-gd-name-unknown: 'name unknown' → ABSENT (rc 1)" {
@@ -1144,6 +1151,34 @@ _run_registry_probe_3state() {
     # GREEN after fix: empty stderr + non-zero → ERROR (rc 2).
     local rc
     rc=$(_run_registry_probe_3state "")
+    [ "$rc" -eq 2 ]
+}
+
+@test "UU-gd-cmd-not-found-ERROR: 'docker: command not found' stderr → ERROR (rc 2, not ABSENT)" {
+    # Before UU fix: bare "not found" matched the allow-list → ABSENT (rc 1), mis-classifying
+    # a missing docker binary as a definitively-absent image.
+    # After UU fix: "command not found" no longer matches any registry-manifest-specific
+    # signal → ERROR (rc 2, fail-closed).
+    local rc
+    rc=$(_run_registry_probe_3state "docker: command not found")
+    [ "$rc" -eq 2 ]
+}
+
+@test "UU-gd-cred-helper-not-found-ERROR: cred-helper 'executable file not found' → ERROR (rc 2)" {
+    # A missing credential helper produces "executable file not found in PATH".
+    # Before UU fix: "not found" in the message matched → ABSENT (rc 1) — mis-classifying
+    # an infra misconfiguration as a definitively-absent image.
+    # After UU fix: → ERROR (rc 2, fail-closed).
+    local rc
+    rc=$(_run_registry_probe_3state "docker-credential-desktop: executable file not found in PATH")
+    [ "$rc" -eq 2 ]
+}
+
+@test "UU-gd-no-such-image-ERROR: 'no such image' stderr → ERROR (rc 2, fail-closed after UU)" {
+    # "no such image" is a Docker daemon local-store message, not a registry-manifest
+    # API response. After UU tightening it is removed from the allow-list → ERROR.
+    local rc
+    rc=$(_run_registry_probe_3state "Error: No such image: ghcr.io/test/ext-timescaledb:pg18-2.27.1")
     [ "$rc" -eq 2 ]
 }
 

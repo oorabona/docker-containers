@@ -242,21 +242,58 @@ setup() {
     echo "$output" | jq -e 'map(select(. == "2.27.1")) | length > 0' > /dev/null
 }
 
-@test "RR-empty-HA-degrade: empty HA response + valid CEILING_VERSION → [ceiling], exit 0" {
-    # When HA returns no tags at all, the resolver must degrade to [ceiling].
-    # Before fix: exits non-zero ("no HA tags found"). After fix: exits 0 with [ceiling].
+@test "RR-empty-HA-degrade: empty HA response + valid CEILING_VERSION → exits non-zero (fail-closed)" {
+    # When HA returns no tags at all the resolver has lost its discovery basis.
+    # On the publish path this must be fatal (fail-closed): a transient HA-metadata
+    # outage must not silently emit [ceiling] and drop every retained older version.
+    # The ceiling-only degrade belongs to the CALLER under LOCAL_ONLY/PULL_ONLY,
+    # not to the resolver itself.
+    # (This test corrects the fail-open oracle introduced in a prior commit.)
     local empty_fixture
     empty_fixture="$(mktemp)"
-    # Empty file: no HA tags at all.
     > "$empty_fixture"
 
+    # Check exit code via run.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$empty_fixture" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
+    local exit_status="$status"
+
+    # Check stdout only (capture independently, suppressing stderr).
+    local stdout_only
+    stdout_only=$(env \
+        _RESOLVER_HA_TAGS_FIXTURE="$empty_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER" 2>/dev/null || true)
+
     rm -f "$empty_fixture"
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.27.1"]' ]]
+    [[ "$exit_status" -ne 0 ]]
+    [[ -z "$stdout_only" ]]
+}
+
+@test "RR-garbled-HA-degrade: garbled HA response (no valid ts tags) + valid CEILING_VERSION → exits non-zero (fail-closed)" {
+    # A garbled registry response that contains lines but no recognisable HA tags
+    # is indistinguishable from a network corruption — fail-closed.
+    local garbled_fixture
+    garbled_fixture="$(mktemp)"
+    printf 'html><body>503 Service Unavailable</body>\n' > "$garbled_fixture"
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$garbled_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    local exit_status="$status"
+
+    local stdout_only
+    stdout_only=$(env \
+        _RESOLVER_HA_TAGS_FIXTURE="$garbled_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER" 2>/dev/null || true)
+
+    rm -f "$garbled_fixture"
+    [[ "$exit_status" -ne 0 ]]
+    [[ -z "$stdout_only" ]]
 }
 
 @test "RR-ceiling-already-in-HA-idempotent: ceiling present in HA tags is not duplicated" {
