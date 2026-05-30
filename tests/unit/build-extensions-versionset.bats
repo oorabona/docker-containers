@@ -5538,3 +5538,175 @@ EOCFG
     # Under DRY_RUN, no artifact must be written.
     [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
 }
+
+# ---------------------------------------------------------------------------
+# AE-1: embedded-newline bypass — resolver returns a single JSON element that
+# contains an embedded newline ("2.27.1\n9.9.9"). The old line-based semver
+# gate splits this into two lines and passes both; the fix validates at the
+# JSON-array-element level so the element fails the anchored regex and the
+# whole set is rejected BEFORE any build/tag/push.
+#
+# RED before fix: jq -r '.[]' splits the element into two lines; each matches
+#   is_strict_semver → both 2.27.1 and 9.9.9 are built/tagged/pushed.
+# GREEN after fix: jq validates each element as a whole string; the embedded
+#   newline causes the element to fail the anchored regex → fail-closed.
+#
+# Non-vacuous: assert NEITHER 2.27.1 NOR 9.9.9 appears in build/tag logs.
+# ---------------------------------------------------------------------------
+
+@test "AE-1-embedded-newline-bypass: resolver returns element with embedded newline → fail-closed, neither version built" {
+    export LOCAL_ONLY=false
+
+    # One JSON element containing an embedded newline — a single string that
+    # the old line-split gate would see as two valid semver lines.
+    resolve_version_set() {
+        printf '["2.27.1\\n9.9.9"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/ae1_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/ae1_tag_calls.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail closed — the embedded-newline element fails array-level validation.
+    [ "$status" -ne 0 ]
+
+    # Neither 2.27.1 nor 9.9.9 must ever reach build or tag (the whole set is rejected).
+    if [ -f "$build_log" ]; then
+        [[ "$(cat "$build_log")" != *"ver=2.27.1"* ]]
+        [[ "$(cat "$build_log")" != *"ver=9.9.9"* ]]
+    fi
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"ver=2.27.1"* ]]
+        [[ "$(cat "$tag_log")" != *"ver=9.9.9"* ]]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# AE-2: above-ceiling rejection — resolver returns a set containing 9.9.9
+# which exceeds the configured ceiling 2.27.1. The ceiling clamp at the
+# array-validation boundary must reject the whole set → fail-closed.
+#
+# RED before fix: no ceiling clamp at build boundary → 9.9.9 is built and pushed.
+# GREEN after fix: set rejected before any build/tag/push because 9.9.9 > ceiling.
+#
+# Non-vacuous: assert 9.9.9 never appears in build/tag logs.
+# ---------------------------------------------------------------------------
+
+@test "AE-2-above-ceiling-rejected: resolver returns version above ceiling → set rejected, nothing built" {
+    export LOCAL_ONLY=false
+
+    # 2.27.1 is the ceiling; 9.9.9 exceeds it.
+    resolve_version_set() {
+        echo '["2.27.1","9.9.9"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/ae2_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/ae2_tag_calls.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail closed — above-ceiling element in the set.
+    [ "$status" -ne 0 ]
+
+    # 9.9.9 must NEVER reach build or tag.
+    if [ -f "$build_log" ]; then
+        [[ "$(cat "$build_log")" != *"ver=9.9.9"* ]]
+    fi
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"ver=9.9.9"* ]]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# AE-3: clean set still builds — a fully valid set ["2.25.0","2.26.0","2.27.1"]
+# where all versions are <= ceiling (2.27.1) must pass array-level validation
+# and trigger all three builds (regression guard for AE-1/AE-2 fix).
+# ---------------------------------------------------------------------------
+
+@test "AE-3-clean-set-still-builds: valid set all-at-or-below ceiling → all 3 versions built normally" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo '["2.25.0","2.26.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/ae3_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 3 ]
+    [[ "$(cat "$build_log")" == *"ver=2.25.0"* ]]
+    [[ "$(cat "$build_log")" == *"ver=2.26.0"* ]]
+    [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
+}

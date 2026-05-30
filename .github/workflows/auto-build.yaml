@@ -570,14 +570,17 @@ jobs:
         shell: bash
         run: yq --version
 
-      - name: Install skopeo (Linux)
+      - name: Install skopeo (postgres Linux)
         # skopeo is required by the generate_dockerfile self-heal path when the
         # versionset artifact is absent or malformed: it calls resolve_version_set
         # → scripts/resolvers/timescaledb-ha.sh → skopeo list-tags.
         # Without it, any postgres timeseries/full build that triggers self-heal
         # (skip_extensions run, lineage-artifact download failure, or local build)
         # would fail with "skopeo: command not found".
-        if: matrix.build.os != 'windows'
+        # Scoped to postgres: only postgres Dockerfiles use the self-heal path;
+        # installing skopeo for every non-Windows build adds an unnecessary
+        # apt/network failure point to unrelated container builds.
+        if: matrix.build.container == 'postgres'
         timeout-minutes: 5
         run: |
           sudo apt-get update -qq

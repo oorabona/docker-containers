@@ -482,24 +482,43 @@ build_tag_push_extensions() {
         _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
 
         if [[ -n "$_resolver_path" ]]; then
+            # Validate the resolved set at the JSON-array-element level BEFORE any
+            # line-oriented iteration. Using \A and \z anchors (whole-string, not
+            # line-boundary) so an element containing an embedded newline
+            # ("2.27.1\n9.9.9") fails the pattern rather than being split into two
+            # passing lines by jq -r. Each element must be a string matching strict
+            # semver with no embedded control characters.
             local _semver_ok=true
-            local _sv_ver
-            while IFS= read -r _sv_ver; do
-                [[ -z "$_sv_ver" ]] && continue
-                if ! is_strict_semver "$_sv_ver"; then
-                    log_error "$ext: resolved version '${_sv_ver}' is not strict semver — refusing to build (injection guard)"
+            if ! echo "$version_set_json" | jq -e \
+                'type == "array" and length > 0 and
+                 all(.[]; type == "string" and test("\\A[0-9]+\\.[0-9]+\\.[0-9]+\\z"))' \
+                > /dev/null 2>&1; then
+                log_error "$ext: resolved set contains a non-strict-semver element (injection guard)"
+                _semver_ok=false
+            fi
+
+            # Ceiling clamp (defense-in-depth): reject the set if any element sorts
+            # AFTER the ceiling under sort -V. The resolver already clamps; this
+            # is belt-and-suspenders so a compromised resolver cannot smuggle an
+            # above-ceiling version into the build loop.
+            if [[ "$_semver_ok" == "true" ]]; then
+                local _highest_in_set
+                _highest_in_set=$(echo "$version_set_json" | jq -r '.[]' | sort -V | tail -1)
+                local _ceiling_is_highest
+                _ceiling_is_highest=$(printf '%s\n%s\n' "$_highest_in_set" "$ceiling" | sort -V | tail -1)
+                if [[ "$_ceiling_is_highest" != "$ceiling" ]]; then
+                    log_error "$ext: resolved set contains above-ceiling version '$_highest_in_set' (ceiling=$ceiling) — refusing to build"
                     _semver_ok=false
-                    break
                 fi
-            done < <(echo "$version_set_json" | jq -r '.[]')
+            fi
 
             if [[ "$_semver_ok" == "false" ]]; then
                 if [[ "$LOCAL_ONLY" == "true" ]]; then
-                    log_warning "$ext: semver validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+                    log_warning "$ext: semver/ceiling validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
                     version_set_json="[\"$ceiling\"]"
                     set_size=1
                 else
-                    log_error "$ext: semver validation failed — skipping build (fail-closed)"
+                    log_error "$ext: semver/ceiling validation failed — skipping build (fail-closed)"
                     failed+=("$ext")
                     continue
                 fi
