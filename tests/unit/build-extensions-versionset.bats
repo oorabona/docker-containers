@@ -4437,3 +4437,142 @@ _run_3state_probe() {
     rc=$(_run_3state_probe "")
     [ "$rc" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# QQ: mixed run — timescaledb all-cached (skipped by build_tag_push_extensions)
+# while another ext (pgvector) is built. A stale per-version duration file for
+# an out-of-window timescaledb version pre-exists.
+#
+# Before fix: _cleanup_stale_duration_files is only called for extensions that
+#   are in the `extensions_to_build` list passed to build_tag_push_extensions.
+#   In a mixed run, timescaledb is NOT in that list (all cached), so its stale
+#   duration files are never cleaned → inflate sum_flavor_extension_durations.
+#
+# After fix: stale cleanup also runs for resolver-backed extensions that are
+#   PROCESSED during the run (whether built or skipped-as-cached), not just
+#   for those explicitly passed to build_tag_push_extensions.
+#
+# RED before fix: stale file survives after the run.
+# GREEN after fix: stale file removed; in-window files and versionset preserved.
+# ---------------------------------------------------------------------------
+
+@test "QQ-mixed-run-stale-cleanup: timescaledb all-cached + pgvector built → stale timescaledb duration file removed" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Extend config to include pgvector (single-version, no resolver)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create a stale per-version duration file for an out-of-window timescaledb version.
+    # 2.20.0 is NOT in the current resolved set [2.25.0,2.26.0,2.27.1].
+    local stale_ts_file="$lineage_dir/ext-timescaledb-pg18-2.20.0.json"
+    printf '{"ext":"timescaledb","version":"2.20.0","duration_seconds":42}\n' > "$stale_ts_file"
+
+    # Pre-create an in-window timescaledb duration file (2.27.1 = ceiling, should survive... actually
+    # _cleanup_stale_duration_files removes ALL per-version files before the run writes fresh ones).
+    # After cleanup, 2.27.1 would be absent (nothing was built in this run since it was cached).
+    # The versionset artifact itself must survive.
+    local ts_vs_artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$ts_vs_artifact"
+
+    local build_log="${tmpd}/qq_build.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
+            else
+                echo '[\"0.8.0\"]'
+            fi
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # timescaledb: ALL versions already in registry (all-cached, nothing to build).
+        # pgvector: absent → triggers build.
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'timescaledb'* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Run must succeed.
+    [ "$status" -eq 0 ]
+
+    # pgvector must have been built (it was absent).
+    [ -f "$build_log" ]
+    [[ "$(cat "$build_log")" == *"ext=pgvector"* ]]
+
+    # The stale timescaledb duration file MUST be removed after the run.
+    # RED before fix: stale file survives (cleanup never runs for cached timescaledb).
+    # GREEN after fix: stale file removed.
+    [ ! -f "$stale_ts_file" ]
+
+    # The timescaledb versionset artifact (-versionset.json) must be preserved
+    # (cleanup never touches versionset files).
+    [ -f "$ts_vs_artifact" ]
+}

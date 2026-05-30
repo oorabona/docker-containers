@@ -368,6 +368,16 @@ generate_dockerfile() {
             local _resolver_path
             _resolver_path=$(ext_config "$ext_name" "version_set.resolver" "$config_file")
 
+            # Resolver-backed extension: require jq before attempting any artifact
+            # parse, self-heal, or validation step. Without jq, _artifact_valid would
+            # silently stay 0 (artifact treated as absent), triggering self-heal which
+            # also needs jq — producing an opaque error unrelated to the root cause.
+            # Fail fast here with a clear actionable message instead.
+            if [[ -n "$_resolver_path" ]] && ! command -v jq &>/dev/null; then
+                log_error "generate_dockerfile: jq is required to resolve the ${ext_name} version set but was not found on PATH"
+                return 1
+            fi
+
             # Check for a versionset artifact emitted by build-extensions.
             # When present, emit one FROM+COPY pair per available version in
             # ascending order so the ceiling version (highest) is COPIED LAST —

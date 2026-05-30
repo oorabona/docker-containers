@@ -1167,6 +1167,29 @@ main() {
     local do_push="true"
     [[ "$LOCAL_ONLY" == "true" ]] && do_push="false"
 
+    # Mixed run: clean stale per-version duration files for all resolver-backed
+    # extensions that are in-scope but NOT in extensions_to_build (all-cached).
+    # build_tag_push_extensions runs its own cleanup for extensions it processes,
+    # but cached extensions are never passed to it — their stale files would
+    # survive and inflate sum_flavor_extension_durations (DEFECT QQ).
+    # Scoping rule: only when $EXTENSION is unset (full run). A scoped run only
+    # has one extension in scope; if it needs building it goes to build_tag_push;
+    # if it's cached the all-cached branch above handles it.
+    if [[ -z "${EXTENSION:-}" ]]; then
+        # Build a set of extensions that WILL be cleaned by build_tag_push_extensions.
+        local -A _btpe_set=()
+        for _btpe_ext in "${extensions_to_build[@]}"; do
+            _btpe_set["$_btpe_ext"]=1
+        done
+        local _mixed_clean_ext
+        while IFS= read -r _mixed_clean_ext; do
+            [[ -z "$_mixed_clean_ext" ]] && continue
+            # Skip extensions that will be cleaned inside build_tag_push_extensions.
+            [[ -n "${_btpe_set[$_mixed_clean_ext]:-}" ]] && continue
+            _cleanup_stale_duration_files "$_mixed_clean_ext" "$major_ver"
+        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+    fi
+
     build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "$do_push" "${extensions_to_build[@]}"
 
     # Final pass: emit presence-based versionset artifacts for ALL in-scope

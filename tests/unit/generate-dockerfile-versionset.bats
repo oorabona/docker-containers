@@ -1280,3 +1280,62 @@ _run_registry_probe_3state() {
 
     [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# SS: jq absent on PATH → explicit prereq fail-fast with actionable message.
+#
+# When jq is not on PATH and a resolver-backed extension is encountered, the
+# code must fail fast with a clear "jq is required" message rather than
+# silently discarding the artifact and self-healing into the same jq-missing
+# failure (which produces an opaque error).
+#
+# Before fix: _artifact_valid stays 0 (jq check skipped) → artifact treated as
+#   absent → self-heal path entered → resolve_version_set called → jq absent
+#   in validation step → opaque error.
+# After fix: explicit prereq check at entry of resolver-backed path → fail-fast
+#   with actionable "jq is required" message.
+# ---------------------------------------------------------------------------
+
+@test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
+    # Write a valid versionset artifact so the test verifies the prereq path,
+    # not the artifact-absent self-heal path.
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    local tmpd="$TEST_TEMP_DIR"
+
+    # Build a fake_bin with all tools extension-utils.sh needs EXCEPT jq,
+    # so that command -v jq returns non-zero (not found) inside the subshell.
+    local fake_bin
+    fake_bin=$(mktemp -d)
+    for _tool in bash sh yq git sed grep sort dirname pwd realpath; do
+        local _real_path
+        _real_path=$(command -v "$_tool" 2>/dev/null || true)
+        [[ -z "$_real_path" ]] && continue
+        ln -sf "$_real_path" "$fake_bin/$_tool"
+    done
+    # Explicitly ensure there is no jq in fake_bin.
+    rm -f "$fake_bin/jq"
+
+    run bash --noprofile --norc -c "
+        export PATH=\"$fake_bin\"
+        export ROOT_DIR=\"$tmpd\"
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+    rm -rf "$fake_bin"
+
+    # Must fail when jq is not on PATH.
+    [ "$status" -ne 0 ]
+
+    # Must mention 'jq' in the error output so the operator knows what to install.
+    [[ "$output" =~ [Jj][Qq] ]]
+}

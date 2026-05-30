@@ -193,23 +193,92 @@ setup() {
     [[ "$combined" == *"no HA tags"* ]]
 }
 
-# ── I: configured CEILING_VERSION absent from upstream tags → non-zero + actionable error ──
+# ── RR: ceiling injected even when absent from HA tags ─────────────────────
+# The ceiling is the version we compile from source; it does NOT depend on
+# whether timescale/timescaledb-ha has published a matching HA image.
+# When the ceiling is absent from HA tags, the resolver must INJECT it and
+# return a non-empty set (at least [ceiling]), not hard-fail.
 
-@test "I-ceiling-absent: configured CEILING_VERSION not in upstream tags exits non-zero" {
-    # ceiling 2.28.0 is NOT present in the fixture (tops out at 2.27.1).
+@test "RR-ceiling-not-in-HA: ceiling absent from HA tags → injected into output, exit 0" {
+    # CEILING_VERSION=2.27.2 is NOT in the fixture (max is 2.27.1).
+    # Before fix: hard-fails (exits non-zero). After fix: exits 0, includes 2.27.2.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.2 \
         "$RESOLVER"
-    [[ "$status" -ne 0 ]]
+    [[ "$status" -eq 0 ]]
+    # The injected ceiling must be present in the output.
+    echo "$output" | jq -e 'map(select(. == "2.27.2")) | length > 0' > /dev/null
+    # Older HA-discovered versions (e.g. 2.27.1) must also be present.
+    echo "$output" | jq -e 'map(select(. == "2.27.1")) | length > 0' > /dev/null
 }
 
-@test "I-ceiling-absent: configured CEILING_VERSION not in upstream tags emits actionable error" {
-    local combined
-    combined=$(env \
+@test "RR-ceiling-injected-is-last: injected ceiling appears as last (highest) element" {
+    run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
-        "$RESOLVER" 2>&1 || true)
-    # Must mention the configured version so the operator knows what to fix
-    [[ "$combined" == *"2.28.0"* ]]
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.2 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.2" ]]
+}
+
+@test "RR-HA-newer-excluded: HA tag above ceiling is dropped; ceiling present in output" {
+    # Fixture contains tags up to 2.27.1. Append a hypothetical 2.28.0 above ceiling 2.27.1.
+    local above_fixture
+    above_fixture="$(mktemp)"
+    cat "$HA_FIXTURE" > "$above_fixture"
+    printf 'pg18.99-ts2.28.0\n' >> "$above_fixture"
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$above_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    rm -f "$above_fixture"
+    [[ "$status" -eq 0 ]]
+    # 2.28.0 must be excluded (above ceiling).
+    ! echo "$output" | jq -e 'map(select(. == "2.28.0")) | length > 0' > /dev/null
+    # Ceiling 2.27.1 must be present.
+    echo "$output" | jq -e 'map(select(. == "2.27.1")) | length > 0' > /dev/null
+}
+
+@test "RR-empty-HA-degrade: empty HA response + valid CEILING_VERSION → [ceiling], exit 0" {
+    # When HA returns no tags at all, the resolver must degrade to [ceiling].
+    # Before fix: exits non-zero ("no HA tags found"). After fix: exits 0 with [ceiling].
+    local empty_fixture
+    empty_fixture="$(mktemp)"
+    # Empty file: no HA tags at all.
+    > "$empty_fixture"
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$empty_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    rm -f "$empty_fixture"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == '["2.27.1"]' ]]
+}
+
+@test "RR-ceiling-already-in-HA-idempotent: ceiling present in HA tags is not duplicated" {
+    # When ceiling IS in HA tags, injecting it must be idempotent (no duplicate).
+    # The standard fixture has pg18 up to 2.27.1, so ceiling=2.27.1 is present.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    # 2.27.1 must appear exactly once.
+    count=$(echo "$output" | jq '[.[] | select(. == "2.27.1")] | length')
+    [[ "$count" -eq 1 ]]
+}
+
+@test "RR-empty-CEILING_VERSION: empty CEILING_VERSION is a configuration error (non-zero exit)" {
+    # CEILING_VERSION="" means the caller has no pinned version — which is a real
+    # misconfig. The resolver must exit non-zero rather than silently returning an
+    # unbounded set that could include versions never validated for build.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION="" \
+        "$RESOLVER"
+    [[ "$status" -ne 0 ]]
 }

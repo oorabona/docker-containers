@@ -56,11 +56,30 @@ _semver_le() {
 }
 
 main() {
+    # CEILING_VERSION is required: an empty ceiling means the caller has no pinned
+    # version, which is a configuration error. Fail fast rather than returning an
+    # unbounded set that was never validated for build.
+    if [[ -z "$CEILING_VERSION" ]]; then
+        _error "CEILING_VERSION is required but was not set"
+        exit 1
+    fi
+
     # Fetch HA tags (one per line)
     local ha_tags
     if ! ha_tags="$(_resolver_fetch_ha_tags 2>/dev/null)"; then
         _error "failed to fetch HA tags"
         exit 1
+    fi
+
+    # Check whether the HA response contains any tags at all (before major filtering).
+    # An empty or purely-whitespace response indicates a network failure, registry
+    # outage, or an empty fixture — treat as a degraded (network-unavailable) state
+    # and fall through to the ceiling-only degrade path.
+    # A non-empty response that has no tags for PG_MAJOR indicates an unknown/
+    # unsupported major — that is a configuration error, not a transient outage.
+    local ha_has_any_tags=false
+    if echo "$ha_tags" | grep -qE "^pg[0-9]+\.[0-9]+-ts[0-9]+"; then
+        ha_has_any_tags=true
     fi
 
     # Extract unique X.Y.Z TS versions from real HA tags for this PG_MAJOR.
@@ -76,33 +95,43 @@ main() {
     )
 
     if [[ -z "$versions" ]]; then
-        _error "no HA tags found for PG${PG_MAJOR}"
-        exit 1
+        if [[ "$ha_has_any_tags" == "true" ]]; then
+            # HA response has data for other PG majors but none for PG_MAJOR.
+            # This indicates an unsupported/unknown major — configuration error.
+            _error "no HA tags found for PG${PG_MAJOR}"
+            exit 1
+        fi
+        # HA response was empty or had no recognisable tags (network outage, empty
+        # fixture, garbage response). Degrade: return [ceiling] so that the build
+        # can still compile the configured pinned version.
     fi
 
     # De-duplicate (multiple pg minors may carry the same TS X.Y.Z).
-    versions=$(echo "$versions" | sort -V -u)
+    if [[ -n "$versions" ]]; then
+        versions=$(echo "$versions" | sort -V -u)
+    fi
 
-    # Apply ceiling filter when set.
+    # Apply ceiling filter: drop any HA-discovered version that exceeds the ceiling.
+    # HA tags are used ONLY to discover older retained versions. The ceiling is our
+    # pinned build version — it does not need to appear in HA to be valid.
     local filtered=""
-    if [[ -n "$CEILING_VERSION" ]]; then
-        while IFS= read -r ver; do
-            if _semver_le "$ver" "$CEILING_VERSION"; then
-                filtered+="${ver}"$'\n'
-            fi
-        done <<< "$versions"
-    else
-        filtered="$versions"$'\n'
-    fi
+    while IFS= read -r ver; do
+        [[ -z "$ver" ]] && continue
+        if _semver_le "$ver" "$CEILING_VERSION"; then
+            filtered+="${ver}"$'\n'
+        fi
+    done <<< "$versions"
 
-    if [[ -z "${filtered// /}" ]] || [[ -z "$(echo "$filtered" | grep -v '^$' || true)" ]]; then
-        _error "no versions in range [floor, ${CEILING_VERSION:-∞}]"
-        exit 1
-    fi
+    # Unconditionally inject the ceiling into the set. This is idempotent when
+    # the ceiling was already discovered from HA tags (sort -V -u deduplicates).
+    # When HA has not yet published the ceiling (upstream publishing lag) or when
+    # the HA response is empty/garbage (degrade path), the ceiling is still included
+    # so that build-extensions.sh can always build the configured pinned version.
+    filtered+="${CEILING_VERSION}"$'\n'
 
-    # Sort oldest→newest and emit compact JSON array
+    # Sort oldest→newest, deduplicate, and emit compact JSON array
     local sorted
-    sorted=$(echo "$filtered" | grep -v '^$' | sort -V)
+    sorted=$(echo "$filtered" | grep -v '^$' | sort -V -u)
 
     local json_array
     json_array=$(echo "$sorted" | jq -Rsc 'split("\n") | map(select(length > 0))')
@@ -113,19 +142,6 @@ main() {
     if (( count == 0 )); then
         _error "produced empty JSON array"
         exit 1
-    fi
-
-    # Assert the configured pinned version (CEILING_VERSION) is present in the
-    # resolved set. An absent ceiling means the config version is a typo or the
-    # upstream tag hasn't been published yet — either way the build would silently
-    # succeed without ever validating the pinned version.
-    if [[ -n "$CEILING_VERSION" ]]; then
-        local ceiling_present
-        ceiling_present=$(echo "$json_array" | jq --arg v "$CEILING_VERSION" 'map(select(. == $v)) | length')
-        if (( ceiling_present == 0 )); then
-            _error "configured version ${CEILING_VERSION} not found in upstream HA tags"
-            exit 1
-        fi
     fi
 
     printf '%s\n' "$json_array"
