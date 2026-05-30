@@ -19,6 +19,11 @@ if ! declare -F expand_template &>/dev/null; then
     source "$HELPERS_DIR/template-utils.sh"
 fi
 
+# Source version-set resolver (provides resolve_version_set for generate_dockerfile self-heal)
+if ! declare -F resolve_version_set &>/dev/null; then
+    source "$HELPERS_DIR/version-set-resolver.sh"
+fi
+
 
 # Get repository owner from git remote or environment
 get_repo_owner() {
@@ -290,14 +295,67 @@ generate_dockerfile() {
             local _lineage_root="${ROOT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
             local versionset_file="${_lineage_root}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
 
-            # Resolver-backed extension with NO versionset artifact: fail closed.
-            # Silently emitting a single-version stage would ship a below-pin image
-            # (the resolver may have resolved older retained versions that are now
-            # absent from the Dockerfile). Run build-extensions first or check the
-            # CI lineage artifact download step.
+            # Resolver-backed extension with NO versionset artifact: SELF-HEAL.
+            # The versionset artifact is an optimisation produced by build-extensions.sh.
+            # Legitimate callers (skip_extensions CI runs, `./make build postgres`) do not
+            # run build-extensions first, so no artifact is present even though the ext
+            # images are already in the registry.
+            #
+            # Self-heal algorithm (only when artifact is absent AND extension is resolver-backed):
+            #   1. Call resolve_version_set to obtain the retained version set.
+            #      On resolver failure → fail closed (cannot determine retained set).
+            #   2. For each resolved version, probe the registry via image_exists_in_registry.
+            #      available = versions whose image is present in the registry.
+            #   3. Apply the same strict-semver + <=ceiling + ceiling-present validations
+            #      as the artifact-present fast path.
+            #   4. If available is empty or ceiling is absent → fail closed.
             if [[ -n "$_resolver_path" ]] && [[ ! -f "$versionset_file" ]]; then
-                log_error "generate_dockerfile: versionset artifact missing for resolver-backed extension $ext_name (expected $versionset_file); run build-extensions first or check the CI lineage artifact download step"
-                return 1
+                local _sh_resolved_json
+                if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major"); then
+                    log_error "generate_dockerfile: self-heal resolver failed for $ext_name pg${pg_major} (resolver: $_resolver_path) — cannot determine retained version set"
+                    return 1
+                fi
+
+                # Validate: must be a non-empty JSON array
+                if ! echo "$_sh_resolved_json" | jq -e 'type == "array" and length > 0' > /dev/null 2>&1; then
+                    log_error "generate_dockerfile: self-heal resolver for $ext_name returned invalid set: $_sh_resolved_json"
+                    return 1
+                fi
+
+                # Probe registry presence for each resolved version
+                local _sh_available=()
+                local _sh_ver
+                while IFS= read -r _sh_ver; do
+                    [[ -z "$_sh_ver" ]] && continue
+                    local _sh_image
+                    _sh_image=$(ext_image_name "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner")
+                    if image_exists_in_registry "$_sh_image" 2>/dev/null; then
+                        _sh_available+=("$_sh_ver")
+                    fi
+                done < <(echo "$_sh_resolved_json" | jq -r '.[]' 2>/dev/null || true)
+
+                if [[ ${#_sh_available[@]} -eq 0 ]]; then
+                    log_error "generate_dockerfile: self-heal for $ext_name pg${pg_major}: no resolved images are present in registry — cannot emit multi-version stages"
+                    return 1
+                fi
+
+                # Build the on-the-fly versionset JSON and write to versionset_file variable
+                # so the existing artifact-present path below handles it transparently.
+                local _sh_avail_json
+                _sh_avail_json=$(printf '%s\n' "${_sh_available[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+                # Write to a temp variable consumed by injecting into versionset_file path logic.
+                # We construct a synthetic artifact in a temp file and point versionset_file at it.
+                local _sh_tmp_artifact
+                _sh_tmp_artifact=$(mktemp)
+                jq -nc \
+                    --arg ext "$ext_name" \
+                    --arg pg_major "$pg_major" \
+                    --arg ceiling "$ext_version" \
+                    --argjson resolved "$_sh_resolved_json" \
+                    --argjson available "$_sh_avail_json" \
+                    '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:[]}' \
+                    > "$_sh_tmp_artifact"
+                versionset_file="$_sh_tmp_artifact"
             fi
 
             if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then

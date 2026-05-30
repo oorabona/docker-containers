@@ -509,14 +509,37 @@ EOF
 
 # ---------------------------------------------------------------------------
 # EE-a: resolver-backed extension (has version_set.resolver) with NO versionset
-#        artifact → generate_dockerfile exits non-zero with actionable message.
+#        artifact → SELF-HEAL (operator-approved contract change).
 #
-# RED before fix: silently emits single-version stage, exits 0.
-# GREEN after fix: exits non-zero (fail-closed), stderr contains "versionset artifact missing".
+# Previous contract (hard-fail): exit non-zero when artifact absent.
+# New contract (self-heal): when artifact absent, call resolve_version_set +
+#   probe image_exists_in_registry to compute available on the fly, then emit
+#   multi-version stages. Fail closed only if the resolver or registry probe fails.
+#
+# Tests assert the NEW self-heal contract:
+#   EE-a-1: resolver-backed, no artifact, all resolved images PRESENT → self-heal,
+#            multi-version stages, exit 0.
+#   EE-a-2: resolver-backed, no artifact, resolve_version_set FAILS → fail closed,
+#            exit non-zero.
+#   EE-a-3: resolver-backed, no artifact, resolves OK but ceiling image ABSENT
+#            from registry → fail closed (ceiling enforcement).
 # ---------------------------------------------------------------------------
-@test "EE-a-resolver-no-artifact: resolver-backed ext + no versionset → non-zero exit" {
-    # No versionset file created for timescaledb (resolver-backed).
-    # The config fixture has version_set.resolver for timescaledb.
+
+@test "EE-a-1-self-heal: resolver-backed ext + no artifact + all images present → self-heals, exit 0" {
+    # Operator-approved contract change: versionset artifact is an optimisation,
+    # not a hard dependency. When absent, generate_dockerfile self-heals via
+    # resolve_version_set + image_exists_in_registry.
+    # No versionset file — self-heal must kick in.
+
+    # Mock resolve_version_set to return the retained set.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # All resolved images are present in the registry.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -524,23 +547,62 @@ EOF
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # RED before fix: exits 0 (silently single-versioned).
-    # GREEN after fix: exits non-zero (fail-closed).
-    [ "$status" -ne 0 ]
+    # Self-heal succeeds: must exit 0.
+    [ "$status" -eq 0 ]
+
+    # Must produce multi-version stages (3 FROM stages from self-healed available set).
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+
+    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
 }
 
-@test "EE-a-resolver-no-artifact: actionable error message mentions extension name and artifact" {
+@test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
+    # Self-heal cannot proceed without a resolver result. Fail closed.
+    resolve_version_set() {
+        echo "::error::simulated resolver failure" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # The function must exit non-zero (fail-closed) AND emit an error naming timescaledb
-    # and mentioning the missing versionset artifact so the operator knows what to fix.
+    # Resolver failure during self-heal → fail closed.
     [ "$status" -ne 0 ]
+    # Error must name the extension.
     [[ "$output" == *"timescaledb"* ]]
-    [[ "$output" == *"versionset"* ]]
+}
+
+@test "EE-a-3-ceiling-absent: resolver-backed ext + no artifact + ceiling not in registry → fail closed" {
+    # Self-heal resolves OK but the ceiling image (2.27.1) is absent from registry.
+    # Ceiling enforcement: refuse to emit below-pin stages.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # Only older versions are present; ceiling (2.27.1) is absent.
+    image_exists_in_registry() {
+        [[ "$1" == *"pg18-2.27.1"* ]] && return 1
+        return 0
+    }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Ceiling absent from self-healed available → fail closed.
+    [ "$status" -ne 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -553,9 +615,14 @@ EOF
 @test "EE-b-non-resolver-no-artifact: non-resolver ext + no versionset → single-version, exit 0" {
     # No versionset file for pgvector (non-resolver) — use multi_mixed flavor
     # which includes pgvector (non-resolver) alongside timescaledb (resolver-backed).
-    # We need to write a versionset for timescaledb so it doesn't fail EE-a.
-    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
-    # NO versionset for pgvector.
+    # Provide resolve_version_set + image_exists_in_registry mocks for timescaledb
+    # self-heal (timescaledb has no versionset artifact either in this test).
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \

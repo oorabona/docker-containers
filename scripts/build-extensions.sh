@@ -466,16 +466,10 @@ build_tag_push_extensions() {
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
 
-        # Remove stale per-version and versionset lineage files for this
-        # ext+major from any previous run, so the on-disk set reflects only the
-        # current run. Scoped to the exact ext+major glob — other containers'
-        # or extensions' files are left untouched.
-        # Dry runs must not mutate .build-lineage.
-        if [[ "$DRY_RUN" != "true" ]]; then
-            local _lineage_glob="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-*.json"
-            # shellcheck disable=SC2086
-            rm -f ${_lineage_glob}
-        fi
+        # Remove stale per-version duration lineage files from any previous run
+        # so only this run's files survive for sum_flavor_extension_durations.
+        # _cleanup_stale_duration_files is a no-op under DRY_RUN.
+        _cleanup_stale_duration_files "$ext" "$major_ver"
 
         # Inner loop over each version oldest→newest.
         local version
@@ -753,6 +747,31 @@ _should_build_extension() {
 }
 
 
+# Remove stale per-version DURATION lineage files for a given (ext, pg_major).
+# Must be called BEFORE build_tag_push_extensions writes new duration files so
+# that only files from the current run survive.
+#
+# Scoped to ext-<ext>-pg<major>-<X.Y.Z>.json (semver-named per-version files).
+# The versionset artifact (ext-<ext>-pg<major>-versionset.json) is NEVER deleted.
+# Under DRY_RUN=true this function is a no-op.
+#
+# Args: ext major_ver
+_cleanup_stale_duration_files() {
+    local ext="$1" major_ver="$2"
+
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local _fp_lineage_dir="${ROOT_DIR}/.build-lineage"
+    [[ -d "$_fp_lineage_dir" ]] || return 0
+
+    local _fp_f
+    for _fp_f in "${_fp_lineage_dir}/ext-${ext}-pg${major_ver}-"*.json; do
+        [[ -f "$_fp_f" ]] || continue
+        [[ "$_fp_f" == *"-versionset.json" ]] && continue
+        rm -f "$_fp_f"
+    done
+}
+
 # Emit (or refresh) versionset artifacts for ALL resolver-backed extensions
 # defined in the container's config, regardless of build scope.
 # This is the single source of truth for versionset artifacts — it runs before
@@ -795,25 +814,6 @@ _emit_final_versionset_pass() {
 
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
-
-        # Clean stale per-version DURATION lineage files for this ext+major before
-        # emitting the versionset artifact.  This ensures that an all-cached run
-        # (where build_tag_push_extensions was never called) does not leave stale
-        # duration files on disk.  Scoped to the per-version semver pattern:
-        # ext-<ext>-pg<major>-<X.Y.Z>.json — the versionset artifact
-        # (ext-<ext>-pg<major>-versionset.json) is excluded by the glob filter.
-        # Dry runs must not mutate .build-lineage.
-        if [[ "$DRY_RUN" != "true" ]]; then
-            local _fp_lineage_dir="${ROOT_DIR}/.build-lineage"
-            if [[ -d "$_fp_lineage_dir" ]]; then
-                local _fp_f
-                for _fp_f in "${_fp_lineage_dir}/ext-${ext}-pg${major_ver}-"*.json; do
-                    [[ -f "$_fp_f" ]] || continue
-                    [[ "$_fp_f" == *"-versionset.json" ]] && continue
-                    rm -f "$_fp_f"
-                done
-            fi
-        fi
 
         # Use the cache — resolver was already called during the build/filter phase.
         # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
@@ -976,6 +976,18 @@ main() {
         else
             log_success "All extensions are up to date"
         fi
+        # Pre-clean stale per-version duration files for every resolver-backed
+        # extension before the final versionset pass.  On an all-cached run
+        # build_tag_push_extensions is never called, so the cleanup that lives
+        # at the top of that function never runs — do it here instead.
+        # This ensures sum_flavor_extension_durations sees 0 (no new builds),
+        # not stale durations from a previous run.
+        local _pre_clean_ext
+        while IFS= read -r _pre_clean_ext; do
+            [[ -z "$_pre_clean_ext" ]] && continue
+            _cleanup_stale_duration_files "$_pre_clean_ext" "$major_ver"
+        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+
         # Final pass: emit presence-based versionset artifacts for all in-scope
         # resolver-backed extensions (resolver results are already cached from
         # the _should_build_extension calls above).

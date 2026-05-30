@@ -3025,3 +3025,201 @@ EOF
     # Recovery path: PULL_ONLY resolver failure must NOT abort the run.
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# HH-1: per-version duration files SURVIVE the _emit_final_versionset_pass.
+#
+# Before HH fix: _emit_final_versionset_pass deleted per-version duration files
+#   AFTER build_tag_push_extensions had already written them → sum = 0 even after
+#   a real build (the final pass wiped them).
+# After HH fix:  the final pass no longer deletes duration files; the cleanup
+#   moved to pre-build (start of build_tag_push_extensions), so files written
+#   during the build survive to be read by sum_flavor_extension_durations.
+#
+# Assertion: after a full main() run where builds occurred, at least one
+# per-version duration file exists AND sum_flavor_extension_durations > 0.
+# ---------------------------------------------------------------------------
+@test "HH-1-duration-survives-final-pass: build-path per-version duration files exist after final pass" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Stateful registry-presence file: seed empty; push_ext_image adds to it.
+    # This mirrors the FORCE-AVAILABLE / CACHED-2 pattern.
+    local registry_present="$tmpd/hh1-registry"
+    : > "$registry_present"
+    export registry_present
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Stateful presence: consults registry_present file.
+        # Initially empty (all absent → all need build).
+        # push_ext_image adds each successfully-pushed version so the final
+        # _image_present pass sees them as available — mirrors production.
+        image_exists_in_registry() {
+            local tag=\"\${1##*:}\"
+            grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+
+        # Stateful push: register version as present after successful push
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    local lineage_dir="$tmpd/.build-lineage"
+
+    # Per-version duration files must EXIST after the run.
+    # RED before HH fix: final pass deleted them → none found.
+    # GREEN after HH fix: final pass no longer deletes; files survive from build.
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.25.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.26.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
+
+    # Verify each file has a duration_seconds field (not the versionset shape)
+    local dur_25 dur_26 dur_27
+    dur_25=$(jq '.duration_seconds' "$lineage_dir/ext-timescaledb-pg18-2.25.0.json")
+    dur_26=$(jq '.duration_seconds' "$lineage_dir/ext-timescaledb-pg18-2.26.0.json")
+    dur_27=$(jq '.duration_seconds' "$lineage_dir/ext-timescaledb-pg18-2.27.1.json")
+
+    [[ "$dur_25" =~ ^[0-9]+$ ]]
+    [[ "$dur_26" =~ ^[0-9]+$ ]]
+    [[ "$dur_27" =~ ^[0-9]+$ ]]
+}
+
+# ---------------------------------------------------------------------------
+# HH-2: all-cached run cleans stale duration file → sum = 0.
+#
+# Confirms the all-cached pre-clean runs before sum_flavor_extension_durations
+# would be called: stale from previous run is gone, nothing built this run,
+# sum = 0.  The versionset artifact is also (re)written.
+# ---------------------------------------------------------------------------
+@test "HH-2-allcached-stale-sum-zero: stale duration cleaned on all-cached run, sum = 0" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Stale per-version duration file from a previous run
+    local stale="$lineage_dir/ext-timescaledb-pg18-2.20.0.json"
+    printf '{"ext":"timescaledb","version":"2.20.0","pg_major":"18","duration_seconds":77,"built_at":"2026-01-01T00:00:00Z"}\n' \
+        > "$stale"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All in registry — all-cached, nothing built
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo 'SHOULD_NOT_BUILD' >> \"$tmpd/hh2_build.log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Must NOT have built anything
+    local build_count
+    build_count=$(_count_log_lines "$tmpd/hh2_build.log")
+    [ "$build_count" -eq 0 ]
+
+    # Stale duration file must be GONE after the all-cached run
+    [ ! -f "$stale" ]
+
+    # No per-version duration files for current versions (nothing built)
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-2.25.0.json" ]
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-2.26.0.json" ]
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
+
+    # Versionset artifact must still be present (rewritten by final pass)
+    [ -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
+}
