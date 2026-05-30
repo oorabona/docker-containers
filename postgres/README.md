@@ -323,24 +323,15 @@ The `timescaledb.control` file sets `default_version` to the pinned ceiling (cur
 
 ### Moving an existing database to the pinned version
 
-**Manual (recommended for existing volumes):** connect to each database that has TimescaleDB installed and run:
+To upgrade TimescaleDB in a persisted database (e.g. after pulling an image with a newer ceiling), connect to each database that has TimescaleDB installed and run:
 
 ```sql
 ALTER EXTENSION timescaledb UPDATE;
 ```
 
-**Automatic on fresh init:** set `TIMESCALEDB_AUTO_UPGRADE=true` when starting the container with a fresh (empty) data directory. The init script `02-timescaledb-upgrade.sh` runs the UPDATE automatically. Init scripts do **not** run against existing data volumes — the manual path above applies there.
+The migration SQL for all retained versions is bundled in the image. The database continues to start on the old `.so` until you run this command — no forced migration on boot.
 
-```yaml
-services:
-  postgres:
-    image: ghcr.io/oorabona/postgres:18-timeseries-alpine
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      TIMESCALEDB_AUTO_UPGRADE: "true"   # only affects fresh init
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-```
+> **Note:** `/docker-entrypoint-initdb.d/` scripts run only on a **fresh** (empty) data directory and have no effect on existing volumes. To upgrade TimescaleDB in an existing database, always use the manual `ALTER EXTENSION` command above.
 
 ## Security
 

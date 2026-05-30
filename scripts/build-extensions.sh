@@ -786,6 +786,7 @@ _emit_final_versionset_pass() {
     ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
 
     local ext
+    local _final_pass_failed=false
     while IFS= read -r ext; do
         [[ -z "$ext" ]] && continue
         # Skip extensions with no Dockerfile (already skipped by build logic)
@@ -798,8 +799,18 @@ _emit_final_versionset_pass() {
         # Use the cache — resolver was already called during the build/filter phase.
         # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
-            # Resolver failure in the final pass: skip artifact (don't abort success).
-            log_warning "$ext: resolver unavailable in final pass — skipping versionset artifact"
+            # Resolver failure in the final pass: distinguish publish vs recovery.
+            # - Publish path (NOT LOCAL_ONLY and NOT PULL_ONLY): fail-closed —
+            #   a required retention artifact cannot be produced; the run must
+            #   exit non-zero so CI does not report success with a missing artifact.
+            # - Recovery paths (LOCAL_ONLY=true or PULL_ONLY=true): degrade —
+            #   a transient resolver outage must not block local recovery.
+            if [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]]; then
+                log_warning "$ext: resolver unavailable in final pass — skipping versionset artifact (recovery path)"
+            else
+                log_error "$ext: resolver failed in final pass (publish path) — versionset artifact cannot be produced"
+                _final_pass_failed=true
+            fi
             continue
         fi
 
@@ -811,6 +822,10 @@ _emit_final_versionset_pass() {
         # from a prior run is refreshed even when no build occurs in the current run.
         _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling"
     done <<< "$ext_list"
+
+    if [[ "$_final_pass_failed" == "true" ]]; then
+        return 1
+    fi
 }
 
 # Write (or refresh) the versionset artifact for a resolver-backed extension
@@ -902,8 +917,9 @@ main() {
     # after the return so every pull-only success path has artifacts too.
     if [[ "$PULL_ONLY" == "true" ]]; then
         handle_pull_only_mode "$config_file" "$major_ver" "$container_dir"
-        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
-        exit 0
+        local _fp_rc=0
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+        exit "$_fp_rc"
     fi
 
     # Build mode — determine which extensions to build.
@@ -944,8 +960,9 @@ main() {
         # Final pass: emit presence-based versionset artifacts for all in-scope
         # resolver-backed extensions (resolver results are already cached from
         # the _should_build_extension calls above).
-        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
-        exit 0
+        local _fp_rc=0
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+        exit "$_fp_rc"
     fi
 
     log_info "Extensions to build: ${extensions_to_build[*]}"
@@ -961,7 +978,11 @@ main() {
     # build_tag_push_extensions (already cached) and those just built.
     # This is the single source of truth for skipped extensions on mixed runs.
     # Resolver results are already cached from _should_build_extension calls above.
-    _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
+    local _fp_rc=0
+    _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+    if [[ "$_fp_rc" -ne 0 ]]; then
+        exit "$_fp_rc"
+    fi
 }
 
 # Only run main when executed directly, not when sourced (e.g. by unit tests)

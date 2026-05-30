@@ -2495,3 +2495,315 @@ EOF
     [[ "$available_versions" == *"2.26.0"* ]]
     [[ "$available_versions" == *"2.27.1"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# BB-1: final-pass resolver failure on PUBLISH path (LOCAL_ONLY=false,
+# PULL_ONLY=false) → run must exit NON-ZERO (fail-closed).
+#
+# RED before fix: _emit_final_versionset_pass does warn+continue on resolver
+#   failure → the function returns 0 → main() exits 0 (no artifact, silent).
+# GREEN after fix: resolver failure in final pass on publish path → run exits
+#   non-zero.
+# ---------------------------------------------------------------------------
+@test "BB-1-publish-fail-closed: final-pass resolver failure + publish path → exit non-zero" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Arrange: pgvector in registry (skipped); timescaledb resolver will fail
+    # in the final pass only (pre-filter succeeds the first time, cache is then
+    # cleared before the final pass to force a second resolution attempt).
+    # We achieve this by having the resolver succeed on the first call (pre-filter
+    # and build-filter), then fail on a subsequent call (final pass re-resolve).
+    # Cache invalidation: we cannot clear the in-process _RESOLVER_CACHE_DIR from
+    # outside; instead we make resolve_version_set fail unconditionally — because
+    # timescaledb has ALL versions in the registry, the pre-filter returns 1 (skip),
+    # so _resolve_cached is called once (pre-filter) and the result IS cached.
+    # The final pass then re-uses the cached result — resolver is NOT called again.
+    #
+    # Correct approach: use a two-ext config where pgvector is the scoped ext
+    # (needs build), and timescaledb is the non-scoped ext that the final pass
+    # must resolve for the first time (NOT in cache when final pass runs).
+    # With --extension pgvector scoped, the pre-filter only resolves pgvector;
+    # timescaledb is NOT resolved during pre-filter, so final pass calls
+    # _resolve_cached for timescaledb → resolver fails → fail-closed.
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    # Registry: pgvector absent (triggers build); timescaledb not queried
+    # (timescaledb is not in scope for --extension pgvector, but final pass
+    # tries to resolve it)
+    local registry_present="$tmpd/bb1-registry"
+    : > "$registry_present"
+    export registry_present
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # pgvector resolves fine; timescaledb resolver FAILS (simulates transient error)
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'pgvector' ]]; then
+                echo '[\"0.8.0\"]'
+                return 0
+            fi
+            # timescaledb resolver fails
+            echo 'resolver error' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # pgvector: absent from registry → needs build
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        # Scoped to pgvector only — timescaledb NOT resolved in pre-filter.
+        # The final pass then tries to resolve timescaledb for the first time.
+        main postgres --major-version 18 --extension pgvector
+    "
+
+    # RED before fix: exit 0 (warn+continue, no artifact but run succeeds).
+    # GREEN after fix: exit non-zero (fail-closed on publish path).
+    [ "$status" -ne 0 ]
+
+    # The timescaledb versionset artifact must NOT exist (resolver failed before write).
+    local ts_artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$ts_artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# BB-2: final-pass resolver failure + LOCAL_ONLY=true → degrade, exit 0.
+# The recovery path must not be blocked by a transient resolver outage.
+#
+# RED before fix: N/A — current code already degrades (same warn+continue).
+#   This test locks the degrade behavior so it is not broken by the BB-1 fix.
+# GREEN: exit 0, warn logged, no artifact (no resolved set → can't write).
+# ---------------------------------------------------------------------------
+@test "BB-2-local-degrade: final-pass resolver failure + LOCAL_ONLY=true → exit 0 (degrade)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=true DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\" LOCAL_ONLY=true
+
+        # pgvector resolves fine; timescaledb resolver fails in final pass
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'pgvector' ]]; then
+                echo '[\"0.8.0\"]'
+                return 0
+            fi
+            echo 'resolver error' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # LOCAL_ONLY: docker inspect for presence; pgvector absent locally
+        docker() { return 1; }
+        export -f docker
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --extension pgvector --local-only
+    "
+
+    # Recovery path: resolver failure in final pass must NOT abort the run.
+    [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# BB-3: final-pass resolver failure + PULL_ONLY=true → degrade, exit 0.
+# ---------------------------------------------------------------------------
+@test "BB-3-pullonly-degrade: final-pass resolver failure + PULL_ONLY=true → exit 0 (degrade)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres PULL_ONLY=true
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\" PULL_ONLY=true
+
+        # pgvector resolves fine; timescaledb resolver fails in final pass
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'pgvector' ]]; then
+                echo '[\"0.8.0\"]'
+                return 0
+            fi
+            echo 'resolver error' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() { return 0; }
+        export -f docker
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        pull_ext_image() { return 0; }
+        export -f pull_ext_image
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --pull-only
+    "
+
+    # Recovery path: PULL_ONLY resolver failure must NOT abort the run.
+    [ "$status" -eq 0 ]
+}

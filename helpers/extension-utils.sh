@@ -295,6 +295,29 @@ generate_dockerfile() {
                         return 1
                     fi
 
+                    # Validate every available[] entry before emitting Dockerfile stages.
+                    # Each entry must:
+                    #   1. Match strict semver (^[0-9]+\.[0-9]+\.[0-9]+$)
+                    #   2. Be <= the configured ceiling (sort -V: ceiling must be last or equal)
+                    # Reject the artifact (fail closed) if any entry is malformed or
+                    # above the ceiling — do not silently emit bad/injection-unsafe stages.
+                    local _val_ver
+                    while IFS= read -r _val_ver; do
+                        [[ -z "$_val_ver" ]] && continue
+                        if ! [[ "$_val_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                            log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name is not strict semver — refusing to emit unsafe stage"
+                            return 1
+                        fi
+                        # above-ceiling check: if sort -V puts _val_ver AFTER ext_version,
+                        # then _val_ver > ext_version → reject.
+                        local _highest
+                        _highest=$(printf '%s\n%s\n' "$_val_ver" "$ext_version" | sort -V | tail -1)
+                        if [[ "$_highest" != "$ext_version" && "$_highest" == "$_val_ver" ]]; then
+                            log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name exceeds ceiling ${ext_version} — refusing to emit above-pin stage"
+                            return 1
+                        fi
+                    done < <(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)
+
                     # Multi-version path: emit one FROM+COPY pair per available version.
                     local raw_versions
                     raw_versions=$(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)

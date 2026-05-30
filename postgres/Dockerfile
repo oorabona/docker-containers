@@ -277,30 +277,6 @@ RUN case "${FLAVOR}" in \
             ;; \
     esac
 
-# Create the opt-in TimescaleDB auto-upgrade init script.
-# This script only activates when TIMESCALEDB_AUTO_UPGRADE=true is set at
-# container start. Default is OFF — the image ships every retained .so so an
-# existing database on an older TimescaleDB version can start without any
-# ALTER. Set the variable to automatically update to the pinned ceiling on
-# a fresh data directory (initdb scripts do NOT run against existing volumes).
-#
-# For existing volumes use the manual path documented in postgres/README.md:
-#   psql -c 'ALTER EXTENSION timescaledb UPDATE;'
-RUN if ls /usr/local/lib/postgresql/timescaledb*.so 1>/dev/null 2>&1; then \
-    printf '%s\n' \
-        '#!/bin/sh' \
-        '# Opt-in TimescaleDB upgrade to the pinned ceiling version.' \
-        '# Runs only when TIMESCALEDB_AUTO_UPGRADE=true is set.' \
-        '# initdb scripts run only on a FRESH data directory.' \
-        'if [ "${TIMESCALEDB_AUTO_UPGRADE:-false}" = "true" ]; then' \
-        '    echo "TIMESCALEDB_AUTO_UPGRADE=true: updating timescaledb extension..."' \
-        '    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL' \
-        '        ALTER EXTENSION timescaledb UPDATE;' \
-        'EOSQL' \
-        'fi' \
-        > /docker-entrypoint-initdb.d/02-timescaledb-upgrade.sh; \
-    chmod +x /docker-entrypoint-initdb.d/02-timescaledb-upgrade.sh; \
-fi
 
 # Configure shared_preload_libraries based on actually installed extensions
 # Detects which extensions need preloading by checking for their .so files

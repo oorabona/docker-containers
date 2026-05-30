@@ -430,3 +430,86 @@ EOF
     from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
     [ "$from_count" -eq 3 ]
 }
+
+# ---------------------------------------------------------------------------
+# CC-1: available[] entry ABOVE the ceiling → generate_dockerfile exits non-zero.
+#
+# RED before fix: no validation → the bad entry is emitted as a FROM stage,
+#   exits 0 (injection-unsafe / wrong image).
+# GREEN after fix: validation rejects above-ceiling entry, exits non-zero.
+# ---------------------------------------------------------------------------
+@test "CC-1-above-ceiling: available[] version above ceiling → generate_dockerfile exits non-zero" {
+    # Artifact: available has an entry (2.99.0) above the configured ceiling (2.27.1).
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1","2.99.0"],"available":["2.25.0","2.27.1","2.99.0"],"excluded":[]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits the malicious/wrong stage.
+    # GREEN after fix: exits non-zero (validation rejected above-ceiling entry).
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# CC-2: available[] entry with non-semver content → generate_dockerfile exits
+# non-zero.
+#
+# RED before fix: no validation → the malformed string is emitted verbatim
+#   as a Docker stage/tag (injection risk), exits 0.
+# GREEN after fix: validation rejects non-semver entry, exits non-zero.
+# ---------------------------------------------------------------------------
+@test "CC-2-non-semver-injection: available[] non-semver string → generate_dockerfile exits non-zero" {
+    # Artifact: available has a non-semver entry.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1; rm -rf"],"excluded":[]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits malformed stage (injection-unsafe).
+    # GREEN after fix: exits non-zero.
+    [ "$status" -ne 0 ]
+}
+
+@test "CC-3-non-semver-latest: available[] 'latest' tag → generate_dockerfile exits non-zero" {
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","latest"],"excluded":[]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# CC-4: valid semver entries, all <= ceiling → succeeds (regression guard).
+# ---------------------------------------------------------------------------
+@test "CC-4-valid-entries: valid semver entries all at-or-below ceiling → succeeds" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # All 3 valid versions produce 3 FROM stages.
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
