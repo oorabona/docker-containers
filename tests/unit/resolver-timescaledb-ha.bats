@@ -198,3 +198,35 @@ setup() {
     # Floor must still be 2.23.0 despite -all/-oss variants being present
     [[ "$first" == "2.23.0" ]]
 }
+
+# ── H: actionable error messages reach stderr ─────────────────────────────────
+
+@test "H-unsupported-pg: unknown PG_MAJOR exits non-zero and emits 'no HA tags' on stderr" {
+    # HA fixture has no tags for PG_MAJOR=99 so the grep for pg99-ts* returns
+    # nothing. Before the fix: grep exits 1, set -e aborts before _error fires
+    # → stderr is empty. After the fix: empty capture then explicit _error.
+    local combined
+    combined=$(env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=99 CEILING_VERSION=2.27.1 \
+        "$RESOLVER" 2>&1 || true)
+    [[ "$combined" == *"no HA tags"* ]]
+}
+
+@test "H-no-semver-tags: TS fixture with only non-semver tags exits non-zero and emits 'no valid semver' on stderr" {
+    # A TS fixture that contains only v-prefixed / pre-release tags means the
+    # bare-semver grep returns nothing. Before the fix: set -e aborts silently.
+    # After the fix: empty capture then explicit _error with actionable message.
+    local no_semver_fixture
+    no_semver_fixture="$(mktemp)"
+    printf 'v2.27.1\n2.27.1-rc1\n2.27.0-beta\n' > "$no_semver_fixture"
+    local combined
+    combined=$(env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _RESOLVER_TS_TAGS_FIXTURE="$no_semver_fixture" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER" 2>&1 || true)
+    rm -f "$no_semver_fixture"
+    [[ "$combined" == *"no valid semver"* ]]
+}

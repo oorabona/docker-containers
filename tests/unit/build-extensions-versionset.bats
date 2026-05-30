@@ -438,16 +438,6 @@ _count_log_lines() {
 # ---------------------------------------------------------------------------
 
 @test "resolver-failure-fatal: resolver non-zero exit causes build failure, not silent fallback" {
-    # Mock resolve_version_set to return non-zero (simulates API outage / resolver bug).
-    # This extension HAS a resolver configured (timescaledb in config.yaml).
-    # With the bug: build exits 0 and builds only the ceiling version.
-    # With the fix: build exits non-zero and logs an error; no build occurs.
-    #
-    # NOTE: build-extensions.sh installs a trap "rm -rf ..." EXIT at source time
-    # (via _RESOLVER_CACHE_DIR). That overwrites bats' EXIT trap, so assertions
-    # that fail under set -e silently kill the test instead of printing "not ok".
-    # To avoid this: capture the function's exit code via a subshell ($()),
-    # then assert with || (no set -e abort on the assertion line itself).
     local build_log="$TEST_TEMP_DIR/rfatal_build_calls.log"
 
     resolve_version_set() {
@@ -471,14 +461,6 @@ _count_log_lines() {
     }
     export -f build_ext_image
 
-    # build-extensions.sh registers a trap EXIT (for _RESOLVER_CACHE_DIR cleanup)
-    # during setup(), which overwrites bats' own EXIT trap. Restore it here so
-    # that failing assertions below are properly reported as "not ok" instead of
-    # silently killing the test process under set -e.
-    # shellcheck disable=SC2064
-    trap "bats_teardown_trap as-exit-trap" EXIT
-
-    # Capture exit code via run (disables set -e around the call).
     run build_tag_push_extensions \
         "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
     local actual_status="$status"
@@ -508,13 +490,6 @@ _count_log_lines() {
     # Before the fix: main() calls _should_build_extension with plain 'if', so rc=2
     # is treated as "skip" → extensions_to_build stays empty → exit 0 + "up to date".
     # After the fix: the caller distinguishes rc>=2 as a resolver error → exit 1.
-
-    # Restore bats' EXIT trap — setup() sources build-extensions.sh which installs
-    # a bare 'rm -rf' EXIT trap that overwrites bats' internal teardown trap. Without
-    # this restore, any failing assertion under set -e kills the bats process silently
-    # instead of printing "not ok". (Same pattern as resolver-failure-fatal test.)
-    # shellcheck disable=SC2064
-    trap "bats_teardown_trap as-exit-trap" EXIT
 
     local tmpd="$TEST_TEMP_DIR"
     local build_log="${tmpd}/main_build_calls.log"
@@ -673,12 +648,6 @@ _count_log_lines() {
 # ---------------------------------------------------------------------------
 
 @test "D-tag-fatal: non-ceiling tag failure is fatal (exit non-zero), not musl-excluded" {
-    # build-extensions.sh installs a bare EXIT trap at source time that overwrites
-    # bats' internal teardown trap.  Restore bats' trap so failing assertions are
-    # reported as "not ok" instead of silently aborting the test process.
-    # shellcheck disable=SC2064
-    trap "bats_teardown_trap as-exit-trap" EXIT
-
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
     export -f resolve_version_set
 
@@ -740,10 +709,6 @@ _count_log_lines() {
 # ---------------------------------------------------------------------------
 
 @test "E-duration-independent: per-version lineage durations are bounded, not cumulative" {
-    # Restore bats' EXIT trap (overwritten by build-extensions.sh source-time trap).
-    # shellcheck disable=SC2064
-    trap "bats_teardown_trap as-exit-trap" EXIT
-
     resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
     export -f resolve_version_set
 
@@ -786,4 +751,84 @@ _count_log_lines() {
         fi
     done
     [ "$fail" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# G: resolver failure + LOCAL_ONLY=true must degrade gracefully to ceiling build
+# (local recovery path). Without LOCAL_ONLY (publish/CI path), must stay fatal.
+# ---------------------------------------------------------------------------
+
+@test "G-local-degrade: resolver fails + LOCAL_ONLY=true → ceiling built, exit 0" {
+    export LOCAL_ONLY=true
+
+    resolve_version_set() {
+        echo "::error::simulated upstream outage" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/g_local_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "false" "timescaledb"
+
+    # Local recovery path must succeed (degraded, not fatal).
+    [ "$status" -eq 0 ]
+
+    # Must have built exactly the ceiling version.
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 1 ]
+    [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
+}
+
+@test "G-publish-fatal: resolver fails + LOCAL_ONLY=false → exit non-zero (publish path stays fail-closed)" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo "::error::simulated upstream outage" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/g_publish_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Publish/CI path must remain fail-closed.
+    [ "$status" -ne 0 ]
+
+    # Must NOT have built anything.
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
 }

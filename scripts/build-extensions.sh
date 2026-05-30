@@ -394,14 +394,21 @@ build_tag_push_extensions() {
         # Resolve ceiling (single configured version) and the full version set.
         # A non-zero return from _resolve_cached means the resolver script failed
         # (network/API/binary error) — NOT a no-resolver extension (which returns
-        # exit 0 with a single-element array). Fail-closed: skip the build and
-        # mark this extension as failed so the overall run exits non-zero (#558).
+        # exit 0 with a single-element array). On the publish/CI path, fail-closed:
+        # mark the extension failed so the run exits non-zero. On the local
+        # recovery path (LOCAL_ONLY=true), degrade to the ceiling version so a
+        # transient upstream outage never blocks a manual rebuild.
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
-            log_error "$ext: version-set resolver failed — skipping build"
-            failed+=("$ext")
-            continue
+            if [[ "$LOCAL_ONLY" == "true" ]]; then
+                log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+                version_set_json="[\"$ceiling\"]"
+            else
+                log_error "$ext: version-set resolver failed — skipping build"
+                failed+=("$ext")
+                continue
+            fi
         fi
 
         local set_size
@@ -534,16 +541,13 @@ build_tag_push_extensions() {
 # File-backed memoisation for resolve_version_set.
 # In-memory variables cannot survive command-substitution subshells ($(...)), so
 # each resolved JSON is written to a per-run temp directory keyed by
-# "<ext>-<major>". The cache directory is created eagerly at source time so that
-# every $(...) subshell inherits the path via the exported variable and reads from
-# the same files. This guarantees resolve_version_set is invoked at most once per
-# (ext, pg_major) across an entire run — both the pre-filter step inside
-# _should_build_extension and the build loop inside build_tag_push_extensions see
-# the same cached file.
+# "<ext>-<major>". The cache directory is created at source time so that every
+# $(...) subshell inherits the path via the exported variable. The EXIT trap
+# that removes this directory is installed ONLY inside the execution guard
+# below (when the script runs as a program), so sourcing this file never
+# clobbers the caller's own EXIT trap.
 _RESOLVER_CACHE_DIR="$(mktemp -d)"
 export _RESOLVER_CACHE_DIR
-# shellcheck disable=SC2064
-trap "rm -rf \"${_RESOLVER_CACHE_DIR}\"" EXIT
 
 _resolve_cached() {
     local ext="$1" major="$2"
@@ -611,11 +615,18 @@ _should_build_extension() {
 
     # Resolve the full version set (cached). A non-zero return from _resolve_cached
     # means the resolver script failed — NOT a no-resolver extension (which returns
-    # exit 0). Propagate the failure so the caller can handle it as a hard error.
+    # exit 0). On the publish/CI path, propagate as a hard error (rc=2). On the
+    # local recovery path (LOCAL_ONLY=true), degrade to the single ceiling version
+    # so a transient upstream outage never blocks a manual rebuild.
     local version_set_json
     if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
-        log_error "$ext: version-set resolver failed in pre-filter check"
-        return 2
+        if [[ "$LOCAL_ONLY" == "true" ]]; then
+            log_warning "$ext: version-set resolver failed — degrading to ceiling $version (LOCAL_ONLY)"
+            version_set_json="[\"$version\"]"
+        else
+            log_error "$ext: version-set resolver failed in pre-filter check"
+            return 2
+        fi
     fi
 
     # Single-version path: preserve exact existing log strings for the 8-case tests.
@@ -737,5 +748,10 @@ main() {
 
 # Only run main when executed directly, not when sourced (e.g. by unit tests)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    # Install EXIT cleanup only when executing as a program. When sourced (e.g.
+    # by unit tests) no trap is installed here so the caller's EXIT trap is
+    # never clobbered. _RESOLVER_CACHE_DIR is already set at source time above.
+    # shellcheck disable=SC2064
+    trap "rm -rf \"${_RESOLVER_CACHE_DIR}\"" EXIT
     main "$@"
 fi

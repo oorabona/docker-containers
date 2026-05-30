@@ -78,14 +78,16 @@ main() {
         exit 1
     fi
 
-    # Extract unique X.Y minors from pg${PG_MAJOR}-tsX.Y lines (strip suffixes like -all, -oss)
+    # Extract unique X.Y minors from pg${PG_MAJOR}-tsX.Y lines (strip suffixes like -all, -oss).
+    # grep exits 1 when there are no matches; use a grouped pipeline so the || true
+    # applies to the whole chain and the output still flows to sort/head.
     local floor_minor
     floor_minor=$(
-        echo "$ha_tags" \
+        { echo "$ha_tags" \
             | grep -E "^pg${PG_MAJOR}-ts[0-9]+\.[0-9]+$" \
             | sed "s/^pg${PG_MAJOR}-ts//" \
             | sort -t. -k1,1n -k2,2n \
-            | head -1
+            | head -1; } 2>/dev/null || true
     )
 
     if [[ -z "$floor_minor" ]]; then
@@ -100,11 +102,12 @@ main() {
         exit 1
     fi
 
-    # Keep only bare semver X.Y.Z (no v-prefix, no -p0, no pre-release suffixes)
+    # Keep only bare semver X.Y.Z (no v-prefix, no -p0, no pre-release suffixes).
+    # grep exits 1 when there are no matches; || true prevents set -e from
+    # aborting before the explicit emptiness check below emits the actionable error.
     local versions
     versions=$(
-        echo "$ts_tags" \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'
+        { echo "$ts_tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'; } 2>/dev/null || true
     )
 
     if [[ -z "$versions" ]]; then
