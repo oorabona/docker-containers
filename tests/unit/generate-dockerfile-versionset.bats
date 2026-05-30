@@ -642,6 +642,118 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# JJ-1: malformed artifact (truncated JSON) + resolver mocks that succeed
+#       → generate_dockerfile SELF-HEALS to multi-version (exit 0, N stages).
+#
+# RED before fix: jq parse fails → available_count collapses to 0 → falls
+#   through to single-version path (exit 0, 1 FROM stage).
+# GREEN after fix: parse failure treated as ABSENT artifact → self-heal kicks
+#   in → resolver+registry probed → multi-version emitted (exit 0, 3 stages).
+# ---------------------------------------------------------------------------
+@test "JJ-1-malformed-truncated: truncated JSON artifact + resolver succeeds → self-heals to multi-version" {
+    # Write a truncated/unparseable JSON artifact.
+    printf '{"ext":"timescaledb"' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    # Resolver and registry mocks that produce the real multi-version set.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must exit 0 (self-heal succeeded).
+    [ "$status" -eq 0 ]
+
+    # Must produce 3 multi-version FROM stages — NOT a single-version fallback.
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+
+    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+}
+
+@test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
+    # Write non-JSON garbage as the artifact.
+    printf 'NOT JSON AT ALL\x00\ngarbage data' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
+
+@test "JJ-3-malformed-no-available: JSON missing .available key + resolver succeeds → self-heals" {
+    # Valid JSON but no .available key — schema mismatch.
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1"}' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+}
+
+@test "JJ-4-malformed-resolver-fails: malformed artifact + resolver FAILS → fail closed (non-zero)" {
+    # Malformed artifact; resolver also fails. Must fail closed.
+    printf '{"ext":"timescaledb"' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    resolve_version_set() {
+        echo "::error::simulated resolver failure" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Malformed artifact → self-heal; resolver fails → fail closed.
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # CC-4: valid semver entries, all <= ceiling → succeeds (regression guard).
 # ---------------------------------------------------------------------------
 @test "CC-4-valid-entries: valid semver entries all at-or-below ceiling → succeeds" {

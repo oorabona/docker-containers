@@ -295,13 +295,20 @@ generate_dockerfile() {
             local _lineage_root="${ROOT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
             local versionset_file="${_lineage_root}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
 
-            # Resolver-backed extension with NO versionset artifact: SELF-HEAL.
+            # Resolver-backed extension with NO versionset artifact (or MALFORMED one):
+            # SELF-HEAL.
             # The versionset artifact is an optimisation produced by build-extensions.sh.
             # Legitimate callers (skip_extensions CI runs, `./make build postgres`) do not
             # run build-extensions first, so no artifact is present even though the ext
             # images are already in the registry.
             #
-            # Self-heal algorithm (only when artifact is absent AND extension is resolver-backed):
+            # A malformed/unreadable artifact (truncated JSON, non-JSON garbage, missing
+            # .available key) is treated as ABSENT and triggers the same self-heal path.
+            # This is NOT silent degradation: if the self-heal resolver also fails, we
+            # fail closed — we never silently produce a single-version image for a
+            # resolver-backed extension.
+            #
+            # Self-heal algorithm (when artifact absent OR malformed, AND resolver-backed):
             #   1. Call resolve_version_set to obtain the retained version set.
             #      On resolver failure → fail closed (cannot determine retained set).
             #   2. For each resolved version, probe the registry via image_exists_in_registry.
@@ -309,7 +316,19 @@ generate_dockerfile() {
             #   3. Apply the same strict-semver + <=ceiling + ceiling-present validations
             #      as the artifact-present fast path.
             #   4. If available is empty or ceiling is absent → fail closed.
-            if [[ -n "$_resolver_path" ]] && [[ ! -f "$versionset_file" ]]; then
+            #
+            # Malformedness check: artifact must be parseable JSON with an .available array.
+            # jq -e exits non-zero on parse error OR when the expression evaluates to false.
+            local _artifact_valid=0
+            if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
+                jq -e 'type == "object" and has("available") and (.available | type) == "array"' \
+                    "$versionset_file" > /dev/null 2>&1 && _artifact_valid=1
+            fi
+
+            if [[ -n "$_resolver_path" ]] && { [[ ! -f "$versionset_file" ]] || [[ "$_artifact_valid" -eq 0 ]]; }; then
+                if [[ "$_artifact_valid" -eq 0 ]] && [[ -f "$versionset_file" ]]; then
+                    log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed or missing .available array — treating as absent, triggering self-heal"
+                fi
                 local _sh_resolved_json
                 if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major"); then
                     log_error "generate_dockerfile: self-heal resolver failed for $ext_name pg${pg_major} (resolver: $_resolver_path) — cannot determine retained version set"
