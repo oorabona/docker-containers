@@ -50,8 +50,13 @@ resolve_version_set() {
     project_root="$(cd "${_HELPER_DIR}/.." && pwd)"
     local abs_resolver="${project_root}/${resolver_path}"
 
+    # Escape a value for safe inclusion in a GHA workflow command.
+    # Prevents %/\r/\n in yq-parsed or env-supplied values from injecting
+    # extra commands (e.g. ::stop-commands::, ::add-mask::) into the runner log.
+    _esc_gha() { local s="$1"; s="${s//\%/%25}"; s="${s//$'\n'/%0A}"; s="${s//$'\r'/%0D}"; printf '%s' "$s"; }
+
     if [[ ! -x "$abs_resolver" ]]; then
-        echo "::error::version-set-resolver: resolver not found or not executable: ${abs_resolver}" >&2
+        echo "::error::version-set-resolver: resolver not found or not executable: $(_esc_gha "${abs_resolver}")" >&2
         return 1
     fi
 

@@ -317,11 +317,21 @@ Analytics and full flavors also include:
 
 ## TimescaleDB Version Retention
 
-The `timeseries` and `full` flavors ship every retained TimescaleDB `.so` (e.g. 2.23.0 through 2.27.1). This lets a persisted database on an older TimescaleDB version **start without any migration** — PostgreSQL loads the `.so` matching the version recorded in the database catalog.
+**Why this exists.** TimescaleDB uses a version-agnostic loader: on first backend access it `dlopen`s the exact `timescaledb-<version>.so` recorded in the database's `pg_extension` catalog. If the image shipped only the current `.so`, a persisted database created on an *older* TimescaleDB version would become **unstartable** after an image upgrade (`FATAL: could not access file "$libdir/timescaledb-<old>.so"`). To prevent that, the `timeseries` and `full` flavors retain a window of TimescaleDB versions.
 
-The `timescaledb.control` file sets `default_version` to the pinned ceiling (currently 2.27.1), so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
+**What is retained.** The image ships every retained TimescaleDB `.so`, so a persisted database on any retained version **starts without any migration** — PostgreSQL loads the `.so` matching the catalog version. The retained window is derived from the upstream `timescale/timescaledb-ha` support matrix, so it differs per PostgreSQL major (a TimescaleDB version that never supported a given PostgreSQL major is not retained for it):
 
-> **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS).
+| PostgreSQL major | Retained TimescaleDB window | Versions |
+|------------------|-----------------------------|----------|
+| 18               | 2.23.0 → 2.27.1             | 13       |
+| 17               | 2.17.2 → 2.27.1             | 32       |
+| 16               | 2.13.0 → 2.27.1             | 45       |
+
+The ceiling — currently **2.27.1** — is the pinned version in `postgres/extensions/config.yaml`; the floor and counts track upstream and refresh automatically as new TimescaleDB versions are released and the pin is bumped.
+
+The `timescaledb.control` file sets `default_version` to the pinned ceiling, so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
+
+> **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres --flavor timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS).
 
 ### Moving an existing database to the pinned version
 

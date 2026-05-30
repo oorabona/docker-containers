@@ -23,9 +23,14 @@ EXT_NAME="${EXT_NAME:-timescaledb}"
 PG_MAJOR="${PG_MAJOR:?PG_MAJOR is required}"
 CEILING_VERSION="${CEILING_VERSION:-}"
 
+# Escape a value for safe inclusion in a GHA workflow command.
+# Prevents %/\r/\n in registry-derived or env-supplied values from injecting
+# extra commands (e.g. ::stop-commands::, ::add-mask::) into the runner log.
+_esc() { local s="$1"; s="${s//\%/%25}"; s="${s//$'\n'/%0A}"; s="${s//$'\r'/%0D}"; printf '%s' "$s"; }
+
 # Emit error to stderr using GHA annotation format when available
 _error() {
-    echo "::error::${EXT_NAME} resolver: $*" >&2
+    echo "::error::$(_esc "${EXT_NAME}") resolver: $(_esc "$*")" >&2
 }
 
 # Fetch HA image tags — one tag per line

@@ -277,11 +277,10 @@ generate_dockerfile() {
             # An extension is resolver-backed when its config has a non-empty
             # version_set.resolver path — this means build-extensions.sh ran a
             # resolver script to produce a multi-version set, and the resulting
-            # versionset artifact is required for correct Dockerfile generation.
-            # A missing artifact for a resolver-backed extension is a build-side
-            # failure (the CI artifact download step may have been skipped or
-            # lost), not a single-version situation — fail closed instead of
-            # silently degrading to a below-pin single-version image.
+            # versionset artifact may be present in .build-lineage/.
+            # When the artifact is absent or malformed, the code below self-heals
+            # by re-invoking the resolver and probing the registry for available
+            # versions — see the SELF-HEAL block below.
             local _resolver_path
             _resolver_path=$(ext_config "$ext_name" "version_set.resolver" "$config_file")
 
