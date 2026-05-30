@@ -313,6 +313,20 @@ push_ext_image() {
 }
 
 # ============================================================================
+# Version validation
+# ============================================================================
+
+# is_strict_semver <version>
+# Returns 0 when <version> matches strict semver (^[0-9]+\.[0-9]+\.[0-9]+$),
+# non-zero otherwise. No pre-release or build-metadata suffixes are accepted.
+# Used as the single source-of-truth validator for both the Dockerfile generation
+# path (generate_dockerfile available[] entries) and the build/tag/push path
+# (build_tag_push_extensions resolved set entries).
+is_strict_semver() {
+    [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# ============================================================================
 # Flavor-aware Dockerfile generation
 # Instead of building N bundle images, we template the main Dockerfile
 # to only include FROM/COPY for extensions relevant to each flavor+PG version
@@ -446,7 +460,7 @@ generate_dockerfile() {
                     log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed, missing .available array, or has empty available[] — treating as absent, triggering self-heal"
                 fi
                 local _sh_resolved_json
-                if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major"); then
+                if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major" "$config_file"); then
                     log_error "generate_dockerfile: self-heal resolver failed for $ext_name pg${pg_major} (resolver: $_resolver_path) — cannot determine retained version set"
                     return 1
                 fi
@@ -533,7 +547,7 @@ generate_dockerfile() {
                     local _val_ver
                     while IFS= read -r _val_ver; do
                         [[ -z "$_val_ver" ]] && continue
-                        if ! [[ "$_val_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                        if ! is_strict_semver "$_val_ver"; then
                             log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name is not strict semver — refusing to emit unsafe stage"
                             return 1
                         fi

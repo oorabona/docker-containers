@@ -106,3 +106,88 @@ setup() {
     last=$(echo "$output" | jq -r '.[-1]')
     [[ "$last" == "2.27.1" ]]
 }
+
+# ── XX: config_file parameter — resolver reads from caller-supplied config ────
+
+@test "XX-temp-config: resolve_version_set uses caller-supplied config, not hard-coded default" {
+    # Write a temp config with a DIFFERENT extension at a DIFFERENT ceiling,
+    # using the same resolver path (timescaledb-ha.sh).
+    # Before fix: reads postgres/extensions/config.yaml → returns real timescaledb set.
+    # After fix:  reads temp config → returns single-version fallback (no resolver path
+    #             configured under "myext") or uses the ceiling from the temp config.
+    #
+    # We use a minimal config with ext "myext" at version "9.9.9" and no resolver.
+    # resolve_version_set with the temp config must return ["9.9.9"], NOT the
+    # timescaledb array from the default config.
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  myext:
+    version: "9.9.9"
+    repo: "https://example.com/myext"
+YAMLEOF
+
+    run bash -c "source \"$HELPER\"; resolve_version_set myext 18 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    [[ "$status" -eq 0 ]]
+    # Must return single-version array from the temp config ceiling
+    local ver
+    ver=$(echo "$output" | jq -r '.[0]')
+    [[ "$ver" == "9.9.9" ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 1 ]]
+}
+
+@test "XX-temp-config-ceiling: resolver ceiling is read from caller-supplied config" {
+    # Write a temp config with timescaledb at ceiling 2.25.0 (below the real default 2.27.1).
+    # Use a resolver path pointing to the real timescaledb-ha.sh resolver.
+    # After fix: the ceiling passed to the resolver must be 2.25.0 (from temp config),
+    # so 2.26.x and 2.27.x must be absent from the output.
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    # Point at the real resolver path (relative to project root) with a lower ceiling.
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.25.0"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    [[ "$status" -eq 0 ]]
+    # The ceiling from the temp config is 2.25.0, so 2.26.0+ must be absent.
+    [[ "$output" != *'"2.26.0"'* ]]
+    [[ "$output" != *'"2.27.1"'* ]]
+    # The ceiling itself (2.25.0) must be the last element.
+    local last
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.25.0" ]]
+}
+
+@test "XX-default-fallback: no config_file arg still resolves correctly via default" {
+    # Regression: direct invocation without a config_file must still work correctly
+    # using the implicit default (postgres/extensions/config.yaml).
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
+    [[ "$status" -eq 0 ]]
+    # Must return the full timescaledb set from the default config
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -gt 1 ]]
+    # The default ceiling 2.27.1 must be the last element
+    local last
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+}

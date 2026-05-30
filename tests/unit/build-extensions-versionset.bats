@@ -4916,3 +4916,176 @@ _run_emit_versionset() {
     old_in_available=$(jq '[.available[] | select(. == "2.24.0")] | length' "$artifact")
     [ "$old_in_available" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# YY-1: malformed resolver output (injection-y entries) → fail-closed BEFORE
+#        any build/tag/push. The malformed version must NEVER reach docker.
+#
+# Before fix: _resolve_cached only checks "non-empty JSON array of strings" —
+#   malformed semver strings pass through and flow into build/tag/push.
+# After fix:  each version in the resolved set is validated with is_strict_semver
+#   before the build loop; any non-semver entry → fail-closed (no build).
+# ---------------------------------------------------------------------------
+
+@test "YY-1-malformed-injection: resolver returns injection-y version → fail-closed, never reaches build" {
+    export LOCAL_ONLY=false
+
+    # Resolver returns a set with an injection-y entry (valid-looking + shell metachar).
+    resolve_version_set() {
+        echo '["2.27.1","2.27.0; rm -rf /","latest"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/yy1_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/yy1_tag_calls.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail closed — malformed version must not be allowed through.
+    [ "$status" -ne 0 ]
+
+    # The injection-y version must NEVER have been passed to build or tag.
+    if [ -f "$build_log" ]; then
+        [[ "$(cat "$build_log")" != *"rm -rf"* ]]
+        [[ "$(cat "$build_log")" != *"latest"* ]]
+    fi
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"rm -rf"* ]]
+        [[ "$(cat "$tag_log")" != *"latest"* ]]
+    fi
+}
+
+@test "YY-2-path-traversal: resolver returns ../evil version → fail-closed, never reaches tag" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo '["2.27.1","../evil"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/yy2_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/yy2_tag_calls.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail closed.
+    [ "$status" -ne 0 ]
+
+    # The path-traversal entry must NEVER reach build or tag.
+    if [ -f "$build_log" ]; then
+        [[ "$(cat "$build_log")" != *"../evil"* ]]
+    fi
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"../evil"* ]]
+    fi
+}
+
+@test "YY-3-valid-set-still-builds: fully valid version set still triggers all builds (regression)" {
+    export LOCAL_ONLY=false
+
+    # All valid semver entries — must build all 3.
+    resolve_version_set() {
+        echo '["2.25.0","2.26.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/yy3_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 3 ]
+    [[ "$(cat "$build_log")" == *"ver=2.25.0"* ]]
+    [[ "$(cat "$build_log")" == *"ver=2.26.0"* ]]
+    [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# YY-4: shared is_strict_semver validator — unit tests for the shared function
+#        extracted to helpers/extension-utils.sh.
+# ---------------------------------------------------------------------------
+
+@test "YY-4-is-strict-semver-valid: is_strict_semver accepts standard X.Y.Z versions" {
+    # is_strict_semver must return 0 (true) for canonical semver strings.
+    _source_build_extensions
+
+    for ver in "0.0.1" "1.0.0" "2.27.1" "100.200.300" "0.8.2"; do
+        run bash -c "
+            source \"$HELPERS_DIR/extension-utils.sh\"
+            is_strict_semver '$ver' && echo OK || echo FAIL
+        "
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"OK"* ]]
+    done
+}
+
+@test "YY-4-is-strict-semver-invalid: is_strict_semver rejects non-semver and injection strings" {
+    for ver in "latest" "2.27" "2.27.1-beta" "2.27.1+build" "2.27.0; rm -rf /" "../evil" "" "v2.27.1" "2.27.1.0"; do
+        run bash -c "
+            source \"$HELPERS_DIR/extension-utils.sh\"
+            is_strict_semver '$ver' && echo OK || echo FAIL
+        "
+        # is_strict_semver must return non-zero (FAIL output) for these inputs.
+        [[ "$output" == *"FAIL"* ]]
+    done
+}

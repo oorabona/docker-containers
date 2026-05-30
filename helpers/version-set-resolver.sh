@@ -28,16 +28,20 @@ _EXT_CONFIG="${_HELPER_DIR}/../postgres/extensions/config.yaml"
 resolve_version_set() {
     local ext_name="${1:?ext_name is required}"
     local pg_major="${2:?pg_major is required}"
+    # Optional third argument: path to the extensions config file.
+    # When provided by the caller it takes precedence; falls back to the
+    # module-level default so existing direct invocations keep working.
+    local _config_file="${3:-${_EXT_CONFIG}}"
 
     # Read single version (always present) for fallback; -r (raw output) strips
     # surrounding quotes so yq v4 returns a bare string regardless of version.
     local single_version
-    single_version=$(yq -r ".extensions.${ext_name}.version" "${_EXT_CONFIG}")
+    single_version=$(yq -r ".extensions.${ext_name}.version" "${_config_file}")
 
     # Read optional resolver path; -r ensures the fallback empty string is bare,
     # not a quoted "\"\"" on older yq v4 variants.
     local resolver_path
-    resolver_path=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" "${_EXT_CONFIG}")
+    resolver_path=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" "${_config_file}")
 
     if [[ -z "$resolver_path" ]]; then
         # No resolver configured — return single-version array

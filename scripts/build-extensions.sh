@@ -200,7 +200,7 @@ list_extension_status() {
 
         # Resolve the full version set (cached). On resolver failure degrade
         # to the single ceiling so --list is never blocked by upstream outage.
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             log_warning "$ext: version-set resolver failed — showing ceiling only (LOCAL_ONLY)"
             version_set_json="[\"${ceiling}\"]"
         fi
@@ -383,7 +383,7 @@ handle_pull_only_mode() {
         # (PULL_ONLY=true), where a transient resolver outage must not block a
         # local image fetch. Keep fail-closed for the true publish path (neither
         # flag set).
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             if [[ "$LOCAL_ONLY" == "true" || "$PULL_ONLY" == "true" ]]; then
                 log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (recovery path)"
                 version_set_json="[\"${ceiling}\"]"
@@ -455,7 +455,7 @@ build_tag_push_extensions() {
         # transient upstream outage never blocks a manual rebuild.
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             if [[ "$LOCAL_ONLY" == "true" ]]; then
                 log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
                 version_set_json="[\"$ceiling\"]"
@@ -468,6 +468,35 @@ build_tag_push_extensions() {
 
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
+
+        # Defense-in-depth: validate every resolved version as strict semver
+        # before it reaches a docker tag or a build-arg.  The resolver already
+        # applies a strict regex, but this gate closes the gap at the build
+        # trust boundary (resolver output could be tampered or malformed).
+        # A single non-semver entry causes the entire extension to be skipped /
+        # failed — honoring the same LOCAL_ONLY degrade rules as a resolver failure.
+        local _semver_ok=true
+        local _sv_ver
+        while IFS= read -r _sv_ver; do
+            [[ -z "$_sv_ver" ]] && continue
+            if ! is_strict_semver "$_sv_ver"; then
+                log_error "$ext: resolved version '${_sv_ver}' is not strict semver — refusing to build (injection guard)"
+                _semver_ok=false
+                break
+            fi
+        done < <(echo "$version_set_json" | jq -r '.[]')
+
+        if [[ "$_semver_ok" == "false" ]]; then
+            if [[ "$LOCAL_ONLY" == "true" ]]; then
+                log_warning "$ext: semver validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+                version_set_json="[\"$ceiling\"]"
+                set_size=1
+            else
+                log_error "$ext: semver validation failed — skipping build (fail-closed)"
+                failed+=("$ext")
+                continue
+            fi
+        fi
 
         # Remove stale per-version duration lineage files from any previous run
         # so only this run's files survive for sum_flavor_extension_durations.
@@ -598,7 +627,7 @@ _BUILT_THIS_RUN_DIR="$(mktemp -d)"
 export _BUILT_THIS_RUN_DIR
 
 _resolve_cached() {
-    local ext="$1" major="$2"
+    local ext="$1" major="$2" config_file="${3:-}"
     local cache_file="${_RESOLVER_CACHE_DIR}/${ext}-${major}.json"
 
     if [[ -f "$cache_file" ]]; then
@@ -607,7 +636,7 @@ _resolve_cached() {
     fi
 
     local result
-    result=$(resolve_version_set "$ext" "$major") || return 1
+    result=$(resolve_version_set "$ext" "$major" "${config_file}") || return 1
 
     # Validate: must be a non-empty JSON array where every element is a string.
     # If the resolver exits 0 but emits malformed output or an empty array,
@@ -801,7 +830,7 @@ _should_build_extension() {
     # local recovery path (LOCAL_ONLY=true), degrade to the single ceiling version
     # so a transient upstream outage never blocks a manual rebuild.
     local version_set_json
-    if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+    if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
         if [[ "$LOCAL_ONLY" == "true" ]]; then
             log_warning "$ext: version-set resolver failed — degrading to ceiling $version (LOCAL_ONLY)"
             version_set_json="[\"$version\"]"
@@ -931,7 +960,7 @@ _emit_final_versionset_pass() {
 
         # Use the cache — resolver was already called during the build/filter phase.
         # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             # Resolver failure in the final pass: distinguish publish vs recovery.
             # - Publish path (NOT LOCAL_ONLY and NOT PULL_ONLY): fail-closed —
             #   a required retention artifact cannot be produced; the run must
