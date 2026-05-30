@@ -744,6 +744,54 @@ _should_build_extension() {
     return 1
 }
 
+
+# Write (or refresh) the versionset artifact for a resolver-backed extension
+# using a pure presence-based pass — no build occurs.
+# Args: ext config_file major_ver version_set_json ceiling
+# Does nothing under DRY_RUN or when set_size <= 1.
+_emit_versionset_artifact() {
+    local ext="$1" config_file="$2" major_ver="$3" version_set_json="$4" ceiling="$5"
+
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local set_size
+    set_size=$(echo "$version_set_json" | jq 'length')
+    [[ "$set_size" -le 1 ]] && return 0
+
+    local available_versions=()
+    local excluded_entries=()
+    local ver
+
+    while IFS= read -r ver; do
+        local ver_image
+        ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
+        if ! _image_needs_build "$ver_image"; then
+            available_versions+=("$ver")
+        else
+            excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"not available\"}")
+        fi
+    done < <(echo "$version_set_json" | jq -r '.[]')
+
+    local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+    mkdir -p "${ROOT_DIR}/.build-lineage"
+
+    local available_json excluded_json resolved_json
+    available_json=$(printf '%s\n' "${available_versions[@]+"${available_versions[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+    excluded_json="[$(IFS=,; echo "${excluded_entries[*]+"${excluded_entries[*]}"}")]"
+    resolved_json=$(echo "$version_set_json" | jq '.')
+
+    jq -nc \
+        --arg ext "$ext" \
+        --arg pg_major "$major_ver" \
+        --arg ceiling "$ceiling" \
+        --argjson resolved "$resolved_json" \
+        --argjson available "$available_json" \
+        --argjson excluded "$excluded_json" \
+        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
+        > "$_vs_lineage_file"
+    log_info "Version-set lineage (presence-based): $_vs_lineage_file"
+}
+
 main() {
     parse_args "$@"
 
@@ -774,8 +822,15 @@ main() {
         exit 0
     fi
 
-    # Build mode - determine which extensions to build
+    # Build mode — determine which extensions to build.
+    # For each extension we also track the resolved version set (from the cache)
+    # so that skipped resolver-backed extensions can still emit their versionset
+    # artifact at the end of this function.
     local extensions_to_build=()
+    # Parallel arrays: one entry per extension in scope.
+    local _all_exts=()        # every ext seen in this run
+    local _all_sets=()        # corresponding resolved JSON (or "" for single-ver)
+    local _all_ceilings=()    # corresponding ceiling versions
 
     if [[ -n "$EXTENSION" ]]; then
         # Strict typo check: explicit --extension must have a real Dockerfile
@@ -791,6 +846,14 @@ main() {
             1) : ;;
             *) log_error "$EXTENSION: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
         esac
+        # Capture resolver output for artifact emission below.
+        local _ext_ceiling _ext_vset
+        _ext_ceiling=$(ext_config "$EXTENSION" "version" "$config_file")
+        if _ext_vset=$(_resolve_cached "$EXTENSION" "$major_ver"); then
+            _all_exts+=("$EXTENSION")
+            _all_sets+=("$_ext_vset")
+            _all_ceilings+=("$_ext_ceiling")
+        fi
     else
         while IFS= read -r ext; do
             local _rc=0
@@ -800,6 +863,14 @@ main() {
                 1) : ;;
                 *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
             esac
+            # Capture resolver output (already cached from _should_build_extension).
+            local _ext_ceiling _ext_vset
+            _ext_ceiling=$(ext_config "$ext" "version" "$config_file")
+            if _ext_vset=$(_resolve_cached "$ext" "$major_ver"); then
+                _all_exts+=("$ext")
+                _all_sets+=("$_ext_vset")
+                _all_ceilings+=("$_ext_ceiling")
+            fi
         done < <(list_extensions_by_priority "$config_file" "$major_ver")
     fi
 
@@ -809,6 +880,16 @@ main() {
         else
             log_success "All extensions are up to date"
         fi
+        # Emit versionset artifacts for resolver-backed extensions that were
+        # fully cached (no build needed). This guarantees generate_dockerfile
+        # always has an up-to-date artifact even on incremental CI runs where
+        # every image already exists.
+        local _i
+        for (( _i=0; _i<${#_all_exts[@]}; _i++ )); do
+            _emit_versionset_artifact \
+                "${_all_exts[$_i]}" "$config_file" "$major_ver" \
+                "${_all_sets[$_i]}" "${_all_ceilings[$_i]}"
+        done
         exit 0
     fi
 
