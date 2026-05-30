@@ -3223,3 +3223,237 @@ EOF
     # Versionset artifact must still be present (rewritten by final pass)
     [ -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
 }
+
+# ---------------------------------------------------------------------------
+# LL-1: empty-available artifact must NOT be written.
+#
+# Tests _emit_versionset_artifact directly: when all versions are absent from
+# the registry (available would be []), the writer must skip writing the
+# artifact entirely. An empty-available artifact is HARMFUL: the consumer
+# treats available=[] as "ceiling is guaranteed built" and falls back to a
+# ceiling tag referencing a non-existent image → downstream build fails.
+#
+# RED before fix: artifact written with available=[].
+# GREEN after fix: writer skips write when available is empty.
+# ---------------------------------------------------------------------------
+@test "LL-1: all-absent ext writes NO versionset artifact (available would be empty)" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    # ALL versions absent from registry — available would be [].
+    image_exists_in_registry() { return 1; }
+    export -f image_exists_in_registry
+
+    docker() { return 1; }
+    export -f docker
+
+    local version_set_json='["2.25.0","2.26.0","2.27.1"]'
+    PULL_ONLY=false LOCAL_ONLY=false DRY_RUN=false
+
+    _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
+        "$version_set_json" "2.27.1"
+
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+
+    # available=[] → no ceiling in available → artifact must NOT be written.
+    # RED before fix: file exists with available=[].
+    # GREEN after fix: file absent.
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# LL-2: ceiling-absent from available → artifact NOT written.
+#
+# Some older versions are present in the registry but the ceiling (2.27.1) is
+# NOT in available (registry absent, not in built-this-run). Writing such an
+# artifact misleads the consumer into referencing a ceiling image that doesn't
+# exist.
+#
+# RED before fix: artifact written with ceiling absent from available.
+# GREEN after fix: artifact skipped when ceiling not in available.
+# ---------------------------------------------------------------------------
+@test "LL-2: ceiling-absent from available → NO versionset artifact written" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    # 2.25.0 and 2.26.0 present; ceiling 2.27.1 ABSENT.
+    image_exists_in_registry() {
+        [[ "$1" == *'pg18-2.25.0'* || "$1" == *'pg18-2.26.0'* ]] && return 0 || return 1
+    }
+    export -f image_exists_in_registry
+
+    docker() { return 1; }
+    export -f docker
+
+    local version_set_json='["2.25.0","2.26.0","2.27.1"]'
+    PULL_ONLY=false LOCAL_ONLY=false DRY_RUN=false
+
+    _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
+        "$version_set_json" "2.27.1"
+
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+
+    # available=[2.25.0,2.26.0] — ceiling 2.27.1 NOT in available.
+    # RED before fix: artifact written despite missing ceiling.
+    # GREEN after fix: artifact NOT written.
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# LL-3: useful artifact (available non-empty AND contains ceiling) IS written.
+# Regression guard: the LL fix must not prevent writing when the ceiling IS
+# present in available.
+# ---------------------------------------------------------------------------
+@test "LL-3: useful artifact (available non-empty, ceiling present) IS written (regression guard)" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    # All versions present in registry (including ceiling 2.27.1).
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    docker() { return 1; }
+    export -f docker
+
+    local version_set_json='["2.25.0","2.26.0","2.27.1"]'
+    PULL_ONLY=false LOCAL_ONLY=false DRY_RUN=false
+
+    _emit_versionset_artifact "timescaledb" "$CONFIG_FILE" "18" \
+        "$version_set_json" "2.27.1"
+
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+
+    # Ceiling IS in available → artifact MUST be written.
+    [ -f "$artifact" ]
+
+    # available must include all 3 versions
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    # ceiling field must match
+    local ceiling_field
+    ceiling_field=$(jq -r '.ceiling' "$artifact")
+    [ "$ceiling_field" = "2.27.1" ]
+}
+
+# ---------------------------------------------------------------------------
+# KK-1: scoped cleanup isolation — a scoped (--extension pgvector) all-cached
+# run must NOT delete duration files from OTHER extensions (timescaledb).
+#
+# Scenario: a previous scoped run built timescaledb and wrote
+#   ext-timescaledb-pg18-2.27.1.json (duration file).
+# Then a second scoped run for pgvector is all-cached (nothing to build).
+# The all-cached pre-clean must only clean pgvector's duration files, NOT
+# timescaledb's.
+#
+# RED before fix: all-cached pre-clean iterates ALL extensions → deletes
+#   timescaledb's duration file → sum_flavor_extension_durations under-reports.
+# GREEN after fix: pre-clean scoped to EXTENSION=pgvector → timescaledb file
+#   survives.
+# ---------------------------------------------------------------------------
+@test "KK-1: scoped all-cached run only cleans own extension's duration files, not others'" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create timescaledb duration file from an earlier scoped invocation.
+    local ts_duration="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+    printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","duration_seconds":42,"built_at":"2026-01-01T00:00:00Z"}\n' \
+        > "$ts_duration"
+
+    # Also pre-create a stale pgvector duration file that SHOULD be cleaned.
+    local stale_pv="$lineage_dir/ext-pgvector-pg18-0.7.0.json"
+    printf '{"ext":"pgvector","version":"0.7.0","pg_major":"18","duration_seconds":10}\n' \
+        > "$stale_pv"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
+            else
+                echo '[\"0.8.0\"]'
+            fi
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # pgvector is already in registry (all-cached for pgvector)
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'pgvector'* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        # Scoped to pgvector only; all-cached (pgvector already in registry)
+        main postgres --major-version 18 --extension pgvector
+    "
+
+    [ "$status" -eq 0 ]
+
+    # CORE INVARIANT: timescaledb duration file from the earlier run must SURVIVE.
+    # RED before fix: all-extensions loop deletes it → [ ! -f ts_duration ] = TRUE (bad).
+    # GREEN after fix: scoped cleanup only touches pgvector → ts_duration still present.
+    [ -f "$ts_duration" ]
+
+    # The stale pgvector file SHOULD be cleaned (it belonged to the pgvector scope).
+    [ ! -f "$stale_pv" ]
+}

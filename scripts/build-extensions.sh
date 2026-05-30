@@ -887,6 +887,26 @@ _emit_versionset_artifact() {
         fi
     done < <(echo "$version_set_json" | jq -r '.[]')
 
+    # Gate: only write the artifact when it is USEFUL.
+    # An artifact is useful iff available is non-empty AND contains the ceiling.
+    # An empty available[] or a ceiling-absent artifact misleads the consumer:
+    # it may reference ext-<ext>:pg<major>-<ceiling> which doesn't exist, causing
+    # the downstream postgres build to fail. With no artifact, the consumer's
+    # self-heal path runs (resolve + probe) and correctly fails closed.
+    local _ceiling_in_available=false
+    local _av
+    for _av in "${available_versions[@]+"${available_versions[@]}"}"; do
+        if [[ "$_av" == "$ceiling" ]]; then
+            _ceiling_in_available=true
+            break
+        fi
+    done
+
+    if [[ ${#available_versions[@]} -eq 0 ]] || [[ "$_ceiling_in_available" == "false" ]]; then
+        log_info "$ext: skipping versionset artifact — available is empty or ceiling ($ceiling) not present"
+        return 0
+    fi
+
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
     mkdir -p "${ROOT_DIR}/.build-lineage"
 
@@ -976,17 +996,26 @@ main() {
         else
             log_success "All extensions are up to date"
         fi
-        # Pre-clean stale per-version duration files for every resolver-backed
-        # extension before the final versionset pass.  On an all-cached run
-        # build_tag_push_extensions is never called, so the cleanup that lives
-        # at the top of that function never runs — do it here instead.
+        # Pre-clean stale per-version duration files before the final versionset pass.
+        # On an all-cached run build_tag_push_extensions is never called, so the
+        # cleanup that lives at the top of that function never runs — do it here instead.
         # This ensures sum_flavor_extension_durations sees 0 (no new builds),
         # not stale durations from a previous run.
-        local _pre_clean_ext
-        while IFS= read -r _pre_clean_ext; do
-            [[ -z "$_pre_clean_ext" ]] && continue
-            _cleanup_stale_duration_files "$_pre_clean_ext" "$major_ver"
-        done < <(list_extensions_by_priority "$config_file" "$major_ver")
+        #
+        # Scoping rule: when $EXTENSION is set (scoped run), only clean that
+        # extension's duration files.  Cleaning other extensions' files on a
+        # scoped run would destroy duration data written by an earlier scoped
+        # invocation in the same job (before artifact upload) and cause
+        # sum_flavor_extension_durations to under-report (DEFECT KK).
+        if [[ -n "$EXTENSION" ]]; then
+            _cleanup_stale_duration_files "$EXTENSION" "$major_ver"
+        else
+            local _pre_clean_ext
+            while IFS= read -r _pre_clean_ext; do
+                [[ -z "$_pre_clean_ext" ]] && continue
+                _cleanup_stale_duration_files "$_pre_clean_ext" "$major_ver"
+            done < <(list_extensions_by_priority "$config_file" "$major_ver")
+        fi
 
         # Final pass: emit presence-based versionset artifacts for all in-scope
         # resolver-backed extensions (resolver results are already cached from
