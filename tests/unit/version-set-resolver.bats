@@ -87,3 +87,21 @@ setup() {
     # pg17 floor is 2.17.0, not 2.23.0
     [[ "$first" == "2.17.0" ]]
 }
+
+# ── CEILING_VERSION clamps resolver output ────────────────────────────────────
+
+@test "above-ceiling version excluded when CEILING_VERSION is exported" {
+    # Fixture contains 2.28.0 which is above the pinned ceiling of 2.27.1.
+    # resolve_version_set must NOT include 2.28.0 in its output.
+    TS_ABOVE_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ts-tags-above-ceiling.txt"
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _RESOLVER_TS_TAGS_FIXTURE="$TS_ABOVE_FIXTURE" \
+        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
+    [[ "$status" -eq 0 ]]
+    # 2.28.0 must NOT appear in the output
+    [[ "$output" != *'"2.28.0"'* ]]
+    # The ceiling version itself (2.27.1) must be the last element
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+}

@@ -433,6 +433,71 @@ _count_log_lines() {
 # build_tag_push_extensions consume the result.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test 8: resolver failure is fatal — not silently degraded to single-version
+# ---------------------------------------------------------------------------
+
+@test "resolver-failure-fatal: resolver non-zero exit causes build failure, not silent fallback" {
+    # Mock resolve_version_set to return non-zero (simulates API outage / resolver bug).
+    # This extension HAS a resolver configured (timescaledb in config.yaml).
+    # With the bug: build exits 0 and builds only the ceiling version.
+    # With the fix: build exits non-zero and logs an error; no build occurs.
+    #
+    # NOTE: build-extensions.sh installs a trap "rm -rf ..." EXIT at source time
+    # (via _RESOLVER_CACHE_DIR). That overwrites bats' EXIT trap, so assertions
+    # that fail under set -e silently kill the test instead of printing "not ok".
+    # To avoid this: capture the function's exit code via a subshell ($()),
+    # then assert with || (no set -e abort on the assertion line itself).
+    local build_log="$TEST_TEMP_DIR/rfatal_build_calls.log"
+
+    resolve_version_set() {
+        echo "::error::simulated resolver failure" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    # build-extensions.sh registers a trap EXIT (for _RESOLVER_CACHE_DIR cleanup)
+    # during setup(), which overwrites bats' own EXIT trap. Restore it here so
+    # that failing assertions below are properly reported as "not ok" instead of
+    # silently killing the test process under set -e.
+    # shellcheck disable=SC2064
+    trap "bats_teardown_trap as-exit-trap" EXIT
+
+    # Capture exit code via run (disables set -e around the call).
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+    local actual_status="$status"
+
+    # Must fail (fail-closed), not silently succeed.
+    [ "$actual_status" -ne 0 ]
+
+    # Must NOT have built any version (no silent fallback to ceiling).
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# M1: resolver call-count — resolve_version_set called AT MOST ONCE per
+# (ext, pg_major) even though both _should_build_extension and
+# build_tag_push_extensions consume the result.
+# ---------------------------------------------------------------------------
+
 @test "resolver-call-count: resolve_version_set called exactly once per (ext,major) across filter+build" {
     local counter_file="$TEST_TEMP_DIR/resolver_call_count"
     printf '0' > "$counter_file"

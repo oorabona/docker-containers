@@ -53,7 +53,9 @@ resolve_version_set() {
         return 1
     fi
 
-    # Invoke resolver with env contract; propagate rc
-    EXT_NAME="$ext_name" PG_MAJOR="$pg_major" \
+    # Invoke resolver with env contract; propagate rc.
+    # CEILING_VERSION bounds the resolver to the pinned config version so that
+    # upstream tags published above it are excluded (see #558).
+    EXT_NAME="$ext_name" PG_MAJOR="$pg_major" CEILING_VERSION="$single_version" \
         "${abs_resolver}"
 }

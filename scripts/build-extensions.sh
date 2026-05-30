@@ -394,10 +394,16 @@ build_tag_push_extensions() {
         local _ext_start=$SECONDS
 
         # Resolve ceiling (single configured version) and the full version set.
+        # A non-zero return from _resolve_cached means the resolver script failed
+        # (network/API/binary error) — NOT a no-resolver extension (which returns
+        # exit 0 with a single-element array). Fail-closed: skip the build and
+        # mark this extension as failed so the overall run exits non-zero (#558).
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
-        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" 2>/dev/null); then
-            version_set_json="[\"${ceiling}\"]"
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+            log_error "$ext: version-set resolver failed — skipping build"
+            failed+=("$ext")
+            continue
         fi
 
         local set_size
@@ -598,10 +604,13 @@ _should_build_extension() {
     version=$(ext_config "$ext" "version" "$config_file")
     image=$(ext_image_name "$ext" "$version" "$major_ver")
 
-    # Resolve the full version set (cached); fall back to single version on error.
+    # Resolve the full version set (cached). A non-zero return from _resolve_cached
+    # means the resolver script failed — NOT a no-resolver extension (which returns
+    # exit 0). Propagate the failure so the caller can handle it as a hard error.
     local version_set_json
-    if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" 2>/dev/null); then
-        version_set_json="[\"${version}\"]"
+    if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+        log_error "$ext: version-set resolver failed in pre-filter check"
+        return 2
     fi
 
     # Single-version path: preserve exact existing log strings for the 8-case tests.
