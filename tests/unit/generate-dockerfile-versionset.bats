@@ -1331,6 +1331,137 @@ _run_registry_probe_3state() {
 #   with actionable "jq is required" message.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ZZ: skopeo absent on PATH + self-heal required → explicit fail-fast.
+#
+# generate_dockerfile self-heals a missing/malformed versionset artifact by
+# calling resolve_version_set(), which runs skopeo list-tags. skopeo is
+# installed in CI but not necessarily on a local dev machine. A local
+# `./make build postgres` with FLAVOR=timeseries|full, when the versionset
+# artifact is absent, must fail fast with a clear actionable message — not
+# with an opaque "skopeo: command not found" deep in the resolver.
+#
+# The fix is NARROW: skopeo check fires ONLY when the self-heal branch
+# is taken (artifact absent or malformed → must re-resolve). When a valid
+# versionset artifact is present, generate_dockerfile consumes it without
+# skopeo — the check must NOT fire in that path.
+#
+# ZZ-skopeo-absent-selfheal-failfast:
+#   NO versionset artifact (forces self-heal) + skopeo shadowed off PATH
+#   (jq present) → generate_dockerfile fails fast (non-zero) with a message
+#   containing "skopeo". The resolver is NOT reached (mock to verify).
+#   RED before fix: opaque downstream "skopeo: command not found" from resolver.
+#   GREEN after fix: explicit fail-fast at the prereq check, "skopeo" in message.
+#
+# ZZ-skopeo-absent-valid-artifact-ok:
+#   A VALID versionset artifact present + skopeo shadowed off PATH (jq present)
+#   → generate_dockerfile SUCCEEDS, skopeo is never needed.
+#   This proves the fix does NOT over-impose skopeo on the valid-artifact path.
+#   RED before fix: n/a (valid-artifact path never used skopeo — stays green).
+#   GREEN after fix: still succeeds with multi-version COPY output (non-vacuous).
+# ---------------------------------------------------------------------------
+
+@test "ZZ-skopeo-absent-selfheal-failfast: no artifact + skopeo absent → fail-fast with 'skopeo' in message (resolver NOT reached)" {
+    # No versionset artifact — forces the self-heal branch.
+    # skopeo is shadowed off PATH; jq remains available.
+    local tmpd="$TEST_TEMP_DIR"
+
+    local fake_bin
+    fake_bin=$(mktemp -d)
+    # Populate fake_bin with everything extension-utils.sh needs EXCEPT skopeo.
+    for _tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find; do
+        local _real_path
+        _real_path=$(command -v "$_tool" 2>/dev/null || true)
+        [[ -z "$_real_path" ]] && continue
+        ln -sf "$_real_path" "$fake_bin/$_tool"
+    done
+    # Explicitly ensure there is no skopeo in fake_bin.
+    rm -f "$fake_bin/skopeo"
+
+    # resolve_version_set must NOT be reached — use a mock that fails loudly
+    # if called, so any pre-fix code path that reaches the resolver is caught.
+    run bash --noprofile --norc -c "
+        export PATH=\"$fake_bin\"
+        export ROOT_DIR=\"$tmpd\"
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() {
+            echo 'resolve_version_set_was_reached' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+    rm -rf "$fake_bin"
+
+    # Must fail fast (non-zero) before the resolver is reached.
+    [ "$status" -ne 0 ]
+
+    # Message must contain 'skopeo' so the operator knows what to install.
+    [[ "$output" == *skopeo* ]]
+
+    # Resolver must NOT have been reached (the fix intercepts before calling it).
+    [[ "$output" != *resolve_version_set_was_reached* ]]
+}
+
+@test "ZZ-skopeo-absent-valid-artifact-ok: valid artifact present + skopeo absent → succeeds (skopeo never needed)" {
+    # A valid, well-formed versionset artifact is on disk — self-heal must NOT fire.
+    # skopeo is shadowed off PATH to prove the valid-artifact path does not touch it.
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    local tmpd="$TEST_TEMP_DIR"
+
+    local fake_bin
+    fake_bin=$(mktemp -d)
+    # Include all tools that the valid-artifact path of generate_dockerfile needs.
+    for _tool in bash sh jq yq git sed grep sort tail tr paste cut awk dirname pwd realpath wc find; do
+        local _real_path
+        _real_path=$(command -v "$_tool" 2>/dev/null || true)
+        [[ -z "$_real_path" ]] && continue
+        ln -sf "$_real_path" "$fake_bin/$_tool"
+    done
+    rm -f "$fake_bin/skopeo"
+
+    run bash --noprofile --norc -c "
+        export PATH=\"$fake_bin\"
+        export ROOT_DIR=\"$tmpd\"
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+    rm -rf "$fake_bin"
+
+    # Must succeed — valid artifact requires no skopeo.
+    [ "$status" -eq 0 ]
+
+    # Must produce 3 multi-version FROM stages (non-vacuous: proves artifact was consumed).
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+
+    # All three version-specific COPY pairs must be present.
+    echo "$output" | grep -q "/tmp/ext/timescaledb/2.23.0/extension/"
+    echo "$output" | grep -q "/tmp/ext/timescaledb/2.25.0/extension/"
+    echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/extension/"
+}
+
 @test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
     # Write a valid versionset artifact so the test verifies the prereq path,
     # not the artifact-absent self-heal path.
