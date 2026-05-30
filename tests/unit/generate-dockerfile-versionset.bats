@@ -251,23 +251,40 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: available=[] in artifact → falls back to SINGLE ceiling version
-# (NOT to .resolved[]).
+# Test 4: available=[] in artifact → SELF-HEAL (operator-aligned contract).
 #
-# Rationale: .resolved[] may contain versions that were never built (musl-failed
-# or simply absent from the registry); COPYing from nonexistent images causes
-# the final build to fail. The ONLY version guaranteed to exist is the ceiling
-# (ceiling-fatal: build aborts if ceiling fails). So the correct fallback when
-# available=[] is the single pinned/ceiling version from config, NOT resolved[].
+# Rationale: build-extensions NEVER writes an empty-available artifact — only
+# non-empty artifacts with a ceiling are written.  An on-disk available:[] is
+# therefore STALE or FOREIGN.  Treating it as absent and routing to self-heal
+# is the correct behaviour: resolve + probe to compute the real set, emit
+# multi-version stages when images are present, fail closed otherwise.
 #
-# RED before fix: code falls back to .resolved[] → 2 FROM stages.
-# GREEN after fix: code falls back to single ceiling → 1 FROM stage.
+# This is NOT a weakening — it is tightening the contract.  The previous
+# single-version ceiling fallback was incorrect: it silently emitted a
+# below-history image from a foreign artifact rather than computing the real
+# retained set.
+#
+# RED before fix: code falls through to single-version path (1 FROM stage).
+# GREEN after fix: empty available treated as absent → self-heal →
+#   resolver+registry probed → multi-version stages emitted (3 FROM stages).
+#
+# Operator-aligned: empty available is never legitimately written; treating
+# it as stale/absent and self-healing (rather than silently degrading to
+# single-version) is the correct production contract.
 # ---------------------------------------------------------------------------
-@test "empty-available: artifact with available=[] falls back to single ceiling version, NOT resolved[]" {
-    # Artifact: available empty, resolved has 2 entries (2.23.0 never built, 2.27.1 = ceiling)
+@test "empty-available: artifact with available=[] triggers self-heal, NOT single-version fallback" {
+    # Artifact: valid JSON, available empty (stale/foreign by design).
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.27.1"],"available":[],"excluded":[{"version":"2.23.0","reason":"build failed"},{"version":"2.27.1","reason":"not available"}]}
 EOF
+
+    # Self-heal mocks: resolver returns the full set; all images are present.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -275,20 +292,41 @@ EOF
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
+    # Must self-heal to multi-version (NOT single-version ceiling fallback).
+    # RED before fix: exits 0 with 1 FROM stage (single-version).
+    # GREEN after fix: exits 0 with 3 FROM stages (multi-version from self-heal).
     [ "$status" -eq 0 ]
 
-    # Must fall back to the SINGLE ceiling version (2.27.1), NOT the full resolved[].
-    # Before fix: falls back to resolved[] → 2 stages (RED).
-    # After fix:  falls back to ceiling config version → 1 stage, flat COPYs (GREEN).
     local from_count
     from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
-    [ "$from_count" -eq 1 ]
+    [ "$from_count" -eq 3 ]
 
-    # Must use the ceiling version tag (2.27.1 from config .version)
-    echo "$output" | grep -q "ext-timescaledb:pg18-2.27.1"
+    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+}
 
-    # Must NOT produce a versioned-subdir COPY path (falls back to single-version flat path)
-    ! echo "$output" | grep -q "/tmp/ext/timescaledb/2\."
+@test "empty-available: artifact with available=[] + resolver fails → fail closed" {
+    # Empty available artifact, resolver also fails — must fail closed (not single-version).
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.27.1"],"available":[],"excluded":[]}
+EOF
+
+    resolve_version_set() {
+        echo "::error::simulated resolver failure" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 (1 FROM stage, single-version).
+    # GREEN after fix: exits non-zero (fail closed — empty treated as stale → self-heal → resolver fails).
+    [ "$status" -ne 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -771,4 +809,105 @@ EOF
     local from_count
     from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
     [ "$from_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------------------
+# LEAK-1: self-heal path must NOT leave orphaned temp files in TMPDIR.
+#
+# Before fix: mktemp creates a synthetic artifact in /tmp; the function
+# returns through multiple paths without ever deleting it → temp file leaks
+# on every self-heal invocation (CI retries, skip-extensions builds,
+# local builds).
+#
+# After fix (no-temp-file refactor): self-heal synthesises the available set
+# into a shell variable; no temp file is created at all → nothing to leak.
+#
+# Test strategy: point TMPDIR at a controlled directory before calling
+# generate_dockerfile; assert it is empty after the call returns.  RED
+# before fix (a .json temp file lingers), GREEN after (directory empty).
+# ---------------------------------------------------------------------------
+@test "LEAK-1-no-tempfile: self-heal path leaves no orphaned temp file in TMPDIR" {
+    # No versionset artifact → triggers self-heal path.
+    # Mocks: resolver succeeds, all images present.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    # Use a dedicated temp dir so we can assert it is empty after the call.
+    local controlled_tmp
+    controlled_tmp=$(mktemp -d)
+    local saved_tmpdir="${TMPDIR:-}"
+    export TMPDIR="$controlled_tmp"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Restore TMPDIR before any assertions so teardown is unaffected.
+    if [[ -n "$saved_tmpdir" ]]; then
+        export TMPDIR="$saved_tmpdir"
+    else
+        unset TMPDIR
+    fi
+
+    # generate_dockerfile must succeed (self-heal works).
+    [ "$status" -eq 0 ]
+
+    # The controlled tmp dir must contain NO files after the call — the
+    # self-heal path must not have left any orphaned temp file.
+    # RED before fix: a synthetic artifact lingers in $controlled_tmp.
+    # GREEN after fix: dir is empty.
+    local leftover_count
+    leftover_count=$(find "$controlled_tmp" -maxdepth 1 -type f | wc -l)
+    rm -rf "$controlled_tmp"
+    [ "$leftover_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# LEAK-2: self-heal via empty-available artifact also leaves no temp file.
+#
+# Same leak vector but triggered via the empty-available → self-heal path
+# (the second route into self-heal added in this fix).
+# ---------------------------------------------------------------------------
+@test "LEAK-2-empty-available-no-tempfile: empty-available self-heal leaves no temp file in TMPDIR" {
+    # Empty available artifact → triggers self-heal.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":[],"available":[],"excluded":[]}
+EOF
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    local controlled_tmp
+    controlled_tmp=$(mktemp -d)
+    local saved_tmpdir="${TMPDIR:-}"
+    export TMPDIR="$controlled_tmp"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    if [[ -n "$saved_tmpdir" ]]; then
+        export TMPDIR="$saved_tmpdir"
+    else
+        unset TMPDIR
+    fi
+
+    [ "$status" -eq 0 ]
+
+    local leftover_count
+    leftover_count=$(find "$controlled_tmp" -maxdepth 1 -type f | wc -l)
+    rm -rf "$controlled_tmp"
+    [ "$leftover_count" -eq 0 ]
 }

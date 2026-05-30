@@ -319,17 +319,29 @@ generate_dockerfile() {
             #      as the artifact-present fast path.
             #   4. If available is empty or ceiling is absent → fail closed.
             #
-            # Malformedness check: artifact must be parseable JSON with an .available array.
-            # jq -e exits non-zero on parse error OR when the expression evaluates to false.
+            # Malformedness check: artifact must be parseable JSON with a non-empty
+            # .available array.  jq -e exits non-zero on parse error OR when the
+            # expression evaluates to false/null.
+            # An artifact with available:[] is treated as malformed (stale/foreign):
+            # build-extensions never writes an empty-available artifact, so an on-disk
+            # available:[] is necessarily stale → route to self-heal just like a
+            # missing or truncated artifact.
             local _artifact_valid=0
             if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
-                jq -e 'type == "object" and has("available") and (.available | type) == "array"' \
+                jq -e 'type == "object" and has("available") and (.available | type) == "array" and (.available | length) > 0' \
                     "$versionset_file" > /dev/null 2>&1 && _artifact_valid=1
             fi
 
+            # _versionset_json holds the JSON source for the multi-version emission
+            # logic below.  It is populated either by the self-heal path (shell
+            # variable, no temp file) or by reading the on-disk artifact.  The
+            # downstream block reads exclusively from this variable — no temp files
+            # are created or left behind.
+            local _versionset_json=""
+
             if [[ -n "$_resolver_path" ]] && { [[ ! -f "$versionset_file" ]] || [[ "$_artifact_valid" -eq 0 ]]; }; then
                 if [[ "$_artifact_valid" -eq 0 ]] && [[ -f "$versionset_file" ]]; then
-                    log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed or missing .available array — treating as absent, triggering self-heal"
+                    log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed, missing .available array, or has empty available[] — treating as absent, triggering self-heal"
                 fi
                 local _sh_resolved_json
                 if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major"); then
@@ -360,28 +372,24 @@ generate_dockerfile() {
                     return 1
                 fi
 
-                # Build the on-the-fly versionset JSON and write to versionset_file variable
-                # so the existing artifact-present path below handles it transparently.
+                # Synthesise the versionset JSON into a shell variable — no temp file.
+                # The downstream emission block reads _versionset_json directly.
                 local _sh_avail_json
                 _sh_avail_json=$(printf '%s\n' "${_sh_available[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')
-                # Write to a temp variable consumed by injecting into versionset_file path logic.
-                # We construct a synthetic artifact in a temp file and point versionset_file at it.
-                local _sh_tmp_artifact
-                _sh_tmp_artifact=$(mktemp)
-                jq -nc \
+                _versionset_json=$(jq -nc \
                     --arg ext "$ext_name" \
                     --arg pg_major "$pg_major" \
                     --arg ceiling "$ext_version" \
                     --argjson resolved "$_sh_resolved_json" \
                     --argjson available "$_sh_avail_json" \
-                    '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:[]}' \
-                    > "$_sh_tmp_artifact"
-                versionset_file="$_sh_tmp_artifact"
+                    '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:[]}')
+            elif [[ -f "$versionset_file" ]] && [[ "$_artifact_valid" -eq 1 ]] && command -v jq &>/dev/null; then
+                _versionset_json=$(< "$versionset_file")
             fi
 
-            if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
+            if [[ -n "$_versionset_json" ]] && command -v jq &>/dev/null; then
                 local available_count
-                available_count=$(jq '.available | length' "$versionset_file" 2>/dev/null || echo 0)
+                available_count=$(echo "$_versionset_json" | jq '.available | length' 2>/dev/null || echo 0)
 
                 if [[ "$available_count" -gt 0 ]]; then
                     # Fail-closed: the configured ceiling version must be present in
@@ -389,11 +397,11 @@ generate_dockerfile() {
                     # due to a ceiling-fatal error), shipping an older-only image
                     # would silently violate the pinned version — abort instead.
                     local ceiling_in_available
-                    ceiling_in_available=$(jq --arg ceiling "$ext_version" \
+                    ceiling_in_available=$(echo "$_versionset_json" | jq --arg ceiling "$ext_version" \
                         '[.available[] | select(. == $ceiling)] | length' \
-                        "$versionset_file" 2>/dev/null || echo 0)
+                        2>/dev/null || echo 0)
                     if [[ "$ceiling_in_available" -eq 0 ]]; then
-                        log_error "generate_dockerfile: ceiling $ext_version for $ext_name is absent from available[] in $versionset_file — refusing to emit below-pin image"
+                        log_error "generate_dockerfile: ceiling $ext_version for $ext_name is absent from available[] — refusing to emit below-pin image"
                         return 1
                     fi
 
@@ -418,11 +426,11 @@ generate_dockerfile() {
                             log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name exceeds ceiling ${ext_version} — refusing to emit above-pin stage"
                             return 1
                         fi
-                    done < <(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)
+                    done < <(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     # Multi-version path: emit one FROM+COPY pair per available version.
                     local raw_versions
-                    raw_versions=$(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)
+                    raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
                         # Sort ascending (sort -V handles semver ordering)
@@ -448,10 +456,6 @@ generate_dockerfile() {
                         continue
                     fi
                 fi
-                # Artifact exists but available=[] — fall through to single-version path
-                # using the pinned ceiling (ext_version) which is guaranteed built
-                # (ceiling-fatal).  Do NOT fall back to .resolved[] as that may
-                # include versions that were never built (musl-failed / absent).
             fi
 
             # Single-version path (no versionset artifact, or jq unavailable):
