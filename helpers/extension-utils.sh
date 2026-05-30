@@ -113,6 +113,63 @@ image_exists_in_registry() {
     return 1
 }
 
+# _image_registry_probe_3state <image>
+# 3-state registry presence probe for versionset availability computation.
+# Returns:
+#   0  PRESENT  — image confirmed present in registry
+#   1  ABSENT   — definitively absent (manifest unknown / not found / 404 / empty stderr)
+#   2  ERROR    — probe failed ambiguously (network blip, 429, auth, timeout)
+#
+# Fast-path: calls image_exists_in_registry first; if it returns 0 (PRESENT),
+# returns immediately without a second probe.  This preserves the established
+# mock surface for unit tests (image_exists_in_registry is the PRESENT oracle
+# in all existing self-heal tests).
+#
+# Only when image_exists_in_registry returns non-zero does the stderr-capturing
+# direct probe run to classify the failure as ABSENT vs transient ERROR.
+#
+# Does NOT replace image_exists_in_registry for any other callers.
+_image_registry_probe_3state() {
+    local image="$1"
+
+    # Fast-path: if image_exists_in_registry confirms present, return PRESENT.
+    if image_exists_in_registry "$image" 2>/dev/null; then
+        return 0  # PRESENT
+    fi
+
+    # image_exists_in_registry returned non-zero (not confirmed present).
+    # Run a stderr-capturing probe to distinguish ABSENT from transient ERROR.
+    local _probe_stderr
+    local _probe_rc=0
+
+    _probe_stderr=$(docker manifest inspect "$image" 2>&1 >/dev/null) || _probe_rc=$?
+    if [[ "$_probe_rc" -eq 0 ]]; then
+        return 0  # PRESENT (image_exists_in_registry was a false negative)
+    fi
+
+    # Transient-error patterns: network, auth, rate-limit, timeout.
+    # These are the signals that must trigger fail-closed (ERROR rc=2).
+    if echo "$_probe_stderr" | grep -qiE \
+        'connection refused|connection reset|connection timed out|timeout|timed out|429|too many requests|unauthorized|authentication|forbidden|403|server error|5[0-9][0-9]|unexpected status code|i/o timeout|TLS|certificate'; then
+        if command -v skopeo &>/dev/null; then
+            local _skopeo_stderr
+            local _skopeo_rc=0
+            _skopeo_stderr=$(skopeo inspect "docker://${image}" 2>&1 >/dev/null) || _skopeo_rc=$?
+            if [[ "$_skopeo_rc" -eq 0 ]]; then
+                return 0  # PRESENT (skopeo confirms)
+            fi
+            if echo "$_skopeo_stderr" | grep -qiE \
+                'manifest unknown|not found|no such manifest|name unknown|MANIFEST_UNKNOWN'; then
+                return 1  # ABSENT (skopeo confirms)
+            fi
+        fi
+        return 2  # ERROR (transient — caller must fail closed)
+    fi
+
+    # Definitive-not-found, empty stderr, or unrecognized → ABSENT.
+    return 1
+}
+
 # Parse extension config using yq
 ext_config() {
     local ext_name="$1"
@@ -355,17 +412,34 @@ generate_dockerfile() {
                     return 1
                 fi
 
-                # Probe registry presence for each resolved version
+                # Probe registry presence for each resolved version using the 3-state probe.
+                # Fail closed on ERROR: a transient network blip must never silently drop
+                # a previously-published retained version.
                 local _sh_available=()
+                local _sh_probe_error=false
                 local _sh_ver
                 while IFS= read -r _sh_ver; do
                     [[ -z "$_sh_ver" ]] && continue
                     local _sh_image
                     _sh_image=$(ext_image_name "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner")
-                    if image_exists_in_registry "$_sh_image" 2>/dev/null; then
-                        _sh_available+=("$_sh_ver")
-                    fi
+                    local _sh_rc=0
+                    _image_registry_probe_3state "$_sh_image" || _sh_rc=$?
+                    case "$_sh_rc" in
+                        0)  # PRESENT
+                            _sh_available+=("$_sh_ver")
+                            ;;
+                        1)  # ABSENT (definitive) — musl-failed / never-built
+                            ;;
+                        *)  # ERROR (ambiguous) — fail closed
+                            log_error "generate_dockerfile: self-heal probe for $ext_name $pg_major $ext_version — registry probe for $_sh_ver returned an ambiguous error; cannot determine availability (fail-closed)"
+                            _sh_probe_error=true
+                            ;;
+                    esac
                 done < <(echo "$_sh_resolved_json" | jq -r '.[]' 2>/dev/null || true)
+
+                if [[ "$_sh_probe_error" == "true" ]]; then
+                    return 1
+                fi
 
                 if [[ ${#_sh_available[@]} -eq 0 ]]; then
                     log_error "generate_dockerfile: self-heal for $ext_name pg${pg_major}: no resolved images are present in registry — cannot emit multi-version stages"

@@ -911,3 +911,109 @@ EOF
     rm -rf "$controlled_tmp"
     [ "$leftover_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# NN-3: transient probe ERROR in self-heal path → fail closed.
+#
+# Scenario: no versionset artifact on disk; resolver succeeds and returns
+# ["2.23.0","2.25.0","2.27.1"]. The self-heal probes registry presence:
+#   - 2.27.1 (ceiling): PRESENT  (rc=0)
+#   - 2.25.0:           PRESENT  (rc=0)
+#   - 2.23.0:           ERROR    (transient — rc=2, not a definitive not-found)
+#
+# Before fix (fail-OPEN): 2.23.0 treated as absent → self-heal proceeds with
+#   available=["2.25.0","2.27.1"] — silently drops a published retained version.
+#
+# After fix (fail-CLOSED): probe error on any version → generate_dockerfile
+#   returns non-zero (fail closed), no Dockerfile emitted.
+#
+# Mock strategy: _image_registry_probe_3state is mocked directly to return
+# the desired 3-state code per version, isolating the self-heal routing logic
+# from the low-level docker/skopeo probe.
+# ---------------------------------------------------------------------------
+@test "NN-3: transient probe error in self-heal path fails closed (generate_dockerfile exits non-zero)" {
+    # No versionset artifact — forces the self-heal path.
+
+    # Resolver returns 3 versions.
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # _image_registry_probe_3state mock (3-state):
+    #   - 2.27.1: PRESENT (rc=0)
+    #   - 2.25.0: PRESENT (rc=0)
+    #   - 2.23.0: ERROR   (rc=2, transient — no definitive not-found signal)
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.27.1*) return 0 ;;
+            *pg18-2.25.0*) return 0 ;;
+            *pg18-2.23.0*) return 2 ;;  # ERROR (transient)
+            *)             return 1 ;;
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 with only 2 FROM stages (2.23.0 silently dropped).
+    # GREEN after fix: exits non-zero (fail-closed; transient error must not drop a version).
+    [ "$status" -ne 0 ]
+
+    # Secondary: if it exited 0 (pre-fix behavior), it must NOT have 2 stages
+    # (2 = the exactly-wrong fail-open behavior that drops 2.23.0).
+    if [ "$status" -eq 0 ]; then
+        local from_count
+        from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+        [ "$from_count" -eq 3 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# NN-3b (regression): definitively absent version in self-heal path is correctly
+# excluded. rc=1 from _image_registry_probe_3state is treated as ABSENT, not ERROR.
+# The over-correct guard — ensures we didn't break the musl-failed / never-built case.
+# ---------------------------------------------------------------------------
+@test "NN-3b: definitively absent version in self-heal path is excluded, not an error" {
+    # No versionset artifact — forces the self-heal path.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # _image_registry_probe_3state mock:
+    #   - 2.27.1: PRESENT  (rc=0)
+    #   - 2.25.0: PRESENT  (rc=0)
+    #   - 2.23.0: ABSENT   (rc=1 — definitive not-found, musl-failed)
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.27.1*) return 0 ;;
+            *pg18-2.25.0*) return 0 ;;
+            *pg18-2.23.0*) return 1 ;;  # definitively absent
+            *)             return 1 ;;
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Definitively absent is the musl-failed / never-built case: must succeed.
+    [ "$status" -eq 0 ]
+
+    # Must produce 2 FROM stages (2.25.0 and 2.27.1 — 2.23.0 correctly excluded).
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 2 ]
+
+    # Ceiling 2.27.1 must be present
+    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+}

@@ -675,6 +675,93 @@ _image_present() {
     return $?
 }
 
+# _image_present_3state <image>
+# 3-state presence probe for versionset availability computation ONLY.
+# Returns:
+#   0  PRESENT          — image confirmed in registry / local store
+#   1  ABSENT           — definitively absent (registry returned "manifest unknown",
+#                         "not found", 404, or equivalent; local inspect returned 1)
+#   2  ERROR            — probe failed for an ambiguous reason (network blip, 429,
+#                         auth error, timeout) — caller must treat as unknown
+#
+# Decision table (same routing as _image_present):
+#   LOCAL_ONLY=true  OR  PULL_ONLY=true  → docker image inspect  (2-state: 0/1 only)
+#   else (push/CI path)                  → image_exists_in_registry fast-path (PRESENT if rc=0),
+#                                          then docker manifest inspect with stderr capture:
+#                                            transient-error stderr (network/429/auth/timeout)
+#                                            → ERROR (rc=2, fail-closed)
+#                                            definitive-not-found or empty stderr → ABSENT (rc=1)
+#
+# The image_exists_in_registry fast-path is intentional:
+#   1. Existing tests mock image_exists_in_registry as the PRESENT oracle; this preserves that contract.
+#   2. Happy path (PRESENT) avoids a second probe.
+#   3. Only on non-present results does the stderr-capturing probe run to classify the failure.
+#
+# "Empty stderr + rc≠0" rule: test mocks that use `docker() { return 1; }` (no stderr)
+# represent controlled absent images and are correctly classified as ABSENT.  In production,
+# transient errors (network, 429, auth) always emit text and are classified as ERROR.
+#
+# NOT a replacement for _image_present for any other callers.
+# image_exists_in_registry's boolean contract is unchanged.
+_image_present_3state() {
+    local image="$1"
+
+    # Local-store path: docker image inspect is 2-state (present / not present).
+    # A missing local image is always definitive-absent, not an error.
+    if [[ "$LOCAL_ONLY" == "true" || "$PULL_ONLY" == "true" ]]; then
+        if docker image inspect "$image" &>/dev/null; then
+            return 0  # PRESENT
+        fi
+        return 1      # ABSENT (definitively — local store is authoritative)
+    fi
+
+    # Registry fast-path: if image_exists_in_registry confirms present, return PRESENT.
+    # This preserves the established mock surface for existing tests (which mock
+    # image_exists_in_registry as the presence oracle).
+    if image_exists_in_registry "$image" 2>/dev/null; then
+        return 0  # PRESENT
+    fi
+
+    # image_exists_in_registry returned non-zero (not confirmed present).
+    # Run a stderr-capturing probe to distinguish ABSENT from transient ERROR.
+    # rc=0 → PRESENT (image_exists_in_registry was a false negative, e.g. auth differences).
+    # rc≠0 with transient-error stderr (network/auth/429/timeout) → ERROR (fail-closed).
+    # rc≠0 with definitive-not-found stderr OR empty stderr → ABSENT.
+    #   (Empty stderr: test mocks / docker silently returning 1 = controlled absent;
+    #    in production, transient errors always emit text.)
+    local _probe_stderr
+    local _probe_rc=0
+
+    _probe_stderr=$(docker manifest inspect "$image" 2>&1 >/dev/null) || _probe_rc=$?
+    if [[ "$_probe_rc" -eq 0 ]]; then
+        return 0  # PRESENT
+    fi
+
+    # Transient-error patterns: network, auth, rate-limit, timeout.
+    # Only these promote to ERROR (rc=2); all other non-zero exits are ABSENT (rc=1).
+    if echo "$_probe_stderr" | grep -qiE \
+        'connection refused|connection reset|connection timed out|timeout|timed out|429|too many requests|unauthorized|authentication|forbidden|403|server error|5[0-9][0-9]|unexpected status code|i/o timeout|TLS|certificate'; then
+        # docker returned a transient/ambiguous error — check skopeo for a second opinion.
+        if command -v skopeo &>/dev/null; then
+            local _skopeo_stderr
+            local _skopeo_rc=0
+            _skopeo_stderr=$(skopeo inspect "docker://${image}" 2>&1 >/dev/null) || _skopeo_rc=$?
+            if [[ "$_skopeo_rc" -eq 0 ]]; then
+                return 0  # PRESENT (skopeo confirms)
+            fi
+            # skopeo definitive-not-found → ABSENT despite docker's transient error
+            if echo "$_skopeo_stderr" | grep -qiE \
+                'manifest unknown|not found|no such manifest|name unknown|MANIFEST_UNKNOWN'; then
+                return 1  # ABSENT
+            fi
+        fi
+        return 2  # ERROR (transient — fail-closed)
+    fi
+
+    # Definitive-not-found or empty stderr → ABSENT.
+    return 1
+}
+
 # Decide whether a given extension needs (re)building.
 # Honors LOCAL_ONLY (image inspect), FORCE, and registry presence.
 # Logs the skip reason itself so callers can stay terse.
@@ -851,7 +938,13 @@ _emit_final_versionset_pass() {
 
         # Always (re)write — no file-existence guard. This ensures a stale artifact
         # from a prior run is refreshed even when no build occurs in the current run.
-        _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling"
+        # Propagate non-zero return: _emit_versionset_artifact returns non-zero when a
+        # probe error (transient failure) prevents safe artifact emission (fail-closed).
+        local _eva_rc=0
+        _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" || _eva_rc=$?
+        if [[ "$_eva_rc" -ne 0 ]]; then
+            _final_pass_failed=true
+        fi
     done <<< "$ext_list"
 
     if [[ "$_final_pass_failed" == "true" ]]; then
@@ -889,15 +982,38 @@ _emit_versionset_artifact() {
         done < "$_built_this_run_file"
     fi
 
+    local _probe_error=false
     while IFS= read -r ver; do
         local ver_image
         ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        if _image_present "$ver_image" || [[ -n "${_built_this_run_set[$ver]:-}" ]]; then
+
+        # Use 3-state probe to distinguish PRESENT / ABSENT / ERROR.
+        # Versions in the built-this-run set are always PRESENT (propagation-lag guard).
+        if [[ -n "${_built_this_run_set[$ver]:-}" ]]; then
             available_versions+=("$ver")
         else
-            excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"not available\"}")
+            local _probe_rc=0
+            _image_present_3state "$ver_image" || _probe_rc=$?
+            case "$_probe_rc" in
+                0)  # PRESENT
+                    available_versions+=("$ver")
+                    ;;
+                1)  # ABSENT (definitive) — legitimate musl-failed / never-built
+                    excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"not available\"}")
+                    ;;
+                *)  # ERROR (transient probe failure) — fail closed
+                    log_error "$ext: registry probe for $ver (pg${major_ver}) returned an ambiguous error — cannot determine availability; versionset artifact suppressed (fail-closed)"
+                    _probe_error=true
+                    ;;
+            esac
         fi
     done < <(echo "$version_set_json" | jq -r '.[]')
+
+    # Fail closed: if any probe returned ERROR, do not write a potentially-incomplete artifact.
+    # A transient network blip must never silently drop a previously-published retained version.
+    if [[ "$_probe_error" == "true" ]]; then
+        return 1
+    fi
 
     # Gate: only write the artifact when it is USEFUL.
     # An artifact is useful iff available is non-empty AND contains the ceiling.

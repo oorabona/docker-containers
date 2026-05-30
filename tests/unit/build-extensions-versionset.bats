@@ -3994,3 +3994,200 @@ EOF
     [ -f "$build_log" ] && build_count=$(wc -l < "$build_log")
     [ "$build_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# NN-1: transient probe ERROR on a non-ceiling resolved version → fail closed.
+#
+# Scenario: resolver returns ["2.25.0","2.26.0","2.27.1"] (all 3 retained).
+# Ceiling 2.27.1 probes as PRESENT.
+# 2.26.0 probes as PRESENT.
+# 2.25.0 probe ERRORS (network blip / non-definitive failure — not a
+#   "manifest unknown" / 404 signal, just a non-zero exit without that text).
+#
+# Before fix (fail-OPEN): 2.25.0 treated as absent → versionset artifact
+#   written with available=["2.26.0","2.27.1"] (silently drops a published
+#   retained version).
+#
+# After fix (fail-CLOSED): transient probe error on any non-ceiling resolved
+#   version → artifact NOT written, emission exits non-zero.
+#
+# The test drives _emit_versionset_artifact via the final pass (main()).
+# _image_present_3state is mocked to return rc=2 for 2.25.0 (transient error signal).
+# ---------------------------------------------------------------------------
+@test "NN-1: transient probe error on non-ceiling version fails closed (no partial artifact)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    # Prepare environment expected by main()/final pass
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # _image_present_3state mock: ceiling=PRESENT, 2.26.0=PRESENT, 2.25.0=ERROR (transient, rc=2)
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.27.1*) return 0 ;;   # ceiling: PRESENT
+                *pg18-2.26.0*) return 0 ;;   # 2.26.0: PRESENT
+                *pg18-2.25.0*) return 2 ;;   # 2.25.0: ERROR (transient) — rc=2
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        # image_exists_in_registry returns 0 so _should_build_extension skips all builds
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # RED before fix: exits 0, artifact written with available=[\"2.26.0\",\"2.27.1\"]
+    #   (2.25.0 silently dropped as if definitively absent).
+    # GREEN after fix: exits non-zero (fail-closed) AND artifact either absent or
+    #   contains all 3 versions (never a silently-reduced set).
+
+    # Primary assertion: the run must exit non-zero (fail-closed on probe error).
+    [ "$status" -ne 0 ]
+
+    # Secondary: if artifact was written despite the error, it must NOT have dropped 2.25.0.
+    if [ -f "$artifact" ]; then
+        local avail_count
+        avail_count=$(jq '.available | length' "$artifact")
+        # A reduced set of 2 (missing 2.25.0) is the exact pre-fix bug.
+        [ "$avail_count" -ne 2 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# NN-2 (regression): definitively absent non-ceiling version is correctly
+# excluded, run continues (legitimate musl-failed / never-built case).
+#
+# Scenario: resolver returns ["2.25.0","2.26.0","2.27.1"].
+# Ceiling 2.27.1 probes PRESENT.
+# 2.26.0 probes PRESENT.
+# 2.25.0 is DEFINITIVELY ABSENT (rc=1, "manifest unknown" / not-found signal).
+#
+# Expected: artifact IS written with available=["2.26.0","2.27.1"], exit 0.
+# Ensures we didn't over-correct (definitively absent is still excluded, not an error).
+# ---------------------------------------------------------------------------
+@test "NN-2: definitively absent non-ceiling version is excluded, run continues (exit 0)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # _image_present_3state mock: ceiling=PRESENT, 2.26.0=PRESENT, 2.25.0=ABSENT (rc=1, definitive)
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.27.1*) return 0 ;;   # ceiling: PRESENT
+                *pg18-2.26.0*) return 0 ;;   # 2.26.0: PRESENT
+                *pg18-2.25.0*) return 1 ;;   # 2.25.0: ABSENT (definitive, e.g. musl-failed)
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed (definitive absence = musl-failed / never-built — expected behavior).
+    [ "$status" -eq 0 ]
+
+    # Artifact must be written with available=["2.26.0","2.27.1"] (2.25.0 correctly excluded).
+    [ -f "$artifact" ]
+    local avail_count
+    avail_count=$(jq '.available | length' "$artifact")
+    [ "$avail_count" -eq 2 ]
+
+    # 2.27.1 (ceiling) must be in available
+    local ceiling_present
+    ceiling_present=$(jq '[.available[] | select(. == "2.27.1")] | length' "$artifact")
+    [ "$ceiling_present" -eq 1 ]
+
+    # 2.25.0 must appear in excluded (not silently lost)
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -ge 1 ]
+    local excluded_has_2_25
+    excluded_has_2_25=$(jq '[.excluded[] | select(.version == "2.25.0")] | length' "$artifact")
+    [ "$excluded_has_2_25" -eq 1 ]
+}
