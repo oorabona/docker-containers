@@ -477,10 +477,6 @@ build_tag_push_extensions() {
             rm -f ${_lineage_glob}
         fi
 
-        # Per-version tracking for the versionset artifact.
-        local available_versions=()
-        local excluded_entries=()
-
         # Inner loop over each version oldest→newest.
         local version
         while IFS= read -r version; do
@@ -494,13 +490,11 @@ build_tag_push_extensions() {
                 else
                     log_success "$ext $version already exists in registry"
                 fi
-                available_versions+=("$version")
                 continue
             fi
 
             if [[ "$DRY_RUN" == "true" ]]; then
                 log_info "[DRY-RUN] Would build $ext $version for $CONTAINER v$major_ver"
-                available_versions+=("$version")
                 continue
             fi
 
@@ -521,7 +515,6 @@ build_tag_push_extensions() {
                     failed+=("$ext@$version")
                 else
                     log_warning "$ext $version build failed (non-ceiling, skipping)"
-                    excluded_entries+=("{\"version\":\"${version}\",\"reason\":\"build failed (musl)\"}")
                 fi
                 continue
             fi
@@ -543,7 +536,6 @@ build_tag_push_extensions() {
             fi
 
             log_success "$ext $version completed successfully"
-            available_versions+=("$version")
 
             # Write per-version lineage file with this version's own duration.
             # Dry runs must not mutate .build-lineage.
@@ -567,29 +559,6 @@ build_tag_push_extensions() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Write versionset artifact only for multi-version (resolver-backed) extensions.
-        # Dry runs must not mutate .build-lineage.
-        if [[ "$set_size" -gt 1 ]] && [[ "$DRY_RUN" != "true" ]]; then
-            local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-            mkdir -p "${ROOT_DIR}/.build-lineage"
-
-            # Build JSON arrays for available and excluded.
-            local available_json excluded_json resolved_json
-            available_json=$(printf '%s\n' "${available_versions[@]+"${available_versions[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
-            excluded_json="[$(IFS=,; echo "${excluded_entries[*]+"${excluded_entries[*]}"}")]"
-            resolved_json=$(echo "$version_set_json" | jq '.')
-
-            jq -nc \
-                --arg ext "$ext" \
-                --arg pg_major "$major_ver" \
-                --arg ceiling "$ceiling" \
-                --argjson resolved "$resolved_json" \
-                --argjson available "$available_json" \
-                --argjson excluded "$excluded_json" \
-                '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
-                > "$_vs_lineage_file"
-            log_info "Version-set lineage: $_vs_lineage_file"
-        fi
     done
 
     echo ""
@@ -745,15 +714,14 @@ _should_build_extension() {
 }
 
 
-# Emit versionset artifacts for ALL resolver-backed, in-scope extensions
-# that do NOT already have an artifact written by build_tag_push_extensions
-# in this run. This is the unconditional final pass that runs before EVERY
-# success exit in main() — covering the all-up-to-date path, the normal build
-# path (for skipped/cached extensions), and the pull-only path.
+# Emit (or refresh) versionset artifacts for ALL resolver-backed, in-scope
+# extensions. This is the single source of truth for versionset artifacts —
+# it runs before EVERY success exit in main() covering the all-up-to-date
+# path, the normal build path, and the pull-only path.
 #
-# Extensions that were actually built get their artifact from build_tag_push_extensions
-# (which has richer build-failure excluded reasons). The final pass uses a
-# presence-based check for extensions whose artifact file doesn't yet exist.
+# Always (re)writes the artifact using a pure presence-based check so that a
+# stale artifact from a prior run is never left on disk. The file-existence
+# guard is intentionally absent.
 #
 # Args: config_file major_ver container_dir [optional_extension]
 #   optional_extension: when set, only emit for that one extension (--extension mode)
@@ -793,15 +761,8 @@ _emit_final_versionset_pass() {
         set_size=$(echo "$version_set_json" | jq 'length')
         [[ "$set_size" -le 1 ]] && continue
 
-        # Only emit for extensions that don't already have an artifact from
-        # build_tag_push_extensions in this run. build_tag_push_extensions writes
-        # a richer artifact (with exact build-failure reasons); this final pass
-        # fills in the gap for extensions that were skipped (all versions cached).
-        local _vs_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-        if [[ -f "$_vs_file" ]]; then
-            continue
-        fi
-
+        # Always (re)write — no file-existence guard. This ensures a stale artifact
+        # from a prior run is refreshed even when no build occurs in the current run.
         _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling"
     done <<< "$ext_list"
 }

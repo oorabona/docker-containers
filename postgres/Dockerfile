@@ -99,17 +99,17 @@ RUN set -eux; \
             for ver_dir in $(ls -d /tmp/ext/${ext}/*/ | sort -V); do \
                 echo "  version: ${ver_dir}"; \
                 if [ -d "${ver_dir}lib" ]; then \
-                    cp -v ${ver_dir}lib/* /usr/local/lib/postgresql/ 2>/dev/null || true; \
+                    cp -v "${ver_dir}lib/"* /usr/local/lib/postgresql/ 2>/dev/null || true; \
                 fi; \
                 if [ -d "${ver_dir}extension" ]; then \
-                    cp -v ${ver_dir}extension/* /usr/local/share/postgresql/extension/ 2>/dev/null || true; \
+                    cp -v "${ver_dir}extension/"* /usr/local/share/postgresql/extension/ 2>/dev/null || true; \
                 fi; \
             done; \
             ceiling_dir=$(ls -d /tmp/ext/${ext}/*/ | sort -V | tail -1); \
             if [ -f "${ceiling_dir}extension/${ext}.control" ]; then \
                 cp -v "${ceiling_dir}extension/${ext}.control" \
                     /usr/local/share/postgresql/extension/${ext}.control; \
-                echo "  ceiling control: $(grep '^default_version' ${ceiling_dir}extension/${ext}.control || true)"; \
+                echo "  ceiling control: $(grep '^default_version' "${ceiling_dir}extension/${ext}.control" || true)"; \
             fi; \
         fi; \
     }; \

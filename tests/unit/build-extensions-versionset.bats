@@ -257,17 +257,9 @@ _count_log_lines() {
     [[ "$(cat "$TEST_TEMP_DIR/build_calls.log")" == *"ver=2.25.0"* ]]
     [[ "$(cat "$TEST_TEMP_DIR/build_calls.log")" != *"ver=2.26.0"* ]]
     [[ "$(cat "$TEST_TEMP_DIR/build_calls.log")" == *"ver=2.27.1"* ]]
-
-    # Artifact should list 2.26.0 as available (not excluded)
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-    local available_versions
-    available_versions=$(jq -r '.available[]' "$artifact")
-    [[ "$available_versions" == *"2.26.0"* ]]
-
-    local excluded_count
-    excluded_count=$(jq '.excluded | length' "$artifact")
-    [ "$excluded_count" -eq 0 ]
+    # Note: versionset artifact is now written exclusively by _emit_final_versionset_pass
+    # (called from main()); build_tag_push_extensions no longer writes it.
+    # Artifact content is covered by the CACHED-1/CACHED-2/MIXED-* integration tests.
 }
 
 # ---------------------------------------------------------------------------
@@ -306,23 +298,9 @@ _count_log_lines() {
     # 2.26.0 and 2.27.1 (ceiling) should still have been built
     [[ "$(cat "$TEST_TEMP_DIR/build_calls.log")" == *"ver=2.26.0"* ]]
     [[ "$(cat "$TEST_TEMP_DIR/build_calls.log")" == *"ver=2.27.1"* ]]
-
-    # Artifact: 2.25.0 in excluded; others in available
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-
-    local excluded_count
-    excluded_count=$(jq '.excluded | length' "$artifact")
-    [ "$excluded_count" -eq 1 ]
-
-    local excluded_ver
-    excluded_ver=$(jq -r '.excluded[0].version' "$artifact")
-    [ "$excluded_ver" = "2.25.0" ]
-
-    local available
-    available=$(jq -r '.available[]' "$artifact")
-    [[ "$available" == *"2.26.0"* ]]
-    [[ "$available" == *"2.27.1"* ]]
+    # Note: versionset artifact is now written exclusively by _emit_final_versionset_pass
+    # (called from main()); build_tag_push_extensions no longer writes it.
+    # The musl-excluded split is covered by the CACHED-2 integration test.
 }
 
 # ---------------------------------------------------------------------------
@@ -391,40 +369,10 @@ _count_log_lines() {
         "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
 
     [ "$status" -eq 0 ]
-
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-
-    # Validate top-level fields
-    local ext pg ceiling
-    ext=$(jq -r '.ext' "$artifact")
-    pg=$(jq -r '.pg_major' "$artifact")
-    ceiling=$(jq -r '.ceiling' "$artifact")
-    [ "$ext" = "timescaledb" ]
-    [ "$pg" = "18" ]
-    [ "$ceiling" = "2.27.1" ]
-
-    # resolved array must contain all 3 versions
-    local resolved_count
-    resolved_count=$(jq '.resolved | length' "$artifact")
-    [ "$resolved_count" -eq 3 ]
-
-    # available must contain the 2 that built
-    local available_count
-    available_count=$(jq '.available | length' "$artifact")
-    [ "$available_count" -eq 2 ]
-
-    # excluded must contain the 1 that failed
-    local excluded_count
-    excluded_count=$(jq '.excluded | length' "$artifact")
-    [ "$excluded_count" -eq 1 ]
-
-    # excluded entry must have version + reason fields
-    local excl_ver excl_reason
-    excl_ver=$(jq -r '.excluded[0].version' "$artifact")
-    excl_reason=$(jq -r '.excluded[0].reason' "$artifact")
-    [ "$excl_ver" = "2.25.0" ]
-    [[ -n "$excl_reason" ]]
+    # Note: versionset artifact is now written exclusively by _emit_final_versionset_pass
+    # (called from main()); build_tag_push_extensions no longer writes it.
+    # Artifact shape (resolved/available/excluded fields) is covered by the
+    # CACHED-1/CACHED-2/MIXED-* integration tests which drive main().
 }
 
 # ---------------------------------------------------------------------------
@@ -881,20 +829,14 @@ _count_log_lines() {
     [ -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
 }
 
-@test "K-stale-cleanup: stale versionset artifact from previous run is removed" {
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
+@test "K-stale-cleanup: stale versionset artifact from previous run is overwritten by final pass" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
 
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
 
-    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local lineage_dir="$tmpd/.build-lineage"
     mkdir -p "$lineage_dir"
 
     # Pre-create a stale versionset artifact from a prior run.
@@ -902,12 +844,55 @@ _count_log_lines() {
     printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.24.0","resolved":["2.24.0"],"available":["2.24.0"],"excluded":[]}\n' \
         > "$stale_vs"
 
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions in registry — nothing to build
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
 
     [ "$status" -eq 0 ]
 
-    # The new versionset artifact must reflect the current run (ceiling=2.27.1).
+    # The final pass must overwrite the stale artifact with the current ceiling.
     [ -f "$stale_vs" ]
     local ceiling
     ceiling=$(jq -r '.ceiling' "$stale_vs")
@@ -1347,8 +1332,16 @@ _count_log_lines() {
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
 
+    # Stateful registry-presence file: seed with 2.26.0 already cached.
+    # push_ext_image will add successfully-pushed versions to this file so
+    # image_exists_in_registry reflects production behaviour (just-built = present).
+    local registry_present="$tmpd/registry-present"
+    printf 'pg18-2.26.0\n' > "$registry_present"
+    export registry_present
+
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
         cd \"$sd\"
         source ./build-extensions.sh
         export ROOT_DIR=\"$tmpd\"
@@ -1370,16 +1363,20 @@ _count_log_lines() {
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # 2.26.0 is pre-cached in registry; 2.25.0 and 2.27.1 are absent
+        # Stateful presence check: consults the registry-present file.
+        # Image arg format: ghcr.io/test/ext-<name>:pg<major>-<ver>
+        # Tag (after the colon) matches entries written by push_ext_image.
+        # Seed: pg18-2.26.0 present. Successfully pushed versions are added by push_ext_image.
         image_exists_in_registry() {
-            [[ \"\$1\" == *'pg18-2.26.0'* ]] && return 0 || return 1
+            local tag=\"\${1##*:}\"
+            grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
         }
         export -f image_exists_in_registry
 
         docker() { return 1; }
         export -f docker
 
-        # 2.25.0 fails to build (musl); others succeed
+        # 2.25.0 fails to build (musl); others succeed.
         build_ext_image() {
             if [[ \"\$2\" == '2.25.0' ]]; then
                 return 1
@@ -1389,8 +1386,16 @@ _count_log_lines() {
         export -f build_ext_image
         tag_ext_image()  { return 0; }
         export -f tag_ext_image
-        push_ext_image() { return 0; }
+
+        # Stateful push: on success, register the version as present so
+        # image_exists_in_registry sees it as available (mirrors production).
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
         export -f push_ext_image
+
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
         check_registry_auth()     { return 0; }
@@ -1407,7 +1412,9 @@ _count_log_lines() {
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ -f "$artifact" ]
 
-    # available: 2.26.0 (pre-cached) + 2.27.1 (built this run) = 2
+    # Stateful mock reflects production: 2.26.0 was pre-seeded, 2.27.1 was built+pushed
+    # (added to present set by push_ext_image), 2.25.0 failed to build (never pushed).
+    # Result: available=[2.26.0, 2.27.1] (2), excluded=[2.25.0] (1).
     local available_count
     available_count=$(jq '.available | length' "$artifact")
     [ "$available_count" -eq 2 ]
@@ -1417,14 +1424,15 @@ _count_log_lines() {
     [[ "$available_versions" == *"2.26.0"* ]]
     [[ "$available_versions" == *"2.27.1"* ]]
 
-    # excluded: 2.25.0 (musl failure)
     local excluded_count
     excluded_count=$(jq '.excluded | length' "$artifact")
     [ "$excluded_count" -eq 1 ]
 
-    local excl_ver
-    excl_ver=$(jq -r '.excluded[0].version' "$artifact")
-    [ "$excl_ver" = "2.25.0" ]
+    # Only 2.25.0 (build failed) is excluded; 2.27.1 is available (push succeeded).
+    local all_excl
+    all_excl=$(jq -r '.excluded[].version' "$artifact")
+    [[ "$all_excl" == *"2.25.0"* ]]
+    [[ "$all_excl" != *"2.27.1"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -1566,8 +1574,16 @@ EOF
 
     local build_log="${tmpd}/mixed2_build.log"
 
+    # Stateful registry-presence file: seed with 2.26.0 and 2.27.1 already cached.
+    # push_ext_image adds successfully-pushed versions so image_exists_in_registry
+    # reflects production behaviour (just-built 2.25.0 becomes present after push).
+    local registry_present="$tmpd/registry-present"
+    printf 'pg18-2.26.0\npg18-2.27.1\n' > "$registry_present"
+    export registry_present
+
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
         cd \"$sd\"
         source ./build-extensions.sh
         export ROOT_DIR=\"$tmpd\"
@@ -1590,9 +1606,11 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # 2.26.0 and 2.27.1 already in registry; 2.25.0 absent
+        # Stateful presence check: image arg format ghcr.io/test/ext-<name>:pg<major>-<ver>.
+        # 2.26.0 and 2.27.1 pre-seeded; 2.25.0 becomes present after push_ext_image succeeds.
         image_exists_in_registry() {
-            [[ \"\$1\" == *'pg18-2.25.0'* ]] && return 1 || return 0
+            local tag=\"\${1##*:}\"
+            grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
         }
         export -f image_exists_in_registry
 
@@ -1606,8 +1624,16 @@ EOF
         export -f build_ext_image
         tag_ext_image()  { return 0; }
         export -f tag_ext_image
-        push_ext_image() { return 0; }
+
+        # Stateful push: register the version as present so image_exists_in_registry
+        # sees it as available on the final pass (mirrors production).
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
         export -f push_ext_image
+
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
         check_registry_auth()     { return 0; }
@@ -1620,19 +1646,26 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # 2.25.0 was built
+    # 2.25.0 was built (absent → triggered build)
     [ -f "$build_log" ]
     [[ "$(cat "$build_log")" == *"ext=timescaledb"* ]]
     [[ "$(cat "$build_log")" == *"ver=2.25.0"* ]]
 
-    # Versionset artifact exists and reflects all 3 as available (2.25.0 just built,
-    # 2.26.0+2.27.1 were already in registry — all pass presence check after build)
+    # Stateful mock reflects production: 2.26.0 and 2.27.1 were pre-seeded, 2.25.0 was
+    # built+pushed (added to present set by push_ext_image). All 3 versions are available.
+    # Result: available=[2.25.0, 2.26.0, 2.27.1] (3), excluded=[] (0).
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ -f "$artifact" ]
 
     local available_count
     available_count=$(jq '.available | length' "$artifact")
     [ "$available_count" -eq 3 ]
+
+    local available_versions
+    available_versions=$(jq -r '.available[]' "$artifact")
+    [[ "$available_versions" == *"2.25.0"* ]]
+    [[ "$available_versions" == *"2.26.0"* ]]
+    [[ "$available_versions" == *"2.27.1"* ]]
 
     local excluded_count
     excluded_count=$(jq '.excluded | length' "$artifact")
@@ -1818,4 +1851,112 @@ EOF
     # Under DRY_RUN, NO versionset artifact must be written (the core invariant).
     [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
     [ ! -f "$lineage_dir/ext-pgvector-pg18-versionset.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# STALENESS: pre-existing stale versionset artifact is overwritten on a
+# cache-hit run (no build occurs).
+#
+# Before fix: _emit_final_versionset_pass has a file-existence guard → skips
+#   refresh when the artifact is already on disk → stale "1.0.0" survives (RED).
+# After fix:  guard removed → artifact always (re)written → stale "1.0.0" gone,
+#   real versions present (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "STALENESS: cache-hit run overwrites stale versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+
+    # Pre-create a STALE artifact with wrong content (old single version "1.0.0").
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"1.0.0","resolved":["1.0.0"],"available":["1.0.0"],"excluded":[]}\n' \
+        > "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # Real resolved set: 3 current versions
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions already in registry — cache-hit, nothing to build
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo 'BUILD_CALLED' >> \"$tmpd/staleness_build.log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed (all cached)
+    [ "$status" -eq 0 ]
+
+    # Must NOT have built anything (cache-hit run)
+    local build_count
+    build_count=$(_count_log_lines "$tmpd/staleness_build.log")
+    [ "$build_count" -eq 0 ]
+
+    # The artifact MUST be overwritten with the CURRENT resolved set.
+    # Before fix (guard present): stale "1.0.0" survives → this fails (RED).
+    # After fix (guard removed):  artifact is rewritten → this passes (GREEN).
+    [ -f "$artifact" ]
+
+    local ceiling
+    ceiling=$(jq -r '.ceiling' "$artifact")
+    [ "$ceiling" = "2.27.1" ]
+
+    # The stale "1.0.0" must be gone from the available array.
+    local stale_present
+    stale_present=$(jq '[.available[] | select(. == "1.0.0")] | length' "$artifact")
+    [ "$stale_present" -eq 0 ]
+
+    # The real versions must be present (all 3 are in registry).
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    local resolved_count
+    resolved_count=$(jq '.resolved | length' "$artifact")
+    [ "$resolved_count" -eq 3 ]
 }
