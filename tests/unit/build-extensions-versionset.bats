@@ -832,3 +832,82 @@ _count_log_lines() {
     build_count=$(_count_log_lines "$build_log")
     [ "$build_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# K: stale lineage files from a previous run must not persist across re-runs.
+# Before fix: build-extensions.sh never removes old per-version lineage files,
+# so ext-<ext>-pg<major>-<oldver>.json from the previous run survives and
+# inflates the duration sum read by extension-duration-utils.sh.
+# After fix: at the start of processing each ext+major, any pre-existing
+# ext-<ext>-pg<major>-*.json (including *-versionset.json) is removed so only
+# the current run's versions are on disk.
+# ---------------------------------------------------------------------------
+
+@test "K-stale-cleanup: stale lineage file from old version is removed before current run" {
+    # Arrange: pre-create a stale per-version lineage file (2.24.0, not in the
+    # current resolved set which is [2.25.0,2.26.0,2.27.1]).
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Stale file from a previous run — version 2.24.0 is NOT in the current set.
+    local stale_file="$lineage_dir/ext-timescaledb-pg18-2.24.0.json"
+    printf '{"ext":"timescaledb","version":"2.24.0","duration_seconds":99}\n' > "$stale_file"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # The stale file must be gone after the run.
+    [ ! -f "$stale_file" ]
+
+    # Current-run lineage files must exist for each built version.
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.25.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.26.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
+}
+
+@test "K-stale-cleanup: stale versionset artifact from previous run is removed" {
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create a stale versionset artifact from a prior run.
+    local stale_vs="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.24.0","resolved":["2.24.0"],"available":["2.24.0"],"excluded":[]}\n' \
+        > "$stale_vs"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # The new versionset artifact must reflect the current run (ceiling=2.27.1).
+    [ -f "$stale_vs" ]
+    local ceiling
+    ceiling=$(jq -r '.ceiling' "$stale_vs")
+    [ "$ceiling" = "2.27.1" ]
+}

@@ -151,6 +151,19 @@ main() {
         exit 1
     fi
 
+    # Assert the configured pinned version (CEILING_VERSION) is present in the
+    # resolved set. An absent ceiling means the config version is a typo or the
+    # upstream tag hasn't been published yet — either way the build would silently
+    # succeed without ever validating the pinned version.
+    if [[ -n "$CEILING_VERSION" ]]; then
+        local ceiling_present
+        ceiling_present=$(echo "$json_array" | jq --arg v "$CEILING_VERSION" 'map(select(. == $v)) | length')
+        if (( ceiling_present == 0 )); then
+            _error "configured version ${CEILING_VERSION} not found in upstream tags (typo or tag lag?)"
+            exit 1
+        fi
+    fi
+
     printf '%s\n' "$json_array"
 }
 

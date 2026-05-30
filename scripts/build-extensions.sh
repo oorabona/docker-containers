@@ -414,6 +414,14 @@ build_tag_push_extensions() {
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
 
+        # Remove stale per-version and versionset lineage files for this
+        # ext+major from any previous run, so the on-disk set reflects only the
+        # current run. Scoped to the exact ext+major glob — other containers'
+        # or extensions' files are left untouched.
+        local _lineage_glob="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-*.json"
+        # shellcheck disable=SC2086
+        rm -f ${_lineage_glob}
+
         # Per-version tracking for the versionset artifact.
         local available_versions=()
         local excluded_entries=()

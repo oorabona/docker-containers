@@ -230,3 +230,28 @@ setup() {
     rm -f "$no_semver_fixture"
     [[ "$combined" == *"no valid semver"* ]]
 }
+
+# ── I: configured CEILING_VERSION absent from upstream tags → non-zero + actionable error ──
+
+@test "I-ceiling-absent: configured CEILING_VERSION not in upstream tags exits non-zero" {
+    # ceiling 2.28.0 is NOT present in the fixture (tops out at 2.27.1).
+    # Before the fix: resolver returns the sub-ceiling set with exit 0 — silent config gap.
+    # After the fix: assert CEILING_VERSION is a member of the filtered set; fail-closed.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
+        "$RESOLVER"
+    [[ "$status" -ne 0 ]]
+}
+
+@test "I-ceiling-absent: configured CEILING_VERSION not in upstream tags emits actionable error" {
+    local combined
+    combined=$(env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
+        "$RESOLVER" 2>&1 || true)
+    # Must mention the configured version so the operator knows what to fix
+    [[ "$combined" == *"2.28.0"* ]]
+}

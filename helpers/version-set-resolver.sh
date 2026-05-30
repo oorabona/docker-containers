@@ -29,13 +29,15 @@ resolve_version_set() {
     local ext_name="${1:?ext_name is required}"
     local pg_major="${2:?pg_major is required}"
 
-    # Read single version (always present) for fallback
+    # Read single version (always present) for fallback; -r (raw output) strips
+    # surrounding quotes so yq v4 returns a bare string regardless of version.
     local single_version
-    single_version=$(yq ".extensions.${ext_name}.version" "${_EXT_CONFIG}")
+    single_version=$(yq -r ".extensions.${ext_name}.version" "${_EXT_CONFIG}")
 
-    # Read optional resolver path (mikefarah/yq v4: use // "" for absent key)
+    # Read optional resolver path; -r ensures the fallback empty string is bare,
+    # not a quoted "\"\"" on older yq v4 variants.
     local resolver_path
-    resolver_path=$(yq ".extensions.${ext_name}.version_set.resolver // \"\"" "${_EXT_CONFIG}")
+    resolver_path=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" "${_EXT_CONFIG}")
 
     if [[ -z "$resolver_path" ]]; then
         # No resolver configured — return single-version array
