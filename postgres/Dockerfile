@@ -80,7 +80,8 @@ RUN set -eux; \
     # 1. Multi-version (retention): /tmp/ext/<ext>/<ver>/{extension,lib}/ \
     #    Each retained version ships its own .so so a persisted database on an \
     #    older version can still start without a forced pg_upgrade. \
-    #    Files are installed in ascending version order (sort -V) so the highest \
+    #    Files are installed in ascending version order (sort -t. -k1,1n -k2,2n -k3,3n) \
+    #    so the highest \
     #    (ceiling) version's timescaledb.control — which carries \
     #    default_version=<ceiling> — is written last and wins. \
     #    A new `CREATE EXTENSION timescaledb` therefore defaults to the pinned \
@@ -96,7 +97,9 @@ RUN set -eux; \
             cp -v /tmp/ext/${ext}/lib/* /usr/local/lib/postgresql/ 2>/dev/null || true; \
         elif ls -d /tmp/ext/${ext}/*/ 1>/dev/null 2>&1; then \
             echo "Installing extension (multi-version): ${ext}"; \
-            for ver_dir in $(ls -d /tmp/ext/${ext}/*/ | sort -V); do \
+            sorted_vers=$(ls /tmp/ext/${ext}/ | sort -t. -k1,1n -k2,2n -k3,3n); \
+            for ver in $sorted_vers; do \
+                ver_dir="/tmp/ext/${ext}/${ver}/"; \
                 echo "  version: ${ver_dir}"; \
                 if [ -d "${ver_dir}lib" ]; then \
                     cp -v "${ver_dir}lib/"* /usr/local/lib/postgresql/ 2>/dev/null || true; \
@@ -105,7 +108,8 @@ RUN set -eux; \
                     cp -v "${ver_dir}extension/"* /usr/local/share/postgresql/extension/ 2>/dev/null || true; \
                 fi; \
             done; \
-            ceiling_dir=$(ls -d /tmp/ext/${ext}/*/ | sort -V | tail -1); \
+            ceiling_ver=$(ls /tmp/ext/${ext}/ | sort -t. -k1,1n -k2,2n -k3,3n | tail -1); \
+            ceiling_dir="/tmp/ext/${ext}/${ceiling_ver}/"; \
             if [ -f "${ceiling_dir}extension/${ext}.control" ]; then \
                 cp -v "${ceiling_dir}extension/${ext}.control" \
                     /usr/local/share/postgresql/extension/${ext}.control; \
