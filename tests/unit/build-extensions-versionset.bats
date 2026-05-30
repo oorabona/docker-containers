@@ -1075,3 +1075,169 @@ _count_log_lines() {
     # No lineage dir or files must have been created.
     [ ! -d "$lineage_dir" ]
 }
+
+# ---------------------------------------------------------------------------
+# P-malformed: resolver returns non-JSON → _resolve_cached must return non-zero
+# (fail-closed on publish path), NOT cache the bad value and silently skip builds.
+# ---------------------------------------------------------------------------
+
+@test "P-malformed-json: resolver returns non-JSON → publish path exits non-zero (fail-closed)" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo "not-json"
+        return 0
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/p_malformed_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail — malformed resolver output is treated as resolver failure (fail-closed).
+    [ "$status" -ne 0 ]
+
+    # Must NOT have built anything (no silent fallback).
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
+@test "P-empty-array: resolver returns [] → publish path exits non-zero (fail-closed)" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        echo "[]"
+        return 0
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/p_empty_build_calls.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail — empty array is invalid version set (fail-closed).
+    [ "$status" -ne 0 ]
+
+    local build_count
+    build_count=$(_count_log_lines "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Q-pull-only-degrade: resolver failure + PULL_ONLY=true must degrade to ceiling,
+# not abort. The pull-only recovery path is equivalent to LOCAL_ONLY for degradation.
+# ---------------------------------------------------------------------------
+
+@test "Q-pull-only-degrade: resolver fails + PULL_ONLY=true → degrades to ceiling, exits 0" {
+    export LOCAL_ONLY=false
+    export PULL_ONLY=true
+
+    resolve_version_set() {
+        echo "::error::simulated outage" >&2
+        return 1
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local pull_log="$TEST_TEMP_DIR/q_pull_calls.log"
+    # pull_ext_image: ceiling pulled successfully
+    pull_ext_image() {
+        echo "PULL_CALLED ext=${1} ver=${2}" >> "$pull_log"
+        return 0
+    }
+    export -f pull_ext_image
+
+    list_extensions_by_priority() { echo "timescaledb"; }
+    export -f list_extensions_by_priority
+
+    run handle_pull_only_mode "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must succeed (degrade, not abort).
+    [ "$status" -eq 0 ]
+
+    # Must have attempted pull for the ceiling version.
+    [ -f "$pull_log" ]
+    [[ "$(cat "$pull_log")" == *"ver=2.27.1"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# R-dry-run-pull: --pull-only --dry-run must NOT invoke pull_ext_image (real pull).
+# The DRY_RUN-honoring pull_extension wrapper must be used instead.
+# ---------------------------------------------------------------------------
+
+@test "R-dry-run-pull: pull-only + DRY_RUN=true does not call pull_ext_image" {
+    export LOCAL_ONLY=false
+    export DRY_RUN=true
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local real_pull_log="$TEST_TEMP_DIR/r_real_pull_calls.log"
+    # pull_ext_image is the REAL pull; it must NOT be invoked under DRY_RUN.
+    pull_ext_image() {
+        echo "REAL_PULL ext=${1} ver=${2}" >> "$real_pull_log"
+        return 0
+    }
+    export -f pull_ext_image
+
+    list_extensions_by_priority() { echo "timescaledb"; }
+    export -f list_extensions_by_priority
+
+    run handle_pull_only_mode "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Command must succeed under dry run.
+    [ "$status" -eq 0 ]
+
+    # pull_ext_image must NOT have been called (dry run bypasses real pulls).
+    local real_pull_count
+    real_pull_count=$(_count_log_lines "$real_pull_log")
+    [ "$real_pull_count" -eq 0 ]
+}

@@ -303,22 +303,26 @@ push_extension() {
 }
 
 # Pull extension from registry
+# Args: ext_name config_file major_ver [ext_version]
+# ext_version defaults to ext_config lookup when omitted (backward compat).
 pull_extension() {
     local ext_name="$1"
     local config_file="$2"
     local major_ver="$3"
+    local ext_version="${4:-}"
 
-    local version
-    version=$(ext_config "$ext_name" "version" "$config_file")
+    if [[ -z "$ext_version" ]]; then
+        ext_version=$(ext_config "$ext_name" "version" "$config_file")
+    fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local image
-        image=$(ext_image_name "$ext_name" "$version" "$major_ver")
+        image=$(ext_image_name "$ext_name" "$ext_version" "$major_ver")
         log_info "[DRY-RUN] Would pull $image"
         return 0
     fi
 
-    pull_ext_image "$ext_name" "$version" "$major_ver"
+    pull_ext_image "$ext_name" "$ext_version" "$major_ver"
 }
 
 # Main
@@ -371,11 +375,14 @@ handle_pull_only_mode() {
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
 
-        # Resolve the full version set. On failure, degrade to ceiling (local
-        # recovery path — pull-only is always a local/dev operation).
+        # Resolve the full version set. On failure, degrade to ceiling on either
+        # the local recovery path (LOCAL_ONLY=true) or the pull-only recovery path
+        # (PULL_ONLY=true), where a transient resolver outage must not block a
+        # local image fetch. Keep fail-closed for the true publish path (neither
+        # flag set).
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
-            if [[ "$LOCAL_ONLY" == "true" ]]; then
-                log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+            if [[ "$LOCAL_ONLY" == "true" || "$PULL_ONLY" == "true" ]]; then
+                log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (recovery path)"
                 version_set_json="[\"${ceiling}\"]"
             else
                 log_error "$ext: version-set resolver failed — aborting pull-only (fail-closed)"
@@ -393,7 +400,7 @@ handle_pull_only_mode() {
                 continue
             fi
 
-            if pull_ext_image "$ext" "$ver" "$major_ver" 2>/dev/null; then
+            if pull_extension "$ext" "$config_file" "$major_ver" "$ver" 2>/dev/null; then
                 log_success "$ext $ver pulled from registry"
             else
                 log_warning "$ext $ver not in registry, will build locally"
@@ -620,6 +627,14 @@ _resolve_cached() {
 
     local result
     result=$(resolve_version_set "$ext" "$major") || return 1
+
+    # Validate: must be a non-empty JSON array where every element is a string.
+    # If the resolver exits 0 but emits malformed output or an empty array,
+    # treat it as a resolver failure (fail-closed) and do NOT cache the bad value.
+    if ! echo "$result" | jq -e 'type == "array" and length > 0 and (all(.[]; type == "string"))' > /dev/null 2>&1; then
+        log_error "resolver for $ext returned invalid version set (not a non-empty string array): $result"
+        return 1
+    fi
 
     # Write atomically so a concurrent subshell never reads a partial file.
     local tmp_file
