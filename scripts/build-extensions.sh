@@ -177,6 +177,8 @@ detect_major_version() {
 }
 
 # List extension status
+# For extensions backed by a version-set resolver, each resolved version is
+# reported individually so that partial registry presence is visible.
 list_extension_status() {
     local config_file="$1"
     local major_ver="$2"
@@ -190,21 +192,32 @@ list_extension_status() {
     printf "%-15s %-10s %-12s %s\n" "---------" "-------" "------" "-----"
 
     for ext in $(list_extensions_by_priority "$config_file" "$major_ver"); do
-        local version
-        version=$(ext_config "$ext" "version" "$config_file")
-        local image
-        image=$(ext_image_name "$ext" "$version" "$major_ver")
+        local ceiling version_set_json
+        ceiling=$(ext_config "$ext" "version" "$config_file")
 
-        local status
-        if image_exists_in_registry "$image" 2>/dev/null; then
-            status="${GREEN}✓ exists${NC}"
-        else
-            status="${YELLOW}✗ missing${NC}"
+        # Resolve the full version set (cached). On resolver failure degrade
+        # to the single ceiling so --list is never blocked by upstream outage.
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+            log_warning "$ext: version-set resolver failed — showing ceiling only (LOCAL_ONLY)"
+            version_set_json="[\"${ceiling}\"]"
         fi
 
-        printf "%-15s %-10s " "$ext" "$version"
-        echo -e "$status"
-        printf "%-39s %s\n" "" "$image"
+        local ver
+        while IFS= read -r ver; do
+            local image
+            image=$(ext_image_name "$ext" "$ver" "$major_ver")
+
+            local status
+            if image_exists_in_registry "$image" 2>/dev/null; then
+                status="${GREEN}✓ exists${NC}"
+            else
+                status="${YELLOW}✗ missing${NC}"
+            fi
+
+            printf "%-15s %-10s " "$ext" "$ver"
+            echo -e "$status"
+            printf "%-39s %s\n" "" "$image"
+        done < <(echo "$version_set_json" | jq -r '.[]')
     done
 
     echo ""
@@ -331,6 +344,7 @@ validate_prerequisites() {
 }
 
 # Pull-only mode: pull extensions from registry, build missing ones locally.
+# For version-set extensions, every resolved version is pulled/built individually.
 # Exits 0 on success, 1 on failure.
 handle_pull_only_mode() {
     local config_file="$1" major_ver="$2" container_dir="$3"
@@ -354,21 +368,38 @@ handle_pull_only_mode() {
     fi
 
     for ext in "${extensions_to_pull[@]}"; do
-        local version image
-        version=$(ext_config "$ext" "version" "$config_file")
-        image=$(ext_image_name "$ext" "$version" "$major_ver")
+        local ceiling version_set_json
+        ceiling=$(ext_config "$ext" "version" "$config_file")
 
-        if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
-            log_success "$ext $version already exists locally"
-            continue
+        # Resolve the full version set. On failure, degrade to ceiling (local
+        # recovery path — pull-only is always a local/dev operation).
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+            if [[ "$LOCAL_ONLY" == "true" ]]; then
+                log_warning "$ext: version-set resolver failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+                version_set_json="[\"${ceiling}\"]"
+            else
+                log_error "$ext: version-set resolver failed — aborting pull-only (fail-closed)"
+                exit 1
+            fi
         fi
 
-        if pull_extension "$ext" "$config_file" "$major_ver" 2>/dev/null; then
-            log_success "$ext $version pulled from registry"
-        else
-            log_warning "$ext $version not in registry, will build locally"
-            extensions_to_build+=("$ext")
-        fi
+        local ver
+        while IFS= read -r ver; do
+            local image
+            image=$(ext_image_name "$ext" "$ver" "$major_ver")
+
+            if docker image inspect "$image" &>/dev/null && [[ "$FORCE" != "true" ]]; then
+                log_success "$ext $ver already exists locally"
+                continue
+            fi
+
+            if pull_ext_image "$ext" "$ver" "$major_ver" 2>/dev/null; then
+                log_success "$ext $ver pulled from registry"
+            else
+                log_warning "$ext $ver not in registry, will build locally"
+                extensions_to_build+=("${ext}@${ver}")
+            fi
+        done < <(echo "$version_set_json" | jq -r '.[]')
     done
 
     if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
@@ -376,8 +407,22 @@ handle_pull_only_mode() {
         exit 0
     fi
 
-    log_info "Extensions to build locally: ${extensions_to_build[*]}"
-    build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "false" "${extensions_to_build[@]}"
+    # Deduplicate to extension names; build_tag_push_extensions will skip any
+    # version already present locally (via _image_needs_build with LOCAL_ONLY=true).
+    local -A _seen_exts=()
+    local unique_exts_to_build=()
+    for ext_ver in "${extensions_to_build[@]}"; do
+        local ext="${ext_ver%%@*}"
+        if [[ -z "${_seen_exts[$ext]:-}" ]]; then
+            _seen_exts[$ext]=1
+            unique_exts_to_build+=("$ext")
+        fi
+    done
+
+    log_info "Extensions to build locally: ${unique_exts_to_build[*]}"
+    # Build with LOCAL_ONLY semantics (do_push=false) so only locally absent
+    # versions are built — pulled versions already in docker are skipped.
+    LOCAL_ONLY=true build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "false" "${unique_exts_to_build[@]}"
 }
 
 # Build, tag, and optionally push a list of extensions. Exits 1 if any fail.
@@ -418,9 +463,12 @@ build_tag_push_extensions() {
         # ext+major from any previous run, so the on-disk set reflects only the
         # current run. Scoped to the exact ext+major glob — other containers'
         # or extensions' files are left untouched.
-        local _lineage_glob="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-*.json"
-        # shellcheck disable=SC2086
-        rm -f ${_lineage_glob}
+        # Dry runs must not mutate .build-lineage.
+        if [[ "$DRY_RUN" != "true" ]]; then
+            local _lineage_glob="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-*.json"
+            # shellcheck disable=SC2086
+            rm -f ${_lineage_glob}
+        fi
 
         # Per-version tracking for the versionset artifact.
         local available_versions=()
@@ -491,26 +539,30 @@ build_tag_push_extensions() {
             available_versions+=("$version")
 
             # Write per-version lineage file with this version's own duration.
-            local _ver_duration=$(( SECONDS - _ver_start ))
-            local _ver_image
-            _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
-            local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
-            local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
-            mkdir -p "${ROOT_DIR}/.build-lineage"
-            jq -nc \
-                --arg ext "$ext" \
-                --arg version "$version" \
-                --arg pg_major "$major_ver" \
-                --arg image "$_ver_image" \
-                --argjson duration "$_ver_duration" \
-                --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-                '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
-                > "$_ver_lineage_file"
-            log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
+            # Dry runs must not mutate .build-lineage.
+            if [[ "$DRY_RUN" != "true" ]]; then
+                local _ver_duration=$(( SECONDS - _ver_start ))
+                local _ver_image
+                _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
+                local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
+                local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
+                mkdir -p "${ROOT_DIR}/.build-lineage"
+                jq -nc \
+                    --arg ext "$ext" \
+                    --arg version "$version" \
+                    --arg pg_major "$major_ver" \
+                    --arg image "$_ver_image" \
+                    --argjson duration "$_ver_duration" \
+                    --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                    '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
+                    > "$_ver_lineage_file"
+                log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
+            fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Write versionset artifact only for multi-version (resolver-backed) extensions.
-        if [[ "$set_size" -gt 1 ]]; then
+        # Dry runs must not mutate .build-lineage.
+        if [[ "$set_size" -gt 1 ]] && [[ "$DRY_RUN" != "true" ]]; then
             local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
             mkdir -p "${ROOT_DIR}/.build-lineage"
 

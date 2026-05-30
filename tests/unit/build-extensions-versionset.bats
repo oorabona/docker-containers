@@ -502,11 +502,12 @@ _count_log_lines() {
     # The config + timescaledb.Dockerfile are already in place from setup()
 
     run bash -c "
-        export ROOT_DIR='${tmpd}'
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
 
-        cd '${sd}'
+        cd \"$sd\"
         source ./build-extensions.sh
+        # Re-set ROOT_DIR after source — build-extensions.sh resets it to the real repo
+        export ROOT_DIR=\"$tmpd\"
 
         resolve_version_set() { echo 'simulated resolver failure' >&2; return 1; }
         export -f resolve_version_set
@@ -586,11 +587,12 @@ _count_log_lines() {
     # (the actual build loop) in a single shell so the cache is shared — mimicking
     # the real main() flow where both call _resolve_cached for the same (ext, major).
     run bash -c "
-        export ROOT_DIR=\"$TEST_TEMP_DIR\"
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         export counter_file=\"$counter_file\"
         cd \"$SCRIPTS_DIR\"
         source ./build-extensions.sh
+        # Re-set ROOT_DIR after source — build-extensions.sh resets it to the real repo
+        export ROOT_DIR=\"$TEST_TEMP_DIR\"
 
         resolve_version_set() {
             local n; n=\$(cat \"\$counter_file\")
@@ -910,4 +912,166 @@ _count_log_lines() {
     local ceiling
     ceiling=$(jq -r '.ceiling' "$stale_vs")
     [ "$ceiling" = "2.27.1" ]
+}
+
+# ---------------------------------------------------------------------------
+# P1: --pull-only resolves full version set and attempts pull for each version
+# ---------------------------------------------------------------------------
+
+@test "pull-only-multiversion: resolver-backed ext attempts pull for each resolved version" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Record pull attempts; all fail so build will be triggered
+    local pull_log="$TEST_TEMP_DIR/pull_calls.log"
+    pull_ext_image() {
+        echo "PULL_CALLED ext=${1} ver=${2} pg=${3}" >> "$pull_log"
+        return 1  # simulate: not in registry
+    }
+    export -f pull_ext_image
+
+    # Build succeeds (LOCAL_ONLY=true set by handle_pull_only_mode for fallback builds)
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2} pg=${4}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 0
+    }
+    export -f build_ext_image
+
+    list_extensions_by_priority() { echo "timescaledb"; }
+    export -f list_extensions_by_priority
+
+    run handle_pull_only_mode "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must have attempted pull for all 3 versions
+    [ -f "$pull_log" ]
+    local pull_count
+    pull_count=$(wc -l < "$pull_log")
+    [ "$pull_count" -eq 3 ]
+    [[ "$(cat "$pull_log")" == *"ver=2.25.0"* ]]
+    [[ "$(cat "$pull_log")" == *"ver=2.26.0"* ]]
+    [[ "$(cat "$pull_log")" == *"ver=2.27.1"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# P2: --pull-only: versions already local are skipped (not pulled again)
+# ---------------------------------------------------------------------------
+
+@test "pull-only-skip-local: version already present locally is not pulled" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # 2.26.0 is present locally
+    docker() {
+        local img="${*: -1}"
+        [[ "$img" == *"2.26.0"* ]] && return 0 || return 1
+    }
+    export -f docker
+
+    local pull_log="$TEST_TEMP_DIR/pull_calls.log"
+    pull_ext_image() {
+        echo "PULL_CALLED ext=${1} ver=${2}" >> "$pull_log"
+        return 0
+    }
+    export -f pull_ext_image
+
+    list_extensions_by_priority() { echo "timescaledb"; }
+    export -f list_extensions_by_priority
+
+    run handle_pull_only_mode "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    [ "$status" -eq 0 ]
+
+    # 2.26.0 must NOT appear in the pull log (already present locally)
+    if [ -f "$pull_log" ]; then
+        [[ "$(cat "$pull_log")" != *"ver=2.26.0"* ]]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# DRY1: dry run must not delete existing lineage files
+# ---------------------------------------------------------------------------
+
+@test "dry-run-no-delete: pre-existing lineage file is not removed under DRY_RUN=true" {
+    export DRY_RUN=true
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create a lineage file that must survive the dry run.
+    local existing_file="$lineage_dir/ext-timescaledb-pg18-2.24.0.json"
+    printf '{"ext":"timescaledb","version":"2.24.0","duration_seconds":5}\n' > "$existing_file"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # The pre-existing lineage file must still be there.
+    [ -f "$existing_file" ]
+}
+
+# ---------------------------------------------------------------------------
+# DRY2: dry run must not write any new lineage or versionset artifact
+# ---------------------------------------------------------------------------
+
+@test "dry-run-no-write: no new lineage files created under DRY_RUN=true" {
+    export DRY_RUN=true
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    # Ensure the lineage dir does not exist before the run.
+    rm -rf "$lineage_dir"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # No lineage dir or files must have been created.
+    [ ! -d "$lineage_dir" ]
 }

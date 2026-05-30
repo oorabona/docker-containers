@@ -8,7 +8,6 @@ setup() {
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
     HELPER="${PROJECT_ROOT}/helpers/version-set-resolver.sh"
     HA_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ha-tags.txt"
-    TS_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ts-tags.txt"
 }
 
 # ── timescaledb has version_set: returns resolver output ─────────────────────
@@ -16,7 +15,6 @@ setup() {
 @test "resolve_version_set timescaledb 18 returns the resolver JSON array" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
     [[ "$output" == '["2.23.0","2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
@@ -25,7 +23,6 @@ setup() {
 @test "resolve_version_set timescaledb 18 output is valid JSON array" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
     type=$(echo "$output" | jq -r 'type')
@@ -62,7 +59,6 @@ setup() {
 @test "resolver failure propagates non-zero exit" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -ne 0 ]]
 }
@@ -70,7 +66,6 @@ setup() {
 @test "resolver failure produces empty stdout" {
     result=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18" 2>/dev/null || true)
     [[ -z "$result" ]]
 }
@@ -80,26 +75,32 @@ setup() {
 @test "timescaledb pg17 floor differs from pg18 floor" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 17"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
-    # pg17 floor is 2.17.0, not 2.23.0
-    [[ "$first" == "2.17.0" ]]
+    # pg17 floor is 2.17.2 (first TS version shipped with pg17 in the HA registry)
+    [[ "$first" == "2.17.2" ]]
 }
 
 # ── CEILING_VERSION clamps resolver output ────────────────────────────────────
 
-@test "above-ceiling version excluded when CEILING_VERSION is exported" {
-    # Fixture contains 2.28.0 which is above the pinned ceiling of 2.27.1.
-    # resolve_version_set must NOT include 2.28.0 in its output.
-    TS_ABOVE_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ts-tags-above-ceiling.txt"
+@test "above-ceiling version excluded when CEILING_VERSION is set" {
+    # The HA fixture only contains tags up to 2.27.1.
+    # The resolver ceiling (from config) is 2.27.1 — so the output must not exceed it.
+    # This test uses a synthetic fixture that adds a hypothetical 2.28.0 HA tag
+    # to verify the ceiling filter works.
+    local above_fixture
+    above_fixture="$(mktemp)"
+    # Copy the real fixture and append a hypothetical pg18.99-ts2.28.0 tag
+    cat "$HA_FIXTURE" > "$above_fixture"
+    printf 'pg18.99-ts2.28.0\n' >> "$above_fixture"
+
     run env \
-        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_ABOVE_FIXTURE" \
+        _RESOLVER_HA_TAGS_FIXTURE="$above_fixture" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
+    rm -f "$above_fixture"
     [[ "$status" -eq 0 ]]
-    # 2.28.0 must NOT appear in the output
+    # 2.28.0 must NOT appear in the output (ceiling is 2.27.1 from config)
     [[ "$output" != *'"2.28.0"'* ]]
     # The ceiling version itself (2.27.1) must be the last element
     last=$(echo "$output" | jq -r '.[-1]')

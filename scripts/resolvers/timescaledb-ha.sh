@@ -9,9 +9,13 @@
 # Output: compact JSON array of version strings, sorted oldest→newest
 # Exit:   0 on success, non-zero on any error (fail-closed, nothing on stdout)
 #
-# Test hooks:
+# Algorithm: derive the version set directly from HA image tags.
+# Real tag format: pg<MAJOR>.<pgminor>-ts<X.Y.Z>[-suffix]
+# e.g. pg18.0-ts2.23.0, pg18.4-ts2.27.1, pg17.2-ts2.18.1-oss
+# One source (HA registry) enumerates every shipped TS version per PG major.
+#
+# Test hook:
 #   _RESOLVER_HA_TAGS_FIXTURE — path to file; substitutes skopeo call
-#   _RESOLVER_TS_TAGS_FIXTURE — path to file; substitutes gh api call
 
 set -euo pipefail
 
@@ -26,7 +30,7 @@ _error() {
 
 # Fetch HA image tags — one tag per line
 # Test hook: _RESOLVER_HA_TAGS_FIXTURE
-_resolver_fetch_ha_minor_tags() {
+_resolver_fetch_ha_tags() {
     if [[ -n "${_RESOLVER_HA_TAGS_FIXTURE:-}" ]]; then
         cat "${_RESOLVER_HA_TAGS_FIXTURE}"
     else
@@ -35,33 +39,9 @@ _resolver_fetch_ha_minor_tags() {
     fi
 }
 
-# Fetch timescaledb GitHub release tag names — one per line
-# Test hook: _RESOLVER_TS_TAGS_FIXTURE
-_resolver_fetch_ts_tags() {
-    if [[ -n "${_RESOLVER_TS_TAGS_FIXTURE:-}" ]]; then
-        cat "${_RESOLVER_TS_TAGS_FIXTURE}"
-    else
-        gh api repos/timescale/timescaledb/tags --paginate \
-            --jq '.[].name'
-    fi
-}
-
-# Compare two X.Y semver minors numerically; return 0 if a >= b
-_minor_ge() {
-    local a_major a_minor b_major b_minor
-    a_major="${1%%.*}"; a_minor="${1#*.}"
-    b_major="${2%%.*}"; b_minor="${2#*.}"
-    if (( a_major != b_major )); then
-        (( a_major > b_major ))
-    else
-        (( a_minor >= b_minor ))
-    fi
-}
-
 # Compare two X.Y.Z semver versions; return 0 if a <= b
 _semver_le() {
     local a="$1" b="$2"
-    # Split into parts and compare numerically
     local a1 a2 a3 b1 b2 b3
     IFS='.' read -r a1 a2 a3 <<< "$a"
     IFS='.' read -r b1 b2 b3 <<< "$b"
@@ -71,68 +51,47 @@ _semver_le() {
 }
 
 main() {
-    # Step 1: derive floor minor from HA tags for this PG_MAJOR
+    # Fetch HA tags (one per line)
     local ha_tags
-    if ! ha_tags="$(_resolver_fetch_ha_minor_tags 2>/dev/null)"; then
+    if ! ha_tags="$(_resolver_fetch_ha_tags 2>/dev/null)"; then
         _error "failed to fetch HA tags"
         exit 1
     fi
 
-    # Extract unique X.Y minors from pg${PG_MAJOR}-tsX.Y lines (strip suffixes like -all, -oss).
-    # grep exits 1 when there are no matches; use a grouped pipeline so the || true
-    # applies to the whole chain and the output still flows to sort/head.
-    local floor_minor
-    floor_minor=$(
+    # Extract unique X.Y.Z TS versions from real HA tags for this PG_MAJOR.
+    # Real tag format: pg<MAJOR>.<pgminor>-ts<X.Y.Z>[-suffix]
+    # Only tags matching exactly ^pg${PG_MAJOR}\.[0-9]+-ts[0-9]+\.[0-9]+\.[0-9]+$
+    # (anchored: no suffix) are selected; variants like -oss/-all/-dev/-amd64 etc.
+    # are excluded by the end-anchor, so de-duplication is automatic.
+    local versions
+    versions=$(
         { echo "$ha_tags" \
-            | grep -E "^pg${PG_MAJOR}-ts[0-9]+\.[0-9]+$" \
-            | sed "s/^pg${PG_MAJOR}-ts//" \
-            | sort -t. -k1,1n -k2,2n \
-            | head -1; } 2>/dev/null || true
+            | grep -E "^pg${PG_MAJOR}\.[0-9]+-ts[0-9]+\.[0-9]+\.[0-9]+$" \
+            | sed "s/^pg${PG_MAJOR}\.[0-9]*-ts//"; } 2>/dev/null || true
     )
 
-    if [[ -z "$floor_minor" ]]; then
+    if [[ -z "$versions" ]]; then
         _error "no HA tags found for PG${PG_MAJOR}"
         exit 1
     fi
 
-    # Step 2: fetch full TS release tags and filter
-    local ts_tags
-    if ! ts_tags="$(_resolver_fetch_ts_tags 2>/dev/null)"; then
-        _error "failed to fetch TS tags"
-        exit 1
-    fi
+    # De-duplicate (multiple pg minors may carry the same TS X.Y.Z).
+    versions=$(echo "$versions" | sort -V -u)
 
-    # Keep only bare semver X.Y.Z (no v-prefix, no -p0, no pre-release suffixes).
-    # grep exits 1 when there are no matches; || true prevents set -e from
-    # aborting before the explicit emptiness check below emits the actionable error.
-    local versions
-    versions=$(
-        { echo "$ts_tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'; } 2>/dev/null || true
-    )
-
-    if [[ -z "$versions" ]]; then
-        _error "no valid semver tags found in TS releases"
-        exit 1
-    fi
-
-    # Filter: keep versions where X.Y >= floor_minor
+    # Apply ceiling filter when set.
     local filtered=""
-    while IFS= read -r ver; do
-        local minor="${ver%.*}"  # strip patch → X.Y
-        if _minor_ge "$minor" "$floor_minor"; then
-            # Apply ceiling if set
-            if [[ -n "$CEILING_VERSION" ]]; then
-                if _semver_le "$ver" "$CEILING_VERSION"; then
-                    filtered+="${ver}"$'\n'
-                fi
-            else
+    if [[ -n "$CEILING_VERSION" ]]; then
+        while IFS= read -r ver; do
+            if _semver_le "$ver" "$CEILING_VERSION"; then
                 filtered+="${ver}"$'\n'
             fi
-        fi
-    done <<< "$versions"
+        done <<< "$versions"
+    else
+        filtered="$versions"$'\n'
+    fi
 
-    if [[ -z "$filtered" ]]; then
-        _error "no versions in range [${floor_minor}, ${CEILING_VERSION:-∞}]"
+    if [[ -z "${filtered// /}" ]] || [[ -z "$(echo "$filtered" | grep -v '^$' || true)" ]]; then
+        _error "no versions in range [floor, ${CEILING_VERSION:-∞}]"
         exit 1
     fi
 
@@ -159,7 +118,7 @@ main() {
         local ceiling_present
         ceiling_present=$(echo "$json_array" | jq --arg v "$CEILING_VERSION" 'map(select(. == $v)) | length')
         if (( ceiling_present == 0 )); then
-            _error "configured version ${CEILING_VERSION} not found in upstream tags (typo or tag lag?)"
+            _error "configured version ${CEILING_VERSION} not found in upstream HA tags"
             exit 1
         fi
     fi

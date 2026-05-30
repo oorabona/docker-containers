@@ -2,13 +2,14 @@
 
 # Unit tests for scripts/resolvers/timescaledb-ha.sh
 # All tests are fixture-driven (no network).
+# Fixture: tests/fixtures/resolver/ha-tags.txt
+# Real HA tag format: pg<MAJOR>.<pgminor>-ts<X.Y.Z>[-suffix]
 
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
     RESOLVER="${PROJECT_ROOT}/scripts/resolvers/timescaledb-ha.sh"
     HA_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ha-tags.txt"
-    TS_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ts-tags.txt"
 }
 
 # ── pg18: exact 13-version array ─────────────────────────────────────────────
@@ -16,7 +17,6 @@ setup() {
 @test "pg18 produces exactly the 13-version array" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -26,7 +26,6 @@ setup() {
 @test "pg18 array has 13 elements" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -34,23 +33,31 @@ setup() {
     [[ "$count" -eq 13 ]]
 }
 
-# ── pg17: floor 2.17 ──────────────────────────────────────────────────────────
+# ── pg17: floor 2.17.2 ────────────────────────────────────────────────────────
 
-@test "pg17 floor is 2.17.0" {
+@test "pg17 floor is 2.17.2" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
-    [[ "$first" == "2.17.0" ]]
+    [[ "$first" == "2.17.2" ]]
 }
 
-@test "pg17 array starts at 2.17 and ends at 2.27.1" {
+@test "pg17 array has 32 elements" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 32 ]]
+}
+
+@test "pg17 array ends at 2.27.1" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -58,12 +65,11 @@ setup() {
     [[ "$last" == "2.27.1" ]]
 }
 
-# ── pg16: floor 2.13 ──────────────────────────────────────────────────────────
+# ── pg16: floor 2.13.0, 45 versions ──────────────────────────────────────────
 
 @test "pg16 floor is 2.13.0" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -71,23 +77,42 @@ setup() {
     [[ "$first" == "2.13.0" ]]
 }
 
-# ── Filtering: -p0, v-prefix, pre-release must be excluded ───────────────────
-
-@test "output contains no -p0 suffixed versions" {
+@test "pg16 array has 45 elements" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 45 ]]
+}
+
+# ── Suffix variants do not create extra versions or affect results ─────────────
+
+@test "suffix variants (-oss/-all/-all-oss) do not create extra versions" {
+    # The fixture contains -all, -all-oss, and -oss suffixed variants.
+    # The resolver must de-duplicate and produce only clean X.Y.Z versions.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
-    # None of the entries contain a dash
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 13 ]]
+}
+
+@test "output contains no -oss suffixed versions" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
     ! echo "$output" | jq -e '.[] | select(contains("-"))' > /dev/null 2>&1
 }
 
 @test "output contains no v-prefixed versions" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -97,11 +122,9 @@ setup() {
 @test "output is sorted oldest to newest" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
-    # Verify array equals itself sorted by sort -V
     sorted=$(echo "$output" | jq -r '.[]' | sort -V | jq -Rsc 'split("\n") | map(select(length > 0))')
     [[ "$output" == "$sorted" ]]
 }
@@ -111,7 +134,6 @@ setup() {
 @test "output is valid JSON array" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -124,7 +146,6 @@ setup() {
 @test "missing HA fixture exits non-zero" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -ne 0 ]]
@@ -133,27 +154,6 @@ setup() {
 @test "missing HA fixture produces empty stdout" {
     result=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
-        "$RESOLVER" 2>/dev/null || true)
-    [[ -z "$result" ]]
-}
-
-# ── Fail-closed: missing TS fixture → non-zero + empty stdout ────────────────
-
-@test "missing TS fixture exits non-zero" {
-    run env \
-        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="/nonexistent/ts.txt" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
-        "$RESOLVER"
-    [[ "$status" -ne 0 ]]
-}
-
-@test "missing TS fixture produces empty stdout" {
-    result=$(env \
-        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="/nonexistent/ts.txt" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
         "$RESOLVER" 2>/dev/null || true)
     [[ -z "$result" ]]
@@ -164,7 +164,6 @@ setup() {
 @test "unknown PG_MAJOR exits non-zero" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=99 CEILING_VERSION=2.27.1 \
         "$RESOLVER"
     [[ "$status" -ne 0 ]]
@@ -175,71 +174,31 @@ setup() {
 @test "CEILING_VERSION clamps output" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.24.0 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     last=$(echo "$output" | jq -r '.[-1]')
     [[ "$last" == "2.24.0" ]]
-    # 2.27.x should not appear
     ! echo "$output" | jq -e '.[] | select(startswith("2.25"))' > /dev/null 2>&1
-}
-
-# ── -all / -oss variants in HA tags are tolerated (not counted as separate floors) ──
-
-@test "-all and -oss HA tag variants do not affect floor detection" {
-    run env \
-        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
-        "$RESOLVER"
-    [[ "$status" -eq 0 ]]
-    first=$(echo "$output" | jq -r '.[0]')
-    # Floor must still be 2.23.0 despite -all/-oss variants being present
-    [[ "$first" == "2.23.0" ]]
 }
 
 # ── H: actionable error messages reach stderr ─────────────────────────────────
 
 @test "H-unsupported-pg: unknown PG_MAJOR exits non-zero and emits 'no HA tags' on stderr" {
-    # HA fixture has no tags for PG_MAJOR=99 so the grep for pg99-ts* returns
-    # nothing. Before the fix: grep exits 1, set -e aborts before _error fires
-    # → stderr is empty. After the fix: empty capture then explicit _error.
     local combined
     combined=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=99 CEILING_VERSION=2.27.1 \
         "$RESOLVER" 2>&1 || true)
     [[ "$combined" == *"no HA tags"* ]]
-}
-
-@test "H-no-semver-tags: TS fixture with only non-semver tags exits non-zero and emits 'no valid semver' on stderr" {
-    # A TS fixture that contains only v-prefixed / pre-release tags means the
-    # bare-semver grep returns nothing. Before the fix: set -e aborts silently.
-    # After the fix: empty capture then explicit _error with actionable message.
-    local no_semver_fixture
-    no_semver_fixture="$(mktemp)"
-    printf 'v2.27.1\n2.27.1-rc1\n2.27.0-beta\n' > "$no_semver_fixture"
-    local combined
-    combined=$(env \
-        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$no_semver_fixture" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
-        "$RESOLVER" 2>&1 || true)
-    rm -f "$no_semver_fixture"
-    [[ "$combined" == *"no valid semver"* ]]
 }
 
 # ── I: configured CEILING_VERSION absent from upstream tags → non-zero + actionable error ──
 
 @test "I-ceiling-absent: configured CEILING_VERSION not in upstream tags exits non-zero" {
     # ceiling 2.28.0 is NOT present in the fixture (tops out at 2.27.1).
-    # Before the fix: resolver returns the sub-ceiling set with exit 0 — silent config gap.
-    # After the fix: assert CEILING_VERSION is a member of the filtered set; fail-closed.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
         "$RESOLVER"
     [[ "$status" -ne 0 ]]
@@ -249,7 +208,6 @@ setup() {
     local combined
     combined=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        _RESOLVER_TS_TAGS_FIXTURE="$TS_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.28.0 \
         "$RESOLVER" 2>&1 || true)
     # Must mention the configured version so the operator knows what to fix
