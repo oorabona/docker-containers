@@ -64,11 +64,16 @@ expand_template() {
         for i in "${!_marker_names[@]}"; do
             if [[ "$line" == *"@@${_marker_names[$i]}@@"* ]]; then
                 # Replace marker line with content (if non-empty)
-                [[ -n "${_marker_content[$i]}" ]] && printf '%s' "${_marker_content[$i]}"
+                if [[ -n "${_marker_content[$i]}" ]]; then
+                    printf '%s' "${_marker_content[$i]}"
+                fi
                 matched=true
                 break
             fi
         done
-        [[ "$matched" != "true" ]] && printf '%s\n' "$line"
+        if [[ "$matched" != "true" ]]; then
+            printf '%s\n' "$line"
+        fi
     done < "$template"
+    return 0
 }

@@ -264,8 +264,50 @@ generate_dockerfile() {
 
             local ext_version
             ext_version=$(ext_config "$ext_name" "version" "$config_file")
-            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
 
+            # Check for a versionset artifact emitted by build-extensions.
+            # When present, emit one FROM+COPY pair per available version in
+            # ascending order so the ceiling version (highest) is COPIED LAST —
+            # its timescaledb.control (default_version=<ceiling>) wins at
+            # install time without needing an explicit override step.
+            local versionset_file="${ROOT_DIR:-.}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
+            if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
+                # Prefer .available[]; fall back to .resolved[] when available is empty.
+                local raw_versions
+                raw_versions=$(jq -r '
+                    if (.available | length) > 0 then .available[]
+                    else .resolved[]
+                    end
+                ' "$versionset_file" 2>/dev/null || true)
+
+                if [[ -n "$raw_versions" ]]; then
+                    # Sort ascending (sort -V handles semver ordering)
+                    local sorted_versions
+                    sorted_versions=$(echo "$raw_versions" | sort -V)
+
+                    while IFS= read -r ver; do
+                        [[ -z "$ver" ]] && continue
+                        # Docker stage names must not contain dots — replace with underscores
+                        local ver_alias="${ver//./_}"
+                        local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ver}"
+                        stages_block+="FROM ${image} AS ext-${ext_name}-${ver_alias}"$'\n'
+                        copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
+                        copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
+                    done <<< "$sorted_versions"
+
+                    # Collect runtime_deps (if any) — unchanged from single-version path
+                    local deps
+                    deps=$(ext="$ext_name" yq -r '(.extensions[strenv(ext)].runtime_deps // [])[]' "$config_file" 2>/dev/null || true)
+                    if [[ -n "$deps" ]]; then
+                        all_runtime_deps+="${deps}"$'\n'
+                    fi
+                    continue
+                fi
+            fi
+
+            # Single-version path (no versionset artifact, or jq unavailable):
+            # keep the original behavior — one stage, flat COPY paths.
+            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
             stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'
@@ -288,7 +330,10 @@ generate_dockerfile() {
         runtime_deps_block+="RUN apk add --no-cache ${unique_deps}"$'\n'
     fi
 
-    # Expand template using generic template engine
+    # Expand template using generic template engine.
+    # expand_template returns 0 on success, non-zero on genuine errors
+    # (missing template file, no markers provided). Let the exit status
+    # propagate so callers see real failures instead of always succeeding.
     expand_template "$template" \
         "EXTENSION_STAGES" "$stages_block" \
         "EXTENSION_COPIES" "$copies_block" \

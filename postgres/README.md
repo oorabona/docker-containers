@@ -296,7 +296,7 @@ default_statistics_target = 100
 | hypopg | 1.4.2 | Hypothetical indexes | analytics, full | PostgreSQL |
 | pg_qualstats | 2.1.3 | Predicate statistics | analytics, full | PostgreSQL |
 | PostGIS | 3.6.2 | Geospatial types and functions | analytics, timeseries, spatial, full | GPL-2.0 |
-| TimescaleDB | 2.25.1 | Time-series database | timeseries, full | Apache-2.0 + TSL |
+| TimescaleDB | 2.27.1 | Time-series database | timeseries, full | Apache-2.0 + TSL |
 | Citus | 14.0.0 | Distributed PostgreSQL | distributed, full | AGPL-3.0 |
 | pg_cron | 1.6.7 | Job scheduler | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
 | pg_ivm | 1.13 | Incremental materialized views | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
@@ -314,6 +314,33 @@ Analytics and full flavors also include:
 - `pg_buffercache` - Shared buffer inspection
 - `pg_prewarm` - Buffer cache preloading
 - `file_fdw` / `postgres_fdw` - Foreign data wrappers (full only)
+
+## TimescaleDB Version Retention
+
+The `timeseries` and `full` flavors ship every retained TimescaleDB `.so` (e.g. 2.23.0 through 2.27.1). This lets a persisted database on an older TimescaleDB version **start without any migration** — PostgreSQL loads the `.so` matching the version recorded in the database catalog.
+
+The `timescaledb.control` file sets `default_version` to the pinned ceiling (currently 2.27.1), so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
+
+### Moving an existing database to the pinned version
+
+**Manual (recommended for existing volumes):** connect to each database that has TimescaleDB installed and run:
+
+```sql
+ALTER EXTENSION timescaledb UPDATE;
+```
+
+**Automatic on fresh init:** set `TIMESCALEDB_AUTO_UPGRADE=true` when starting the container with a fresh (empty) data directory. The init script `02-timescaledb-upgrade.sh` runs the UPDATE automatically. Init scripts do **not** run against existing data volumes — the manual path above applies there.
+
+```yaml
+services:
+  postgres:
+    image: ghcr.io/oorabona/postgres:18-timeseries-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TIMESCALEDB_AUTO_UPGRADE: "true"   # only affects fresh init
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+```
 
 ## Security
 

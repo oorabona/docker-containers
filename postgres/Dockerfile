@@ -74,13 +74,43 @@ RUN if [ -n "${LOCALES}" ]; then \
 
 # Install extensions based on flavor
 RUN set -eux; \
-    # Function to install an extension from staging
+    # Install an extension from its staging area under /tmp/ext/<ext>/. \
+    # Two layouts are supported: \
+    # \
+    # 1. Multi-version (retention): /tmp/ext/<ext>/<ver>/{extension,lib}/ \
+    #    Each retained version ships its own .so so a persisted database on an \
+    #    older version can still start without a forced pg_upgrade. \
+    #    Files are installed in ascending version order (sort -V) so the highest \
+    #    (ceiling) version's timescaledb.control — which carries \
+    #    default_version=<ceiling> — is written last and wins. \
+    #    A new `CREATE EXTENSION timescaledb` therefore defaults to the pinned \
+    #    ceiling; existing databases on older versions continue to load their .so. \
+    # \
+    # 2. Single-version (no retention): /tmp/ext/<ext>/{extension,lib}/ \
+    #    Original flat layout, unchanged behaviour. \
     install_ext() { \
         local ext=$1; \
         if [ -d "/tmp/ext/${ext}/extension" ]; then \
-            echo "Installing extension: ${ext}"; \
+            echo "Installing extension (single-version): ${ext}"; \
             cp -v /tmp/ext/${ext}/extension/* /usr/local/share/postgresql/extension/ 2>/dev/null || true; \
             cp -v /tmp/ext/${ext}/lib/* /usr/local/lib/postgresql/ 2>/dev/null || true; \
+        elif ls -d /tmp/ext/${ext}/*/ 1>/dev/null 2>&1; then \
+            echo "Installing extension (multi-version): ${ext}"; \
+            for ver_dir in $(ls -d /tmp/ext/${ext}/*/ | sort -V); do \
+                echo "  version: ${ver_dir}"; \
+                if [ -d "${ver_dir}lib" ]; then \
+                    cp -v ${ver_dir}lib/* /usr/local/lib/postgresql/ 2>/dev/null || true; \
+                fi; \
+                if [ -d "${ver_dir}extension" ]; then \
+                    cp -v ${ver_dir}extension/* /usr/local/share/postgresql/extension/ 2>/dev/null || true; \
+                fi; \
+            done; \
+            ceiling_dir=$(ls -d /tmp/ext/${ext}/*/ | sort -V | tail -1); \
+            if [ -f "${ceiling_dir}extension/${ext}.control" ]; then \
+                cp -v "${ceiling_dir}extension/${ext}.control" \
+                    /usr/local/share/postgresql/extension/${ext}.control; \
+                echo "  ceiling control: $(grep '^default_version' ${ceiling_dir}extension/${ext}.control || true)"; \
+            fi; \
         fi; \
     }; \
     \
@@ -246,6 +276,31 @@ RUN case "${FLAVOR}" in \
                 > /docker-entrypoint-initdb.d/01-init-flavor.sql \
             ;; \
     esac
+
+# Create the opt-in TimescaleDB auto-upgrade init script.
+# This script only activates when TIMESCALEDB_AUTO_UPGRADE=true is set at
+# container start. Default is OFF — the image ships every retained .so so an
+# existing database on an older TimescaleDB version can start without any
+# ALTER. Set the variable to automatically update to the pinned ceiling on
+# a fresh data directory (initdb scripts do NOT run against existing volumes).
+#
+# For existing volumes use the manual path documented in postgres/README.md:
+#   psql -c 'ALTER EXTENSION timescaledb UPDATE;'
+RUN if ls /usr/local/lib/postgresql/timescaledb*.so 1>/dev/null 2>&1; then \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# Opt-in TimescaleDB upgrade to the pinned ceiling version.' \
+        '# Runs only when TIMESCALEDB_AUTO_UPGRADE=true is set.' \
+        '# initdb scripts run only on a FRESH data directory.' \
+        'if [ "${TIMESCALEDB_AUTO_UPGRADE:-false}" = "true" ]; then' \
+        '    echo "TIMESCALEDB_AUTO_UPGRADE=true: updating timescaledb extension..."' \
+        '    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL' \
+        '        ALTER EXTENSION timescaledb UPDATE;' \
+        'EOSQL' \
+        'fi' \
+        > /docker-entrypoint-initdb.d/02-timescaledb-upgrade.sh; \
+    chmod +x /docker-entrypoint-initdb.d/02-timescaledb-upgrade.sh; \
+fi
 
 # Configure shared_preload_libraries based on actually installed extensions
 # Detects which extensions need preloading by checking for their .so files
