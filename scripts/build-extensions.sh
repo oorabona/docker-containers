@@ -469,7 +469,7 @@ build_tag_push_extensions() {
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
 
-        # Strict-semver injection guard: applies ONLY to resolver-backed extensions
+        # Semver/ceiling injection guard: applies ONLY to resolver-backed extensions
         # (those with version_set.resolver in config.yaml). Their version sets come
         # from an external resolver whose output is untrusted — a malformed or
         # injected entry must never reach a docker tag or build-arg.
@@ -478,41 +478,18 @@ build_tag_push_extensions() {
         # in config.yaml (operator-controlled, same trust level as the Dockerfile).
         # The injection concern does not apply to them, and their legitimate formats
         # (e.g. "1.14") must not be rejected.
+        #
+        # The primary validation happens in _resolve_cached (chokepoint) before the
+        # result is cached. This gate is retained as defense-in-depth for the
+        # LOCAL_ONLY degrade path (where _resolve_cached failed and version_set_json
+        # was replaced with the operator-controlled ceiling) and any path that might
+        # bypass the cache. validate_semver_set_json is the shared validator used by
+        # both _resolve_cached and this gate — single implementation, no duplication.
         local _resolver_path
         _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
 
         if [[ -n "$_resolver_path" ]]; then
-            # Validate the resolved set at the JSON-array-element level BEFORE any
-            # line-oriented iteration. Using \A and \z anchors (whole-string, not
-            # line-boundary) so an element containing an embedded newline
-            # ("2.27.1\n9.9.9") fails the pattern rather than being split into two
-            # passing lines by jq -r. Each element must be a string matching strict
-            # semver with no embedded control characters.
-            local _semver_ok=true
-            if ! echo "$version_set_json" | jq -e \
-                'type == "array" and length > 0 and
-                 all(.[]; type == "string" and test("\\A[0-9]+\\.[0-9]+\\.[0-9]+\\z"))' \
-                > /dev/null 2>&1; then
-                log_error "$ext: resolved set contains a non-strict-semver element (injection guard)"
-                _semver_ok=false
-            fi
-
-            # Ceiling clamp (defense-in-depth): reject the set if any element sorts
-            # AFTER the ceiling under sort -V. The resolver already clamps; this
-            # is belt-and-suspenders so a compromised resolver cannot smuggle an
-            # above-ceiling version into the build loop.
-            if [[ "$_semver_ok" == "true" ]]; then
-                local _highest_in_set
-                _highest_in_set=$(echo "$version_set_json" | jq -r '.[]' | sort -V | tail -1)
-                local _ceiling_is_highest
-                _ceiling_is_highest=$(printf '%s\n%s\n' "$_highest_in_set" "$ceiling" | sort -V | tail -1)
-                if [[ "$_ceiling_is_highest" != "$ceiling" ]]; then
-                    log_error "$ext: resolved set contains above-ceiling version '$_highest_in_set' (ceiling=$ceiling) — refusing to build"
-                    _semver_ok=false
-                fi
-            fi
-
-            if [[ "$_semver_ok" == "false" ]]; then
+            if ! validate_semver_set_json "$version_set_json" "$ceiling"; then
                 if [[ "$LOCAL_ONLY" == "true" ]]; then
                     log_warning "$ext: semver/ceiling validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
                     version_set_json="[\"$ceiling\"]"
@@ -671,6 +648,30 @@ _resolve_cached() {
     if ! echo "$result" | jq -e 'type == "array" and length > 0 and (all(.[]; type == "string"))' > /dev/null 2>&1; then
         log_error "resolver for $ext returned invalid version set (not a non-empty string array): $result"
         return 1
+    fi
+
+    # For RESOLVER-BACKED extensions only: apply strict whole-string semver +
+    # ceiling validation at the chokepoint BEFORE caching.
+    # This prevents the embedded-newline bypass where jq -r '.[]' would split a
+    # single element "2.27.1\n9.9.9" into two apparent versions, each passing a
+    # per-line semver check in every downstream consumer.
+    #
+    # Non-resolver single-version extensions (e.g. pg_ivm "1.14") return a
+    # single-element array from a config-controlled value — they are NOT resolver-
+    # backed and must NOT be subjected to this check (their format may not be 3-part
+    # semver). Detection: check for a non-empty version_set.resolver in config_file.
+    if [[ -n "${config_file:-}" ]]; then
+        local _resolver_path_cached
+        _resolver_path_cached=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "${config_file}" 2>/dev/null || true)
+        if [[ -n "$_resolver_path_cached" ]]; then
+            # Read the ceiling for the clamp check.
+            local _ceiling_cached
+            _ceiling_cached=$(yq -r ".extensions.${ext}.version" "${config_file}" 2>/dev/null || true)
+            if ! validate_semver_set_json "$result" "$_ceiling_cached"; then
+                log_error "resolver for $ext returned set that fails whole-string semver/ceiling validation (injection guard): $result"
+                return 1
+            fi
+        fi
     fi
 
     # Write atomically so a concurrent subshell never reads a partial file.

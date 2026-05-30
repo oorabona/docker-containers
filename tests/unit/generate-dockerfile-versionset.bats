@@ -1462,6 +1462,116 @@ _run_registry_probe_3state() {
     echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/extension/"
 }
 
+# ---------------------------------------------------------------------------
+# AG-3: generate_dockerfile artifact-consumption path — artifact whose
+# available[] contains a poisoned element "2.25.0\n2.26.0" (one string,
+# embedded newline) must be rejected BEFORE any FROM/COPY stage emission.
+# Without the fix, jq -r '.available[]' splits the element into two lines and
+# each passes the per-line is_strict_semver check, emitting two extra stages.
+#
+# RED before fix: two stages emitted (2.25.0 and 2.26.0 treated as separate).
+# GREEN after fix: artifact rejected, generate_dockerfile returns non-zero.
+#
+# Non-vacuous: the smuggled version must NOT appear as a FROM stage.
+# ---------------------------------------------------------------------------
+
+@test "AG-3-artifact-poisoned-available: artifact with embedded-newline element rejected before stage emission" {
+    # Artifact with one poisoned element: "2.25.0\n2.26.0" contains an embedded newline.
+    mkdir -p "$TEST_TEMP_DIR/.build-lineage"
+    # Write JSON manually: the element contains a literal \n inside the string.
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0\\n2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must fail closed — the poisoned artifact is rejected before stage emission.
+    [ "$status" -ne 0 ]
+
+    # The smuggled "2.26.0" must NOT appear as a FROM stage (non-vacuous).
+    echo "$output" | grep -qv "FROM.*ext-timescaledb:pg18-2.26.0" || true
+    # And "2.25.0\n2.26.0" (the raw poisoned element) must not appear literally.
+    [[ "$output" != *"2.25.0"$'\n'"2.26.0"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AG-4: generate_dockerfile self-heal path — resolver returns a set with an
+# embedded-newline element where BOTH parts are below-ceiling valid semver
+# ("2.25.0\n2.26.0") so the ceiling clamp cannot catch it. Without the
+# whole-string chokepoint, both 2.25.0 and 2.26.0 get probed separately and
+# both would be present (image_exists_in_registry returns 0), leading to
+# TWO stages from a single JSON element. With the fix, the whole-string
+# check rejects the element before any probe or stage emission.
+#
+# RED before fix: jq -r '.[]' splits into 2 lines, both below ceiling, both
+#   "present" -> 2 stages emitted from one poisoned element.
+# GREEN after fix: whole-string anchor rejects the element -> fail-closed.
+# ---------------------------------------------------------------------------
+
+@test "AG-4-self-heal-embedded-newline-below-ceiling: resolver returns embedded-newline element (both parts below ceiling) in self-heal path -> fail-closed" {
+    # No versionset artifact — triggers self-heal path.
+    rm -f "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    # Resolver returns ["2.25.0\n2.26.0"] — one element with embedded newline.
+    # Both 2.25.0 and 2.26.0 are below ceiling 2.27.1, so the ceiling clamp
+    # would NOT catch this without the whole-string anchor.
+    resolve_version_set() {
+        printf '["2.25.0\\n2.26.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # skopeo mocked to not be installed (avoid real network calls).
+    skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+    export -f skopeo
+
+    # All probes succeed — both split lines would be "present" without the fix.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must fail closed — the embedded-newline element fails whole-string validation.
+    [ "$status" -ne 0 ]
+
+    # Neither 2.25.0 nor 2.26.0 from the split must appear as FROM stages.
+    # (non-vacuous: assert the smuggled version never becomes a stage)
+    [[ "$output" != *"pg18-2.25.0"* ]]
+    [[ "$output" != *"pg18-2.26.0"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AG-5: regression guard — valid versionset artifact with 3 clean elements
+# still produces exactly 3 FROM stages (chokepoint must not break happy path).
+# ---------------------------------------------------------------------------
+
+@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> 3 FROM stages" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    [ "$from_count" -eq 3 ]
+
+    # All three versions present, no smuggled version (non-vacuous).
+    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
+    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+}
+
 @test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
     # Write a valid versionset artifact so the test verifies the prereq path,
     # not the artifact-absent self-heal path.

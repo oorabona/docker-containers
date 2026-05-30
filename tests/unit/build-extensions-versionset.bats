@@ -5710,3 +5710,152 @@ EOCFG
     [[ "$(cat "$build_log")" == *"ver=2.26.0"* ]]
     [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# AG-1: _should_build_extension — resolver returns element with embedded newline
+# ("2.27.1\n9.9.9") -> the all-cached path must reject it fail-closed.
+# Without the chokepoint fix, jq -r '.[]' splits the element into two lines
+# (2.27.1 and 9.9.9); each passes the per-line semver check, and 9.9.9 is
+# treated as "already available", causing _should_build_extension to skip the
+# extension and the smuggled 9.9.9 to silently pass into the all-cached path.
+#
+# RED before fix: exits 0 or 1 (treated as "all available").
+# GREEN after fix: exits non-zero (fail-closed at _resolve_cached chokepoint).
+# ---------------------------------------------------------------------------
+
+@test "AG-1-should-build-embedded-newline: resolver returns element with embedded newline -> fail-closed in pre-filter" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() {
+        printf '["2.27.1\\n9.9.9"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # All registry probes return true — if 9.9.9 is treated as a version,
+    # it would be "available" and the extension would be all-cached (return 1).
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run _should_build_extension \
+        "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must fail closed (rc >= 2) — neither 0 (build-needed) nor 1 (all-cached skip).
+    # The smuggled 9.9.9 must never be treated as a present version.
+    [ "$status" -ne 0 ]
+    [ "$status" -ne 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# AG-2: embedded-newline resolver output must never reach the versionset artifact.
+# Full main() subprocess: poisoned resolver -> exit non-zero, artifact absent or
+# does not contain 9.9.9.
+#
+# RED before fix: 9.9.9 treated as available -> artifact contains 9.9.9 or exits 0.
+# GREEN after fix: rejected at chokepoint -> exit non-zero, no 9.9.9 in artifact.
+# ---------------------------------------------------------------------------
+
+@test "AG-2-poisoned-all-cached-never-in-artifact: embedded-newline resolver output never written to versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Run in a subprocess to isolate environment mutations.
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { printf "[\"2.27.1\\\\n9.9.9\"]"; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version)              echo "2.27.1" ;;
+                repo)                 echo "https://github.com/timescale/timescaledb" ;;
+                version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+                *)                    echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+        build_ext_image()  { return 0; }
+        export -f build_ext_image
+        tag_ext_image()    { return 0; }
+        export -f tag_ext_image
+        push_ext_image()   { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    ' 2>&1
+
+    # Must fail closed.
+    [ "$status" -ne 0 ]
+
+    # The artifact must not contain 9.9.9.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    if [ -f "$artifact" ]; then
+        [[ "$(cat "$artifact")" != *"9.9.9"* ]]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# AH: regression guard — valid resolver output (clean semver, at/below ceiling)
+# passes the chokepoint and _should_build_extension returns 1 (all-cached skip).
+# Ensures the chokepoint does not break the normal happy path.
+# ---------------------------------------------------------------------------
+
+@test "AH-clean-all-cached-still-skips: valid set all-present -> _should_build_extension returns 1 (skip)" {
+    export LOCAL_ONLY=false
+
+    resolve_version_set() { echo '["2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # All versions present in registry.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run _should_build_extension \
+        "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must return 1 (skip — all already available).
+    [ "$status" -eq 1 ]
+}

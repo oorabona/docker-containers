@@ -326,6 +326,49 @@ is_strict_semver() {
     [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# validate_semver_set_json <json_array> <ceiling>
+# Validates a JSON array of version strings at the array level (NOT after jq -r).
+# This prevents the embedded-newline bypass where jq -r '.[]' splits a single
+# element "2.27.1\n9.9.9" into two lines that each pass a per-line check.
+#
+# Checks (operating on the JSON array before any jq -r iteration):
+#   1. Input is a non-empty JSON array where EVERY element is a STRING matching
+#      strict semver with WHOLE-STRING anchors: \A[0-9]+\.[0-9]+\.[0-9]+\z
+#      (\A/\z are whole-string, not per-line — jq/Oniguruma uses these).
+#   2. Every element is <= ceiling (highest element must not exceed ceiling under
+#      sort -V; this is the ceiling clamp / belt-and-suspenders guard).
+#
+# Returns 0 (valid) or 1 (invalid/malformed/above-ceiling).
+# Does NOT log — callers emit appropriate error messages.
+#
+# Only applies to RESOLVER-BACKED extensions (caller's responsibility to gate).
+# Non-resolver single-version extensions (e.g. pg_ivm "1.14") bypass validation
+# at the caller level.
+validate_semver_set_json() {
+    local json_array="$1"
+    local ceiling="$2"
+
+    # 1. Every element must be a string matching strict semver with whole-string anchors.
+    #    \A and \z are Oniguruma whole-string anchors (not per-line like ^ and $).
+    if ! echo "$json_array" | jq -e \
+        'type == "array" and length > 0 and
+         all(.[]; type == "string" and test("\\A[0-9]+\\.[0-9]+\\.[0-9]+\\z"))' \
+        > /dev/null 2>&1; then
+        return 1
+    fi
+
+    # 2. Ceiling clamp: reject if any element is above the ceiling.
+    #    Sort all elements + ceiling; if the last element is not the ceiling,
+    #    some element exceeds the ceiling.
+    local _highest
+    _highest=$(echo "$json_array" | jq -r '.[]' | { cat; printf '%s\n' "$ceiling"; } | sort -V | tail -1)
+    if [[ "$_highest" != "$ceiling" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
 # ============================================================================
 # Flavor-aware Dockerfile generation
 # Instead of building N bundle images, we template the main Dockerfile
@@ -476,9 +519,12 @@ generate_dockerfile() {
                     return 1
                 fi
 
-                # Validate: must be a non-empty JSON array
-                if ! echo "$_sh_resolved_json" | jq -e 'type == "array" and length > 0' > /dev/null 2>&1; then
-                    log_error "generate_dockerfile: self-heal resolver for $ext_name returned invalid set: $_sh_resolved_json"
+                # Validate the resolver output at the JSON-array level using whole-string
+                # semver anchors (\A...\z) before any jq -r iteration.
+                # This prevents the embedded-newline bypass where jq -r '.[]' splits a
+                # single element "2.25.0\n2.26.0" into two apparently-valid lines.
+                if ! validate_semver_set_json "$_sh_resolved_json" "$ext_version"; then
+                    log_error "generate_dockerfile: self-heal resolver for $ext_name returned invalid or above-ceiling set: $_sh_resolved_json"
                     return 1
                 fi
 
@@ -536,6 +582,19 @@ generate_dockerfile() {
                 available_count=$(echo "$_versionset_json" | jq '.available | length' 2>/dev/null || echo 0)
 
                 if [[ "$available_count" -gt 0 ]]; then
+                    # Validate the available[] array at the JSON level BEFORE any jq -r
+                    # iteration. This prevents the embedded-newline bypass where a single
+                    # element "2.25.0\n2.26.0" would be split into two apparent versions
+                    # by jq -r, each passing the per-line is_strict_semver check.
+                    # validate_semver_set_json uses whole-string anchors (\A...\z) and
+                    # the ceiling clamp, operating on the JSON array directly.
+                    local _available_json
+                    _available_json=$(echo "$_versionset_json" | jq '.available' 2>/dev/null || echo 'null')
+                    if ! validate_semver_set_json "$_available_json" "$ext_version"; then
+                        log_error "generate_dockerfile: available[] for $ext_name contains invalid, malformed, or above-ceiling entry — refusing to emit stages (poisoned or malformed artifact)"
+                        return 1
+                    fi
+
                     # Fail-closed: the configured ceiling version must be present in
                     # available[].  If it is absent (e.g. build-side probe missed it
                     # due to a ceiling-fatal error), shipping an older-only image
@@ -549,12 +608,9 @@ generate_dockerfile() {
                         return 1
                     fi
 
-                    # Validate every available[] entry before emitting Dockerfile stages.
-                    # Each entry must:
-                    #   1. Match strict semver (^[0-9]+\.[0-9]+\.[0-9]+$)
-                    #   2. Be <= the configured ceiling (sort -V: ceiling must be last or equal)
-                    # Reject the artifact (fail closed) if any entry is malformed or
-                    # above the ceiling — do not silently emit bad/injection-unsafe stages.
+                    # Per-element validation (now redundant for semver/ceiling, retained as
+                    # defense-in-depth for any value that passes validate_semver_set_json
+                    # but would still be unsafe as a Docker stage name).
                     local _val_ver
                     while IFS= read -r _val_ver; do
                         [[ -z "$_val_ver" ]] && continue
