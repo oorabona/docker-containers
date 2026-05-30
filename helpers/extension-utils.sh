@@ -272,37 +272,42 @@ generate_dockerfile() {
             # install time without needing an explicit override step.
             local versionset_file="${ROOT_DIR:-.}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
             if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
-                # Prefer .available[]; fall back to .resolved[] when available is empty.
-                local raw_versions
-                raw_versions=$(jq -r '
-                    if (.available | length) > 0 then .available[]
-                    else .resolved[]
-                    end
-                ' "$versionset_file" 2>/dev/null || true)
+                local available_count
+                available_count=$(jq '.available | length' "$versionset_file" 2>/dev/null || echo 0)
 
-                if [[ -n "$raw_versions" ]]; then
-                    # Sort ascending (sort -V handles semver ordering)
-                    local sorted_versions
-                    sorted_versions=$(echo "$raw_versions" | sort -V)
+                if [[ "$available_count" -gt 0 ]]; then
+                    # Multi-version path: emit one FROM+COPY pair per available version.
+                    local raw_versions
+                    raw_versions=$(jq -r '.available[]' "$versionset_file" 2>/dev/null || true)
 
-                    while IFS= read -r ver; do
-                        [[ -z "$ver" ]] && continue
-                        # Docker stage names must not contain dots — replace with underscores
-                        local ver_alias="${ver//./_}"
-                        local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ver}"
-                        stages_block+="FROM ${image} AS ext-${ext_name}-${ver_alias}"$'\n'
-                        copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
-                        copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
-                    done <<< "$sorted_versions"
+                    if [[ -n "$raw_versions" ]]; then
+                        # Sort ascending (sort -V handles semver ordering)
+                        local sorted_versions
+                        sorted_versions=$(echo "$raw_versions" | sort -V)
 
-                    # Collect runtime_deps (if any) — unchanged from single-version path
-                    local deps
-                    deps=$(ext="$ext_name" yq -r '(.extensions[strenv(ext)].runtime_deps // [])[]' "$config_file" 2>/dev/null || true)
-                    if [[ -n "$deps" ]]; then
-                        all_runtime_deps+="${deps}"$'\n'
+                        while IFS= read -r ver; do
+                            [[ -z "$ver" ]] && continue
+                            # Docker stage names must not contain dots — replace with underscores
+                            local ver_alias="${ver//./_}"
+                            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ver}"
+                            stages_block+="FROM ${image} AS ext-${ext_name}-${ver_alias}"$'\n'
+                            copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
+                            copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
+                        done <<< "$sorted_versions"
+
+                        # Collect runtime_deps (if any) — unchanged from single-version path
+                        local deps
+                        deps=$(ext="$ext_name" yq -r '(.extensions[strenv(ext)].runtime_deps // [])[]' "$config_file" 2>/dev/null || true)
+                        if [[ -n "$deps" ]]; then
+                            all_runtime_deps+="${deps}"$'\n'
+                        fi
+                        continue
                     fi
-                    continue
                 fi
+                # Artifact exists but available=[] — fall through to single-version path
+                # using the pinned ceiling (ext_version) which is guaranteed built
+                # (ceiling-fatal).  Do NOT fall back to .resolved[] as that may
+                # include versions that were never built (musl-failed / absent).
             fi
 
             # Single-version path (no versionset artifact, or jq unavailable):

@@ -639,6 +639,30 @@ _image_needs_build() {
     return 0
 }
 
+# _image_present <image>
+# Pure presence check — answers "does this image exist where the consumer will
+# read it", FORCE-INDEPENDENT.
+#
+# Decision table (checked in order):
+#   LOCAL_ONLY=true  OR  PULL_ONLY=true  → docker image inspect  (local store)
+#   else (push/CI path)                  → image_exists_in_registry
+#
+# Used exclusively by _emit_versionset_artifact so that FORCE=true rebuilds and
+# pull-only local-build fallbacks are reflected correctly in the artifact's
+# available/excluded split.  The build-decision path (_image_needs_build) is
+# left unchanged because FORCE must still bypass the skip-existing check there.
+_image_present() {
+    local image="$1"
+
+    if [[ "$LOCAL_ONLY" == "true" || "$PULL_ONLY" == "true" ]]; then
+        docker image inspect "$image" &>/dev/null
+        return $?
+    fi
+
+    image_exists_in_registry "$image" 2>/dev/null
+    return $?
+}
+
 # Decide whether a given extension needs (re)building.
 # Honors LOCAL_ONLY (image inspect), FORCE, and registry presence.
 # Logs the skip reason itself so callers can stay terse.
@@ -714,30 +738,37 @@ _should_build_extension() {
 }
 
 
-# Emit (or refresh) versionset artifacts for ALL resolver-backed, in-scope
-# extensions. This is the single source of truth for versionset artifacts —
-# it runs before EVERY success exit in main() covering the all-up-to-date
-# path, the normal build path, and the pull-only path.
+# Emit (or refresh) versionset artifacts for ALL resolver-backed extensions
+# defined in the container's config, regardless of build scope.
+# This is the single source of truth for versionset artifacts — it runs before
+# EVERY success exit in main() covering the all-up-to-date path, the normal
+# build path, and the pull-only path.
 #
-# Always (re)writes the artifact using a pure presence-based check so that a
-# stale artifact from a prior run is never left on disk. The file-existence
-# guard is intentionally absent.
+# Always iterates over ALL extensions from config (not just the scoped one) so
+# that a scoped run (--extension pgvector) still emits the timescaledb artifact
+# for any flavor that needs it.  Only extensions with a resolver-backed
+# multi-version set (set_size > 1) and an existing Dockerfile are emitted.
 #
-# Args: config_file major_ver container_dir [optional_extension]
-#   optional_extension: when set, only emit for that one extension (--extension mode)
+# Always (re)writes the artifact using a pure presence-based check (_image_present)
+# so that FORCE=true rebuilds and pull-only local-build fallbacks are reflected
+# correctly.  The file-existence guard is intentionally absent.
+#
+# Args: config_file major_ver container_dir [_ignored_single_ext]
+#   The fourth argument is accepted for backward compatibility but ignored —
+#   the pass always covers ALL resolver-backed extensions.
 # Does nothing under DRY_RUN.
 _emit_final_versionset_pass() {
     local config_file="$1" major_ver="$2" container_dir="$3"
-    local single_ext="${4:-}"
+    # $4 (formerly single_ext) is intentionally ignored — we always emit for all.
 
     [[ "$DRY_RUN" == "true" ]] && return 0
 
+    # Always iterate over the full extension list from config, regardless of
+    # whether this run was scoped to a single --extension.  This ensures that
+    # resolver-backed extensions not targeted by the build scope still have
+    # their presence-based artifact written (DEFECT V fix).
     local ext_list
-    if [[ -n "$single_ext" ]]; then
-        ext_list="$single_ext"
-    else
-        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
-    fi
+    ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
 
     local ext
     while IFS= read -r ext; do
@@ -750,7 +781,7 @@ _emit_final_versionset_pass() {
         ceiling=$(ext_config "$ext" "version" "$config_file")
 
         # Use the cache — resolver was already called during the build/filter phase.
-        # If not in cache yet (e.g. pull-only path), resolve now.
+        # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
             # Resolver failure in the final pass: skip artifact (don't abort success).
             log_warning "$ext: resolver unavailable in final pass — skipping versionset artifact"
@@ -787,7 +818,7 @@ _emit_versionset_artifact() {
     while IFS= read -r ver; do
         local ver_image
         ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        if ! _image_needs_build "$ver_image"; then
+        if _image_present "$ver_image"; then
             available_versions+=("$ver")
         else
             excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"not available\"}")

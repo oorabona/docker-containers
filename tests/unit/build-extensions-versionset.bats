@@ -1960,3 +1960,357 @@ EOF
     resolved_count=$(jq '.resolved | length' "$artifact")
     [ "$resolved_count" -eq 3 ]
 }
+
+# ---------------------------------------------------------------------------
+# FORCE-AVAILABLE: FORCE=true + successful build+push → available must contain
+# the built versions (NOT empty).
+# Before fix: _emit_versionset_artifact calls _image_needs_build, which returns 0
+#   (needs build) unconditionally when FORCE=true → every version goes to excluded
+#   even after a successful push → available=[] (RED).
+# After fix:  _emit_versionset_artifact uses _image_present (FORCE-independent
+#   presence check) → available = built+pushed versions (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "FORCE-AVAILABLE: FORCE=true + successful build+push → available is non-empty" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Stateful registry-presence: seed empty; push_ext_image adds to it.
+    local registry_present="$tmpd/registry-present-force"
+    : > "$registry_present"
+    export registry_present
+
+    run bash -c "
+        export LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Stateful presence: consults registry_present file.
+        # Initially empty so --force triggers rebuilds for all versions.
+        # push_ext_image adds each successfully-pushed version so the final
+        # _image_present pass sees them as available — mirrors production.
+        image_exists_in_registry() {
+            local tag=\"\${1##*:}\"
+            grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+
+        # Stateful push: register version as present after successful push
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        # Pass --force via CLI argument (source resets FORCE=false, so env export is not enough)
+        main postgres --major-version 18 --force
+    "
+
+    [ "$status" -eq 0 ]
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # FORCE=true + all pushes succeeded → available must be ALL 3 versions.
+    # Before fix: available=[] (FORCE makes _image_needs_build return 0 = "needs build"
+    #   even for just-pushed images → all go to excluded). RED.
+    # After fix:  _image_present is FORCE-independent; registry has all versions
+    #   after push → all 3 in available. GREEN.
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# SCOPED-RETENTION: scoped run (--extension pgvector only) with timescaledb
+# images already in registry → timescaledb versionset artifact IS emitted.
+# Before fix: _emit_final_versionset_pass only emits for the scoped extension
+#   (single_ext = "pgvector") → timescaledb artifact absent (RED).
+# After fix:  final pass always emits for every resolver-backed extension
+#   defined in config, regardless of build scope (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "SCOPED-RETENTION: scoped --extension pgvector run still emits timescaledb artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: both timescaledb (resolver-backed) and pgvector (single-version)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Stateful registry-presence: timescaledb all present (3 versions);
+    # pgvector absent → triggered by scoped build, then pushed.
+    local registry_present="$tmpd/registry-present-scoped"
+    printf 'pg18-2.25.0\npg18-2.26.0\npg18-2.27.1\n' > "$registry_present"
+    export registry_present
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present=\"$registry_present\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
+            else
+                echo '[\"0.8.0\"]'
+            fi
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Stateful presence: timescaledb all 3 present; pgvector absent
+        image_exists_in_registry() {
+            local tag=\"\${1##*:}\"
+            grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+
+        push_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            printf 'pg%s-%s\n' \"\$major\" \"\$ver\" >> \"\$registry_present\"
+            return 0
+        }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        # Both extensions visible to list_extensions_by_priority (used by final pass)
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        # Scoped: only pgvector is being built in this run
+        main postgres --major-version 18 --extension pgvector
+    "
+
+    [ "$status" -eq 0 ]
+
+    # timescaledb artifact MUST be emitted even though only pgvector was built.
+    # Before fix: single_ext='pgvector' → final pass only emits for pgvector → absent (RED).
+    # After fix:  final pass always emits for ALL resolver-backed extensions → present (GREEN).
+    local ts_artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$ts_artifact" ]
+
+    # timescaledb: all 3 versions in registry → available=3, excluded=0
+    local available_count
+    available_count=$(jq '.available | length' "$ts_artifact")
+    [ "$available_count" -eq 3 ]
+
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$ts_artifact")
+    [ "$excluded_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# PULL-ONLY-LOCAL-PRESENCE: --pull-only where a version is missing from
+# registry but built locally → that version is in available (local presence),
+# not excluded.
+# Before fix: _emit_final_versionset_pass calls _emit_versionset_artifact with
+#   PULL_ONLY still true but LOCAL_ONLY false; _image_needs_build with FORCE=false
+#   and LOCAL_ONLY=false → checks registry → locally-built version absent from
+#   registry → excluded (RED, available=2).
+# After fix:  _image_present checks docker image inspect when PULL_ONLY=true
+#   → locally-built version is in local store → available (GREEN, available=3).
+# ---------------------------------------------------------------------------
+
+@test "PULL-ONLY-LOCAL-PRESENCE: pull-only + local build → locally-built version in available" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Local image store: 2.26.0 and 2.27.1 pulled from registry.
+    # 2.25.0 absent from registry → will be built locally.
+    # tag_ext_image adds it to the local store.
+    local local_store="$tmpd/local-images"
+    printf 'ghcr.io/test/ext-timescaledb:pg18-2.26.0\nghcr.io/test/ext-timescaledb:pg18-2.27.1\n' \
+        > "$local_store"
+    export local_store
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export local_store=\"$local_store\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Registry: 2.26.0 and 2.27.1 present; 2.25.0 absent → local build fallback
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'pg18-2.26.0'* || \"\$1\" == *'pg18-2.27.1'* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+
+        # Local docker inspect: consults local_store file
+        docker() {
+            local img=\"\${*: -1}\"
+            grep -qxF \"\$img\" \"\$local_store\" 2>/dev/null
+        }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+
+        # tag_ext_image: adds image to local store (mirrors docker tag → inspectable)
+        tag_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            local img=\"ghcr.io/test/ext-\${ext}:pg\${major}-\${ver}\"
+            grep -qxF \"\$img\" \"\$local_store\" || printf '%s\n' \"\$img\" >> \"\$local_store\"
+            return 0
+        }
+        export -f tag_ext_image
+
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # pull_ext_image: 2.26.0/2.27.1 pull OK; 2.25.0 fails → local build
+        pull_ext_image() {
+            local ext=\"\$1\" ver=\"\$2\" major=\"\$3\"
+            local img=\"ghcr.io/test/ext-\${ext}:pg\${major}-\${ver}\"
+            if [[ \"\$ver\" == '2.25.0' ]]; then
+                return 1
+            fi
+            grep -qxF \"\$img\" \"\$local_store\" || printf '%s\n' \"\$img\" >> \"\$local_store\"
+            return 0
+        }
+        export -f pull_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        # Pass --pull-only via CLI (source resets PULL_ONLY=false, env export is not enough)
+        main postgres --major-version 18 --pull-only
+    "
+
+    [ "$status" -eq 0 ]
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # 2.25.0 was built locally and tagged → present in local store.
+    # Before fix: _image_present (via _image_needs_build) checks registry when
+    #   LOCAL_ONLY=false → 2.25.0 absent → excluded (RED, available=2).
+    # After fix:  _image_present checks docker inspect when PULL_ONLY=true
+    #   → 2.25.0 in local store → available (GREEN, available=3).
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    local available_versions
+    available_versions=$(jq -r '.available[]' "$artifact")
+    [[ "$available_versions" == *"2.25.0"* ]]
+    [[ "$available_versions" == *"2.26.0"* ]]
+    [[ "$available_versions" == *"2.27.1"* ]]
+
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -eq 0 ]
+}

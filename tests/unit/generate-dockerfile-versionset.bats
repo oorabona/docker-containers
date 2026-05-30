@@ -242,12 +242,22 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: available=[] in artifact → falls back to resolved[]
+# Test 4: available=[] in artifact → falls back to SINGLE ceiling version
+# (NOT to .resolved[]).
+#
+# Rationale: .resolved[] may contain versions that were never built (musl-failed
+# or simply absent from the registry); COPYing from nonexistent images causes
+# the final build to fail. The ONLY version guaranteed to exist is the ceiling
+# (ceiling-fatal: build aborts if ceiling fails). So the correct fallback when
+# available=[] is the single pinned/ceiling version from config, NOT resolved[].
+#
+# RED before fix: code falls back to .resolved[] → 2 FROM stages.
+# GREEN after fix: code falls back to single ceiling → 1 FROM stage.
 # ---------------------------------------------------------------------------
-@test "empty-available: artifact with available=[] falls back to resolved versions" {
-    # Simulate artifact written by resolver-only run (no actual builds yet)
+@test "empty-available: artifact with available=[] falls back to single ceiling version, NOT resolved[]" {
+    # Artifact: available empty, resolved has 2 entries (2.23.0 never built, 2.27.1 = ceiling)
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
-{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.27.1"],"available":[],"excluded":[]}
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.23.0","2.27.1"],"available":[],"excluded":[{"version":"2.23.0","reason":"build failed"},{"version":"2.27.1","reason":"not available"}]}
 EOF
 
     run generate_dockerfile \
@@ -258,10 +268,18 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Should still render multi-version (from resolved fallback)
+    # Must fall back to the SINGLE ceiling version (2.27.1), NOT the full resolved[].
+    # Before fix: falls back to resolved[] → 2 stages (RED).
+    # After fix:  falls back to ceiling config version → 1 stage, flat COPYs (GREEN).
     local from_count
     from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
-    [ "$from_count" -eq 2 ]
+    [ "$from_count" -eq 1 ]
+
+    # Must use the ceiling version tag (2.27.1 from config .version)
+    echo "$output" | grep -q "ext-timescaledb:pg18-2.27.1"
+
+    # Must NOT produce a versioned-subdir COPY path (falls back to single-version flat path)
+    ! echo "$output" | grep -q "/tmp/ext/timescaledb/2\."
 }
 
 # ---------------------------------------------------------------------------
