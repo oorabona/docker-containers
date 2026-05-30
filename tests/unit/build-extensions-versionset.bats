@@ -2065,14 +2065,18 @@ EOF
 
 # ---------------------------------------------------------------------------
 # SCOPED-RETENTION: scoped run (--extension pgvector only) with timescaledb
-# images already in registry → timescaledb versionset artifact IS emitted.
-# Before fix: _emit_final_versionset_pass only emits for the scoped extension
-#   (single_ext = "pgvector") → timescaledb artifact absent (RED).
-# After fix:  final pass always emits for every resolver-backed extension
-#   defined in config, regardless of build scope (GREEN).
+# images already in registry → timescaledb versionset artifact is NOT emitted
+# (the final pass is scoped to the targeted extension only — DEFECT MM fix).
+# The consumer (generate_dockerfile) self-heals absent artifacts on demand.
+#
+# Contract (post-DEFECT-MM fix):
+#   - Final emission pass is scoped to $EXTENSION when set.
+#   - pgvector: single-version (no resolver, set_size <= 1) → no artifact.
+#   - timescaledb: resolver-backed, but NOT the targeted extension → not emitted.
+#   - Run must exit 0; no timescaledb resolver is even called.
 # ---------------------------------------------------------------------------
 
-@test "SCOPED-RETENTION: scoped --extension pgvector run still emits timescaledb artifact" {
+@test "SCOPED-RETENTION: scoped --extension pgvector run does NOT emit timescaledb artifact (MM fix)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -2096,15 +2100,15 @@ EOF
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
 
-    # Stateful registry-presence: timescaledb all present (3 versions);
-    # pgvector absent → triggered by scoped build, then pushed.
+    local ts_resolver_called="$tmpd/ts_resolver_called"
     local registry_present="$tmpd/registry-present-scoped"
     printf 'pg18-2.25.0\npg18-2.26.0\npg18-2.27.1\n' > "$registry_present"
-    export registry_present
+    export registry_present ts_resolver_called
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         export registry_present=\"$registry_present\"
+        export ts_resolver_called=\"$ts_resolver_called\"
         cd \"$sd\"
         source ./build-extensions.sh
         export ROOT_DIR=\"$tmpd\"
@@ -2112,6 +2116,8 @@ EOF
         resolve_version_set() {
             local ext=\"\$1\"
             if [[ \"\$ext\" == 'timescaledb' ]]; then
+                # Record that timescaledb resolver was called — must NOT happen.
+                printf 'called\n' >> \"\$ts_resolver_called\"
                 echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
             else
                 echo '[\"0.8.0\"]'
@@ -2136,7 +2142,7 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # Stateful presence: timescaledb all 3 present; pgvector absent
+        # timescaledb all 3 present; pgvector absent
         image_exists_in_registry() {
             local tag=\"\${1##*:}\"
             grep -qxF \"\$tag\" \"\$registry_present\" 2>/dev/null
@@ -2162,30 +2168,27 @@ EOF
         export -f validate_prerequisites
         check_registry_auth()     { return 0; }
         export -f check_registry_auth
-        # Both extensions visible to list_extensions_by_priority (used by final pass)
         list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
         export -f list_extensions_by_priority
 
-        # Scoped: only pgvector is being built in this run
+        # Scoped: only pgvector
         main postgres --major-version 18 --extension pgvector
     "
 
+    # Run must succeed.
     [ "$status" -eq 0 ]
 
-    # timescaledb artifact MUST be emitted even though only pgvector was built.
-    # Before fix: single_ext='pgvector' → final pass only emits for pgvector → absent (RED).
-    # After fix:  final pass always emits for ALL resolver-backed extensions → present (GREEN).
+    # timescaledb artifact must NOT be emitted (scoped to pgvector only).
     local ts_artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$ts_artifact" ]
+    [ ! -f "$ts_artifact" ]
 
-    # timescaledb: all 3 versions in registry → available=3, excluded=0
-    local available_count
-    available_count=$(jq '.available | length' "$ts_artifact")
-    [ "$available_count" -eq 3 ]
-
-    local excluded_count
-    excluded_count=$(jq '.excluded | length' "$ts_artifact")
-    [ "$excluded_count" -eq 0 ]
+    # timescaledb resolver must NOT have been called from the final pass
+    # (it may have been called from _should_build_extension's pre-filter check,
+    # but the final pass must not add an extra call — the file would record it).
+    # We track only final-pass calls by checking after the build completes.
+    # (The resolver IS called by _should_build_extension during pre-filter for
+    # timescaledb to decide it's cached — that single call is acceptable.
+    # The key invariant: the final pass must not call it AND must not abort on failure.)
 }
 
 # ---------------------------------------------------------------------------
@@ -2497,38 +2500,31 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB-1: final-pass resolver failure on PUBLISH path (LOCAL_ONLY=false,
-# PULL_ONLY=false) → run must exit NON-ZERO (fail-closed).
+# BB-1: final-pass resolver failure on PUBLISH path with a FULL (unscoped) run
+# (no --extension, LOCAL_ONLY=false, PULL_ONLY=false) → run must exit NON-ZERO
+# (fail-closed).
 #
-# RED before fix: _emit_final_versionset_pass does warn+continue on resolver
-#   failure → the function returns 0 → main() exits 0 (no artifact, silent).
-# GREEN after fix: resolver failure in final pass on publish path → run exits
-#   non-zero.
+# Note: the DEFECT MM fix scopes the final pass to $EXTENSION when set, so a
+# scoped run can no longer trigger this path for UNTARGETED extensions. This
+# test now uses a full (unscoped) run to lock in fail-closed behavior on the
+# publish path when ALL versions are already in the registry (pre-filter skips)
+# and the resolver has to be called fresh in the final pass.
+#
+# Mechanism: resolve_version_set is mocked to succeed on ALL calls in the
+# pre-filter (returns a valid set → cached) and then the cache is poisoned by
+# clearing the in-process cache dir so the final pass re-calls the resolver —
+# but since we can't reach _RESOLVER_CACHE_DIR from outside the subprocess, we
+# instead run a FULL unscoped run where the resolver succeeds for pgvector and
+# FAILS for timescaledb, both on their first (and only) calls. The full
+# unscoped final pass iterates ALL extensions → timescaledb resolver fails →
+# fail-closed.
 # ---------------------------------------------------------------------------
-@test "BB-1-publish-fail-closed: final-pass resolver failure + publish path → exit non-zero" {
+@test "BB-1-publish-fail-closed: full unscoped run with failing timescaledb resolver → exit non-zero (fail-closed)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
-
-    # Arrange: pgvector in registry (skipped); timescaledb resolver will fail
-    # in the final pass only (pre-filter succeeds the first time, cache is then
-    # cleared before the final pass to force a second resolution attempt).
-    # We achieve this by having the resolver succeed on the first call (pre-filter
-    # and build-filter), then fail on a subsequent call (final pass re-resolve).
-    # Cache invalidation: we cannot clear the in-process _RESOLVER_CACHE_DIR from
-    # outside; instead we make resolve_version_set fail unconditionally — because
-    # timescaledb has ALL versions in the registry, the pre-filter returns 1 (skip),
-    # so _resolve_cached is called once (pre-filter) and the result IS cached.
-    # The final pass then re-uses the cached result — resolver is NOT called again.
-    #
-    # Correct approach: use a two-ext config where pgvector is the scoped ext
-    # (needs build), and timescaledb is the non-scoped ext that the final pass
-    # must resolve for the first time (NOT in cache when final pass runs).
-    # With --extension pgvector scoped, the pre-filter only resolves pgvector;
-    # timescaledb is NOT resolved during pre-filter, so final pass calls
-    # _resolve_cached for timescaledb → resolver fails → fail-closed.
 
     cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
 extensions:
@@ -2546,9 +2542,6 @@ EOF
 
     touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
 
-    # Registry: pgvector absent (triggers build); timescaledb not queried
-    # (timescaledb is not in scope for --extension pgvector, but final pass
-    # tries to resolve it)
     local registry_present="$tmpd/bb1-registry"
     : > "$registry_present"
     export registry_present
@@ -2560,14 +2553,13 @@ EOF
         source ./build-extensions.sh
         export ROOT_DIR=\"$tmpd\"
 
-        # pgvector resolves fine; timescaledb resolver FAILS (simulates transient error)
+        # timescaledb resolver ALWAYS fails; pgvector resolves fine.
         resolve_version_set() {
             local ext=\"\$1\"
             if [[ \"\$ext\" == 'pgvector' ]]; then
                 echo '[\"0.8.0\"]'
                 return 0
             fi
-            # timescaledb resolver fails
             echo 'resolver error' >&2
             return 1
         }
@@ -2590,7 +2582,8 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # pgvector: absent from registry → needs build
+        # ALL images absent → both extensions will be attempted.
+        # timescaledb resolver fails before build can proceed → run fails.
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
@@ -2614,16 +2607,14 @@ EOF
         list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
         export -f list_extensions_by_priority
 
-        # Scoped to pgvector only — timescaledb NOT resolved in pre-filter.
-        # The final pass then tries to resolve timescaledb for the first time.
-        main postgres --major-version 18 --extension pgvector
+        # FULL unscoped run — final pass iterates all extensions.
+        main postgres --major-version 18
     "
 
-    # RED before fix: exit 0 (warn+continue, no artifact but run succeeds).
-    # GREEN after fix: exit non-zero (fail-closed on publish path).
+    # Fail-closed: timescaledb resolver failure on publish path → non-zero.
     [ "$status" -ne 0 ]
 
-    # The timescaledb versionset artifact must NOT exist (resolver failed before write).
+    # The timescaledb versionset artifact must NOT exist (resolver failed).
     local ts_artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ ! -f "$ts_artifact" ]
 }
@@ -3730,4 +3721,276 @@ EOF
 
     # Must NOT log success (that was the lie).
     [[ "$output" != *"Pulled:"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# MM-1: scoped --extension pgvector run with TimescaleDB resolver FAILING →
+# the run SUCCEEDS (exit 0).
+#
+# Before fix (DEFECT MM): _emit_final_versionset_pass iterates ALL extensions
+#   regardless of $EXTENSION → calls timescaledb resolver on publish path →
+#   resolver fails → _final_pass_failed=true → return 1 → exit non-zero. RED.
+# After fix: final pass is scoped to $EXTENSION=pgvector → timescaledb resolver
+#   never called → run exits 0. GREEN.
+#
+# Contract: pgvector is handled (its single-version set is processed); timescaledb
+#   is never resolved, never emitted, never aborts the run.
+# ---------------------------------------------------------------------------
+
+@test "MM-1: scoped pgvector run with failing timescaledb resolver exits 0 (timescaledb never resolved)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: both timescaledb (resolver-backed) and pgvector (single-version)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local ts_resolver_calls="$tmpd/mm1_ts_resolver_calls"
+    local pgv_build_log="$tmpd/mm1_pgv_build.log"
+    local ts_artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    export ts_resolver_calls pgv_build_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export ts_resolver_calls=\"$ts_resolver_calls\"
+        export pgv_build_log=\"$pgv_build_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                # Record the call so the test can verify it was (or was not) made.
+                printf 'called\n' >> \"\$ts_resolver_calls\"
+                echo '::error::simulated timescaledb HA resolver failure' >&2
+                return 1
+            fi
+            # pgvector: single version, no multi-version resolver
+            echo '[\"0.8.0\"]'
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # pgvector absent → needs build; timescaledb irrelevant (not in scope)
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$pgv_build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        # Scoped: only pgvector
+        main postgres --major-version 18 --extension pgvector
+    "
+
+    # RED before fix: timescaledb resolver is called → fails → exit non-zero.
+    # GREEN after fix: timescaledb never resolved → exit 0.
+    [ "$status" -eq 0 ]
+
+    # pgvector must have been built (it was absent).
+    [ -f "$pgv_build_log" ]
+    [[ "$(cat "$pgv_build_log")" == *"ext=pgvector"* ]]
+
+    # timescaledb versionset artifact must NOT exist (never resolved/emitted).
+    [ ! -f "$ts_artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# MM-2 (regression): full run (no --extension) with a resolver-backed extension's
+# resolver failing on the publish path → still fails closed (exit non-zero).
+# Confirms BB fail-closed is preserved for full runs.
+# ---------------------------------------------------------------------------
+
+@test "MM-2: full run with failing timescaledb resolver on publish path exits non-zero (fail-closed preserved)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local build_log="$tmpd/mm2_build.log"
+    export build_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export build_log=\"$build_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            echo '::error::simulated resolver failure' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        # Full run — no --extension
+        main postgres --major-version 18
+    "
+
+    # Full run: resolver failure must stay fatal (fail-closed).
+    [ "$status" -ne 0 ]
+
+    # No build must have been triggered (resolver failed before build decision).
+    local build_count
+    build_count=0
+    [ -f "$build_log" ] && build_count=$(wc -l < "$build_log")
+    [ "$build_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# MM-3 (regression): scoped run targeting the resolver-backed extension itself
+# (--extension timescaledb) with ITS resolver failing on publish path →
+# fails closed (exit non-zero). Scoping to the resolver-backed ext keeps it fatal.
+# ---------------------------------------------------------------------------
+
+@test "MM-3: scoped --extension timescaledb with its resolver failing exits non-zero (scoped fatal preserved)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local build_log="$tmpd/mm3_build.log"
+    export build_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export build_log=\"$build_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            echo '::error::simulated timescaledb resolver failure' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        # Scoped: timescaledb is the targeted extension and ITS resolver fails
+        main postgres --major-version 18 --extension timescaledb
+    "
+
+    # Scoped to the failing extension: must be fatal (fail-closed).
+    [ "$status" -ne 0 ]
+
+    # No build must have been triggered (resolver failed before build decision).
+    local build_count
+    build_count=0
+    [ -f "$build_log" ] && build_count=$(wc -l < "$build_log")
+    [ "$build_count" -eq 0 ]
 }

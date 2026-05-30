@@ -775,16 +775,23 @@ _cleanup_stale_duration_files() {
     done
 }
 
-# Emit (or refresh) versionset artifacts for ALL resolver-backed extensions
-# defined in the container's config, regardless of build scope.
+# Emit (or refresh) versionset artifacts for resolver-backed extensions.
 # This is the single source of truth for versionset artifacts — it runs before
 # EVERY success exit in main() covering the all-up-to-date path, the normal
 # build path, and the pull-only path.
 #
-# Always iterates over ALL extensions from config (not just the scoped one) so
-# that a scoped run (--extension pgvector) still emits the timescaledb artifact
-# for any flavor that needs it.  Only extensions with a resolver-backed
-# multi-version set (set_size > 1) and an existing Dockerfile are emitted.
+# Scoping rule (DEFECT MM fix):
+# - When $EXTENSION is set (scoped run) → emit ONLY for that extension (if it is
+#   resolver-backed).  Do NOT resolve or touch any other extension.  A resolver
+#   failure for the scoped extension stays fail-closed (you are building it);
+#   an UNTARGETED extension is never resolved, so it cannot abort the run.
+#   The consumer (generate_dockerfile) self-heals absent artifacts for untargeted
+#   extensions by resolving + probing on demand.
+# - When $EXTENSION is unset (full run) → iterate all resolver-backed extensions
+#   from config (previous behavior).
+#
+# Only extensions with a resolver-backed multi-version set (set_size > 1) and an
+# existing Dockerfile are emitted.
 #
 # Always (re)writes the artifact using a pure presence-based check (_image_present)
 # so that FORCE=true rebuilds and pull-only local-build fallbacks are reflected
@@ -792,20 +799,22 @@ _cleanup_stale_duration_files() {
 #
 # Args: config_file major_ver container_dir [_ignored_single_ext]
 #   The fourth argument is accepted for backward compatibility but ignored —
-#   the pass always covers ALL resolver-backed extensions.
+#   scoping is driven exclusively by the global $EXTENSION variable.
 # Does nothing under DRY_RUN.
 _emit_final_versionset_pass() {
     local config_file="$1" major_ver="$2" container_dir="$3"
-    # $4 (formerly single_ext) is intentionally ignored — we always emit for all.
+    # $4 accepted for backward compatibility but unused.
 
     [[ "$DRY_RUN" == "true" ]] && return 0
 
-    # Always iterate over the full extension list from config, regardless of
-    # whether this run was scoped to a single --extension.  This ensures that
-    # resolver-backed extensions not targeted by the build scope still have
-    # their presence-based artifact written (DEFECT V fix).
+    # Determine the extension list to iterate.
+    # Scoped run: only the targeted extension; full run: all extensions from config.
     local ext_list
-    ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+    if [[ -n "${EXTENSION:-}" ]]; then
+        ext_list="$EXTENSION"
+    else
+        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+    fi
 
     local ext
     local _final_pass_failed=false
