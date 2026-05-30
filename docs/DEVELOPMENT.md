@@ -218,6 +218,8 @@ When using `--local-only`, extensions are:
 
 This allows the postgres build to find extensions via `COPY --from=ghcr.io/...` without requiring registry access.
 
+When the upstream version resolver is unavailable (network outage, offline), `./make build-extensions <container> --local-only` writes a ceiling-only version-set artifact for the extension it built. A subsequent `./make build <container> --flavor timeseries` (or `full`) reads that artifact via the normal artifact path — no skopeo or resolver required. Run the extension build first, then the postgres build.
+
 ### Required Permissions
 
 For pushing to GHCR locally:

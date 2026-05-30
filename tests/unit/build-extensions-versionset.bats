@@ -5234,3 +5234,240 @@ EOCFG
         [[ "$(cat "$tag_log")" != *"rm -rf"* ]]
     fi
 }
+
+# ---------------------------------------------------------------------------
+# AC-1: LOCAL_ONLY=true, resolver unavailable in final pass, ceiling built →
+# a versionset artifact IS written reflecting what was actually built.
+#
+# RED before fix: the degrade branch logs a warning and `continue`s — no
+#   artifact is written, leaving the downstream postgres build without the
+#   channel file it needs (compose fails).
+# GREEN after fix: the degrade branch writes a ceiling-only artifact
+#   (available:[ceiling], resolved:[ceiling], excluded:[]).
+# ---------------------------------------------------------------------------
+@test "AC-1: LOCAL_ONLY=true + resolver unavailable in final pass → ceiling artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local build_log="${tmpd}/ac1_build.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=true DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\" LOCAL_ONLY=true
+
+        resolve_version_set() {
+            echo '::error::simulated upstream outage' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --local-only
+    "
+
+    # Local recovery path must succeed.
+    [ "$status" -eq 0 ]
+
+    # Ceiling must have been built (build_tag_push_extensions degrade built it).
+    [ -f "$build_log" ]
+    [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
+
+    # Artifact MUST be written (RED before fix, GREEN after fix).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # available must contain the ceiling — non-vacuous assertion.
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -ge 1 ]
+
+    local ceiling_in_available
+    ceiling_in_available=$(jq '[.available[] | select(. == "2.27.1")] | length' "$artifact")
+    [ "$ceiling_in_available" -eq 1 ]
+
+    # ceiling field must be set correctly.
+    local ceiling_field
+    ceiling_field=$(jq -r '.ceiling' "$artifact")
+    [ "$ceiling_field" = "2.27.1" ]
+}
+
+# ---------------------------------------------------------------------------
+# AC-2: publish path (LOCAL_ONLY=false, PULL_ONLY=false) + resolver unavailable
+# in final pass → run exits non-zero, and no new ceiling-only artifact is written.
+# Regression guard: our fix must NOT create an artifact on the publish path.
+# Must stay GREEN before AND after the fix (fail-closed behavior intact).
+# ---------------------------------------------------------------------------
+@test "AC-2: publish path + resolver unavailable in final pass → exit non-zero (fail-closed), no new artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Start with no pre-existing artifact so the test is clean.
+    local lineage_dir="$tmpd/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() {
+            echo '::error::simulated outage' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Publish path must remain fail-closed.
+    [ "$status" -ne 0 ]
+
+    # The fix must NOT have written an artifact on the publish path.
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# AC-3: LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable in final pass →
+# no filesystem mutation (no artifact written).
+# ---------------------------------------------------------------------------
+@test "AC-3: LOCAL_ONLY=true + DRY_RUN=true + resolver unavailable → no artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=true DRY_RUN=true CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\" LOCAL_ONLY=true DRY_RUN=true
+
+        resolve_version_set() {
+            echo '::error::simulated outage' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --local-only
+    "
+
+    # Dry run must succeed.
+    [ "$status" -eq 0 ]
+
+    # Under DRY_RUN, no artifact must be written.
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
+}
