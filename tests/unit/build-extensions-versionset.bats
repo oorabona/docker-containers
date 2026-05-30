@@ -664,3 +664,126 @@ _count_log_lines() {
     # Must be exactly 1 — the at-most-once invariant
     [ "$call_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# D: tag failure on non-ceiling version must be fatal, NOT tolerated as musl.
+# Before fix: single build_ok flag swallows tag failure into the "non-ceiling
+# tolerated" branch → exit 0; version recorded in excluded as "musl" (#558).
+# After fix:  tag failure always fatal → exit non-zero; version NOT in excluded.
+# ---------------------------------------------------------------------------
+
+@test "D-tag-fatal: non-ceiling tag failure is fatal (exit non-zero), not musl-excluded" {
+    # build-extensions.sh installs a bare EXIT trap at source time that overwrites
+    # bats' internal teardown trap.  Restore bats' trap so failing assertions are
+    # reported as "not ok" instead of silently aborting the test process.
+    # shellcheck disable=SC2064
+    trap "bats_teardown_trap as-exit-trap" EXIT
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Builds all succeed; tag fails for the oldest (non-ceiling) version only.
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 0
+    }
+    export -f build_ext_image
+
+    tag_ext_image() {
+        if [[ "$2" == "2.25.0" ]]; then
+            echo "TAG_FAILED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/tag_calls.log"
+            return 1
+        fi
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/tag_calls.log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+    local actual_status="$status"
+
+    # Tag failure must be fatal regardless of ceiling/non-ceiling.
+    [ "$actual_status" -ne 0 ]
+
+    # 2.25.0 must NOT appear as a musl-excluded entry in the versionset artifact.
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    if [ -f "$artifact" ]; then
+        local excluded_count
+        excluded_count=$(jq '.excluded | length' "$artifact")
+        [ "$excluded_count" -eq 0 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# E: per-version lineage durations must be independent (each = own build time),
+# not cumulative (each = elapsed since outer loop started).
+# Before fix: _ext_start captured once before the loop → later versions'
+#   durations include earlier versions' build time → monotonically growing.
+# After fix:  _ver_start captured per iteration → each duration is bounded.
+#
+# Strategy: mock build_ext_image to sleep 1s per call and build 3 versions.
+# With the bug: durations are ~1, ~2, ~3 (cumulative wall time from _ext_start).
+# With the fix: durations are ~1, ~1, ~1 (each version's own time).
+# Assertion: every per-version lineage file has duration_seconds < 3.
+# (Generous upper bound: on a very slow CI box each "build" is just sleep 1,
+# so even with scheduler jitter no single-version delta should reach 3s.)
+# ---------------------------------------------------------------------------
+
+@test "E-duration-independent: per-version lineage durations are bounded, not cumulative" {
+    # Restore bats' EXIT trap (overwritten by build-extensions.sh source-time trap).
+    # shellcheck disable=SC2064
+    trap "bats_teardown_trap as-exit-trap" EXIT
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Each build takes ~1s — makes cumulative vs. per-version observable.
+    build_ext_image() {
+        sleep 1
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Read per-version lineage files and assert each duration is bounded (< 3).
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    local fail=0
+    for ver in "2.25.0" "2.26.0" "2.27.1"; do
+        local safe_ver="${ver//[^a-zA-Z0-9.-]/_}"
+        local lfile="$lineage_dir/ext-timescaledb-pg18-${safe_ver}.json"
+        [ -f "$lfile" ] || { echo "Missing lineage file for $ver"; fail=1; continue; }
+        local dur
+        dur=$(jq '.duration_seconds' "$lfile")
+        # With cumulative code: ver 2.26.0 ≈ 2, ver 2.27.1 ≈ 3 → this assertion fails.
+        # With per-version code: all ≈ 1 → passes.
+        if [ "$dur" -ge 3 ]; then
+            echo "FAIL: $ver duration_seconds=$dur is >= 3 (cumulative, not per-version)"
+            fail=1
+        fi
+    done
+    [ "$fail" -eq 0 ]
+}

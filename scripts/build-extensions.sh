@@ -391,8 +391,6 @@ build_tag_push_extensions() {
         echo ""
         log_info "Processing: $ext"
 
-        local _ext_start=$SECONDS
-
         # Resolve ceiling (single configured version) and the full version set.
         # A non-zero return from _resolve_cached means the resolver script failed
         # (network/API/binary error) — NOT a no-resolver extension (which returns
@@ -436,57 +434,64 @@ build_tag_push_extensions() {
                 continue
             fi
 
-            # Attempt build → tag → push for this version.
-            local build_ok=true
+            # Capture a fresh start time for this version so each lineage file
+            # records only that version's own build time (#558).
+            local _ver_start=$SECONDS
+
+            # Attempt build for this version.
+            local compile_ok=true
             if ! build_extension "$ext" "$config_file" "$major_ver" "$container_dir" "$version"; then
-                build_ok=false
+                compile_ok=false
             fi
 
-            if [[ "$build_ok" == "true" ]]; then
-                if ! tag_extension "$ext" "$config_file" "$major_ver" "$version"; then
-                    build_ok=false
-                fi
-            fi
-
-            if [[ "$build_ok" == "true" ]] && [[ "$do_push" == "true" ]]; then
-                if ! push_extension "$ext" "$config_file" "$major_ver" "$version"; then
-                    build_ok=false
-                fi
-            fi
-
-            if [[ "$build_ok" == "true" ]]; then
-                log_success "$ext $version completed successfully"
-                available_versions+=("$version")
-
-                # Write per-version lineage file.
-                local _ver_duration=$(( SECONDS - _ext_start ))
-                local _ver_image
-                _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
-                local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
-                local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
-                mkdir -p "${ROOT_DIR}/.build-lineage"
-                jq -nc \
-                    --arg ext "$ext" \
-                    --arg version "$version" \
-                    --arg pg_major "$major_ver" \
-                    --arg image "$_ver_image" \
-                    --argjson duration "$_ver_duration" \
-                    --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-                    '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
-                    > "$_ver_lineage_file"
-                log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
-            else
-                # Build/tag/push failed for this version.
+            if [[ "$compile_ok" == "false" ]]; then
+                # Compile failure: ceiling is fatal; non-ceiling is tolerated (musl compat).
                 if [[ "$version" == "$ceiling" ]]; then
-                    # Ceiling version MUST build — this is a fatal error.
                     log_error "$ext $version (ceiling) build failed"
                     failed+=("$ext@$version")
                 else
-                    # Older retained version — warn and continue (musl tolerance).
                     log_warning "$ext $version build failed (non-ceiling, skipping)"
                     excluded_entries+=("{\"version\":\"${version}\",\"reason\":\"build failed (musl)\"}")
                 fi
+                continue
             fi
+
+            # Tag failure is always fatal — it is a registry/infra error, not musl.
+            if ! tag_extension "$ext" "$config_file" "$major_ver" "$version"; then
+                log_error "$ext $version tag failed (infra error)"
+                failed+=("$ext@$version")
+                continue
+            fi
+
+            # Push failure is always fatal.
+            if [[ "$do_push" == "true" ]]; then
+                if ! push_extension "$ext" "$config_file" "$major_ver" "$version"; then
+                    log_error "$ext $version push failed"
+                    failed+=("$ext@$version")
+                    continue
+                fi
+            fi
+
+            log_success "$ext $version completed successfully"
+            available_versions+=("$version")
+
+            # Write per-version lineage file with this version's own duration.
+            local _ver_duration=$(( SECONDS - _ver_start ))
+            local _ver_image
+            _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
+            local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
+            local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
+            mkdir -p "${ROOT_DIR}/.build-lineage"
+            jq -nc \
+                --arg ext "$ext" \
+                --arg version "$version" \
+                --arg pg_major "$major_ver" \
+                --arg image "$_ver_image" \
+                --argjson duration "$_ver_duration" \
+                --arg built_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                '{ext:$ext, version:$version, pg_major:$pg_major, image:$image, duration_seconds:$duration, built_at:$built_at}' \
+                > "$_ver_lineage_file"
+            log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Write versionset artifact only for multi-version (resolver-backed) extensions.
