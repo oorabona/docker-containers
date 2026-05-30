@@ -974,27 +974,16 @@ _emit_final_versionset_pass() {
             #   a required retention artifact cannot be produced; the run must
             #   exit non-zero so CI does not report success with a missing artifact.
             # - Recovery paths (LOCAL_ONLY=true or PULL_ONLY=true): degrade —
-            #   a transient resolver outage must not block local recovery.
-            #   When the ceiling was genuinely built this run (recorded in
-            #   _BUILT_THIS_RUN_DIR), emit a ceiling-only artifact so the
-            #   downstream postgres build can compose without skopeo.
+            #   a transient resolver outage must not block the ceiling build, but
+            #   NO version-set artifact is emitted. The downstream timeseries/full
+            #   postgres build requires skopeo or a CI-produced artifact (documented
+            #   in postgres/README.md). Any stale artifact is deleted so it cannot
+            #   be silently consumed with out-of-date retention data.
             if [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]]; then
-                log_warning "$ext: resolver unavailable in final pass — checking for ceiling in built-this-run set (recovery path)"
-                local _btr_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
-                if [[ "$DRY_RUN" != "true" ]] && [[ -f "$_btr_file" ]] && grep -qxF "$ceiling" "$_btr_file" 2>/dev/null; then
-                    log_info "$ext: ceiling $ceiling was built this run — writing ceiling-only versionset artifact"
-                    local _vs_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
-                    mkdir -p "${ROOT_DIR}/.build-lineage"
-                    jq -nc \
-                        --arg ext "$ext" \
-                        --arg pg_major "$major_ver" \
-                        --arg ceiling "$ceiling" \
-                        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling,
-                          resolved:[$ceiling], available:[$ceiling], excluded:[]}' \
-                        > "$_vs_file"
-                    log_info "Version-set lineage (ceiling-only, recovery): $_vs_file"
-                else
-                    log_warning "$ext: resolver unavailable and ceiling not in built-this-run set — skipping versionset artifact (recovery path)"
+                log_warning "$ext: resolver unavailable in final pass (recovery path) — no version-set artifact produced"
+                log_warning "$ext: a local timeseries/full postgres build requires skopeo or a CI-produced version-set artifact"
+                if [[ "$DRY_RUN" != "true" ]]; then
+                    _delete_stale_versionset_artifact "$ext" "$major_ver"
                 fi
             else
                 log_error "$ext: resolver failed in final pass (publish path) — versionset artifact cannot be produced"

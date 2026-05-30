@@ -5236,23 +5236,31 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AC-1: LOCAL_ONLY=true, resolver unavailable in final pass, ceiling built →
-# a versionset artifact IS written reflecting what was actually built.
+# AD-1: LOCAL_ONLY=true, resolver unavailable in final pass, ceiling built →
+# NO reduced version-set artifact is written. Any pre-existing stale artifact
+# for that (ext, major) is DELETED so it cannot be silently consumed.
 #
-# RED before fix: the degrade branch logs a warning and `continue`s — no
-#   artifact is written, leaving the downstream postgres build without the
-#   channel file it needs (compose fails).
-# GREEN after fix: the degrade branch writes a ceiling-only artifact
-#   (available:[ceiling], resolved:[ceiling], excluded:[]).
+# RED before fix (AC): artifact WAS written with available:[ceiling] — silently
+#   ships reduced TimescaleDB retention, breaking persisted databases on older
+#   retained versions (the exact failure the feature exists to prevent).
+# GREEN after fix (AD): artifact is NOT written; stale artifact is removed;
+#   downstream build must use skopeo or a CI-produced artifact.
 # ---------------------------------------------------------------------------
-@test "AC-1: LOCAL_ONLY=true + resolver unavailable in final pass → ceiling artifact written" {
+@test "AD-1: LOCAL_ONLY=true + resolver unavailable in final pass → no artifact, stale deleted" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
 
-    local build_log="${tmpd}/ac1_build.log"
+    local build_log="${tmpd}/ad1_build.log"
+
+    # Pre-create a stale artifact to verify it is DELETED on recovery.
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.26.0","resolved":["2.26.0"],"available":["2.26.0"],"excluded":[]}\n' \
+        > "$artifact"
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=true DRY_RUN=false CONTAINER=postgres
@@ -5305,30 +5313,89 @@ EOCFG
         main postgres --major-version 18 --local-only
     "
 
-    # Local recovery path must succeed.
+    # Local recovery path must succeed (ceiling still built).
     [ "$status" -eq 0 ]
 
-    # Ceiling must have been built (build_tag_push_extensions degrade built it).
+    # Ceiling must have been built (build_tag_push_extensions degrade is unchanged).
     [ -f "$build_log" ]
     [[ "$(cat "$build_log")" == *"ver=2.27.1"* ]]
 
-    # Artifact MUST be written (RED before fix, GREEN after fix).
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
+    # Artifact must NOT be present — fail-closed, no reduced retention artifact.
+    # RED before fix (AC): file exists with available:[ceiling].
+    # GREEN after fix (AD): file absent.
+    [ ! -f "$artifact" ]
+}
 
-    # available must contain the ceiling — non-vacuous assertion.
-    local available_count
-    available_count=$(jq '.available | length' "$artifact")
-    [ "$available_count" -ge 1 ]
+# ---------------------------------------------------------------------------
+# AD-2: PULL_ONLY=true, resolver unavailable in final pass → no artifact written.
+# Consistent with AD-1: both LOCAL_ONLY and PULL_ONLY recovery paths must be
+# fail-closed on artifact emission.
+# ---------------------------------------------------------------------------
+@test "AD-2: PULL_ONLY=true + resolver unavailable in final pass → no artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
 
-    local ceiling_in_available
-    ceiling_in_available=$(jq '[.available[] | select(. == "2.27.1")] | length' "$artifact")
-    [ "$ceiling_in_available" -eq 1 ]
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
 
-    # ceiling field must be set correctly.
-    local ceiling_field
-    ceiling_field=$(jq -r '.ceiling' "$artifact")
-    [ "$ceiling_field" = "2.27.1" ]
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=true DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\" PULL_ONLY=true
+
+        resolve_version_set() {
+            echo '::error::simulated outage' >&2
+            return 1
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        docker() { return 0; }
+        export -f docker
+
+        pull_ext_image() { return 0; }
+        export -f pull_ext_image
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --pull-only
+    "
+
+    # Recovery path must succeed.
+    [ "$status" -eq 0 ]
+
+    # No version-set artifact must be present (consistent with LOCAL_ONLY behavior).
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
 }
 
 # ---------------------------------------------------------------------------
