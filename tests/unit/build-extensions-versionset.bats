@@ -5089,3 +5089,148 @@ _run_emit_versionset() {
         [[ "$output" == *"FAIL"* ]]
     done
 }
+
+# ---------------------------------------------------------------------------
+# AB-single-version-nonsemver-builds: a NON-resolver extension pinned to a
+# two-component version (1.14 — the format pg_ivm uses in config.yaml) must
+# NOT be rejected by the semver gate. The gate applies ONLY to resolver-backed
+# extensions; trusted single-version config inputs are not subject to it.
+#
+# Before fix: is_strict_semver gate runs unconditionally → rejects "1.14" →
+#   build is never triggered, extension fails (RED).
+# After fix:  gate is skipped for non-resolver extensions → "1.14" flows
+#   through to build/tag/push normally (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "AB-single-version-nonsemver-builds: non-resolver ext pinned to 1.14 builds successfully" {
+    export LOCAL_ONLY=false
+
+    # Config with NO version_set.resolver — single-version, trusted input.
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOCFG'
+extensions:
+  pg_ivm:
+    version: "1.14"
+    repo: "https://github.com/sraoss/pg_ivm"
+    priority: 1
+EOCFG
+
+    # Dockerfile must exist so build_ext_image is reached.
+    touch "$EXT_BUILD_DIR/pg_ivm.Dockerfile"
+
+    # resolve_version_set: single-version (no resolver configured) — echoes ["1.14"].
+    resolve_version_set() {
+        echo '["1.14"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _ext="$1" _key="$2"
+        case "$_key" in
+            version)           echo "1.14" ;;
+            repo)              echo "https://github.com/sraoss/pg_ivm" ;;
+            version_set.resolver) echo "" ;;
+            *)                 echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/ab_single_build.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/ab_single_tag.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    local push_log="$TEST_TEMP_DIR/ab_single_push.log"
+    push_ext_image() {
+        echo "PUSH_CALLED ext=${1} ver=${2}" >> "$push_log"
+        return 0
+    }
+    export -f push_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "pg_ivm"
+
+    # Must succeed — two-component version from trusted config is not rejected.
+    [ "$status" -eq 0 ]
+
+    # The build must have been called with version 1.14 (gate did not reject it).
+    [ -f "$build_log" ]
+    [[ "$(cat "$build_log")" == *"ver=1.14"* ]]
+
+    # Tag and push must also have been called (the version actually reached them).
+    [ -f "$tag_log" ]
+    [[ "$(cat "$tag_log")" == *"ver=1.14"* ]]
+    [ -f "$push_log" ]
+    [[ "$(cat "$push_log")" == *"ver=1.14"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AB-resolver-backed-still-gated: a resolver-backed extension (timescaledb)
+# with a malformed entry in its resolver output must STILL fail closed after
+# the narrowing. Confirms the YY hardening (strict-semver gate on resolver
+# output) was not disabled by the AB fix — only its APPLICATION was narrowed
+# to resolver-backed extensions.
+#
+# The config used here has version_set.resolver configured (same as YY tests),
+# so the gate MUST still apply and reject the malformed entry.
+# ---------------------------------------------------------------------------
+
+@test "AB-resolver-backed-still-gated: resolver-backed ext with malformed output still fails closed" {
+    export LOCAL_ONLY=false
+
+    # Config has version_set.resolver — this ext IS resolver-backed.
+    # (Uses the CONFIG_FILE from setup(), which already has timescaledb with resolver.)
+
+    # Resolver returns a set with an injection-y entry.
+    resolve_version_set() {
+        echo '["2.27.1","2.27.0; rm -rf /"]'
+    }
+    export -f resolve_version_set
+
+    ext_config() {
+        local _ext="$1" _key="$2"
+        case "$_key" in
+            version)              echo "2.27.1" ;;
+            repo)                 echo "https://github.com/timescale/timescaledb" ;;
+            version_set.resolver) echo "scripts/resolvers/timescaledb-ha.sh" ;;
+            *)                    echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local build_log="$TEST_TEMP_DIR/ab_resolver_build.log"
+    build_ext_image() {
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    local tag_log="$TEST_TEMP_DIR/ab_resolver_tag.log"
+    tag_ext_image() {
+        echo "TAG_CALLED ext=${1} ver=${2}" >> "$tag_log"
+        return 0
+    }
+    export -f tag_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail closed — resolver-backed gate still active.
+    [ "$status" -ne 0 ]
+
+    # The malformed entry must NEVER reach build or tag.
+    if [ -f "$build_log" ]; then
+        [[ "$(cat "$build_log")" != *"rm -rf"* ]]
+    fi
+    if [ -f "$tag_log" ]; then
+        [[ "$(cat "$tag_log")" != *"rm -rf"* ]]
+    fi
+}

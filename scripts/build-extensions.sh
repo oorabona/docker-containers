@@ -469,32 +469,40 @@ build_tag_push_extensions() {
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
 
-        # Defense-in-depth: validate every resolved version as strict semver
-        # before it reaches a docker tag or a build-arg.  The resolver already
-        # applies a strict regex, but this gate closes the gap at the build
-        # trust boundary (resolver output could be tampered or malformed).
-        # A single non-semver entry causes the entire extension to be skipped /
-        # failed — honoring the same LOCAL_ONLY degrade rules as a resolver failure.
-        local _semver_ok=true
-        local _sv_ver
-        while IFS= read -r _sv_ver; do
-            [[ -z "$_sv_ver" ]] && continue
-            if ! is_strict_semver "$_sv_ver"; then
-                log_error "$ext: resolved version '${_sv_ver}' is not strict semver — refusing to build (injection guard)"
-                _semver_ok=false
-                break
-            fi
-        done < <(echo "$version_set_json" | jq -r '.[]')
+        # Strict-semver injection guard: applies ONLY to resolver-backed extensions
+        # (those with version_set.resolver in config.yaml). Their version sets come
+        # from an external resolver whose output is untrusted — a malformed or
+        # injected entry must never reach a docker tag or build-arg.
+        #
+        # Non-resolver single-version extensions have their version pinned directly
+        # in config.yaml (operator-controlled, same trust level as the Dockerfile).
+        # The injection concern does not apply to them, and their legitimate formats
+        # (e.g. "1.14") must not be rejected.
+        local _resolver_path
+        _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
 
-        if [[ "$_semver_ok" == "false" ]]; then
-            if [[ "$LOCAL_ONLY" == "true" ]]; then
-                log_warning "$ext: semver validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
-                version_set_json="[\"$ceiling\"]"
-                set_size=1
-            else
-                log_error "$ext: semver validation failed — skipping build (fail-closed)"
-                failed+=("$ext")
-                continue
+        if [[ -n "$_resolver_path" ]]; then
+            local _semver_ok=true
+            local _sv_ver
+            while IFS= read -r _sv_ver; do
+                [[ -z "$_sv_ver" ]] && continue
+                if ! is_strict_semver "$_sv_ver"; then
+                    log_error "$ext: resolved version '${_sv_ver}' is not strict semver — refusing to build (injection guard)"
+                    _semver_ok=false
+                    break
+                fi
+            done < <(echo "$version_set_json" | jq -r '.[]')
+
+            if [[ "$_semver_ok" == "false" ]]; then
+                if [[ "$LOCAL_ONLY" == "true" ]]; then
+                    log_warning "$ext: semver validation failed — degrading to ceiling $ceiling (LOCAL_ONLY)"
+                    version_set_json="[\"$ceiling\"]"
+                    set_size=1
+                else
+                    log_error "$ext: semver validation failed — skipping build (fail-closed)"
+                    failed+=("$ext")
+                    continue
+                fi
             fi
         fi
 
