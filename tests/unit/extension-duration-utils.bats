@@ -240,3 +240,26 @@ _write_ext_lineage() {
     [ "$status" -eq 0 ]
     [ "$output" -eq 0 ]
 }
+
+# Case FF-dur: stale per-version duration files from a previous run that are NOT
+# cleaned before invoking sum_flavor_extension_durations would be counted incorrectly.
+# After FF fix: build-extensions.sh cleans stale duration files on all success paths
+# (including all-cached), so by the time sum_flavor_extension_durations is called
+# only current-run files exist. This test verifies the utility returns 0 when
+# only stale-but-cleaned (absent) files remain — i.e., an all-cached no-op run
+# produces 0 duration, not a stale non-zero from previous runs.
+#
+# RED before fix (caller side): stale files from previous run survive an all-cached
+#   run → sum_flavor_extension_durations returns non-zero (counts stale durations).
+# GREEN after fix (caller side): build-extensions.sh cleaned the stale files before
+#   calling sum_flavor_extension_durations → no files → sum returns 0.
+# This test asserts the behavior of the utility with no files present (as produced
+# by a fully-cleaned all-cached run).
+@test "FF-dur: no per-version files (cleaned by caller) → sum returns 0 for no-op run" {
+    # Simulate the post-cleanup state: no per-version duration files exist.
+    # (build-extensions.sh removed them; sum_flavor_extension_durations should return 0.)
+
+    run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 0 ]
+}

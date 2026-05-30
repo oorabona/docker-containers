@@ -796,6 +796,25 @@ _emit_final_versionset_pass() {
         local ceiling version_set_json
         ceiling=$(ext_config "$ext" "version" "$config_file")
 
+        # Clean stale per-version DURATION lineage files for this ext+major before
+        # emitting the versionset artifact.  This ensures that an all-cached run
+        # (where build_tag_push_extensions was never called) does not leave stale
+        # duration files on disk.  Scoped to the per-version semver pattern:
+        # ext-<ext>-pg<major>-<X.Y.Z>.json — the versionset artifact
+        # (ext-<ext>-pg<major>-versionset.json) is excluded by the glob filter.
+        # Dry runs must not mutate .build-lineage.
+        if [[ "$DRY_RUN" != "true" ]]; then
+            local _fp_lineage_dir="${ROOT_DIR}/.build-lineage"
+            if [[ -d "$_fp_lineage_dir" ]]; then
+                local _fp_f
+                for _fp_f in "${_fp_lineage_dir}/ext-${ext}-pg${major_ver}-"*.json; do
+                    [[ -f "$_fp_f" ]] || continue
+                    [[ "$_fp_f" == *"-versionset.json" ]] && continue
+                    rm -f "$_fp_f"
+                done
+            fi
+        fi
+
         # Use the cache — resolver was already called during the build/filter phase.
         # If not in cache yet (e.g. pull-only path or scoped run), resolve now.
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then

@@ -2721,6 +2721,224 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# FF-1: stale per-version DURATION lineage files are removed on an all-cached
+# run (no build occurs). The versionset artifact must survive.
+#
+# Scenario: a previous run built timescaledb 2.20.0 and wrote:
+#   ext-timescaledb-pg18-2.20.0.json  (stale per-version DURATION file)
+# In the current run, all resolved versions (2.25.0, 2.26.0, 2.27.1) are
+# already in the registry — all-cached, nothing built.
+#
+# RED before fix: stale 2.20.0 per-version file survives the all-cached run.
+# GREEN after fix: stale per-version duration file is cleaned on the all-cached
+#   path while the versionset artifact is preserved.
+# ---------------------------------------------------------------------------
+@test "FF-1-allcached-stale-duration-cleaned: stale per-version duration file removed on all-cached run" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Stale per-version DURATION file from a PREVIOUS run (version not in current set)
+    local stale_duration="$lineage_dir/ext-timescaledb-pg18-2.20.0.json"
+    printf '{"ext":"timescaledb","version":"2.20.0","pg_major":"18","duration_seconds":55,"built_at":"2026-01-01T00:00:00Z"}\n' \
+        > "$stale_duration"
+
+    # Pre-create a versionset artifact (to verify it SURVIVES the cleanup)
+    local versionset_artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$versionset_artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions in registry — all-cached, nothing to build
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo 'BUILD_CALLED' >> \"$tmpd/ff1_build.log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed (all cached)
+    [ "$status" -eq 0 ]
+
+    # Must NOT have built anything
+    local build_count
+    build_count=$(_count_log_lines "$tmpd/ff1_build.log")
+    [ "$build_count" -eq 0 ]
+
+    # Stale per-version DURATION file must be GONE.
+    # RED before fix: stale file survives (cleanup only runs in build_tag_push_extensions).
+    # GREEN after fix: cleaned by all-paths pass.
+    [ ! -f "$stale_duration" ]
+
+    # The versionset artifact must SURVIVE (never deleted by the stale-duration cleanup).
+    [ -f "$versionset_artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# FF-2: stale per-version DURATION lineage files are removed on all success paths.
+# Verify the same cleanup runs on the build path (build_tag_push_extensions IS called).
+# After cleanup, fresh per-version files are written for actually-built versions.
+# ---------------------------------------------------------------------------
+@test "FF-2-build-path-stale-cleaned: stale per-version duration removed even when build runs" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Stale file from a previous run
+    local stale_duration="$lineage_dir/ext-timescaledb-pg18-2.20.0.json"
+    printf '{"ext":"timescaledb","version":"2.20.0","pg_major":"18","duration_seconds":99}\n' \
+        > "$stale_duration"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Stale file must be gone
+    [ ! -f "$stale_duration" ]
+
+    # Current-run per-version files must exist for each built version
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.25.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.26.0.json" ]
+    [ -f "$lineage_dir/ext-timescaledb-pg18-2.27.1.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# FF-3: the FF cleanup must NEVER delete the versionset artifact even if it
+# exists before an all-cached run.
+# ---------------------------------------------------------------------------
+@test "FF-3-versionset-survives: versionset artifact is never deleted by FF cleanup" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create both: a stale duration AND the versionset artifact
+    local stale_duration="$lineage_dir/ext-timescaledb-pg18-2.20.0.json"
+    printf '{"ext":"timescaledb","version":"2.20.0","duration_seconds":42}\n' > "$stale_duration"
+
+    local versionset="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$versionset"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Stale per-version DURATION file must be gone
+    [ ! -f "$stale_duration" ]
+
+    # Versionset artifact must SURVIVE and be fresh (rewritten by final pass)
+    [ -f "$versionset" ]
+    local ceiling
+    ceiling=$(jq -r '.ceiling' "$versionset")
+    [ "$ceiling" = "2.27.1" ]
+}
+
+# ---------------------------------------------------------------------------
 # BB-3: final-pass resolver failure + PULL_ONLY=true → degrade, exit 0.
 # ---------------------------------------------------------------------------
 @test "BB-3-pullonly-degrade: final-pass resolver failure + PULL_ONLY=true → exit 0 (degrade)" {

@@ -56,6 +56,8 @@ flavors:
   multi_mixed:
     - timescaledb
     - pgvector
+  vector:
+    - pgvector
 EOF
 
     # Minimal Dockerfile template
@@ -172,42 +174,49 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: backward-compat — no versionset → single stage + flat COPY paths
+# Test 2: backward-compat — no versionset → single stage + flat COPY paths.
+# Uses the "vector" flavor (pgvector only, no version_set.resolver) to exercise
+# the non-resolver single-version path. Resolver-backed extensions (timescaledb)
+# require a versionset artifact; non-resolver extensions still use the single-version
+# flat-copy path when no artifact is present.
 # ---------------------------------------------------------------------------
-@test "backward-compat: no versionset → single FROM stage for timescaledb" {
-    # No versionset file created — backward-compat path
+@test "backward-compat: no versionset → single FROM stage for non-resolver extension (pgvector)" {
+    # No versionset file created — pgvector is non-resolver, so single-version path applies.
+    # timescaledb (resolver-backed) is not in this flavor.
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
-        "timeseries" "18" \
+        "vector" "18" \
         "ghcr.io" "testowner"
 
     [ "$status" -eq 0 ]
 
-    # Exactly ONE FROM stage for timescaledb
+    # Exactly ONE FROM stage for pgvector
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
     [ "$from_count" -eq 1 ]
 
     # Stage alias uses extension name only (no version suffix)
-    echo "$output" | grep -q "FROM.*ext-timescaledb:pg18-2.27.1 AS ext-timescaledb$"
+    echo "$output" | grep -q "FROM.*ext-pgvector:pg18-0.8.2 AS ext-pgvector$"
 }
 
-@test "backward-compat: no versionset → COPYs go into flat /tmp/ext/timescaledb/{extension,lib}/" {
+@test "backward-compat: no versionset → COPYs go into flat /tmp/ext/pgvector/{extension,lib}/" {
+    # pgvector is non-resolver — no versionset required.
+
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
-        "timeseries" "18" \
+        "vector" "18" \
         "ghcr.io" "testowner"
 
     [ "$status" -eq 0 ]
 
-    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/"
-    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/lib/ /tmp/ext/timescaledb/lib/"
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/"
 
     # Must NOT have version-subdirectory COPYs
-    echo "$output" | grep -qv "/tmp/ext/timescaledb/2\."
+    echo "$output" | grep -qv "/tmp/ext/pgvector/0\."
 }
 
 # ---------------------------------------------------------------------------
@@ -310,7 +319,11 @@ EOF
 # workaround.
 # ---------------------------------------------------------------------------
 @test "success: generate_dockerfile returns 0 when RUNTIME_DEPS marker is empty (last line)" {
-    # No versionset → backward-compat single-version path; no runtime_deps in config
+    # Provide the required versionset artifact for timescaledb (resolver-backed).
+    # The test intent is that an empty RUNTIME_DEPS block at the end of the template
+    # does not cause a spurious non-zero exit from expand_template.
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
@@ -492,6 +505,73 @@ EOF
         "ghcr.io" "testowner"
 
     [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# EE-a: resolver-backed extension (has version_set.resolver) with NO versionset
+#        artifact → generate_dockerfile exits non-zero with actionable message.
+#
+# RED before fix: silently emits single-version stage, exits 0.
+# GREEN after fix: exits non-zero (fail-closed), stderr contains "versionset artifact missing".
+# ---------------------------------------------------------------------------
+@test "EE-a-resolver-no-artifact: resolver-backed ext + no versionset → non-zero exit" {
+    # No versionset file created for timescaledb (resolver-backed).
+    # The config fixture has version_set.resolver for timescaledb.
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 (silently single-versioned).
+    # GREEN after fix: exits non-zero (fail-closed).
+    [ "$status" -ne 0 ]
+}
+
+@test "EE-a-resolver-no-artifact: actionable error message mentions extension name and artifact" {
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # The function must exit non-zero (fail-closed) AND emit an error naming timescaledb
+    # and mentioning the missing versionset artifact so the operator knows what to fix.
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"timescaledb"* ]]
+    [[ "$output" == *"versionset"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# EE-b: non-resolver extension (no version_set in config) with NO versionset
+#        artifact → single-version path, exits 0 (unchanged behavior).
+#
+# The pgvector extension in the config fixture has no version_set.resolver.
+# GREEN before and after fix: non-resolver ext must still produce single-version.
+# ---------------------------------------------------------------------------
+@test "EE-b-non-resolver-no-artifact: non-resolver ext + no versionset → single-version, exit 0" {
+    # No versionset file for pgvector (non-resolver) — use multi_mixed flavor
+    # which includes pgvector (non-resolver) alongside timescaledb (resolver-backed).
+    # We need to write a versionset for timescaledb so it doesn't fail EE-a.
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+    # NO versionset for pgvector.
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "multi_mixed" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # pgvector must still produce exactly 1 FROM stage (single-version).
+    local pv_count
+    pv_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
+    [ "$pv_count" -eq 1 ]
+
+    # pgvector must use flat COPY paths (single-version format).
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 }
 
 # ---------------------------------------------------------------------------

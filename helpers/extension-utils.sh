@@ -265,6 +265,18 @@ generate_dockerfile() {
             local ext_version
             ext_version=$(ext_config "$ext_name" "version" "$config_file")
 
+            # Determine whether this extension is resolver-backed.
+            # An extension is resolver-backed when its config has a non-empty
+            # version_set.resolver path — this means build-extensions.sh ran a
+            # resolver script to produce a multi-version set, and the resulting
+            # versionset artifact is required for correct Dockerfile generation.
+            # A missing artifact for a resolver-backed extension is a build-side
+            # failure (the CI artifact download step may have been skipped or
+            # lost), not a single-version situation — fail closed instead of
+            # silently degrading to a below-pin single-version image.
+            local _resolver_path
+            _resolver_path=$(ext_config "$ext_name" "version_set.resolver" "$config_file")
+
             # Check for a versionset artifact emitted by build-extensions.
             # When present, emit one FROM+COPY pair per available version in
             # ascending order so the ceiling version (highest) is COPIED LAST —
@@ -277,6 +289,17 @@ generate_dockerfile() {
             # container subdirectory (make pushd's into it) and ROOT_DIR is unset.
             local _lineage_root="${ROOT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
             local versionset_file="${_lineage_root}/.build-lineage/ext-${ext_name}-pg${pg_major}-versionset.json"
+
+            # Resolver-backed extension with NO versionset artifact: fail closed.
+            # Silently emitting a single-version stage would ship a below-pin image
+            # (the resolver may have resolved older retained versions that are now
+            # absent from the Dockerfile). Run build-extensions first or check the
+            # CI lineage artifact download step.
+            if [[ -n "$_resolver_path" ]] && [[ ! -f "$versionset_file" ]]; then
+                log_error "generate_dockerfile: versionset artifact missing for resolver-backed extension $ext_name (expected $versionset_file); run build-extensions first or check the CI lineage artifact download step"
+                return 1
+            fi
+
             if [[ -f "$versionset_file" ]] && command -v jq &>/dev/null; then
                 local available_count
                 available_count=$(jq '.available | length' "$versionset_file" 2>/dev/null || echo 0)
