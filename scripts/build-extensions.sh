@@ -411,7 +411,7 @@ handle_pull_only_mode() {
 
     if [[ ${#extensions_to_build[@]} -eq 0 ]]; then
         log_success "All extensions pulled successfully"
-        exit 0
+        return 0
     fi
 
     # Deduplicate to extension names; build_tag_push_extensions will skip any
@@ -745,6 +745,67 @@ _should_build_extension() {
 }
 
 
+# Emit versionset artifacts for ALL resolver-backed, in-scope extensions
+# that do NOT already have an artifact written by build_tag_push_extensions
+# in this run. This is the unconditional final pass that runs before EVERY
+# success exit in main() — covering the all-up-to-date path, the normal build
+# path (for skipped/cached extensions), and the pull-only path.
+#
+# Extensions that were actually built get their artifact from build_tag_push_extensions
+# (which has richer build-failure excluded reasons). The final pass uses a
+# presence-based check for extensions whose artifact file doesn't yet exist.
+#
+# Args: config_file major_ver container_dir [optional_extension]
+#   optional_extension: when set, only emit for that one extension (--extension mode)
+# Does nothing under DRY_RUN.
+_emit_final_versionset_pass() {
+    local config_file="$1" major_ver="$2" container_dir="$3"
+    local single_ext="${4:-}"
+
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local ext_list
+    if [[ -n "$single_ext" ]]; then
+        ext_list="$single_ext"
+    else
+        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+    fi
+
+    local ext
+    while IFS= read -r ext; do
+        [[ -z "$ext" ]] && continue
+        # Skip extensions with no Dockerfile (already skipped by build logic)
+        local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
+        [[ ! -f "$dockerfile" ]] && continue
+
+        local ceiling version_set_json
+        ceiling=$(ext_config "$ext" "version" "$config_file")
+
+        # Use the cache — resolver was already called during the build/filter phase.
+        # If not in cache yet (e.g. pull-only path), resolve now.
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver"); then
+            # Resolver failure in the final pass: skip artifact (don't abort success).
+            log_warning "$ext: resolver unavailable in final pass — skipping versionset artifact"
+            continue
+        fi
+
+        local set_size
+        set_size=$(echo "$version_set_json" | jq 'length')
+        [[ "$set_size" -le 1 ]] && continue
+
+        # Only emit for extensions that don't already have an artifact from
+        # build_tag_push_extensions in this run. build_tag_push_extensions writes
+        # a richer artifact (with exact build-failure reasons); this final pass
+        # fills in the gap for extensions that were skipped (all versions cached).
+        local _vs_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+        if [[ -f "$_vs_file" ]]; then
+            continue
+        fi
+
+        _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling"
+    done <<< "$ext_list"
+}
+
 # Write (or refresh) the versionset artifact for a resolver-backed extension
 # using a pure presence-based pass — no build occurs.
 # Args: ext config_file major_ver version_set_json ceiling
@@ -816,21 +877,17 @@ main() {
         check_registry_auth || log_warning "Continuing without registry auth check"
     fi
 
-    # Handle pull-only mode
+    # Handle pull-only mode — returns 0 on success, propagates exit 1 from
+    # build_tag_push_extensions on failure. The final versionset pass runs
+    # after the return so every pull-only success path has artifacts too.
     if [[ "$PULL_ONLY" == "true" ]]; then
         handle_pull_only_mode "$config_file" "$major_ver" "$container_dir"
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
         exit 0
     fi
 
     # Build mode — determine which extensions to build.
-    # For each extension we also track the resolved version set (from the cache)
-    # so that skipped resolver-backed extensions can still emit their versionset
-    # artifact at the end of this function.
     local extensions_to_build=()
-    # Parallel arrays: one entry per extension in scope.
-    local _all_exts=()        # every ext seen in this run
-    local _all_sets=()        # corresponding resolved JSON (or "" for single-ver)
-    local _all_ceilings=()    # corresponding ceiling versions
 
     if [[ -n "$EXTENSION" ]]; then
         # Strict typo check: explicit --extension must have a real Dockerfile
@@ -846,14 +903,6 @@ main() {
             1) : ;;
             *) log_error "$EXTENSION: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
         esac
-        # Capture resolver output for artifact emission below.
-        local _ext_ceiling _ext_vset
-        _ext_ceiling=$(ext_config "$EXTENSION" "version" "$config_file")
-        if _ext_vset=$(_resolve_cached "$EXTENSION" "$major_ver"); then
-            _all_exts+=("$EXTENSION")
-            _all_sets+=("$_ext_vset")
-            _all_ceilings+=("$_ext_ceiling")
-        fi
     else
         while IFS= read -r ext; do
             local _rc=0
@@ -863,14 +912,6 @@ main() {
                 1) : ;;
                 *) log_error "$ext: version-set resolver failed — aborting (fail-closed)"; exit 1 ;;
             esac
-            # Capture resolver output (already cached from _should_build_extension).
-            local _ext_ceiling _ext_vset
-            _ext_ceiling=$(ext_config "$ext" "version" "$config_file")
-            if _ext_vset=$(_resolve_cached "$ext" "$major_ver"); then
-                _all_exts+=("$ext")
-                _all_sets+=("$_ext_vset")
-                _all_ceilings+=("$_ext_ceiling")
-            fi
         done < <(list_extensions_by_priority "$config_file" "$major_ver")
     fi
 
@@ -880,16 +921,10 @@ main() {
         else
             log_success "All extensions are up to date"
         fi
-        # Emit versionset artifacts for resolver-backed extensions that were
-        # fully cached (no build needed). This guarantees generate_dockerfile
-        # always has an up-to-date artifact even on incremental CI runs where
-        # every image already exists.
-        local _i
-        for (( _i=0; _i<${#_all_exts[@]}; _i++ )); do
-            _emit_versionset_artifact \
-                "${_all_exts[$_i]}" "$config_file" "$major_ver" \
-                "${_all_sets[$_i]}" "${_all_ceilings[$_i]}"
-        done
+        # Final pass: emit presence-based versionset artifacts for all in-scope
+        # resolver-backed extensions (resolver results are already cached from
+        # the _should_build_extension calls above).
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
         exit 0
     fi
 
@@ -900,6 +935,13 @@ main() {
     [[ "$LOCAL_ONLY" == "true" ]] && do_push="false"
 
     build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "$do_push" "${extensions_to_build[@]}"
+
+    # Final pass: emit presence-based versionset artifacts for ALL in-scope
+    # resolver-backed extensions — including those that were skipped by
+    # build_tag_push_extensions (already cached) and those just built.
+    # This is the single source of truth for skipped extensions on mixed runs.
+    # Resolver results are already cached from _should_build_extension calls above.
+    _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}"
 }
 
 # Only run main when executed directly, not when sourced (e.g. by unit tests)

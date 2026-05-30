@@ -1426,3 +1426,396 @@ _count_log_lines() {
     excl_ver=$(jq -r '.excluded[0].version' "$artifact")
     [ "$excl_ver" = "2.25.0" ]
 }
+
+# ---------------------------------------------------------------------------
+# MIXED-1: two extensions in scope — timescaledb (resolver-backed, ALL versions
+# already in registry → skipped by build_tag_push) and pgvector (single-version,
+# needs build). main() must NOT take the all-up-to-date early-exit; after
+# build_tag_push completes for pgvector, the timescaledb versionset artifact
+# MUST still be written (presence-based final pass).
+#
+# Before fix: only the early-exit path emits the artifact → mixed path never
+#   triggers the emission → timescaledb artifact absent (RED).
+# After fix:  final pass runs on all success paths → artifact present (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "MIXED-1: mixed run (skipped resolver-backed ext + built single-ver ext) emits versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Extend config to include pgvector (single-version, no resolver)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local build_log="${tmpd}/mixed1_build.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # timescaledb: multi-version resolver → 3 versions
+        # pgvector: single-version (no resolver), absent → needs build
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
+            else
+                echo '[\"0.8.0\"]'
+            fi
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # timescaledb: ALL versions already in registry (skipped by build_tag_push)
+        # pgvector: absent → triggers build
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'timescaledb'* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed
+    [ "$status" -eq 0 ]
+
+    # pgvector must have been built (it was absent from registry)
+    [ -f "$build_log" ]
+    [[ "$(cat "$build_log")" == *"ext=pgvector"* ]]
+
+    # The timescaledb versionset artifact MUST be present (not built, but in scope)
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # available must list all 3 resolved versions (all were in registry)
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    # excluded must be empty (all 3 were in registry)
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# MIXED-2: resolver-backed ext IS built (not skipped), single-ver ext already
+# cached. After build completes, the versionset artifact reflects what is
+# actually in the registry (presence-based — no regression from the build path).
+# ---------------------------------------------------------------------------
+
+@test "MIXED-2: built resolver-backed ext produces correct versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local build_log="${tmpd}/mixed2_build.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # timescaledb: 3-version set; 2.25.0 absent → needs build
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # 2.26.0 and 2.27.1 already in registry; 2.25.0 absent
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'pg18-2.25.0'* ]] && return 1 || return 0
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() {
+            echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # 2.25.0 was built
+    [ -f "$build_log" ]
+    [[ "$(cat "$build_log")" == *"ext=timescaledb"* ]]
+    [[ "$(cat "$build_log")" == *"ver=2.25.0"* ]]
+
+    # Versionset artifact exists and reflects all 3 as available (2.25.0 just built,
+    # 2.26.0+2.27.1 were already in registry — all pass presence check after build)
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 3 ]
+
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# PULL-ONLY-EMITS: --pull-only where all resolved versions pull successfully →
+# versionset artifact written before the pull-only success exit.
+#
+# Before fix: handle_pull_only_mode exits 0 without emitting the artifact (RED).
+# After fix:  final pass runs before the success exit → artifact present (GREEN).
+# ---------------------------------------------------------------------------
+
+@test "pull-only-emits: pull-only success path writes versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres PULL_ONLY=true
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() { return 1; }
+        export -f docker
+
+        # All versions pulled successfully → no fallback builds needed
+        pull_ext_image() { return 0; }
+        export -f pull_ext_image
+
+        # After pull, images are present locally (docker inspect returns 0)
+        docker() {
+            # Any 'docker image inspect <image>' call: succeed for pulled images
+            return 0
+        }
+        export -f docker
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Artifact must exist after pull-only success
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # All 3 versions were pulled and are now present locally → all available
+    local resolved_count
+    resolved_count=$(jq '.resolved | length' "$artifact")
+    [ "$resolved_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------------------
+# MIXED-DRY-RUN: mixed path (pgvector built, timescaledb skipped) with
+# DRY_RUN=true must NOT write the timescaledb versionset artifact.
+# ---------------------------------------------------------------------------
+
+@test "MIXED-DRY-RUN: mixed path under DRY_RUN=true writes no versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Extend config to include pgvector (same as MIXED-1)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        # Re-export after source: build-extensions.sh resets DRY_RUN=false at script level
+        export ROOT_DIR=\"$tmpd\" DRY_RUN=true
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            if [[ \"\$ext\" == 'timescaledb' ]]; then
+                echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'
+            else
+                echo '[\"0.8.0\"]'
+            fi
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # timescaledb: all in registry (skipped); pgvector: absent
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'timescaledb'* ]] && return 0 || return 1
+        }
+        export -f image_exists_in_registry
+
+        docker() { return 1; }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Under DRY_RUN, NO versionset artifact must be written (the core invariant).
+    [ ! -f "$lineage_dir/ext-timescaledb-pg18-versionset.json" ]
+    [ ! -f "$lineage_dir/ext-pgvector-pg18-versionset.json" ]
+}
