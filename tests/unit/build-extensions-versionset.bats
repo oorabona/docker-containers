@@ -9522,11 +9522,11 @@ _run_an_producer() {
 
 # ---------------------------------------------------------------------------
 # A-arch-suffixed-build: ARCH_SUFFIX=amd64 => per-version build uses
-# `buildx --platform linux/amd64` and bundle gets -amd64 suffix;
-# NO versionset artifact written (deferred when ARCH_SUFFIX non-empty).
+# `buildx --platform linux/amd64`, bundle is DEFERRED to stage B (no
+# per-arch bundle build in stage A), and NO versionset artifact is written.
 # ---------------------------------------------------------------------------
 
-@test "A-arch-suffixed-build: ARCH_SUFFIX=amd64 uses buildx --platform and suffixed bundle tag, no artifact" {
+@test "A-arch-suffixed-build: ARCH_SUFFIX=amd64 uses buildx --platform and defers bundle to stage B, no artifact" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -9575,7 +9575,10 @@ _run_an_producer() {
         }
         export -f _capture_bundle_digest
 
-        build_ext_image() { return 0; }
+        build_ext_image() {
+            echo "BUILD_EXT_CALLED $*" >> "'"$docker_calls"'"
+            return 0
+        }
         export -f build_ext_image
         tag_ext_image()  { return 0; }
         export -f tag_ext_image
@@ -9595,14 +9598,17 @@ _run_an_producer() {
 
     [ "$status" -eq 0 ]
 
-    # Bundle build must include --platform linux/amd64
+    # Per-version builds must have happened (with ARCH_SUFFIX=amd64).
     [ -f "$docker_calls" ]
+
+    # Bundle is DEFERRED to stage B — no per-arch bundle build/push in stage A.
+    # Must NOT contain a bundle build call (pg18-bundle-amd64).
     local calls
     calls=$(cat "$docker_calls")
-    [[ "$calls" == *"--platform linux/amd64"* ]]
-
-    # Bundle tag must be suffixed with -amd64 (:pg18-bundle-amd64)
-    [[ "$calls" == *"pg18-bundle-amd64"* ]]
+    [[ "$calls" != *"pg18-bundle-amd64"* ]] || {
+        echo "FAIL: per-arch bundle build must be deferred to stage B, not run in stage A"
+        false
+    }
 
     # NO versionset artifact written (deferred when ARCH_SUFFIX non-empty)
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -9610,11 +9616,11 @@ _run_an_producer() {
 }
 
 # ---------------------------------------------------------------------------
-# A-arm64-suffix: ARCH_SUFFIX=arm64, BUILD_PLATFORM=linux/arm64 => -arm64 tags
-# and --platform linux/arm64 in docker calls.
+# A-arm64-suffix: ARCH_SUFFIX=arm64, BUILD_PLATFORM=linux/arm64 => per-version
+# builds use --platform linux/arm64, bundle is DEFERRED to stage B.
 # ---------------------------------------------------------------------------
 
-@test "A-arm64-suffix: ARCH_SUFFIX=arm64 produces -arm64 suffixed bundle tag and --platform linux/arm64" {
+@test "A-arm64-suffix: ARCH_SUFFIX=arm64 defers bundle to stage B and uses buildx --platform for per-version builds" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -9663,7 +9669,10 @@ _run_an_producer() {
         }
         export -f _capture_bundle_digest
 
-        build_ext_image() { return 0; }
+        build_ext_image() {
+            echo "BUILD_EXT_CALLED $*" >> "'"$docker_calls"'"
+            return 0
+        }
         export -f build_ext_image
         tag_ext_image()   { return 0; }
         export -f tag_ext_image
@@ -9683,17 +9692,18 @@ _run_an_producer() {
 
     [ "$status" -eq 0 ]
 
+    # Per-version builds must have been called.
     [ -f "$docker_calls" ]
+
+    # Bundle is DEFERRED to stage B — no per-arch bundle build/push in stage A.
     local calls
     calls=$(cat "$docker_calls")
+    [[ "$calls" != *"pg18-bundle-arm64"* ]] || {
+        echo "FAIL: per-arch bundle build must be deferred to stage B, not run in stage A"
+        false
+    }
 
-    # Must use --platform linux/arm64
-    [[ "$calls" == *"--platform linux/arm64"* ]]
-
-    # Bundle tag must be -arm64 suffixed
-    [[ "$calls" == *"pg18-bundle-arm64"* ]]
-
-    # No artifact (deferred)
+    # No artifact (deferred when ARCH_SUFFIX non-empty)
     [ ! -f "$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json" ]
 }
 
@@ -9916,7 +9926,10 @@ _run_an_producer() {
 # bundle, merging -amd64 + -arm64 suffixed refs into un-suffixed targets.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version and bundle" {
+@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version and builds bundle via buildx" {
+    # SIMP-merge-from-stable-tags: imagetools create uses stable SUFFIXED TAG refs
+    # (ext:pg18-2.25.0-amd64, ext:pg18-2.25.0-arm64), not @digest refs.
+    # Bundle is built via buildx build --platform, not imagetools create.
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -9950,7 +9963,11 @@ _run_an_producer() {
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # Mock docker to record imagetools create calls; succeed for all.
+        # image_exists_in_registry: all suffixed tags present (all versions on both arches)
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # Mock docker to record all calls; succeed for all.
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
             return 0
@@ -9981,25 +9998,34 @@ _run_an_producer() {
     local calls
     calls=$(cat "$docker_calls")
 
-    # imagetools create for each version must reference both -amd64 and -arm64 sources.
-    # Version 2.25.0
-    [[ "$calls" == *"pg18-2.25.0"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.25.0"* ]]
-    [[ "$calls" == *"pg18-2.25.0"*"-arm64"* ]] || [[ "$calls" == *"-arm64"*"pg18-2.25.0"* ]]
-    # Version 2.26.0
-    [[ "$calls" == *"pg18-2.26.0"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.26.0"* ]]
-    # Version 2.27.1 (ceiling)
-    [[ "$calls" == *"pg18-2.27.1"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.27.1"* ]]
+    # SIMP-merge-from-stable-tags: imagetools create for per-version merges MUST use
+    # stable suffixed TAG refs (not @digest refs). Verify the -amd64 and -arm64
+    # suffixed tag refs appear in the imagetools create calls.
+    [[ "$calls" == *"pg18-2.25.0-amd64"* ]]
+    [[ "$calls" == *"pg18-2.25.0-arm64"* ]]
+    [[ "$calls" == *"pg18-2.26.0-amd64"* ]]
+    [[ "$calls" == *"pg18-2.27.1-amd64"* ]]
 
-    # imagetools create for the bundle must reference bundle-amd64 and bundle-arm64.
-    [[ "$calls" == *"pg18-bundle-amd64"* ]]
-    [[ "$calls" == *"pg18-bundle-arm64"* ]]
+    # Must NOT contain @sha256: digest refs in per-version imagetools create lines.
+    local digest_lines
+    digest_lines=$(grep 'imagetools.*create' "$docker_calls" | grep '@sha256:' || true)
+    [ -z "$digest_lines" ]
 
-    # Un-suffixed multi-arch targets must be in the create calls (not just suffixed).
-    # The -t flag target for a version must be the un-suffixed form.
+    # Bundle must be built via buildx build --platform, NOT imagetools create.
+    # SIMP-bundle-from-available: bundle build uses --platform and --push.
+    grep -q 'buildx build.*--platform' "$docker_calls"
+    grep -q '\-\-push' "$docker_calls"
+
+    # The bundle must NOT be assembled via imagetools create (old per-arch approach).
+    # pg18-bundle-amd64 and pg18-bundle-arm64 are not referenced in any imagetools create.
+    local bundle_imagetools_lines
+    bundle_imagetools_lines=$(grep 'imagetools.*create' "$docker_calls" | grep 'pg18-bundle' || true)
+    [ -z "$bundle_imagetools_lines" ]
+
+    # Un-suffixed multi-arch targets must be in the imagetools create calls (the -t flag).
     [[ "$calls" == *"-t "* ]]
-    # bundle target (un-suffixed) must appear — grep for pg18-bundle followed by a
-    # non-hyphen character (space, newline, or end of token).
-    grep -qE 'pg18-bundle[^-]|pg18-bundle$' <<< "$calls"
+    # pg18-bundle (un-suffixed) must appear in the buildx build call.
+    grep -qE 'pg18-bundle' "$docker_calls"
 }
 
 # ---------------------------------------------------------------------------
@@ -10038,6 +10064,10 @@ _run_an_producer() {
         export -f ext_image_name
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
+
+        # All suffixed tags present so all 3 versions are available (INTERSECTION = {all})
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
 
         docker() { return 0; }
         export -f docker
@@ -10117,6 +10147,10 @@ _run_an_producer() {
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
+        # All suffixed tags present so availability check passes; imagetools create fails.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
         # imagetools create fails for all calls.
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
@@ -10183,7 +10217,11 @@ _run_an_producer() {
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # imagetools create succeeds but digest capture fails (returns non-OCI string).
+        # All suffixed tags present (availability passes); imagetools create succeeds;
+        # but bundle digest capture returns a non-OCI string (fail-closed).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
         docker() { return 0; }
         export -f docker
 
@@ -10369,6 +10407,10 @@ EOF
         }
         export -f resolve_version_set
 
+        # All suffixed tags present so timescaledb availability check passes.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
@@ -10399,11 +10441,15 @@ EOF
     local create_content
     create_content=$(cat "$imagetools_log")
 
-    # timescaledb: 3 per-version creates + 1 bundle create
+    # timescaledb: 3 per-version imagetools creates (stable suffixed tags, NOT @digest)
     [[ "$create_content" == *"pg18-2.25.0-amd64"* ]]
     [[ "$create_content" == *"pg18-2.26.0-amd64"* ]]
     [[ "$create_content" == *"pg18-2.27.1-amd64"* ]]
-    [[ "$create_content" == *"pg18-bundle-amd64"* ]]
+    # bundle is built via buildx build, NOT imagetools create
+    [[ "$create_content" != *"pg18-bundle-amd64"* ]] || {
+        echo "FAIL: bundle was assembled via imagetools create instead of buildx build"
+        false
+    }
 
     # pgvector: 1 single-version create (no bundle)
     [[ "$create_content" == *"pg18-0.8.0-amd64"* ]]
@@ -10757,32 +10803,19 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AX1-merge-by-digest: finalize_multiarch_manifests with per-arch digest maps
-# present uses `imagetools create <ref>@<digest>` (digest refs), NOT mutable
-# `-amd64`/`-arm64` tag refs. The @sha256: pattern must appear in every
-# imagetools create call for per-version merges.
+# SIMP-merge-from-stable-tags: finalize_multiarch_manifests uses STABLE SUFFIXED TAGS
+# (-amd64/-arm64), NOT @digest refs. This is the replacement for the reverted
+# AX1 digest-map approach. Stable suffixed tags persist in the registry across
+# runs, so a cached version (not rebuilt this run) is included correctly.
 # ---------------------------------------------------------------------------
-@test "AX1-merge-by-digest: finalize-multiarch uses digest refs from maps, not mutable tags" {
+@test "SIMP-merge-from-stable-tags: finalize-multiarch uses stable suffixed tag refs, not digest refs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
-    local imagetools_calls_log="${tmpd}/ax1_imagetools_calls.log"
+    local imagetools_calls_log="${tmpd}/simp_imagetools_calls.log"
     export imagetools_calls_log
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
-
-    # Provide per-arch digest map files — the maps that stage-A per-arch legs write
-    # after each push. Structure: { "<version>": "sha256:<64hex>", "bundle": "sha256:..." }
-    # Use 3 versions so set_size>1, ensuring the per-version merge loop runs.
-    mkdir -p "${tmpd}/.build-lineage"
-    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" \
-        "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
-    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'c%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" \
-        "$(printf 'd%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
 
     run bash -c '
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -10806,6 +10839,10 @@ EOF
         export -f ext_image_name
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
+
+        # All suffixed tags present (all versions available on both arches)
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
@@ -10834,48 +10871,43 @@ EOF
     # Must succeed.
     [ "$status" -eq 0 ]
 
-    # imagetools create must have been called.
+    # imagetools create must have been called for per-version merges.
     [ -f "$imagetools_calls_log" ]
 
     local create_calls
     create_calls=$(cat "$imagetools_calls_log")
 
-    # Must contain at least one imagetools create line.
+    # Must contain imagetools create calls for each version.
     [[ "$create_calls" == *"IMAGETOOLS_CREATE"* ]]
 
-    # All create calls for per-version merges must reference @sha256: refs.
-    local bad_lines
-    bad_lines=$(grep 'IMAGETOOLS_CREATE' "$imagetools_calls_log" | grep -v '@sha256:' || true)
-    [ -z "$bad_lines" ]
+    # Per-version merges MUST use stable suffixed tag refs (not @digest refs).
+    # GREEN: all per-version imagetools create lines reference -amd64 and -arm64 tag refs.
+    [[ "$create_calls" == *"pg18-2.25.0-amd64"* ]]
+    [[ "$create_calls" == *"pg18-2.25.0-arm64"* ]]
+    [[ "$create_calls" == *"pg18-2.26.0-amd64"* ]]
+    [[ "$create_calls" == *"pg18-2.27.1-amd64"* ]]
+
+    # Must NOT contain @sha256: digest refs in per-version imagetools create lines.
+    local digest_lines
+    digest_lines=$(grep 'IMAGETOOLS_CREATE' "$imagetools_calls_log" | grep '@sha256:' || true)
+    [ -z "$digest_lines" ]
 }
 
 # ---------------------------------------------------------------------------
-# AX1-version-missing-one-arch-excluded: a version present in amd64 map but
-# absent in arm64 map is excluded (not merged), recorded in excluded[].
-# Ceiling present in both → ok; ceiling missing in one → fatal.
+# SIMP-intersection-availability: version present on amd64 suffixed tag but
+# missing on arm64 suffixed tag → excluded (non-ceiling) / fatal (ceiling).
+# This replaces the reverted AX1-version-missing-one-arch-excluded test which
+# used digest maps (dropped approach). The new mechanism uses registry probes
+# of the stable suffixed tags to compute the INTERSECTION.
 # ---------------------------------------------------------------------------
-@test "AX1-version-missing-one-arch-excluded: version in only one arch map is excluded, not merged" {
+@test "SIMP-intersection-availability: version missing on arm64 suffixed tag is excluded, not merged" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
-    local imagetools_calls_log="${tmpd}/ax1_missing_imagetools.log"
+    local imagetools_calls_log="${tmpd}/simp_intersection_imagetools.log"
     export imagetools_calls_log
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
-
-    # Resolved set: [2.25.0, 2.26.0, 2.27.1] (ceiling=2.27.1)
-    # amd64 map has all 3; arm64 map has ONLY 2.26.0 and 2.27.1 (2.25.0 absent).
-    # Expected: 2.25.0 excluded (only in amd64), 2.26.0+2.27.1 merged (in both).
-    # confirmed_available=[2.26.0, 2.27.1] (length=2) → bundle created → artifact written.
-    mkdir -p "${tmpd}/.build-lineage"
-    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
-        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
-    # arm64: 2.25.0 ABSENT (simulates musl build failed on arm64 leg)
-    printf '{"2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'e%.0s' {1..64})" "$(printf 'f%.0s' {1..64})" "$(printf 'g%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
 
     run bash -c '
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -10899,6 +10931,18 @@ EOF
         export -f ext_image_name
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
+
+        # INTERSECTION: 2.25.0 arm64 tag is ABSENT (musl build failed on arm64 leg).
+        # 2.26.0 and 2.27.1 are present on BOTH arches.
+        # Expected: 2.25.0 excluded, 2.26.0+2.27.1 in available → bundle built → artifact written.
+        image_exists_in_registry() {
+            local _img="$1"
+            case "$_img" in
+                *2.25.0-arm64*) return 1 ;;  # absent on arm64
+                *)               return 0 ;;  # all others present
+            esac
+        }
+        export -f image_exists_in_registry
 
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
@@ -10924,19 +10968,19 @@ EOF
         main postgres --major-version 18 --finalize-multiarch
     '
 
-    # Ceiling (2.27.1) present in both → success.
+    # Ceiling (2.27.1) present on both arches → success.
     [ "$status" -eq 0 ]
 
     # Versionset artifact must exist (ceiling merged successfully).
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ -f "$artifact" ]
 
-    # 2.25.0 (only in amd64, absent from arm64) must be in excluded[].
+    # 2.25.0 (missing on arm64) must be in excluded[].
     local excluded_versions
     excluded_versions=$(jq -r '.excluded[].version' "$artifact")
     [[ "$excluded_versions" == *"2.25.0"* ]]
 
-    # 2.27.1 (ceiling, in both) must be in available[].
+    # 2.27.1 (ceiling, on both) must be in available[].
     local available_versions
     available_versions=$(jq -r '.available[]' "$artifact")
     [[ "$available_versions" == *"2.27.1"* ]]
@@ -10950,22 +10994,15 @@ EOF
     fi
 }
 
-@test "AX1-ceiling-missing-one-arch-fatal: ceiling absent from one arch map → fatal exit" {
+@test "SIMP-intersection-availability-ceiling-fatal: ceiling missing on arm64 suffixed tag → fatal exit" {
+    # Replaces the reverted AX1-ceiling-missing-one-arch-fatal test.
+    # New mechanism: registry probe of stable suffixed tags.
+    # Ceiling's -arm64 tag absent → fatal (fail-closed).
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
-
-    # amd64 map has ceiling 2.27.1; arm64 map is MISSING ceiling 2.27.1.
-    mkdir -p "${tmpd}/.build-lineage"
-    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
-    # arm64 map has only an older version, ceiling absent.
-    printf '{"2.25.0":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
 
     run bash -c '
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -10990,6 +11027,16 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
+        # Ceiling 2.27.1 is ABSENT on arm64 — fatal.
+        image_exists_in_registry() {
+            local _img="$1"
+            case "$_img" in
+                *2.27.1-arm64*) return 1 ;;  # ceiling absent on arm64
+                *)               return 0 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
         docker() { return 0; }
         export -f docker
 
@@ -11008,7 +11055,7 @@ EOF
         main postgres --major-version 18 --finalize-multiarch
     '
 
-    # Ceiling missing in arm64 map → fatal.
+    # Ceiling missing on arm64 → fatal.
     [ "$status" -ne 0 ]
 
     # No versionset artifact must be written.
@@ -11039,14 +11086,6 @@ EOF
     printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":140,"built_at":"2026-05-31T00:00:00Z"}\n' \
         > "${tmpd}/.build-lineage/ext-timescaledb-pg18-2.27.1-arm64.json"
 
-    # Digest maps required by finalize-multiarch AX-1 path.
-    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
-    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
-        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
-        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
-
     run bash -c '
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
         cd "'"$sd"'"
@@ -11069,6 +11108,10 @@ EOF
         export -f ext_image_name
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
+
+        # Suffixed tags for ceiling present on both arches so the INTERSECTION check passes.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
 
         docker() { return 0; }
         export -f docker
@@ -11100,8 +11143,7 @@ EOF
     consolidated_dur=$(jq '.duration_seconds' "$canonical_dur")
     [ "$consolidated_dur" -eq 140 ]
 
-    # sum_flavor_extension_durations ignores *-versionset.json and *-digests-*.json;
-    # canonical duration file ext-timescaledb-pg18-2.27.1.json has duration=140.
+    # sum_flavor_extension_durations canonical duration file has duration=140.
     [ "$consolidated_dur" -gt 0 ]
 
     # For a single-version set (set_size=1), no versionset artifact is produced —
@@ -11110,20 +11152,15 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AY-1: non-resolver finalize branch must merge by digest-map, not mutable tags.
-#
-# Before fix (AY-1): the non-resolver branch in finalize_multiarch_manifests does:
-#   imagetools create <stable> <ref>:pg<major>-<ver>-amd64 <ref>:...-arm64
-# which uses MUTABLE tags. If a concurrent run overwrites those tags between
-# the per-arch push and the merge, the wrong image lands in the manifest.
-#
-# After fix: non-resolver branch loads per-arch digest maps (same as AX-1 for
-# resolver-backed extensions) and calls:
-#   imagetools create <stable> <ref>@<amd64-digest> <ref>@<arm64-digest>
-# Fails closed if a required digest is missing or malformed.
+# AY-2 replacement test: non-resolver finalize uses STABLE SUFFIXED TAG refs.
+# This replaces the reverted AY1 digest-map tests.
+# Non-resolver extensions (single configured version) use imagetools create
+# with stable -amd64/-arm64 suffixed tag refs directly (no registry probe,
+# no digest map needed). The merge runner's imagetools call creates the
+# un-suffixed multi-arch manifest from the stable per-arch tags.
 # ---------------------------------------------------------------------------
 
-@test "AY1-nonresolver-merge-by-digest: non-resolver finalize uses digest refs from maps, not mutable tags" {
+@test "SIMP-nonresolver-merge-stable-tags: non-resolver finalize uses stable suffixed tag refs" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -11136,15 +11173,6 @@ extensions:
     priority: 1
 EOF
     touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
-
-    local lineage_dir="$tmpd/.build-lineage"
-    mkdir -p "$lineage_dir"
-
-    # Per-arch digest maps for pgvector (written by the per-arch build leg AX-1)
-    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    local arm64_dig="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    printf '{"0.8.0":"%s"}\n' "$amd64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-amd64.json"
-    printf '{"0.8.0":"%s"}\n' "$arm64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-arm64.json"
 
     # Record the exact imagetools invocation
     local imagetools_log="$tmpd/ay1_imagetools.log"
@@ -11191,35 +11219,31 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # The imagetools create call MUST use @digest refs, NOT mutable -amd64/-arm64 tag refs.
-    # RED before fix: call contains ":pg18-0.8.0-amd64" (mutable tag).
-    # GREEN after fix: call contains "@sha256:aaaa..." (immutable digest).
+    # The imagetools create call MUST use stable suffixed tag refs.
     [ -f "$imagetools_log" ]
     local call
     call=$(cat "$imagetools_log")
 
-    # Must contain both digest refs
-    [[ "$call" == *"@${amd64_dig}"* ]] || {
-        echo "FAIL: imagetools call does not contain amd64 digest ref. Got: $call"
+    # Must contain stable -amd64 and -arm64 suffixed tag refs.
+    [[ "$call" == *":pg18-0.8.0-amd64"* ]] || {
+        echo "FAIL: imagetools call does not contain -amd64 suffixed tag. Got: $call"
         false
     }
-    [[ "$call" == *"@${arm64_dig}"* ]] || {
-        echo "FAIL: imagetools call does not contain arm64 digest ref. Got: $call"
+    [[ "$call" == *":pg18-0.8.0-arm64"* ]] || {
+        echo "FAIL: imagetools call does not contain -arm64 suffixed tag. Got: $call"
         false
     }
 
-    # Must NOT contain mutable suffixed tags
-    [[ "$call" != *":pg18-0.8.0-amd64"* ]] || {
-        echo "FAIL: imagetools call contains mutable -amd64 tag. Got: $call"
-        false
-    }
-    [[ "$call" != *":pg18-0.8.0-arm64"* ]] || {
-        echo "FAIL: imagetools call contains mutable -arm64 tag. Got: $call"
+    # Must NOT contain @digest refs (non-resolver branch does not use digest maps).
+    [[ "$call" != *"@sha256:"* ]] || {
+        echo "FAIL: imagetools call contains unexpected @digest ref. Got: $call"
         false
     }
 }
 
-@test "AY1-nonresolver-missing-digest-failclosed: non-resolver ext with missing arch digest fails closed" {
+@test "SIMP-nonresolver-merge-succeeds-no-digest-map: non-resolver finalize succeeds without any digest map files" {
+    # Regression guard: non-resolver branch must work WITHOUT digest-map files present.
+    # The reverted AY-1 approach required digest maps; the stable-tag approach does not.
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -11233,15 +11257,10 @@ extensions:
 EOF
     touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
 
+    # Deliberately no digest map files present (verifying absence is not required).
     local lineage_dir="$tmpd/.build-lineage"
     mkdir -p "$lineage_dir"
-
-    # Only amd64 digest map present; arm64 is MISSING (simulates incomplete build leg)
-    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    printf '{"0.8.0":"%s"}\n' "$amd64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-amd64.json"
-    # arm64 digest map intentionally absent
-
-    local imagetools_log="$tmpd/ay1_missing_imagetools.log"
+    # (no digests-*.json files)
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -11264,14 +11283,7 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
-                echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
-                return 0
-            fi
-            return 0
-        }
+        docker() { return 0; }
         export -f docker
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
@@ -11282,22 +11294,8 @@ EOF
         finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
     "
 
-    # Must fail closed: missing arm64 digest map means the merge cannot use immutable refs.
-    # With digest maps absent (neither file present), the fallback to mutable tags would run.
-    # With only ONE map present (partial/incomplete), it should also fail closed.
-    # The test verifies that with ONE map missing, the result is non-zero (not a silent mutable-tag merge).
-    # Note: if BOTH maps are absent it falls back to mutable tags (backward compat); if only ONE is
-    # present it should fail closed to prevent a half-race-safe merge.
-    [ "$status" -ne 0 ] || {
-        # If the implementation chose to fall back to mutable tags on partial maps,
-        # verify it did NOT use a digest ref for the missing arch (would be malformed).
-        if [ -f "$imagetools_log" ]; then
-            local call
-            call=$(cat "$imagetools_log")
-            # Must not have used a bogus digest ref for arm64 (no arm64 map = no arm64 digest)
-            [[ "$call" != *"@sha256:bbbb"* ]]
-        fi
-    }
+    # Must succeed — no digest map files are required for the stable-tag approach.
+    [ "$status" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -11453,15 +11451,7 @@ EOF
     printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":140,"built_at":"2026-01-01T00:00:01Z"}\n' \
         > "$arm64_dur"
 
-    # Per-arch digest maps (required for resolver-backed extension finalize)
-    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    local arm64_dig="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    local bundle_amd64_dig="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    local bundle_arm64_dig="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    printf '{"2.27.1":"%s","bundle":"%s"}\n' "$amd64_dig" "$bundle_amd64_dig" \
-        > "$lineage_dir/ext-timescaledb-pg18-digests-amd64.json"
-    printf '{"2.27.1":"%s","bundle":"%s"}\n' "$arm64_dig" "$bundle_arm64_dig" \
-        > "$lineage_dir/ext-timescaledb-pg18-digests-arm64.json"
+    # No digest-map files seeded (stable-tag approach does not require them).
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -11485,6 +11475,10 @@ EOF
         export -f ext_image_name
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
+
+        # Suffixed tags for the ceiling present on both arches.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
 
         docker() {
             local _dcmd=\"\${1:-}\"
@@ -11537,6 +11531,326 @@ EOF
     }
     [ ! -f "$arm64_dur" ] || {
         echo "FAIL: arm64 suffixed duration file was not removed after consolidation"
+        false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# SIMP-cached-version-merged: a CACHED non-ceiling version (its -amd64/-arm64
+# suffixed tags exist in the registry from a prior run, NOT rebuilt this run)
+# appears in available[] after finalize. RED before (digest-map dropped it
+# because no map entry); GREEN after (stable-tag probe finds it).
+#
+# Scenario: resolved=[2.25.0, 2.26.0, 2.27.1], ceiling=2.27.1.
+# All -amd64 and -arm64 suffixed tags exist (2.25.0 is "cached", not rebuilt).
+# Expectation: all 3 in available[], bundle built, artifact written.
+# ---------------------------------------------------------------------------
+@test "SIMP-cached-version-merged: cached non-ceiling version (not rebuilt) appears in available via stable-tag probe" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # All suffixed tags present — including 2.25.0 which was not rebuilt this run
+        # (simulates a cached version whose suffixed tags persist from a prior run).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { return 0; }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:cafecafe00000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # All 3 versions must be in available[] — including 2.25.0 (cached, not rebuilt).
+    local av_count
+    av_count=$(jq '.available | length' "$artifact")
+    [ "$av_count" -eq 3 ] || {
+        echo "FAIL: expected 3 available versions (including cached), got $av_count"
+        jq '.' "$artifact"
+        false
+    }
+
+    # Ceiling must be in available.
+    local av_ceiling
+    av_ceiling=$(jq -r '[.available[] | select(. == "2.27.1")] | length' "$artifact")
+    [ "$av_ceiling" -eq 1 ]
+
+    # 2.25.0 (cached) must be in available (not excluded).
+    local av_cached
+    av_cached=$(jq -r '[.available[] | select(. == "2.25.0")] | length' "$artifact")
+    [ "$av_cached" -eq 1 ] || {
+        echo "FAIL: cached version 2.25.0 not in available[] (digest-map regression)"
+        jq '.' "$artifact"
+        false
+    }
+
+    # bundle_digest must be set (bundle was built).
+    local bd
+    bd=$(jq -r '.bundle_digest // empty' "$artifact")
+    [ -n "$bd" ]
+}
+
+# ---------------------------------------------------------------------------
+# SIMP-bundle-from-available: the stage-B bundle is built (buildx --platform
+# amd64,arm64) from AVAILABLE per-version multi-arch manifests. An excluded
+# version is NOT in the bundle COPY list. (AZ-1 regression guard)
+# ---------------------------------------------------------------------------
+@test "SIMP-bundle-from-available: stage-B bundle uses buildx build from available manifests, excluded version absent" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local buildx_log="$tmpd/buildx_build.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export buildx_log
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # 2.25.0 missing on arm64 → excluded. 2.26.0 and 2.27.1 on both → available.
+        image_exists_in_registry() {
+            local _img="$1"
+            case "$_img" in
+                *2.25.0-arm64*) return 1 ;;
+                *)               return 0 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        # Record buildx build calls to a log file for inspection.
+        docker() {
+            local _dcmd="${1:-}"
+            if [[ "$_dcmd" == "buildx" && "${2:-}" == "build" ]]; then
+                echo "BUILDX_BUILD $*" >> "'"$buildx_log"'"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:dddddddd00000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+
+    # A buildx build call must exist (bundle is built via buildx, not imagetools create).
+    [ -f "$buildx_log" ]
+    grep -q 'BUILDX_BUILD' "$buildx_log"
+
+    # The buildx build call must use --platform linux/amd64,linux/arm64 and --push.
+    grep -q '\-\-platform' "$buildx_log"
+    grep -q '\-\-push' "$buildx_log"
+
+    # The versionset artifact must list only available versions (not excluded 2.25.0).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    local av_count
+    av_count=$(jq '.available | length' "$artifact")
+    [ "$av_count" -eq 2 ] || {
+        echo "FAIL: expected 2 available (2.26.0+2.27.1), got $av_count"
+        jq '.' "$artifact"
+        false
+    }
+
+    # 2.25.0 (excluded) must NOT be in available[].
+    local excl_in_avail
+    excl_in_avail=$(jq -r '[.available[] | select(. == "2.25.0")] | length' "$artifact")
+    [ "$excl_in_avail" -eq 0 ] || {
+        echo "FAIL: excluded version 2.25.0 appears in available[] (AZ-1 regression)"
+        false
+    }
+
+    # 2.25.0 must be in excluded[].
+    local excl_count
+    excl_count=$(jq -r '[.excluded[] | select(.version == "2.25.0")] | length' "$artifact")
+    [ "$excl_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# SIMP-single-version-manifest: resolver-backed set_size==1 (ceiling only) →
+# the un-suffixed multi-arch per-version manifest IS created (not skipped).
+# The consumer's single-version path references the un-suffixed tag, so
+# imagetools create for the ceiling version must be called even when set_size==1.
+# (AZ-4 regression guard)
+# ---------------------------------------------------------------------------
+@test "SIMP-single-version-manifest: resolver-backed set_size==1 creates un-suffixed per-version manifest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/simp_single_imagetools.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export imagetools_log
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        # Single-version resolver result (set_size == 1).
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # Ceiling suffixed tags present on both arches.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            local _dcmd="${1:-}"
+            if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+
+    # imagetools create MUST have been called for the ceiling version (AZ-4 fix).
+    # Before fix: set_size==1 caused an early continue after AX-3 consolidation,
+    # so imagetools create was never called → consumer's single-version path
+    # references an un-suffixed tag that does not exist.
+    # After fix: the per-version merge loop runs for set_size==1 too.
+    [ -f "$imagetools_log" ] || {
+        echo "FAIL: imagetools create was not called for set_size==1 (AZ-4 regression)"
+        false
+    }
+    local create_calls
+    create_calls=$(cat "$imagetools_log")
+    [[ "$create_calls" == *"pg18-2.27.1"* ]] || {
+        echo "FAIL: imagetools create for ceiling 2.27.1 not found (AZ-4 regression). Got: $create_calls"
+        false
+    }
+
+    # The imagetools create call must use the stable suffixed tag refs.
+    [[ "$create_calls" == *"pg18-2.27.1-amd64"* ]] || {
+        echo "FAIL: -amd64 suffixed source tag not used. Got: $create_calls"
+        false
+    }
+    [[ "$create_calls" == *"pg18-2.27.1-arm64"* ]] || {
+        echo "FAIL: -arm64 suffixed source tag not used. Got: $create_calls"
+        false
+    }
+
+    # No bundle must be built for set_size==1.
+    # No versionset artifact (consumer uses single-version path; stale deleted).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ] || {
+        echo "FAIL: versionset artifact should not be written for set_size==1"
         false
     }
 }

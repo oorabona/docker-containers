@@ -431,8 +431,9 @@ jobs:
         with:
           # Arch-specific artifact name: the versionset artifact (with bundle_digest)
           # is written by merge-extension-manifests (stage B), not here.
-          # Per-version duration lineage files are arch-independent; amd64 leg wins
-          # on any collision (both legs produce identical duration-schema files).
+          # Per-version duration files use arch-suffixed names (ext-*-<ver>-amd64.json,
+          # etc.) to avoid collision when both arch artifacts are downloaded together;
+          # AX-3 consolidation in stage B merges them with MAX policy.
           name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}
           path: .build-lineage/ext-*.json
           retention-days: 1
@@ -494,14 +495,14 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Download amd64 arch-leg lineage (AX-1 digest maps + AX-3 duration files)
+      - name: Download amd64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}-amd64
           path: .build-lineage/
         continue-on-error: true
 
-      - name: Download arm64 arch-leg lineage (AX-1 digest maps + AX-3 duration files)
+      - name: Download arm64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}-arm64
@@ -574,14 +575,9 @@ jobs:
           # Contains versionset artifacts (ext-*-versionset.json) and consolidated
           # per-version duration files (ext-<ext>-pg<major>-<ver>.json, no arch suffix)
           # after AX-3 MAX-policy consolidation by finalize_multiarch_manifests.
-          # Arch-specific duration files (*-amd64.json, *-arm64.json) and digest maps
-          # (*-digests-*.json) are excluded from the upload path via the path glob
-          # (only files without those suffixes match ext-*.json when digests maps are
-          # named ext-*-digests-*.json, which also match — so we rely on the script
-          # having removed arch-suffixed files). A dedicated exclusion is not needed
-          # because after consolidation the arch-suffixed duration files are deleted
-          # and the digest-map files (*-digests-amd64.json etc.) are not consumed by
-          # build-and-push (it only reads versionset + duration files).
+          # Arch-specific duration files (*-amd64.json, *-arm64.json) are removed by
+          # AX-3 consolidation before upload; after consolidation only the canonical
+          # (un-suffixed) files remain.
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/ext-*.json
           retention-days: 1

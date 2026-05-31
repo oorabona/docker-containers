@@ -97,29 +97,6 @@ build_ext_image() {
 
         if [[ "$_do_push_ext" == "true" ]]; then
             log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
-            # AX-1: capture the pushed per-version digest and record it in the
-            # per-arch digest map. The map is read by finalize_multiarch_manifests
-            # so the merge uses immutable digest refs instead of mutable suffixed tags.
-            # Digest map: .build-lineage/ext-<ext>-pg<major>-digests-<arch>.json
-            # Structure:  { "<version>": "sha256:<64hex>", "bundle": "sha256:..." }
-            # Written atomically: read → merge → write.
-            if [[ -n "${ARCH_SUFFIX:-}" ]]; then
-                local _ver_digest
-                _ver_digest=$(_capture_bundle_digest "$_ver_tag") || true
-                if is_valid_oci_digest "$_ver_digest"; then
-                    local _dig_map="${ROOT_DIR}/.build-lineage/ext-${ext_name}-pg${pg_major}-digests-${ARCH_SUFFIX}.json"
-                    mkdir -p "${ROOT_DIR}/.build-lineage"
-                    local _existing_map="{}"
-                    [[ -f "$_dig_map" ]] && _existing_map=$(cat "$_dig_map")
-                    local _tmp_dig
-                    _tmp_dig=$(mktemp)
-                    printf '%s' "$_existing_map" | jq --arg ver "$ext_version" --arg dig "$_ver_digest" \
-                        '. + {($ver): $dig}' > "$_tmp_dig" && mv "$_tmp_dig" "$_dig_map" || rm -f "$_tmp_dig"
-                    log_info "Digest map updated: $_dig_map [$ext_version=$_ver_digest]"
-                else
-                    log_warning "$ext_name $ext_version: per-version digest capture failed (non-fatal for build; merge will exclude if missing)"
-                fi
-            fi
         else
             log_success "Built (local only): $_ver_tag (platform: ${BUILD_PLATFORM})"
         fi
@@ -760,18 +737,25 @@ assemble_and_push_bundle() {
     _bundle_ref=$(_arch_suffix_tag "$_bundle_base_tag" "${ARCH_SUFFIX:-}")
 
     local _bundle_df
+    # CI per-arch leg (ARCH_SUFFIX set): the bundle is built by stage B
+    # (finalize_multiarch_manifests) from the merged per-version multi-arch manifests,
+    # not here. Skip the bundle build/push on a per-arch leg; only the local/single-arch
+    # path (ARCH_SUFFIX empty) builds the bundle directly.
+    if [[ -n "${ARCH_SUFFIX:-}" ]]; then
+        log_info "$ext pg${major_ver}: per-arch leg — bundle deferred to stage-B finalize step"
+        return 0
+    fi
+
     _bundle_df=$(mktemp)
 
     {
         printf 'FROM scratch\n'
         local _bver
         for _bver in "${avail_versions[@]}"; do
-            # Per-version source: use arch-suffixed ref when ARCH_SUFFIX is set so the
-            # bundle COPYs from the same-arch per-version image built on this leg.
-            local _per_ver_ref_base
-            _per_ver_ref_base=$(ext_image_name "$ext" "$_bver" "$major_ver")
+            # Local/single-arch path (ARCH_SUFFIX empty): reference the plain un-suffixed
+            # per-version image built on this host.
             local _per_ver_ref
-            _per_ver_ref=$(_arch_suffix_tag "$_per_ver_ref_base" "${ARCH_SUFFIX:-}")
+            _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
             printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
             printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
         done
@@ -783,17 +767,7 @@ assemble_and_push_bundle() {
     _bundle_ctx=$(mktemp -d)
 
     local _bundle_build_ok=true
-    if [[ -n "${BUILD_PLATFORM:-}" ]]; then
-        # CI per-arch leg: use buildx build --platform with --push.
-        if ! $DOCKER buildx build \
-            --platform "${BUILD_PLATFORM}" \
-            -t "$_bundle_ref" \
-            -f "$_bundle_df" \
-            --push \
-            "$_bundle_ctx"; then
-            _bundle_build_ok=false
-        fi
-    elif ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
+    if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
         _bundle_build_ok=false
     fi
 
@@ -807,33 +781,22 @@ assemble_and_push_bundle() {
 
     log_success "Bundle built: $_bundle_ref"
 
-    # Push phase: when BUILD_PLATFORM is set the buildx build already pushed via --push,
-    # so no separate docker push is needed.  We still capture the digest on that path.
     local _pushed=false
     if [[ "$do_push" == "true" ]]; then
-        if [[ -z "${BUILD_PLATFORM:-}" ]]; then
-            # Local / plain-buildx path: push separately.
-            if ! $DOCKER push "$_bundle_ref"; then
-                log_error "$ext pg${major_ver} bundle push failed"
-                return 1
-            fi
-            log_success "Bundle pushed: $_bundle_ref"
-        else
-            # CI per-arch path: buildx --push already sent it to the registry.
-            log_success "Bundle pushed (via buildx --push): $_bundle_ref"
+        if ! $DOCKER push "$_bundle_ref"; then
+            log_error "$ext pg${major_ver} bundle push failed"
+            return 1
         fi
+        log_success "Bundle pushed: $_bundle_ref"
         _pushed=true
     fi
 
     if [[ "$_pushed" == "true" ]]; then
-        # AM fix: capture the digest of the pushed bundle image so the consumer
-        # can emit a digest-pinned COPY --from=<ref>@<digest> (immutable reference).
+        # Capture the digest of the pushed bundle image. The consumer emits a
+        # digest-pinned COPY --from=<ref>@<digest> for reproducibility.
         # Digest capture failure after a successful push is fatal: the caller cannot
         # construct an immutable reference without the digest.  Fail closed here;
         # the caller (_bundle_and_write_artifact) propagates the non-zero return.
-        #
-        # AN fix: apply strict whole-string OCI digest validation (is_valid_oci_digest)
-        # to prevent a poisoned capture value from flowing into the artifact.
         local _captured_digest
         _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
         if ! is_valid_oci_digest "$_captured_digest"; then
@@ -845,20 +808,6 @@ assemble_and_push_bundle() {
         # Export so _bundle_and_write_artifact can read it without a subshell.
         _BUNDLE_DIGEST="$_captured_digest"
         export _BUNDLE_DIGEST
-
-        # AX-1: record the bundle digest in the per-arch digest map so
-        # finalize_multiarch_manifests can merge the bundle by immutable digest ref.
-        if [[ -n "${ARCH_SUFFIX:-}" ]]; then
-            local _bdmap="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-${ARCH_SUFFIX}.json"
-            mkdir -p "${ROOT_DIR}/.build-lineage"
-            local _bdmap_existing="{}"
-            [[ -f "$_bdmap" ]] && _bdmap_existing=$(cat "$_bdmap")
-            local _tmp_bdmap
-            _tmp_bdmap=$(mktemp)
-            printf '%s' "$_bdmap_existing" | jq --arg dig "$_captured_digest" \
-                '. + {"bundle": $dig}' > "$_tmp_bdmap" && mv "$_tmp_bdmap" "$_bdmap" || rm -f "$_tmp_bdmap"
-            log_info "Bundle digest recorded in map: $_bdmap [bundle=$_captured_digest]"
-        fi
     fi
 
     return 0
@@ -1729,18 +1678,45 @@ _emit_versionset_artifact() {
 # finalize_multiarch_manifests <config_file> <major_ver> <container_dir>
 #
 # Stage B (multi-arch): invoked after BOTH arch build legs finish.
-# For each resolver-backed (ext, major_ver) in scope:
-#   1. Re-resolves the version set (deterministic via resolver + retain_count).
-#   2. For each version: creates multi-arch manifest from -amd64 / -arm64 suffixed refs.
-#   3. Creates multi-arch bundle manifest from bundle-amd64 / bundle-arm64 refs.
-#   4. Captures the INDEX digest of the multi-arch bundle manifest.
-#   5. Writes the versionset artifact with bundle_digest = that index digest.
+# For each extension in scope:
 #
-# Fail-closed: any imagetools create failure, or digest capture failure, or
-# ceiling absent from confirmed_available → fatal (no artifact written / stale deleted).
+#   Non-resolver extensions (single configured version):
+#     Creates the un-suffixed multi-arch manifest from stable suffixed tags
+#     (-amd64 / -arm64). No bundle, no versionset artifact.
 #
-# Only extensions with a resolver-backed multi-version set (set_size > 1) and
-# an existing Dockerfile are processed.
+#   Resolver-backed extensions:
+#     1. Re-resolves the version set (deterministic via resolver + retain_count).
+#     2. AVAILABILITY = INTERSECTION: for each version, probe both
+#        ext-<ext>:pg<major>-<ver>-amd64 AND ext-<ext>:pg<major>-<ver>-arm64.
+#        A version present on BOTH arches → available; missing on either arch →
+#        excluded (tolerated for non-ceiling) or FATAL (ceiling).
+#     3. Creates per-version multi-arch manifests from the stable suffixed tags
+#        for all AVAILABLE versions (including cached versions not rebuilt this
+#        run — their suffixed tags persist in the registry from prior runs).
+#     4. For set_size == 1 (single-version resolver result): still creates the
+#        un-suffixed per-version manifest so the consumer's single-version path
+#        finds it. No bundle needed.
+#     5. For available count >= 2: builds the multi-arch bundle image via
+#        buildx build --platform linux/amd64,linux/arm64 from the AVAILABLE
+#        per-version multi-arch manifests (un-suffixed, just created).
+#        Each platform's bundle layer gets that platform's .so from the
+#        per-version manifest — no QEMU/compilation needed, file-copy only.
+#     6. Captures the INDEX digest of the bundle manifest.
+#     7. Writes the versionset artifact with bundle_digest = that index digest.
+#
+# Stable-tag merge rationale: digest-pinned merge (reverted AX-1/AY-1 approach)
+# was dropped because it excluded cached versions (not rebuilt this run, so no
+# digest map entry) from the merge, silently dropping retention. Stable suffixed
+# tags (-amd64/-arm64) persist in the registry across runs and are always present
+# for any version that was ever successfully pushed. A cross-run tag race (a
+# concurrent run overwriting the same suffixed tag between push and merge) is an
+# accepted low-probability risk for this single-maintainer repo: auto-update PRs
+# are serialized by the concurrency group, so same-ref concurrent pushes do not
+# occur in practice.
+#
+# Fail-closed: ceiling missing on either arch, imagetools create failure for
+# ceiling, bundle build/push failure, or digest capture failure → fatal.
+# Non-ceiling failures are tolerated (musl-compat contract from stage A).
 #
 # Called from main() when FINALIZE_MULTIARCH=true.
 # Does nothing under DRY_RUN.
@@ -1773,55 +1749,15 @@ finalize_multiarch_manifests() {
 
         if [[ -z "$_resolver_path" ]]; then
             # AW-1: Non-resolver extension (single configured version).
-            # Create the un-suffixed multi-arch manifest from per-arch sources.
+            # Create the un-suffixed multi-arch manifest from stable per-arch suffixed tags.
             # No bundle, no versionset artifact — the consumer uses the un-suffixed ref directly.
-            #
-            # AY-1: Load per-arch digest maps when both are present and use immutable
-            # digest refs for imagetools create, preventing the cross-run tag race where
-            # a concurrent run overwrites -amd64/-arm64 tags between the per-arch push
-            # and this merge step. Fall back to mutable suffixed tag refs only when BOTH
-            # maps are absent (backward compat with older runs without digest maps).
-            # Fail closed when only ONE map is present (partial/incomplete build).
             local _ver_image_base
             _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
-
-            local _nr_dig_map_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-amd64.json"
-            local _nr_dig_map_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-arm64.json"
             local _nr_src_amd64 _nr_src_arm64
+            _nr_src_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
+            _nr_src_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
 
-            if [[ -f "$_nr_dig_map_amd64" ]] && [[ -f "$_nr_dig_map_arm64" ]]; then
-                # Both maps present: use immutable digest refs (AY-1 fix).
-                local _nr_d_amd64 _nr_d_arm64
-                _nr_d_amd64=$(cat "$_nr_dig_map_amd64" | jq -r --arg v "$ceiling" '.[$v] // empty' 2>/dev/null || true)
-                _nr_d_arm64=$(cat "$_nr_dig_map_arm64" | jq -r --arg v "$ceiling" '.[$v] // empty' 2>/dev/null || true)
-
-                if [[ -z "$_nr_d_amd64" ]] || [[ -z "$_nr_d_arm64" ]]; then
-                    log_error "$ext $ceiling pg${major_ver} (non-resolver): ceiling digest missing in one arch map (amd64='$(_sanitize_for_log "$_nr_d_amd64")' arm64='$(_sanitize_for_log "$_nr_d_arm64")') — fail-closed"
-                    _failed=true
-                    continue
-                fi
-
-                if ! is_valid_oci_digest "$_nr_d_amd64" || ! is_valid_oci_digest "$_nr_d_arm64"; then
-                    log_error "$ext $ceiling pg${major_ver} (non-resolver): malformed digest in map — fail-closed"
-                    _failed=true
-                    continue
-                fi
-
-                _nr_src_amd64="${_ver_image_base}@${_nr_d_amd64}"
-                _nr_src_arm64="${_ver_image_base}@${_nr_d_arm64}"
-                log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, AY-1 digest)"
-            elif [[ -f "$_nr_dig_map_amd64" ]] || [[ -f "$_nr_dig_map_arm64" ]]; then
-                # Only one map present: partial/incomplete — fail closed to avoid a half-race-safe merge.
-                log_error "$ext $ceiling pg${major_ver} (non-resolver): only one arch digest map present (partial build) — fail-closed"
-                _failed=true
-                continue
-            else
-                # Both maps absent: fall back to mutable suffixed tag refs (backward compat).
-                _nr_src_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
-                _nr_src_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
-                log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, mutable fallback)"
-            fi
-
+            log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
             local _nr_create_rc=0
             if ! $DOCKER buildx imagetools create \
                 -t "$_ver_image_base" \
@@ -1835,7 +1771,7 @@ finalize_multiarch_manifests() {
             continue
         fi
 
-        # Resolver-backed extension: resolve version set, validate, and merge all versions.
+        # Resolver-backed extension: resolve version set, validate, then merge.
         local version_set_json
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             log_error "$ext: resolver failed in finalize-multiarch — cannot produce multi-arch manifests (fail-closed)"
@@ -1891,91 +1827,43 @@ finalize_multiarch_manifests() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        if [[ "$set_size" -le 1 ]]; then
-            # Single-version resolver result: no bundle needed; delete any stale artifact.
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            continue
-        fi
-
-        # AX-1: Load per-arch digest maps when available. These are written by the
-        # per-arch build legs after each push and capture the immutable digest of
-        # each pushed image. When both maps are present, use digest refs in
-        # imagetools create to prevent a concurrent run on the same ref from
-        # overwriting -amd64/-arm64 tags between this run's leg-push and merge.
-        #
-        # Map path: .build-lineage/ext-<ext>-pg<major>-digests-<arch>.json
-        # Structure: { "<version>": "sha256:<64hex>", "bundle": "sha256:<64hex>" }
-        #
-        # Fallback: if maps are absent (older runs, no-digest path), fall back to
-        # the previous mutable-tag behavior (-amd64/-arm64 suffixed refs).
-        local _dig_map_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-amd64.json"
-        local _dig_map_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-arm64.json"
-        local _have_digest_maps=false
-        local _map_amd64_json="{}" _map_arm64_json="{}"
-        if [[ -f "$_dig_map_amd64" ]] && [[ -f "$_dig_map_arm64" ]]; then
-            _map_amd64_json=$(cat "$_dig_map_amd64")
-            _map_arm64_json=$(cat "$_dig_map_arm64")
-            _have_digest_maps=true
-            log_info "$ext pg${major_ver}: per-arch digest maps found — using digest refs for imagetools create (AX-1)"
-        else
-            log_info "$ext pg${major_ver}: per-arch digest maps absent — falling back to mutable suffixed tag refs"
-        fi
-
-        # Step 1: merge per-version multi-arch manifests.
-        # AX-1 (when maps present): use `<ref>@<amd64-digest>` + `<ref>@<arm64-digest>`.
-        #   A version absent from either map is excluded (not merged).
-        #   Ceiling absent from either map is FATAL.
-        # Fallback (maps absent): use mutable -amd64/-arm64 tag refs (pre-AX-1 behavior).
-        # AW-4: non-ceiling imagetools create failures are TOLERATED (excluded[]);
-        # ceiling failure is FATAL. Mirror stage A's musl-tolerance contract.
+        # Step 1: compute AVAILABLE set = INTERSECTION of -amd64 and -arm64 suffixed tags.
+        # A version whose suffixed tags exist on BOTH arches is available; missing on
+        # either arch → excluded (non-ceiling) or FATAL (ceiling). Stable suffixed tags
+        # persist across runs so a cached (not-rebuilt) version with existing tags is
+        # correctly included — this is the key fix over the digest-map approach.
         local _confirmed_available=()
         local _excluded_entries=()
         local _ext_failed=false
         local ver
         while IFS= read -r ver; do
-            local ver_image_base ver_multiarch
+            local ver_image_base
             ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
-            ver_multiarch="$ver_image_base"  # un-suffixed = multi-arch target
+            local _ver_tag_amd64 _ver_tag_arm64
+            _ver_tag_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
+            _ver_tag_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
 
-            local _src_amd64 _src_arm64
-            if [[ "$_have_digest_maps" == "true" ]]; then
-                # AX-1 path: resolve digest refs from maps.
-                local _d_amd64 _d_arm64
-                _d_amd64=$(printf '%s' "$_map_amd64_json" | jq -r --arg v "$ver" '.[$v] // empty' 2>/dev/null || true)
-                _d_arm64=$(printf '%s' "$_map_arm64_json" | jq -r --arg v "$ver" '.[$v] // empty' 2>/dev/null || true)
+            local _amd64_ok=false _arm64_ok=false
+            image_exists_in_registry "$_ver_tag_amd64" 2>/dev/null && _amd64_ok=true
+            image_exists_in_registry "$_ver_tag_arm64" 2>/dev/null && _arm64_ok=true
 
-                # A version missing from either map is excluded (not a fatal error for non-ceiling).
-                if [[ -z "$_d_amd64" ]] || [[ -z "$_d_arm64" ]]; then
-                    if [[ "$ver" == "$ceiling" ]]; then
-                        log_error "$ext $ver pg${major_ver} (ceiling): digest missing in one arch map (amd64='$(_sanitize_for_log "$_d_amd64")' arm64='$(_sanitize_for_log "$_d_arm64")') — fatal"
-                        _ext_failed=true
-                        break
-                    else
-                        log_warning "$ext $ver pg${major_ver}: digest missing in one arch map — excluded (AX-1 missing-one-arch)"
-                        _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"digest missing in one arch\"}")
-                        continue
-                    fi
+            if [[ "$_amd64_ok" == "false" ]] || [[ "$_arm64_ok" == "false" ]]; then
+                if [[ "$ver" == "$ceiling" ]]; then
+                    log_error "$ext $ver pg${major_ver} (ceiling): suffixed tag missing on arch(es) — amd64=$_amd64_ok arm64=$_arm64_ok — fatal"
+                    _ext_failed=true
+                    break
+                else
+                    log_warning "$ext $ver pg${major_ver}: suffixed tag missing on arch(es) — amd64=$_amd64_ok arm64=$_arm64_ok — excluded"
+                    _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"suffixed tag missing on one or more arches\"}")
+                    continue
                 fi
-
-                if ! is_valid_oci_digest "$_d_amd64" || ! is_valid_oci_digest "$_d_arm64"; then
-                    if [[ "$ver" == "$ceiling" ]]; then
-                        log_error "$ext $ver pg${major_ver} (ceiling): malformed digest in map — fatal"
-                        _ext_failed=true
-                        break
-                    else
-                        log_warning "$ext $ver pg${major_ver}: malformed digest in map — excluded"
-                        _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"malformed digest in map\"}")
-                        continue
-                    fi
-                fi
-
-                _src_amd64="${ver_image_base}@${_d_amd64}"
-                _src_arm64="${ver_image_base}@${_d_arm64}"
-            else
-                # Fallback: mutable suffixed tag refs (pre-AX-1 behavior).
-                _src_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
-                _src_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
             fi
+
+            # Both arch suffixed tags exist: create the un-suffixed multi-arch manifest.
+            local ver_multiarch="$ver_image_base"
+            local _src_amd64 _src_arm64
+            _src_amd64="$_ver_tag_amd64"
+            _src_arm64="$_ver_tag_arm64"
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_src_amd64 + $_src_arm64"
             local _create_rc=0
@@ -1984,12 +1872,10 @@ finalize_multiarch_manifests() {
                 "$_src_amd64" "$_src_arm64" 2>&1; then
                 _create_rc=$?
                 if [[ "$ver" == "$ceiling" ]]; then
-                    # Ceiling failure is fatal: the consumer cannot function without it.
                     log_error "$ext $ver pg${major_ver} (ceiling): imagetools create failed (rc=$_create_rc) — fatal"
                     _ext_failed=true
                     break
                 else
-                    # Non-ceiling failure: tolerated (source images absent — e.g. musl excluded).
                     log_warning "$ext $ver pg${major_ver} (non-ceiling): imagetools create failed (rc=$_create_rc) — tolerated, recording in excluded"
                     _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"manifest create failed\"}")
                 fi
@@ -1999,7 +1885,7 @@ finalize_multiarch_manifests() {
             _confirmed_available+=("$ver")
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # If ceiling merge failed, abort this extension (fatal).
+        # Ceiling merge failed → fatal for this extension.
         if [[ "$_ext_failed" == "true" ]]; then
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
@@ -2021,60 +1907,72 @@ finalize_multiarch_manifests() {
             continue
         fi
 
-        # Skip bundle creation when only one version is confirmed available — a 1-version
-        # bundle is unused by the consumer (falls through to the single-version path).
-        # Delete any stale artifact so the consumer self-heals cleanly.
+        # For set_size == 1 (single-version resolver): the per-version multi-arch manifest
+        # was already created above (ceiling). No bundle needed; consumer uses single-version
+        # path. Delete any stale versionset artifact. (AZ-4 fix: manifest IS created above.)
+        if [[ "$set_size" -le 1 ]]; then
+            log_info "$ext pg${major_ver}: single-version resolver result — per-version manifest created, no bundle needed"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            continue
+        fi
+
+        # Only one version confirmed available — no bundle (consumer uses single-version path).
         if [[ ${#_confirmed_available[@]} -le 1 ]]; then
             log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — skipping bundle (consumer uses single-version path)"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
-        # Step 2: merge bundle multi-arch manifest.
+        # Step 2: build the multi-arch bundle from the AVAILABLE per-version multi-arch
+        # manifests (un-suffixed, just created above). Each platform's bundle layer gets
+        # that platform's .so via the per-version manifest's platform selection.
+        # This is file-copy only (no compilation), so buildx multi-platform on the amd64
+        # merge runner works without QEMU. The bundle contains EXACTLY the available set.
         local _bundle_image_base
         _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
         local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
-        local _bundle_multiarch="$_bundle_base_tag"  # un-suffixed
 
-        local _bsrc_amd64 _bsrc_arm64
-        if [[ "$_have_digest_maps" == "true" ]]; then
-            # AX-1: use digest refs for bundle merge.
-            local _bd_amd64 _bd_arm64
-            _bd_amd64=$(printf '%s' "$_map_amd64_json" | jq -r '.bundle // empty' 2>/dev/null || true)
-            _bd_arm64=$(printf '%s' "$_map_arm64_json" | jq -r '.bundle // empty' 2>/dev/null || true)
-            if [[ -n "$_bd_amd64" ]] && [[ -n "$_bd_arm64" ]] && \
-               is_valid_oci_digest "$_bd_amd64" && is_valid_oci_digest "$_bd_arm64"; then
-                _bsrc_amd64="${_bundle_multiarch}@${_bd_amd64}"
-                _bsrc_arm64="${_bundle_multiarch}@${_bd_arm64}"
-                log_info "$ext pg${major_ver}: bundle merge using digest refs (AX-1)"
-            else
-                log_warning "$ext pg${major_ver}: bundle digest missing or malformed in maps — falling back to mutable bundle tag refs"
-                _bsrc_amd64="${_bundle_base_tag}-amd64"
-                _bsrc_arm64="${_bundle_base_tag}-arm64"
-            fi
-        else
-            _bsrc_amd64="${_bundle_base_tag}-amd64"
-            _bsrc_arm64="${_bundle_base_tag}-arm64"
-        fi
+        local _bundle_df
+        _bundle_df=$(mktemp)
+        {
+            printf 'FROM scratch\n'
+            local _bv
+            for _bv in "${_confirmed_available[@]}"; do
+                local _bv_ref
+                _bv_ref=$(ext_image_name "$ext" "$_bv" "$major_ver")  # un-suffixed multi-arch ref
+                printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_bv_ref" "$_bv"
+                printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_bv_ref" "$_bv"
+            done
+        } > "$_bundle_df"
 
-        log_info "$ext pg${major_ver}: imagetools create $_bundle_multiarch from $_bsrc_amd64 + $_bsrc_arm64"
-        local _bundle_create_rc=0
-        if ! $DOCKER buildx imagetools create \
-            -t "$_bundle_multiarch" \
-            "$_bsrc_amd64" "$_bsrc_arm64" 2>&1; then
-            _bundle_create_rc=$?
-            log_error "$ext pg${major_ver}: bundle manifest create failed (rc=$_bundle_create_rc) — fail-closed"
+        local _bundle_ctx
+        _bundle_ctx=$(mktemp -d)
+
+        log_info "$ext pg${major_ver}: buildx build --platform linux/amd64,linux/arm64 -t $_bundle_base_tag (bundle from available: ${_confirmed_available[*]})"
+        local _bundle_build_rc=0
+        if ! $DOCKER buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t "$_bundle_base_tag" \
+            -f "$_bundle_df" \
+            --push \
+            "$_bundle_ctx" 2>&1; then
+            _bundle_build_rc=$?
+            log_error "$ext pg${major_ver}: bundle buildx build failed (rc=$_bundle_build_rc) — fail-closed"
+            rm -f "$_bundle_df"
+            rm -rf "$_bundle_ctx"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
             continue
         fi
-        log_success "Bundle multi-arch manifest created: $_bundle_multiarch"
+        rm -f "$_bundle_df"
+        rm -rf "$_bundle_ctx"
+        log_success "Bundle multi-arch image built+pushed: $_bundle_base_tag"
 
-        # Step 3: capture INDEX digest of the multi-arch bundle manifest.
+        # Step 3: capture INDEX digest of the bundle manifest.
         local _index_digest
-        _index_digest=$(_capture_bundle_digest "$_bundle_multiarch") || true
+        _index_digest=$(_capture_bundle_digest "$_bundle_base_tag") || true
         if ! is_valid_oci_digest "$_index_digest"; then
-            log_error "$ext pg${major_ver}: bundle multi-arch index digest capture failed or malformed (got: '$(_sanitize_for_log "${_index_digest}")') — fail-closed"
+            log_error "$ext pg${major_ver}: bundle index digest capture failed or malformed (got: '$(_sanitize_for_log "${_index_digest}")') — fail-closed"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
             continue
