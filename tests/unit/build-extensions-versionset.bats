@@ -10039,3 +10039,546 @@ _run_an_producer() {
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ ! -f "$artifact" ]
 }
+
+# ---------------------------------------------------------------------------
+# AW-1: finalize-multiarch must merge ALL in-scope extensions, not only
+# resolver-backed ones. A non-resolver extension (pgvector, single version)
+# must get an un-suffixed multi-arch manifest created from its -amd64 + -arm64
+# suffixed source refs.
+#
+# Before fix: finalize_multiarch_manifests skips non-resolver extensions
+#   ([[ -z "$_resolver_path" ]] && continue) → no imagetools create called
+#   for pgvector → its un-suffixed ref never exists → consumer COPY --from=
+#   breaks. (RED)
+# After fix:  non-resolver extensions get a single-version multi-arch manifest
+#   (no bundle, no versionset artifact). (GREEN)
+# ---------------------------------------------------------------------------
+
+@test "AW1-nonresolver-merged: finalize-multiarch creates un-suffixed manifest for non-resolver extension" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: only pgvector (no resolver, single version)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local imagetools_log="${tmpd}/imagetools_create.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '0.8.0' ;;
+                repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # resolve_version_set: single-version for non-resolver ext (returns ceiling)
+        resolve_version_set() { echo '[\"0.8.0\"]'; }
+        export -f resolve_version_set
+
+        # docker: record imagetools create calls; succeed
+        docker() {
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    "
+
+    # Must succeed
+    [ "$status" -eq 0 ]
+
+    # imagetools create must have been called for pgvector (un-suffixed from -amd64 + -arm64)
+    [ -f "$imagetools_log" ]
+    local create_lines
+    create_lines=$(grep -c 'IMAGETOOLS_CREATE' "$imagetools_log" || true)
+    [ "$create_lines" -ge 1 ]
+
+    # The create call must reference the pgvector un-suffixed target and both arch-suffixed sources
+    local create_content
+    create_content=$(cat "$imagetools_log")
+    [[ "$create_content" == *"pg18-0.8.0"* ]]
+    [[ "$create_content" == *"pg18-0.8.0-amd64"* ]]
+    [[ "$create_content" == *"pg18-0.8.0-arm64"* ]]
+}
+
+@test "AW1-all-exts-processed: finalize-multiarch creates manifests for both resolver-backed and non-resolver extensions" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: timescaledb (resolver-backed) + pgvector (non-resolver)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 2
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local imagetools_log="${tmpd}/imagetools_create_all.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                pgvector:version)    echo '0.8.0' ;;
+                pgvector:repo)       echo 'https://github.com/pgvector/pgvector' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        resolve_version_set() {
+            local ext=\"\$1\"
+            case \"\$ext\" in
+                timescaledb) echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]' ;;
+                *)           echo '[\"0.8.0\"]' ;;
+            esac
+        }
+        export -f resolve_version_set
+
+        docker() {
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { printf 'timescaledb\npgvector\n'; }
+        export -f list_extensions_by_priority
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    "
+
+    [ "$status" -eq 0 ]
+
+    [ -f "$imagetools_log" ]
+    local create_content
+    create_content=$(cat "$imagetools_log")
+
+    # timescaledb: 3 per-version creates + 1 bundle create
+    [[ "$create_content" == *"pg18-2.25.0-amd64"* ]]
+    [[ "$create_content" == *"pg18-2.26.0-amd64"* ]]
+    [[ "$create_content" == *"pg18-2.27.1-amd64"* ]]
+    [[ "$create_content" == *"pg18-bundle-amd64"* ]]
+
+    # pgvector: 1 single-version create (no bundle)
+    [[ "$create_content" == *"pg18-0.8.0-amd64"* ]]
+    [[ "$create_content" == *"pg18-0.8.0-arm64"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AW-2: per-arch buildx build must honor do_push / NO_PUSH.
+# When NO_PUSH=true (do_push=false), build_ext_image must use --load, NOT --push.
+# When do_push=true, --push must still be used (regression guard).
+#
+# Before fix: --push is hardcoded in build_ext_image for the BUILD_PLATFORM path
+#   regardless of do_push. (RED)
+# After fix:  --push only when do_push=true; --load when do_push=false. (GREEN)
+# ---------------------------------------------------------------------------
+
+@test "AW2-nopush-uses-load: BUILD_PLATFORM + NO_PUSH=true → buildx uses --load, not --push" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local aw2_log="$tmpd/aw2_nopush_buildx.log"
+    export aw2_log
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/arm64 ARCH_SUFFIX=arm64 NO_PUSH=true
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() {
+            echo "DOCKER_CALL $*" >> "'"$aw2_log"'"
+            return 0
+        }
+        export -f docker
+
+        build_ext_image "pgvector" "0.8.0" "https://github.com/pgvector/pgvector" \
+            "18" "'"$tmpd"'/postgres/extensions/build/timescaledb.Dockerfile" \
+            "'"$tmpd"'/postgres/extensions"
+    '
+
+    [ "$status" -eq 0 ]
+
+    [ -f "$aw2_log" ]
+    local call_content
+    call_content=$(cat "$aw2_log")
+
+    # Must NOT use --push when NO_PUSH=true
+    [[ "$call_content" != *"--push"* ]]
+
+    # Must use --load when do_push=false
+    [[ "$call_content" == *"--load"* ]]
+}
+
+@test "AW2-push-true-regression: BUILD_PLATFORM + NO_PUSH unset → buildx uses --push (regression guard)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local aw2_push_log="$tmpd/aw2_push_buildx.log"
+    export aw2_push_log
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64 ARCH_SUFFIX=amd64
+        unset NO_PUSH
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() {
+            echo "DOCKER_CALL $*" >> "'"$aw2_push_log"'"
+            return 0
+        }
+        export -f docker
+
+        build_ext_image "pgvector" "0.8.0" "https://github.com/pgvector/pgvector" \
+            "18" "'"$tmpd"'/postgres/extensions/build/timescaledb.Dockerfile" \
+            "'"$tmpd"'/postgres/extensions"
+    '
+
+    [ "$status" -eq 0 ]
+
+    [ -f "$aw2_push_log" ]
+    local call_content
+    call_content=$(cat "$aw2_push_log")
+
+    # Must use --push when NO_PUSH is not set
+    [[ "$call_content" == *"--push"* ]]
+
+    # Must NOT use --load
+    [[ "$call_content" != *"--load"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AW-3: prefilter (_should_build_extension multi-version path) must check
+# arch-suffixed refs when ARCH_SUFFIX is set.
+#
+# Scenario: ARCH_SUFFIX=arm64, the un-suffixed ref exists in registry but the
+# -arm64 suffixed ref does NOT. Without the fix, the prefilter sees the
+# un-suffixed ref as present → returns 1 (skip) → the -arm64 source is never
+# built → stage B merge fails (no suffixed image).
+#
+# Before fix: _should_build_extension multi-version path uses _image_needs_build
+#   on the un-suffixed ver_image, so a present un-suffixed ref causes skip. (RED)
+# After fix:  when ARCH_SUFFIX is non-empty, the prefilter probes the
+#   arch-suffixed ref → skips only when -arm64 is present → builds when absent. (GREEN)
+# ---------------------------------------------------------------------------
+
+@test "AW3-prefilter-arch-suffixed: ARCH_SUFFIX set + un-suffixed present but suffixed absent → extension NOT skipped (builds -arm64)" {
+    export ARCH_SUFFIX="arm64"
+    export BUILD_PLATFORM="linux/arm64"
+
+    # The un-suffixed ref is present; the -arm64 suffixed ref is absent.
+    # Before fix: prefilter sees un-suffixed as present → skips → returns 1
+    # After fix:  prefilter probes suffixed → absent → returns 0 (build)
+    image_exists_in_registry() {
+        local ref="$1"
+        # Un-suffixed ref is present; -arm64 is absent
+        if [[ "$ref" == *"-arm64"* ]]; then
+            return 1  # absent
+        fi
+        return 0  # present (un-suffixed)
+    }
+    export -f image_exists_in_registry
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run _should_build_extension "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must return 0 (build) because the -arm64 suffixed ref is absent.
+    # Before fix: returns 1 (skip) because un-suffixed is present. RED.
+    # After fix:  returns 0 (build). GREEN.
+    [ "$status" -eq 0 ]
+
+    unset ARCH_SUFFIX BUILD_PLATFORM
+}
+
+@test "AW3-prefilter-arch-suffixed-present: ARCH_SUFFIX set + suffixed ref IS present → extension skipped" {
+    export ARCH_SUFFIX="amd64"
+    export BUILD_PLATFORM="linux/amd64"
+
+    # Both un-suffixed and -amd64 suffixed refs are present.
+    image_exists_in_registry() {
+        return 0  # everything present
+    }
+    export -f image_exists_in_registry
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run _should_build_extension "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Must return 1 (skip) because -amd64 is already present.
+    [ "$status" -eq 1 ]
+
+    unset ARCH_SUFFIX BUILD_PLATFORM
+}
+
+# ---------------------------------------------------------------------------
+# AW-4: stage B must merge only AVAILABLE versions and tolerate excluded
+# (non-ceiling versions whose -amd64 or -arm64 source is absent).
+#
+# Before fix: finalize_multiarch_manifests treats every imagetools create
+#   failure as fatal (_failed=true; break) → a legitimately-excluded old
+#   version blocks even the valid ceiling → exit non-zero. (RED)
+# After fix:  non-ceiling imagetools create failures are recorded in excluded[]
+#   and tolerated; ceiling failure is still fatal; valid ceiling + available
+#   set produces artifact; exit 0. (GREEN)
+# ---------------------------------------------------------------------------
+
+@test "AW4-excluded-version-not-fatal: non-ceiling version missing → excluded, ceiling merged, exit 0" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local imagetools_log="${tmpd}/imagetools_aw4.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # imagetools create: fails for 2.25.0 (source not available — musl-excluded),
+        # succeeds for 2.26.0, 2.27.1 (ceiling), and the bundle.
+        # Detect the 2.25.0 create call: \$5 is the target tag (after -t).
+        docker() {
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
+                # The call is: docker buildx imagetools create -t <target> <src1> <src2>
+                # Positional: \$1=buildx \$2=imagetools \$3=create \$4=-t \$5=<target>
+                # Fail when the CREATE TARGET ends with ':pg18-2.25.0' (the un-suffixed
+                # multi-arch target whose arch-specific sources never built — musl failure).
+                local _tgt=''
+                [[ \$# -ge 5 ]] && _tgt=\"\$5\"
+                if [[ \"\$_tgt\" == *':pg18-2.25.0' ]]; then
+                    return 1
+                fi
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    "
+
+    # Before fix: any imagetools create failure → fatal → exit non-zero. RED.
+    # After fix:  non-ceiling failure tolerated → exit 0. GREEN.
+    [ "$status" -eq 0 ]
+
+    # The versionset artifact must have been written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # available must contain 2.26.0 and 2.27.1 (the versions whose sources existed).
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -ge 1 ]
+
+    # ceiling (2.27.1) must be in available
+    local ceiling_present
+    ceiling_present=$(jq '[.available[] | select(. == "2.27.1")] | length' "$artifact")
+    [ "$ceiling_present" -eq 1 ]
+
+    # 2.25.0 must be in excluded (its manifest create failed)
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -ge 1 ]
+
+    local excl_2250
+    excl_2250=$(jq '[.excluded[].version | select(. == "2.25.0")] | length' "$artifact")
+    [ "$excl_2250" -eq 1 ]
+}
+
+@test "AW4-ceiling-absent-fatal: ceiling version missing from arch sources → exit non-zero (fail-closed)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # imagetools create: CEILING (2.27.1) fails — its arch sources are absent.
+        docker() {
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
+                if [[ \"\${*}\" == *'pg18-2.27.1'* ]]; then
+                    return 1  # ceiling sources absent
+                fi
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    "
+
+    # Ceiling absent → fatal → exit non-zero.
+    [ "$status" -ne 0 ]
+
+    # No artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}

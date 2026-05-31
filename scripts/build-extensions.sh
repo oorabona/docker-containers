@@ -64,19 +64,28 @@ build_ext_image() {
 
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         # CI per-arch leg: build for the specific platform using buildx.
-        # --push is required here because buildx cannot --load multi-arch images;
-        # but per-version ext images are always pushed to the registry anyway.
-        # The suffixed tag is the push target (used later by bundle COPY --from=).
+        # On a PR / NO_PUSH leg (do_push=false), use --load so the image stays in the
+        # local docker store for smoke validation without any registry write.
+        # On the publish leg (do_push=true / NO_PUSH unset), use --push so the
+        # suffixed tag lands in the registry for the stage-B manifest merge.
         local _ver_image
         _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
         local _ver_tag
         _ver_tag=$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")
 
+        # Compute do_push for this build leg: true unless NO_PUSH or LOCAL_ONLY.
+        local _do_push_ext=true
+        [[ "${NO_PUSH:-false}" == "true" ]] && _do_push_ext=false
+        [[ "${LOCAL_ONLY:-false}" == "true" ]] && _do_push_ext=false
+
+        local _push_or_load="--push"
+        [[ "$_do_push_ext" == "false" ]] && _push_or_load="--load"
+
         if ! $DOCKER buildx build \
             --platform "${BUILD_PLATFORM}" \
             -f "$dockerfile" \
             -t "$_ver_tag" \
-            --push \
+            "$_push_or_load" \
             --build-arg REMOTE_CR="${REMOTE_CR}" \
             --build-arg MAJOR_VERSION="$pg_major" \
             --build-arg EXT_VERSION="$ext_version" \
@@ -86,7 +95,11 @@ build_ext_image() {
             return 1
         fi
 
-        log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
+        if [[ "$_do_push_ext" == "true" ]]; then
+            log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
+        else
+            log_success "Built (local only): $_ver_tag (platform: ${BUILD_PLATFORM})"
+        fi
         return 0
     fi
 
@@ -1335,9 +1348,14 @@ _should_build_extension() {
     set_size=$(echo "$version_set_json" | jq 'length')
 
     if [[ "$set_size" -eq 1 ]]; then
-        # Exactly the legacy path — same log strings as before.
+        # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref.
+        # An un-suffixed tag from a prior run must not cause a false skip —
+        # stage B needs the suffixed source image.
+        local _check_image
+        _check_image=$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")
+
         if [[ "$LOCAL_ONLY" == "true" ]]; then
-            if [[ "$FORCE" != "true" ]] && docker image inspect "$image" &>/dev/null; then
+            if [[ "$FORCE" != "true" ]] && docker image inspect "$_check_image" &>/dev/null; then
                 log_success "$ext $version already exists locally"
                 return 1
             fi
@@ -1348,7 +1366,7 @@ _should_build_extension() {
             return 0
         fi
 
-        if image_exists_in_registry "$image" 2>/dev/null; then
+        if image_exists_in_registry "$_check_image" 2>/dev/null; then
             log_success "$ext $version already exists in registry"
             return 1
         fi
@@ -1357,11 +1375,15 @@ _should_build_extension() {
     fi
 
     # Multi-version path: return 0 if any version in the set needs building.
+    # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref so
+    # a leftover un-suffixed tag from a prior run does not cause a false skip —
+    # the stage-B merge needs the suffixed source, not the un-suffixed one.
     local ver
     while IFS= read -r ver; do
-        local ver_image
+        local ver_image _check_ver_image
         ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        if _image_needs_build "$ver_image"; then
+        _check_ver_image=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
+        if _image_needs_build "$_check_ver_image"; then
             return 0
         fi
     done < <(echo "$version_set_json" | jq -r '.[]')
@@ -1694,14 +1716,39 @@ finalize_multiarch_manifests() {
         local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
         [[ ! -f "$dockerfile" ]] && continue
 
-        # Only resolver-backed extensions produce a versionset artifact.
-        local _resolver_path
-        _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
-        [[ -z "$_resolver_path" ]] && continue
-
-        local ceiling version_set_json
+        local ceiling
         ceiling=$(ext_config "$ext" "version" "$config_file")
 
+        # Determine whether this extension has a resolver-backed multi-version set.
+        local _resolver_path
+        _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
+
+        if [[ -z "$_resolver_path" ]]; then
+            # AW-1: Non-resolver extension (single configured version).
+            # Create the un-suffixed multi-arch manifest from -amd64 + -arm64 sources.
+            # No bundle, no versionset artifact — the consumer uses the un-suffixed ref directly.
+            local _ver_image_base
+            _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
+            local _ver_amd64 _ver_arm64
+            _ver_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
+            _ver_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
+
+            log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_ver_amd64 + $_ver_arm64 (non-resolver)"
+            local _nr_create_rc=0
+            if ! $DOCKER buildx imagetools create \
+                -t "$_ver_image_base" \
+                "$_ver_amd64" "$_ver_arm64" 2>&1; then
+                _nr_create_rc=$?
+                log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools create failed (rc=$_nr_create_rc) — fail-closed"
+                _failed=true
+            else
+                log_success "Multi-arch manifest created: $_ver_image_base (non-resolver)"
+            fi
+            continue
+        fi
+
+        # Resolver-backed extension: resolve version set, validate, and merge all versions.
+        local version_set_json
         if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
             log_error "$ext: resolver failed in finalize-multiarch — cannot produce multi-arch manifests (fail-closed)"
             _failed=true
@@ -1718,14 +1765,17 @@ finalize_multiarch_manifests() {
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
         if [[ "$set_size" -le 1 ]]; then
-            # Single-version: no bundle needed; delete any stale artifact.
+            # Single-version resolver result: no bundle needed; delete any stale artifact.
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
         # Step 1: merge per-version multi-arch manifests.
+        # AW-4: non-ceiling imagetools create failures are TOLERATED (excluded[]);
+        # ceiling failure is FATAL. Mirror stage A's musl-tolerance contract.
         local _confirmed_available=()
         local _excluded_entries=()
+        local _ext_failed=false
         local ver
         while IFS= read -r ver; do
             local ver_image_base ver_amd64 ver_arm64 ver_multiarch
@@ -1740,18 +1790,27 @@ finalize_multiarch_manifests() {
                 -t "$ver_multiarch" \
                 "$ver_amd64" "$ver_arm64" 2>&1; then
                 _create_rc=$?
-                log_error "$ext $ver pg${major_ver}: imagetools create for version manifest failed (rc=$_create_rc) — fail-closed"
-                _failed=true
-                break
+                if [[ "$ver" == "$ceiling" ]]; then
+                    # Ceiling failure is fatal: the consumer cannot function without it.
+                    log_error "$ext $ver pg${major_ver} (ceiling): imagetools create failed (rc=$_create_rc) — fatal"
+                    _ext_failed=true
+                    break
+                else
+                    # Non-ceiling failure: tolerated (source images absent — e.g. musl excluded).
+                    log_warning "$ext $ver pg${major_ver} (non-ceiling): imagetools create failed (rc=$_create_rc) — tolerated, recording in excluded"
+                    _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"manifest create failed\"}")
+                fi
+                continue
             fi
 
             _confirmed_available+=("$ver")
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # If any per-version create failed, abort this extension.
-        if [[ "$_failed" == "true" ]]; then
+        # If ceiling merge failed, abort this extension (fatal).
+        if [[ "$_ext_failed" == "true" ]]; then
             _delete_stale_versionset_artifact "$ext" "$major_ver"
-            break
+            _failed=true
+            continue
         fi
 
         # Ceiling must be in confirmed_available.
@@ -1763,8 +1822,17 @@ finalize_multiarch_manifests() {
                 break
             fi
         done
-        if [[ "$_ceiling_ok" == "false" ]] || [[ ${#_confirmed_available[@]} -le 1 ]]; then
+        if [[ "$_ceiling_ok" == "false" ]] || [[ ${#_confirmed_available[@]} -eq 0 ]]; then
             log_info "$ext pg${major_ver}: confirmed_available is empty or ceiling ($ceiling) absent after per-version merges — skipping bundle+artifact"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            continue
+        fi
+
+        # Skip bundle creation when only one version is confirmed available — a 1-version
+        # bundle is unused by the consumer (falls through to the single-version path).
+        # Delete any stale artifact so the consumer self-heals cleanly.
+        if [[ ${#_confirmed_available[@]} -le 1 ]]; then
+            log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — skipping bundle (consumer uses single-version path)"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
@@ -1786,7 +1854,7 @@ finalize_multiarch_manifests() {
             log_error "$ext pg${major_ver}: bundle manifest create failed (rc=$_bundle_create_rc) — fail-closed"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
-            break
+            continue
         fi
         log_success "Bundle multi-arch manifest created: $_bundle_multiarch"
 
@@ -1797,7 +1865,7 @@ finalize_multiarch_manifests() {
             log_error "$ext pg${major_ver}: bundle multi-arch index digest capture failed or malformed (got: '$(_sanitize_for_log "${_index_digest}")') — fail-closed"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
-            break
+            continue
         fi
         log_info "$ext pg${major_ver}: bundle index digest: $_index_digest"
 
