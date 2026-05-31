@@ -254,12 +254,21 @@ jobs:
     # finds the GHCR cache absent it falls back to direct docker.io (authenticated
     # via the existing docker-login step) — graceful degradation is preserved;
     # only the race is eliminated.
+    #
+    # Fork PRs are excluded: they have read-only GITHUB_TOKEN and cannot push
+    # to GHCR regardless. TimescaleDB bumps arrive via same-repo auto-update PRs
+    # only; same-repo PRs push (packages:write is explicitly granted below) so
+    # the smoke validates end-to-end and master reuses the cache.
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
       (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
-      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+      packages: write
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
       group: build-extensions-${{ github.ref }}-${{ matrix.arch }}
@@ -291,8 +300,11 @@ jobs:
       - name: Install yq
         timeout-minutes: 5
         run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_${{ matrix.arch }}"
+          case "${{ matrix.arch }}" in
+            amd64) echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c - ;;
+            arm64) echo "4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq" | sha256sum -c - ;;
+          esac
           sudo chmod +x /usr/local/bin/yq
 
       - name: Install skopeo
@@ -336,14 +348,9 @@ jobs:
           # non-fork push/dispatch events (where GHCR write access and sync-base-images ran).
           # REMOTE_CR is NOT set here at job level — it is probed per major_version below.
           USE_BASE_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          # NO_PUSH gates registry writes off for ALL pull_request events: the default
-          # GITHUB_TOKEN downgrades to read-only on packages for pull_request regardless
-          # of fork status (see the sync-base-images job comment), so any PR push would
-          # 403. On a PR build-extensions smoke-builds without pushing per-version or
-          # bundle images; the merge job is likewise skipped on PRs and the postgres
-          # smoke build self-heals against the existing registry images. Push/dispatch
-          # events publish normally.
-          NO_PUSH: ${{ github.event_name == 'pull_request' }}
+          # Fork PRs are excluded at the job if: clause above, so this job only runs on
+          # push/dispatch and same-repo PRs. Same-repo PRs have packages:write (granted
+          # explicitly in the job permissions block) and push normally — NO_PUSH is not set.
           REPO_OWNER: ${{ github.repository_owner }}
           # Stage A: per-arch leg pushes suffixed single-arch images only.
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
@@ -437,8 +444,10 @@ jobs:
   # Stage B: merge per-arch extension manifests into multi-arch manifests and
   # write the versionset artifact with the multi-arch bundle INDEX digest.
   # Runs on ubuntu-latest (manifest operations are registry API calls — no native
-  # runner needed).  Skipped when NO_PUSH would apply (fork PRs where nothing was
-  # pushed) and when the build-extensions legs were skipped or failed.
+  # runner needed).  Skipped on fork PRs (where build-extensions was skipped)
+  # and when the build-extensions legs were skipped or failed.
+  # Same-repo PRs run this job so the postgres build-and-push smoke consumes
+  # the versionset artifact end-to-end.
   merge-extension-manifests:
     name: Merge Extension Manifests (multi-arch)
     needs: [detect-containers, build-extensions, sync-base-images]
@@ -448,7 +457,10 @@ jobs:
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
       (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
       needs.build-extensions.result == 'success' &&
-      github.event_name != 'pull_request'
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

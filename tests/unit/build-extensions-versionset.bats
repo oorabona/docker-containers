@@ -8415,6 +8415,179 @@ _run_an_producer() {
     [ -f "$artifact" ]
 }
 
+# ---------------------------------------------------------------------------
+# AX4: same-repo PR / push — NO_PUSH unset → do_push=true → build+push.
+#
+# Context: the workflow previously set NO_PUSH=true for ALL pull_request events,
+# which prevented pushing on same-repo PRs even though they have packages:write.
+# AX-4 reverts that: fork PRs are excluded by the job if: clause, so
+# build-extensions only runs for push/dispatch and same-repo PRs.  On those
+# events NO_PUSH is not set → do_push=true → build+push happens normally.
+#
+# This test is a regression guard confirming the revert: with NO_PUSH unset
+# (same-repo PR or push context) the script pushes the bundle and writes the
+# versionset artifact — the full end-to-end smoke path.
+# ---------------------------------------------------------------------------
+@test "AX4-samerepo-pr-pushes: NO_PUSH unset (same-repo PR / push) → do_push=true → bundle pushed + artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local push_call_log="${tmpd}/ax4_samerepo_push.log"
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        # NO_PUSH is intentionally NOT set — simulates same-repo PR or push context
+        # where the workflow no longer sets NO_PUSH (AX-4 revert).
+        unset NO_PUSH
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() {
+            local _cmd=\"\${1:-}\"
+            if [[ \"\$_cmd\" == 'push' || \"\$_cmd\" == 'build' ]]; then
+                echo \"DOCKER_\${_cmd^^}\" >> \"$push_call_log\"
+                return 0
+            fi
+            if [[ \"\$*\" == *'buildx'* ]]; then
+                echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+                return 0
+            fi
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+        }
+        export -f _capture_bundle_digest
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+        validate_prerequisites()  { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+        main postgres --major-version 18
+    "
+
+    # Must exit cleanly.
+    [ "$status" -eq 0 ]
+
+    # AX4 regression: docker push MUST have been called (do_push=true path).
+    # Before revert: NO_PUSH=true would suppress push. After revert: push fires.
+    local push_count
+    push_count=$(_count_log_lines "$push_call_log")
+    [ "$push_count" -gt 0 ]
+
+    # Artifact MUST be written (versionset consumed by postgres build-and-push).
+    [ -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# AX4 defensive: NO_PUSH=true still suppresses push (script honors it even
+# though the workflow no longer sets it on same-repo PRs; guards local/manual use).
+# ---------------------------------------------------------------------------
+@test "AX4-nopush-true-still-suppresses: NO_PUSH=true explicit → do_push=false → no push (defensive)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local push_call_log="${tmpd}/ax4_nopush_explicit.log"
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export NO_PUSH=true
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        docker() {
+            local _cmd=\"\${1:-}\"
+            if [[ \"\$_cmd\" == 'push' ]]; then
+                echo \"DOCKER_PUSH\" >> \"$push_call_log\"
+                return 0
+            fi
+            if [[ \"\$_cmd\" == 'build' ]]; then return 0; fi
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
+        export -f docker
+        skopeo() { echo 'manifest unknown' >&2; return 1; }
+        export -f skopeo
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+        }
+        export -f _capture_bundle_digest
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+        validate_prerequisites()  { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+        main postgres --major-version 18
+    "
+
+    # Script honors NO_PUSH=true even when caller sets it explicitly.
+    [ "$status" -eq 0 ]
+
+    # NO_PUSH=true: no docker push.
+    local push_count
+    push_count=$(_count_log_lines "$push_call_log")
+    [ "$push_count" -eq 0 ]
+
+    # NO_PUSH=true: no artifact written.
+    [ ! -f "$artifact" ]
+}
+
 @test "AQ1-localonly-allcached-nopush: all-cached + LOCAL_ONLY=true → NO push (regression guard)" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
