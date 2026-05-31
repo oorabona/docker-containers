@@ -555,8 +555,18 @@ jobs:
           # stage B probes the correct scoped per-arch refs and publishes scoped targets.
           # BE-1: same-repo-only guard mirrors the build-extensions expression.
           PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+          # BH-2b: thread the same rebuild/force signal as stage A so --finalize-multiarch
+          # knows to skip canonical-first reuse and merge from freshly-built PR-scoped tags.
+          REBUILD: ${{ env.REBUILD_MODE }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
+
+          # BH-2b: mirror stage A's --force logic so finalize skips canonical-first
+          # reuse for versions that were explicitly rebuilt by stage A this run.
+          force_arg=()
+          if [[ "$REBUILD" == "force" || "$REBUILD" == "all" ]]; then
+            force_arg=(--force)
+          fi
 
           IFS='|' read -ra ENTRIES <<< "$VERSIONS_MAP"
           for entry in "${ENTRIES[@]}"; do
@@ -589,11 +599,11 @@ jobs:
                 for ext in "${EXT_LIST[@]}"; do
                   [[ -z "$ext" ]] && continue
                   ./scripts/build-extensions.sh "$container" --major-version "$major_version" \
-                    --extension "$ext" --finalize-multiarch
+                    --extension "$ext" --finalize-multiarch "${force_arg[@]}"
                 done
               else
                 ./scripts/build-extensions.sh "$container" --major-version "$major_version" \
-                  --finalize-multiarch
+                  --finalize-multiarch "${force_arg[@]}"
               fi
             done
           done

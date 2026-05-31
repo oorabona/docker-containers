@@ -1584,6 +1584,12 @@ _should_build_extension() {
     fi
 
     # Multi-version path: return 0 if any version in the set needs building.
+    # BH-2a fix: FORCE=true means every resolved version needs (re)build, same as
+    # the single-version branch above. Skip the per-version presence checks entirely.
+    if [[ "$FORCE" == "true" ]]; then
+        return 0
+    fi
+
     # BF fix: on a PR (PR_TAG_SUFFIX non-empty), a version is "needs build" only when
     # NEITHER its canonical arch tag (unchanged, read-only) NOR its PR-scoped arch tag
     # (built this PR) exists in the registry. This prevents rebuilding all retained
@@ -1942,6 +1948,16 @@ _emit_versionset_artifact() {
 # are serialized by the concurrency group, so same-ref concurrent pushes do not
 # occur in practice.
 #
+# BH-1 accepted trade-off: the per-arch stable tags (-amd64/-arm64) are mutable.
+# A concurrent same-ref run could push a new -amd64 while this job reads -arm64,
+# resulting in a manifest mixing arches from different runs. The two robust fixes
+# are: (a) run/SHA-scoped digest passing per arch leg — reverted because it
+# silently dropped cached versions not rebuilt in that run; (b) serialize arch
+# legs A+B into a single job — would ~double wall-clock (no parallel arch compile)
+# against the speed goal. For this single-maintainer repo with serialized
+# auto-update PRs, same-ref concurrent pushes do not occur in practice, so the
+# race probability is near zero. This trade-off is explicit and documented here.
+#
 # Fail-closed: ceiling missing on either arch, imagetools create failure for
 # ceiling, bundle build/push failure, or digest capture failure → fatal.
 # Non-ceiling failures are tolerated (musl-compat contract from stage A).
@@ -1988,7 +2004,9 @@ finalize_multiarch_manifests() {
             local _ver_image_base
             _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
 
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+            # BH-2b fix: skip canonical-first reuse when FORCE is set — the version was
+            # explicitly rebuilt this run and the fresh PR-scoped image must be used.
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]] && [[ "${FORCE:-false}" != "true" ]]; then
                 # Probe canonical multi-arch manifest (no suffix, no arch suffix).
                 local _nr_canonical_rc=0
                 _image_present_3state "$_ver_image_base" || _nr_canonical_rc=$?
@@ -2112,7 +2130,12 @@ finalize_multiarch_manifests() {
             ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
 
             # BF: on a PR, check canonical multi-arch manifest first (unchanged version reuse).
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+            # BH-2b fix: when FORCE is set, skip canonical-first reuse for ALL versions.
+            # A forced rebuild means the version was explicitly rebuilt this run — reusing
+            # the canonical manifest would validate the stale image, not the fresh one.
+            # FORCE applies only when PR_TAG_SUFFIX is set (PR context); on push/dispatch
+            # the canonical-reuse branch is never reached (PR_TAG_SUFFIX is empty).
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]] && [[ "${FORCE:-false}" != "true" ]]; then
                 # Probe the canonical multi-arch ref (no suffix).
                 local _canonical_ver_ref="$ver_image_base"
                 local _canonical_rc=0

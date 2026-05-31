@@ -13972,3 +13972,293 @@ EOF
 
     unset PR_TAG_SUFFIX
 }
+
+# ---------------------------------------------------------------------------
+# BH-2a: FORCE=true + resolver-backed extension, all tags exist in registry
+# → _should_build_extension must return 0 (needs build), NOT skip.
+# Before fix: the multi-version branch goes straight to presence checks and
+#   returns 1 (skip) when all arch tags exist, ignoring FORCE.
+# After fix:  when FORCE is set, the multi-version branch returns 0 immediately
+#   (same as the single-version branch).
+# ---------------------------------------------------------------------------
+
+@test "BH2a-force-resolver-rebuilds: FORCE=true + resolver-backed ext, all tags exist → returns 0 (needs rebuild)" {
+    # All versions present in registry.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    export FORCE=true
+    export PR_TAG_SUFFIX=""
+    export ARCH_SUFFIX=""
+
+    run _should_build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # FORCE=true must override the presence check: return 0 (needs rebuild).
+    # Before fix: returns 1 (all tags present → skip, FORCE ignored). RED.
+    # After fix:  returns 0 (FORCE bypasses presence check). GREEN.
+    [ "$status" -eq 0 ]
+
+    unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
+}
+
+@test "BH2a-noforce-resolver-skips: FORCE unset + resolver-backed ext, all tags exist → returns 1 (skip, regression)" {
+    # All versions present in registry — should skip when not forcing.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    export FORCE=false
+    export PR_TAG_SUFFIX=""
+    export ARCH_SUFFIX=""
+
+    run _should_build_extension timescaledb "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # FORCE unset: all tags present → should skip (return 1).
+    # This is the BF regression guard.
+    [ "$status" -eq 1 ]
+
+    unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
+}
+
+# ---------------------------------------------------------------------------
+# BH-2b: FORCE=true on a PR + canonical manifest exists for a resolver-backed
+# version → finalize_multiarch_manifests must NOT reuse canonical for it; it
+# must call imagetools create from the freshly-built PR-scoped arch tags.
+#
+# Before fix: the BF canonical-first reuse runs regardless of FORCE → canonical
+#   manifest found → returns "reused", no imagetools create for this version.
+#   The PR smoke validates the stale canonical image, not the rebuilt one. RED.
+# After fix:  when FORCE is set, skip canonical-first reuse for ALL versions;
+#   always use the freshly-built scoped sources (PR-scoped arch tags). GREEN.
+# ---------------------------------------------------------------------------
+
+@test "BH2b-force-finalize-uses-fresh: FORCE=true on PR, canonical manifest exists → imagetools create from pr-scoped tags" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/bh2b_imagetools.log"
+
+    # Config: timescaledb only (resolver-backed).
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+EOF
+
+    run bash -c "
+        export LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export ARCH_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        # Set FORCE=true AFTER sourcing — source resets FORCE=false from the defaults block.
+        export FORCE=true
+        export ROOT_DIR='${tmpd}'
+
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Canonical multi-arch manifest EXISTS (simulates prior push of this version).
+        _image_present_3state() {
+            # All refs present (canonical + pr-scoped arch tags).
+            return 0
+        }
+        export -f _image_present_3state
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                echo '{\"schemaVersion\":2}' && return 0
+            fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'build' ]]; then
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # FORCE=true: must call imagetools create from pr-scoped arch tags, not reuse canonical.
+    # Before fix: canonical present → reused, no imagetools create. RED (log absent or 0 calls).
+    # After fix:  FORCE bypasses canonical reuse → imagetools create called. GREEN.
+    [ -f "$imagetools_log" ] || {
+        echo "FAIL: imagetools_log not created — imagetools create was never called (canonical was reused)"
+        false
+    }
+    local create_count
+    create_count=$(wc -l < "$imagetools_log")
+    [ "$create_count" -ge 1 ] || {
+        echo "FAIL: imagetools create was not called (expected >= 1 call, got $create_count)"
+        false
+    }
+
+    # The imagetools create call must use the PR-scoped arch tags (not canonical).
+    local call
+    call=$(cat "$imagetools_log")
+    [[ "$call" == *'-amd64-pr42'* ]] || {
+        echo "FAIL: imagetools create must use PR-scoped arch tag (-amd64-pr42). Got: $call"
+        false
+    }
+    [[ "$call" == *'-arm64-pr42'* ]] || {
+        echo "FAIL: imagetools create must use PR-scoped arch tag (-arm64-pr42). Got: $call"
+        false
+    }
+
+    unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
+}
+
+@test "BH2b-noforce-finalize-reuses-canonical: FORCE unset on PR, canonical manifest present → canonical reused, no imagetools create (BF regression)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/bh2b_noforce_imagetools.log"
+
+    # Config: timescaledb only (resolver-backed).
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+EOF
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export ARCH_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                timescaledb:version) echo '2.27.1' ;;
+                timescaledb:repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)                   echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Canonical multi-arch manifest EXISTS.
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # FORCE unset: canonical present → canonical must be reused; no imagetools create.
+    # This is the BF regression guard.
+    local create_count=0
+    if [ -f "$imagetools_log" ]; then
+        create_count=$(wc -l < "$imagetools_log")
+    fi
+    [ "$create_count" -eq 0 ] || {
+        echo "FAIL: imagetools create must not be called when FORCE unset and canonical is present (BF regression). Got $create_count calls."
+        false
+    }
+
+    unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
+}
