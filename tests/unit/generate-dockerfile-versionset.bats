@@ -2892,3 +2892,103 @@ ARTIFACT_EOF
 
     rm -f "$vv_stderr"
 }
+
+# ---------------------------------------------------------------------------
+# AT-2: self-heal with reduced retention must emit a log_warning naming
+# the dropped versions.
+#
+# When the probed available set (_sh_available) is SMALLER than the resolved
+# set (some resolved versions are absent from the registry), generate_dockerfile
+# must:
+#   - still SUCCEED (do NOT fail-closed here — local/smoke builds where older
+#     versions aren't available are legitimate; the ceiling-presence check is
+#     the hard gate)
+#   - emit a log_warning that:
+#       * mentions the count of dropped versions
+#       * names each dropped version
+#       * is sanitised through _sanitize_for_log (no raw injection path)
+#
+# Tests:
+#   AT2-selfheal-reduced-warns: resolved=3, probed-present=2 (ceiling present),
+#     1 version absent → SUCCEEDS, log_warning names the dropped version.
+#     RED before fix: no warning at all (silent reduction).
+#     GREEN after fix: warning surfaces dropped version.
+#
+#   AT2-selfheal-full-no-warn: resolved=3, probed-present=3 (all present) →
+#     SUCCEEDS, NO reduction warning emitted.
+#     (Regression: the warning must not fire when no version was dropped.)
+#
+# Existing ceiling-present fail-closed (AO-4 / EE-a-3) and per-version
+# emission (AP) remain unchanged — these tests do NOT touch or weaken them.
+# ---------------------------------------------------------------------------
+
+@test "AT2-selfheal-reduced-warns: self-heal with 1 absent version emits log_warning naming dropped version" {
+    # No versionset artifact — forces self-heal path.
+    # Resolver returns 3 versions; only 2 are present in registry.
+    # 2.16.0 is definitively absent (rc=1 from _image_registry_probe_3state).
+    # Ceiling (2.27.1) is present.
+
+    resolve_version_set() {
+        echo '["2.16.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.16.0*) return 1 ;;  # ABSENT (definitively)
+            *)             return 0 ;;  # PRESENT
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must succeed — reduced set with ceiling present is not a fatal error.
+    [ "$status" -eq 0 ]
+
+    # AP: per-version COPYs for the 2 proved-present versions (2.25.0 and 2.27.1).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 2 ]
+
+    # A reduction warning must have been emitted.
+    # "output" in bats captures both stdout and stderr of "run" — the warning
+    # goes to stderr from log_warning, but run merges them by default.
+    # The warning must name the dropped version (2.16.0).
+    [[ "$output" == *"2.16.0"* ]]
+
+    # The warning must indicate the set was reduced / retention reduced.
+    # Accept either "retention reduced" or "reduced" as the key signal.
+    [[ "$output" == *"reduc"* ]] || [[ "$output" == *"absent"* ]] || [[ "$output" == *"not retain"* ]]
+}
+
+@test "AT2-selfheal-full-no-warn: all resolved versions present — no reduction warning emitted" {
+    # No versionset artifact — forces self-heal path.
+    # All 3 resolved versions are present → no reduction, no warning.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    _image_registry_probe_3state() {
+        return 0  # all PRESENT
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # No reduction warning should appear when nothing was dropped.
+    # The warning message will contain "retention reduced" or "reduc" — check it is absent.
+    [[ "$output" != *"retention reduced"* ]]
+}

@@ -31,9 +31,23 @@ fi
 # command.  '::' at the start of a line is the trigger; removing newlines defangs it.
 # Also escapes '%' first (mirrors the _esc ordering in timescaledb-ha.sh resolver)
 # so that %0A / %0D sequences in the source data are not re-expanded by the runner.
+#
+# Backslash neutralisation (FIRST transformation):
+# The loggers use 'echo -e', which expands backslash sequences in the string it
+# receives.  A value containing the two-char literal sequence \n (backslash + n)
+# passes the CR/LF check (no actual control byte present) but echo -e expands it
+# into a real newline, recreating a '::command::' line from \x3a\x3a sequences.
+# Escaping every '\' -> '\\' as the very first step means echo -e renders '\n' as
+# the literal two characters \n (not a newline) and '\x3a' as the four characters
+# \x3a (not ':'), so no downstream expansion can reconstruct a workflow command.
+# Legitimate version strings and OCI digests contain no backslashes, so this
+# transformation is always safe on real data.
+#
 # Usage: _sanitize_for_log <string>  (prints sanitized form to stdout)
 _sanitize_for_log() {
     local s="$1"
+    # Backslash must be escaped FIRST so later encodings don't double-process.
+    s="${s//\\/\\\\}"
     s="${s//\%/%25}"
     s="${s//$'\r'/%0D}"
     s="${s//$'\n'/%0A}"
@@ -608,6 +622,31 @@ generate_dockerfile() {
                 if [[ ${#_sh_available[@]} -eq 0 ]]; then
                     log_error "generate_dockerfile: self-heal for $ext_name pg${pg_major}: no resolved images are present in registry — cannot emit multi-version stages"
                     return 1
+                fi
+
+                # Warn when the confirmed-available set is smaller than the resolved set.
+                # This happens when some retained versions are absent from the registry
+                # (e.g. a fork/PR that didn't push, or registry lag).  The build still
+                # proceeds with the available subset — the ceiling-presence check is the
+                # hard gate.  Emit a named warning so the reduction is visible, not silent.
+                local _sh_resolved_count
+                _sh_resolved_count=$(echo "$_sh_resolved_json" | jq 'length' 2>/dev/null || echo 0)
+                if [[ "${#_sh_available[@]}" -lt "$_sh_resolved_count" ]]; then
+                    # Compute the dropped versions for the warning message.
+                    local _sh_dropped=()
+                    local _sh_rv
+                    while IFS= read -r _sh_rv; do
+                        [[ -z "$_sh_rv" ]] && continue
+                        local _sh_found=false
+                        local _sh_av
+                        for _sh_av in "${_sh_available[@]}"; do
+                            [[ "$_sh_av" == "$_sh_rv" ]] && _sh_found=true && break
+                        done
+                        [[ "$_sh_found" == "false" ]] && _sh_dropped+=("$(_sanitize_for_log "$_sh_rv")")
+                    done < <(echo "$_sh_resolved_json" | jq -r '.[]' 2>/dev/null || true)
+                    local _sh_dropped_list
+                    _sh_dropped_list=$(printf '%s, ' "${_sh_dropped[@]}" | sed 's/, $//')
+                    log_warning "generate_dockerfile: ${ext_name} pg${pg_major}: retention reduced — ${#_sh_available[@]} of ${_sh_resolved_count} resolved versions available; image will NOT retain ${_sh_dropped_list} (versions absent from the registry; expected in a no-push/fork-PR or registry-lag context)"
                 fi
 
                 # Synthesise the versionset JSON into a shell variable — no temp file.

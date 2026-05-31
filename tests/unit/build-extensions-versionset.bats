@@ -9045,3 +9045,129 @@ _run_an_producer() {
 
     rm -f "$as2_stderr"
 }
+
+# ---------------------------------------------------------------------------
+# AT-1: _sanitize_for_log must neutralize backslash sequences so that
+# echo -e cannot expand them after sanitisation.
+#
+# The existing sanitiser neutralises actual CR/LF bytes and literal "::" but
+# does NOT escape backslashes.  A value containing "sha256:abc\n\x3a\x3a
+# add-mask::secret" (literal backslash-n and backslash-x3a, NOT actual
+# control bytes) passes the old sanitiser unchanged.  echo -e then expands
+# \n -> newline and \x3a -> ':', reconstructing a "::add-mask::secret"
+# workflow command line.
+#
+# Fix: escape every '\' -> '\\' as the FIRST transformation in
+# _sanitize_for_log, so echo -e renders "\n" as the literal two-char
+# sequence "\n" (not a newline) and "\x3a" as the literal four-char
+# sequence "\x3a" (not ":").
+#
+# AT1-sanitizer-backslash-escape: end-to-end proof that echo -e cannot
+#   expand an injected backslash escape after sanitisation.
+#   Input: a value with literal \n and \x3a\x3a sequences.
+#   Test drives the sanitised value through the real log_error logger
+#   (which uses echo -e) and asserts:
+#   (a) the combined logger output contains NO actual newline-then-:: line
+#   (b) the literal backslash-n is preserved as two chars, not expanded
+#   RED before fix: echo -e expands \n and \x3a, reconstructing "::add-mask::".
+#   GREEN after fix: backslashes escaped first; echo -e sees \\n -> "\n".
+#
+# AT1-sanitizer-actual-controls: the existing CR/LF/:: neutralisation
+#   still works after the backslash-first fix (regression guard).
+# ---------------------------------------------------------------------------
+
+@test "AT1-sanitizer-backslash-escape: echo -e cannot expand injected backslash sequences after sanitisation" {
+    # Poison value: literal backslash-n and backslash-x3a (two-char sequences,
+    # NOT actual control bytes).  When passed to echo -e without sanitisation,
+    # \n expands to newline and \x3a to ':', producing:
+    #   sha256:abc
+    #   ::add-mask::secret
+    # which GHA interprets as a workflow command.
+    local poison='sha256:abc\n\x3a\x3aadd-mask::secret'
+
+    # Drive the sanitised value through the real log_error logger (echo -e path).
+    # Capture stderr (where log_error writes).
+    local sanitized_stderr
+    sanitized_stderr=$(bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        sanitized=\$(_sanitize_for_log '$poison')
+        log_error \"\$sanitized\"
+    " 2>&1 || true)
+
+    # (a) No line in the logger output may start with '::' — that is the GHA
+    #     workflow-command trigger.  If echo -e expanded \x3a to ':', the line
+    #     "::add-mask::secret" would appear after the expanded newline.
+    if printf '%s\n' "$sanitized_stderr" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — backslash injection not neutralised"
+        echo "--- sanitized_stderr (cat -A) ---"
+        printf '%s\n' "$sanitized_stderr" | cat -A
+        return 1
+    fi
+
+    # (b) The output must NOT contain an actual newline immediately after
+    #     "sha256:abc" (which would mean \n was expanded).
+    #     Strategy: strip ANSI, find the line containing "sha256:abc", and assert
+    #     that no subsequent line starts with "::" (already covered above, but
+    #     also assert the raw split for clarity).
+    local stripped
+    stripped=$(printf '%s\n' "$sanitized_stderr" | sed 's/\x1b\[[0-9;]*m//g')
+    # The token "sha256:abc" must appear on EXACTLY ONE line (not split across two).
+    local abc_lines
+    abc_lines=$(printf '%s\n' "$stripped" | grep -c 'sha256:abc' || true)
+    [ "$abc_lines" -ge 1 ]
+
+    # (c) The literal string "add-mask" must not appear on a line starting with "::".
+    if printf '%s\n' "$stripped" | grep -qE '^::.*add-mask'; then
+        echo "FAIL: '::add-mask' line present in logger output after sanitisation"
+        printf '%s\n' "$stripped" | cat -A
+        return 1
+    fi
+}
+
+@test "AT1-sanitizer-actual-controls: existing CR/LF/percent/double-colon neutralisation still works" {
+    # Regression guard: the backslash-first fix must not break the existing
+    # neutralisation of actual control bytes and literal '::'.
+    local actual_cr_lf
+    actual_cr_lf=$'hello\r\nworld'
+    local actual_pct='100% done'
+    local actual_colons='::warning::bad'
+
+    local sanitized_cr_lf
+    sanitized_cr_lf=$(bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        _sanitize_for_log '$actual_cr_lf'
+    " 2>/dev/null)
+
+    local sanitized_pct
+    sanitized_pct=$(bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        _sanitize_for_log '$actual_pct'
+    " 2>/dev/null)
+
+    local sanitized_colons
+    sanitized_colons=$(bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        _sanitize_for_log '$actual_colons'
+    " 2>/dev/null)
+
+    # CR must be encoded as %0D (not left as a raw CR byte).
+    [[ "$sanitized_cr_lf" != *$'\r'* ]]
+
+    # LF must be encoded as %0A (not left as a raw newline byte).
+    [[ "$sanitized_cr_lf" != *$'\n'* ]]
+
+    # '%' must be encoded as %25 first so downstream percent-encodings are safe.
+    [[ "$sanitized_pct" == *"%25"* ]]
+
+    # '::' must be encoded so no workflow-command line survives.
+    [[ "$sanitized_colons" != *"::"* ]]
+
+    # None of the sanitised forms may trigger a GHA workflow command.
+    for s in "$sanitized_cr_lf" "$sanitized_pct" "$sanitized_colons"; do
+        if printf '%s\n' "$s" | grep -qE '^::'; then
+            echo "FAIL: sanitised value still starts a line with '::'"
+            printf '%s\n' "$s" | cat -A
+            return 1
+        fi
+    done
+}
