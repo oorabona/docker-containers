@@ -9171,3 +9171,178 @@ _run_an_producer() {
         fi
     done
 }
+
+# ---------------------------------------------------------------------------
+# AU-multi-to-single-deletes-stale: multi→single transition must delete stale
+# versionset artifact.
+#
+# Scenario: a prior run wrote ext-timescaledb-pg18-versionset.json (multi-version
+# artifact). The current run resolves set_size==1 (retain_count lowered to 1 or
+# window shrank to a single version). The set_size<=1 early return in
+# _bundle_and_write_artifact must delete the stale multi-version artifact so the
+# downstream postgres build self-heals to the single-version path (AL), never
+# consuming a stale multi-version artifact/bundle.
+#
+# RED before fix: stale artifact survives the set_size<=1 early return.
+# GREEN after fix: stale artifact is deleted, file absent after the run.
+#
+# Non-vacuous: pre-seed the stale artifact; assert file absence after the run.
+# DRY_RUN path is a separate test (AU-dry-run-single-preserves).
+# ---------------------------------------------------------------------------
+
+@test "AU-multi-to-single-deletes-stale: set_size==1 early return deletes pre-existing stale versionset artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-seed a stale multi-version artifact from a prior run.
+    local stale_artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale_artifact"
+    [ -f "$stale_artifact" ]
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # Resolver returns a SINGLE-version set (set_size==1) — simulates the
+        # transition from multi-version to single (retain_count lowered to 1).
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Ceiling version already in registry — nothing to build.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Run must succeed (single-version set is not an error).
+    [ "$status" -eq 0 ]
+
+    # RED before fix: stale multi-version artifact survives (set_size<=1 early return
+    #   returns 0 without deleting it).
+    # GREEN after fix: stale artifact is DELETED — consumer self-heals to single-version.
+    [ ! -f "$stale_artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# AU-dry-run-single-preserves: DRY_RUN=true + set_size==1 + stale artifact →
+# stale artifact must NOT be deleted (no filesystem mutation under DRY_RUN).
+#
+# The DRY_RUN early return fires BEFORE the set_size<=1 check, so no rm -f
+# can occur. This test locks that invariant.
+#
+# GREEN: stale artifact survives intact under DRY_RUN=true.
+# ---------------------------------------------------------------------------
+
+@test "AU-dry-run-single-preserves: DRY_RUN=true + set_size==1 + stale artifact is NOT deleted" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-seed a stale artifact.
+    local stale_artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.26.0","2.27.1"],"available":["2.25.0","2.26.0","2.27.1"],"excluded":[]}\n' \
+        > "$stale_artifact"
+    [ -f "$stale_artifact" ]
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        # Re-export after source — build-extensions.sh resets DRY_RUN=false.
+        export ROOT_DIR=\"$tmpd\" DRY_RUN=true
+
+        # Resolver returns single-version set.
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # DRY_RUN must succeed.
+    [ "$status" -eq 0 ]
+
+    # Under DRY_RUN: no filesystem mutation — stale artifact must still be present.
+    [ -f "$stale_artifact" ]
+}

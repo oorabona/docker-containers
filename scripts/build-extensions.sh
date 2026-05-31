@@ -446,7 +446,8 @@ handle_pull_only_mode() {
 #   do_push: "true" = push to registry; "false" = local-only build.
 # Returns: 0 on success; 1 on any failure.
 # Does nothing (returns 0) under DRY_RUN — callers handle DRY_RUN logging.
-# Does nothing (returns 0) when set_size <= 1 (no bundle needed for single-version).
+# When set_size <= 1: deletes any stale versionset artifact and returns 0
+#   (no bundle needed for single-version; consumer self-heals to single-version path).
 _bundle_and_write_artifact() {
     local ext="$1" config_file="$2" major_ver="$3" version_set_json="$4" ceiling="$5" do_push="$6"
 
@@ -454,7 +455,10 @@ _bundle_and_write_artifact() {
 
     local set_size
     set_size=$(echo "$version_set_json" | jq 'length')
-    [[ "$set_size" -le 1 ]] && return 0
+    if [[ "$set_size" -le 1 ]]; then
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
 
     # CI no-push guard: when do_push=false AND this is not a LOCAL_ONLY or PULL_ONLY
     # recovery path, we are in a fork PR / CI smoke context where the package registry
@@ -1362,7 +1366,10 @@ _emit_final_versionset_pass() {
 
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
-        [[ "$set_size" -le 1 ]] && continue
+        if [[ "$set_size" -le 1 ]]; then
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            continue
+        fi
 
         # Determine the effective do_push for this final pass.
         # Use arg 5 when provided (threaded from main()); otherwise re-derive from
@@ -1410,7 +1417,9 @@ _delete_stale_versionset_artifact() {
 # Write (or refresh) the versionset artifact for a resolver-backed extension
 # using a pure presence-based pass — no build occurs.
 # Args: ext config_file major_ver version_set_json ceiling
-# Does nothing under DRY_RUN or when set_size <= 1.
+# Does nothing under DRY_RUN.
+# When set_size <= 1: deletes any stale versionset artifact and returns 0
+#   (single-version extensions produce no artifact; consumer uses single-version path).
 _emit_versionset_artifact() {
     local ext="$1" config_file="$2" major_ver="$3" version_set_json="$4" ceiling="$5"
 
@@ -1418,7 +1427,10 @@ _emit_versionset_artifact() {
 
     local set_size
     set_size=$(echo "$version_set_json" | jq 'length')
-    [[ "$set_size" -le 1 ]] && return 0
+    if [[ "$set_size" -le 1 ]]; then
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
 
     local available_versions=()
     local excluded_entries=()
