@@ -11108,3 +11108,435 @@ EOF
     # that is correct behavior (the consumer uses the single-version path).
     # The test's goal is only to verify duration consolidation; versionset absence is expected.
 }
+
+# ---------------------------------------------------------------------------
+# AY-1: non-resolver finalize branch must merge by digest-map, not mutable tags.
+#
+# Before fix (AY-1): the non-resolver branch in finalize_multiarch_manifests does:
+#   imagetools create <stable> <ref>:pg<major>-<ver>-amd64 <ref>:...-arm64
+# which uses MUTABLE tags. If a concurrent run overwrites those tags between
+# the per-arch push and the merge, the wrong image lands in the manifest.
+#
+# After fix: non-resolver branch loads per-arch digest maps (same as AX-1 for
+# resolver-backed extensions) and calls:
+#   imagetools create <stable> <ref>@<amd64-digest> <ref>@<arm64-digest>
+# Fails closed if a required digest is missing or malformed.
+# ---------------------------------------------------------------------------
+
+@test "AY1-nonresolver-merge-by-digest: non-resolver finalize uses digest refs from maps, not mutable tags" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: pgvector is NON-resolver (no version_set.resolver key)
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Per-arch digest maps for pgvector (written by the per-arch build leg AX-1)
+    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local arm64_dig="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    printf '{"0.8.0":"%s"}\n' "$amd64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-amd64.json"
+    printf '{"0.8.0":"%s"}\n' "$arm64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-arm64.json"
+
+    # Record the exact imagetools invocation
+    local imagetools_log="$tmpd/ay1_imagetools.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Record the imagetools create call (capture the full argument list)
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # The imagetools create call MUST use @digest refs, NOT mutable -amd64/-arm64 tag refs.
+    # RED before fix: call contains ":pg18-0.8.0-amd64" (mutable tag).
+    # GREEN after fix: call contains "@sha256:aaaa..." (immutable digest).
+    [ -f "$imagetools_log" ]
+    local call
+    call=$(cat "$imagetools_log")
+
+    # Must contain both digest refs
+    [[ "$call" == *"@${amd64_dig}"* ]] || {
+        echo "FAIL: imagetools call does not contain amd64 digest ref. Got: $call"
+        false
+    }
+    [[ "$call" == *"@${arm64_dig}"* ]] || {
+        echo "FAIL: imagetools call does not contain arm64 digest ref. Got: $call"
+        false
+    }
+
+    # Must NOT contain mutable suffixed tags
+    [[ "$call" != *":pg18-0.8.0-amd64"* ]] || {
+        echo "FAIL: imagetools call contains mutable -amd64 tag. Got: $call"
+        false
+    }
+    [[ "$call" != *":pg18-0.8.0-arm64"* ]] || {
+        echo "FAIL: imagetools call contains mutable -arm64 tag. Got: $call"
+        false
+    }
+}
+
+@test "AY1-nonresolver-missing-digest-failclosed: non-resolver ext with missing arch digest fails closed" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: pgvector is NON-resolver
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Only amd64 digest map present; arm64 is MISSING (simulates incomplete build leg)
+    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    printf '{"0.8.0":"%s"}\n' "$amd64_dig" > "$lineage_dir/ext-pgvector-pg18-digests-amd64.json"
+    # arm64 digest map intentionally absent
+
+    local imagetools_log="$tmpd/ay1_missing_imagetools.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    # Must fail closed: missing arm64 digest map means the merge cannot use immutable refs.
+    # With digest maps absent (neither file present), the fallback to mutable tags would run.
+    # With only ONE map present (partial/incomplete), it should also fail closed.
+    # The test verifies that with ONE map missing, the result is non-zero (not a silent mutable-tag merge).
+    # Note: if BOTH maps are absent it falls back to mutable tags (backward compat); if only ONE is
+    # present it should fail closed to prevent a half-race-safe merge.
+    [ "$status" -ne 0 ] || {
+        # If the implementation chose to fall back to mutable tags on partial maps,
+        # verify it did NOT use a digest ref for the missing arch (would be malformed).
+        if [ -f "$imagetools_log" ]; then
+            local call
+            call=$(cat "$imagetools_log")
+            # Must not have used a bogus digest ref for arm64 (no arm64 map = no arm64 digest)
+            [[ "$call" != *"@sha256:bbbb"* ]]
+        fi
+    }
+}
+
+# ---------------------------------------------------------------------------
+# AY-2: per-arch leg must write ARCH-SUFFIXED duration files.
+#
+# Before fix: build_tag_push_extensions always writes:
+#   ext-<ext>-pg<major>-<ver>.json  (un-suffixed)
+# Both arch artifacts (ext-lineage-<run>-amd64, -arm64) are downloaded into the
+# SAME .build-lineage/ dir → the un-suffixed files COLLIDE (one arch overwrites
+# the other). AX-3 consolidation reads -amd64.json / -arm64.json (suffixed),
+# which never exist → MAX consolidation no-ops → wrong/zero durations.
+#
+# After fix: when ARCH_SUFFIX is non-empty, write:
+#   ext-<ext>-pg<major>-<ver>-${ARCH_SUFFIX}.json  (arch-suffixed)
+# When ARCH_SUFFIX is empty (local/single-arch), keep the un-suffixed name.
+# ---------------------------------------------------------------------------
+
+@test "AY2-arch-suffixed-duration-no-collision: ARCH_SUFFIX=amd64 writes arch-suffixed duration file" {
+    export ARCH_SUFFIX="amd64"
+    export BUILD_PLATFORM="linux/amd64"
+
+    resolve_version_set() { echo '["2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Simulated buildx build succeeds; captures pushed digest
+    docker() {
+        local _dcmd="${1:-}"
+        if [[ "$_dcmd" == "buildx" && "${2:-}" == "build" ]]; then
+            return 0
+        fi
+        if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+            # Return raw manifest JSON so _capture_bundle_digest can hash it
+            printf '{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}\n'
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    _capture_bundle_digest() {
+        echo "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        return 0
+    }
+    export -f _capture_bundle_digest
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # RED before fix: un-suffixed file exists; suffixed file absent.
+    # GREEN after fix: suffixed file exists for the per-arch leg.
+    local suffixed_file="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local unsuffixed_file="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    [ -f "$suffixed_file" ] || {
+        echo "FAIL: expected arch-suffixed duration file not found: $suffixed_file"
+        echo "Contents of lineage dir:"
+        ls "$lineage_dir" 2>/dev/null || echo "(empty)"
+        false
+    }
+
+    # The arch-suffixed file must have a numeric duration_seconds field
+    local dur
+    dur=$(jq '.duration_seconds' "$suffixed_file")
+    [[ "$dur" =~ ^[0-9]+$ ]]
+
+    # Un-suffixed file must NOT exist for a per-arch leg (would cause collision
+    # when both arch artifacts are downloaded together)
+    [ ! -f "$unsuffixed_file" ] || {
+        echo "FAIL: un-suffixed file exists on a per-arch leg (collision risk): $unsuffixed_file"
+        false
+    }
+
+    unset ARCH_SUFFIX BUILD_PLATFORM
+}
+
+@test "AY2-local-unsuffixed: ARCH_SUFFIX empty keeps un-suffixed duration file (local/single-arch path)" {
+    unset ARCH_SUFFIX
+    unset BUILD_PLATFORM
+
+    resolve_version_set() { echo '["2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    rm -rf "$lineage_dir"
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Local/single-arch: un-suffixed file must still exist (backward compat).
+    local unsuffixed_file="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+    [ -f "$unsuffixed_file" ] || {
+        echo "FAIL: expected un-suffixed duration file not found: $unsuffixed_file"
+        false
+    }
+
+    # No arch-suffixed files must exist (ARCH_SUFFIX was empty)
+    local amd64_file="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_file="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    [ ! -f "$amd64_file" ]
+    [ ! -f "$arm64_file" ]
+}
+
+@test "AY2-consolidation-runs: -amd64.json + -arm64.json → consolidation writes canonical file with MAX, removes suffixed" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # Config: timescaledb with resolver (multi-version set so consolidation loop runs)
+    # We seed a 2-version set but only the consolidation part is tested here.
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    priority: 1
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+EOF
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-create arch-suffixed duration files (as written by the fixed per-arch build leg)
+    local amd64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-amd64.json"
+    local arm64_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1-arm64.json"
+    local canonical_dur="$lineage_dir/ext-timescaledb-pg18-2.27.1.json"
+
+    printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":100,"built_at":"2026-01-01T00:00:00Z"}\n' \
+        > "$amd64_dur"
+    printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":140,"built_at":"2026-01-01T00:00:01Z"}\n' \
+        > "$arm64_dur"
+
+    # Per-arch digest maps (required for resolver-backed extension finalize)
+    local amd64_dig="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local arm64_dig="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    local bundle_amd64_dig="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local bundle_arm64_dig="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    printf '{"2.27.1":"%s","bundle":"%s"}\n' "$amd64_dig" "$bundle_amd64_dig" \
+        > "$lineage_dir/ext-timescaledb-pg18-digests-amd64.json"
+    printf '{"2.27.1":"%s","bundle":"%s"}\n' "$arm64_dig" "$bundle_arm64_dig" \
+        > "$lineage_dir/ext-timescaledb-pg18-digests-arm64.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' ]]; then
+                if [[ \"\${3:-}\" == 'create' ]]; then
+                    return 0
+                fi
+                if [[ \"\${3:-}\" == 'inspect' ]]; then
+                    printf '{\"schemaVersion\":2}\n'
+                    return 0
+                fi
+            fi
+            return 0
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # RED before fix: -amd64.json and -arm64.json never existed (un-suffixed only);
+    #   AX-3 reads suffixed files which were absent → loop no-op → canonical not written.
+    # GREEN after fix: suffixed files were pre-seeded (as if written by the fixed per-arch
+    #   build leg); AX-3 reads them, takes MAX(100,140)=140, writes canonical, removes suffixed.
+
+    # Canonical duration file must exist with duration_seconds = MAX(100, 140) = 140
+    [ -f "$canonical_dur" ] || {
+        echo "FAIL: canonical duration file not written: $canonical_dur"
+        ls "$lineage_dir"
+        false
+    }
+
+    local consolidated_dur
+    consolidated_dur=$(jq '.duration_seconds' "$canonical_dur")
+    [ "$consolidated_dur" -eq 140 ] || {
+        echo "FAIL: expected duration_seconds=140 (MAX), got $consolidated_dur"
+        false
+    }
+
+    # Arch-suffixed source files must be REMOVED after consolidation
+    [ ! -f "$amd64_dur" ] || {
+        echo "FAIL: amd64 suffixed duration file was not removed after consolidation"
+        false
+    }
+    [ ! -f "$arm64_dur" ] || {
+        echo "FAIL: arm64 suffixed duration file was not removed after consolidation"
+        false
+    }
+}

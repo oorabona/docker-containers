@@ -1044,12 +1044,23 @@ build_tag_push_extensions() {
 
             # Write per-version lineage file with this version's own duration.
             # Dry runs must not mutate .build-lineage.
+            #
+            # AY-2: When ARCH_SUFFIX is non-empty (CI per-arch leg), write the
+            # lineage file as arch-suffixed: ext-<ext>-pg<major>-<ver>-<arch>.json.
+            # Both arch artifact directories are downloaded into the SAME .build-lineage/
+            # during the finalize step; un-suffixed files from both legs would collide
+            # (one arch overwrites the other). The AX-3 consolidation loop in
+            # finalize_multiarch_manifests reads -amd64.json + -arm64.json, takes
+            # MAX of duration_seconds, and writes the canonical un-suffixed file.
+            # When ARCH_SUFFIX is empty (local/single-arch), keep the un-suffixed name.
             if [[ "$DRY_RUN" != "true" ]]; then
                 local _ver_duration=$(( SECONDS - _ver_start ))
                 local _ver_image
                 _ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
                 local _ver_safe="${version//[^a-zA-Z0-9.-]/_}"
-                local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}.json"
+                local _ver_lineage_suffix=""
+                [[ -n "${ARCH_SUFFIX:-}" ]] && _ver_lineage_suffix="-${ARCH_SUFFIX}"
+                local _ver_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe}${_ver_lineage_suffix}.json"
                 mkdir -p "${ROOT_DIR}/.build-lineage"
                 jq -nc \
                     --arg ext "$ext" \
@@ -1762,19 +1773,59 @@ finalize_multiarch_manifests() {
 
         if [[ -z "$_resolver_path" ]]; then
             # AW-1: Non-resolver extension (single configured version).
-            # Create the un-suffixed multi-arch manifest from -amd64 + -arm64 sources.
+            # Create the un-suffixed multi-arch manifest from per-arch sources.
             # No bundle, no versionset artifact — the consumer uses the un-suffixed ref directly.
+            #
+            # AY-1: Load per-arch digest maps when both are present and use immutable
+            # digest refs for imagetools create, preventing the cross-run tag race where
+            # a concurrent run overwrites -amd64/-arm64 tags between the per-arch push
+            # and this merge step. Fall back to mutable suffixed tag refs only when BOTH
+            # maps are absent (backward compat with older runs without digest maps).
+            # Fail closed when only ONE map is present (partial/incomplete build).
             local _ver_image_base
             _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
-            local _ver_amd64 _ver_arm64
-            _ver_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
-            _ver_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
 
-            log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_ver_amd64 + $_ver_arm64 (non-resolver)"
+            local _nr_dig_map_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-amd64.json"
+            local _nr_dig_map_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-arm64.json"
+            local _nr_src_amd64 _nr_src_arm64
+
+            if [[ -f "$_nr_dig_map_amd64" ]] && [[ -f "$_nr_dig_map_arm64" ]]; then
+                # Both maps present: use immutable digest refs (AY-1 fix).
+                local _nr_d_amd64 _nr_d_arm64
+                _nr_d_amd64=$(cat "$_nr_dig_map_amd64" | jq -r --arg v "$ceiling" '.[$v] // empty' 2>/dev/null || true)
+                _nr_d_arm64=$(cat "$_nr_dig_map_arm64" | jq -r --arg v "$ceiling" '.[$v] // empty' 2>/dev/null || true)
+
+                if [[ -z "$_nr_d_amd64" ]] || [[ -z "$_nr_d_arm64" ]]; then
+                    log_error "$ext $ceiling pg${major_ver} (non-resolver): ceiling digest missing in one arch map (amd64='$(_sanitize_for_log "$_nr_d_amd64")' arm64='$(_sanitize_for_log "$_nr_d_arm64")') — fail-closed"
+                    _failed=true
+                    continue
+                fi
+
+                if ! is_valid_oci_digest "$_nr_d_amd64" || ! is_valid_oci_digest "$_nr_d_arm64"; then
+                    log_error "$ext $ceiling pg${major_ver} (non-resolver): malformed digest in map — fail-closed"
+                    _failed=true
+                    continue
+                fi
+
+                _nr_src_amd64="${_ver_image_base}@${_nr_d_amd64}"
+                _nr_src_arm64="${_ver_image_base}@${_nr_d_arm64}"
+                log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, AY-1 digest)"
+            elif [[ -f "$_nr_dig_map_amd64" ]] || [[ -f "$_nr_dig_map_arm64" ]]; then
+                # Only one map present: partial/incomplete — fail closed to avoid a half-race-safe merge.
+                log_error "$ext $ceiling pg${major_ver} (non-resolver): only one arch digest map present (partial build) — fail-closed"
+                _failed=true
+                continue
+            else
+                # Both maps absent: fall back to mutable suffixed tag refs (backward compat).
+                _nr_src_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
+                _nr_src_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
+                log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, mutable fallback)"
+            fi
+
             local _nr_create_rc=0
             if ! $DOCKER buildx imagetools create \
                 -t "$_ver_image_base" \
-                "$_ver_amd64" "$_ver_arm64" 2>&1; then
+                "$_nr_src_amd64" "$_nr_src_arm64" 2>&1; then
                 _nr_create_rc=$?
                 log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools create failed (rc=$_nr_create_rc) — fail-closed"
                 _failed=true
