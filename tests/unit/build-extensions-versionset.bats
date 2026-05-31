@@ -8123,3 +8123,121 @@ _run_an_producer() {
     recorded=$(jq -r '.bundle_digest' "$artifact")
     [ "$recorded" = "$good_digest" ]
 }
+
+# ---------------------------------------------------------------------------
+# AO-1: resolved set > 1 but only the ceiling is confirmed available (other
+# versions absent) → producer must NOT assemble/push a bundle and must NOT
+# write a versionset artifact.  The consumer would ignore a 1-version bundle
+# (available_count <= 1 falls through to single-version path), so pushing one
+# would waste CI resources and a push/digest failure there would break the run
+# for no benefit.
+#
+# Scenario: resolver returns ["2.25.0","2.26.0","2.27.1"] (set_size=3).
+#   - 2.25.0: ABSENT (musl-failed / never built)
+#   - 2.26.0: ABSENT (musl-failed / never built)
+#   - 2.27.1 (ceiling): PRESENT
+#
+# Expected: confirmed_available == ["2.27.1"] (size 1) → NO bundle build/push,
+#   NO artifact written (stale artifact deleted), exit 0 (NOT a failure).
+#
+# RED before fix: 1-version bundle is assembled and pushed; artifact is written
+#   with available=["2.27.1"].  A subsequent push/digest failure would fail CI.
+# GREEN after fix: confirmed_available size == 1 → skip bundle, skip artifact,
+#   delete stale, return 0.
+# ---------------------------------------------------------------------------
+@test "AO1-confirmed-one-no-bundle: resolved>1 but only ceiling confirmed → no bundle, no artifact, exit 0" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    local bundle_call_log="$tmpd/ao1_bundle_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Pre-place a stale artifact to verify it gets deleted.
+    mkdir -p "$tmpd/.build-lineage"
+    echo '{"stale":true}' > "$artifact"
+    rm -f "$bundle_call_log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # Resolver returns 3 versions (set_size=3 > 1).
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Skip-build: all versions appear in registry for _image_needs_build check.
+        # (ceiling appears present, so the existing-check skips rebuild)
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # 3-state probe: only the ceiling is PRESENT; others are ABSENT.
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.27.1*) return 0 ;;  # PRESENT (ceiling)
+                *)             return 1 ;;  # ABSENT  (non-ceiling)
+            esac
+        }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+
+        # Record any docker bundle build call.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'build' ]]; then
+                echo \"docker_build_called\" >> '$bundle_call_log'
+                return 0
+            fi
+            [[ \"\$_dcmd\" == 'push' ]] && return 0
+            return 1
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()      { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()         { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed — confirmed_available==1 with ceiling present is not an error.
+    [ "$status" -eq 0 ]
+
+    # No artifact must be present (stale one deleted, new one not written).
+    # RED before fix: artifact IS written with available=[\"2.27.1\"].
+    # GREEN after fix: no artifact (confirmed_available size 1 → skip).
+    [ ! -f "$artifact" ]
+
+    # No bundle docker build must have been invoked.
+    # RED before fix: bundle_call_log exists.
+    # GREEN after fix: no bundle assembly.
+    [ ! -f "$bundle_call_log" ]
+}

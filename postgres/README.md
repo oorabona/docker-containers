@@ -321,13 +321,15 @@ Analytics and full flavors also include:
 
 **What is retained.** The image ships up to `version_set.retain_count` (default **12**) of the most-recent TimescaleDB versions per PostgreSQL major that successfully build for the Alpine/musl platform. A persisted database on any version within that window **starts without any migration** — PostgreSQL loads the `.so` matching the catalog version. Versions that fail to compile under musl are tolerated and excluded; they are recorded in the versionset artifact (`.build-lineage/ext-timescaledb-pg<major>-versionset.json`, `excluded[]`) and not shipped. The retain count is configurable via `version_set.retain_count` in `postgres/extensions/config.yaml`. The retained window is derived from the upstream `timescale/timescaledb-ha` support matrix, so it differs per PostgreSQL major (a TimescaleDB version that never supported a given PostgreSQL major is not retained for it):
 
-| PostgreSQL major | Retained TimescaleDB window | Versions |
-|------------------|-----------------------------|----------|
-| 18               | 2.23.0 → 2.27.1             | 13       |
-| 17               | 2.17.2 → 2.27.1             | 32       |
-| 16               | 2.13.0 → 2.27.1             | 45       |
+| PostgreSQL major | Upstream support window (floor → ceiling) | Default image retains |
+|------------------|-------------------------------------------|-----------------------|
+| 18               | 2.23.0 → 2.27.1                           | up to 12 most-recent  |
+| 17               | 2.17.2 → 2.27.1                           | up to 12 most-recent  |
+| 16               | 2.13.0 → 2.27.1                           | up to 12 most-recent  |
 
-The ceiling — currently **2.27.1** — is the pinned version in `postgres/extensions/config.yaml`; the floor and counts track upstream and refresh automatically as new TimescaleDB versions are released and the pin is bumped.
+The table shows the upstream support window per PostgreSQL major. The shipped image retains the **12 most-recent** versions from that window (configurable via `version_set.retain_count` in `postgres/extensions/config.yaml`). Databases on versions older than the retained window use `ALTER EXTENSION timescaledb UPDATE` to migrate to the ceiling.
+
+The ceiling — currently **2.27.1** — is the pinned version in `postgres/extensions/config.yaml`; the floor and retained count track upstream and refresh automatically as new TimescaleDB versions are released and the pin is bumped.
 
 The `timescaledb.control` file sets `default_version` to the pinned ceiling, so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
 

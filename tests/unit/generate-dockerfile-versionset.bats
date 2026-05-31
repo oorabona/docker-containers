@@ -2291,3 +2291,112 @@ _write_versionset_with_digest() {
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AO-4: self-heal path, synthesized available contains ONLY an older version
+# (ceiling absent) → generate_dockerfile must FAIL CLOSED.
+#
+# Context: When the versionset artifact is absent/malformed, generate_dockerfile
+# self-heals by calling resolve_version_set + probing each resolved version.
+# The probe may find that only an older retained version is present (e.g. the
+# ceiling build is still in progress or failed in a previous CI run).
+# In that case available_count == 1 but the single available version is NOT
+# the ceiling.
+#
+# Pre-fix behavior: available_count == 1 falls through to the single-version
+# path, which emits FROM <ext>:pg<major>-<ext_version> (the CEILING tag) even
+# though the ceiling image is absent.  This creates a Dockerfile that fails at
+# build time with an obscure "manifest not found" error.
+#
+# Fix: when the data came from the self-heal path (_versionset_from_selfheal),
+# enforce ceiling-presence REGARDLESS of count.  If available_count == 1 and
+# the single element is NOT the ceiling → FAIL CLOSED (log_error, return 1).
+# Only allow single-version fallthrough when available == [ceiling].
+#
+# AO4-selfheal-ceiling-absent-failclosed:
+#   self-heal, synthesized available == [older-only] → fail closed.
+#   RED before fix: emits single-version FROM with ceiling tag (which doesn't exist).
+#   GREEN after fix: exits non-zero, no FROM emitted.
+#
+# AO4-selfheal-ceiling-only-singleversion:
+#   self-heal, available == [ceiling] → single-version path OK.
+#   Must remain GREEN (ceiling present → allowed).
+# ---------------------------------------------------------------------------
+
+@test "AO4-selfheal-ceiling-absent-failclosed: self-heal available=[older-only] (no ceiling) → fail closed" {
+    # No versionset artifact — forces the self-heal path.
+
+    # Resolver returns 3 versions; the ceiling is 2.27.1.
+    resolve_version_set() {
+        echo '["2.25.0","2.26.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # 3-state probe: only 2.25.0 is PRESENT; ceiling 2.27.1 and 2.26.0 are ABSENT.
+    # Result: _sh_available == ["2.25.0"] — count 1, ceiling NOT present.
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.25.0*) return 0 ;;  # PRESENT (older version)
+            *)             return 1 ;;  # ABSENT  (including ceiling 2.27.1)
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 with a single-version FROM using the ceiling tag
+    #   (ghcr.io/testowner/ext-timescaledb:pg18-2.27.1) which is absent from registry.
+    # GREEN after fix: exits non-zero (fail-closed — ceiling absent from self-heal set).
+    [ "$status" -ne 0 ]
+
+    # Secondary: if it exited 0 (pre-fix), no single-version FROM with the ceiling tag
+    # must appear (that would reference a non-existent image).
+    if [ "$status" -eq 0 ]; then
+        local ceiling_from_count
+        ceiling_from_count=$(echo "$output" | grep -c "FROM.*ext-timescaledb:pg18-2.27.1" || true)
+        [ "$ceiling_from_count" -eq 0 ]
+    fi
+}
+
+@test "AO4-selfheal-ceiling-only-singleversion: self-heal available=[ceiling] → single-version path OK" {
+    # No versionset artifact — forces the self-heal path.
+
+    # Resolver returns 3 versions.
+    resolve_version_set() {
+        echo '["2.25.0","2.26.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # 3-state probe: only the ceiling is PRESENT; older versions are ABSENT.
+    # Result: _sh_available == ["2.27.1"] — count 1, ceiling IS present.
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.27.1*) return 0 ;;  # PRESENT (ceiling)
+            *)             return 1 ;;  # ABSENT  (older versions)
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Available == [ceiling]: single-version path is permitted.
+    [ "$status" -eq 0 ]
+
+    # Must emit exactly one FROM stage for the ceiling version (single-version path).
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1" || true)
+    [ "$from_count" -eq 1 ]
+
+    # Must NOT emit a bundle COPY (no bundle for count==1).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}

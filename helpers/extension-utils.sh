@@ -615,6 +615,25 @@ generate_dockerfile() {
                 local available_count
                 available_count=$(echo "$_versionset_json" | jq '.available | length' 2>/dev/null || echo 0)
 
+                # AO-4: when the versionset came from the self-heal synthesis
+                # (_versionset_from_selfheal=true), enforce ceiling-presence
+                # REGARDLESS of available_count.  A self-heal result where the
+                # single available version is NOT the ceiling means the ceiling
+                # image is absent — falling through to the single-version path
+                # would emit a FROM <ext>:pg<major>-<ceiling> that does not exist.
+                # Fail closed instead; the operator must wait for the ceiling build.
+                # When available_count == 1 AND the element IS the ceiling, the
+                # single-version fallthrough below is safe (ceiling is present).
+                if [[ "$_versionset_from_selfheal" == "true" ]] && [[ "$available_count" -le 1 ]]; then
+                    local _selfheal_single
+                    _selfheal_single=$(echo "$_versionset_json" | jq -r '.available[0] // empty' 2>/dev/null || true)
+                    if [[ "$_selfheal_single" != "$ext_version" ]]; then
+                        log_error "generate_dockerfile: self-heal for $ext_name pg${pg_major}: single available version '${_selfheal_single:-<none>}' is not the ceiling ${ext_version} — ceiling image is absent, fail closed"
+                        return 1
+                    fi
+                    # available == [ceiling]: single-version path is safe; fall through.
+                fi
+
                 # AL fix: use the bundle path ONLY when more than one version is
                 # available.  When available_count == 1 (the ceiling only), the
                 # producer never builds a bundle (set_size<=1 early return in

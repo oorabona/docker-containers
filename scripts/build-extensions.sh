@@ -517,6 +517,18 @@ _bundle_and_write_artifact() {
         return 0
     fi
 
+    # AO-1: if only one version is confirmed available (the ceiling only, non-ceiling
+    # versions were musl-failed or absent), do NOT assemble a bundle — a 1-version
+    # bundle is unused by the consumer (available_count <= 1 falls through to the
+    # single-version path in generate_dockerfile).  A bundle push or digest-capture
+    # failure on a 1-version bundle would fail CI for no benefit.
+    # Delete any stale artifact so the consumer self-heals cleanly; return 0 (not fatal).
+    if [[ ${#_confirmed_available[@]} -le 1 ]]; then
+        log_info "$ext: only ${#_confirmed_available[@]} version(s) confirmed available — skipping bundle (consumer uses single-version path), deleting stale artifact"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
+
     # Push the bundle from EXACTLY confirmed_available.
     local _ba_rc=0
     assemble_and_push_bundle "$ext" "$major_ver" "$do_push" "${_confirmed_available[@]}" || _ba_rc=$?
