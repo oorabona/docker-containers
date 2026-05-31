@@ -628,21 +628,21 @@ generate_dockerfile() {
                         fi
                     done < <(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
-                    # Multi-version path: emit one FROM+COPY pair per available version.
+                    # Multi-version path: emit a SINGLE bundle COPY.
+                    # The bundle image (<registry>/<owner>/ext-<ext>:pg<major>-bundle) was
+                    # assembled by the producer (build-extensions.sh) from all available
+                    # per-version images.  Its internal layout is /<ver>/{extension,lib}/
+                    # so COPY / /tmp/ext/<ext>/ lands each version at
+                    # /tmp/ext/<ext>/<ver>/{extension,lib}/ — exactly the layout
+                    # that install_ext iterates.
+                    local _bundle_copy_written=false
                     local raw_versions
                     raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
-                        # Sort ascending (sort -V handles semver ordering)
-                        local sorted_versions
-                        sorted_versions=$(echo "$raw_versions" | sort -V)
-
-                        while IFS= read -r ver; do
-                            [[ -z "$ver" ]] && continue
-                            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ver}"
-                            copies_block+="COPY --from=${image} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
-                            copies_block+="COPY --from=${image} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
-                        done <<< "$sorted_versions"
+                        local _bundle_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-bundle"
+                        copies_block+="COPY --from=${_bundle_ref} / /tmp/ext/${ext_name}/"$'\n'
+                        _bundle_copy_written=true
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
                         local deps

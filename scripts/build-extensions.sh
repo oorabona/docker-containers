@@ -507,6 +507,10 @@ build_tag_push_extensions() {
         # _cleanup_stale_duration_files is a no-op under DRY_RUN.
         _cleanup_stale_duration_files "$ext" "$major_ver"
 
+        # Track versions that are available (built this loop OR pre-existing) for
+        # the bundle assembly step below.  Populated inside the inner loop.
+        local _available_for_bundle=()
+
         # Inner loop over each version oldest→newest.
         local version
         while IFS= read -r version; do
@@ -520,6 +524,7 @@ build_tag_push_extensions() {
                 else
                     log_success "$ext $version already exists in registry"
                 fi
+                _available_for_bundle+=("$version")
                 continue
             fi
 
@@ -567,6 +572,9 @@ build_tag_push_extensions() {
 
             log_success "$ext $version completed successfully"
 
+            # Mark available for bundle assembly.
+            _available_for_bundle+=("$version")
+
             # Record this version as built-this-run so _emit_versionset_artifact
             # can union it with the registry probe (guards against GHCR lag).
             if [[ "$DRY_RUN" != "true" ]]; then
@@ -594,6 +602,78 @@ build_tag_push_extensions() {
                 log_info "Extension lineage: $_ver_lineage_file (${_ver_duration}s)"
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
+
+        # Bundle assembly: for resolver-backed multi-version extensions, build a
+        # single bundle image that contains all available versions under /<ver>/...
+        # so the consumer can do ONE COPY to land all versions at /tmp/ext/<ext>/<ver>/
+        #
+        # Under DRY_RUN the per-version inner loop skips all builds (nothing added to
+        # _available_for_bundle), so we compute the "would build" set from version_set_json.
+        # On the real path, only fire when at least one version is available.
+        if [[ -n "$_resolver_path" ]] && [[ "$set_size" -gt 1 ]]; then
+            local _bundle_image_base
+            _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
+            # Bundle ref: replace trailing :pg<major>-dummy with :pg<major>-bundle
+            local _bundle_ref="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+                local _dry_all_versions
+                _dry_all_versions=$(echo "$version_set_json" | jq -r '.[]' | tr '\n' ' ')
+                log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref (versions: ${_dry_all_versions})"
+                log_info "[DRY-RUN] Would push bundle $_bundle_ref"
+                continue
+            fi
+
+            # Real path: only proceed when at least one version is available.
+            if [[ ${#_available_for_bundle[@]} -eq 0 ]]; then
+                continue
+            fi
+
+            # Generate the bundle Dockerfile to a temp file.
+            local _bundle_df
+            _bundle_df=$(mktemp)
+
+            {
+                printf 'FROM scratch\n'
+                local _bver
+                for _bver in "${_available_for_bundle[@]}"; do
+                    local _per_ver_ref
+                    _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
+                    printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
+                    printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
+                done
+            } > "$_bundle_df"
+
+            log_info "Building bundle $ext pg${major_ver}: $_bundle_ref"
+
+            local _bundle_ctx
+            _bundle_ctx=$(mktemp -d)
+
+            local _bundle_build_ok=true
+            if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
+                _bundle_build_ok=false
+            fi
+
+            rm -f "$_bundle_df"
+            rm -rf "$_bundle_ctx"
+
+            if [[ "$_bundle_build_ok" == "false" ]]; then
+                log_error "$ext pg${major_ver} bundle build failed"
+                failed+=("$ext@bundle")
+                continue
+            fi
+
+            log_success "Bundle built: $_bundle_ref"
+
+            if [[ "$do_push" == "true" ]]; then
+                if ! $DOCKER push "$_bundle_ref"; then
+                    log_error "$ext pg${major_ver} bundle push failed"
+                    failed+=("$ext@bundle")
+                    continue
+                fi
+                log_success "Bundle pushed: $_bundle_ref"
+            fi
+        fi
 
     done
 

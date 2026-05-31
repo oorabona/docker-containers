@@ -77,13 +77,27 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 _setup_default_mocks() {
-    # docker: image inspect absent locally; manifest inspect returns "manifest unknown"
-    # (models production: a non-existent registry image returns manifest unknown).
+    # docker: image inspect absent locally; manifest inspect returns "manifest unknown";
+    # build and push succeed (production: bundle assembly succeeds when per-version
+    # images are available; build/push of the bundle image succeeds).
     docker() {
-        if [[ "$*" == *"manifest inspect"* ]]; then
-            printf 'manifest unknown: manifest unknown\n' >&2
-        fi
-        return 1
+        local _cmd="${1:-}"
+        case "$_cmd" in
+            build|push)
+                # Bundle build/push succeed by default — production-faithful (if
+                # per-version images exist, the bundle assembly succeeds).
+                return 0
+                ;;
+            manifest)
+                if [[ "$*" == *"manifest inspect"* ]]; then
+                    printf 'manifest unknown: manifest unknown\n' >&2
+                fi
+                return 1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
     }
     export -f docker
 
@@ -489,7 +503,7 @@ _count_log_lines() {
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker()               { return 1; }
+        docker()               { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image()      { echo \"BUILD ext=\$1 ver=\$2\" >> '${build_log}'; return 0; }
         export -f build_ext_image
@@ -578,7 +592,7 @@ _count_log_lines() {
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -974,7 +988,7 @@ _count_log_lines() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -1373,7 +1387,7 @@ _count_log_lines() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -1473,7 +1487,11 @@ _count_log_lines() {
         export -f image_exists_in_registry
 
         docker() {
-            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+            local _cmd="\${1:-}"
+            if [[ "\$_cmd" == "build" || "\$_cmd" == "push" ]]; then
+                return 0
+            fi
+            if [[ "\$*" == *'manifest inspect'* ]]; then
                 echo 'manifest unknown: manifest unknown' >&2
             fi
             return 1
@@ -1635,7 +1653,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -1734,7 +1752,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -1830,7 +1848,7 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         # All versions pulled successfully → no fallback builds needed
@@ -1947,7 +1965,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -2027,7 +2045,7 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -2137,7 +2155,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -2269,7 +2287,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -2368,8 +2386,12 @@ EOF
         }
         export -f image_exists_in_registry
 
-        # Local docker inspect: consults local_store file
+        # Local docker inspect: consults local_store file; build/push always succeed
         docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
+                return 0
+            fi
             local img=\"\${*: -1}\"
             grep -qxF \"\$img\" \"\$local_store\" 2>/dev/null
         }
@@ -2485,6 +2507,10 @@ EOF
         export -f image_exists_in_registry
 
         docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
+                return 0
+            fi
             if [[ \"\$*\" == *'manifest inspect'* ]]; then
                 echo 'manifest unknown: manifest unknown' >&2
             fi
@@ -2588,6 +2614,10 @@ EOF
         export -f image_exists_in_registry
 
         docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
+                return 0
+            fi
             if [[ \"\$*\" == *'manifest inspect'* ]]; then
                 echo 'manifest unknown: manifest unknown' >&2
             fi
@@ -2739,7 +2769,7 @@ EOF
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -2838,7 +2868,7 @@ EOF
         export -f ext_local_image_name
 
         # LOCAL_ONLY: docker inspect for presence; pgvector absent locally
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
@@ -2923,7 +2953,7 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -3050,7 +3080,7 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -3229,7 +3259,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -3326,7 +3356,7 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -3603,7 +3633,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -3747,6 +3777,10 @@ EOF
                 echo "simulated musl build failure for $ver" >&2
                 return 1
             fi
+            return 0
+        fi
+        if [[ "$1" == "push" ]]; then
+            # Bundle push succeeds (production-faithful)
             return 0
         fi
         # inspect / other sub-commands: image absent
@@ -3993,7 +4027,7 @@ EOF
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -4072,7 +4106,7 @@ EOF
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
@@ -4148,7 +4182,7 @@ EOF
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
@@ -4245,7 +4279,7 @@ EOF
         # image_exists_in_registry returns 0 so _should_build_extension skips all builds
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -4336,7 +4370,7 @@ EOF
 
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -4631,7 +4665,7 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -4871,7 +4905,7 @@ _run_emit_versionset() {
     local mocks='
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
     '
 
@@ -4896,7 +4930,7 @@ _run_emit_versionset() {
     local mocks='
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
     '
 
@@ -5290,7 +5324,7 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() {
@@ -5443,7 +5477,7 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -5512,7 +5546,7 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
 
         build_ext_image() { return 0; }
@@ -5798,7 +5832,7 @@ EOCFG
         export -f ext_local_image_name
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { return 1; }
+        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
         build_ext_image()  { return 0; }
         export -f build_ext_image
@@ -5858,4 +5892,285 @@ EOCFG
 
     # Must return 1 (skip — all already available).
     [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-1: resolver-backed ext with 3 available versions → after the
+# per-version build/tag/push loop, a bundle image is built AND pushed.
+# Bundle ref: ghcr.io/test/ext-timescaledb:pg18-bundle
+# Bundle build uses $DOCKER (DRY_RUN-aware).
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-1: 3 available versions → bundle built and pushed after per-version loop" {
+    local docker_log="$TEST_TEMP_DIR/bundle1_docker.log"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Use $DOCKER="docker" (default from logging.sh) so the docker() function is called.
+    # The docker() mock records all calls including bundle build/push.
+    docker() {
+        echo "DOCKER_CMD=$1 ARGS=${*:2}" >> "$docker_log"
+        return 0
+    }
+    export -f docker
+    export docker_log
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # $DOCKER build must have been called with the bundle ref
+    [ -f "$docker_log" ]
+    grep -q "DOCKER_CMD=build" "$docker_log"
+    grep -q "pg18-bundle" "$docker_log"
+
+    # $DOCKER push must have been called with the bundle ref
+    grep -q "DOCKER_CMD=push" "$docker_log"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-2: DRY_RUN=true → bundle docker build/push command is echoed,
+# no real docker invocation.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-2: DRY_RUN=true → bundle build+push commands echoed, not executed" {
+    export DRY_RUN=true
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Under DRY_RUN, $DOCKER is "echo docker" — capture that output
+    local real_build_log="$TEST_TEMP_DIR/bundle2_real_build.log"
+    build_ext_image() {
+        echo "REAL_BUILD ext=${1} ver=${2}" >> "$real_build_log"
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Under DRY_RUN no real build occurred (build_ext_image not called)
+    local real_count
+    real_count=$(_count_log_lines "$real_build_log")
+    [ "$real_count" -eq 0 ]
+
+    # Output must mention the bundle ref (echoed, not executed)
+    [[ "$output" == *"pg18-bundle"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-3: LOCAL_ONLY=true → bundle is built locally, NOT pushed.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-3: LOCAL_ONLY=true → bundle built locally, push NOT called" {
+    export LOCAL_ONLY=true
+
+    local docker_log="$TEST_TEMP_DIR/bundle3_docker.log"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    docker() {
+        echo "DOCKER $*" >> "$docker_log"
+        return 0
+    }
+    export -f docker
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "false" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Bundle build must have been called
+    [ -f "$docker_log" ]
+    grep -q "build.*pg18-bundle" "$docker_log"
+
+    # Bundle push must NOT have been called
+    ! grep -q "push.*pg18-bundle" "$docker_log"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-4: bundle build failure is fatal on the publish path (do_push=true).
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-4: bundle build failure → exit non-zero (fatal on publish path)" {
+    local docker_call_count=0
+    local docker_log="$TEST_TEMP_DIR/bundle4_docker.log"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Per-version build/tag/push succeed; bundle docker build fails
+    docker() {
+        local cmd="$1"
+        echo "DOCKER $*" >> "$docker_log"
+        if [[ "$cmd" == "build" ]] && grep -q "bundle" <(echo "$*"); then
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Bundle build failure must be fatal (non-zero exit)
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-5: empty available set → NO bundle is built.
+# If all per-version builds fail (e.g. ceiling fatal), available is empty
+# and build_tag_push_extensions should exit non-zero without building a bundle.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-5: no available versions → bundle NOT built" {
+    local docker_log="$TEST_TEMP_DIR/bundle5_docker.log"
+
+    resolve_version_set() { echo '["2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # All builds fail (ceiling fatal → exit non-zero)
+    build_ext_image() {
+        echo "BUILD_FAILED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 1
+    }
+    export -f build_ext_image
+
+    docker() {
+        echo "DOCKER $*" >> "$docker_log"
+        return 0
+    }
+    export -f docker
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Ceiling fatal → non-zero exit expected
+    [ "$status" -ne 0 ]
+
+    # No bundle docker command must have been issued
+    if [ -f "$docker_log" ]; then
+        ! grep -q "bundle" "$docker_log"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-6: bundle Dockerfile content — FROM scratch + per-version COPYs.
+# Verify the producer writes a bundle Dockerfile with the correct structure:
+#   FROM scratch
+#   COPY --from=<per-version-ref> /output/extension/ /<ver>/extension/
+#   COPY --from=<per-version-ref> /output/lib/ /<ver>/lib/
+# for each available version.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-6: bundle Dockerfile has FROM scratch + per-version layout COPYs" {
+    local docker_log="$TEST_TEMP_DIR/bundle6_docker.log"
+    local bundle_df_capture="$TEST_TEMP_DIR/bundle6_df.txt"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Capture the -f <dockerfile> path from the bundle docker build call,
+    # then copy its contents for assertion.
+    docker() {
+        echo "DOCKER $*" >> "$docker_log"
+        # When this is the bundle build call, capture the Dockerfile content.
+        if [[ "$1" == "build" ]]; then
+            local i
+            for (( i=1; i<=$#; i++ )); do
+                if [[ "${!i}" == "-f" ]]; then
+                    local next=$(( i + 1 ))
+                    local df_path="${!next}"
+                    if [[ -f "$df_path" ]]; then
+                        cp "$df_path" "$bundle_df_capture"
+                    fi
+                fi
+            done
+        fi
+        return 0
+    }
+    export -f docker
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Bundle Dockerfile must exist and have been captured
+    [ -f "$bundle_df_capture" ]
+
+    # First line must be FROM scratch
+    local first_line
+    first_line=$(head -1 "$bundle_df_capture")
+    [ "$first_line" = "FROM scratch" ]
+
+    # Must contain per-version COPY lines: /output/extension/ -> /<ver>/extension/
+    grep -q "COPY --from=.*pg18-2.25.0.*/output/extension/ /2.25.0/extension/" "$bundle_df_capture"
+    grep -q "COPY --from=.*pg18-2.26.0.*/output/lib/ /2.26.0/lib/" "$bundle_df_capture"
+    grep -q "COPY --from=.*pg18-2.27.1.*/output/extension/ /2.27.1/extension/" "$bundle_df_capture"
+
+    # Must NOT use FROM scratch as anything other than the first line
+    local scratch_count
+    scratch_count=$(grep -c "FROM scratch" "$bundle_df_capture")
+    [ "$scratch_count" -eq 1 ]
 }

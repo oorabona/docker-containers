@@ -331,6 +331,8 @@ The ceiling — currently **2.27.1** — is the pinned version in `postgres/exte
 
 The `timescaledb.control` file sets `default_version` to the pinned ceiling, so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
 
+**How retained versions are shipped.** All retained versions for a given PostgreSQL major are assembled into a single per-major bundle image (`ghcr.io/<owner>/ext-timescaledb:pg<major>-bundle`). The bundle stores each version's files under `/<ver>/{extension,lib}/`. The postgres Dockerfile consumes the bundle with one `COPY --from=<bundle> / /tmp/ext/timescaledb/` instruction — one layer regardless of how many versions are retained (up to `retain_count` default **12**). The `install_ext` shell function in the Dockerfile iterates `/tmp/ext/timescaledb/` subdirectories and installs each version's `.so`; the ceiling version's `.control` file is written last so `default_version` reflects the pinned ceiling. To move an existing database to a newer version, run `ALTER EXTENSION timescaledb UPDATE;` (see below).
+
 > **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres --flavor timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS). macOS also requires **GNU coreutils** (`brew install coreutils`) because the version-set resolution uses `sort -V`, which is not available in the BSD sort shipped with macOS.
 
 ### Moving an existing database to the pinned version

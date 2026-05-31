@@ -107,7 +107,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: multi-version — 3 available → 3 direct external COPYs, NO per-version FROM stages
+# Test 1: multi-version — 3 available → ONE bundle COPY, NO per-version FROM stages
 # ---------------------------------------------------------------------------
 @test "multi-version: 3 available versions produce 3 direct COPY --from= lines, NO per-version FROM stages" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
@@ -125,15 +125,15 @@ EOF
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    # Three direct external COPY --from= lines per /extension/ subdir (one per version)
-    local copy_count
-    copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$copy_count" -eq 3 ]
+    # Exactly ONE bundle COPY covers all available versions (single layer)
+    local bundle_copy_count
+    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_copy_count" -eq 1 ]
 
-    # Each version appears as a full image ref in a COPY --from= line
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines for individual version tags
+    local per_ver_copy_count
+    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_copy_count" -eq 0 ]
 }
 
 @test "multi-version: COPY --from= refs are full image refs (host/path:tag), NOT bareword stage names" {
@@ -160,6 +160,9 @@ EOF
 }
 
 @test "multi-version: COPYs go into per-version subdirs /tmp/ext/timescaledb/<ver>/" {
+    # The bundle COPY lands at /tmp/ext/timescaledb/ so the bundle's internal
+    # /<ver>/{extension,lib}/ structure arrives at /tmp/ext/timescaledb/<ver>/
+    # which is exactly the layout install_ext iterates.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -170,15 +173,17 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.23.0/extension/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.23.0/lib/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.25.0/extension/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.25.0/lib/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/extension/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/lib/"
+    # The single bundle COPY lands at /tmp/ext/timescaledb/ — version coverage
+    # is preserved because the bundle contains /<ver>/{extension,lib}/ for every
+    # available version.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
 }
 
 @test "multi-version: ceiling version 2.27.1 appears LAST (ascending order, COPY lines)" {
+    # With the bundle approach, ordering is handled by the producer (bundle Dockerfile
+    # lists versions ascending). The consumer emits exactly ONE COPY; version ordering
+    # is no longer observable in the consumer output.
+    # This test verifies the consumer still succeeds and emits the bundle COPY.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -189,16 +194,13 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Extract line numbers for the first COPY line of each version and verify ascending order
-    local line_2_23 line_2_25 line_2_27
-    line_2_23=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0" | head -1 | cut -d: -f1)
-    line_2_25=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0" | head -1 | cut -d: -f1)
-    line_2_27=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1" | head -1 | cut -d: -f1)
+    # Single bundle COPY present
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
 
-    # Ceiling (2.27.1) COPY must appear after both earlier versions
-    [ "$line_2_27" -gt "$line_2_25" ]
-    [ "$line_2_27" -gt "$line_2_23" ]
-    [ "$line_2_25" -gt "$line_2_23" ]
+    # Zero per-version COPY lines (order no longer needs asserting in the consumer)
+    local per_ver_copy_count
+    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_copy_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -261,15 +263,20 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # timescaledb: NO per-version FROM ... AS stages (direct COPY path)
+    # timescaledb: NO per-version FROM ... AS stages
     local ts_from_count
     ts_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$ts_from_count" -eq 0 ]
 
-    # timescaledb: 3 direct COPY --from= lines (one per version, /extension/ subdir)
-    local ts_count
-    ts_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$ts_count" -eq 3 ]
+    # timescaledb: exactly ONE bundle COPY covering all available versions
+    local ts_bundle_count
+    ts_bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$ts_bundle_count" -eq 1 ]
+
+    # timescaledb: zero per-version COPY lines
+    local ts_per_ver_count
+    ts_per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$ts_per_ver_count" -eq 0 ]
 
     # pgvector: exactly 1 FROM stage (single-version, non-resolver path unchanged)
     local pv_count
@@ -327,7 +334,7 @@ EOF
 
     # Must self-heal to multi-version (NOT single-version ceiling fallback).
     # RED before fix: exits 0 with 1 FROM stage (single-version).
-    # GREEN after fix: exits 0 with 3 direct COPY --from= lines (multi-version from self-heal).
+    # GREEN after fix: exits 0 with single bundle COPY (multi-version from self-heal).
     [ "$status" -eq 0 ]
 
     # No per-version FROM ... AS stages
@@ -335,14 +342,15 @@ EOF
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    # 3 direct COPY --from= lines (one per version, /extension/ subdir)
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Exactly ONE bundle COPY — version coverage preserved in the bundle
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines (versions are bundled, not emitted individually)
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 @test "empty-available: artifact with available=[] + resolver fails → fail closed" {
@@ -470,11 +478,12 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Must find artifact via PROJECT_ROOT → multi-version path (3 direct COPY --from= lines).
+    # Must find artifact via PROJECT_ROOT → bundle COPY path (single COPY, not single-version FROM).
     # RED before fix: 1 FROM stage (single-version fallback because artifact not found).
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # GREEN after fix: 1 bundle COPY (multi-version from artifact found via PROJECT_ROOT).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -505,7 +514,7 @@ EOF
 }
 
 @test "Z-ceiling-present: ceiling in available[] → multi-version path succeeds" {
-    # Sanity: ceiling IS present → normal multi-version success, no error.
+    # Sanity: ceiling IS present → normal multi-version success with bundle COPY.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -516,9 +525,10 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY (all 3 versions are in the bundle)
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -627,18 +637,20 @@ EOF
     # Self-heal succeeds: must exit 0.
     [ "$status" -eq 0 ]
 
-    # Must produce 3 direct COPY --from= lines (no per-version FROM ... AS stages).
+    # Must produce single bundle COPY (no per-version FROM stages).
     local per_ver_from_count
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY — version coverage preserved in the bundle image
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 @test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
@@ -753,14 +765,15 @@ EOF
     # Must exit 0 (self-heal succeeded).
     [ "$status" -eq 0 ]
 
-    # Must produce 3 direct COPY --from= lines — NOT a single-version fallback.
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Must produce single bundle COPY — NOT a single-version fallback or per-version COPYs.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 @test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
@@ -783,9 +796,10 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY — version coverage preserved
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 @test "JJ-3-malformed-no-available: JSON missing .available key + resolver succeeds → self-heals" {
@@ -808,9 +822,10 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY — version coverage preserved
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 @test "JJ-4-malformed-resolver-fails: malformed artifact + resolver FAILS → fail closed (non-zero)" {
@@ -848,10 +863,10 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # All 3 valid versions produce 3 direct COPY --from= lines (no per-version FROM stages).
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # All 3 valid versions → single bundle COPY (no per-version FROM stages or individual COPYs).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1052,13 +1067,17 @@ EOF
     # Definitively absent is the musl-failed / never-built case: must succeed.
     [ "$status" -eq 0 ]
 
-    # Must produce 2 direct COPY --from= lines (2.25.0 and 2.27.1 — 2.23.0 correctly excluded).
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 2 ]
+    # Must produce single bundle COPY (2.25.0 and 2.27.1 in bundle; 2.23.0 excluded
+    # but that is the producer's concern — consumer emits 1 bundle COPY regardless
+    # of how many available versions exist in the artifact, as long as ceiling is present).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    # Ceiling 2.27.1 must be present as a direct COPY ref
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1277,9 +1296,10 @@ _run_registry_probe_3state() {
     # GREEN after fix: exits 0 (local daemon probe finds images, self-heals).
     [ "$status" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY — version coverage preserved in the bundle
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 @test "PP-pull-only-self-heal: PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
@@ -1318,9 +1338,10 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY — version coverage preserved in the bundle
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 }
 
 @test "PP-local-only-image-absent-locally: LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
@@ -1494,15 +1515,15 @@ _run_registry_probe_3state() {
     # Must succeed — valid artifact requires no skopeo.
     [ "$status" -eq 0 ]
 
-    # Must produce 3 direct COPY --from= lines (non-vacuous: proves artifact was consumed).
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Must produce single bundle COPY (non-vacuous: proves artifact was consumed).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    # All three version-specific COPY pairs must be present with full image refs.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 .*/tmp/ext/timescaledb/2.23.0/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 .*/tmp/ext/timescaledb/2.25.0/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 .*/tmp/ext/timescaledb/2.27.1/extension/"
+    # No per-version COPY lines (version coverage is in the bundle, not individual COPYs).
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1610,14 +1631,15 @@ _run_registry_probe_3state() {
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    local from_count
-    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
-    [ "$from_count" -eq 3 ]
+    # Single bundle COPY (chokepoint must not break happy path; version coverage in bundle).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
 
-    # All three versions present as full image refs (non-vacuous).
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+    # Zero per-version COPY lines
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
 
 @test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
@@ -1662,4 +1684,190 @@ _run_registry_probe_3state() {
 
     # Must mention 'jq' in the error output so the operator knows what to install.
     [[ "$output" =~ [Jj][Qq] ]]
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-1: resolver-backed ext with 3 available versions →
+# generated Dockerfile has EXACTLY ONE COPY --from=<bundle-ref> / /tmp/ext/<ext>/
+# and ZERO per-version COPY/FROM lines.
+#
+# RED before: N per-version COPY pairs (2N lines)
+# GREEN after: 1 bundle COPY line
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-1: 3 available versions → exactly 1 bundle COPY, 0 per-version refs" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Exactly ONE COPY --from=<bundle-ref> landing at /tmp/ext/timescaledb/
+    local bundle_copy_count
+    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_copy_count" -eq 1 ]
+
+    # ZERO per-version COPY lines referencing individual version tags (pg18-2.X.Y)
+    local per_ver_copy_count
+    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_copy_count" -eq 0 ]
+
+    # ZERO per-version FROM ... AS stages for timescaledb
+    local per_ver_from_count
+    per_ver_from_count=$(echo "$output" | grep -cE "^FROM .*ext-timescaledb:pg18-[0-9]" || true)
+    [ "$per_ver_from_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-2: the bundle COPY places files at /tmp/ext/<ext>/
+# so that /<ver>/... in the bundle lands at /tmp/ext/<ext>/<ver>/...
+# which is the layout install_ext iterates.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-2: bundle COPY destination is /tmp/ext/timescaledb/ (installs at correct path)" {
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # The single COPY must land at /tmp/ext/timescaledb/ so bundle's
+    # /<ver>/{extension,lib}/ becomes /tmp/ext/timescaledb/<ver>/{extension,lib}/
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-3: bundle ref is derived identically by producer and consumer.
+# Consumer must use ext_image_name base + :pg<major>-bundle suffix.
+# The ref in the generated COPY must match the producer's naming scheme.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-3: bundle ref in generated COPY uses correct scheme ghcr.io/<owner>/ext-<ext>:pg<major>-bundle" {
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Full bundle ref must appear in the output
+    echo "$output" | grep -q "ghcr.io/testowner/ext-timescaledb:pg18-bundle"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-4: single-version (non-resolver) extension path UNCHANGED.
+# pgvector (no version_set.resolver) must still emit a FROM stage + flat COPY.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-4: single-version pgvector path unchanged — still 1 FROM + flat COPY" {
+    # No versionset artifact for pgvector (non-resolver extension).
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "vector" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # pgvector must still emit exactly one FROM stage
+    local from_count
+    from_count=$(echo "$output" | grep -c "^FROM.*ext-pgvector:pg18-")
+    [ "$from_count" -eq 1 ]
+
+    # pgvector must still use flat COPY paths
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+
+    # pgvector must NOT have a bundle COPY
+    ! echo "$output" | grep -q "ext-pgvector:pg18-bundle"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-5: mixed flavor — timescaledb uses bundle COPY,
+# pgvector uses original single-version path. One bundle COPY, zero per-version
+# timescaledb COPYs, one pgvector FROM.
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-5: mixed flavor — timescaledb bundle COPY + pgvector single-version unchanged" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "multi_mixed" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # timescaledb: exactly one bundle COPY
+    local ts_bundle_count
+    ts_bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$ts_bundle_count" -eq 1 ]
+
+    # timescaledb: zero per-version FROM stages
+    local ts_from_count
+    ts_from_count=$(echo "$output" | grep -cE "^FROM .*ext-timescaledb:pg18-[0-9]" || true)
+    [ "$ts_from_count" -eq 0 ]
+
+    # timescaledb: zero per-version COPY lines
+    local ts_per_ver_count
+    ts_per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$ts_per_ver_count" -eq 0 ]
+
+    # pgvector: exactly one FROM stage (single-version path unchanged)
+    local pv_from_count
+    pv_from_count=$(echo "$output" | grep -c "^FROM.*ext-pgvector:pg18-")
+    [ "$pv_from_count" -eq 1 ]
+
+    # pgvector: flat COPY paths
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+
+    # pgvector: no bundle COPY
+    ! echo "$output" | grep -q "ext-pgvector:pg18-bundle"
+}
+
+# ---------------------------------------------------------------------------
+# BUNDLE-CON-6: self-heal path (no artifact) for resolver-backed ext
+# also emits a single bundle COPY (not per-version COPYs).
+# ---------------------------------------------------------------------------
+
+@test "BUNDLE-CON-6: self-heal (no artifact) emits single bundle COPY, not per-version COPYs" {
+    # No versionset file — self-heal must kick in.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Single bundle COPY
+    local bundle_copy_count
+    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_copy_count" -eq 1 ]
+
+    # Zero per-version COPYs
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
 }
