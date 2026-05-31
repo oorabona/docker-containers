@@ -753,6 +753,14 @@ jobs:
       # and merge-extension-manifests skip fork PRs), so their postgres build must use the
       # canonical (empty suffix) refs already in the registry via self-heal.
       PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+      # BJ-1: export REBUILD so generate_dockerfile can derive FORCE for the
+      # non-resolver/single-version ext path.  Mirrors the signal used by
+      # build-extensions and merge-extension-manifests so a forced PR rebuild
+      # causes the postgres smoke to consume the freshly-rebuilt -pr<N> refs
+      # rather than the stale canonical ones for non-resolver extensions (e.g.
+      # pgvector).  generate_dockerfile sets FORCE=true when REBUILD is
+      # "force" or "all", which is then read by ext_ref_resolve.
+      REBUILD: ${{ env.REBUILD_MODE }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:

@@ -74,58 +74,6 @@ _scoped_tag() {
     fi
 }
 
-# _resolve_existing_arch_ref <ext_name> <version> <pg_major> <arch>
-# BF fix: on a PR (PR_TAG_SUFFIX non-empty), determine which ref to use for
-# a given per-arch version tag via a canonical-first probe.
-#
-# Logic:
-#   If PR_TAG_SUFFIX is empty (push/dispatch):
-#     → return the canonical arch ref unchanged (no lookup needed).
-#   If PR_TAG_SUFFIX is non-empty (PR context):
-#     1. Probe the CANONICAL arch ref (no PR suffix):
-#        <img>-<arch>  (e.g. :pg18-2.25.0-amd64)
-#        If PRESENT → version is unchanged, reuse canonical; return canonical ref.
-#     2. Probe the PR-scoped arch ref (with PR suffix):
-#        <img>-<arch>${PR_TAG_SUFFIX}  (e.g. :pg18-2.27.1-amd64-pr42)
-#        If PRESENT → version was built this PR; return PR-scoped ref.
-#     3. Neither present → version needs building; return empty string.
-#
-# Supply-chain safety: reading canonical is read-only. PRs only WRITE PR-scoped refs.
-# On push (empty suffix): canonical probe only (unchanged behavior).
-#
-# Returns: the ref string to use, or "" if neither canonical nor PR-scoped exists.
-# Exit code: always 0 (callers check the returned string for emptiness).
-_resolve_existing_arch_ref() {
-    local ext_name="$1" version="$2" pg_major="$3" arch="${4:-}"
-    local ver_image
-    ver_image=$(ext_image_name "$ext_name" "$version" "$pg_major")
-    local canonical_arch_ref
-    canonical_arch_ref=$(_arch_suffix_tag "$ver_image" "$arch")
-
-    if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
-        # Push/dispatch: always return canonical (caller decides build-or-skip).
-        printf '%s' "$canonical_arch_ref"
-        return 0
-    fi
-
-    # PR context: check canonical first (read-only reuse for unchanged versions).
-    if image_exists_in_registry "$canonical_arch_ref" 2>/dev/null; then
-        printf '%s' "$canonical_arch_ref"
-        return 0
-    fi
-
-    # Canonical absent: check PR-scoped (version built this PR).
-    local pr_arch_ref
-    pr_arch_ref=$(_scoped_tag "$canonical_arch_ref")
-    if image_exists_in_registry "$pr_arch_ref" 2>/dev/null; then
-        printf '%s' "$pr_arch_ref"
-        return 0
-    fi
-
-    # Neither present → needs building.
-    printf ''
-    return 0
-}
 
 # Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
 # This ensures the trusted CI registry root reaches extension builder stages.
@@ -726,6 +674,16 @@ _bundle_and_write_artifact() {
         done < "$_built_this_run_file"
     fi
 
+    # Single 3-state pass: compute confirmed_available from resolved set.
+    #
+    # BI-2 fix: canonical-first, PR-aware availability probe.
+    # On a same-repo PR (PR_TAG_SUFFIX non-empty), a version may have been built in
+    # an EARLIER run of this PR and exists ONLY under the PR-scoped tag.  The
+    # canonical probe alone returns ABSENT, incorrectly excluding the version and
+    # causing the artifact to be deleted — breaking PR rerun idempotency.
+    # Fix: if the canonical probe returns ABSENT AND PR_TAG_SUFFIX is non-empty,
+    # also probe the PR-scoped ref; if PRESENT there, version is confirmed-available.
+    # On push/dispatch (PR_TAG_SUFFIX empty), only the canonical probe runs (unchanged).
     # Single 3-state pass: compute confirmed_available from resolved set.
     #
     # BI-2 fix: canonical-first, PR-aware availability probe.
@@ -2023,43 +1981,43 @@ finalize_multiarch_manifests() {
 
         if [[ -z "$_resolver_path" ]]; then
             # BG-1: Non-resolver extension (single configured version).
-            # On push/dispatch (PR_TAG_SUFFIX empty) → create canonical manifest from
-            #   stable suffixed tags (-amd64/-arm64). Unchanged behavior.
-            # On same-repo PR (PR_TAG_SUFFIX=-prN) → canonical-first reuse:
-            #   probe the canonical multi-arch manifest (no suffix). If PRESENT,
-            #   the extension is unchanged; reuse it read-only, no imagetools create.
-            #   If ABSENT, the extension was built this PR; create the PR-scoped
-            #   manifest from the PR-scoped arch tags (-amd64-prN / -arm64-prN).
-            #   Supply-chain: PRs never overwrite canonical (read-only reuse).
-            local _ver_image_base
-            _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
+            # When FORCE=true: always create fresh manifest (skip reuse check).
+            # Otherwise: use ext_ref_resolve to probe for existing manifest (canonical-first, PR-scoped fallback).
+            if [[ "${FORCE:-false}" != "true" ]]; then
+                local _nr_multiarch_rc=0
+                ext_ref_resolve "$ext" "$ceiling" "$major_ver" "" > /dev/null || _nr_multiarch_rc=$?
 
-            # BH-2b fix: skip canonical-first reuse when FORCE is set — the version was
-            # explicitly rebuilt this run and the fresh PR-scoped image must be used.
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]] && [[ "${FORCE:-false}" != "true" ]]; then
-                # Probe canonical multi-arch manifest (no suffix, no arch suffix).
-                local _nr_canonical_rc=0
-                _image_present_3state "$_ver_image_base" || _nr_canonical_rc=$?
-
-                if [[ "$_nr_canonical_rc" -eq 2 ]]; then
-                    log_error "$ext $ceiling pg${major_ver}: transient registry probe error on canonical non-resolver ref — fail closed"
-                    _failed=true
-                    continue
-                fi
-
-                if [[ "$_nr_canonical_rc" -eq 0 ]]; then
-                    # Canonical manifest present: extension is unchanged, reuse read-only.
-                    log_info "$ext $ceiling pg${major_ver}: canonical manifest present — reused (unchanged, non-resolver)"
-                    continue
-                fi
-                # Canonical absent: extension was built this PR, fall through to create.
+                case "$_nr_multiarch_rc" in
+                    0)
+                        log_info "$ext $ceiling pg${major_ver}: manifest present — reused (unchanged, non-resolver)"
+                        continue
+                        ;;
+                    2)
+                        log_error "$ext $ceiling pg${major_ver}: transient registry probe error on non-resolver ref — fail closed"
+                        _failed=true
+                        continue
+                        ;;
+                esac
             fi
+            # rc 1 → absent, or FORCE=true → fall through to create.
 
+            # Resolve per-arch source refs via ext_ref_resolve.
             local _nr_src_amd64 _nr_src_arm64
-            _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "amd64")")
-            _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "arm64")")
+            _nr_src_amd64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "amd64") || true
+            _nr_src_arm64=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "arm64") || true
             local _nr_target
-            _nr_target=$(_scoped_tag "$_ver_image_base")
+            _nr_target=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "" 2>/dev/null) || true
+            # When both arch refs are absent (normal case: imagetools create hasn't run yet),
+            # fall back to the computed scoped refs.
+            if [[ -z "$_nr_src_amd64" ]]; then
+                _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")" "amd64")")
+            fi
+            if [[ -z "$_nr_src_arm64" ]]; then
+                _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")" "arm64")")
+            fi
+            if [[ -z "$_nr_target" ]]; then
+                _nr_target=$(_scoped_tag "$(ext_image_name "$ext" "$ceiling" "$major_ver")")
+            fi
 
             log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
             local _nr_create_rc=0
@@ -2132,90 +2090,76 @@ finalize_multiarch_manifests() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Step 1: compute AVAILABLE set.
-        # BF fix: canonical-first resolution for the PR path.
+        # Step 1: compute AVAILABLE set via ext_ref_resolve (unified resolver).
         #
-        # On push (PR_TAG_SUFFIX empty): probe canonical arch tags as before.
+        # For each version, first probe the multi-arch manifest (arch=""):
+        #   rc 0 → manifest present (canonical or PR-scoped when FORCE+PR) → reuse, skip imagetools create.
+        #   rc 2 → transient error → fail closed.
+        #   rc 1 → manifest absent → probe per-arch tags (amd64/arm64) and create manifest.
         #
-        # On PR (PR_TAG_SUFFIX non-empty):
-        #   For each version, check if the canonical multi-arch manifest already
-        #   exists (version unchanged — was pushed in a prior push run).
-        #   - If canonical manifest EXISTS: reuse it (no imagetools create needed);
-        #     add to _confirmed_available with source=canonical. PR never overwrites
-        #     canonical (supply-chain safe: read-only).
-        #   - If canonical manifest ABSENT: check PR-scoped arch tags (built this PR).
-        #     If both present: create PR-scoped multi-arch manifest as before.
-        #     If either absent: exclude non-ceiling; fatal for ceiling.
-        #
-        # Bundle Dockerfile COPYs use the resolved source ref per version:
-        #   - unchanged versions → canonical multi-arch ref (e.g. :pg18-2.23.0)
-        #   - changed/new version → PR-scoped multi-arch ref (e.g. :pg18-2.27.1-pr42)
+        # Per-arch probe (when multi-arch manifest absent):
+        #   Both rc 0 → create multi-arch manifest from those resolved refs.
+        #   Any rc 2 → fail closed.
+        #   Either rc 1 → absent on that arch → exclude non-ceiling; fatal for ceiling.
         local _confirmed_available=()
         local _confirmed_sources=()   # parallel array: ref to use in bundle COPY per available version
         local _excluded_entries=()
         local _ext_failed=false
         local ver
         while IFS= read -r ver; do
-            local ver_image_base
-            ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
+            # When FORCE=true: skip reuse check, always create fresh manifest from arch tags.
+            # Otherwise: probe multi-arch manifest via ext_ref_resolve (canonical-first, PR-scoped fallback, 3-state).
+            if [[ "${FORCE:-false}" != "true" ]]; then
+                local _ma_ref _ma_rc=0
+                _ma_ref=$(ext_ref_resolve "$ext" "$ver" "$major_ver" "") || _ma_rc=$?
 
-            # BF: on a PR, check canonical multi-arch manifest first (unchanged version reuse).
-            # BH-2b fix: when FORCE is set, skip canonical-first reuse for ALL versions.
-            # A forced rebuild means the version was explicitly rebuilt this run — reusing
-            # the canonical manifest would validate the stale image, not the fresh one.
-            # FORCE applies only when PR_TAG_SUFFIX is set (PR context); on push/dispatch
-            # the canonical-reuse branch is never reached (PR_TAG_SUFFIX is empty).
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]] && [[ "${FORCE:-false}" != "true" ]]; then
-                # Probe the canonical multi-arch ref (no suffix).
-                local _canonical_ver_ref="$ver_image_base"
-                local _canonical_rc=0
-                _image_present_3state "$_canonical_ver_ref" || _canonical_rc=$?
-
-                if [[ "$_canonical_rc" -eq 2 ]]; then
-                    # Transient probe error on canonical → fail closed.
-                    log_error "$ext $ver pg${major_ver}: transient registry probe error on canonical ref — fail closed"
+                if [[ "$_ma_rc" -eq 2 ]]; then
+                    log_error "$ext $ver pg${major_ver}: transient registry probe error on multi-arch ref — fail closed"
                     _ext_failed=true
                     break
                 fi
 
-                if [[ "$_canonical_rc" -eq 0 ]]; then
-                    # Canonical multi-arch manifest exists → unchanged version, reuse read-only.
-                    log_info "$ext $ver pg${major_ver}: canonical manifest present — reused (unchanged)"
+                if [[ "$_ma_rc" -eq 0 ]]; then
+                    # Multi-arch manifest present → reuse (canonical or PR-scoped).
+                    log_info "$ext $ver pg${major_ver}: manifest present — reused (unchanged)"
                     _confirmed_available+=("$ver")
-                    _confirmed_sources+=("$_canonical_ver_ref")
+                    _confirmed_sources+=("$_ma_ref")
                     continue
                 fi
-                # Canonical absent: fall through to PR-scoped arch tag probe below.
             fi
 
+            # Multi-arch manifest absent (rc 1), or FORCE=true: probe per-arch tags and create manifest.
             local _ver_tag_amd64 _ver_tag_arm64
-            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
-                # PR context: probe the PR-scoped arch tags (built this PR).
-                _ver_tag_amd64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "amd64")")
-                _ver_tag_arm64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "arm64")")
-            else
-                # Push/dispatch: probe canonical arch tags as before.
-                _ver_tag_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
-                _ver_tag_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
-            fi
+            _ver_tag_amd64=$(ext_ref_resolve "$ext" "$ver" "$major_ver" "amd64") || {
+                local _a64_rc=$?
+                if [[ "$_a64_rc" -eq 2 ]]; then
+                    log_error "$ext $ver pg${major_ver}: transient registry probe error on amd64 arch tag — fail closed"
+                    _ext_failed=true
+                    break
+                fi
+                # rc 1 → amd64 absent.
+                _ver_tag_amd64=""
+            }
+            _ver_tag_arm64=$(ext_ref_resolve "$ext" "$ver" "$major_ver" "arm64") || {
+                local _a64_rc=$?
+                if [[ "$_a64_rc" -eq 2 ]]; then
+                    log_error "$ext $ver pg${major_ver}: transient registry probe error on arm64 arch tag — fail closed"
+                    _ext_failed=true
+                    break
+                fi
+                # rc 1 → arm64 absent.
+                _ver_tag_arm64=""
+            }
 
-            # Use the 3-state probe to distinguish a definitive ABSENT (legitimate
-            # per-arch build miss → excluded for non-ceiling) from a transient ERROR
-            # (auth/429/network → fail-closed, do not silently shrink the version set).
-            local _amd64_rc=0 _arm64_rc=0
-            _image_present_3state "$_ver_tag_amd64" || _amd64_rc=$?
-            _image_present_3state "$_ver_tag_arm64" || _arm64_rc=$?
+            # Exit the per-version loop immediately if a transient error was detected
+            # (the break inside the || { } block cannot exit the outer while loop directly).
+            [[ "$_ext_failed" == "true" ]] && break
 
-            # Transient probe error (rc=2) on either arch → fail closed immediately.
-            # Do not exclude the version; we do not know if it is genuinely absent.
-            if [[ "$_amd64_rc" -eq 2 ]] || [[ "$_arm64_rc" -eq 2 ]]; then
-                log_error "$ext $ver pg${major_ver}: transient registry probe error (amd64_rc=$_amd64_rc arm64_rc=$_arm64_rc) — fail closed"
-                _ext_failed=true
-                break
-            fi
-
-            # Definitive absence (rc=1) on either arch.
-            if [[ "$_amd64_rc" -eq 1 ]] || [[ "$_arm64_rc" -eq 1 ]]; then
+            # Definitive absence on either arch.
+            if [[ -z "$_ver_tag_amd64" ]] || [[ -z "$_ver_tag_arm64" ]]; then
+                local _amd64_rc=0 _arm64_rc=0
+                [[ -z "$_ver_tag_amd64" ]] && _amd64_rc=1
+                [[ -z "$_ver_tag_arm64" ]] && _arm64_rc=1
                 if [[ "$ver" == "$ceiling" ]]; then
                     log_error "$ext $ver pg${major_ver} (ceiling): suffixed tag missing on arch(es) — amd64_rc=$_amd64_rc arm64_rc=$_arm64_rc — fatal"
                     _ext_failed=true
@@ -2227,34 +2171,24 @@ finalize_multiarch_manifests() {
                 fi
             fi
 
-            # Both arch suffixed tags confirmed PRESENT (rc=0): create the scoped
-            # multi-arch manifest target from the scoped source tags.
-            # On push (empty suffix): canonical un-suffixed target.
-            # On PR: PR-scoped target (e.g. :pg18-2.27.1-pr42).
-            # Supply-chain: PRs write only PR-scoped targets; canonical unchanged.
+            # Both arch tags confirmed PRESENT: create the multi-arch manifest.
+            # Target is the scoped version ref (canonical on push, PR-scoped on PR).
             local ver_multiarch
-            ver_multiarch=$(_scoped_tag "$ver_image_base")
-            local _src_amd64 _src_arm64
-            _src_amd64="$_ver_tag_amd64"
-            _src_arm64="$_ver_tag_arm64"
+            ver_multiarch=$(_scoped_tag "$(ext_image_name "$ext" "$ver" "$major_ver")")
 
-            log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_src_amd64 + $_src_arm64"
+            log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_ver_tag_amd64 + $_ver_tag_arm64"
             local _create_rc=0
             $DOCKER buildx imagetools create \
                 -t "$ver_multiarch" \
-                "$_src_amd64" "$_src_arm64" 2>&1 \
+                "$_ver_tag_amd64" "$_ver_tag_arm64" 2>&1 \
                 || _create_rc=$?
             if [[ "$_create_rc" -ne 0 ]]; then
-                # Both sources were confirmed present by the probe; a create failure
-                # is a registry/infra error, NOT a missing-source exclusion.
-                # Fatal for ceiling AND non-ceiling (infra error, not build miss).
                 log_error "$ext $ver pg${major_ver}: imagetools create failed (rc=$_create_rc) — sources confirmed present, infra error — fatal"
                 _ext_failed=true
                 break
             fi
 
             _confirmed_available+=("$ver")
-            # BF: track the scoped ref so bundle COPY uses the right target per version.
             _confirmed_sources+=("$ver_multiarch")
         done < <(echo "$version_set_json" | jq -r '.[]')
 

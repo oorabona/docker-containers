@@ -3069,6 +3069,16 @@ EOF
     # No versionset artifact — pgvector is non-resolver, uses single-version path.
     export PR_TAG_SUFFIX="-pr42"
 
+    # Faithful mock: canonical absent (rc=1), PR-scoped present (rc=0).
+    # In production the PR-scoped image was just built by stage A.
+    _image_registry_probe_3state() {
+        case "$1" in
+            *-pr42) return 0 ;;  # PR-scoped: PRESENT
+            *)      return 1 ;;  # canonical: ABSENT (definitive not-found)
+        esac
+    }
+    export -f _image_registry_probe_3state
+
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
@@ -3076,6 +3086,7 @@ EOF
         "ghcr.io" "testowner"
 
     unset PR_TAG_SUFFIX
+    unset -f _image_registry_probe_3state
 
     [ "$status" -eq 0 ]
 
@@ -3441,16 +3452,15 @@ EOF
         get_repo_owner() { echo 'testowner'; }
         export -f get_registry get_repo_owner
 
-        # pgvector (non-resolver): canonical ref ABSENT; PR-scoped EXISTS in registry.
-        image_exists_in_registry() {
-            local ref=\"\$1\"
-            # PR-scoped pgvector ref: present
-            if [[ \"\$ref\" == *'pg18-0.8.2-pr42' ]]; then
-                return 0
-            fi
-            return 1
+        # Faithful mock: canonical ABSENT (rc=1), PR-scoped PRESENT (rc=0).
+        # In production the PR-scoped image was just built by stage A.
+        _image_registry_probe_3state() {
+            case \"\$1\" in
+                *pg18-0.8.2-pr42) return 0 ;;  # PR-scoped: PRESENT
+                *)                 return 1 ;;  # canonical: ABSENT
+            esac
         }
-        export -f image_exists_in_registry
+        export -f _image_registry_probe_3state
 
         generate_dockerfile \\
             \"$tmpd/extensions/config.yaml\" \\
@@ -3625,6 +3635,143 @@ EOF
     pr42_from_count=$(echo "$output" | grep -c 'ext-timescaledb:pg18-2.27.1-pr42' || true)
     [ "$pr42_from_count" -ge 1 ] || {
         echo "FAIL: bumped version must be emitted as pr42-scoped ref. Output was:"
+        echo "$output"
+        false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# BJ: generate_dockerfile derives FORCE from REBUILD env, so a forced PR run
+# causes the single-version (non-resolver) path to prefer the freshly-rebuilt
+# PR-scoped ref over the (stale) canonical ref.
+#
+# Context: the build-and-push job now exports REBUILD from env.REBUILD_MODE.
+# generate_dockerfile derives FORCE=true when REBUILD is "force" or "all".
+# ext_ref_resolve then prefers the PR-scoped ref when FORCE=true + PR_TAG_SUFFIX set.
+#
+# BJ-1 (FORCE-consumer-nonresolver-fresh):
+#   REBUILD=force + PR_TAG_SUFFIX=-pr42, pgvector (non-resolver/single-version),
+#   canonical AND -pr42 BOTH present in registry.
+#   FORCE derived true → ext_ref_resolve returns PR-scoped ref.
+#   RED before fix: FORCE never set → canonical path → emits canonical.
+#   GREEN after fix: FORCE derived from REBUILD → emits -pr42 ref.
+#
+# BJ-2 (FORCE-consumer-noforce-canonical):
+#   REBUILD unset (none) + PR_TAG_SUFFIX=-pr42, pgvector, canonical present.
+#   FORCE stays false → canonical-first reuse (unchanged regression).
+#   GREEN before and after (regression guard).
+# ---------------------------------------------------------------------------
+
+@test "BJ-1-FORCE-consumer-nonresolver-fresh: REBUILD=force + PR-pr42 + canonical+pr42 both present → emits pr42 ref" {
+    # Non-resolver single-version extension (pgvector). Both canonical and -pr42
+    # exist in the registry. With REBUILD=force the consumer must prefer the
+    # freshly-rebuilt PR-scoped ref, not the (stale) canonical.
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=false PULL_ONLY=false
+        export PR_TAG_SUFFIX='-pr42'
+        export REBUILD='force'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        # Faithful mock: both canonical AND pr42 refs are present in registry.
+        # In production: canonical exists from a prior push; -pr42 was built this run.
+        _image_registry_probe_3state() {
+            case \"\$1\" in
+                *pg18-0.8.2-pr42) return 0 ;;  # PR-scoped: PRESENT (freshly built)
+                *pg18-0.8.2)      return 0 ;;  # canonical: PRESENT (stale but exists)
+                *)                return 1 ;;
+            esac
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'vector' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -eq 0 ]
+
+    # RED before fix: generate_dockerfile ignores REBUILD → FORCE stays false →
+    #   ext_ref_resolve canonical-first → emits canonical ref (stale pgvector).
+    # GREEN after fix: FORCE derived from REBUILD=force → ext_ref_resolve prefers
+    #   PR-scoped → emits -pr42 ref (freshly rebuilt pgvector).
+    local pr_from_count
+    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    [ "$pr_from_count" -eq 1 ] || {
+        echo 'FAIL: expected FROM with -pr42 ref. Output was:'
+        echo "$output"
+        false
+    }
+
+    # Canonical ref must NOT appear (FORCE overrides canonical-first).
+    local canonical_from_count
+    canonical_from_count=$(echo "$output" | grep -cE 'ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$' || true)
+    [ "$canonical_from_count" -eq 0 ] || {
+        echo 'FAIL: canonical ref must not appear when FORCE=true and PR-scoped exists. Output was:'
+        echo "$output"
+        false
+    }
+}
+
+@test "BJ-2-FORCE-consumer-noforce-canonical: REBUILD unset + PR-pr42 + canonical present → emits canonical ref" {
+    # Non-resolver single-version extension (pgvector). REBUILD is unset.
+    # FORCE stays false → canonical-first (reuse unchanged version).
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=false PULL_ONLY=false
+        export PR_TAG_SUFFIX='-pr42'
+        unset REBUILD
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        # Faithful mock: canonical present, pr42 also present.
+        _image_registry_probe_3state() {
+            case \"\$1\" in
+                *pg18-0.8.2-pr42) return 0 ;;
+                *pg18-0.8.2)      return 0 ;;
+                *)                return 1 ;;
+            esac
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'vector' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -eq 0 ]
+
+    # REBUILD unset → FORCE false → canonical-first → emits canonical ref.
+    local canonical_from_count
+    canonical_from_count=$(echo "$output" | grep -cE 'ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$' || true)
+    [ "$canonical_from_count" -eq 1 ] || {
+        echo 'FAIL: expected canonical FROM ref when REBUILD unset. Output was:'
+        echo "$output"
+        false
+    }
+
+    # PR-scoped ref must NOT appear (not forced).
+    local pr_from_count
+    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    [ "$pr_from_count" -eq 0 ] || {
+        echo 'FAIL: PR-scoped ref must not appear when REBUILD unset. Output was:'
         echo "$output"
         false
     }

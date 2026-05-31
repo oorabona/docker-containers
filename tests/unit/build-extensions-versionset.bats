@@ -512,8 +512,10 @@ _count_log_lines() {
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker()               { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker()               { local _dk="\$1"; if [[ "\$_dk" == "build" || "\$_dk" == "push" ]]; then return 0; fi; if [[ "\$_dk" == "manifest" || "\$_dk" == "buildx" ]]; then printf 'manifest unknown: manifest unknown\n' >&2; return 1; fi; return 1; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image()      { echo \"BUILD ext=\$1 ver=\$2\" >> '${build_log}'; return 0; }
@@ -603,8 +605,10 @@ _count_log_lines() {
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image() { return 0; }
@@ -1001,8 +1005,10 @@ _count_log_lines() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1402,8 +1408,10 @@ _count_log_lines() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1514,6 +1522,8 @@ _count_log_lines() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1672,8 +1682,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1773,8 +1785,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1871,8 +1885,10 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1886,6 +1902,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -1992,8 +2010,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2074,8 +2094,10 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2186,8 +2208,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2320,8 +2344,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2431,6 +2457,8 @@ EOF
             grep -qxF \"\$img\" \"\$local_store\" 2>/dev/null
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2554,6 +2582,8 @@ EOF
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2663,6 +2693,8 @@ EOF
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2810,8 +2842,10 @@ EOF
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -2911,8 +2945,10 @@ EOF
         export -f ext_local_image_name
 
         # LOCAL_ONLY: docker inspect for presence; pgvector absent locally
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         image_exists_in_registry() { return 1; }
@@ -2998,8 +3034,10 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -3127,8 +3165,10 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -3223,6 +3263,8 @@ EOF
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         image_exists_in_registry() { return 1; }
@@ -3310,8 +3352,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -3409,8 +3453,10 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -3688,8 +3734,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -4100,8 +4148,10 @@ EOF
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -4181,8 +4231,10 @@ EOF
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image() {
@@ -4259,8 +4311,10 @@ EOF
         export -f ext_local_image_name
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image() {
@@ -4345,6 +4399,8 @@ EOF
         export -f ext_local_image_name
 
         # _image_present_3state mock: ceiling=PRESENT, 2.26.0=PRESENT, 2.25.0=ERROR (transient, rc=2)
+        # Note: _image_registry_probe_3state delegates to _image_present_3state in build-extensions.sh
+        # so mocking _image_present_3state controls ext_ref_resolve's probe behavior too.
         _image_present_3state() {
             case \"\$1\" in
                 *pg18-2.27.1*) return 0 ;;   # ceiling: PRESENT
@@ -4358,8 +4414,10 @@ EOF
         # image_exists_in_registry returns 0 so _should_build_extension skips all builds
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image() { return 0; }
@@ -4451,8 +4509,10 @@ EOF
 
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image() { return 0; }
@@ -4532,6 +4592,8 @@ _run_3state_probe() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         # skopeo mock: mirrors the tightened classification.
@@ -4750,8 +4812,10 @@ EOF
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -4899,6 +4963,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
@@ -4937,6 +5003,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
@@ -4972,6 +5040,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         skopeo() { printf "toomanyrequests: pull rate limit\n" >&2; return 1; }
@@ -4998,8 +5068,10 @@ _run_emit_versionset() {
     local mocks='
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
     '
@@ -5025,8 +5097,10 @@ _run_emit_versionset() {
     local mocks='
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
     '
@@ -5421,8 +5495,10 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -5504,6 +5580,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -5578,8 +5656,10 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -5649,8 +5729,10 @@ EOCFG
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -5937,8 +6019,10 @@ EOCFG
         export -f ext_local_image_name
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         build_ext_image()  { return 0; }
@@ -6338,6 +6422,8 @@ EOCFG
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -6523,6 +6609,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -6612,6 +6700,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -6733,10 +6823,12 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         # 3-state probe: 2.25.0 ABSENT (definitively — build failed, never pushed),
@@ -6863,6 +6955,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7047,10 +7141,12 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         build_ext_image() { return 0; }
@@ -7164,6 +7260,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7303,10 +7401,12 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         validate_prerequisites()  { return 0; }
@@ -7404,6 +7504,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7502,6 +7604,8 @@ EOCFG
             [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7591,6 +7695,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7655,6 +7761,8 @@ EOCFG
             [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7745,6 +7853,8 @@ EOCFG
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7845,6 +7955,8 @@ EOCFG
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -7940,6 +8052,8 @@ EOCFG
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         validate_prerequisites()      { return 0; }
         export -f validate_prerequisites
@@ -8035,6 +8149,8 @@ _run_an_producer() {
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         # _capture_bundle_digest returns the digest under test.
         _capture_bundle_digest() {
@@ -8215,6 +8331,8 @@ _run_an_producer() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -8719,6 +8837,8 @@ _run_an_producer() {
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
         }
@@ -8785,6 +8905,8 @@ _run_an_producer() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         # LOCAL_ONLY: _capture_bundle_digest not called (no push) → unset is fine.
         _capture_bundle_digest() { echo ''; return 0; }
         export -f _capture_bundle_digest
@@ -8866,6 +8988,8 @@ _run_an_producer() {
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() {
             echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             return 0
@@ -9180,6 +9304,8 @@ _run_an_producer() {
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         # _capture_bundle_digest returns a malformed multi-line value with
         # an embedded GHA workflow command injection attempt.
@@ -9408,8 +9534,10 @@ _run_an_producer() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -9492,8 +9620,10 @@ _run_an_producer() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="\$1"; case "\$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -9568,6 +9698,8 @@ _run_an_producer() {
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -9662,6 +9794,8 @@ _run_an_producer() {
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -9754,8 +9888,10 @@ _run_an_producer() {
         }
         export -f image_exists_in_registry
 
-        docker() { [[ "$1" == "build" || "$1" == "push" ]] && return 0; return 1; }
+        docker() { local _dk="$1"; case "$_dk" in build|push) return 0;; manifest|buildx) echo manifest unknown >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -9874,6 +10010,8 @@ _run_an_producer() {
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -9963,16 +10101,28 @@ _run_an_producer() {
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # image_exists_in_registry: all suffixed tags present (all versions on both arches)
-        image_exists_in_registry() { return 0; }
+        # Faithful: only per-arch suffixed tags exist (stage A output); un-suffixed
+        # multi-arch manifests are absent (stage B creates them).
+        image_exists_in_registry() {
+            local ref="$1"
+            # Per-arch tags (ending in -amd64 or -arm64): PRESENT
+            [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
         # Mock docker to record all calls; succeed for all.
+        # manifest inspect returns manifest-unknown for absent un-suffixed refs.
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
+            if [[ "$1" == "manifest" ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -9986,8 +10136,6 @@ _run_an_producer() {
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -10071,6 +10219,8 @@ _run_an_producer() {
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         # Stable mock digest (64 hex chars).
         _capture_bundle_digest() {
@@ -10147,19 +10297,34 @@ _run_an_producer() {
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # All suffixed tags present so availability check passes; imagetools create fails.
-        image_exists_in_registry() { return 0; }
+        # Faithful: only per-arch suffixed tags exist (stage A pushed them);
+        # un-suffixed multi-arch manifests do NOT yet exist (stage B creates them).
+        image_exists_in_registry() {
+            local ref="$1"
+            # Per-arch tags (ending in -amd64 or -arm64): PRESENT
+            if [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]; then
+                return 0
+            fi
+            # Un-suffixed multi-arch manifests: ABSENT (not yet created by stage B)
+            return 1
+        }
         export -f image_exists_in_registry
 
-        # imagetools create fails for all calls.
+        # imagetools create fails for all calls (the error under test).
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
                 echo "simulated imagetools create failure" >&2
                 return 1
             fi
+            if [[ "$1" == "manifest" ]]; then
+                printf 'manifest unknown: manifest unknown\n' >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -10173,8 +10338,6 @@ _run_an_producer() {
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -10224,6 +10387,8 @@ _run_an_producer() {
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "not-a-valid-digest"
@@ -10308,15 +10473,30 @@ EOF
         resolve_version_set() { echo '[\"0.8.0\"]'; }
         export -f resolve_version_set
 
-        # docker: record imagetools create calls; succeed
+        # Faithful: only per-arch suffixed tags exist (stage A output); un-suffixed
+        # multi-arch manifests are absent (stage B creates them).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]]
+        }
+        export -f image_exists_in_registry
+
+        # docker: record imagetools create calls; succeed.
+        # manifest inspect returns manifest-unknown for un-suffixed absent refs.
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$1\" == 'manifest' ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
@@ -10327,8 +10507,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo 'pgvector'; }
         export -f list_extensions_by_priority
-        skopeo() { echo 'manifest unknown' >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     "
@@ -10407,8 +10585,12 @@ EOF
         }
         export -f resolve_version_set
 
-        # All suffixed tags present so timescaledb availability check passes.
-        image_exists_in_registry() { return 0; }
+        # Faithful: only per-arch suffixed tags present (stage A output).
+        # Un-suffixed multi-arch manifests absent (stage B creates them).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
         docker() {
@@ -10416,9 +10598,15 @@ EOF
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$1\" == 'manifest' ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
@@ -10679,17 +10867,27 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # 2.25.0-amd64 is definitively absent (failed to build on musl).
-        # All other tags are present.
+        # Faithful: per-arch tags present; un-suffixed multi-arch manifests absent (stage B creates them).
+        # 2.25.0-amd64 is definitively absent (musl build miss).
         image_exists_in_registry() {
-            [[ \"\$1\" == *'pg18-2.25.0-amd64'* ]] && return 1 || return 0
+            local ref=\"\$1\"
+            # 2.25.0-amd64: definitively absent
+            [[ \"\$ref\" == *pg18-2.25.0-amd64* ]] && return 1
+            # Un-suffixed multi-arch manifests: absent
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]] && return 0
+            return 1
         }
         export -f image_exists_in_registry
 
-        # 3-state: 2.25.0-amd64 definitively absent (rc=1); all others present (rc=0).
-        _image_present_3state() {
-            [[ \"\$1\" == *'pg18-2.25.0-amd64'* ]] && return 1 || return 0
+        # 3-state proxy: per-arch present except 2.25.0-amd64; un-suffixed absent.
+        _image_registry_probe_3state() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" == *pg18-2.25.0-amd64* ]] && return 1  # ABSENT
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]] && return 0  # PRESENT
+            return 1  # un-suffixed: ABSENT
         }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state \"\$@\"; }
         export -f _image_present_3state
 
         docker() {
@@ -10697,9 +10895,15 @@ EOF
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
                 return 0
             fi
+            if [[ \"\$1\" == 'manifest' ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
@@ -10773,17 +10977,42 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # imagetools create: CEILING (2.27.1) fails — its arch sources are absent.
+        # Faithful: per-arch tags present except 2.27.1 (ceiling) which is absent;
+        # un-suffixed multi-arch manifests absent (stage B creates them).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" == *pg18-2.27.1* ]] && return 1  # ceiling arch tags: absent
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]] && return 0  # other per-arch: present
+            return 1  # un-suffixed: absent
+        }
+        export -f image_exists_in_registry
+
+        _image_registry_probe_3state() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" == *pg18-2.27.1* ]] && return 1  # ceiling: ABSENT
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]] && return 0  # per-arch: PRESENT
+            return 1  # un-suffixed: ABSENT
+        }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state \"\$@\"; }
+        export -f _image_present_3state
+
         docker() {
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
                 if [[ \"\${*}\" == *'pg18-2.27.1'* ]]; then
-                    return 1  # ceiling sources absent
+                    return 1  # ceiling: imagetools create fails (sources absent)
                 fi
                 return 0
+            fi
+            if [[ \"\$1\" == 'manifest' ]]; then
+                echo manifest unknown >&2
+                return 1
             fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
@@ -10794,8 +11023,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo 'timescaledb'; }
         export -f list_extensions_by_priority
-        skopeo() { echo 'manifest unknown' >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     "
@@ -10846,8 +11073,11 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # All suffixed tags present (all versions available on both arches)
-        image_exists_in_registry() { return 0; }
+        # Faithful: per-arch suffixed tags present; un-suffixed multi-arch manifests absent.
+        image_exists_in_registry() {
+            local ref="$1"
+            [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
         docker() {
@@ -10855,9 +11085,15 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
+            if [[ "$1" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
         export -f _capture_bundle_digest
@@ -10868,8 +11104,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -10938,26 +11172,28 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # INTERSECTION: 2.25.0 arm64 tag is ABSENT (musl build failed on arm64 leg).
+        # INTERSECTION: 2.25.0 arm64 tag is ABSENT; un-suffixed multi-arch manifests absent.
         # 2.26.0 and 2.27.1 are present on BOTH arches.
-        # Expected: 2.25.0 excluded, 2.26.0+2.27.1 in available → bundle built → artifact written.
         image_exists_in_registry() {
             local _img="$1"
             case "$_img" in
                 *2.25.0-arm64*) return 1 ;;  # absent on arm64
-                *)               return 0 ;;  # all others present
             esac
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]  # per-arch: present; un-suffixed: absent
         }
         export -f image_exists_in_registry
 
-        # 3-state probe: definitively absent (rc=1) for 2.25.0-arm64; present (rc=0) otherwise.
-        # Faithful to image_exists_in_registry above (no transient errors in this scenario).
-        _image_present_3state() {
-            case "$1" in
-                *2.25.0-arm64*) return 1 ;;  # ABSENT (definitive)
-                *)               return 0 ;;  # PRESENT
+        # 3-state probe: absent for 2.25.0-arm64 and un-suffixed; present for other per-arch.
+        _image_registry_probe_3state() {
+            local _img="$1"
+            case "$_img" in
+                *2.25.0-arm64*) return 1 ;;  # ABSENT
             esac
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]] && return 0  # PRESENT
+            return 1  # un-suffixed: ABSENT
         }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
         docker() {
@@ -10965,9 +11201,15 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
+            if [[ "$1" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
         export -f _capture_bundle_digest
@@ -11043,27 +11285,38 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # Ceiling 2.27.1 is ABSENT on arm64 — fatal.
+        # Ceiling 2.27.1 is ABSENT on arm64; un-suffixed multi-arch manifests absent.
         image_exists_in_registry() {
             local _img="$1"
             case "$_img" in
-                *2.27.1-arm64*) return 1 ;;  # ceiling absent on arm64
-                *)               return 0 ;;
+                *2.27.1-arm64*) return 1 ;;
             esac
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]  # per-arch present; un-suffixed absent
         }
         export -f image_exists_in_registry
 
-        # 3-state: ceiling 2.27.1-arm64 definitively absent (rc=1); all others present (rc=0).
-        _image_present_3state() {
-            case "$1" in
-                *2.27.1-arm64*) return 1 ;;  # ABSENT (definitive)
-                *)               return 0 ;;  # PRESENT
+        _image_registry_probe_3state() {
+            local _img="$1"
+            case "$_img" in
+                *2.27.1-arm64*) return 1 ;;
             esac
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]] && return 0
+            return 1  # un-suffixed: ABSENT
         }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
-        docker() { return 0; }
+        docker() {
+            if [[ "$1" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
+            return 0
+        }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
         export -f _capture_bundle_digest
@@ -11140,6 +11393,8 @@ EOF
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
         export -f _capture_bundle_digest
@@ -11223,6 +11478,13 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
+        # Faithful: per-arch suffixed tags present; un-suffixed multi-arch manifests absent.
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]]
+        }
+        export -f image_exists_in_registry
+
         # Record the imagetools create call (capture the full argument list)
         docker() {
             local _dcmd=\"\${1:-}\"
@@ -11230,9 +11492,15 @@ EOF
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dcmd\" == 'manifest' ]]; then
+                echo \"manifest unknown: manifest unknown\" >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -11310,6 +11578,8 @@ EOF
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -11519,6 +11789,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
 
@@ -11607,6 +11879,8 @@ EOF
 
         docker() { return 0; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:cafecafe00000000000000000000000000000000000000000000000000000000"
@@ -11698,23 +11972,22 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # 2.25.0 missing on arm64 → excluded. 2.26.0 and 2.27.1 on both → available.
+        # Faithful: per-arch tags present except 2.25.0-arm64; un-suffixed absent (stage B creates them).
         image_exists_in_registry() {
             local _img="$1"
-            case "$_img" in
-                *2.25.0-arm64*) return 1 ;;
-                *)               return 0 ;;
-            esac
+            [[ "$_img" == *2.25.0-arm64* ]] && return 1
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]  # per-arch: present; un-suffixed: absent
         }
         export -f image_exists_in_registry
 
-        # 3-state: 2.25.0-arm64 definitively absent (rc=1); all others present (rc=0).
-        _image_present_3state() {
-            case "$1" in
-                *2.25.0-arm64*) return 1 ;;  # ABSENT (definitive)
-                *)               return 0 ;;  # PRESENT
-            esac
+        _image_registry_probe_3state() {
+            local _img="$1"
+            [[ "$_img" == *2.25.0-arm64* ]] && return 1
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]] && return 0
+            return 1  # un-suffixed: ABSENT
         }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
         # Record buildx build calls to a log file for inspection.
@@ -11724,9 +11997,15 @@ EOF
                 echo "BUILDX_BUILD $*" >> "'"$buildx_log"'"
                 return 0
             fi
+            if [[ "$_dcmd" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:dddddddd00000000000000000000000000000000000000000000000000000000"
@@ -11823,8 +12102,11 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # Ceiling suffixed tags present on both arches.
-        image_exists_in_registry() { return 0; }
+        # Faithful: ceiling per-arch tags present; un-suffixed multi-arch manifests absent.
+        image_exists_in_registry() {
+            local _img="$1"
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
         docker() {
@@ -11833,9 +12115,15 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
+            if [[ "$_dcmd" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
         export -f _capture_bundle_digest
@@ -11846,8 +12134,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -12177,39 +12463,50 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # image_exists_in_registry: all tags present (PRESENT oracle — 3-state fast-path).
-        # Returns 0 for all so _image_present_3state fast-paths to PRESENT.
-        # Overridden below for the transient-error case via _image_present_3state.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        # _image_present_3state: returns ERROR (rc=2) for the 2.25.0 -amd64 suffixed tag.
-        # All other tags return PRESENT (rc=0).
-        # This simulates a transient auth/network failure on one tag probe.
-        _image_present_3state() {
-            if [[ "$1" == *"pg18-2.25.0-amd64"* ]]; then
+        # Faithful: un-suffixed multi-arch refs ABSENT (stage B creates them);
+        # per-arch refs PRESENT except 2.25.0-amd64 returns ERROR (the test case).
+        # _image_registry_probe_3state is the unified probe for ext_ref_resolve
+        # (used in finalize_multiarch_manifests). Also mock _image_present_3state
+        # for any residual callers.
+        _image_registry_probe_3state() {
+            local ref="$1"
+            if [[ "$ref" == *"pg18-2.25.0-amd64"* ]]; then
                 return 2  # ERROR (transient — fail-closed)
             fi
-            return 0  # PRESENT
+            # Un-suffixed refs (multi-arch manifests not yet created): ABSENT
+            if [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]; then
+                return 0  # Per-arch tags: PRESENT
+            fi
+            return 1  # Un-suffixed: ABSENT
+        }
+        export -f _image_registry_probe_3state
+        _image_present_3state() {
+            _image_registry_probe_3state "$@"
         }
         export -f _image_present_3state
 
+        image_exists_in_registry() {
+            local ref="$1"
+            [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]
+        }
+        export -f image_exists_in_registry
+
         docker() {
-            # imagetools create succeeds for all
             if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then
                 return 0
             fi
-            # buildx build (bundle): succeeds
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then
                 return 0
             fi
             if [[ "$*" == *"manifest inspect"* ]]; then
-                echo "manifest unknown: manifest unknown" >&2
+                echo manifest unknown >&2
                 return 1
             fi
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -12223,8 +12520,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -12284,31 +12579,37 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # 2.25.0-amd64 is definitively absent (clean not-found); all others present.
+        # Faithful: 2.25.0-amd64 definitively absent; un-suffixed multi-arch manifests absent;
+        # other per-arch tags present.
         image_exists_in_registry() {
-            [[ "$1" == *"pg18-2.25.0-amd64"* ]] && return 1 || return 0
+            local _img="$1"
+            [[ "$_img" == *pg18-2.25.0-amd64* ]] && return 1
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]  # per-arch: present; un-suffixed: absent
         }
         export -f image_exists_in_registry
 
-        # 3-state: 2.25.0-amd64 → ABSENT (rc=1, definitive); all others → PRESENT (rc=0).
-        _image_present_3state() {
-            if [[ "$1" == *"pg18-2.25.0-amd64"* ]]; then
-                return 1  # ABSENT (definitive)
-            fi
-            return 0  # PRESENT
+        _image_registry_probe_3state() {
+            local _img="$1"
+            [[ "$_img" == *pg18-2.25.0-amd64* ]] && return 1  # ABSENT
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]] && return 0  # PRESENT
+            return 1  # un-suffixed: ABSENT
         }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
         docker() {
             if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then return 0; fi
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
             if [[ "$*" == *"manifest inspect"* ]]; then
-                echo "manifest unknown: manifest unknown" >&2
+                echo manifest unknown >&2
                 return 1
             fi
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -12383,12 +12684,21 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        # All suffixed tags confirmed PRESENT (both arches, all versions).
-        image_exists_in_registry() { return 0; }
+        # Faithful: per-arch suffixed tags PRESENT (both arches, all versions);
+        # un-suffixed multi-arch manifests ABSENT (stage B creates them).
+        image_exists_in_registry() {
+            local _img="$1"
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
-        # 3-state: all tags PRESENT (rc=0).
-        _image_present_3state() { return 0; }
+        _image_registry_probe_3state() {
+            local _img="$1"
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]] && return 0
+            return 1  # un-suffixed: ABSENT
+        }
+        export -f _image_registry_probe_3state
+        _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
         docker() {
@@ -12421,6 +12731,8 @@ EOF
             return 1
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -12498,6 +12810,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -12595,14 +12909,24 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        image_exists_in_registry() { return 0; }
+        # Faithful: per-arch suffixed tags present; un-suffixed multi-arch manifests absent.
+        image_exists_in_registry() {
+            local _img="$1"
+            [[ "$_img" =~ -amd64$ ]] || [[ "$_img" =~ -arm64$ ]]
+        }
         export -f image_exists_in_registry
 
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
+            if [[ "$1" == "manifest" ]]; then
+                echo manifest unknown >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -12616,8 +12940,6 @@ EOF
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -12691,6 +13013,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -13043,6 +13367,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -13128,6 +13454,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -13220,6 +13548,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -13304,6 +13634,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -13466,6 +13798,8 @@ EOF
             esac
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
@@ -13473,7 +13807,7 @@ EOF
         }
         export -f _capture_bundle_digest
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         validate_prerequisites()  { return 0; }
@@ -13588,6 +13922,8 @@ EOF
             return 0
         }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
 
         _capture_bundle_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
@@ -13595,7 +13931,7 @@ EOF
         }
         export -f _capture_bundle_digest
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         validate_prerequisites()  { return 0; }
@@ -13762,7 +14098,7 @@ EOF
         }
         export -f docker
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         list_extensions_by_priority() { echo 'pgvector'; }
@@ -13851,7 +14187,7 @@ EOF
         }
         export -f docker
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         list_extensions_by_priority() { echo 'pgvector'; }
@@ -13926,17 +14262,28 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
+        # Faithful: per-arch suffixed tags present; un-suffixed absent (stage B creates them).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            [[ \"\$ref\" =~ -amd64$ ]] || [[ \"\$ref\" =~ -arm64$ ]]
+        }
+        export -f image_exists_in_registry
+
         docker() {
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dc\" == 'manifest' ]]; then
+                echo \"manifest unknown: manifest unknown\" >&2
+                return 1
+            fi
             return 0
         }
         export -f docker
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         list_extensions_by_priority() { echo 'pgvector'; }
@@ -14126,7 +14473,7 @@ EOF
         }
         export -f docker
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         _capture_bundle_digest() {
@@ -14232,7 +14579,7 @@ EOF
         }
         export -f docker
 
-        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         _capture_bundle_digest() {
@@ -14347,8 +14694,10 @@ EOF
         }
         export -f _image_present_3state
 
-        docker() { [[ \"\$1\" == 'build' || \"\$1\" == 'push' ]] && return 0; return 1; }
+        docker() { local _dk=\"\$1\"; case \"\$_dk\" in build|push) return 0;; manifest|buildx) echo \"manifest unknown: manifest unknown\" >&2; return 1;; *) return 1;; esac; }
         export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
         _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
         export -f _capture_bundle_digest
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
@@ -14413,4 +14762,248 @@ EOF
     }
 
     unset PR_TAG_SUFFIX ARCH_SUFFIX
+}
+
+# ===========================================================================
+# ext_ref_resolve exhaustive unit matrix
+#
+# ext_ref_resolve is the single source of truth for per-version extension
+# image reference resolution (canonical-vs-PR-scoped × arch × FORCE × 3-state).
+# These tests exercise the full combinatorial space from extension-utils.sh.
+# ===========================================================================
+
+# Helper: source extension-utils.sh and set up deterministic stubs.
+_source_ext_utils_for_resolve() {
+    source "$HELPERS_DIR/extension-utils.sh"
+    get_registry()   { echo "ghcr.io"; }
+    get_repo_owner() { echo "testowner"; }
+    export -f get_registry get_repo_owner
+    ext_image_name() { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+    export -f ext_image_name
+}
+
+# Helper: set _image_registry_probe_3state outcomes via env vars.
+# Arguments: <canonical_outcome> <pr_outcome>
+# Outcomes: 0=PRESENT 1=ABSENT 2=ERROR
+_mock_probe_outcomes() {
+    export _MOCK_CAN_RC="$1"
+    export _MOCK_PR_RC="$2"
+    _image_registry_probe_3state() {
+        local ref="$1"
+        if [[ "$ref" == *"-pr42"* ]]; then
+            return "$_MOCK_PR_RC"
+        else
+            return "$_MOCK_CAN_RC"
+        fi
+    }
+    export -f _image_registry_probe_3state
+}
+
+# ---------------------------------------------------------------------------
+# PUSH/DISPATCH path (PR_TAG_SUFFIX empty): only canonical is considered.
+# ---------------------------------------------------------------------------
+
+@test "ext_ref_resolve: push+canonical-PRESENT → rc0, canonical ref" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=false
+    _mock_probe_outcomes 0 0  # canonical PRESENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-pgvector:pg18-0.8.2" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: push+canonical-ABSENT → rc1, no output" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=false
+    _mock_probe_outcomes 1 1  # canonical ABSENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$out" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: push+canonical-ERROR → rc2, fail closed" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=false
+    _mock_probe_outcomes 2 2  # canonical ERROR
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 2 ]
+    [ -z "$out" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: push+arch-amd64+canonical-PRESENT → rc0, arch ref" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=false
+    _mock_probe_outcomes 0 0
+    local out rc=0
+    out=$(ext_ref_resolve "timescaledb" "2.27.1" "18" "amd64") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-amd64" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: push+arch-amd64+canonical-ABSENT → rc1" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=false
+    _mock_probe_outcomes 1 1
+    local rc=0
+    ext_ref_resolve "timescaledb" "2.27.1" "18" "amd64" > /dev/null || rc=$?
+    [ "$rc" -eq 1 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+# ---------------------------------------------------------------------------
+# PR path (PR_TAG_SUFFIX=-pr42), FORCE=false: canonical-first reuse.
+# ---------------------------------------------------------------------------
+
+@test "ext_ref_resolve: PR+FORCE-false+canonical-PRESENT → rc0, canonical ref (reuse unchanged)" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 0 0  # canonical PRESENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-pgvector:pg18-0.8.2" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-false+canonical-ABSENT+pr-PRESENT → rc0, PR-scoped ref" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 1 0  # canonical ABSENT, pr PRESENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-false+both-ABSENT → rc1" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 1 1  # both ABSENT
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 1 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-false+canonical-ERROR → rc2, fail closed (regardless of pr)" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 2 0  # canonical ERROR, pr PRESENT
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 2 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-false+canonical-ABSENT+pr-ERROR → rc2, fail closed" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 1 2  # canonical ABSENT, pr ERROR
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 2 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-false+amd64+canonical-ABSENT+pr-PRESENT → rc0, PR-scoped arch ref" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=false
+    _mock_probe_outcomes 1 0  # canonical arch absent, pr-arch present
+    local out rc=0
+    out=$(ext_ref_resolve "timescaledb" "2.27.1" "18" "amd64") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+# ---------------------------------------------------------------------------
+# PR path (PR_TAG_SUFFIX=-pr42), FORCE=true: prefer PR-scoped fresh build.
+# ---------------------------------------------------------------------------
+
+@test "ext_ref_resolve: PR+FORCE-true+pr-PRESENT → rc0, PR-scoped ref (not canonical)" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=true
+    _mock_probe_outcomes 0 0  # canonical PRESENT, pr PRESENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 0 ]
+    # Must return PR-scoped, not canonical.
+    [ "$out" = "ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-true+pr-ABSENT → rc1 (needs build)" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=true
+    _mock_probe_outcomes 0 1  # canonical PRESENT, pr ABSENT
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 1 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-true+pr-ERROR → rc2, fail closed" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=true
+    _mock_probe_outcomes 0 2  # canonical PRESENT, pr ERROR
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 2 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-true+amd64+pr-PRESENT → rc0, PR-scoped arch ref" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=true
+    _mock_probe_outcomes 0 0
+    local out rc=0
+    out=$(ext_ref_resolve "timescaledb" "2.27.1" "18" "amd64") || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$out" = "ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-amd64-pr42" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: PR+FORCE-true+arm64+pr-ABSENT → rc1" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="-pr42" FORCE=true
+    _mock_probe_outcomes 0 1  # pr-scoped arm64 absent
+    local rc=0
+    ext_ref_resolve "timescaledb" "2.27.1" "18" "arm64" > /dev/null || rc=$?
+    [ "$rc" -eq 1 ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+# ---------------------------------------------------------------------------
+# Edge: FORCE=true but PR_TAG_SUFFIX empty (push with --force flag).
+# Must behave identical to FORCE=false push (canonical probe only).
+# ---------------------------------------------------------------------------
+
+@test "ext_ref_resolve: push+FORCE-true+canonical-PRESENT → rc0, canonical (not PR-scoped path)" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=true
+    _mock_probe_outcomes 0 0  # canonical PRESENT
+    local out rc=0
+    out=$(ext_ref_resolve "pgvector" "0.8.2" "18" "") || rc=$?
+    [ "$rc" -eq 0 ]
+    # On push (no PR suffix), FORCE+PR branch is not entered; canonical probe runs.
+    [ "$out" = "ghcr.io/testowner/ext-pgvector:pg18-0.8.2" ]
+    unset PR_TAG_SUFFIX FORCE
+}
+
+@test "ext_ref_resolve: push+FORCE-true+canonical-ABSENT → rc1" {
+    _source_ext_utils_for_resolve
+    export PR_TAG_SUFFIX="" FORCE=true
+    _mock_probe_outcomes 1 1
+    local rc=0
+    ext_ref_resolve "pgvector" "0.8.2" "18" "" > /dev/null || rc=$?
+    [ "$rc" -eq 1 ]
+    unset PR_TAG_SUFFIX FORCE
 }

@@ -435,11 +435,7 @@ validate_semver_set_json() {
 # Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
 # returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
 #
-# Used by generate_dockerfile to PR-scope the tag-based refs it emits for
-# non-resolver (single-version) FROM lines and self-heal per-version COPY lines,
-# matching the scoping the producer (build-extensions.sh) applies via _scoped_tag.
-# The bundle artifact path (repo@digest) is tag-agnostic and does NOT use this.
-#
+# Low-level string helper used internally by ext_ref_resolve and generate_dockerfile.
 # Examples (PR_TAG_SUFFIX=-pr42):
 #   _scoped_ext_ref "ghcr.io/owner/ext-pgvector:pg18-0.8.2"  => "ghcr.io/owner/ext-pgvector:pg18-0.8.2-pr42"
 # Examples (PR_TAG_SUFFIX empty — push/dispatch):
@@ -453,45 +449,108 @@ _scoped_ext_ref() {
     fi
 }
 
-# _resolve_existing_ext_ref <ext_name> <version> <pg_major> <registry> <owner>
-# BF fix (consumer side): resolve the correct image ref for a non-resolver
-# single-version extension FROM line in generate_dockerfile.
+# ext_ref_resolve <ext> <version> <major> <arch>
 #
-# Logic:
-#   If PR_TAG_SUFFIX is empty (push/dispatch):
-#     → return canonical ref unchanged (no probe needed).
-#   If PR_TAG_SUFFIX is non-empty (PR context):
-#     1. Probe the CANONICAL ref (no PR suffix):
-#        If PRESENT → version is unchanged, use canonical (read-only).
-#     2. Canonical absent → return PR-scoped ref (version built this PR or new).
+# SINGLE SOURCE OF TRUTH for per-version extension image reference resolution.
+# Encapsulates all five axes: canonical-vs-PR-scoped, arch suffix, FORCE,
+# 3-state fail-closed, PR suffix.
 #
-# Supply-chain: PRs only WRITE PR-scoped refs. Reading canonical is read-only.
-# The self-heal per-version COPY path uses _scoped_ext_ref directly (that path
-# already probed presence before calling; canonical-then-PR logic lives here only
-# for the non-resolver single-version FROM line).
+# Parameters:
+#   <ext>     extension name (e.g. timescaledb)
+#   <version> version string (e.g. 2.27.1)
+#   <major>   PG major version (e.g. 18)
+#   <arch>    arch suffix: "" for the plain multi-arch tag,
+#             "amd64" or "arm64" for per-arch suffixed tags.
 #
-# Returns: the ref string to use (never empty — fallback to PR-scoped).
-_resolve_existing_ext_ref() {
-    local ext_name="$1" version="$2" pg_major="$3"
-    local registry="${4:-$(get_registry)}" owner="${5:-$(get_repo_owner)}"
-    local canonical_ref
-    canonical_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${version}"
+# Reads env:
+#   PR_TAG_SUFFIX  (PR scoping, may be empty)
+#   FORCE          (true|false, defaults false)
+#
+# Ref construction (registry/owner from get_registry/get_repo_owner):
+#   canonical  = ext_image_name(ext,ver,major)[+"-"<arch>]
+#   pr-scoped  = canonical + PR_TAG_SUFFIX
+#
+# Probing uses _image_registry_probe_3state (PRESENT/ABSENT/ERROR).
+#
+# Resolution order:
+#   FORCE=true AND PR_TAG_SUFFIX set:
+#     → prefer PR-scoped (freshly rebuilt this run); do NOT reuse canonical.
+#     Probe PR-scoped only (canonical is stale for this version).
+#   else (not FORCE, or no PR_TAG_SUFFIX):
+#     → prefer canonical when PRESENT (read-only reuse for unchanged versions).
+#     If canonical ABSENT and PR_TAG_SUFFIX set → probe PR-scoped.
+#
+# Output / return codes:
+#   rc 0  → prints the ref to use (canonical or pr-scoped).
+#   rc 1  → neither ref exists definitively (needs build or exclude).
+#           prints nothing.
+#   rc 2  → a probe returned transient ERROR → fail closed.
+#           prints nothing.
+#
+# On push/dispatch (PR_TAG_SUFFIX empty): only canonical is considered;
+# behavior is identical to the current canonical path.
+ext_ref_resolve() {
+    local ext="$1" version="$2" major="$3" arch="${4:-}"
+    local registry owner canonical_ref pr_ref
+    registry=$(get_registry)
+    owner=$(get_repo_owner)
 
-    if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
-        # Push/dispatch: always canonical.
-        printf '%s' "$canonical_ref"
-        return 0
+    # Build canonical base: ext_image_name gives registry/owner/ext-<name>:pg<major>-<ver>
+    # Append arch suffix when arch is non-empty.
+    canonical_ref=$(ext_image_name "$ext" "$version" "$major" "$registry" "$owner")
+    if [[ -n "$arch" ]]; then
+        canonical_ref="${canonical_ref}-${arch}"
     fi
 
-    # PR context: prefer canonical if it already exists (unchanged version).
-    if image_exists_in_registry "$canonical_ref" 2>/dev/null; then
-        printf '%s' "$canonical_ref"
-        return 0
+    # PR-scoped ref = canonical + PR_TAG_SUFFIX (empty when not on PR).
+    if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+        pr_ref="${canonical_ref}${PR_TAG_SUFFIX}"
+    else
+        pr_ref="$canonical_ref"
     fi
 
-    # Canonical absent: use PR-scoped ref (new/changed version built this PR).
-    printf '%s%s' "$canonical_ref" "$PR_TAG_SUFFIX"
-    return 0
+    # On push/dispatch (PR_TAG_SUFFIX empty), pr_ref == canonical_ref.
+    # Handle FORCE + PR: prefer pr-scoped (do not reuse canonical stale ref).
+    if [[ "${FORCE:-false}" == "true" ]] && [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+        # Probe the PR-scoped ref only.
+        local _rc=0
+        _image_registry_probe_3state "$pr_ref" || _rc=$?
+        case "$_rc" in
+            0) printf '%s' "$pr_ref"; return 0 ;;
+            1) return 1 ;;  # absent — needs build
+            *) return 2 ;;  # transient error — fail closed
+        esac
+    fi
+
+    # Normal path (not FORCE+PR, or push/dispatch):
+    # Probe canonical first (read-only reuse for unchanged versions).
+    local _can_rc=0
+    _image_registry_probe_3state "$canonical_ref" || _can_rc=$?
+    case "$_can_rc" in
+        0)
+            # Canonical present: use it.
+            printf '%s' "$canonical_ref"
+            return 0
+            ;;
+        2)
+            # Transient error on canonical — fail closed regardless of PR-scoped state.
+            return 2
+            ;;
+        1)
+            # Canonical absent: if we have a PR suffix, try the PR-scoped ref.
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                local _pr_rc=0
+                _image_registry_probe_3state "$pr_ref" || _pr_rc=$?
+                case "$_pr_rc" in
+                    0) printf '%s' "$pr_ref"; return 0 ;;
+                    1) return 1 ;;  # neither ref exists
+                    *) return 2 ;;  # transient error — fail closed
+                esac
+            fi
+            # Push/dispatch (no PR suffix): canonical absent = needs build.
+            return 1
+            ;;
+    esac
 }
 
 # Get list of extensions for a flavor, filtered by PG version compatibility
@@ -524,6 +583,16 @@ generate_dockerfile() {
     local pg_major="$4"
     local registry="${5:-$(get_registry)}"
     local owner="${6:-$(get_repo_owner)}"
+
+    # Derive FORCE from REBUILD env so a forced PR run prefers freshly-rebuilt
+    # PR-scoped refs over stale canonical refs for non-resolver/single-version
+    # extensions.  This mirrors the --force logic in build-extensions.sh and
+    # merge-extension-manifests.  ext_ref_resolve reads FORCE from env; the
+    # build-and-push job exports REBUILD from env.REBUILD_MODE.
+    # Pre-existing FORCE=true is preserved (e.g. LOCAL_ONLY builds).
+    if [[ "${REBUILD:-}" == "force" || "${REBUILD:-}" == "all" ]]; then
+        export FORCE=true
+    fi
 
     # Get filtered extension list for this flavor + PG version
     local extensions
@@ -653,81 +722,29 @@ generate_dockerfile() {
                     return 1
                 fi
 
-                # Probe registry presence for each resolved version using the 3-state probe.
-                # Fail closed on ERROR: a transient network blip must never silently drop
-                # a previously-published retained version.
-                #
-                # BI-1 fix: canonical-first probe + emit.
-                # On a same-repo PR (PR_TAG_SUFFIX non-empty), an UNCHANGED retained
-                # version exists only under the canonical tag (no -pr<N> suffix).
-                # Probing only the PR-scoped ref (old code) yields ABSENT → version
-                # silently dropped from the self-heal available set.
-                # Fix: probe canonical first; if PRESENT, record the canonical ref as the
-                # emit ref.  If canonical is ABSENT, probe the PR-scoped ref; if PRESENT,
-                # record the PR-scoped ref.  If neither PRESENT (ERROR or both ABSENT),
-                # apply the existing fail-closed / drop logic.
-                # On push/dispatch (PR_TAG_SUFFIX empty), the canonical ref IS the only
-                # ref, so there is no change in behaviour.
+                # Probe registry presence for each resolved version via ext_ref_resolve.
+                # ext_ref_resolve encapsulates canonical-first, PR-scoped fallback,
+                # FORCE, and 3-state fail-closed in one call (arch="" = multi-arch tag).
+                # rc 0 → PRESENT (ref printed); rc 1 → ABSENT; rc 2 → transient ERROR (fail-closed).
                 local _sh_available=()
-                local _sh_emit_refs=()   # parallel: resolved emit ref per available version
                 local -A _sh_emit_ref_map=()  # version → resolved emit ref (for lookup in emit loop)
                 local _sh_probe_error=false
                 local _sh_ver
                 while IFS= read -r _sh_ver; do
                     [[ -z "$_sh_ver" ]] && continue
-                    local _sh_canonical_image
-                    _sh_canonical_image=$(ext_image_name "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner")
-
-                    if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
-                        # Push/dispatch: canonical only (unchanged behaviour).
-                        local _sh_rc=0
-                        _image_registry_probe_3state "$_sh_canonical_image" || _sh_rc=$?
-                        case "$_sh_rc" in
-                            0)
-                                _sh_available+=("$_sh_ver")
-                                _sh_emit_refs+=("$_sh_canonical_image")
-                                _sh_emit_ref_map["$_sh_ver"]="$_sh_canonical_image"
-                                ;;
-                            1)  ;;   # ABSENT — musl-failed / never-built
-                            *)
-                                log_error "generate_dockerfile: self-heal probe for $ext_name $pg_major $ext_version — registry probe for $_sh_ver returned an ambiguous error; cannot determine availability (fail-closed)"
-                                _sh_probe_error=true
-                                ;;
-                        esac
-                    else
-                        # PR context: canonical-first probe.
-                        local _sh_can_rc=0
-                        _image_registry_probe_3state "$_sh_canonical_image" || _sh_can_rc=$?
-
-                        if [[ "$_sh_can_rc" -eq 0 ]]; then
-                            # Canonical PRESENT: unchanged version — emit canonical ref.
+                    local _sh_resolved_ref _sh_rc=0
+                    _sh_resolved_ref=$(ext_ref_resolve "$ext_name" "$_sh_ver" "$pg_major" "") || _sh_rc=$?
+                    case "$_sh_rc" in
+                        0)
                             _sh_available+=("$_sh_ver")
-                            _sh_emit_refs+=("$_sh_canonical_image")
-                            _sh_emit_ref_map["$_sh_ver"]="$_sh_canonical_image"
-                        elif [[ "$_sh_can_rc" -eq 1 ]]; then
-                            # Canonical ABSENT: probe PR-scoped ref (version built this PR).
-                            local _sh_pr_image
-                            _sh_pr_image=$(_scoped_ext_ref "$_sh_canonical_image")
-                            local _sh_pr_rc=0
-                            _image_registry_probe_3state "$_sh_pr_image" || _sh_pr_rc=$?
-                            case "$_sh_pr_rc" in
-                                0)
-                                    _sh_available+=("$_sh_ver")
-                                    _sh_emit_refs+=("$_sh_pr_image")
-                                    _sh_emit_ref_map["$_sh_ver"]="$_sh_pr_image"
-                                    ;;
-                                1)  ;;   # ABSENT (both canonical and PR-scoped) — musl-failed / never-built
-                                *)
-                                    log_error "generate_dockerfile: self-heal probe for $ext_name $pg_major $ext_version — PR-scoped registry probe for $_sh_ver returned an ambiguous error; cannot determine availability (fail-closed)"
-                                    _sh_probe_error=true
-                                    ;;
-                            esac
-                        else
-                            # Canonical probe returned ERROR — fail closed.
+                            _sh_emit_ref_map["$_sh_ver"]="$_sh_resolved_ref"
+                            ;;
+                        1)  ;;   # ABSENT — musl-failed / never-built / not yet pushed
+                        *)
                             log_error "generate_dockerfile: self-heal probe for $ext_name $pg_major $ext_version — registry probe for $_sh_ver returned an ambiguous error; cannot determine availability (fail-closed)"
                             _sh_probe_error=true
-                        fi
-                    fi
+                            ;;
+                    esac
                 done < <(echo "$_sh_resolved_json" | jq -r '.[]' 2>/dev/null || true)
 
                 if [[ "$_sh_probe_error" == "true" ]]; then
@@ -885,31 +902,16 @@ generate_dockerfile() {
                     if [[ -n "$raw_versions" ]]; then
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
                             # AP: self-heal path — emit per-version COPYs from proved-present refs.
-                            # Each per-version image exposes /output/extension/ and /output/lib/.
-                            # Map to /tmp/ext/<ext>/<ver>/extension/ and /tmp/ext/<ext>/<ver>/lib/
-                            # so install_ext finds them at the expected layout.
-                            #
-                            # BI-1 fix: use _sh_emit_ref_map[ver] (the canonical-first resolved ref
-                            # from the probe loop) instead of _scoped_ext_ref(ext_image_name(...)).
-                            # This ensures unchanged retained versions emitted as canonical refs
-                            # (probe confirmed them present canonically), while versions built this
-                            # PR are emitted as PR-scoped refs — matching probe-ref == emit-ref.
+                            # _sh_emit_ref_map[ver] was populated by ext_ref_resolve in the probe
+                            # loop above (canonical-first, PR-scoped fallback, FORCE-aware).
                             local _pv_ver
                             while IFS= read -r _pv_ver; do
                                 [[ -z "$_pv_ver" ]] && continue
-                                local _pv_ref
-                                if [[ -n "${_sh_emit_ref_map[$_pv_ver]:-}" ]]; then
-                                    _pv_ref="${_sh_emit_ref_map[$_pv_ver]}"
-                                else
-                                    # Fallback (shouldn't happen for valid self-heal path):
-                                    # apply canonical-first resolution.
-                                    local _pv_canonical
-                                    _pv_canonical=$(ext_image_name "$ext_name" "$_pv_ver" "$pg_major" "$registry" "$owner")
-                                    if [[ -n "${PR_TAG_SUFFIX:-}" ]] && ! image_exists_in_registry "$_pv_canonical" 2>/dev/null; then
-                                        _pv_ref=$(_scoped_ext_ref "$_pv_canonical")
-                                    else
-                                        _pv_ref="$_pv_canonical"
-                                    fi
+                                local _pv_ref="${_sh_emit_ref_map[$_pv_ver]:-}"
+                                if [[ -z "$_pv_ref" ]]; then
+                                    # Should not happen: every version in available[] was resolved by ext_ref_resolve.
+                                    log_error "generate_dockerfile: AP self-heal emit: no resolved ref for $ext_name $_pv_ver pg${pg_major} — fail closed"
+                                    return 1
                                 fi
                                 copies_block+="COPY --from=${_pv_ref} /output/extension/ /tmp/ext/${ext_name}/${_pv_ver}/extension/"$'\n'
                                 copies_block+="COPY --from=${_pv_ref} /output/lib/ /tmp/ext/${ext_name}/${_pv_ver}/lib/"$'\n'
@@ -985,14 +987,28 @@ generate_dockerfile() {
             fi
 
             # Single-version path (no versionset artifact, or jq unavailable):
-            # keep the original behavior — one stage, flat COPY paths.
-            # BF fix (consumer): on a PR, prefer the canonical ref when it exists
-            # (unchanged version), else use PR-scoped (new/changed version built this PR).
-            # On push (PR_TAG_SUFFIX empty): always canonical (unchanged behavior).
-            # The COPY uses the Docker stage alias (ext-${ext_name}) — no suffix needed.
-            local image
-            image=$(_resolve_existing_ext_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner")
-            stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
+            # Route through ext_ref_resolve when in PR context (PR_TAG_SUFFIX set):
+            #   canonical-first reuse (unchanged version) or PR-scoped (built this PR).
+            #   rc 2 → fail closed; rc 1 → ceiling absent on both → fail closed.
+            # On push/dispatch (PR_TAG_SUFFIX empty):
+            #   emit canonical ref directly — no probe (image availability checked at docker build time).
+            local _sv_ref
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                local _sv_rc=0
+                _sv_ref=$(ext_ref_resolve "$ext_name" "$ext_version" "$pg_major" "") || _sv_rc=$?
+                if [[ "$_sv_rc" -eq 2 ]]; then
+                    log_error "generate_dockerfile: transient registry probe error resolving $ext_name $ext_version pg${pg_major} — fail closed"
+                    return 1
+                fi
+                if [[ "$_sv_rc" -ne 0 ]] || [[ -z "$_sv_ref" ]]; then
+                    log_error "generate_dockerfile: ceiling ref for $ext_name $ext_version pg${pg_major} is absent — fail closed"
+                    return 1
+                fi
+            else
+                # Push/dispatch: always emit canonical ref (unchanged from pre-consolidation behavior).
+                _sv_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
+            fi
+            stages_block+="FROM ${_sv_ref} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'
 
