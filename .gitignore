@@ -92,3 +92,6 @@ github-runner/Dockerfile.debian-*
 
 # bats test fixture symlinks that can leak when bats is interrupted mid-run
 bats-*
+
+# Test run artifact (TAP output)
+report.tap

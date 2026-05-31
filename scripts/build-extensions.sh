@@ -1496,6 +1496,14 @@ _image_present_3state() {
 # Logs the skip reason itself so callers can stay terse.
 # Returns 0 to build, 1 to skip.
 # For extensions with a multi-version set, returns 0 if ANY version needs build.
+#
+# Prefilter key: version + scope (PR suffix or empty for push/dispatch), NOT
+# build-input content.  A same-version change to a Dockerfile or toolchain
+# without a version bump will reuse the already-built image — this applies on
+# master too, not only on PRs.  To force a rebuild after such a change, set
+# REBUILD=force (or FORCE=true); the FORCE branch above skips this check entirely.
+# This is intentional: rebuilding the entire retained version window on every
+# commit would defeat the purpose of the prefilter.
 _should_build_extension() {
     local ext="$1" config_file="$2" major_ver="$3" container_dir="$4"
     local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"

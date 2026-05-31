@@ -263,7 +263,7 @@ jobs:
       always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
+      github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
@@ -475,7 +475,7 @@ jobs:
       always() &&
       needs.detect-containers.outputs.count > 0 &&
       contains(needs.detect-containers.outputs.containers, 'postgres') &&
-      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
+      github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       needs.build-extensions.result == 'success' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
