@@ -800,6 +800,15 @@ generate_dockerfile() {
                             # an unvalidated digest, and do NOT silently fall back to the
                             # tag (that would mask the corruption).  An absent bundle_digest
                             # (LOCAL_ONLY case) → tag-based COPY, unchanged.
+                            #
+                            # BB-1 Part 3: when bundle_digest is present, reference the
+                            # bundle by REPO + DIGEST only (no tag segment).  A digest
+                            # reference is addressable in the repo regardless of which tag
+                            # (pr-scoped or canonical) points to it, so the SAME artifact
+                            # works whether produced by a PR or a push/dispatch run.
+                            # Format: <registry>/<owner>/ext-<name>@sha256:<64hex>
+                            # The tag-based fallback (no bundle_digest) is unchanged —
+                            # LOCAL_ONLY artifacts use the un-suffixed bundle tag directly.
                             local _bundle_digest
                             _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
                             local _bundle_copy_ref
@@ -808,7 +817,9 @@ generate_dockerfile() {
                                     log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(_sanitize_for_log "$(printf '%s' "$_bundle_digest" | head -c 80)")') — fail closed (possible artifact corruption or poisoning)"
                                     return 1
                                 fi
-                                _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"
+                                # Repo-only digest ref (no tag segment) — valid for both
+                                # PR-scoped and canonical bundles sharing the same digest.
+                                _bundle_copy_ref="${registry}/${owner}/ext-${ext_name}@${_bundle_digest}"
                             else
                                 _bundle_copy_ref="${_bundle_ref}"
                             fi

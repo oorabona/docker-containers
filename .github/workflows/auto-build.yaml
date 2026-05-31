@@ -356,6 +356,12 @@ jobs:
           # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
           ARCH_SUFFIX: ${{ matrix.arch }}
           BUILD_PLATFORM: ${{ matrix.platform }}
+          # BB-1 supply-chain: same-repo PRs publish PR-scoped tags only so unreviewed
+          # code never overwrites canonical production-consumed refs.  On push/dispatch
+          # (master) PR_TAG_SUFFIX is empty → canonical refs published.
+          # The shared registry build-cache lets master reuse the PR's compiled layers
+          # (cache hit, no recompile) — safe because forks are excluded by the job if:.
+          PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -524,6 +530,9 @@ jobs:
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           REPO_OWNER: ${{ github.repository_owner }}
+          # BB-1: must match the suffix used by the build-extensions stage A leg so
+          # stage B probes the correct scoped per-arch refs and publishes scoped targets.
+          PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 

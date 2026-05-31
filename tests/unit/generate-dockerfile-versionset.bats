@@ -2113,7 +2113,7 @@ EOF
 # RED before fix: COPY uses only the mutable tag <bundle-ref>, no @sha256:...
 # GREEN after fix: COPY uses <bundle-ref>@sha256:... (digest-pinned).
 # ---------------------------------------------------------------------------
-@test "AM-consumer-digest-pin: artifact with bundle_digest → COPY from bundle ref pinned with @sha256:" {
+@test "AM-consumer-digest-pin: artifact with bundle_digest → COPY from repo@digest (no tag segment)" {
     # Artifact: multi-version with bundle_digest.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:deadbeef00000000000000000000000000000000000000000000000000000000"}
@@ -2127,14 +2127,20 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # RED before fix: COPY uses only the mutable tag (no @sha256: pin).
-    # GREEN after fix: COPY includes @sha256: digest pin.
+    # BB-1 Part 3: COPY uses repo@digest (no tag segment) — addressable regardless
+    # of whether the bundle was produced by a PR (pr-scoped tag) or push (canonical tag).
+    # Must NOT contain ":pg18-bundle@" (old tag-ref@digest format).
+    local old_format_count
+    old_format_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-bundle@sha256:" || true)
+    [ "$old_format_count" -eq 0 ]
+
+    # Must contain the repo@digest format (no tag between image name and @digest).
     local pinned_count
-    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:" || true)
+    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:" || true)
     [ "$pinned_count" -eq 1 ]
 
-    # The full pinned ref must contain the exact digest from the artifact.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:deadbeef"
+    # The full repo@digest ref must contain the exact digest from the artifact.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:deadbeef"
 }
 
 # ---------------------------------------------------------------------------
@@ -2287,8 +2293,8 @@ _write_versionset_with_digest() {
     [ "$status" -ne 0 ]
 }
 
-@test "AN-consumer-accepts-valid-digest: valid sha256:<64lowercase-hex> → pinned COPY emitted" {
-    # Proper OCI digest — must produce a pinned COPY --from=<ref>@sha256:<64hex>.
+@test "AN-consumer-accepts-valid-digest: valid sha256:<64lowercase-hex> → repo@digest COPY emitted" {
+    # Proper OCI digest — must produce a pinned COPY --from=<repo>@sha256:<64hex> (no tag).
     local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
     _write_versionset_with_digest "timescaledb" "18" "$good_digest" "2.25.0" "2.27.1"
 
@@ -2301,8 +2307,8 @@ _write_versionset_with_digest() {
     # Regression: valid digest must succeed.
     [ "$status" -eq 0 ]
 
-    # COPY must use the exact pinned digest ref.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@${good_digest} / /tmp/ext/timescaledb/"
+    # BB-1 Part 3: COPY must use repo@digest format (no tag segment).
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb@${good_digest} / /tmp/ext/timescaledb/"
 }
 
 @test "AN-consumer-absent-digest-tag: no bundle_digest in artifact → tag-based COPY, no @ pin" {
@@ -2547,8 +2553,9 @@ _write_versionset_with_digest() {
     [ "$bundle_count" -eq 0 ]
 }
 
-@test "AP-artifact-path-still-bundle-digest: artifact present with bundle_digest → digest-pinned bundle COPY unchanged" {
-    # AM regression: artifact-present path must still emit the digest-pinned bundle COPY.
+@test "AP-artifact-path-still-bundle-digest: artifact present with bundle_digest → repo@digest COPY (no tag segment)" {
+    # AM regression: artifact-present path must still emit a digest-pinned COPY.
+    # BB-1 Part 3: the ref is repo@digest (no tag segment) — tag-agnostic.
     # Self-heal is NOT triggered (valid artifact on disk).
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
 {"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:cafebabe00000000000000000000000000000000000000000000000000000000"}
@@ -2562,10 +2569,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Artifact-present path: exactly ONE digest-pinned bundle COPY.
+    # BB-1 Part 3: exactly ONE repo@digest COPY (no tag segment before @sha256:).
     local pinned_count
-    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:cafebabe" || true)
+    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:cafebabe" || true)
     [ "$pinned_count" -eq 1 ]
+
+    # Must NOT contain the old tag-ref format (:pg18-bundle@sha256:).
+    local old_format_count
+    old_format_count=$(echo "$output" | grep -c ":pg18-bundle@sha256:" || true)
+    [ "$old_format_count" -eq 0 ]
 
     # NO per-version individual COPY lines (artifact path uses bundle, not per-version).
     local per_ver_ext_count
@@ -2991,4 +3003,51 @@ ARTIFACT_EOF
     # No reduction warning should appear when nothing was dropped.
     # The warning message will contain "retention reduced" or "reduc" — check it is absent.
     [[ "$output" != *"retention reduced"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# BB1-consumer-repo-digest: artifact with bundle_digest → consumer COPY uses
+# <registry>/<owner>/ext-<ext>@<digest> (repo + digest, NO tag segment).
+# This is addressable in the repo regardless of which tag (pr-scoped or
+# canonical) points to it — the SAME artifact works from both PR and master.
+#
+# RED before fix: COPY uses <bundle-ref>@<digest> where <bundle-ref> includes
+#   the tag segment (:pg18-bundle). A digest ref with a tag is still
+#   tag-dependent notation — Docker resolves by digest but pulls tag namespace.
+#   More importantly: if the tag was -pr42-scoped, a later canonical master run
+#   would need the artifact regenerated.
+# GREEN after fix: COPY uses <registry>/<owner>/ext-<ext>@<digest> (no tag),
+#   which is a pure-digest reference valid across any tag scope.
+# ---------------------------------------------------------------------------
+@test "BB1-consumer-repo-digest: bundle_digest in artifact → COPY ref is repo@digest (no tag segment)" {
+    # Artifact: multi-version with bundle_digest.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:deadbeef00000000000000000000000000000000000000000000000000000000"}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # GREEN: COPY ref must be repo@digest format (no tag segment like :pg18-bundle).
+    # The ref must be ghcr.io/testowner/ext-timescaledb@sha256:deadbeef...
+    # with NO colon-delimited tag between the image name and the @digest.
+    local copy_line
+    copy_line=$(echo "$output" | grep "COPY --from=.*timescaledb.*deadbeef" || true)
+    [ -n "$copy_line" ]
+
+    # Must NOT contain ":pg18-bundle" before the @digest.
+    [[ "$copy_line" != *":pg18-bundle@"* ]]
+
+    # Must contain the bare repo path + @digest.
+    [[ "$copy_line" == *"ghcr.io/testowner/ext-timescaledb@sha256:deadbeef"* ]]
+
+    # Exactly one such COPY line.
+    local copy_count
+    copy_count=$(echo "$output" | grep -c "ghcr.io/testowner/ext-timescaledb@sha256:" || true)
+    [ "$copy_count" -eq 1 ]
 }

@@ -12445,3 +12445,530 @@ EOF
     # After fix:  fatal (exit non-zero).
     [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# BB1-pr-scoped-tags: PR_TAG_SUFFIX=-pr42 → per-arch + per-version + bundle
+# published refs all carry -pr42; canonical (un-suffixed) refs NEVER created.
+#
+# RED before fix: finalize_multiarch_manifests creates refs with no suffix
+#   (e.g. :pg18-bundle, :pg18-2.27.1), which are the canonical production tags.
+# GREEN after fix: every published ref carries -pr42 suffix; canonical refs
+#   never appear in the docker calls log.
+# ---------------------------------------------------------------------------
+@test "BB1-pr-scoped-tags: PR_TAG_SUFFIX=-pr42 → all published refs carry -pr42, canonical refs absent" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX="-pr42"
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    local calls
+    calls=$(cat "$docker_calls")
+
+    # Every imagetools create -t target must carry -pr42 suffix.
+    # (Per-version multi-arch manifest targets.)
+    local target_lines
+    target_lines=$(grep 'imagetools.*create' "$docker_calls" | grep -- '-t ' || true)
+    # Each target ref must end in -pr42.
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        # Extract the -t value: the token after '-t '.
+        local target_ref
+        target_ref=$(echo "$line" | sed -n 's/.*-t \([^ ]*\).*/\1/p')
+        [[ "$target_ref" == *"-pr42" ]]
+    done <<< "$target_lines"
+
+    # Bundle: the buildx build -t ref must carry -pr42.
+    local bundle_ref_in_calls
+    bundle_ref_in_calls=$(grep 'buildx build' "$docker_calls" | grep 'pg18-bundle' || true)
+    [[ "$bundle_ref_in_calls" == *"-pr42"* ]]
+
+    # Canonical refs (no -pr suffix) must NEVER appear in imagetools create -t lines.
+    # The canonical tags are :pg18-2.27.1 and :pg18-bundle (no suffix).
+    # They must not appear as -t targets — only the suffixed versions are targets.
+    local canon_target_lines
+    canon_target_lines=$(grep 'imagetools.*create.*-t ' "$docker_calls" \
+        | grep -v '\-pr42' | grep 'pg18-2' || true)
+    [ -z "$canon_target_lines" ]
+
+    local canon_bundle_target
+    canon_bundle_target=$(grep 'buildx build.*-t ' "$docker_calls" \
+        | grep 'pg18-bundle' | grep -v '\-pr42' || true)
+    [ -z "$canon_bundle_target" ]
+}
+
+# ---------------------------------------------------------------------------
+# BB1-push-canonical: PR_TAG_SUFFIX empty (push/dispatch) → canonical refs
+# (no suffix) created (regression guard).
+# ---------------------------------------------------------------------------
+@test "BB1-push-canonical: PR_TAG_SUFFIX empty → canonical refs published (regression)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        # PR_TAG_SUFFIX empty (push/dispatch path)
+        export PR_TAG_SUFFIX=""
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    local calls
+    calls=$(cat "$docker_calls")
+
+    # Canonical per-version target refs must appear (no -pr suffix).
+    [[ "$calls" == *"pg18-2.27.1"* ]]
+    # Bundle must appear without a -pr suffix.
+    grep -q 'pg18-bundle' "$docker_calls"
+    # No -pr suffix refs should appear at all.
+    local pr_refs
+    pr_refs=$(grep '\-pr[0-9]' "$docker_calls" || true)
+    [ -z "$pr_refs" ]
+}
+
+# ---------------------------------------------------------------------------
+# CACHE-flags: per-arch buildx build uses --cache-from and --cache-to with
+# deterministic ref ghcr.io/<owner>/ext-<ext>-buildcache:pg<major>-<arch>.
+#
+# RED before fix: buildx build call has no --cache-from / --cache-to flags.
+# GREEN after fix: both flags present with the deterministic buildcache ref.
+# ---------------------------------------------------------------------------
+@test "CACHE-flags: per-arch buildx build carries --cache-from and --cache-to registry flags" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        export REPO_OWNER=testowner
+        export REMOTE_CR=ghcr.io/testowner
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    # The buildx build for the per-arch compile step must include --cache-from and --cache-to.
+    local buildx_line
+    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    [ -n "$buildx_line" ]
+
+    # Verify both cache flags are present.
+    [[ "$buildx_line" == *"--cache-from"* ]]
+    [[ "$buildx_line" == *"--cache-to"* ]]
+
+    # The cache ref must use the deterministic buildcache pattern.
+    [[ "$buildx_line" == *"ext-timescaledb-buildcache:pg18-amd64"* ]]
+
+    # Cache type must be registry.
+    [[ "$buildx_line" == *"type=registry"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Retry tests: transient build/push failures must be retried up to EXT_BUILD_RETRIES
+# times before propagating as a persistent failure.
+# ---------------------------------------------------------------------------
+
+# A non-ceiling compile that fails once then succeeds must be INCLUDED (not excluded).
+# Without retry: single failure → excluded. With retry: second attempt succeeds → included.
+@test "BB2-transient-build-retry-succeeds: compile fails once then succeeds → version included" {
+    export EXT_BUILD_RETRIES=3
+
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # build_ext_image for 2.25.0 fails on attempt 1, succeeds on attempt 2+.
+    # Self-counting via the build_calls.log file (TEST_TEMP_DIR is exported).
+    build_ext_image() {
+        local ver="$2"
+        echo "CALL ext=${1} ver=${ver}" >> "$TEST_TEMP_DIR/build_calls.log"
+        if [[ "$ver" == "2.25.0" ]]; then
+            local cnt
+            cnt=$(grep -c "ver=2.25.0" "$TEST_TEMP_DIR/build_calls.log" 2>/dev/null || echo 0)
+            if [[ "$cnt" -le 1 ]]; then
+                return 1  # first attempt fails (transient)
+            fi
+        fi
+        return 0  # subsequent attempts and all other versions succeed
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Both versions must succeed → exit 0 (transient failure absorbed by retry).
+    [ "$status" -eq 0 ]
+
+    # build_ext_image for 2.25.0 must have been called at least 2 times (retry happened).
+    local calls_25
+    calls_25=$(grep -c "ver=2.25.0" "$TEST_TEMP_DIR/build_calls.log")
+    [ "$calls_25" -ge 2 ]
+
+    # 2.27.1 (ceiling) must have been built exactly once (no retry needed).
+    local calls_ceil
+    calls_ceil=$(grep -c "ver=2.27.1" "$TEST_TEMP_DIR/build_calls.log")
+    [ "$calls_ceil" -eq 1 ]
+
+    unset EXT_BUILD_RETRIES
+}
+
+# Non-ceiling build that fails ALL retry attempts → tolerated (genuine incompatibility).
+# Ceiling that fails ALL retry attempts → fatal.
+@test "BB2-persistent-build-fail-tolerated: non-ceiling all-retry-fail → tolerated (exit 0)" {
+    export EXT_BUILD_RETRIES=2
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # 2.25.0 always fails (simulates real musl incompatibility after retries).
+    # Log to build_calls.log (TEST_TEMP_DIR is already exported by the test framework).
+    build_ext_image() {
+        echo "CALL ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        if [[ "$2" == "2.25.0" ]]; then
+            return 1
+        fi
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Non-ceiling persistent failure → tolerated → exit 0.
+    [ "$status" -eq 0 ]
+
+    # 2.25.0 must have been attempted EXT_BUILD_RETRIES times (retry exhausted).
+    local attempts_25
+    attempts_25=$(grep -c "ver=2.25.0" "$TEST_TEMP_DIR/build_calls.log")
+    [ "$attempts_25" -eq "$EXT_BUILD_RETRIES" ]
+
+    # 2.26.0 and ceiling 2.27.1 must have been built successfully (each once).
+    local log_content
+    log_content=$(cat "$TEST_TEMP_DIR/build_calls.log")
+    [[ "$log_content" == *"ver=2.26.0"* ]]
+    [[ "$log_content" == *"ver=2.27.1"* ]]
+
+    unset EXT_BUILD_RETRIES
+}
+
+@test "BB2-ceiling-persistent-fail-fatal: ceiling all-retry-fail → exit non-zero" {
+    export EXT_BUILD_RETRIES=2
+
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # Ceiling always fails all attempts.
+    build_ext_image() {
+        echo "CALL ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        if [[ "$2" == "2.27.1" ]]; then
+            return 1
+        fi
+        return 0
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Ceiling persistent failure → fatal → non-zero exit.
+    [ "$status" -ne 0 ]
+
+    # Ceiling must have been attempted EXT_BUILD_RETRIES times.
+    local attempts_ceil
+    attempts_ceil=$(grep -c "ver=2.27.1" "$TEST_TEMP_DIR/build_calls.log")
+    [ "$attempts_ceil" -eq "$EXT_BUILD_RETRIES" ]
+
+    unset EXT_BUILD_RETRIES
+}
+
+# Push failure (rc=2) fails all retries → fatal.
+@test "BB2-push-retry-then-fatal: push fails all retries → fatal" {
+    export EXT_BUILD_RETRIES=2
+
+    resolve_version_set() { echo '["2.25.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # rc=2 from build_ext_image means push failure → fatal for all versions.
+    build_ext_image() {
+        echo "CALL ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 2
+    }
+    export -f build_ext_image
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Push failure must be fatal even with retries exhausted.
+    [ "$status" -ne 0 ]
+
+    # The first version must have been attempted EXT_BUILD_RETRIES times.
+    local attempts
+    attempts=$(grep -c "ver=2.25.0" "$TEST_TEMP_DIR/build_calls.log")
+    [ "$attempts" -eq "$EXT_BUILD_RETRIES" ]
+
+    unset EXT_BUILD_RETRIES
+}
+
+# ---------------------------------------------------------------------------
+# rc-capture after negated if: verify the logged rc is the real docker exit code
+# and not 0 (the exit of the negation).
+# ---------------------------------------------------------------------------
+
+# When imagetools create fails, the logged rc in the error message must equal
+# the real non-zero exit code, not 0.
+# Without the fix: `if ! $DOCKER ...; then rc=$?` captures rc=0 (exit of `!`).
+# With the fix: rc is captured from the command directly → real non-zero value.
+@test "BBlow-rc-capture: imagetools create failure logs real rc, not 0" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local log_file="$tmpd/bblow_output.log"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM="" ARCH_SUFFIX="" PR_TAG_SUFFIX=""
+        export REMOTE_CR="ghcr.io/test"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        # Return empty resolver path so the non-resolver (AW-1) branch executes.
+        yq() { echo ""; }
+        export -f yq
+
+        # imagetools create exits with rc=42 (chosen to be clearly non-zero, not 1).
+        docker() {
+            if [[ "$*" == *imagetools* ]]; then return 42; fi
+            return 0
+        }
+        export -f docker
+
+        finalize_multiarch_manifests "'"$tmpd"'/postgres/extensions/config.yaml" 18 "'"$tmpd"'/postgres" 2>&1 | tee "'"$log_file"'"
+    '
+
+    # The logged rc in the error message must not be 0.
+    # With the bug: log contains "(rc=0)". With the fix: log contains the real rc.
+    local logged_rc
+    logged_rc=$(grep -oP 'rc=\K[0-9]+' "$log_file" 2>/dev/null | head -1 || echo "")
+    # Only assert if a rc= value was actually logged (the function reached the error path).
+    if [[ -n "$logged_rc" ]]; then
+        [ "$logged_rc" -ne 0 ]
+    fi
+}

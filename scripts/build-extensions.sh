@@ -44,6 +44,32 @@ _arch_suffix_tag() {
     fi
 }
 
+# _scoped_tag <base_ref>
+# Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
+# returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
+#
+# PR build-cache reuse design: on a same-repo pull_request, the build-extensions
+# leg publishes per-arch images and the stage-B merge publishes multi-arch
+# manifests and the bundle — all carrying the -pr<N> suffix.  The shared
+# registry build-cache (--cache-to/--cache-from below) lets the master push leg
+# reuse the PR's compilation output (cache hit, no recompile) when it publishes
+# the canonical un-suffixed tags.  Forks are excluded at the job if: clause so
+# only trusted same-repo PRs write to the GHCR namespace.
+#
+# Examples (PR_TAG_SUFFIX=-pr42):
+#   _scoped_tag "ghcr.io/owner/ext-ts:pg18-2.27.1"  => "ghcr.io/owner/ext-ts:pg18-2.27.1-pr42"
+#   _scoped_tag "ghcr.io/owner/ext-ts:pg18-bundle"   => "ghcr.io/owner/ext-ts:pg18-bundle-pr42"
+# Examples (PR_TAG_SUFFIX empty — push/dispatch):
+#   _scoped_tag "ghcr.io/owner/ext-ts:pg18-bundle"   => "ghcr.io/owner/ext-ts:pg18-bundle"
+_scoped_tag() {
+    local base="$1"
+    if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+        printf '%s%s' "$base" "$PR_TAG_SUFFIX"
+    else
+        printf '%s' "$base"
+    fi
+}
+
 # Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
 # This ensures the trusted CI registry root reaches extension builder stages.
 # When BUILD_PLATFORM is set (CI per-arch leg), uses `docker buildx build --platform`
@@ -82,7 +108,15 @@ build_ext_image() {
         local _ver_image
         _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
         local _ver_tag
-        _ver_tag=$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")
+        # Per-arch tag carries both the arch suffix and the PR scope suffix (if any).
+        # Format: <registry>/<owner>/ext-<name>:pg<major>-<ver>-<arch>${PR_TAG_SUFFIX}
+        _ver_tag=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")")
+
+        # Registry build-cache ref: shared between PR and push runs so master reuses
+        # the PR's compilation output (cache hit, no recompile) when publishing
+        # canonical tags.  Deterministic per ext/major/arch; same ref for PR and push.
+        local _cache_ref
+        _cache_ref="${REMOTE_CR:+${REMOTE_CR}/}ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
 
         # Compute do_push for this build leg: true unless NO_PUSH or LOCAL_ONLY.
         local _do_push_ext=true
@@ -91,11 +125,19 @@ build_ext_image() {
 
         # Step 1: compile — always use --load (loads image into the local docker
         # store of the native runner).  rc=1 on failure (compile / musl error).
+        # --cache-from reads from the shared registry build-cache so a PR's
+        # compilation is reused by the master push leg (no recompile on merge).
+        # --cache-to writes to the same ref so the PR populates it for master.
+        # A cache-to write failure is non-fatal in buildx (the build itself
+        # succeeds even if the cache upload fails), so no explicit error handling
+        # is needed here.
         if ! $DOCKER buildx build \
             --platform "${BUILD_PLATFORM}" \
             -f "$dockerfile" \
             -t "$_ver_tag" \
             --load \
+            --cache-from "type=registry,ref=${_cache_ref}" \
+            --cache-to "type=registry,ref=${_cache_ref},mode=max" \
             --build-arg REMOTE_CR="${REMOTE_CR}" \
             --build-arg MAJOR_VERSION="$pg_major" \
             --build-arg EXT_VERSION="$ext_version" \
@@ -344,8 +386,32 @@ build_extension() {
         return 0
     fi
 
-    # Build the image
-    build_ext_image "$ext_name" "$ext_version" "$repo" "$major_ver" "$dockerfile" "$context_dir"
+    # Retry loop for transient failures (network blips on FROM pull, apk add, git clone).
+    # EXT_BUILD_RETRIES defaults to 3; set to a lower value in tests.
+    # Persistent failures (real musl incompatibility, auth error) fail all attempts
+    # and propagate the original rc so the caller can distinguish compile (rc=1)
+    # from push (rc=2) failures. Retries reduce — but do not eliminate — the
+    # transient-vs-incompatibility ambiguity: a version excluded after N persistent
+    # failures is treated as a genuine build miss.
+    local _max_attempts="${EXT_BUILD_RETRIES:-3}"
+    local _attempt=0
+    local _build_rc=0
+    while [[ "$_attempt" -lt "$_max_attempts" ]]; do
+        _attempt=$(( _attempt + 1 ))
+        _build_rc=0
+        build_ext_image "$ext_name" "$ext_version" "$repo" "$major_ver" "$dockerfile" "$context_dir" \
+            || _build_rc=$?
+        if [[ "$_build_rc" -eq 0 ]]; then
+            return 0
+        fi
+        if [[ "$_attempt" -lt "$_max_attempts" ]]; then
+            local _backoff=$(( _attempt * 3 ))
+            log_warning "build_ext_image attempt $_attempt/$_max_attempts failed (rc=$_build_rc) for $ext_name $ext_version — retrying in ${_backoff}s"
+            sleep "$_backoff"
+        fi
+    done
+    log_error "build_ext_image failed after $_max_attempts attempt(s) (rc=$_build_rc) for $ext_name $ext_version — persistent failure"
+    return "$_build_rc"
 }
 
 # Tag extension with registry name (always needed for COPY --from= to work)
@@ -936,8 +1002,10 @@ build_tag_push_extensions() {
             ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
             # On the CI per-arch leg (ARCH_SUFFIX set), check presence of the
             # arch-suffixed ref; locally (ARCH_SUFFIX empty) use the plain ref.
+            # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a
+            # canonical tag from a prior push run.
             local _check_image
-            _check_image=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
+            _check_image=$(_scoped_tag "$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")")
 
             # Skip already-available versions.
             if ! _image_needs_build "$_check_image"; then
@@ -1376,10 +1444,10 @@ _should_build_extension() {
 
     if [[ "$set_size" -eq 1 ]]; then
         # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref.
-        # An un-suffixed tag from a prior run must not cause a false skip —
-        # stage B needs the suffixed source image.
+        # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a canonical
+        # tag from a prior push run.
         local _check_image
-        _check_image=$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")
+        _check_image=$(_scoped_tag "$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")")
 
         if [[ "$LOCAL_ONLY" == "true" ]]; then
             if [[ "$FORCE" != "true" ]] && docker image inspect "$_check_image" &>/dev/null; then
@@ -1405,11 +1473,12 @@ _should_build_extension() {
     # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref so
     # a leftover un-suffixed tag from a prior run does not cause a false skip —
     # the stage-B merge needs the suffixed source, not the un-suffixed one.
+    # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a canonical tag.
     local ver
     while IFS= read -r ver; do
         local ver_image _check_ver_image
         ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        _check_ver_image=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
+        _check_ver_image=$(_scoped_tag "$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")")
         if _image_needs_build "$_check_ver_image"; then
             return 0
         fi
@@ -1779,24 +1848,28 @@ finalize_multiarch_manifests() {
 
         if [[ -z "$_resolver_path" ]]; then
             # AW-1: Non-resolver extension (single configured version).
-            # Create the un-suffixed multi-arch manifest from stable per-arch suffixed tags.
-            # No bundle, no versionset artifact — the consumer uses the un-suffixed ref directly.
+            # Create the scoped multi-arch manifest target from scoped per-arch suffixed tags.
+            # On push/dispatch (PR_TAG_SUFFIX empty) → canonical un-suffixed target.
+            # On same-repo PR (PR_TAG_SUFFIX=-prN) → PR-scoped target, canonical unchanged.
             local _ver_image_base
             _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
             local _nr_src_amd64 _nr_src_arm64
-            _nr_src_amd64=$(_arch_suffix_tag "$_ver_image_base" "amd64")
-            _nr_src_arm64=$(_arch_suffix_tag "$_ver_image_base" "arm64")
+            _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "amd64")")
+            _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "arm64")")
+            local _nr_target
+            _nr_target=$(_scoped_tag "$_ver_image_base")
 
-            log_info "$ext $ceiling pg${major_ver}: imagetools create $_ver_image_base from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
+            log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
             local _nr_create_rc=0
-            if ! $DOCKER buildx imagetools create \
-                -t "$_ver_image_base" \
-                "$_nr_src_amd64" "$_nr_src_arm64" 2>&1; then
-                _nr_create_rc=$?
+            $DOCKER buildx imagetools create \
+                -t "$_nr_target" \
+                "$_nr_src_amd64" "$_nr_src_arm64" 2>&1 \
+                || _nr_create_rc=$?
+            if [[ "$_nr_create_rc" -ne 0 ]]; then
                 log_error "$ext $ceiling pg${major_ver}: non-resolver imagetools create failed (rc=$_nr_create_rc) — fail-closed"
                 _failed=true
             else
-                log_success "Multi-arch manifest created: $_ver_image_base (non-resolver)"
+                log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
             fi
             continue
         fi
@@ -1857,11 +1930,12 @@ finalize_multiarch_manifests() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Step 1: compute AVAILABLE set = INTERSECTION of -amd64 and -arm64 suffixed tags.
-        # A version whose suffixed tags exist on BOTH arches is available; missing on
-        # either arch → excluded (non-ceiling) or FATAL (ceiling). Stable suffixed tags
-        # persist across runs so a cached (not-rebuilt) version with existing tags is
-        # correctly included — this is the key fix over the digest-map approach.
+        # Step 1: compute AVAILABLE set = INTERSECTION of scoped -amd64 and -arm64 suffixed tags.
+        # Source tags carry PR_TAG_SUFFIX (set by stage A's per-arch build leg), so on a PR
+        # the probed refs are e.g. :pg18-2.27.1-amd64-pr42.  On push, PR_TAG_SUFFIX is empty
+        # and the stable un-scoped refs (:pg18-2.27.1-amd64) are probed as before.
+        # Per-version multi-arch manifest targets also carry PR_TAG_SUFFIX so canonical
+        # un-suffixed tags are NEVER written from a PR.
         local _confirmed_available=()
         local _excluded_entries=()
         local _ext_failed=false
@@ -1870,8 +1944,9 @@ finalize_multiarch_manifests() {
             local ver_image_base
             ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
             local _ver_tag_amd64 _ver_tag_arm64
-            _ver_tag_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
-            _ver_tag_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
+            # Probe the scoped per-arch refs that stage A published.
+            _ver_tag_amd64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "amd64")")
+            _ver_tag_arm64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "arm64")")
 
             # Use the 3-state probe to distinguish a definitive ABSENT (legitimate
             # per-arch build miss → excluded for non-ceiling) from a transient ERROR
@@ -1901,20 +1976,23 @@ finalize_multiarch_manifests() {
                 fi
             fi
 
-            # Both arch suffixed tags confirmed PRESENT (rc=0): create the un-suffixed
-            # multi-arch manifest.  A failure here is a registry infra error (the
-            # sources are confirmed present), not a build miss — fatal for all versions.
-            local ver_multiarch="$ver_image_base"
+            # Both arch suffixed tags confirmed PRESENT (rc=0): create the scoped
+            # multi-arch manifest target from the scoped source tags.
+            # On push (empty suffix): canonical un-suffixed target.
+            # On PR: PR-scoped target (e.g. :pg18-2.27.1-pr42).
+            local ver_multiarch
+            ver_multiarch=$(_scoped_tag "$ver_image_base")
             local _src_amd64 _src_arm64
             _src_amd64="$_ver_tag_amd64"
             _src_arm64="$_ver_tag_arm64"
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_src_amd64 + $_src_arm64"
             local _create_rc=0
-            if ! $DOCKER buildx imagetools create \
+            $DOCKER buildx imagetools create \
                 -t "$ver_multiarch" \
-                "$_src_amd64" "$_src_arm64" 2>&1; then
-                _create_rc=$?
+                "$_src_amd64" "$_src_arm64" 2>&1 \
+                || _create_rc=$?
+            if [[ "$_create_rc" -ne 0 ]]; then
                 # Both sources were confirmed present by the probe; a create failure
                 # is a registry/infra error, NOT a missing-source exclusion.
                 # Fatal for ceiling AND non-ceiling (infra error, not build miss).
@@ -1965,13 +2043,17 @@ finalize_multiarch_manifests() {
         fi
 
         # Step 2: build the multi-arch bundle from the AVAILABLE per-version multi-arch
-        # manifests (un-suffixed, just created above). Each platform's bundle layer gets
+        # manifests (scoped, just created above). Each platform's bundle layer gets
         # that platform's .so via the per-version manifest's platform selection.
         # This is file-copy only (no compilation), so buildx multi-platform on the amd64
         # merge runner works without QEMU. The bundle contains EXACTLY the available set.
         local _bundle_image_base
         _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
-        local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+        local _bundle_base_tag_canonical="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+        # Apply PR_TAG_SUFFIX to the bundle tag so PR runs publish a scoped bundle ref
+        # and never overwrite the canonical :pg<major>-bundle tag.
+        local _bundle_base_tag
+        _bundle_base_tag=$(_scoped_tag "$_bundle_base_tag_canonical")
 
         local _bundle_df
         _bundle_df=$(mktemp)
@@ -1980,7 +2062,9 @@ finalize_multiarch_manifests() {
             local _bv
             for _bv in "${_confirmed_available[@]}"; do
                 local _bv_ref
-                _bv_ref=$(ext_image_name "$ext" "$_bv" "$major_ver")  # un-suffixed multi-arch ref
+                # Bundle Dockerfile COPYs from the scoped per-version multi-arch manifests
+                # (just created in step 1 above).
+                _bv_ref=$(_scoped_tag "$(ext_image_name "$ext" "$_bv" "$major_ver")")
                 printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_bv_ref" "$_bv"
                 printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_bv_ref" "$_bv"
             done
@@ -1991,13 +2075,14 @@ finalize_multiarch_manifests() {
 
         log_info "$ext pg${major_ver}: buildx build --platform linux/amd64,linux/arm64 -t $_bundle_base_tag (bundle from available: ${_confirmed_available[*]})"
         local _bundle_build_rc=0
-        if ! $DOCKER buildx build \
+        $DOCKER buildx build \
             --platform linux/amd64,linux/arm64 \
             -t "$_bundle_base_tag" \
             -f "$_bundle_df" \
             --push \
-            "$_bundle_ctx" 2>&1; then
-            _bundle_build_rc=$?
+            "$_bundle_ctx" 2>&1 \
+            || _bundle_build_rc=$?
+        if [[ "$_bundle_build_rc" -ne 0 ]]; then
             log_error "$ext pg${major_ver}: bundle buildx build failed (rc=$_bundle_build_rc) — fail-closed"
             rm -f "$_bundle_df"
             rm -rf "$_bundle_ctx"
