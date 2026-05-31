@@ -326,6 +326,31 @@ is_strict_semver() {
     [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# is_valid_oci_digest <digest>
+# Returns 0 when <digest> is a valid OCI content digest: EXACTLY the string
+# "sha256:" followed by EXACTLY 64 lowercase hexadecimal characters, and
+# NOTHING else (no trailing whitespace, no embedded newlines, no extra tokens).
+#
+# Uses printf '%s' piped to grep -Eqx (whole-line match) rather than a bare
+# bash =~ so that embedded newlines — which cause bash $ in =~ to match before
+# the newline, not at the true end of the string — are safely rejected.
+#
+# This is the single shared validator used by BOTH:
+#   - The producer (assemble_and_push_bundle in build-extensions.sh) — after
+#     _capture_bundle_digest, before writing the artifact.
+#   - The consumer (generate_dockerfile in extension-utils.sh) — after reading
+#     .bundle_digest from the artifact, before inserting into COPY --from=.
+#
+# Any value that does not satisfy the whole-string pattern is treated as
+# malformed/poisoned, regardless of whether it has the sha256: prefix.
+is_valid_oci_digest() {
+    local _d="${1:-}"
+    # Reject immediately if the value contains a newline — grep -x would only
+    # match the first line, silently accepting multi-line injections otherwise.
+    [[ "$_d" == *$'\n'* ]] && return 1
+    printf '%s' "$_d" | grep -Eqx 'sha256:[0-9a-f]{64}'
+}
+
 # validate_semver_set_json <json_array> <ceiling>
 # Validates a JSON array of version strings at the array level (NOT after jq -r).
 # This prevents the embedded-newline bypass where jq -r '.[]' splits a single
@@ -679,10 +704,23 @@ generate_dockerfile() {
                         # consistent with the atomic invariant (written by the producer
                         # only after a successful push).  LOCAL_ONLY artifacts omit
                         # bundle_digest, so the tag-based fallback is correct there.
+                        #
+                        # AN fix: validate the digest with is_valid_oci_digest (strict
+                        # whole-string: sha256: + exactly 64 lowercase hex, no extra
+                        # content) before using it in the COPY line.  A present-but-
+                        # invalid digest signals a poisoned or corrupted artifact:
+                        # fail closed (log error, return 1) — do NOT emit a COPY with
+                        # an unvalidated digest, and do NOT silently fall back to the
+                        # tag (that would mask the corruption).  An absent bundle_digest
+                        # (LOCAL_ONLY case) → tag-based COPY, unchanged.
                         local _bundle_digest
                         _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
                         local _bundle_copy_ref
                         if [[ -n "$_bundle_digest" ]]; then
+                            if ! is_valid_oci_digest "$_bundle_digest"; then
+                                log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(printf '%s' "$_bundle_digest" | head -c 80)') — fail closed (possible artifact corruption or poisoning)"
+                                return 1
+                            fi
                             _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"
                         else
                             _bundle_copy_ref="${_bundle_ref}"

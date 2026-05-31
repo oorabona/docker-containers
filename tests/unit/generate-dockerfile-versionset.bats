@@ -16,6 +16,8 @@
 #   - ROOT_DIR:       set to TEST_TEMP_DIR (versionset artifacts go there)
 #   - Config and template: minimal inline fixtures
 
+bats_require_minimum_version 1.5.0
+
 load "../test_helper"
 
 # ---------------------------------------------------------------------------
@@ -2123,6 +2125,168 @@ EOF
     [ "$bundle_count" -eq 1 ]
 
     # Must NOT contain any @sha256: (no digest pinning when digest absent).
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$pinned_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AN-consumer: strict OCI digest validation at the consumer boundary.
+#
+# bundle_digest flows from the artifact into COPY --from=<ref>@<digest>.
+# A poisoned artifact can put whitespace/newlines/extra tokens in bundle_digest
+# and inject arbitrary Dockerfile instructions.
+#
+# Fix: `is_valid_oci_digest` validates the whole-string before use:
+#   EXACTLY sha256: followed by EXACTLY 64 lowercase hex chars, nothing else.
+#
+# AN-consumer-rejects-malformed-digest: poisoned bundle_digest (embedded
+#   newline + RUN evil, wrong length, uppercase, extra chars) → generate_dockerfile
+#   FAILS CLOSED (non-zero, no injected text in any emitted line).
+#   RED before (injected into COPY), GREEN after.
+#
+# AN-consumer-accepts-valid-digest: valid digest → COPY --from=<ref>@sha256:<64hex>
+#   (regression — AM digest-pin still works).
+#
+# AN-consumer-absent-digest-tag: no bundle_digest in artifact → tag-based COPY
+#   (LOCAL_ONLY case, unchanged).
+# ---------------------------------------------------------------------------
+
+# Helper: write a versionset artifact that contains bundle_digest.
+_write_versionset_with_digest() {
+    local ext="$1"
+    local pg_major="$2"
+    local digest="$3"
+    shift 3
+    local -a available_arr=("$@")
+
+    local arr_json="["
+    local first=1
+    for v in "${available_arr[@]}"; do
+        [[ "$first" -eq 0 ]] && arr_json+=","
+        arr_json+="\"$v\""
+        first=0
+    done
+    arr_json+="]"
+
+    # Use printf to write the digest value literally (handles embedded newlines).
+    local tmp_digest_file
+    tmp_digest_file=$(mktemp)
+    printf '%s' "$digest" > "$tmp_digest_file"
+
+    jq -nc \
+        --arg ext "$ext" \
+        --arg pg_major "$pg_major" \
+        --arg ceiling "${available_arr[-1]}" \
+        --argjson resolved "$arr_json" \
+        --argjson available "$arr_json" \
+        --rawfile bundle_digest "$tmp_digest_file" \
+        '{ext:$ext,pg_major:$pg_major,ceiling:$ceiling,resolved:$resolved,available:$available,excluded:[],bundle_digest:($bundle_digest|rtrimstr("\n"))}' \
+        > "$TEST_TEMP_DIR/.build-lineage/ext-${ext}-pg${pg_major}-versionset.json"
+    rm -f "$tmp_digest_file"
+}
+
+@test "AN-consumer-rejects-embedded-newline-injection: bundle_digest with newline+RUN evil → fail closed, injected text absent" {
+    # Poisoned digest: valid-looking sha256 prefix + embedded newline + injected directive.
+    # An attacker who controls the artifact can put this in bundle_digest to inject
+    # a RUN instruction into the generated Dockerfile.
+    local evil_digest
+    evil_digest=$(printf 'sha256:0000000000000000000000000000000000000000000000000000000000000000\nRUN evil')
+    _write_versionset_with_digest "timescaledb" "18" "$evil_digest" "2.25.0" "2.27.1"
+
+    # Use --separate-stderr so $output contains only stdout (Dockerfile content)
+    # and $stderr contains error messages. This prevents the log_error message
+    # (which quotes the malformed digest for diagnostics) from being mistaken
+    # for injected Dockerfile content in the evil_count assertion.
+    run --separate-stderr generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0, "RUN evil" appears in stdout (injected into Dockerfile).
+    # GREEN after fix: exits non-zero (fail closed — malformed digest rejected).
+    [ "$status" -ne 0 ]
+
+    # The injected token must NEVER appear in the Dockerfile stdout (primary oracle).
+    # $output is stdout-only with --separate-stderr; error messages go to $stderr.
+    local evil_count
+    evil_count=$(printf '%s' "$output" | grep -c "RUN evil" || true)
+    [ "$evil_count" -eq 0 ]
+}
+
+@test "AN-consumer-rejects-uppercase-hex: uppercase digest → fail closed" {
+    # sha256: followed by 64 uppercase hex chars — fails strict validator (must be lowercase).
+    local bad_digest="sha256:DEADBEEF00000000000000000000000000000000000000000000000000000000"
+    _write_versionset_with_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
+
+    # Use --separate-stderr so $output contains Dockerfile stdout only.
+    run --separate-stderr generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0, emits COPY with uppercase digest (unvalidated).
+    # GREEN after fix: exits non-zero.
+    [ "$status" -ne 0 ]
+
+    # The uppercase hex must not appear in any COPY line in the Dockerfile stdout.
+    local upper_count
+    upper_count=$(printf '%s' "$output" | grep -c "DEADBEEF" || true)
+    [ "$upper_count" -eq 0 ]
+}
+
+@test "AN-consumer-rejects-short-hash: sha256:<63hex> too-short → fail closed" {
+    # 63 hex chars — one char short of a valid sha256 digest.
+    local bad_digest="sha256:000000000000000000000000000000000000000000000000000000000000000"
+    _write_versionset_with_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -ne 0 ]
+}
+
+@test "AN-consumer-accepts-valid-digest: valid sha256:<64lowercase-hex> → pinned COPY emitted" {
+    # Proper OCI digest — must produce a pinned COPY --from=<ref>@sha256:<64hex>.
+    local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
+    _write_versionset_with_digest "timescaledb" "18" "$good_digest" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Regression: valid digest must succeed.
+    [ "$status" -eq 0 ]
+
+    # COPY must use the exact pinned digest ref.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@${good_digest} / /tmp/ext/timescaledb/"
+}
+
+@test "AN-consumer-absent-digest-tag: no bundle_digest in artifact → tag-based COPY, no @ pin" {
+    # LOCAL_ONLY-produced artifact: no bundle_digest field.
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Tag-based COPY (no digest pin).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
+    [ "$bundle_count" -eq 1 ]
+
+    # No @sha256: in output.
     local pinned_count
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]

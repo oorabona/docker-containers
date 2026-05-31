@@ -654,10 +654,15 @@ assemble_and_push_bundle() {
         # Digest capture failure after a successful push is fatal: the caller cannot
         # construct an immutable reference without the digest.  Fail closed here;
         # the caller (_bundle_and_write_artifact) propagates the non-zero return.
+        #
+        # AN fix: apply strict whole-string OCI digest validation (is_valid_oci_digest)
+        # — not just a sha256: prefix check — to prevent a poisoned capture value
+        # (uppercase hex, wrong length, embedded newline, extra tokens) from flowing
+        # into the artifact bundle_digest field and ultimately into a Dockerfile COPY line.
         local _captured_digest
         _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
-        if [[ -z "$_captured_digest" || "$_captured_digest" != sha256:* ]]; then
-            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed (got: '${_captured_digest}') — cannot write immutable artifact ref; fail closed"
+        if ! is_valid_oci_digest "$_captured_digest"; then
+            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed or is malformed (got: '${_captured_digest}') — cannot write immutable artifact ref; fail closed"
             return 2
         fi
         log_info "Bundle digest: $_captured_digest"

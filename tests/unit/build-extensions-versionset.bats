@@ -7958,3 +7958,168 @@ EOCFG
     # No artifact must be written (digest capture failed → fail-closed, no partial artifact).
     [ ! -f "$artifact" ]
 }
+
+# ---------------------------------------------------------------------------
+# AN-producer: strict OCI digest validation at the producer boundary.
+#
+# _capture_bundle_digest output flows directly into the artifact bundle_digest
+# field and from there into the generated Dockerfile COPY line.  A poisoned
+# or malformed value (uppercase hex, short hash, embedded whitespace/newline,
+# extra tokens after the hash) must be rejected BEFORE the artifact is written.
+#
+# Fix: `is_valid_oci_digest` validates the whole captured string:
+#   - MUST match exactly: sha256: followed by exactly 64 lowercase hex chars
+#   - Embedded newlines MUST be rejected (bash $= in =~ can match before \n)
+#   - Zero trailing content allowed
+#
+# AN-producer-rejects-malformed-digest: each malformed form → FATAL, no artifact.
+# AN-producer-accepts-valid: proper sha256:<64hex> → artifact written (regression).
+# ---------------------------------------------------------------------------
+
+# Helper: drive _bundle_and_write_artifact in a subprocess via main() so the
+# artifact write gate is exercised. All versions present in registry (no build
+# needed), digest injected via _capture_bundle_digest mock.
+_run_an_producer() {
+    # Args: <digest_to_return>
+    local digest_value="$1"
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    # version.sh so detect_major_version can run
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions in registry — no builds needed, just bundle + artifact.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+
+        # Bundle build+push succeed; digest is what we control.
+        docker() {
+            local _dc=\"\${1:-}\"
+            case \"\$_dc\" in
+                build) return 0 ;;
+                push)  return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+
+        # _capture_bundle_digest returns the digest under test.
+        _capture_bundle_digest() {
+            printf '%s' '$digest_value'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()      { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()         { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+}
+
+@test "AN-producer-rejects-uppercase-hex: sha256:DEADBEEF... uppercase → FATAL, no artifact" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    # Uppercase hex — should be rejected (valid OCI digest is lowercase only)
+    local bad_digest="sha256:DEADBEEF00000000000000000000000000000000000000000000000000000000"
+    _run_an_producer "$bad_digest"
+
+    # RED before fix: exits 0, artifact written with uppercase digest.
+    # GREEN after fix: exits non-zero (strict validator rejects uppercase hex).
+    [ "$status" -ne 0 ]
+    # Artifact must NOT be written.
+    [ ! -f "$artifact" ]
+}
+
+@test "AN-producer-rejects-short-hash: sha256:<63hex> too short → FATAL, no artifact" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    # 63 hex chars — one short of a valid sha256 digest
+    local bad_digest="sha256:000000000000000000000000000000000000000000000000000000000000000"
+    _run_an_producer "$bad_digest"
+
+    [ "$status" -ne 0 ]
+    [ ! -f "$artifact" ]
+}
+
+@test "AN-producer-rejects-extra-tokens: sha256:<64hex> extra trailing content → FATAL, no artifact" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    # Valid digest followed by extra content (e.g. injected Dockerfile directive)
+    local bad_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000 extra"
+    _run_an_producer "$bad_digest"
+
+    [ "$status" -ne 0 ]
+    [ ! -f "$artifact" ]
+}
+
+@test "AN-producer-rejects-embedded-newline: sha256:<64hex>\\nRUN evil → FATAL, no artifact" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    # Digest with embedded newline followed by a Dockerfile injection attempt.
+    # This is the canonical newline bypass: bash "=~" matches $ before \n.
+    local bad_digest
+    bad_digest=$(printf 'sha256:0000000000000000000000000000000000000000000000000000000000000000\nRUN evil')
+    _run_an_producer "$bad_digest"
+
+    [ "$status" -ne 0 ]
+    [ ! -f "$artifact" ]
+}
+
+@test "AN-producer-accepts-valid: proper sha256:<64lowercase-hex> → artifact written" {
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
+    _run_an_producer "$good_digest"
+
+    # Regression: a valid digest must succeed.
+    [ "$status" -eq 0 ]
+    # Artifact must be written.
+    [ -f "$artifact" ]
+    # The artifact must contain the exact valid digest.
+    local recorded
+    recorded=$(jq -r '.bundle_digest' "$artifact")
+    [ "$recorded" = "$good_digest" ]
+}
