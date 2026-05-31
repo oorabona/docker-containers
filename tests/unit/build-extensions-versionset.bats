@@ -13155,3 +13155,186 @@ EOF
         fi
     fi
 }
+
+# ---------------------------------------------------------------------------
+# BD1-cache-pr-scoped: build cache ref must carry PR_TAG_SUFFIX on PR builds,
+# and no suffix on push/dispatch (canonical) builds.
+#
+# Supply-chain policy (operator-confirmed): the build cache is PR-scoped so an
+# unmerged PR cannot influence master's canonical build via a shared cache.
+# Master recompiles the bumped version (the prefilter skips already-canonical
+# versions, so only the new version recompiles — bounded, accepted waste).
+# No shared PR<->master refs.
+#
+# RED before fix: cache ref is ..:pg18-amd64 regardless of PR_TAG_SUFFIX —
+#   a PR run writes to the same ref as master, enabling cross-scope influence.
+# GREEN after fix:
+#   PR_TAG_SUFFIX=-pr42  → --cache-from/--cache-to ref ends in pg18-amd64-pr42
+#   PR_TAG_SUFFIX empty  → --cache-from/--cache-to ref ends in pg18-amd64 (no suffix)
+# ---------------------------------------------------------------------------
+@test "BD1-cache-pr-scoped: PR_TAG_SUFFIX=-pr42 → cache ref is ...buildcache:pg18-amd64-pr42" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/bd1_pr_docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        export REPO_OWNER=testowner
+        export REMOTE_CR=ghcr.io/testowner
+        # Simulate a same-repo PR build.
+        export PR_TAG_SUFFIX="-pr42"
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    local buildx_line
+    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    [ -n "$buildx_line" ]
+
+    # The cache ref (both --cache-from and --cache-to) must carry the PR suffix.
+    # PR_TAG_SUFFIX=-pr42 → ref must end in pg18-amd64-pr42, NOT pg18-amd64.
+    [[ "$buildx_line" == *"ext-timescaledb-buildcache:pg18-amd64-pr42"* ]]
+
+    # The un-scoped (canonical) cache ref must NOT appear.
+    local unscoped_count
+    unscoped_count=$(echo "$buildx_line" | grep -c 'buildcache:pg18-amd64[^-]' || true)
+    [ "$unscoped_count" -eq 0 ]
+}
+
+@test "BD1-cache-pr-scoped: PR_TAG_SUFFIX empty (push) → canonical cache ref (no suffix)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/bd1_push_docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        export REPO_OWNER=testowner
+        export REMOTE_CR=ghcr.io/testowner
+        # Simulate a push/dispatch (master) build — no PR suffix.
+        export PR_TAG_SUFFIX=""
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    local buildx_line
+    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    [ -n "$buildx_line" ]
+
+    # Canonical cache ref: ends in pg18-amd64 with no PR suffix.
+    [[ "$buildx_line" == *"ext-timescaledb-buildcache:pg18-amd64"* ]]
+
+    # The ref must NOT contain -pr<N> (no PR suffix on canonical builds).
+    local pr_count
+    pr_count=$(echo "$buildx_line" | grep -c 'buildcache:pg18-amd64-pr' || true)
+    [ "$pr_count" -eq 0 ]
+}

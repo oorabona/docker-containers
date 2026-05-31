@@ -468,6 +468,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # BD-2: serialize merge runs on the same ref so a later run's stage-A/merge
+    # does not interleave with an earlier merge's probe/create window and overwrite
+    # the per-arch suffixed tags while they are being assembled into a manifest.
+    # cancel-in-progress: false — let the in-flight merge finish; the later run
+    # will queue and merge the correct digests once the earlier run completes.
+    concurrency:
+      group: merge-extension-manifests-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

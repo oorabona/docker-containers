@@ -48,13 +48,17 @@ _arch_suffix_tag() {
 # Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
 # returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
 #
-# PR build-cache reuse design: on a same-repo pull_request, the build-extensions
-# leg publishes per-arch images and the stage-B merge publishes multi-arch
-# manifests and the bundle — all carrying the -pr<N> suffix.  The shared
-# registry build-cache (--cache-to/--cache-from below) lets the master push leg
-# reuse the PR's compilation output (cache hit, no recompile) when it publishes
-# the canonical un-suffixed tags.  Forks are excluded at the job if: clause so
-# only trusted same-repo PRs write to the GHCR namespace.
+# BD-1 supply-chain policy (operator-confirmed option 2): image tags AND the
+# registry build-cache are both PR-scoped.  On a same-repo pull_request, the
+# build-extensions leg publishes per-arch images and the stage-B merge publishes
+# multi-arch manifests and the bundle — all carrying the -pr<N> suffix.
+# The build-cache ref also carries the PR suffix (see BD-1 comment in
+# build_ext_image) so an unmerged PR cannot influence master's canonical build
+# via a shared cache entry.  Master recompiles the bumped version on merge;
+# the prefilter skips already-canonical versions so only the newly bumped
+# version recompiles — bounded, accepted waste.
+# Forks are excluded at the job if: clause so only trusted same-repo PRs write
+# to the GHCR namespace.
 #
 # Examples (PR_TAG_SUFFIX=-pr42):
 #   _scoped_tag "ghcr.io/owner/ext-ts:pg18-2.27.1"  => "ghcr.io/owner/ext-ts:pg18-2.27.1-pr42"
@@ -118,10 +122,19 @@ build_ext_image() {
         # produced docker.io/ext-...-buildcache — no owner namespace, not writable.
         # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
         # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
+        #
+        # BD-1 supply-chain policy (operator-confirmed): the cache ref is PR-scoped
+        # by appending PR_TAG_SUFFIX so an unmerged PR cannot influence master's
+        # canonical build via a shared cache entry.  On a same-repo PR the ref ends
+        # in pg<N>-<arch>-pr<N>; on push/dispatch (master) PR_TAG_SUFFIX is empty
+        # and the ref ends in pg<N>-<arch>.  There are no shared PR<->master refs.
+        # Master recompiles the bumped version on merge; the prefilter skips
+        # already-canonical versions so only the newly bumped version recompiles —
+        # bounded, accepted waste relative to the supply-chain guarantee.
         local _cache_owner
         _cache_owner="${REPO_OWNER:-$(get_repo_owner)}"
         local _cache_ref
-        _cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
+        _cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}${PR_TAG_SUFFIX:-}"
 
         # Compute do_push for this build leg: true unless NO_PUSH or LOCAL_ONLY.
         local _do_push_ext=true
@@ -130,8 +143,9 @@ build_ext_image() {
 
         # Step 1: compile — always use --load (loads image into the local docker
         # store of the native runner).  rc=1 on failure (compile / musl error).
-        # --cache-from reads from the shared registry build-cache so a PR's
-        # compilation is reused by the master push leg (no recompile on merge).
+        # BD-1: the cache is PR-scoped (see comment above); --cache-from on a PR
+        # reads ONLY that PR's own scoped cache across re-pushes.  On push/dispatch
+        # (master) the ref has no suffix so master reads/writes only its own cache.
         # --cache-to writes when we have GHCR write access (_do_push_ext=true);
         # omitting --cache-to on LOCAL_ONLY/NO_PUSH paths avoids attempting writes
         # to a registry we cannot authenticate to in that context.
