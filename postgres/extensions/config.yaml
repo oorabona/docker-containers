@@ -101,6 +101,7 @@ extensions:
     priority: 3
     version_set:
       resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 12
   pg_cron:
     version: "1.6.7"
     description: "Cron-based job scheduling inside PostgreSQL"

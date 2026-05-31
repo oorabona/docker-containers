@@ -15,40 +15,68 @@ setup() {
 # ── pg18: exact 13-version array ─────────────────────────────────────────────
 
 @test "pg18 produces exactly the 13-version array" {
+    # pg18 has 13 versions in the fixture — all fit within default retain_count=12?
+    # No: 13 > 12 so the capped result is the 12 most-recent (2.23.1..2.27.1).
+    # This test is updated to the capped expectation; retain_count=12 is the default.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 RETAIN_COUNT=12 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.23.0","2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
+    [[ "$output" == '["2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
 }
 
-@test "pg18 array has 13 elements" {
+@test "pg18 array has 13 elements when RETAIN_COUNT exceeds window" {
+    # RETAIN_COUNT=100 is larger than the 13-version pg18 window — keep all 13.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     count=$(echo "$output" | jq 'length')
     [[ "$count" -eq 13 ]]
 }
 
-# ── pg17: floor 2.17.2 ────────────────────────────────────────────────────────
-
-@test "pg17 floor is 2.17.2" {
+@test "pg18 array has 12 elements with default RETAIN_COUNT" {
+    # Default retain_count=12: pg18 has 13 versions, capped to 12.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+# ── pg17: floor 2.17.2 ────────────────────────────────────────────────────────
+
+@test "pg17 floor is 2.17.2 when RETAIN_COUNT exceeds window" {
+    # RETAIN_COUNT=100 larger than 32-version pg17 window — keep all, floor is 2.17.2.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
     [[ "$first" == "2.17.2" ]]
 }
 
-@test "pg17 array has 32 elements" {
+@test "pg17 array has 12 elements with default RETAIN_COUNT" {
+    # Default retain_count=12: pg17 has 32 versions, capped to 12 most-recent.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "pg17 array has 32 elements when RETAIN_COUNT exceeds window" {
+    # RETAIN_COUNT=100 is larger than the 32-version pg17 window — keep all 32.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=17 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     count=$(echo "$output" | jq 'length')
@@ -67,20 +95,33 @@ setup() {
 
 # ── pg16: floor 2.13.0, 45 versions ──────────────────────────────────────────
 
-@test "pg16 floor is 2.13.0" {
+@test "pg16 floor is 2.13.0 when RETAIN_COUNT exceeds window" {
+    # RETAIN_COUNT=100 larger than 45-version pg16 window — keep all, floor is 2.13.0.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
     [[ "$first" == "2.13.0" ]]
 }
 
-@test "pg16 array has 45 elements" {
+@test "pg16 array has 12 elements with default RETAIN_COUNT" {
+    # Default retain_count=12: pg16 has 45 versions, capped to 12 most-recent.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "pg16 array has 45 elements when RETAIN_COUNT exceeds window" {
+    # RETAIN_COUNT=100 is larger than the 45-version pg16 window — keep all 45.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     count=$(echo "$output" | jq 'length')
@@ -92,9 +133,10 @@ setup() {
 @test "suffix variants (-oss/-all/-all-oss) do not create extra versions" {
     # The fixture contains -all, -all-oss, and -oss suffixed variants.
     # The resolver must de-duplicate and produce only clean X.Y.Z versions.
+    # With RETAIN_COUNT=100 we verify the raw unique count before capping.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
-        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
         "$RESOLVER"
     [[ "$status" -eq 0 ]]
     count=$(echo "$output" | jq 'length')
@@ -318,4 +360,112 @@ setup() {
         EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION="" \
         "$RESOLVER"
     [[ "$status" -ne 0 ]]
+}
+
+# ── RETAIN_COUNT: cap the retained window to N most-recent versions ───────────
+
+@test "RC-default: RETAIN_COUNT unset defaults to 12" {
+    # No RETAIN_COUNT in env — default of 12 applies.
+    # pg16 has 45 versions in the fixture; result must be exactly 12.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "RC-ceiling-always-present: ceiling is the last element after cap" {
+    # After capping to N, the ceiling (highest) must still be the last element.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=12 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+}
+
+@test "RC-retain-1: RETAIN_COUNT=1 returns only [ceiling]" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=1 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 1 ]]
+    ver=$(echo "$output" | jq -r '.[0]')
+    [[ "$ver" == "2.27.1" ]]
+}
+
+@test "RC-over-window: RETAIN_COUNT larger than window keeps all versions" {
+    # pg18 has 13 versions; RETAIN_COUNT=100 must keep all 13.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.1 RETAIN_COUNT=100 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 13 ]]
+}
+
+@test "RC-invalid-alpha: invalid RETAIN_COUNT 'abc' falls back to 12" {
+    # Non-numeric RETAIN_COUNT must be treated as if unset — default 12 applies.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=abc \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "RC-invalid-zero: RETAIN_COUNT=0 falls back to 12" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=0 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "RC-invalid-negative: RETAIN_COUNT=-3 falls back to 12" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=-3 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "RC-oldest-first: capped output is sorted oldest-first with ceiling last" {
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=16 CEILING_VERSION=2.27.1 RETAIN_COUNT=5 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 5 ]]
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+    # Verify ascending order: re-sort and compare
+    sorted=$(echo "$output" | jq -r '.[]' | sort -V | jq -Rsc 'split("\n") | map(select(length > 0))')
+    [[ "$output" == "$sorted" ]]
+}
+
+@test "RC-ceiling-in-window: ceiling injected above-HA is last element even after cap" {
+    # Use a ceiling not in the fixture (2.27.2) — it gets injected.
+    # After cap, it must still be the last element.
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        EXT_NAME=timescaledb PG_MAJOR=18 CEILING_VERSION=2.27.2 RETAIN_COUNT=5 \
+        "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 5 ]]
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.2" ]]
 }

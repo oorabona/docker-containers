@@ -639,12 +639,9 @@ generate_dockerfile() {
 
                         while IFS= read -r ver; do
                             [[ -z "$ver" ]] && continue
-                            # Docker stage names must not contain dots — replace with underscores
-                            local ver_alias="${ver//./_}"
                             local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ver}"
-                            stages_block+="FROM ${image} AS ext-${ext_name}-${ver_alias}"$'\n'
-                            copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
-                            copies_block+="COPY --from=ext-${ext_name}-${ver_alias} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
+                            copies_block+="COPY --from=${image} /output/extension/ /tmp/ext/${ext_name}/${ver}/extension/"$'\n'
+                            copies_block+="COPY --from=${image} /output/lib/ /tmp/ext/${ext_name}/${ver}/lib/"$'\n'
                         done <<< "$sorted_versions"
 
                         # Collect runtime_deps (if any) — unchanged from single-version path

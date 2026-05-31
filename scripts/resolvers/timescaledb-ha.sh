@@ -23,6 +23,17 @@ EXT_NAME="${EXT_NAME:-timescaledb}"
 PG_MAJOR="${PG_MAJOR:?PG_MAJOR is required}"
 CEILING_VERSION="${CEILING_VERSION:-}"
 
+# RETAIN_COUNT: cap the window to the N most-recent versions.
+# Must be a positive integer; any other value (unset, empty, non-numeric, zero,
+# negative) falls back to the default of 12.
+_DEFAULT_RETAIN_COUNT=12
+_raw_retain="${RETAIN_COUNT:-}"
+if [[ "$_raw_retain" =~ ^[1-9][0-9]*$ ]]; then
+    _retain_count="$_raw_retain"
+else
+    _retain_count="$_DEFAULT_RETAIN_COUNT"
+fi
+
 # Escape a value for safe inclusion in a GHA workflow command.
 # Prevents %/\r/\n in registry-derived or env-supplied values from injecting
 # extra commands (e.g. ::stop-commands::, ::add-mask::) into the runner log.
@@ -135,12 +146,18 @@ main() {
     # so that build-extensions.sh can always build the configured pinned version.
     filtered+="${CEILING_VERSION}"$'\n'
 
-    # Sort oldest→newest, deduplicate, and emit compact JSON array
+    # Sort oldest→newest, deduplicate
     local sorted
     sorted=$(echo "$filtered" | grep -v '^$' | sort -V -u)
 
+    # Keep only the N most-recent versions (the highest N by version order).
+    # The ceiling is already in the set and is always the last element after sort,
+    # so it is guaranteed to be retained regardless of N.
+    local windowed
+    windowed=$(echo "$sorted" | tail -n "$_retain_count")
+
     local json_array
-    json_array=$(echo "$sorted" | jq -Rsc 'split("\n") | map(select(length > 0))')
+    json_array=$(echo "$windowed" | jq -Rsc 'split("\n") | map(select(length > 0))')
 
     # Validate the output is a non-empty JSON array
     local count

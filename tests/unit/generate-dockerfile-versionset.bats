@@ -107,9 +107,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: multi-version — 3 available → 3 FROM stages + per-version COPYs
+# Test 1: multi-version — 3 available → 3 direct external COPYs, NO per-version FROM stages
 # ---------------------------------------------------------------------------
-@test "multi-version: 3 available versions produce 3 FROM stages in ascending order" {
+@test "multi-version: 3 available versions produce 3 direct COPY --from= lines, NO per-version FROM stages" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -120,15 +120,43 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Three FROM stages must be present
-    local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
-    [ "$from_count" -eq 3 ]
+    # No per-version FROM ... AS stage lines for the resolver-backed extension
+    local per_ver_from_count
+    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+    [ "$per_ver_from_count" -eq 0 ]
 
-    # All three versions appear as stage aliases
-    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    # Three direct external COPY --from= lines per /extension/ subdir (one per version)
+    local copy_count
+    copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
+    [ "$copy_count" -eq 3 ]
+
+    # Each version appears as a full image ref in a COPY --from= line
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
+}
+
+@test "multi-version: COPY --from= refs are full image refs (host/path:tag), NOT bareword stage names" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Every COPY --from= for timescaledb must use a full image ref (host/path:tag pattern)
+    # A bareword like "ext-timescaledb-2_23_0" would NOT match this pattern.
+    while IFS= read -r copy_line; do
+        [[ -z "$copy_line" ]] && continue
+        # Extract the --from= value
+        local from_ref
+        from_ref=$(echo "$copy_line" | sed -n 's/.*--from=\([^ ]*\).*/\1/p')
+        # Must contain a registry host (has a slash before the first colon), a colon, and a tag
+        [[ "$from_ref" =~ ghcr\.io/.+:.+ ]]
+    done < <(echo "$output" | grep "COPY --from=.*ext-timescaledb" || true)
 }
 
 @test "multi-version: COPYs go into per-version subdirs /tmp/ext/timescaledb/<ver>/" {
@@ -150,7 +178,7 @@ EOF
     echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/lib/"
 }
 
-@test "multi-version: ceiling version 2.27.1 appears LAST (ascending order)" {
+@test "multi-version: ceiling version 2.27.1 appears LAST (ascending order, COPY lines)" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -161,13 +189,13 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Extract line numbers for the three FROM lines and verify ascending order
+    # Extract line numbers for the first COPY line of each version and verify ascending order
     local line_2_23 line_2_25 line_2_27
-    line_2_23=$(echo "$output" | grep -n "pg18-2.23.0" | head -1 | cut -d: -f1)
-    line_2_25=$(echo "$output" | grep -n "pg18-2.25.0" | head -1 | cut -d: -f1)
-    line_2_27=$(echo "$output" | grep -n "pg18-2.27.1" | head -1 | cut -d: -f1)
+    line_2_23=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0" | head -1 | cut -d: -f1)
+    line_2_25=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0" | head -1 | cut -d: -f1)
+    line_2_27=$(echo "$output" | grep -n "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1" | head -1 | cut -d: -f1)
 
-    # Ceiling (2.27.1) line must be after both earlier versions
+    # Ceiling (2.27.1) COPY must appear after both earlier versions
     [ "$line_2_27" -gt "$line_2_25" ]
     [ "$line_2_27" -gt "$line_2_23" ]
     [ "$line_2_25" -gt "$line_2_23" ]
@@ -233,12 +261,17 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # timescaledb: 3 stages
+    # timescaledb: NO per-version FROM ... AS stages (direct COPY path)
+    local ts_from_count
+    ts_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+    [ "$ts_from_count" -eq 0 ]
+
+    # timescaledb: 3 direct COPY --from= lines (one per version, /extension/ subdir)
     local ts_count
-    ts_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    ts_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$ts_count" -eq 3 ]
 
-    # pgvector: exactly 1 stage, flat COPYs
+    # pgvector: exactly 1 FROM stage (single-version, non-resolver path unchanged)
     local pv_count
     pv_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
     [ "$pv_count" -eq 1 ]
@@ -294,16 +327,22 @@ EOF
 
     # Must self-heal to multi-version (NOT single-version ceiling fallback).
     # RED before fix: exits 0 with 1 FROM stage (single-version).
-    # GREEN after fix: exits 0 with 3 FROM stages (multi-version from self-heal).
+    # GREEN after fix: exits 0 with 3 direct COPY --from= lines (multi-version from self-heal).
     [ "$status" -eq 0 ]
 
+    # No per-version FROM ... AS stages
+    local per_ver_from_count
+    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+    [ "$per_ver_from_count" -eq 0 ]
+
+    # 3 direct COPY --from= lines (one per version, /extension/ subdir)
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 
-    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
 }
 
 @test "empty-available: artifact with available=[] + resolver fails → fail closed" {
@@ -431,10 +470,10 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Must find artifact via PROJECT_ROOT → 3 FROM stages (multi-version path).
+    # Must find artifact via PROJECT_ROOT → multi-version path (3 direct COPY --from= lines).
     # RED before fix: 1 FROM stage (single-version fallback because artifact not found).
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -478,7 +517,7 @@ EOF
     [ "$status" -eq 0 ]
 
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -588,14 +627,18 @@ EOF
     # Self-heal succeeds: must exit 0.
     [ "$status" -eq 0 ]
 
-    # Must produce multi-version stages (3 FROM stages from self-healed available set).
+    # Must produce 3 direct COPY --from= lines (no per-version FROM ... AS stages).
+    local per_ver_from_count
+    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+    [ "$per_ver_from_count" -eq 0 ]
+
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 
-    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
 }
 
 @test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
@@ -670,7 +713,7 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # pgvector must still produce exactly 1 FROM stage (single-version).
+    # pgvector must still produce exactly 1 FROM stage (single-version, non-resolver path unchanged).
     local pv_count
     pv_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
     [ "$pv_count" -eq 1 ]
@@ -710,14 +753,14 @@ EOF
     # Must exit 0 (self-heal succeeded).
     [ "$status" -eq 0 ]
 
-    # Must produce 3 multi-version FROM stages — NOT a single-version fallback.
+    # Must produce 3 direct COPY --from= lines — NOT a single-version fallback.
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 
-    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
 }
 
 @test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
@@ -741,7 +784,7 @@ EOF
     [ "$status" -eq 0 ]
 
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -766,7 +809,7 @@ EOF
     [ "$status" -eq 0 ]
 
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -805,9 +848,9 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # All 3 valid versions produce 3 FROM stages.
+    # All 3 valid versions produce 3 direct COPY --from= lines (no per-version FROM stages).
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -964,11 +1007,11 @@ EOF
     # GREEN after fix: exits non-zero (fail-closed; transient error must not drop a version).
     [ "$status" -ne 0 ]
 
-    # Secondary: if it exited 0 (pre-fix behavior), it must NOT have 2 stages
+    # Secondary: if it exited 0 (pre-fix behavior), it must NOT have 2 COPY lines
     # (2 = the exactly-wrong fail-open behavior that drops 2.23.0).
     if [ "$status" -eq 0 ]; then
         local from_count
-        from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+        from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/" || true)
         [ "$from_count" -eq 3 ]
     fi
 }
@@ -1009,13 +1052,13 @@ EOF
     # Definitively absent is the musl-failed / never-built case: must succeed.
     [ "$status" -eq 0 ]
 
-    # Must produce 2 FROM stages (2.25.0 and 2.27.1 — 2.23.0 correctly excluded).
+    # Must produce 2 direct COPY --from= lines (2.25.0 and 2.27.1 — 2.23.0 correctly excluded).
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 2 ]
 
-    # Ceiling 2.27.1 must be present
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    # Ceiling 2.27.1 must be present as a direct COPY ref
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
 }
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1278,7 @@ _run_registry_probe_3state() {
     [ "$status" -eq 0 ]
 
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -1276,7 +1319,7 @@ _run_registry_probe_3state() {
     [ "$status" -eq 0 ]
 
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 }
 
@@ -1451,15 +1494,15 @@ _run_registry_probe_3state() {
     # Must succeed — valid artifact requires no skopeo.
     [ "$status" -eq 0 ]
 
-    # Must produce 3 multi-version FROM stages (non-vacuous: proves artifact was consumed).
+    # Must produce 3 direct COPY --from= lines (non-vacuous: proves artifact was consumed).
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 
-    # All three version-specific COPY pairs must be present.
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.23.0/extension/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.25.0/extension/"
-    echo "$output" | grep -q "/tmp/ext/timescaledb/2.27.1/extension/"
+    # All three version-specific COPY pairs must be present with full image refs.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 .*/tmp/ext/timescaledb/2.23.0/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 .*/tmp/ext/timescaledb/2.25.0/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 .*/tmp/ext/timescaledb/2.27.1/extension/"
 }
 
 # ---------------------------------------------------------------------------
@@ -1551,7 +1594,7 @@ _run_registry_probe_3state() {
 # still produces exactly 3 FROM stages (chokepoint must not break happy path).
 # ---------------------------------------------------------------------------
 
-@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> 3 FROM stages" {
+@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> 3 direct COPY --from= lines" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1562,14 +1605,19 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
+    # No per-version FROM ... AS stages
+    local per_ver_from_count
+    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
+    [ "$per_ver_from_count" -eq 0 ]
+
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-")
+    from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/")
     [ "$from_count" -eq 3 ]
 
-    # All three versions present, no smuggled version (non-vacuous).
-    echo "$output" | grep -q "AS ext-timescaledb-2_23_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_25_0"
-    echo "$output" | grep -q "AS ext-timescaledb-2_27_1"
+    # All three versions present as full image refs (non-vacuous).
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 "
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 "
 }
 
 @test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {

@@ -64,9 +64,15 @@ resolve_version_set() {
         return 1
     fi
 
+    # Read optional retain_count; default empty string means resolver uses its own default.
+    local retain_count
+    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
+
     # Invoke resolver with env contract; propagate rc.
     # CEILING_VERSION bounds the resolver to the pinned config version so that
     # upstream tags published above it are excluded (see #558).
+    # RETAIN_COUNT caps the window to the N most-recent versions per major.
     EXT_NAME="$ext_name" PG_MAJOR="$pg_major" CEILING_VERSION="$single_version" \
+        RETAIN_COUNT="$retain_count" \
         "${abs_resolver}"
 }

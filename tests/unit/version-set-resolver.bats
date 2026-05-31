@@ -12,12 +12,14 @@ setup() {
 
 # ── timescaledb has version_set: returns resolver output ─────────────────────
 
-@test "resolve_version_set timescaledb 18 returns the resolver JSON array" {
+@test "resolve_version_set timescaledb 18 returns the capped resolver JSON array" {
+    # Default retain_count=12 from config.yaml: pg18 has 13 versions, capped to 12.
+    # The oldest (2.23.0) is dropped; result is 2.23.1..2.27.1 (12 elements).
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.23.0","2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
+    [[ "$output" == '["2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
 }
 
 @test "resolve_version_set timescaledb 18 output is valid JSON array" {
@@ -73,13 +75,14 @@ setup() {
 # ── Different pg_major values produce different arrays via helper ─────────────
 
 @test "timescaledb pg17 floor differs from pg18 floor" {
+    # With default retain_count=12, pg17 returns the 12 most-recent versions.
+    # The floor of that capped window is 2.23.1 (12th from the end of the 32-version set).
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 17"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
-    # pg17 floor is 2.17.2 (first TS version shipped with pg17 in the HA registry)
-    [[ "$first" == "2.17.2" ]]
+    [[ "$first" == "2.23.1" ]]
 }
 
 # ── CEILING_VERSION clamps resolver output ────────────────────────────────────
@@ -178,15 +181,74 @@ YAMLEOF
 @test "XX-default-fallback: no config_file arg still resolves correctly via default" {
     # Regression: direct invocation without a config_file must still work correctly
     # using the implicit default (postgres/extensions/config.yaml).
+    # Default retain_count=12 in config.yaml so count must be exactly 12.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
-    # Must return the full timescaledb set from the default config
+    # Must return the capped timescaledb set from the default config (retain_count=12)
     local count
     count=$(echo "$output" | jq 'length')
-    [[ "$count" -gt 1 ]]
+    [[ "$count" -eq 12 ]]
     # The default ceiling 2.27.1 must be the last element
+    local last
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+}
+
+# ── RC: retain_count config key threading ────────────────────────────────────
+
+@test "RC-config-retain5: retain_count=5 in config threads through to resolver" {
+    # A temp config with retain_count=5 must produce <=5 versions, ceiling last.
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 5
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 16 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    [[ "$status" -eq 0 ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 5 ]]
+    local last
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.1" ]]
+}
+
+@test "RC-config-no-retain: absent retain_count in config defaults to 12" {
+    # A temp config without retain_count must apply the default of 12.
+    # pg16 has 45 versions in the fixture; result must be 12.
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 16 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    [[ "$status" -eq 0 ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
     local last
     last=$(echo "$output" | jq -r '.[-1]')
     [[ "$last" == "2.27.1" ]]
