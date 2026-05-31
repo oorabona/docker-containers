@@ -1905,6 +1905,50 @@ _emit_versionset_artifact() {
     log_info "Version-set lineage (presence-based): $_vs_lineage_file"
 }
 
+# _consolidate_version_duration_file <ext> <major_ver> <version>
+#
+# MAX-of-arch duration consolidation (AX-3 per-version unit).
+# Merges ext-<ext>-pg<major>-<ver>-amd64.json + -arm64.json into a single
+# canonical ext-<ext>-pg<major>-<ver>.json using the MAX duration, then deletes
+# the arch-suffixed originals.  Idempotent: when neither arch file exists the
+# canonical file is untouched and no error is raised.
+#
+# Called for EVERY extension path in finalize_multiarch_manifests (resolver and
+# non-resolver) so the duration summer in extension-duration-utils.sh never sees
+# double arch-suffixed files.
+_consolidate_version_duration_file() {
+    local ext="$1" major_ver="$2" version="$3"
+    local ver_safe="${version//[^a-zA-Z0-9.-]/_}"
+    local dur_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${ver_safe}-amd64.json"
+    local dur_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${ver_safe}-arm64.json"
+    local dur_canonical="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${ver_safe}.json"
+
+    local dp_amd64=0 dp_arm64=0 have_dur=false dur_source=""
+    if [[ -f "$dur_amd64" ]]; then
+        local _dp; _dp=$(jq -r '.duration_seconds // 0' "$dur_amd64" 2>/dev/null || echo 0)
+        [[ "$_dp" =~ ^[0-9]+$ ]] && dp_amd64="$_dp"
+        have_dur=true
+        dur_source="$dur_amd64"
+    fi
+    if [[ -f "$dur_arm64" ]]; then
+        local _dp; _dp=$(jq -r '.duration_seconds // 0' "$dur_arm64" 2>/dev/null || echo 0)
+        [[ "$_dp" =~ ^[0-9]+$ ]] && dp_arm64="$_dp"
+        have_dur=true
+        [[ -z "$dur_source" ]] && dur_source="$dur_arm64"
+    fi
+
+    if [[ "$have_dur" == "true" ]] && [[ -n "$dur_source" ]]; then
+        local max_dur
+        max_dur=$(( dp_amd64 > dp_arm64 ? dp_amd64 : dp_arm64 ))
+        local tmp_dur
+        tmp_dur=$(mktemp)
+        jq --argjson dur "$max_dur" '. + {duration_seconds: $dur}' "$dur_source" \
+            > "$tmp_dur" && mv "$tmp_dur" "$dur_canonical" || rm -f "$tmp_dur"
+        rm -f "$dur_amd64" "$dur_arm64"
+        log_info "Duration consolidated (AX-3): $dur_canonical (amd64=${dp_amd64}s arm64=${dp_arm64}s max=${max_dur}s)"
+    fi
+}
+
 # finalize_multiarch_manifests <config_file> <major_ver> <container_dir>
 #
 # Stage B (multi-arch): invoked after BOTH arch build legs finish.
@@ -2039,6 +2083,9 @@ finalize_multiarch_manifests() {
             else
                 log_success "Multi-arch manifest created: $_nr_target (non-resolver)"
             fi
+            # AX-3: consolidate per-arch duration files so the summer counts the
+            # ceiling once (MAX), not once per arch.
+            _consolidate_version_duration_file "$ext" "$major_ver" "$ceiling"
             continue
         fi
 
@@ -2067,35 +2114,7 @@ finalize_multiarch_manifests() {
         local _dur_ver_pre
         while IFS= read -r _dur_ver_pre; do
             [[ -z "$_dur_ver_pre" ]] && continue
-            local _ver_safe_pre="${_dur_ver_pre//[^a-zA-Z0-9.-]/_}"
-            local _dur_pre_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}-amd64.json"
-            local _dur_pre_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}-arm64.json"
-            local _dur_pre_canonical="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}.json"
-
-            local _dp_amd64_sec=0 _dp_arm64_sec=0 _have_dur_pre=false _dur_pre_source=""
-            if [[ -f "$_dur_pre_amd64" ]]; then
-                local _dp; _dp=$(jq -r '.duration_seconds // 0' "$_dur_pre_amd64" 2>/dev/null || echo 0)
-                [[ "$_dp" =~ ^[0-9]+$ ]] && _dp_amd64_sec="$_dp"
-                _have_dur_pre=true
-                _dur_pre_source="$_dur_pre_amd64"
-            fi
-            if [[ -f "$_dur_pre_arm64" ]]; then
-                local _dp; _dp=$(jq -r '.duration_seconds // 0' "$_dur_pre_arm64" 2>/dev/null || echo 0)
-                [[ "$_dp" =~ ^[0-9]+$ ]] && _dp_arm64_sec="$_dp"
-                _have_dur_pre=true
-                [[ -z "$_dur_pre_source" ]] && _dur_pre_source="$_dur_pre_arm64"
-            fi
-
-            if [[ "$_have_dur_pre" == "true" ]] && [[ -n "$_dur_pre_source" ]]; then
-                local _max_dur_pre
-                _max_dur_pre=$(( _dp_amd64_sec > _dp_arm64_sec ? _dp_amd64_sec : _dp_arm64_sec ))
-                local _tmp_dur_pre
-                _tmp_dur_pre=$(mktemp)
-                jq --argjson dur "$_max_dur_pre" '. + {duration_seconds: $dur}' "$_dur_pre_source" \
-                    > "$_tmp_dur_pre" && mv "$_tmp_dur_pre" "$_dur_pre_canonical" || rm -f "$_tmp_dur_pre"
-                rm -f "$_dur_pre_amd64" "$_dur_pre_arm64"
-                log_info "Duration consolidated (AX-3): $_dur_pre_canonical (amd64=${_dp_amd64_sec}s arm64=${_dp_arm64_sec}s max=${_max_dur_pre}s)"
-            fi
+            _consolidate_version_duration_file "$ext" "$major_ver" "$_dur_ver_pre"
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Step 1: compute AVAILABLE set via ext_ref_resolve (unified resolver).

@@ -267,6 +267,7 @@ jobs:
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
+      actions: read          # Required by actions/upload-artifact (per-arch lineage/duration artifacts)
       contents: read
       # BE-3 accepted trade-off: packages:write on same-repo PRs is deliberate.
       # This is a single-maintainer repo; all same-repo PR authors are trusted
@@ -479,6 +480,7 @@ jobs:
       needs.build-extensions.result == 'success' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
+      actions: read          # Required by actions/download-artifact (per-arch lineage/duration artifacts)
       contents: read
       packages: write
     # BD-2: serialize merge runs on the same ref so a later run's stage-A/merge

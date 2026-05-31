@@ -241,6 +241,126 @@ _write_ext_lineage() {
     [ "$output" -eq 0 ]
 }
 
+# ---------------------------------------------------------------------------
+# _consolidate_version_duration_file tests
+# ---------------------------------------------------------------------------
+# Source build-extensions.sh to get _consolidate_version_duration_file.
+# We need minimal mocks so the script sources cleanly without side-effects.
+
+_source_build_extensions_for_consolidate() {
+    # Provide stubs for functions called at source-time or by other helpers.
+    # yq, docker, skopeo stubs prevent real invocations.
+    yq()        { return 1; }; export -f yq
+    docker()    { return 1; }; export -f docker
+    skopeo()    { return 1; }; export -f skopeo
+
+    pushd "$SCRIPTS_DIR" > /dev/null 2>&1
+    # shellcheck disable=SC1091
+    source "./build-extensions.sh"
+    popd > /dev/null 2>&1
+
+    # build-extensions.sh sets ROOT_DIR to the real project root at source time;
+    # restore it to the test temp dir so path lookups land in the fixture tree.
+    export ROOT_DIR="$TEST_TEMP_DIR"
+}
+
+# Write a per-arch duration JSON file
+_write_arch_lineage() {
+    local ext="$1" pg_major="$2" version="$3" arch="$4" duration="$5"
+    local file="$LINEAGE_DIR/ext-${ext}-pg${pg_major}-${version}-${arch}.json"
+    jq -nc \
+        --arg ext "$ext" \
+        --arg version "$version" \
+        --arg pg_major "$pg_major" \
+        --argjson duration "$duration" \
+        --arg arch "$arch" \
+        '{ext:$ext, version:$version, pg_major:$pg_major, duration_seconds:$duration, arch:$arch}' \
+        > "$file"
+}
+
+@test "consolidate: amd64>arm64 → canonical takes amd64 value, arch files removed" {
+    _source_build_extensions_for_consolidate
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "amd64" 300
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "arm64" 200
+
+    _consolidate_version_duration_file "pgvector" "$MAJOR_VER" "0.8.0"
+
+    local canonical="$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0.json"
+    local amd64_file="$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-amd64.json"
+    local arm64_file="$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-arm64.json"
+
+    # canonical file must exist with MAX duration
+    [ -f "$canonical" ]
+    local dur; dur=$(jq -r '.duration_seconds' "$canonical")
+    [ "$dur" -eq 300 ]
+    # arch-suffixed files must be removed
+    [ ! -f "$amd64_file" ]
+    [ ! -f "$arm64_file" ]
+}
+
+@test "consolidate: arm64>amd64 → canonical takes arm64 value, arch files removed" {
+    _source_build_extensions_for_consolidate
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "amd64" 150
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "arm64" 250
+
+    _consolidate_version_duration_file "pgvector" "$MAJOR_VER" "0.8.0"
+
+    local canonical="$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0.json"
+    [ -f "$canonical" ]
+    local dur; dur=$(jq -r '.duration_seconds' "$canonical")
+    [ "$dur" -eq 250 ]
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-amd64.json" ]
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-arm64.json" ]
+}
+
+@test "consolidate: only amd64 present → canonical created, no arm64 to remove" {
+    _source_build_extensions_for_consolidate
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "amd64" 120
+
+    _consolidate_version_duration_file "pgvector" "$MAJOR_VER" "0.8.0"
+
+    local canonical="$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0.json"
+    [ -f "$canonical" ]
+    local dur; dur=$(jq -r '.duration_seconds' "$canonical")
+    [ "$dur" -eq 120 ]
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-amd64.json" ]
+}
+
+@test "consolidate: neither arch present → no-op, no canonical created" {
+    _source_build_extensions_for_consolidate
+
+    _consolidate_version_duration_file "pgvector" "$MAJOR_VER" "0.8.0"
+
+    # No arch files, no canonical either — nothing to consolidate
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0.json" ]
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-amd64.json" ]
+    [ ! -f "$LINEAGE_DIR/ext-pgvector-pg${MAJOR_VER}-0.8.0-arm64.json" ]
+}
+
+# Integration: after consolidation the duration summer counts the MAX once,
+# not once per arch.
+@test "integration: non-resolver arch files consolidated → summer counts MAX once" {
+    _source_build_extensions_for_consolidate
+    # Re-apply mocks: sourcing build-extensions.sh replaces get_flavor_extensions
+    # with the real yq-backed implementation from extension-utils.sh.
+    _setup_default_mocks
+
+    # Simulate what build-extensions.sh writes: two per-arch duration files for
+    # a non-resolver extension (pgvector, ceiling 0.8.0).
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "amd64" 300
+    _write_arch_lineage "pgvector" "$MAJOR_VER" "0.8.0" "arm64" 200
+
+    # Call the consolidation helper (the non-resolver finalize path now does this).
+    _consolidate_version_duration_file "pgvector" "$MAJOR_VER" "0.8.0"
+
+    # Both paradedb and pg_cron are absent this run (cached); only pgvector rebuilt.
+    # The duration summer must see exactly one canonical file and return MAX (300),
+    # not the double-counted sum (300+200=500).
+    run sum_flavor_extension_durations "postgres" "full" "$MAJOR_VER"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 300 ]
+}
+
 # Case FF-dur: stale per-version duration files from a previous run that are NOT
 # cleaned before invoking sum_flavor_extension_durations would be counted incorrectly.
 # After FF fix: build-extensions.sh cleans stale duration files on all success paths
