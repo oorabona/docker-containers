@@ -3051,3 +3051,183 @@ EOF
     copy_count=$(echo "$output" | grep -c "ghcr.io/testowner/ext-timescaledb@sha256:" || true)
     [ "$copy_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# BC-1: consumer PR_TAG_SUFFIX scoping for non-resolver/single-version path
+#
+# generate_dockerfile must append ${PR_TAG_SUFFIX} to the FROM image ref for
+# single-version (non-resolver) extensions when PR_TAG_SUFFIX is set.
+# The COPY --from=ext-<name> uses the Docker stage alias, not the registry ref,
+# so it does NOT carry the suffix.
+#
+# BC1-consumer-pr-scopes-nonresolver:
+#   PR_TAG_SUFFIX=-pr42, pgvector (non-resolver) → FROM ref carries -pr42.
+#   PR_TAG_SUFFIX empty → canonical ref (no suffix).
+#   RED before fix: FROM always uses canonical tag.  GREEN after: -pr42 appended.
+# ---------------------------------------------------------------------------
+@test "BC1-consumer-pr-scopes-nonresolver: PR_TAG_SUFFIX=-pr42 → FROM ref for non-resolver ext carries -pr42" {
+    # No versionset artifact — pgvector is non-resolver, uses single-version path.
+    export PR_TAG_SUFFIX="-pr42"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "vector" "18" \
+        "ghcr.io" "testowner"
+
+    unset PR_TAG_SUFFIX
+
+    [ "$status" -eq 0 ]
+
+    # FROM ref must carry -pr42 suffix.
+    local from_line
+    from_line=$(echo "$output" | grep "^FROM ghcr.io/testowner/ext-pgvector:pg18-" || true)
+    [ -n "$from_line" ]
+    [[ "$from_line" == *"-pr42"* ]]
+
+    # Must be: FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector
+    echo "$output" | grep -q "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector"
+
+    # The COPY still references the stage alias (no suffix in --from).
+    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/"
+}
+
+@test "BC1-consumer-canonical-no-suffix: PR_TAG_SUFFIX empty → FROM ref is canonical (no suffix)" {
+    # Regression: empty PR_TAG_SUFFIX must leave the FROM ref unchanged.
+    export PR_TAG_SUFFIX=""
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "vector" "18" \
+        "ghcr.io" "testowner"
+
+    unset PR_TAG_SUFFIX
+
+    [ "$status" -eq 0 ]
+
+    # FROM ref must be exactly the canonical tag (no -pr suffix).
+    echo "$output" | grep -q "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector"
+
+    # Must NOT have any -pr suffix.
+    local pr_count
+    pr_count=$(echo "$output" | grep -c '\-pr[0-9]' || true)
+    [ "$pr_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# BC-1: consumer PR_TAG_SUFFIX scoping for self-heal per-version COPY refs
+#
+# On the self-heal path (AP), generate_dockerfile emits per-version COPY lines
+# using ext_image_name().  Those refs must also carry the PR_TAG_SUFFIX.
+#
+# BC1-consumer-pr-scopes-selfheal:
+#   PR_TAG_SUFFIX=-pr42, self-heal path (no artifact) → per-version COPY refs
+#   all carry -pr42.  Confirmed for each version in the proved-present set.
+#   RED before fix: per-version refs use canonical tags.  GREEN after: -pr42 appended.
+# ---------------------------------------------------------------------------
+@test "BC1-consumer-pr-scopes-selfheal: PR_TAG_SUFFIX=-pr42 → self-heal per-version COPY refs carry -pr42" {
+    # No versionset artifact → self-heal path for timescaledb.
+    export PR_TAG_SUFFIX="-pr42"
+
+    resolve_version_set() {
+        echo '["2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # All versions proved present.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    unset PR_TAG_SUFFIX
+
+    [ "$status" -eq 0 ]
+
+    # AP path: per-version COPY lines for each proved version.
+    # Each per-version ref must carry -pr42.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 2 ]
+
+    # Canonical per-version refs (no -pr suffix) must NOT appear in COPY --from= lines.
+    # All per-version COPYs must carry -pr42; if any canonical ref appears, count > 0.
+    local canonical_copy_lines
+    canonical_copy_lines=$(echo "$output" | grep -E "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ " || true)
+    [ -z "$canonical_copy_lines" ]
+
+    # Both expected refs present.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/extension/"
+}
+
+# ---------------------------------------------------------------------------
+# BC-3: present-empty bundle_digest fails closed; absent key → tag fallback
+#
+# generate_dockerfile uses `jq '.bundle_digest // empty'` which maps both
+# ABSENT and PRESENT-EMPTY to the empty string — falling back to the mutable
+# bundle tag.  BC-3 requires distinguishing:
+#   - FIELD ABSENT    → allowed LOCAL_ONLY tag fallback (exit 0)
+#   - FIELD PRESENT but empty string → FAIL CLOSED (exit non-zero)
+#   - FIELD PRESENT but not valid OCI digest → FAIL CLOSED (already AN-covered)
+#
+# BC3-empty-digest-failclosed:
+#   artifact has {"bundle_digest":""} (present, empty string) →
+#   generate_dockerfile FAILS CLOSED (non-zero).
+#   RED before fix: falls back to mutable tag (exits 0).
+#   GREEN after: exits non-zero (field present but invalid → fail closed).
+#
+# BC3-absent-digest-tag-fallback:
+#   artifact has NO bundle_digest key → tag-based COPY, exit 0 (LOCAL_ONLY case).
+#   Must remain GREEN (regression guard).
+# ---------------------------------------------------------------------------
+@test "BC3-empty-digest-failclosed: bundle_digest present-but-empty string → fail closed (no mutable-tag fallback)" {
+    # Artifact with bundle_digest field present but set to empty string.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":""}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 (falls through to mutable bundle tag).
+    # GREEN after fix: exits non-zero (field present, value invalid → fail closed).
+    [ "$status" -ne 0 ]
+
+    # The mutable bundle tag must NOT appear in any COPY line (no fallback).
+    local bundle_tag_count
+    bundle_tag_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" || true)
+    [ "$bundle_tag_count" -eq 0 ]
+}
+
+@test "BC3-absent-digest-tag-fallback: NO bundle_digest key in artifact → tag-based COPY, exit 0 (LOCAL_ONLY regression)" {
+    # LOCAL_ONLY-produced artifact: bundle_digest key is completely absent.
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must succeed (LOCAL_ONLY case — key absent is allowed).
+    [ "$status" -eq 0 ]
+
+    # Must emit exactly ONE mutable bundle tag COPY (no digest pin).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
+    [ "$bundle_count" -eq 1 ]
+
+    # No @sha256: anywhere.
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$pinned_count" -eq 0 ]
+}

@@ -12972,3 +12972,186 @@ EOF
         [ "$logged_rc" -ne 0 ]
     fi
 }
+
+# ---------------------------------------------------------------------------
+# BC-2: build cache ref must always be a writable GHCR ref, independent of
+# REMOTE_CR (which is the base-image source, not the cache store).
+#
+# The per-arch buildx build derives --cache-to/--cache-from from REMOTE_CR,
+# which defaults to docker.io on the GHCR-mirror-absent fallback.
+# docker.io/ext-...-buildcache has no owner namespace → not writable → cache
+# export fails, can break the per-arch build.
+#
+# Fix: cache ref must ALWAYS use ghcr.io/<owner>/ext-<name>-buildcache:pg<major>-<arch>
+# regardless of REMOTE_CR.  REPO_OWNER (env) or get_repo_owner() provides the GHCR owner.
+# --cache-to is only emitted when we are in a push/same-repo-PR context (_do_push_ext=true).
+# --cache-from (read) can always be present.
+#
+# BC2-cache-ref-ghcr:
+#   REMOTE_CR=docker.io, REPO_OWNER=testowner → cache ref uses ghcr.io/testowner/
+#   NOT docker.io/...  RED before fix: docker.io in cache ref.  GREEN after: ghcr.io.
+#
+# BC2-cache-to-only-with-write:
+#   LOCAL_ONLY=true (no push) → --cache-to must NOT appear in the buildx invocation.
+#   --cache-from may still be present (reading cache is always safe).
+# ---------------------------------------------------------------------------
+@test "BC2-cache-ref-ghcr: REMOTE_CR=docker.io → cache ref still uses ghcr.io/<owner>/, NOT docker.io" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/bc2_docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        # REMOTE_CR=docker.io simulates GHCR mirror absent fallback.
+        export REMOTE_CR=docker.io
+        # REPO_OWNER is the GHCR owner (always set in CI by github.repository_owner).
+        export REPO_OWNER=testowner
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+    [ -f "$docker_calls" ]
+
+    # The buildx build (--load, compile step) must have --cache-from and --cache-to.
+    local buildx_line
+    buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+    [ -n "$buildx_line" ]
+
+    # Cache ref must use ghcr.io/testowner, NOT docker.io.
+    [[ "$buildx_line" == *"ghcr.io/testowner/ext-timescaledb-buildcache"* ]]
+
+    # Must NOT contain docker.io in cache ref position.
+    local docker_io_cache_count
+    docker_io_cache_count=$(echo "$buildx_line" | grep -c 'docker\.io.*buildcache' || true)
+    [ "$docker_io_cache_count" -eq 0 ]
+
+    # Cache type must be registry.
+    [[ "$buildx_line" == *"type=registry"* ]]
+}
+
+@test "BC2-cache-to-only-with-write: --local-only flag → --cache-to absent from buildx invocation" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/bc2_local_docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        export REMOTE_CR=docker.io
+        export REPO_OWNER=testowner
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/testowner/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        # --local-only sets LOCAL_ONLY=true after sourcing (parse_args path)
+        # so _do_push_ext=false → --cache-to must be omitted.
+        main postgres --major-version 18 --local-only
+    '
+
+    [ "$status" -eq 0 ]
+
+    # With --local-only, no push → --cache-to must NOT appear in the buildx call.
+    if [ -f "$docker_calls" ]; then
+        local buildx_line
+        buildx_line=$(grep 'buildx build' "$docker_calls" | grep -- '--load' || true)
+        if [ -n "$buildx_line" ]; then
+            # --cache-to must be absent.
+            [[ "$buildx_line" != *"--cache-to"* ]]
+        fi
+    fi
+}

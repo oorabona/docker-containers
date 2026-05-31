@@ -112,11 +112,16 @@ build_ext_image() {
         # Format: <registry>/<owner>/ext-<name>:pg<major>-<ver>-<arch>${PR_TAG_SUFFIX}
         _ver_tag=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")")
 
-        # Registry build-cache ref: shared between PR and push runs so master reuses
-        # the PR's compilation output (cache hit, no recompile) when publishing
-        # canonical tags.  Deterministic per ext/major/arch; same ref for PR and push.
+        # BC-2: cache ref must ALWAYS use a writable GHCR path, independent of
+        # REMOTE_CR (which is the base-image source mirror, not the cache store).
+        # When REMOTE_CR=docker.io (GHCR mirror absent fallback), the old derivation
+        # produced docker.io/ext-...-buildcache — no owner namespace, not writable.
+        # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
+        # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
+        local _cache_owner
+        _cache_owner="${REPO_OWNER:-$(get_repo_owner)}"
         local _cache_ref
-        _cache_ref="${REMOTE_CR:+${REMOTE_CR}/}ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
+        _cache_ref="ghcr.io/${_cache_owner}/ext-${ext_name}-buildcache:pg${pg_major}-${ARCH_SUFFIX:-local}"
 
         # Compute do_push for this build leg: true unless NO_PUSH or LOCAL_ONLY.
         local _do_push_ext=true
@@ -127,17 +132,23 @@ build_ext_image() {
         # store of the native runner).  rc=1 on failure (compile / musl error).
         # --cache-from reads from the shared registry build-cache so a PR's
         # compilation is reused by the master push leg (no recompile on merge).
-        # --cache-to writes to the same ref so the PR populates it for master.
+        # --cache-to writes when we have GHCR write access (_do_push_ext=true);
+        # omitting --cache-to on LOCAL_ONLY/NO_PUSH paths avoids attempting writes
+        # to a registry we cannot authenticate to in that context.
         # A cache-to write failure is non-fatal in buildx (the build itself
         # succeeds even if the cache upload fails), so no explicit error handling
         # is needed here.
+        local _cache_flags=("--cache-from" "type=registry,ref=${_cache_ref}")
+        if [[ "$_do_push_ext" == "true" ]]; then
+            _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max")
+        fi
+
         if ! $DOCKER buildx build \
             --platform "${BUILD_PLATFORM}" \
             -f "$dockerfile" \
             -t "$_ver_tag" \
             --load \
-            --cache-from "type=registry,ref=${_cache_ref}" \
-            --cache-to "type=registry,ref=${_cache_ref},mode=max" \
+            "${_cache_flags[@]}" \
             --build-arg REMOTE_CR="${REMOTE_CR}" \
             --build-arg MAJOR_VERSION="$pg_major" \
             --build-arg EXT_VERSION="$ext_version" \

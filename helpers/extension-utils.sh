@@ -431,6 +431,28 @@ validate_semver_set_json() {
 # to only include FROM/COPY for extensions relevant to each flavor+PG version
 # ============================================================================
 
+# _scoped_ext_ref <base_ref>
+# Appends ${PR_TAG_SUFFIX} to <base_ref> when PR_TAG_SUFFIX is non-empty;
+# returns <base_ref> unchanged when PR_TAG_SUFFIX is empty (push/dispatch path).
+#
+# Used by generate_dockerfile to PR-scope the tag-based refs it emits for
+# non-resolver (single-version) FROM lines and self-heal per-version COPY lines,
+# matching the scoping the producer (build-extensions.sh) applies via _scoped_tag.
+# The bundle artifact path (repo@digest) is tag-agnostic and does NOT use this.
+#
+# Examples (PR_TAG_SUFFIX=-pr42):
+#   _scoped_ext_ref "ghcr.io/owner/ext-pgvector:pg18-0.8.2"  => "ghcr.io/owner/ext-pgvector:pg18-0.8.2-pr42"
+# Examples (PR_TAG_SUFFIX empty — push/dispatch):
+#   _scoped_ext_ref "ghcr.io/owner/ext-pgvector:pg18-0.8.2"  => "ghcr.io/owner/ext-pgvector:pg18-0.8.2"
+_scoped_ext_ref() {
+    local base="$1"
+    if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+        printf '%s%s' "$base" "$PR_TAG_SUFFIX"
+    else
+        printf '%s' "$base"
+    fi
+}
+
 # Get list of extensions for a flavor, filtered by PG version compatibility
 # Excludes disabled extensions and those exceeding max_pg_version
 get_flavor_extensions() {
@@ -773,11 +795,13 @@ generate_dockerfile() {
                             # Each per-version image exposes /output/extension/ and /output/lib/.
                             # Map to /tmp/ext/<ext>/<ver>/extension/ and /tmp/ext/<ext>/<ver>/lib/
                             # so install_ext finds them at the expected layout.
+                            # BC-1: apply PR_TAG_SUFFIX so a PR's postgres smoke consumes the
+                            # PR's own extension images, not the canonical (possibly stale) ones.
                             local _pv_ver
                             while IFS= read -r _pv_ver; do
                                 [[ -z "$_pv_ver" ]] && continue
                                 local _pv_ref
-                                _pv_ref=$(ext_image_name "$ext_name" "$_pv_ver" "$pg_major" "$registry" "$owner")
+                                _pv_ref=$(_scoped_ext_ref "$(ext_image_name "$ext_name" "$_pv_ver" "$pg_major" "$registry" "$owner")")
                                 copies_block+="COPY --from=${_pv_ref} /output/extension/ /tmp/ext/${ext_name}/${_pv_ver}/extension/"$'\n'
                                 copies_block+="COPY --from=${_pv_ref} /output/lib/ /tmp/ext/${ext_name}/${_pv_ver}/lib/"$'\n'
                             done <<< "$raw_versions"
@@ -809,10 +833,21 @@ generate_dockerfile() {
                             # Format: <registry>/<owner>/ext-<name>@sha256:<64hex>
                             # The tag-based fallback (no bundle_digest) is unchanged —
                             # LOCAL_ONLY artifacts use the un-suffixed bundle tag directly.
+                            # BC-3: distinguish FIELD-ABSENT from FIELD-PRESENT-BUT-EMPTY.
+                            # jq '.bundle_digest // empty' maps both absent and "" to empty
+                            # string — that would allow present-but-empty to fall through to
+                            # the mutable tag fallback, defeating atomic pinning.
+                            # Use has("bundle_digest") to detect field presence explicitly:
+                            #   - Field ABSENT   → LOCAL_ONLY case → tag-based fallback (allowed).
+                            #   - Field PRESENT  → value must be a valid OCI digest; empty or
+                            #                      non-conforming value → FAIL CLOSED.
+                            local _bundle_digest_field_present
+                            _bundle_digest_field_present=$(echo "$_versionset_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
                             local _bundle_digest
                             _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
                             local _bundle_copy_ref
-                            if [[ -n "$_bundle_digest" ]]; then
+                            if [[ "$_bundle_digest_field_present" == "yes" ]]; then
+                                # Field present: value must be a valid OCI digest.
                                 if ! is_valid_oci_digest "$_bundle_digest"; then
                                     log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(_sanitize_for_log "$(printf '%s' "$_bundle_digest" | head -c 80)")') — fail closed (possible artifact corruption or poisoning)"
                                     return 1
@@ -821,6 +856,7 @@ generate_dockerfile() {
                                 # PR-scoped and canonical bundles sharing the same digest.
                                 _bundle_copy_ref="${registry}/${owner}/ext-${ext_name}@${_bundle_digest}"
                             else
+                                # Field absent (LOCAL_ONLY case) → tag-based fallback.
                                 _bundle_copy_ref="${_bundle_ref}"
                             fi
 
@@ -841,7 +877,11 @@ generate_dockerfile() {
 
             # Single-version path (no versionset artifact, or jq unavailable):
             # keep the original behavior — one stage, flat COPY paths.
-            local image="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}"
+            # BC-1: apply PR_TAG_SUFFIX to the FROM image ref so a PR's postgres smoke
+            # consumes the PR's own extension image (not the canonical production one).
+            # The COPY uses the Docker stage alias (ext-${ext_name}) — no suffix needed.
+            local image
+            image=$(_scoped_ext_ref "${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}")
             stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'

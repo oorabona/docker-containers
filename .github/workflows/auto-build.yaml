@@ -711,6 +711,13 @@ jobs:
     # (observed 2026-04-23). Workflow-level concurrency is already removed so
     # different-container runs parallelize. Same-container races are rare in practice
     # (upstream-monitor serializes PR merges via concurrency on its own workflow).
+    env:
+      # BC-1: export PR_TAG_SUFFIX so generate_dockerfile (called by ./make build postgres)
+      # PR-scopes the non-resolver/single-version extension FROM refs and self-heal
+      # per-version COPY refs.  Must match the expression used by build-extensions and
+      # merge-extension-manifests so the postgres smoke consumes the PR's own extension
+      # images rather than the canonical (possibly stale) ones.
+      PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
