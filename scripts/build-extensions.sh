@@ -97,6 +97,29 @@ build_ext_image() {
 
         if [[ "$_do_push_ext" == "true" ]]; then
             log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
+            # AX-1: capture the pushed per-version digest and record it in the
+            # per-arch digest map. The map is read by finalize_multiarch_manifests
+            # so the merge uses immutable digest refs instead of mutable suffixed tags.
+            # Digest map: .build-lineage/ext-<ext>-pg<major>-digests-<arch>.json
+            # Structure:  { "<version>": "sha256:<64hex>", "bundle": "sha256:..." }
+            # Written atomically: read → merge → write.
+            if [[ -n "${ARCH_SUFFIX:-}" ]]; then
+                local _ver_digest
+                _ver_digest=$(_capture_bundle_digest "$_ver_tag") || true
+                if is_valid_oci_digest "$_ver_digest"; then
+                    local _dig_map="${ROOT_DIR}/.build-lineage/ext-${ext_name}-pg${pg_major}-digests-${ARCH_SUFFIX}.json"
+                    mkdir -p "${ROOT_DIR}/.build-lineage"
+                    local _existing_map="{}"
+                    [[ -f "$_dig_map" ]] && _existing_map=$(cat "$_dig_map")
+                    local _tmp_dig
+                    _tmp_dig=$(mktemp)
+                    printf '%s' "$_existing_map" | jq --arg ver "$ext_version" --arg dig "$_ver_digest" \
+                        '. + {($ver): $dig}' > "$_tmp_dig" && mv "$_tmp_dig" "$_dig_map" || rm -f "$_tmp_dig"
+                    log_info "Digest map updated: $_dig_map [$ext_version=$_ver_digest]"
+                else
+                    log_warning "$ext_name $ext_version: per-version digest capture failed (non-fatal for build; merge will exclude if missing)"
+                fi
+            fi
         else
             log_success "Built (local only): $_ver_tag (platform: ${BUILD_PLATFORM})"
         fi
@@ -822,6 +845,20 @@ assemble_and_push_bundle() {
         # Export so _bundle_and_write_artifact can read it without a subshell.
         _BUNDLE_DIGEST="$_captured_digest"
         export _BUNDLE_DIGEST
+
+        # AX-1: record the bundle digest in the per-arch digest map so
+        # finalize_multiarch_manifests can merge the bundle by immutable digest ref.
+        if [[ -n "${ARCH_SUFFIX:-}" ]]; then
+            local _bdmap="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-${ARCH_SUFFIX}.json"
+            mkdir -p "${ROOT_DIR}/.build-lineage"
+            local _bdmap_existing="{}"
+            [[ -f "$_bdmap" ]] && _bdmap_existing=$(cat "$_bdmap")
+            local _tmp_bdmap
+            _tmp_bdmap=$(mktemp)
+            printf '%s' "$_bdmap_existing" | jq --arg dig "$_captured_digest" \
+                '. + {"bundle": $dig}' > "$_tmp_bdmap" && mv "$_tmp_bdmap" "$_bdmap" || rm -f "$_tmp_bdmap"
+            log_info "Bundle digest recorded in map: $_bdmap [bundle=$_captured_digest]"
+        fi
     fi
 
     return 0
@@ -1764,13 +1801,80 @@ finalize_multiarch_manifests() {
 
         local set_size
         set_size=$(echo "$version_set_json" | jq 'length')
+
+        # AX-3: Consolidate per-arch duration files into canonical files (MAX policy).
+        # This runs for ALL set sizes so single-version resolver results also get
+        # consolidated duration files. The consolidation is idempotent — if no
+        # arch-suffixed files exist, the loop is a no-op.
+        local _dur_ver_pre
+        while IFS= read -r _dur_ver_pre; do
+            [[ -z "$_dur_ver_pre" ]] && continue
+            local _ver_safe_pre="${_dur_ver_pre//[^a-zA-Z0-9.-]/_}"
+            local _dur_pre_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}-amd64.json"
+            local _dur_pre_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}-arm64.json"
+            local _dur_pre_canonical="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-${_ver_safe_pre}.json"
+
+            local _dp_amd64_sec=0 _dp_arm64_sec=0 _have_dur_pre=false _dur_pre_source=""
+            if [[ -f "$_dur_pre_amd64" ]]; then
+                local _dp; _dp=$(jq -r '.duration_seconds // 0' "$_dur_pre_amd64" 2>/dev/null || echo 0)
+                [[ "$_dp" =~ ^[0-9]+$ ]] && _dp_amd64_sec="$_dp"
+                _have_dur_pre=true
+                _dur_pre_source="$_dur_pre_amd64"
+            fi
+            if [[ -f "$_dur_pre_arm64" ]]; then
+                local _dp; _dp=$(jq -r '.duration_seconds // 0' "$_dur_pre_arm64" 2>/dev/null || echo 0)
+                [[ "$_dp" =~ ^[0-9]+$ ]] && _dp_arm64_sec="$_dp"
+                _have_dur_pre=true
+                [[ -z "$_dur_pre_source" ]] && _dur_pre_source="$_dur_pre_arm64"
+            fi
+
+            if [[ "$_have_dur_pre" == "true" ]] && [[ -n "$_dur_pre_source" ]]; then
+                local _max_dur_pre
+                _max_dur_pre=$(( _dp_amd64_sec > _dp_arm64_sec ? _dp_amd64_sec : _dp_arm64_sec ))
+                local _tmp_dur_pre
+                _tmp_dur_pre=$(mktemp)
+                jq --argjson dur "$_max_dur_pre" '. + {duration_seconds: $dur}' "$_dur_pre_source" \
+                    > "$_tmp_dur_pre" && mv "$_tmp_dur_pre" "$_dur_pre_canonical" || rm -f "$_tmp_dur_pre"
+                rm -f "$_dur_pre_amd64" "$_dur_pre_arm64"
+                log_info "Duration consolidated (AX-3): $_dur_pre_canonical (amd64=${_dp_amd64_sec}s arm64=${_dp_arm64_sec}s max=${_max_dur_pre}s)"
+            fi
+        done < <(echo "$version_set_json" | jq -r '.[]')
+
         if [[ "$set_size" -le 1 ]]; then
             # Single-version resolver result: no bundle needed; delete any stale artifact.
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
+        # AX-1: Load per-arch digest maps when available. These are written by the
+        # per-arch build legs after each push and capture the immutable digest of
+        # each pushed image. When both maps are present, use digest refs in
+        # imagetools create to prevent a concurrent run on the same ref from
+        # overwriting -amd64/-arm64 tags between this run's leg-push and merge.
+        #
+        # Map path: .build-lineage/ext-<ext>-pg<major>-digests-<arch>.json
+        # Structure: { "<version>": "sha256:<64hex>", "bundle": "sha256:<64hex>" }
+        #
+        # Fallback: if maps are absent (older runs, no-digest path), fall back to
+        # the previous mutable-tag behavior (-amd64/-arm64 suffixed refs).
+        local _dig_map_amd64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-amd64.json"
+        local _dig_map_arm64="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-digests-arm64.json"
+        local _have_digest_maps=false
+        local _map_amd64_json="{}" _map_arm64_json="{}"
+        if [[ -f "$_dig_map_amd64" ]] && [[ -f "$_dig_map_arm64" ]]; then
+            _map_amd64_json=$(cat "$_dig_map_amd64")
+            _map_arm64_json=$(cat "$_dig_map_arm64")
+            _have_digest_maps=true
+            log_info "$ext pg${major_ver}: per-arch digest maps found — using digest refs for imagetools create (AX-1)"
+        else
+            log_info "$ext pg${major_ver}: per-arch digest maps absent — falling back to mutable suffixed tag refs"
+        fi
+
         # Step 1: merge per-version multi-arch manifests.
+        # AX-1 (when maps present): use `<ref>@<amd64-digest>` + `<ref>@<arm64-digest>`.
+        #   A version absent from either map is excluded (not merged).
+        #   Ceiling absent from either map is FATAL.
+        # Fallback (maps absent): use mutable -amd64/-arm64 tag refs (pre-AX-1 behavior).
         # AW-4: non-ceiling imagetools create failures are TOLERATED (excluded[]);
         # ceiling failure is FATAL. Mirror stage A's musl-tolerance contract.
         local _confirmed_available=()
@@ -1778,17 +1882,55 @@ finalize_multiarch_manifests() {
         local _ext_failed=false
         local ver
         while IFS= read -r ver; do
-            local ver_image_base ver_amd64 ver_arm64 ver_multiarch
+            local ver_image_base ver_multiarch
             ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
-            ver_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
-            ver_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
             ver_multiarch="$ver_image_base"  # un-suffixed = multi-arch target
 
-            log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $ver_amd64 + $ver_arm64"
+            local _src_amd64 _src_arm64
+            if [[ "$_have_digest_maps" == "true" ]]; then
+                # AX-1 path: resolve digest refs from maps.
+                local _d_amd64 _d_arm64
+                _d_amd64=$(printf '%s' "$_map_amd64_json" | jq -r --arg v "$ver" '.[$v] // empty' 2>/dev/null || true)
+                _d_arm64=$(printf '%s' "$_map_arm64_json" | jq -r --arg v "$ver" '.[$v] // empty' 2>/dev/null || true)
+
+                # A version missing from either map is excluded (not a fatal error for non-ceiling).
+                if [[ -z "$_d_amd64" ]] || [[ -z "$_d_arm64" ]]; then
+                    if [[ "$ver" == "$ceiling" ]]; then
+                        log_error "$ext $ver pg${major_ver} (ceiling): digest missing in one arch map (amd64='$(_sanitize_for_log "$_d_amd64")' arm64='$(_sanitize_for_log "$_d_arm64")') — fatal"
+                        _ext_failed=true
+                        break
+                    else
+                        log_warning "$ext $ver pg${major_ver}: digest missing in one arch map — excluded (AX-1 missing-one-arch)"
+                        _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"digest missing in one arch\"}")
+                        continue
+                    fi
+                fi
+
+                if ! is_valid_oci_digest "$_d_amd64" || ! is_valid_oci_digest "$_d_arm64"; then
+                    if [[ "$ver" == "$ceiling" ]]; then
+                        log_error "$ext $ver pg${major_ver} (ceiling): malformed digest in map — fatal"
+                        _ext_failed=true
+                        break
+                    else
+                        log_warning "$ext $ver pg${major_ver}: malformed digest in map — excluded"
+                        _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"malformed digest in map\"}")
+                        continue
+                    fi
+                fi
+
+                _src_amd64="${ver_image_base}@${_d_amd64}"
+                _src_arm64="${ver_image_base}@${_d_arm64}"
+            else
+                # Fallback: mutable suffixed tag refs (pre-AX-1 behavior).
+                _src_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
+                _src_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
+            fi
+
+            log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_src_amd64 + $_src_arm64"
             local _create_rc=0
             if ! $DOCKER buildx imagetools create \
                 -t "$ver_multiarch" \
-                "$ver_amd64" "$ver_arm64" 2>&1; then
+                "$_src_amd64" "$_src_arm64" 2>&1; then
                 _create_rc=$?
                 if [[ "$ver" == "$ceiling" ]]; then
                     # Ceiling failure is fatal: the consumer cannot function without it.
@@ -1841,15 +1983,34 @@ finalize_multiarch_manifests() {
         local _bundle_image_base
         _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
         local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
-        local _bundle_amd64="${_bundle_base_tag}-amd64"
-        local _bundle_arm64="${_bundle_base_tag}-arm64"
         local _bundle_multiarch="$_bundle_base_tag"  # un-suffixed
 
-        log_info "$ext pg${major_ver}: imagetools create $_bundle_multiarch from $_bundle_amd64 + $_bundle_arm64"
+        local _bsrc_amd64 _bsrc_arm64
+        if [[ "$_have_digest_maps" == "true" ]]; then
+            # AX-1: use digest refs for bundle merge.
+            local _bd_amd64 _bd_arm64
+            _bd_amd64=$(printf '%s' "$_map_amd64_json" | jq -r '.bundle // empty' 2>/dev/null || true)
+            _bd_arm64=$(printf '%s' "$_map_arm64_json" | jq -r '.bundle // empty' 2>/dev/null || true)
+            if [[ -n "$_bd_amd64" ]] && [[ -n "$_bd_arm64" ]] && \
+               is_valid_oci_digest "$_bd_amd64" && is_valid_oci_digest "$_bd_arm64"; then
+                _bsrc_amd64="${_bundle_multiarch}@${_bd_amd64}"
+                _bsrc_arm64="${_bundle_multiarch}@${_bd_arm64}"
+                log_info "$ext pg${major_ver}: bundle merge using digest refs (AX-1)"
+            else
+                log_warning "$ext pg${major_ver}: bundle digest missing or malformed in maps — falling back to mutable bundle tag refs"
+                _bsrc_amd64="${_bundle_base_tag}-amd64"
+                _bsrc_arm64="${_bundle_base_tag}-arm64"
+            fi
+        else
+            _bsrc_amd64="${_bundle_base_tag}-amd64"
+            _bsrc_arm64="${_bundle_base_tag}-arm64"
+        fi
+
+        log_info "$ext pg${major_ver}: imagetools create $_bundle_multiarch from $_bsrc_amd64 + $_bsrc_arm64"
         local _bundle_create_rc=0
         if ! $DOCKER buildx imagetools create \
             -t "$_bundle_multiarch" \
-            "$_bundle_amd64" "$_bundle_arm64" 2>&1; then
+            "$_bsrc_amd64" "$_bsrc_arm64" 2>&1; then
             _bundle_create_rc=$?
             log_error "$ext pg${major_ver}: bundle manifest create failed (rc=$_bundle_create_rc) — fail-closed"
             _delete_stale_versionset_artifact "$ext" "$major_ver"

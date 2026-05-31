@@ -10755,3 +10755,356 @@ EOF
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ ! -f "$artifact" ]
 }
+
+# ---------------------------------------------------------------------------
+# AX1-merge-by-digest: finalize_multiarch_manifests with per-arch digest maps
+# present uses `imagetools create <ref>@<digest>` (digest refs), NOT mutable
+# `-amd64`/`-arm64` tag refs. The @sha256: pattern must appear in every
+# imagetools create call for per-version merges.
+# ---------------------------------------------------------------------------
+@test "AX1-merge-by-digest: finalize-multiarch uses digest refs from maps, not mutable tags" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_calls_log="${tmpd}/ax1_imagetools_calls.log"
+    export imagetools_calls_log
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Provide per-arch digest map files — the maps that stage-A per-arch legs write
+    # after each push. Structure: { "<version>": "sha256:<64hex>", "bundle": "sha256:..." }
+    # Use 3 versions so set_size>1, ensuring the per-version merge loop runs.
+    mkdir -p "${tmpd}/.build-lineage"
+    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'a%.0s' {1..64})" "$(printf 'a%.0s' {1..64})" \
+        "$(printf 'b%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
+    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'c%.0s' {1..64})" "$(printf 'c%.0s' {1..64})" \
+        "$(printf 'd%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() {
+            if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Must succeed.
+    [ "$status" -eq 0 ]
+
+    # imagetools create must have been called.
+    [ -f "$imagetools_calls_log" ]
+
+    local create_calls
+    create_calls=$(cat "$imagetools_calls_log")
+
+    # Must contain at least one imagetools create line.
+    [[ "$create_calls" == *"IMAGETOOLS_CREATE"* ]]
+
+    # All create calls for per-version merges must reference @sha256: refs.
+    local bad_lines
+    bad_lines=$(grep 'IMAGETOOLS_CREATE' "$imagetools_calls_log" | grep -v '@sha256:' || true)
+    [ -z "$bad_lines" ]
+}
+
+# ---------------------------------------------------------------------------
+# AX1-version-missing-one-arch-excluded: a version present in amd64 map but
+# absent in arm64 map is excluded (not merged), recorded in excluded[].
+# Ceiling present in both → ok; ceiling missing in one → fatal.
+# ---------------------------------------------------------------------------
+@test "AX1-version-missing-one-arch-excluded: version in only one arch map is excluded, not merged" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_calls_log="${tmpd}/ax1_missing_imagetools.log"
+    export imagetools_calls_log
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Resolved set: [2.25.0, 2.26.0, 2.27.1] (ceiling=2.27.1)
+    # amd64 map has all 3; arm64 map has ONLY 2.26.0 and 2.27.1 (2.25.0 absent).
+    # Expected: 2.25.0 excluded (only in amd64), 2.26.0+2.27.1 merged (in both).
+    # confirmed_available=[2.26.0, 2.27.1] (length=2) → bundle created → artifact written.
+    mkdir -p "${tmpd}/.build-lineage"
+    printf '{"2.25.0":"sha256:%s","2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
+        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
+    # arm64: 2.25.0 ABSENT (simulates musl build failed on arm64 leg)
+    printf '{"2.26.0":"sha256:%s","2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'e%.0s' {1..64})" "$(printf 'f%.0s' {1..64})" "$(printf 'g%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() {
+            if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
+                echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Ceiling (2.27.1) present in both → success.
+    [ "$status" -eq 0 ]
+
+    # Versionset artifact must exist (ceiling merged successfully).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # 2.25.0 (only in amd64, absent from arm64) must be in excluded[].
+    local excluded_versions
+    excluded_versions=$(jq -r '.excluded[].version' "$artifact")
+    [[ "$excluded_versions" == *"2.25.0"* ]]
+
+    # 2.27.1 (ceiling, in both) must be in available[].
+    local available_versions
+    available_versions=$(jq -r '.available[]' "$artifact")
+    [[ "$available_versions" == *"2.27.1"* ]]
+    [[ "$available_versions" != *"2.25.0"* ]]
+
+    # imagetools create must NOT have been called for 2.25.0 (it was excluded).
+    if [ -f "$imagetools_calls_log" ]; then
+        local ts_25_calls
+        ts_25_calls=$(grep '2\.25\.0' "$imagetools_calls_log" || true)
+        [ -z "$ts_25_calls" ]
+    fi
+}
+
+@test "AX1-ceiling-missing-one-arch-fatal: ceiling absent from one arch map → fatal exit" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # amd64 map has ceiling 2.27.1; arm64 map is MISSING ceiling 2.27.1.
+    mkdir -p "${tmpd}/.build-lineage"
+    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
+    # arm64 map has only an older version, ceiling absent.
+    printf '{"2.25.0":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() { return 0; }
+        export -f docker
+
+        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Ceiling missing in arm64 map → fatal.
+    [ "$status" -ne 0 ]
+
+    # No versionset artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# AX3-duration-consolidated: per-arch duration files for a version
+# (amd64=100s, arm64=140s) → canonical artifact gets one duration file with
+# MAX policy (140s); the consolidated duration_seconds is 140.
+# ---------------------------------------------------------------------------
+@test "AX3-duration-consolidated: per-arch duration files consolidated with MAX policy; canonical duration=140" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Write per-arch duration files as if stage A legs wrote them.
+    mkdir -p "${tmpd}/.build-lineage"
+
+    # amd64 leg: duration=100
+    printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":100,"built_at":"2026-05-31T00:00:00Z"}\n' \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-2.27.1-amd64.json"
+
+    # arm64 leg: duration=140 (slower arch)
+    printf '{"ext":"timescaledb","version":"2.27.1","pg_major":"18","image":"ghcr.io/test/ext-timescaledb:pg18-2.27.1","duration_seconds":140,"built_at":"2026-05-31T00:00:00Z"}\n' \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-2.27.1-arm64.json"
+
+    # Digest maps required by finalize-multiarch AX-1 path.
+    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-amd64.json"
+    printf '{"2.27.1":"sha256:%s","bundle":"sha256:%s"}\n' \
+        "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" \
+        > "${tmpd}/.build-lineage/ext-timescaledb-pg18-digests-arm64.json"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() { return 0; }
+        export -f docker
+
+        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Must succeed.
+    [ "$status" -eq 0 ]
+
+    # The consolidated per-version duration file must exist (without arch suffix).
+    local canonical_dur="$tmpd/.build-lineage/ext-timescaledb-pg18-2.27.1.json"
+    [ -f "$canonical_dur" ]
+
+    # MAX policy: arm64 was slower (140 > 100) → consolidated = 140.
+    local consolidated_dur
+    consolidated_dur=$(jq '.duration_seconds' "$canonical_dur")
+    [ "$consolidated_dur" -eq 140 ]
+
+    # sum_flavor_extension_durations ignores *-versionset.json and *-digests-*.json;
+    # canonical duration file ext-timescaledb-pg18-2.27.1.json has duration=140.
+    [ "$consolidated_dur" -gt 0 ]
+
+    # For a single-version set (set_size=1), no versionset artifact is produced —
+    # that is correct behavior (the consumer uses the single-version path).
+    # The test's goal is only to verify duration consolidation; versionset absence is expected.
+}

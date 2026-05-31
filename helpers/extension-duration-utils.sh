@@ -66,6 +66,8 @@ sum_flavor_extension_durations() {
             [[ -f "$lineage_file" ]] || continue
             # Skip the versionset artifact — it contains no duration_seconds
             [[ "$lineage_file" == *"-versionset.json" ]] && continue
+            # Skip per-arch digest maps (AX-1) — they contain no duration_seconds
+            [[ "$lineage_file" == *"-digests-"*".json" ]] && continue
             local d
             d=$(jq -r '.duration_seconds // 0' "$lineage_file" 2>/dev/null || echo 0)
             # Guard against non-numeric output from jq (e.g. "null" when field absent)
