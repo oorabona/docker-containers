@@ -435,6 +435,92 @@ handle_pull_only_mode() {
     LOCAL_ONLY=true build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "false" "${unique_exts_to_build[@]}"
 }
 
+# Assemble (and optionally push) a bundle image for a resolver-backed extension.
+#
+# The bundle is a FROM-scratch image that COPYs each available per-version image's
+# /output/extension/ and /output/lib/ layers under /<ver>/ so the consumer can do
+# a single COPY --from=ext-<ext>:pg<major>-bundle to land all versions.
+#
+# This is intentionally cheap: no compilation occurs — only COPY layers from the
+# per-version refs that already exist in the registry (or local store on LOCAL_ONLY).
+# Idempotent: rebuilding with the same available set produces the same content.
+#
+# Called from TWO sites:
+#   1. build_tag_push_extensions — after the per-version inner loop (build path).
+#   2. main() — on the all-cached path where build_tag_push_extensions is not called
+#      but the bundle must still be refreshed to match the current available set.
+#
+# Args: ext major_ver do_push avail_ver1 [avail_ver2 ...]
+#   do_push: "true" → push to registry after build; "false" → build locally only.
+#   avail_ver*: the versions to include in the bundle (must be non-empty).
+#
+# Returns: 0 on success, 1 on build or push failure (caller adds to failed[]).
+# Does NOT call exit directly; callers propagate the failure.
+# Under DRY_RUN=true, logs what would happen and returns 0 (callers handle DRY_RUN
+# before calling this function on the real path — this guard is defense-in-depth).
+assemble_and_push_bundle() {
+    local ext="$1" major_ver="$2" do_push="$3"
+    shift 3
+    local avail_versions=("$@")
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local _bundle_image_base_d
+        _bundle_image_base_d=$(ext_image_name "$ext" "dummy" "$major_ver")
+        local _bundle_ref_d="${_bundle_image_base_d%:*}:pg${major_ver}-bundle"
+        log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref_d (versions: ${avail_versions[*]})"
+        [[ "$do_push" == "true" ]] && log_info "[DRY-RUN] Would push bundle $_bundle_ref_d"
+        return 0
+    fi
+
+    local _bundle_image_base
+    _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
+    local _bundle_ref="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+
+    local _bundle_df
+    _bundle_df=$(mktemp)
+
+    {
+        printf 'FROM scratch\n'
+        local _bver
+        for _bver in "${avail_versions[@]}"; do
+            local _per_ver_ref
+            _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
+            printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
+            printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
+        done
+    } > "$_bundle_df"
+
+    log_info "Building bundle $ext pg${major_ver}: $_bundle_ref"
+
+    local _bundle_ctx
+    _bundle_ctx=$(mktemp -d)
+
+    local _bundle_build_ok=true
+    if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
+        _bundle_build_ok=false
+    fi
+
+    rm -f "$_bundle_df"
+    rm -rf "$_bundle_ctx"
+
+    if [[ "$_bundle_build_ok" == "false" ]]; then
+        log_error "$ext pg${major_ver} bundle build failed"
+        return 1
+    fi
+
+    log_success "Bundle built: $_bundle_ref"
+
+    if [[ "$do_push" == "true" ]]; then
+        if ! $DOCKER push "$_bundle_ref"; then
+            log_error "$ext pg${major_ver} bundle push failed"
+            return 1
+        fi
+        log_success "Bundle pushed: $_bundle_ref"
+    fi
+
+    return 0
+}
+
 # Build, tag, and optionally push a list of extensions. Exits 1 if any fail.
 # Args: config_file major_ver container_dir push ext1 [ext2 ...]
 build_tag_push_extensions() {
@@ -611,67 +697,25 @@ build_tag_push_extensions() {
         # _available_for_bundle), so we compute the "would build" set from version_set_json.
         # On the real path, only fire when at least one version is available.
         if [[ -n "$_resolver_path" ]] && [[ "$set_size" -gt 1 ]]; then
-            local _bundle_image_base
-            _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
-            # Bundle ref: replace trailing :pg<major>-dummy with :pg<major>-bundle
-            local _bundle_ref="${_bundle_image_base%:*}:pg${major_ver}-bundle"
-
             if [[ "$DRY_RUN" == "true" ]]; then
+                local _bundle_image_base_dry
+                _bundle_image_base_dry=$(ext_image_name "$ext" "dummy" "$major_ver")
+                local _bundle_ref_dry="${_bundle_image_base_dry%:*}:pg${major_ver}-bundle"
                 local _dry_all_versions
                 _dry_all_versions=$(echo "$version_set_json" | jq -r '.[]' | tr '\n' ' ')
-                log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref (versions: ${_dry_all_versions})"
-                log_info "[DRY-RUN] Would push bundle $_bundle_ref"
+                log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref_dry (versions: ${_dry_all_versions})"
+                log_info "[DRY-RUN] Would push bundle $_bundle_ref_dry"
                 continue
             fi
 
             # Real path: only proceed when at least one version is available.
-            if [[ ${#_available_for_bundle[@]} -eq 0 ]]; then
-                continue
-            fi
-
-            # Generate the bundle Dockerfile to a temp file.
-            local _bundle_df
-            _bundle_df=$(mktemp)
-
-            {
-                printf 'FROM scratch\n'
-                local _bver
-                for _bver in "${_available_for_bundle[@]}"; do
-                    local _per_ver_ref
-                    _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
-                    printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
-                    printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
-                done
-            } > "$_bundle_df"
-
-            log_info "Building bundle $ext pg${major_ver}: $_bundle_ref"
-
-            local _bundle_ctx
-            _bundle_ctx=$(mktemp -d)
-
-            local _bundle_build_ok=true
-            if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
-                _bundle_build_ok=false
-            fi
-
-            rm -f "$_bundle_df"
-            rm -rf "$_bundle_ctx"
-
-            if [[ "$_bundle_build_ok" == "false" ]]; then
-                log_error "$ext pg${major_ver} bundle build failed"
-                failed+=("$ext@bundle")
-                continue
-            fi
-
-            log_success "Bundle built: $_bundle_ref"
-
-            if [[ "$do_push" == "true" ]]; then
-                if ! $DOCKER push "$_bundle_ref"; then
-                    log_error "$ext pg${major_ver} bundle push failed"
+            if [[ ${#_available_for_bundle[@]} -gt 0 ]]; then
+                local _bundle_rc=0
+                assemble_and_push_bundle "$ext" "$major_ver" "$do_push" "${_available_for_bundle[@]}" || _bundle_rc=$?
+                if [[ "$_bundle_rc" -ne 0 ]]; then
                     failed+=("$ext@bundle")
                     continue
                 fi
-                log_success "Bundle pushed: $_bundle_ref"
             fi
         fi
 
@@ -1328,6 +1372,68 @@ main() {
         # the _should_build_extension calls above).
         local _fp_rc=0
         _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+
+        # Bundle refresh on the all-cached path: assemble_and_push_bundle is normally
+        # called from inside build_tag_push_extensions, but that function is never
+        # invoked when every per-version image already exists. Refresh every in-scope
+        # resolver-backed multi-version extension's bundle here so the bundle tag
+        # always exists and always reflects the current available set (DEFECT AJ fix).
+        # Only runs when DRY_RUN=false; a non-zero return is fatal (bundle required).
+        if [[ "$DRY_RUN" != "true" ]]; then
+            local _do_push_cached="true"
+            [[ "$LOCAL_ONLY" == "true" ]] && _do_push_cached="false"
+
+            local _br_ext
+            local _br_ext_list
+            if [[ -n "${EXTENSION:-}" ]]; then
+                _br_ext_list="$EXTENSION"
+            else
+                _br_ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+            fi
+
+            while IFS= read -r _br_ext; do
+                [[ -z "$_br_ext" ]] && continue
+                local _br_dockerfile="$container_dir/extensions/build/${_br_ext}.Dockerfile"
+                [[ ! -f "$_br_dockerfile" ]] && continue
+
+                # Only resolver-backed multi-version extensions need a bundle.
+                local _br_resolver_path
+                _br_resolver_path=$(yq -r ".extensions.${_br_ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
+                [[ -z "$_br_resolver_path" ]] && continue
+
+                local _br_version_set_json
+                if ! _br_version_set_json=$(_resolve_cached "$_br_ext" "$major_ver" "$config_file"); then
+                    # Resolver unavailable: skip bundle refresh for this extension.
+                    # The versionset final pass already logged the warning/error.
+                    continue
+                fi
+
+                local _br_set_size
+                _br_set_size=$(echo "$_br_version_set_json" | jq 'length')
+                [[ "$_br_set_size" -le 1 ]] && continue
+
+                # Collect the versions that are actually present (available set).
+                local _br_available=()
+                local _br_ver
+                while IFS= read -r _br_ver; do
+                    local _br_img
+                    _br_img=$(ext_image_name "$_br_ext" "$_br_ver" "$major_ver")
+                    if _image_present "$_br_img"; then
+                        _br_available+=("$_br_ver")
+                    fi
+                done < <(echo "$_br_version_set_json" | jq -r '.[]')
+
+                [[ ${#_br_available[@]} -eq 0 ]] && continue
+
+                local _br_rc=0
+                assemble_and_push_bundle "$_br_ext" "$major_ver" "$_do_push_cached" "${_br_available[@]}" || _br_rc=$?
+                if [[ "$_br_rc" -ne 0 ]]; then
+                    log_error "$_br_ext pg${major_ver}: bundle refresh failed on all-cached path"
+                    _fp_rc=$(( _fp_rc + 1 ))
+                fi
+            done <<< "$_br_ext_list"
+        fi
+
         exit "$_fp_rc"
     fi
 

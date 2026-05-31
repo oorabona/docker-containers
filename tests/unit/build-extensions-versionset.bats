@@ -6174,3 +6174,337 @@ EOCFG
     scratch_count=$(grep -c "FROM scratch" "$bundle_df_capture")
     [ "$scratch_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# AJ-1: all-cached path still assembles and pushes the bundle.
+# When ALL per-version images already exist in the registry, _should_build_extension
+# returns 1 (skip) and build_tag_push_extensions is never called. Before the fix,
+# the bundle is never (re)assembled on this path. After the fix, assemble_and_push_bundle
+# is called from main() after the all-cached early-exit, so the bundle always exists
+# and always reflects the current available[].
+#
+# RED before fix:  bundle docker build/push NOT called on all-cached path.
+# GREEN after fix: bundle docker build/push IS called even when no per-version build runs.
+# ---------------------------------------------------------------------------
+
+@test "AJ-all-cached-still-builds-bundle: all-cached path assembles and pushes the bundle" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_log="$tmpd/aj1_docker.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export docker_log=\"$docker_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All per-version images already in registry — per-version build loop is skipped.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # Record docker calls.
+        docker() {
+            echo \"DOCKER_CMD=\$1 ARGS=\${*:2}\" >> \"\$docker_log\"
+            return 0
+        }
+        export -f docker
+
+        build_ext_image() {
+            echo 'BUILD_CALLED' >> \"$tmpd/aj1_build.log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # No per-version build must have occurred (all-cached).
+    local build_count
+    build_count=$(_count_log_lines "$tmpd/aj1_build.log")
+    [ "$build_count" -eq 0 ]
+
+    # Bundle docker build MUST have been called (AJ fix assertion).
+    # Before fix: docker_log absent or has no bundle entry → RED.
+    # After fix:  docker build pg18-bundle present → GREEN.
+    [ -f "$docker_log" ]
+    grep -q "DOCKER_CMD=build" "$docker_log"
+    grep -q "pg18-bundle" "$docker_log"
+
+    # Bundle docker push MUST have been called on the publish path.
+    grep -q "DOCKER_CMD=push" "$docker_log"
+}
+
+# ---------------------------------------------------------------------------
+# AJ-2: bundle assembled from the AVAILABLE set (not a stale or larger set).
+# The bundle Dockerfile must COPY exactly the versions that are currently
+# available in the registry — no more, no fewer.
+#
+# Scenario: resolved set = [2.25.0, 2.26.0, 2.27.1]; 2.25.0 is absent
+# from the registry (musl-failed previously); 2.26.0 and 2.27.1 are present.
+# The all-cached path (2.26.0 and 2.27.1 are cached, 2.25.0 never built) runs
+# because _should_build_extension sees 2.25.0 absent — wait, 2.25.0 is absent
+# so _should_build_extension returns 0 (needs build). Adjust: available = those
+# currently present; we use the build path but confirm the bundle only copies
+# from available versions (not from 2.25.0 which fails to build).
+#
+# Strategy: 3-version resolver; 2.25.0 build fails (musl); 2.26.0 and 2.27.1
+# succeed. Bundle Dockerfile must only contain COPYs for 2.26.0 and 2.27.1.
+# ---------------------------------------------------------------------------
+
+@test "AJ-bundle-matches-available: bundle Dockerfile copies only available versions" {
+    local docker_log="$TEST_TEMP_DIR/aj2_docker.log"
+    local bundle_df_capture="$TEST_TEMP_DIR/aj2_df.txt"
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # 2.25.0 fails to build (musl incompatibility)
+    build_ext_image() {
+        if [[ "$2" == "2.25.0" ]]; then
+            return 1
+        fi
+        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
+        return 0
+    }
+    export -f build_ext_image
+
+    # Capture the bundle Dockerfile content.
+    docker() {
+        echo "DOCKER $*" >> "$docker_log"
+        if [[ "$1" == "build" ]]; then
+            local i
+            for (( i=1; i<=$#; i++ )); do
+                if [[ "${!i}" == "-f" ]]; then
+                    local next=$(( i + 1 ))
+                    local df_path="${!next}"
+                    if [[ -f "$df_path" ]]; then
+                        cp "$df_path" "$bundle_df_capture"
+                    fi
+                fi
+            done
+        fi
+        return 0
+    }
+    export -f docker
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Bundle Dockerfile must have been captured.
+    [ -f "$bundle_df_capture" ]
+
+    # Must contain COPY lines for the available versions (2.26.0 and 2.27.1).
+    grep -q "2.26.0" "$bundle_df_capture"
+    grep -q "2.27.1" "$bundle_df_capture"
+
+    # Must NOT contain a COPY for the failed (unavailable) version 2.25.0.
+    ! grep -q "2.25.0" "$bundle_df_capture"
+}
+
+# ---------------------------------------------------------------------------
+# AJ-3: all-cached + LOCAL_ONLY=true → bundle is built, NOT pushed.
+# On the all-cached path with LOCAL_ONLY, the bundle must be assembled from
+# the available per-version images (already in local store from prior pulls/builds),
+# but must not be pushed to the registry.
+# ---------------------------------------------------------------------------
+
+@test "AJ-local-only-no-push: all-cached + LOCAL_ONLY=true → bundle built, not pushed" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_log="$tmpd/aj3_docker.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=true DRY_RUN=false CONTAINER=postgres
+        export docker_log=\"$docker_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # LOCAL_ONLY: all versions present locally (docker image inspect returns 0).
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            echo \"DOCKER_CMD=\$_dcmd ARGS=\${*:2}\" >> \"\$docker_log\"
+            if [[ \"\$_dcmd\" == \"image\" ]]; then
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f docker
+
+        # image_exists_in_registry not consulted in LOCAL_ONLY mode for per-version skip check
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() {
+            echo 'BUILD_CALLED' >> \"$tmpd/aj3_build.log\"
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --local-only
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Bundle docker build MUST have been called.
+    [ -f "$docker_log" ]
+    grep -q "DOCKER_CMD=build" "$docker_log"
+    grep -q "pg18-bundle" "$docker_log"
+
+    # Bundle docker push must NOT have been called (LOCAL_ONLY=true).
+    ! grep -qE "DOCKER_CMD=push.*pg18-bundle|DOCKER_CMD=push.+bundle" "$docker_log"
+}
+
+# ---------------------------------------------------------------------------
+# AJ-4: bundle push failure on the publish path is fatal (exit non-zero).
+# After the all-cached path assembles the bundle, if the push fails the run
+# must exit non-zero so CI does not silently succeed with a missing bundle tag.
+# ---------------------------------------------------------------------------
+
+@test "AJ-publish-bundle-failure-fatal: bundle push failure on publish path exits non-zero" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All per-version images already in registry.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # Bundle build succeeds; bundle push FAILS (registry error).
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" ]]; then
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == \"push\" ]]; then
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Bundle push failure must be fatal on the publish path.
+    [ "$status" -ne 0 ]
+}
