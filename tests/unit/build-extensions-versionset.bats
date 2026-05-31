@@ -9346,3 +9346,393 @@ _run_an_producer() {
     # Under DRY_RUN: no filesystem mutation — stale artifact must still be present.
     [ -f "$stale_artifact" ]
 }
+
+# ---------------------------------------------------------------------------
+# A-arch-suffixed-build: ARCH_SUFFIX=amd64 => per-version build uses
+# `buildx --platform linux/amd64` and bundle gets -amd64 suffix;
+# NO versionset artifact written (deferred when ARCH_SUFFIX non-empty).
+# ---------------------------------------------------------------------------
+
+@test "A-arch-suffixed-build: ARCH_SUFFIX=amd64 uses buildx --platform and suffixed bundle tag, no artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local docker_calls="$tmpd/docker_calls_amd64.log"
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export ARCH_SUFFIX=amd64 BUILD_PLATFORM=linux/amd64
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "'"$docker_calls"'"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+
+    # Bundle build must include --platform linux/amd64
+    [ -f "$docker_calls" ]
+    local calls
+    calls=$(cat "$docker_calls")
+    [[ "$calls" == *"--platform linux/amd64"* ]]
+
+    # Bundle tag must be suffixed with -amd64 (:pg18-bundle-amd64)
+    [[ "$calls" == *"pg18-bundle-amd64"* ]]
+
+    # NO versionset artifact written (deferred when ARCH_SUFFIX non-empty)
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# A-arm64-suffix: ARCH_SUFFIX=arm64, BUILD_PLATFORM=linux/arm64 => -arm64 tags
+# and --platform linux/arm64 in docker calls.
+# ---------------------------------------------------------------------------
+
+@test "A-arm64-suffix: ARCH_SUFFIX=arm64 produces -arm64 suffixed bundle tag and --platform linux/arm64" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local docker_calls="$tmpd/docker_calls_arm64.log"
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export ARCH_SUFFIX=arm64 BUILD_PLATFORM=linux/arm64
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        docker() {
+            echo "DOCKER $*" >> "'"$docker_calls"'"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+
+    [ -f "$docker_calls" ]
+    local calls
+    calls=$(cat "$docker_calls")
+
+    # Must use --platform linux/arm64
+    [[ "$calls" == *"--platform linux/arm64"* ]]
+
+    # Bundle tag must be -arm64 suffixed
+    [[ "$calls" == *"pg18-bundle-arm64"* ]]
+
+    # No artifact (deferred)
+    [ ! -f "$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# A-local-unchanged: ARCH_SUFFIX empty (local) => un-suffixed bundle tag + artifact
+# written (existing behavior regression guard).
+# ---------------------------------------------------------------------------
+
+@test "A-local-unchanged: ARCH_SUFFIX empty (local build) keeps un-suffixed bundle tag and writes artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local registry_present="$tmpd/registry-present-local-a"
+    : > "$registry_present"
+    export registry_present
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export ARCH_SUFFIX=
+        export registry_present="'"$registry_present"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() {
+            local tag="${1##*:}"
+            grep -qxF "$tag" "$registry_present" 2>/dev/null
+        }
+        export -f image_exists_in_registry
+
+        docker() { [[ "$1" == "build" || "$1" == "push" ]] && return 0; return 1; }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+
+        push_ext_image() {
+            local ext="$1" ver="$2" major="$3"
+            printf "pg%s-%s\n" "$major" "$ver" >> "$registry_present"
+            return 0
+        }
+        export -f push_ext_image
+
+        _image_present_3state() {
+            local tag="${1##*:}"
+            grep -qxF "$tag" "$registry_present" 2>/dev/null && return 0
+            return 1
+        }
+        export -f _image_present_3state
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+
+    # Artifact MUST be written when ARCH_SUFFIX is empty (local path unchanged).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# A-no-double-bundle: a full run that builds an ext assembles the bundle
+# EXACTLY ONCE (AV-2 fix). Without the fix, build_tag_push_extensions calls
+# _bundle_and_write_artifact AND _emit_final_versionset_pass also calls it for
+# the same (ext, major) => bundle assembled twice.
+# After fix: final pass skips (ext, major) already bundled on the build path.
+# ---------------------------------------------------------------------------
+
+@test "A-no-double-bundle: build+push of an ext assembles bundle EXACTLY ONCE (AV-2 fix)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local bundle_build_log="$tmpd/bundle_builds.log"
+    local registry_present="$tmpd/registry-present-av2"
+    : > "$registry_present"
+    export registry_present bundle_build_log
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export registry_present="'"$registry_present"'"
+        export bundle_build_log="'"$bundle_build_log"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() {
+            local tag="${1##*:}"
+            grep -qxF "$tag" "$registry_present" 2>/dev/null
+        }
+        export -f image_exists_in_registry
+
+        # Count bundle builds: docker build -t <tag> where tag contains "bundle".
+        docker() {
+            if [[ "$1" == "build" ]]; then
+                local _t_next=false
+                for _arg in "$@"; do
+                    if [[ "$_t_next" == "true" ]]; then
+                        if [[ "$_arg" == *bundle* ]]; then
+                            echo "BUNDLE_BUILD tag=$_arg" >> "$bundle_build_log"
+                        fi
+                        _t_next=false
+                    elif [[ "$_arg" == "-t" ]]; then
+                        _t_next=true
+                    fi
+                done
+                return 0
+            fi
+            [[ "$1" == "push" ]] && return 0
+            return 1
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+
+        push_ext_image() {
+            local ext="$1" ver="$2" major="$3"
+            printf "pg%s-%s\n" "$major" "$ver" >> "$registry_present"
+            return 0
+        }
+        export -f push_ext_image
+
+        _image_present_3state() {
+            local tag="${1##*:}"
+            grep -qxF "$tag" "$registry_present" 2>/dev/null && return 0
+            return 1
+        }
+        export -f _image_present_3state
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    '
+
+    [ "$status" -eq 0 ]
+
+    # Bundle assembled EXACTLY ONCE (AV-2 fix).
+    # Before fix: build_tag_push_extensions + _emit_final_versionset_pass both assemble => count=2 (RED).
+    # After fix:  final pass skips ext already bundled on the build path => count=1 (GREEN).
+    local bundle_count
+    bundle_count=$(_count_log_lines "$bundle_build_log")
+    [ "$bundle_count" -eq 1 ]
+}

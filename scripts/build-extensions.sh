@@ -27,8 +27,28 @@ source "$ROOT_DIR/helpers/version-set-resolver.sh"
 # Must NOT appear in config.yaml build_args (schema guard R7 rejects it).
 REMOTE_CR="${REMOTE_CR:-docker.io}"
 
+# _arch_suffix_tag <base_ref> <suffix>
+# Appends -${suffix} to <base_ref> when <suffix> is non-empty; returns <base_ref> unchanged
+# when <suffix> is empty. Used uniformly by per-version and bundle tagging so the CI
+# per-arch leg and the local/unsuffixed leg use exactly the same logic.
+#
+# Examples:
+#   _arch_suffix_tag "ghcr.io/owner/ext-ts:pg18-bundle"  "amd64"  => "ghcr.io/owner/ext-ts:pg18-bundle-amd64"
+#   _arch_suffix_tag "ghcr.io/owner/ext-ts:pg18-bundle"  ""        => "ghcr.io/owner/ext-ts:pg18-bundle"
+_arch_suffix_tag() {
+    local base="$1" suffix="${2:-}"
+    if [[ -n "$suffix" ]]; then
+        printf '%s-%s' "$base" "$suffix"
+    else
+        printf '%s' "$base"
+    fi
+}
+
 # Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
 # This ensures the trusted CI registry root reaches extension builder stages.
+# When BUILD_PLATFORM is set (CI per-arch leg), uses `docker buildx build --platform`
+# to build for that single architecture; without BUILD_PLATFORM, falls back to
+# plain `docker build` (host platform, local usage).
 build_ext_image() {
     local ext_name="$1"
     local ext_version="$2"
@@ -42,6 +62,35 @@ build_ext_image() {
 
     log_info "Building $ext_name $ext_version for PostgreSQL $pg_major (REMOTE_CR=${REMOTE_CR})"
 
+    if [[ -n "${BUILD_PLATFORM:-}" ]]; then
+        # CI per-arch leg: build for the specific platform using buildx.
+        # --push is required here because buildx cannot --load multi-arch images;
+        # but per-version ext images are always pushed to the registry anyway.
+        # The suffixed tag is the push target (used later by bundle COPY --from=).
+        local _ver_image
+        _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
+        local _ver_tag
+        _ver_tag=$(_arch_suffix_tag "$_ver_image" "${ARCH_SUFFIX:-}")
+
+        if ! $DOCKER buildx build \
+            --platform "${BUILD_PLATFORM}" \
+            -f "$dockerfile" \
+            -t "$_ver_tag" \
+            --push \
+            --build-arg REMOTE_CR="${REMOTE_CR}" \
+            --build-arg MAJOR_VERSION="$pg_major" \
+            --build-arg EXT_VERSION="$ext_version" \
+            --build-arg EXT_REPO="$ext_repo" \
+            "$context_dir"; then
+            log_error "Docker buildx build failed for $ext_name $ext_version (pg${pg_major})"
+            return 1
+        fi
+
+        log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
+        return 0
+    fi
+
+    # Local / host-platform build (ARCH_SUFFIX empty): original plain docker build.
     if ! $DOCKER build \
         -f "$dockerfile" \
         -t "$local_tag" \
@@ -476,6 +525,15 @@ _bundle_and_write_artifact() {
         return 0
     fi
 
+    # AV-2 double-bundle guard: record that this (ext, major_ver) bundle was assembled
+    # on the BUILD PATH so _emit_final_versionset_pass can skip it (preventing the same
+    # bundle from being assembled twice in a single run).
+    # Sentinel file: ${_BUILT_THIS_RUN_DIR}/bundle-<ext>-<major_ver>
+    # Written BEFORE the bundle assembly so the final pass never re-enters here for
+    # the same key even if _bundle_and_write_artifact is called from the build path.
+    local _bundle_sentinel="${_BUILT_THIS_RUN_DIR}/bundle-${ext}-${major_ver}"
+    printf '1' > "$_bundle_sentinel"
+
     # Load built-this-run set so a version pushed this run is counted PRESENT
     # regardless of propagation lag (identical to _emit_versionset_artifact's guard).
     local _built_this_run_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
@@ -558,6 +616,20 @@ _bundle_and_write_artifact() {
         return 1
     fi
 
+    # ARCH_SUFFIX defer: on a CI per-arch leg (ARCH_SUFFIX non-empty) the bundle was
+    # pushed with a platform-suffixed tag (e.g. :pg18-bundle-amd64).  The multi-arch
+    # manifest-merge step (stage B, NOT this change) will create the unsuffixed
+    # :pg18-bundle index and write the final versionset artifact with the index digest.
+    # Defer the artifact write here so stage B has a clean slate — no artifact from a
+    # single-arch leg should pre-empt the multi-arch one.
+    # We still delete any stale artifact so the consumer does not silently use old data.
+    if [[ -n "${ARCH_SUFFIX:-}" ]]; then
+        log_info "$ext pg${major_ver}: ARCH_SUFFIX=${ARCH_SUFFIX} — bundle pushed as suffixed ref; deferring versionset artifact to manifest-merge step"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        unset _BUNDLE_DIGEST
+        return 0
+    fi
+
     # Bundle pushed successfully — NOW write the artifact from the SAME confirmed set.
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
     mkdir -p "${ROOT_DIR}/.build-lineage"
@@ -630,7 +702,9 @@ assemble_and_push_bundle() {
     if [[ "$DRY_RUN" == "true" ]]; then
         local _bundle_image_base_d
         _bundle_image_base_d=$(ext_image_name "$ext" "dummy" "$major_ver")
-        local _bundle_ref_d="${_bundle_image_base_d%:*}:pg${major_ver}-bundle"
+        local _bundle_base_tag_d="${_bundle_image_base_d%:*}:pg${major_ver}-bundle"
+        local _bundle_ref_d
+        _bundle_ref_d=$(_arch_suffix_tag "$_bundle_base_tag_d" "${ARCH_SUFFIX:-}")
         log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref_d (versions: ${avail_versions[*]})"
         [[ "$do_push" == "true" ]] && log_info "[DRY-RUN] Would push bundle $_bundle_ref_d"
         return 0
@@ -638,7 +712,9 @@ assemble_and_push_bundle() {
 
     local _bundle_image_base
     _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
-    local _bundle_ref="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+    local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+    local _bundle_ref
+    _bundle_ref=$(_arch_suffix_tag "$_bundle_base_tag" "${ARCH_SUFFIX:-}")
 
     local _bundle_df
     _bundle_df=$(mktemp)
@@ -647,8 +723,12 @@ assemble_and_push_bundle() {
         printf 'FROM scratch\n'
         local _bver
         for _bver in "${avail_versions[@]}"; do
+            # Per-version source: use arch-suffixed ref when ARCH_SUFFIX is set so the
+            # bundle COPYs from the same-arch per-version image built on this leg.
+            local _per_ver_ref_base
+            _per_ver_ref_base=$(ext_image_name "$ext" "$_bver" "$major_ver")
             local _per_ver_ref
-            _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
+            _per_ver_ref=$(_arch_suffix_tag "$_per_ver_ref_base" "${ARCH_SUFFIX:-}")
             printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
             printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
         done
@@ -660,7 +740,17 @@ assemble_and_push_bundle() {
     _bundle_ctx=$(mktemp -d)
 
     local _bundle_build_ok=true
-    if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
+    if [[ -n "${BUILD_PLATFORM:-}" ]]; then
+        # CI per-arch leg: use buildx build --platform with --push.
+        if ! $DOCKER buildx build \
+            --platform "${BUILD_PLATFORM}" \
+            -t "$_bundle_ref" \
+            -f "$_bundle_df" \
+            --push \
+            "$_bundle_ctx"; then
+            _bundle_build_ok=false
+        fi
+    elif ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
         _bundle_build_ok=false
     fi
 
@@ -674,13 +764,25 @@ assemble_and_push_bundle() {
 
     log_success "Bundle built: $_bundle_ref"
 
+    # Push phase: when BUILD_PLATFORM is set the buildx build already pushed via --push,
+    # so no separate docker push is needed.  We still capture the digest on that path.
+    local _pushed=false
     if [[ "$do_push" == "true" ]]; then
-        if ! $DOCKER push "$_bundle_ref"; then
-            log_error "$ext pg${major_ver} bundle push failed"
-            return 1
+        if [[ -z "${BUILD_PLATFORM:-}" ]]; then
+            # Local / plain-buildx path: push separately.
+            if ! $DOCKER push "$_bundle_ref"; then
+                log_error "$ext pg${major_ver} bundle push failed"
+                return 1
+            fi
+            log_success "Bundle pushed: $_bundle_ref"
+        else
+            # CI per-arch path: buildx --push already sent it to the registry.
+            log_success "Bundle pushed (via buildx --push): $_bundle_ref"
         fi
-        log_success "Bundle pushed: $_bundle_ref"
+        _pushed=true
+    fi
 
+    if [[ "$_pushed" == "true" ]]; then
         # AM fix: capture the digest of the pushed bundle image so the consumer
         # can emit a digest-pinned COPY --from=<ref>@<digest> (immutable reference).
         # Digest capture failure after a successful push is fatal: the caller cannot
@@ -688,9 +790,7 @@ assemble_and_push_bundle() {
         # the caller (_bundle_and_write_artifact) propagates the non-zero return.
         #
         # AN fix: apply strict whole-string OCI digest validation (is_valid_oci_digest)
-        # — not just a sha256: prefix check — to prevent a poisoned capture value
-        # (uppercase hex, wrong length, embedded newline, extra tokens) from flowing
-        # into the artifact bundle_digest field and ultimately into a Dockerfile COPY line.
+        # to prevent a poisoned capture value from flowing into the artifact.
         local _captured_digest
         _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
         if ! is_valid_oci_digest "$_captured_digest"; then
@@ -810,9 +910,13 @@ build_tag_push_extensions() {
         while IFS= read -r version; do
             local ver_image
             ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
+            # On the CI per-arch leg (ARCH_SUFFIX set), check presence of the
+            # arch-suffixed ref; locally (ARCH_SUFFIX empty) use the plain ref.
+            local _check_image
+            _check_image=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
 
             # Skip already-available versions.
-            if ! _image_needs_build "$ver_image"; then
+            if ! _image_needs_build "$_check_image"; then
                 if [[ "$LOCAL_ONLY" == "true" ]]; then
                     log_success "$ext $version already exists locally"
                 else
@@ -848,19 +952,25 @@ build_tag_push_extensions() {
                 continue
             fi
 
-            # Tag failure is always fatal — it is a registry/infra error, not musl.
-            if ! tag_extension "$ext" "$config_file" "$major_ver" "$version"; then
-                log_error "$ext $version tag failed (infra error)"
-                failed+=("$ext@$version")
-                continue
-            fi
-
-            # Push failure is always fatal.
-            if [[ "$do_push" == "true" ]]; then
-                if ! push_extension "$ext" "$config_file" "$major_ver" "$version"; then
-                    log_error "$ext $version push failed"
+            # When BUILD_PLATFORM is set, build_ext_image (the override at the top of
+            # this file) already performed buildx build --platform --push with the
+            # arch-suffixed tag.  The separate tag+push steps are for the local/plain
+            # path only.
+            if [[ -z "${BUILD_PLATFORM:-}" ]]; then
+                # Tag failure is always fatal — it is a registry/infra error, not musl.
+                if ! tag_extension "$ext" "$config_file" "$major_ver" "$version"; then
+                    log_error "$ext $version tag failed (infra error)"
                     failed+=("$ext@$version")
                     continue
+                fi
+
+                # Push failure is always fatal.
+                if [[ "$do_push" == "true" ]]; then
+                    if ! push_extension "$ext" "$config_file" "$major_ver" "$version"; then
+                        log_error "$ext $version push failed"
+                        failed+=("$ext@$version")
+                        continue
+                    fi
                 fi
             fi
 
@@ -1384,6 +1494,18 @@ _emit_final_versionset_pass() {
         else
             _do_push_fp="true"
             [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
+        fi
+
+        # AV-2 single-bundle guard: if _bundle_and_write_artifact was already called for
+        # this (ext, major_ver) on the BUILD PATH (in build_tag_push_extensions), a
+        # sentinel file was written to ${_BUILT_THIS_RUN_DIR}/bundle-<ext>-<major_ver>.
+        # Skip the final pass for this (ext, major_ver) to prevent assembling the bundle
+        # a second time in the same run.  The all-cached path (no build) writes no
+        # sentinel, so those always go through the final pass as before.
+        local _bundle_sentinel_fp="${_BUILT_THIS_RUN_DIR}/bundle-${ext}-${major_ver}"
+        if [[ -f "$_bundle_sentinel_fp" ]]; then
+            log_info "$ext pg${major_ver}: bundle already assembled on build path — skipping final pass for this extension (AV-2 guard)"
+            continue
         fi
 
         # Atomic: push bundle from confirmed_available, then write artifact from the
