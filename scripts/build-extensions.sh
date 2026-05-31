@@ -535,15 +535,34 @@ _bundle_and_write_artifact() {
     _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
     _resolved_json=$(echo "$version_set_json" | jq '.')
 
-    jq -nc \
-        --arg ext "$ext" \
-        --arg pg_major "$major_ver" \
-        --arg ceiling "$ceiling" \
-        --argjson resolved "$_resolved_json" \
-        --argjson available "$_available_json" \
-        --argjson excluded "$_excluded_json" \
-        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
-        > "$_vs_lineage_file"
+    # AM fix: include bundle_digest in the artifact when available (publish path).
+    # _BUNDLE_DIGEST is set by assemble_and_push_bundle after a successful push.
+    # On LOCAL_ONLY/no-push paths, _BUNDLE_DIGEST is unset or empty — omit the field.
+    local _artifact_digest="${_BUNDLE_DIGEST:-}"
+    unset _BUNDLE_DIGEST
+
+    if [[ -n "$_artifact_digest" ]]; then
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            --arg bundle_digest "$_artifact_digest" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, bundle_digest:$bundle_digest}' \
+            > "$_vs_lineage_file"
+    else
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
+            > "$_vs_lineage_file"
+    fi
     log_info "Version-set lineage (atomic): $_vs_lineage_file"
     return 0
 }
@@ -629,9 +648,36 @@ assemble_and_push_bundle() {
             return 1
         fi
         log_success "Bundle pushed: $_bundle_ref"
+
+        # AM fix: capture the digest of the pushed bundle image so the consumer
+        # can emit a digest-pinned COPY --from=<ref>@<digest> (immutable reference).
+        # Digest capture failure after a successful push is fatal: the caller cannot
+        # construct an immutable reference without the digest.  Fail closed here;
+        # the caller (_bundle_and_write_artifact) propagates the non-zero return.
+        local _captured_digest
+        _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
+        if [[ -z "$_captured_digest" || "$_captured_digest" != sha256:* ]]; then
+            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed (got: '${_captured_digest}') — cannot write immutable artifact ref; fail closed"
+            return 2
+        fi
+        log_info "Bundle digest: $_captured_digest"
+
+        # Export so _bundle_and_write_artifact can read it without a subshell.
+        _BUNDLE_DIGEST="$_captured_digest"
+        export _BUNDLE_DIGEST
     fi
 
     return 0
+}
+
+# _capture_bundle_digest <bundle_ref>
+# Captures the content digest of a pushed bundle image using docker buildx imagetools.
+# Returns the sha256:... digest string on stdout on success, exits non-zero on failure.
+# Separated from assemble_and_push_bundle so tests can override it independently
+# without needing to replicate the full docker() mock for buildx.
+_capture_bundle_digest() {
+    local _ref="$1"
+    $DOCKER buildx imagetools inspect "$_ref" --format '{{.Manifest.Digest}}' 2>/dev/null
 }
 
 # Build, tag, and optionally push a list of extensions. Exits 1 if any fail.

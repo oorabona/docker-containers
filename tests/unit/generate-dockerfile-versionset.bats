@@ -2023,3 +2023,107 @@ _run_registry_probe_3state() {
     bundle_count=$(echo "$output" | grep -c "COPY --from=.*:pg18-bundle" || true)
     [ "$bundle_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AL-consumer-single-version: resolver-backed ext, available set == 1 (only
+# the ceiling) → generated Dockerfile uses the single-version FROM path
+# (no bundle reference, no bundle probe).
+#
+# RED before fix: generate_dockerfile enters bundle path for any non-empty
+#   versionset (available_count > 0), emitting a bundle COPY for a set of 1 —
+#   but no bundle was ever built by the producer (set_size<=1 skips it).
+# GREEN after fix: available_count == 1 → fall through to single-version path:
+#   FROM <ext-image>:pg<major>-<ceiling> AS ext-<name>
+#   COPY --from=ext-<name> /output/extension/ ...
+#   COPY --from=ext-<name> /output/lib/ ...
+#   No bundle reference.  No bundle probe.
+# ---------------------------------------------------------------------------
+@test "AL-consumer-single-version: artifact with available=[ceiling] → single-version FROM path, no bundle ref" {
+    # Artifact: resolver-backed extension with exactly 1 available version (the ceiling).
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.27.1"],"available":["2.27.1"],"excluded":[]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # RED before fix: emits a bundle COPY (available_count > 0 unconditionally enters bundle path).
+    # GREEN after fix: no bundle reference anywhere in the output.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+
+    # Must emit a single FROM stage for the ceiling version (single-version path).
+    local from_count
+    from_count=$(echo "$output" | grep -c "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1")
+    [ "$from_count" -eq 1 ]
+
+    # Must emit flat COPY lines (single-version layout).
+    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/"
+    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/lib/ /tmp/ext/timescaledb/lib/"
+}
+
+# ---------------------------------------------------------------------------
+# AM-consumer-digest-pin: artifact present with bundle_digest → generated
+# Dockerfile COPYs from <bundle-ref>@<digest> (immutable, pinned reference).
+#
+# RED before fix: COPY uses only the mutable tag <bundle-ref>, no @sha256:...
+# GREEN after fix: COPY uses <bundle-ref>@sha256:... (digest-pinned).
+# ---------------------------------------------------------------------------
+@test "AM-consumer-digest-pin: artifact with bundle_digest → COPY from bundle ref pinned with @sha256:" {
+    # Artifact: multi-version with bundle_digest.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:deadbeef00000000000000000000000000000000000000000000000000000000"}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # RED before fix: COPY uses only the mutable tag (no @sha256: pin).
+    # GREEN after fix: COPY includes @sha256: digest pin.
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:" || true)
+    [ "$pinned_count" -eq 1 ]
+
+    # The full pinned ref must contain the exact digest from the artifact.
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:deadbeef"
+}
+
+# ---------------------------------------------------------------------------
+# AM-consumer-no-digest-tag-fallback: artifact present WITHOUT bundle_digest
+# (local/LOCAL_ONLY-produced artifact) → COPY uses tag-based reference only
+# (no @sha256:, no failure).
+# ---------------------------------------------------------------------------
+@test "AM-consumer-no-digest-tag-fallback: artifact without bundle_digest → tag-based COPY, no @ pin" {
+    # Artifact: multi-version, no bundle_digest (LOCAL_ONLY-produced case).
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+    # _write_versionset does not include bundle_digest — the artifact is a plain object.
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Must emit exactly ONE bundle COPY (tag-based, no digest pin).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
+    [ "$bundle_count" -eq 1 ]
+
+    # Must NOT contain any @sha256: (no digest pinning when digest absent).
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$pinned_count" -eq 0 ]
+}

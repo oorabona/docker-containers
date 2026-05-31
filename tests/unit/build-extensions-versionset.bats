@@ -136,6 +136,15 @@ _setup_default_mocks() {
     }
     export -f ext_local_image_name
 
+    # _capture_bundle_digest: returns a stable digest on success (production-faithful:
+    # a successful push always has a retrievable digest; tests that need failure
+    # override this function directly).
+    _capture_bundle_digest() {
+        echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        return 0
+    }
+    export -f _capture_bundle_digest
+
     # resolve_version_set: default → single-version (overridden per-test)
     resolve_version_set() {
         echo '["2.27.1"]'
@@ -505,6 +514,8 @@ _count_log_lines() {
         export -f image_exists_in_registry
         docker()               { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image()      { echo \"BUILD ext=\$1 ver=\$2\" >> '${build_log}'; return 0; }
         export -f build_ext_image
         tag_ext_image()        { return 0; }
@@ -594,6 +605,8 @@ _count_log_lines() {
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image() { return 0; }
@@ -990,6 +1003,8 @@ _count_log_lines() {
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -1389,6 +1404,8 @@ _count_log_lines() {
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/cached1_build.log\"
@@ -1497,6 +1514,8 @@ _count_log_lines() {
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() {
             echo 'manifest unknown: manifest unknown' >&2
@@ -1655,6 +1674,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -1754,6 +1775,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -1850,6 +1873,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         # All versions pulled successfully → no fallback builds needed
         pull_ext_image() { return 0; }
@@ -1861,6 +1886,8 @@ EOF
             return 0
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
@@ -1967,6 +1994,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2047,6 +2076,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/staleness_build.log\"
@@ -2157,6 +2188,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2289,6 +2322,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2396,6 +2431,8 @@ EOF
             grep -qxF \"\$img\" \"\$local_store\" 2>/dev/null
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2517,6 +2554,8 @@ EOF
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
         export -f skopeo
@@ -2624,6 +2663,8 @@ EOF
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
         export -f skopeo
@@ -2771,6 +2812,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2870,6 +2913,8 @@ EOF
         # LOCAL_ONLY: docker inspect for presence; pgvector absent locally
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
@@ -2955,6 +3000,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/ff1_build.log\"
@@ -3082,6 +3129,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3174,6 +3223,8 @@ EOF
 
         docker() { return 0; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
@@ -3261,6 +3312,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3358,6 +3411,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo 'SHOULD_NOT_BUILD' >> \"$tmpd/hh2_build.log\"
@@ -3635,6 +3690,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3797,6 +3854,13 @@ EOF
     }
     export -f docker
     export DOCKER
+
+    # Production-faithful: a successful push always has a retrievable digest.
+    _capture_bundle_digest() {
+        echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        return 0
+    }
+    export -f _capture_bundle_digest
 
     # tag_ext_image / push_ext_image must record calls for the ceiling version
     tag_ext_image() {
@@ -4038,6 +4102,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$pgv_build_log\"
@@ -4117,6 +4183,8 @@ EOF
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
             return 0
@@ -4193,6 +4261,8 @@ EOF
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
             return 0
@@ -4290,6 +4360,8 @@ EOF
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image()  { return 0; }
@@ -4381,6 +4453,8 @@ EOF
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image()  { return 0; }
@@ -4458,6 +4532,8 @@ _run_3state_probe() {
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         # skopeo mock: mirrors the tightened classification.
         skopeo() {
             local _not_found_pat='manifest unknown|name unknown|repository name not known|no such manifest'
@@ -4676,6 +4752,8 @@ EOF
 
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -4821,6 +4899,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
         export -f skopeo
     '
@@ -4857,6 +4937,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
         export -f skopeo
     '
@@ -4890,6 +4972,8 @@ _run_emit_versionset() {
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         skopeo() { printf "toomanyrequests: pull rate limit\n" >&2; return 1; }
         export -f skopeo
     '
@@ -4916,6 +5000,8 @@ _run_emit_versionset() {
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
     '
 
     run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1" "true"
@@ -4941,6 +5027,8 @@ _run_emit_versionset() {
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
     '
 
     run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
@@ -5335,6 +5423,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -5414,6 +5504,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { return 0; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         pull_ext_image() { return 0; }
         export -f pull_ext_image
@@ -5488,6 +5580,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -5557,6 +5651,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -5843,6 +5939,8 @@ EOCFG
         export -f image_exists_in_registry
         docker() { [[ "\$1" == "build" || "\$1" == "push" ]] && return 0; return 1; }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
         build_ext_image()  { return 0; }
         export -f build_ext_image
         tag_ext_image()    { return 0; }
@@ -6240,6 +6338,8 @@ EOCFG
             return 0
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/aj1_build.log\"
@@ -6423,6 +6523,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         # image_exists_in_registry not consulted in LOCAL_ONLY mode for per-version skip check
         image_exists_in_registry() { return 1; }
@@ -6510,6 +6612,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -6629,6 +6733,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
         export -f skopeo
@@ -6757,6 +6863,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -6939,6 +7047,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
         export -f skopeo
@@ -7054,6 +7164,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         # 3-state probe used by _emit_versionset_artifact and the all-cached refresh loop.
         # 2.25.0 ABSENT (build failed, never pushed); 2.26.0 and 2.27.1 PRESENT
@@ -7191,6 +7303,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
         export -f skopeo
@@ -7290,6 +7404,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -7386,6 +7502,8 @@ EOCFG
             [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -7473,6 +7591,8 @@ EOCFG
             return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -7535,6 +7655,8 @@ EOCFG
             [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
         }
         export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -7558,4 +7680,281 @@ EOCFG
     local avail_count
     avail_count=$(jq '.available | length' "$artifact")
     [ "$avail_count" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AL-single-version-no-bundle: resolver-backed ext, retain_count/resolved set
+# == 1 (just the ceiling) → NO bundle build, NO artifact written.
+# This is the existing _bundle_and_write_artifact behaviour (set_size<=1 early
+# return) confirmed as a test so any future code change that breaks it is caught.
+# ---------------------------------------------------------------------------
+@test "AL-single-version-no-bundle: resolver-backed ext set_size==1 → no bundle docker build, no artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    local bundle_call_log="$tmpd/bundle_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    rm -f "$artifact" "$bundle_call_log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # Resolver returns EXACTLY one version (the ceiling) — retain_count=1 scenario.
+        resolve_version_set() { echo '[\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+
+        # Record any docker build call for the bundle.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'build' ]]; then
+                # If this is a bundle build (Dockerfile has FROM scratch), record it.
+                echo \"docker_build_called\" >> '${bundle_call_log}'
+                return 0
+            fi
+            [[ \"\$_dcmd\" == 'push' ]] && return 0
+            return 1
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()      { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()         { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed (single-version build is fine).
+    [ "$status" -eq 0 ]
+
+    # No bundle artifact must be written (set_size==1 → _bundle_and_write_artifact returns early).
+    [ ! -f "$artifact" ]
+
+    # The docker command may be called for the per-version build (via build_ext_image override)
+    # but assemble_and_push_bundle (which calls $DOCKER build for the bundle FROM scratch image)
+    # must NOT have been called.  We can verify by checking that _bundle_and_write_artifact's
+    # early return (set_size<=1) skipped the bundle path entirely.
+    # The bundle is only assembled when set_size > 1; with set_size==1 the call to
+    # assemble_and_push_bundle never happens, so the docker() mock above records no build
+    # from the bundle assembly path.  The per-version build goes through build_ext_image()
+    # (overridden separately), NOT through docker() directly, so bundle_call_log is clean.
+    [ ! -f "$bundle_call_log" ]
+}
+
+# ---------------------------------------------------------------------------
+# AM-artifact-records-digest: resolver-backed ext, set>1, bundle push succeeds
+# → the written versionset artifact contains a non-empty bundle_digest field.
+# RED before fix: artifact has no bundle_digest field.
+# GREEN after fix: artifact.bundle_digest matches the sha256 returned by the
+# digest-capture mock.
+# ---------------------------------------------------------------------------
+@test "AM-artifact-records-digest: bundle push succeeds → artifact contains non-empty bundle_digest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All images present so no build is needed; triggered via all-cached path.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+
+        # Bundle build+push succeed; digest capture succeeds.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build) return 0 ;;
+                push)  return 0 ;;
+                buildx)
+                    # imagetools inspect --format '{{.Manifest.Digest}}' → emit a digest
+                    if [[ \"\$*\" == *'imagetools'* && \"\$*\" == *'inspect'* ]]; then
+                        echo 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890'
+                        return 0
+                    fi
+                    return 1
+                    ;;
+                *)     return 1 ;;
+            esac
+        }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()      { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()         { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Artifact must be present.
+    [ -f "$artifact" ]
+
+    # Must contain a non-empty bundle_digest field.
+    # RED before fix: .bundle_digest is null/absent.
+    # GREEN after fix: .bundle_digest == 'sha256:abcdef...'
+    local digest
+    digest=$(jq -r '.bundle_digest // empty' "$artifact")
+    [[ -n "$digest" ]]
+    [[ "$digest" == sha256:* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AM-digest-capture-fail-fatal: bundle push succeeds but digest capture fails
+# → fail closed: no artifact written, exit non-zero.
+# RED before fix: artifact is written (no digest capture, no digest field).
+# GREEN after fix: digest capture failure after push is fatal — no artifact.
+# ---------------------------------------------------------------------------
+@test "AM-digest-capture-fail-fatal: bundle push OK but digest capture fails → no artifact, exit non-zero" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()   { return 0; }
+        export -f tag_ext_image
+        push_ext_image()  { return 0; }
+        export -f push_ext_image
+
+        # Bundle build+push succeed; digest capture FAILS.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build) return 0 ;;
+                push)  return 0 ;;
+                buildx)
+                    # imagetools inspect → simulate failure (e.g. transient registry error)
+                    if [[ \"\$*\" == *'imagetools'* && \"\$*\" == *'inspect'* ]]; then
+                        echo 'error: manifest unknown' >&2
+                        return 1
+                    fi
+                    return 1
+                    ;;
+                *)     return 1 ;;
+            esac
+        }
+        export -f docker
+
+        validate_prerequisites()      { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()         { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # RED before fix: exits 0 (artifact written without digest).
+    # GREEN after fix: exits non-zero (fail closed — cannot guarantee immutable ref).
+    [ "$status" -ne 0 ]
+
+    # No artifact must be written (digest capture failed → fail-closed, no partial artifact).
+    [ ! -f "$artifact" ]
 }

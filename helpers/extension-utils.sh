@@ -590,7 +590,13 @@ generate_dockerfile() {
                 local available_count
                 available_count=$(echo "$_versionset_json" | jq '.available | length' 2>/dev/null || echo 0)
 
-                if [[ "$available_count" -gt 0 ]]; then
+                # AL fix: use the bundle path ONLY when more than one version is
+                # available.  When available_count == 1 (the ceiling only), the
+                # producer never builds a bundle (set_size<=1 early return in
+                # _bundle_and_write_artifact), so referencing a non-existent bundle
+                # would fail the postgres build.  Fall through to the single-version
+                # path instead, which works correctly for set_size==1.
+                if [[ "$available_count" -gt 1 ]]; then
                     # Validate the available[] array at the JSON level BEFORE any jq -r
                     # iteration. This prevents the embedded-newline bypass where a single
                     # element "2.25.0\n2.26.0" would be split into two apparent versions
@@ -668,7 +674,21 @@ generate_dockerfile() {
                             fi
                         fi
 
-                        copies_block+="COPY --from=${_bundle_ref} / /tmp/ext/${ext_name}/"$'\n'
+                        # AM fix: use a digest-pinned COPY ref when the artifact has a
+                        # bundle_digest (publish path).  The digest is immutable and
+                        # consistent with the atomic invariant (written by the producer
+                        # only after a successful push).  LOCAL_ONLY artifacts omit
+                        # bundle_digest, so the tag-based fallback is correct there.
+                        local _bundle_digest
+                        _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
+                        local _bundle_copy_ref
+                        if [[ -n "$_bundle_digest" ]]; then
+                            _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"
+                        else
+                            _bundle_copy_ref="${_bundle_ref}"
+                        fi
+
+                        copies_block+="COPY --from=${_bundle_copy_ref} / /tmp/ext/${ext_name}/"$'\n'
                         _bundle_copy_written=true
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
