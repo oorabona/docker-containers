@@ -2606,3 +2606,72 @@ EOF
     copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb" || true)
     [ "$copy_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AQ-2: artifact-present path — single available entry that is NOT the ceiling.
+#
+# Defect: the single-entry ceiling check ("available[0] must equal ceiling") runs
+# ONLY when the data came from the self-heal path (_versionset_from_selfheal=true).
+# An on-disk artifact with {"ceiling":"2.27.1","available":["2.25.0"]} bypasses
+# the guard and falls through to the single-version path emitting:
+#   FROM <ext>:pg<major>-2.27.1  (the ceiling, not 2.25.0)
+# → manifest-not-found if the ceiling image is absent, or a silently wrong image.
+#
+# Fix: apply the single-entry ceiling-equality check REGARDLESS of source.
+# Whenever available has exactly ONE entry, it MUST equal the ceiling.
+# If not → FAIL CLOSED (log_error, return 1).
+# Remove the _versionset_from_selfheal gating on this specific check.
+# ---------------------------------------------------------------------------
+@test "AQ2-artifact-single-not-ceiling-failclosed: on-disk artifact with single available != ceiling → fail closed" {
+    # On-disk artifact: single entry 2.25.0 in available but ceiling is 2.27.1.
+    # This is a stale/corrupt artifact — build-extensions never writes this shape.
+    # Before fix: falls through to single-version path emitting FROM ...:pg18-2.27.1
+    #             (the ceiling — NOT what the available entry says). Exits 0.
+    # After fix: single available != ceiling → FAIL CLOSED (exit non-zero).
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0"],"excluded":[{"version":"2.27.1","reason":"not available"}]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits FROM ...:pg18-2.27.1 (ceiling as single-version).
+    # GREEN after fix: exits non-zero (single available 2.25.0 != ceiling 2.27.1).
+    [ "$status" -ne 0 ]
+
+    # No FROM stage for the ceiling must appear in the output.
+    local ceiling_from_count
+    ceiling_from_count=$(echo "$output" | grep -c ":pg18-2\.27\.1" || true)
+    [ "$ceiling_from_count" -eq 0 ]
+}
+
+@test "AQ2-artifact-single-is-ceiling-ok: on-disk artifact with single available == ceiling → single-version path succeeds" {
+    # On-disk artifact: single entry 2.27.1 in available, ceiling is also 2.27.1.
+    # This is the legitimate case: ceiling built but no older versions available.
+    # Must succeed and emit the single-version FROM stage.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.27.1"],"excluded":[{"version":"2.25.0","reason":"not available"}]}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Single available == ceiling: single-version path is safe, must exit 0.
+    [ "$status" -eq 0 ]
+
+    # The single-version FROM stage for the ceiling must appear.
+    local ceiling_from_count
+    ceiling_from_count=$(echo "$output" | grep -c "FROM.*ext-timescaledb:pg18-2\.27\.1" || true)
+    [ "$ceiling_from_count" -eq 1 ]
+
+    # No bundle COPY (available_count == 1, bundle path not taken).
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}

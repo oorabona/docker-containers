@@ -321,6 +321,11 @@ jobs:
           # non-fork push/dispatch events (where GHCR write access and sync-base-images ran).
           # REMOTE_CR is NOT set here at job level — it is probed per major_version below.
           USE_BASE_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          # NO_PUSH gates registry writes off for fork PRs (read-only packages) — the
+          # inverse of USE_BASE_CACHE's fork detection. On a fork PR build-extensions
+          # smoke-builds without pushing per-version or bundle images (which would 403);
+          # same-repo PRs and push/dispatch events still publish.
+          NO_PUSH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh

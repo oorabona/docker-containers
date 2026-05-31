@@ -1269,9 +1269,16 @@ _cleanup_stale_duration_files() {
 # so that FORCE=true rebuilds and pull-only local-build fallbacks are reflected
 # correctly.  The file-existence guard is intentionally absent.
 #
-# Args: config_file major_ver container_dir [_ignored_single_ext]
-#   The fourth argument is accepted for backward compatibility but ignored —
-#   scoping is driven exclusively by the global $EXTENSION variable.
+# Args: config_file major_ver container_dir [_ignored_single_ext] [do_push]
+#   Arg 4 (_ignored_single_ext): accepted for backward compatibility but unused —
+#     scoping is driven exclusively by the global $EXTENSION variable.
+#   Arg 5 (do_push): "true" = push bundle to registry; "false" = no push.
+#     When do_push="false" AND not LOCAL_ONLY AND not PULL_ONLY (CI PR smoke),
+#     the bundle assembly and artifact write are SKIPPED entirely — the all-cached
+#     CI PR path must exit cleanly without any GHCR write attempt.
+#     When do_push="false" AND (LOCAL_ONLY OR PULL_ONLY): assemble locally, no push.
+#     Defaults to re-deriving from LOCAL_ONLY/PULL_ONLY when arg 5 is absent
+#     (backward compatibility with callers that do not pass do_push).
 # Does nothing under DRY_RUN.
 _emit_final_versionset_pass() {
     local config_file="$1" major_ver="$2" container_dir="$3"
@@ -1329,12 +1336,35 @@ _emit_final_versionset_pass() {
         set_size=$(echo "$version_set_json" | jq 'length')
         [[ "$set_size" -le 1 ]] && continue
 
+        # Determine the effective do_push for this final pass.
+        # Use arg 5 when provided (threaded from main()); otherwise re-derive from
+        # LOCAL_ONLY/PULL_ONLY for backward compatibility with direct callers.
+        # Three-way contract:
+        #   do_push=true                         → assemble + push bundle + write artifact.
+        #   do_push=false + LOCAL_ONLY/PULL_ONLY → assemble locally, no push (recovery).
+        #   do_push=false + not LOCAL_ONLY/PULL_ONLY → CI PR smoke: skip bundle entirely.
+        local _do_push_fp
+        if [[ -n "${5:-}" ]]; then
+            _do_push_fp="$5"
+        else
+            _do_push_fp="true"
+            [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
+        fi
+
+        # CI PR smoke path: do_push=false AND not LOCAL_ONLY AND not PULL_ONLY.
+        # Skip bundle assembly and artifact write entirely — the PR postgres build
+        # self-heals to per-version COPYs (does not need the bundle).
+        # This prevents a docker push attempt on fork PRs with read-only packages (403).
+        if [[ "$_do_push_fp" == "false" ]] && \
+           [[ "${LOCAL_ONLY:-false}" != "true" ]] && \
+           [[ "${PULL_ONLY:-false}" != "true" ]]; then
+            log_info "$ext: skipping bundle+artifact (CI no-push context — do_push=false)"
+            continue
+        fi
+
         # Atomic: push bundle from confirmed_available, then write artifact from the
         # SAME set. _bundle_and_write_artifact handles the 3-state probe, fail-closed
         # gates, stale artifact deletion, and ordering invariant.
-        local _do_push_fp="true"
-        [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
-
         local _bwa_rc=0
         _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$_do_push_fp" || _bwa_rc=$?
         if [[ "$_bwa_rc" -ne 0 ]]; then
@@ -1492,13 +1522,24 @@ main() {
         check_registry_auth || log_warning "Continuing without registry auth check"
     fi
 
+    # Determine push mode once for all paths in main().
+    # LOCAL_ONLY=true → local-only build, no push (recovery path).
+    # PULL_ONLY=true  → pull-only build, no push (final pass writes local artifact).
+    # NO_PUSH=true    → explicit no-push context (e.g. CI fork PR with read-only
+    #                   package permissions); bundle and artifact are skipped.
+    # do_push=false + not LOCAL_ONLY/PULL_ONLY → CI PR smoke: skip bundle + artifact.
+    local do_push="true"
+    [[ "$LOCAL_ONLY" == "true" ]] && do_push="false"
+    [[ "$PULL_ONLY" == "true" ]] && do_push="false"
+    [[ "${NO_PUSH:-false}" == "true" ]] && do_push="false"
+
     # Handle pull-only mode — returns 0 on success, propagates exit 1 from
     # build_tag_push_extensions on failure. The final versionset pass runs
     # after the return so every pull-only success path has artifacts too.
     if [[ "$PULL_ONLY" == "true" ]]; then
         handle_pull_only_mode "$config_file" "$major_ver" "$container_dir"
         local _fp_rc=0
-        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
         exit "$_fp_rc"
     fi
 
@@ -1562,17 +1603,15 @@ main() {
         # confirmed_available once, push the bundle from that set, then write the
         # artifact from the SAME set. Bundle and artifact are always in sync.
         # This covers both the "all-cached" and "all-DRY_RUN" sub-paths.
+        # Pass do_push so the final pass honors the same push decision as the
+        # rest of main() — prevents the all-cached path from pushing on CI PR smoke.
         local _fp_rc=0
-        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+        _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
 
         exit "$_fp_rc"
     fi
 
     log_info "Extensions to build: ${extensions_to_build[*]}"
-
-    # Determine push mode
-    local do_push="true"
-    [[ "$LOCAL_ONLY" == "true" ]] && do_push="false"
 
     # Mixed run: clean stale per-version duration files for all resolver-backed
     # extensions that are in-scope but NOT in extensions_to_build (all-cached).
@@ -1604,8 +1643,9 @@ main() {
     # build_tag_push_extensions (already cached) and those just built.
     # This is the single source of truth for skipped extensions on mixed runs.
     # Resolver results are already cached from _should_build_extension calls above.
+    # Pass do_push so the final pass honors the same push decision as build_tag_push.
     local _fp_rc=0
-    _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
+    _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
     if [[ "$_fp_rc" -ne 0 ]]; then
         exit "$_fp_rc"
     fi
