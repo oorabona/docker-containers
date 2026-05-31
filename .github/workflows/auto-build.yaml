@@ -236,9 +236,13 @@ jobs:
           event_name: ${{ github.event_name }}
           build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
 
-  # Build and push PostgreSQL extension images if postgres is in the build list
+  # Build and push PostgreSQL extension images if postgres is in the build list.
+  # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg
+  # pushes platform-suffixed single-arch images (-amd64 / -arm64).  The
+  # merge-extension-manifests job below then fuses them into multi-arch manifests
+  # and writes the versionset artifact (stage B).
   build-extensions:
-    name: Build PostgreSQL Extensions
+    name: Build PostgreSQL Extensions (${{ matrix.arch }})
     needs: [detect-containers, sync-base-images]
     # Ordered after sync-base-images so the per-major-version GHCR probe below
     # (docker manifest inspect ghcr.io/<owner>/library/postgres:<ver>-alpine) runs
@@ -258,9 +262,20 @@ jobs:
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
-      group: build-extensions-${{ github.ref }}
+      group: build-extensions-${{ github.ref }}-${{ matrix.arch }}
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Headroom for paradedb's pgrx Rust compile (~1h45 cold) plus a second
     # extension rebuilding in the same run. Pre-fix #416, this regularly
     # cancelled at 120; with skip-as-existing the job is fast unless an
@@ -321,12 +336,19 @@ jobs:
           # non-fork push/dispatch events (where GHCR write access and sync-base-images ran).
           # REMOTE_CR is NOT set here at job level — it is probed per major_version below.
           USE_BASE_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          # NO_PUSH gates registry writes off for fork PRs (read-only packages) — the
-          # inverse of USE_BASE_CACHE's fork detection. On a fork PR build-extensions
-          # smoke-builds without pushing per-version or bundle images (which would 403);
-          # same-repo PRs and push/dispatch events still publish.
-          NO_PUSH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          # NO_PUSH gates registry writes off for ALL pull_request events: the default
+          # GITHUB_TOKEN downgrades to read-only on packages for pull_request regardless
+          # of fork status (see the sync-base-images job comment), so any PR push would
+          # 403. On a PR build-extensions smoke-builds without pushing per-version or
+          # bundle images; the merge job is likewise skipped on PRs and the postgres
+          # smoke build self-heals against the existing registry images. Push/dispatch
+          # events publish normally.
+          NO_PUSH: ${{ github.event_name == 'pull_request' }}
           REPO_OWNER: ${{ github.repository_owner }}
+          # Stage A: per-arch leg pushes suffixed single-arch images only.
+          # merge-extension-manifests (stage B) fuses them into multi-arch manifests.
+          ARCH_SUFFIX: ${{ matrix.arch }}
+          BUILD_PLATFORM: ${{ matrix.platform }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -396,16 +418,138 @@ jobs:
             done
           done
 
-      - name: Upload extension lineage files
+      - name: Upload extension per-version lineage files (${{ matrix.arch }})
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
-          name: ext-lineage-${{ github.run_id }}
+          # Arch-specific artifact name: the versionset artifact (with bundle_digest)
+          # is written by merge-extension-manifests (stage B), not here.
+          # Per-version duration lineage files are arch-independent; amd64 leg wins
+          # on any collision (both legs produce identical duration-schema files).
+          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}
           path: .build-lineage/ext-*.json
           retention-days: 1
           if-no-files-found: ignore
           # `.build-lineage/` is a dot-prefixed directory; v4 of upload-artifact
           # silently skips files inside hidden directories unless this is set.
+          include-hidden-files: true
+
+  # Stage B: merge per-arch extension manifests into multi-arch manifests and
+  # write the versionset artifact with the multi-arch bundle INDEX digest.
+  # Runs on ubuntu-latest (manifest operations are registry API calls — no native
+  # runner needed).  Skipped when NO_PUSH would apply (fork PRs where nothing was
+  # pushed) and when the build-extensions legs were skipped or failed.
+  merge-extension-manifests:
+    name: Merge Extension Manifests (multi-arch)
+    needs: [detect-containers, build-extensions, sync-base-images]
+    if: |
+      always() &&
+      needs.detect-containers.outputs.count > 0 &&
+      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      (github.event.inputs.skip_extensions || inputs.skip_extensions) != 'true' &&
+      needs.build-extensions.result == 'success' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        timeout-minutes: 5
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Install skopeo
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Get versions requiring extensions
+        id: ext-versions
+        timeout-minutes: 5
+        run: |
+          chmod +x scripts/list-extension-versions.sh
+          scripts/list-extension-versions.sh
+
+      - name: Merge per-arch manifests and write versionset artifacts
+        if: steps.ext-versions.outputs.containers != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
+          SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
+          VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
+
+          IFS='|' read -ra ENTRIES <<< "$VERSIONS_MAP"
+          for entry in "${ENTRIES[@]}"; do
+            [[ -z "$entry" ]] && continue
+            container="${entry%%:*}"
+            versions="${entry#*:}"
+
+            IFS=',' read -ra VERSION_LIST <<< "$versions"
+            for major_version in "${VERSION_LIST[@]}"; do
+              [[ -z "$major_version" ]] && continue
+
+              if [[ -n "$SCOPE_VERSIONS" ]]; then
+                if ! echo ",$SCOPE_VERSIONS," | grep -q ",$major_version,"; then
+                  echo "Skipping manifest merge for $container v$major_version (not in scope: $SCOPE_VERSIONS)"
+                  continue
+                fi
+              fi
+
+              # Probe GHCR per major_version — same pattern as build-extensions step.
+              REMOTE_CR=""
+              mirror_tag="${major_version}-alpine"
+              mirror_ref="ghcr.io/${REPO_OWNER}/library/postgres:${mirror_tag}"
+              if docker manifest inspect "$mirror_ref" >/dev/null 2>&1; then
+                REMOTE_CR="ghcr.io/${REPO_OWNER}"
+              fi
+              export REMOTE_CR
+
+              if [[ -n "$SCOPE_EXTENSIONS" ]]; then
+                IFS=',' read -ra EXT_LIST <<< "$SCOPE_EXTENSIONS"
+                for ext in "${EXT_LIST[@]}"; do
+                  [[ -z "$ext" ]] && continue
+                  ./scripts/build-extensions.sh "$container" --major-version "$major_version" \
+                    --extension "$ext" --finalize-multiarch
+                done
+              else
+                ./scripts/build-extensions.sh "$container" --major-version "$major_version" \
+                  --finalize-multiarch
+              fi
+            done
+          done
+
+      - name: Upload versionset artifacts
+        if: always() && hashFiles('.build-lineage/ext-*-versionset.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          # Canonical artifact: consumed by the postgres build-and-push job.
+          # Overwrites arch-leg artifacts (which have no versionset files after stage A).
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/ext-*-versionset.json
+          retention-days: 1
+          if-no-files-found: ignore
           include-hidden-files: true
 
   # Sync base images: blind-copy detected containers' base images from Docker Hub
@@ -514,12 +658,13 @@ jobs:
 
   build-and-push:
     name: Build ${{ matrix.build.container }}${{ matrix.build.variant && format(':{0}', matrix.build.variant) || '' }} (${{ matrix.arch }})
-    needs: [detect-containers, build-extensions, sync-base-images]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
       needs.detect-containers.outputs.builds_count > 0 &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     # NOTE: No job-level concurrency here — caused unexpected mid-build cancellations
     # (observed 2026-04-23). Workflow-level concurrency is already removed so
@@ -1031,7 +1176,7 @@ jobs:
         continue-on-error: true
 
   summary:
-    needs: [detect-containers, build-and-push, create-manifest, sync-registries]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

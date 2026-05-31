@@ -9736,3 +9736,306 @@ _run_an_producer() {
     bundle_count=$(_count_log_lines "$bundle_build_log")
     [ "$bundle_count" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# B-merge-creates-multiarch: finalize --finalize-multiarch for an ext with
+# versions [a,b,ceiling] invokes imagetools create for each version AND the
+# bundle, merging -amd64 + -arm64 suffixed refs into un-suffixed targets.
+# ---------------------------------------------------------------------------
+
+@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version and bundle" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export docker_calls
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # Mock docker to record imagetools create calls; succeed for all.
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+
+    [ -f "$docker_calls" ]
+    local calls
+    calls=$(cat "$docker_calls")
+
+    # imagetools create for each version must reference both -amd64 and -arm64 sources.
+    # Version 2.25.0
+    [[ "$calls" == *"pg18-2.25.0"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.25.0"* ]]
+    [[ "$calls" == *"pg18-2.25.0"*"-arm64"* ]] || [[ "$calls" == *"-arm64"*"pg18-2.25.0"* ]]
+    # Version 2.26.0
+    [[ "$calls" == *"pg18-2.26.0"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.26.0"* ]]
+    # Version 2.27.1 (ceiling)
+    [[ "$calls" == *"pg18-2.27.1"*"-amd64"* ]] || [[ "$calls" == *"-amd64"*"pg18-2.27.1"* ]]
+
+    # imagetools create for the bundle must reference bundle-amd64 and bundle-arm64.
+    [[ "$calls" == *"pg18-bundle-amd64"* ]]
+    [[ "$calls" == *"pg18-bundle-arm64"* ]]
+
+    # Un-suffixed multi-arch targets must be in the create calls (not just suffixed).
+    # The -t flag target for a version must be the un-suffixed form.
+    [[ "$calls" == *"-t "* ]]
+    # bundle target (un-suffixed) must appear — grep for pg18-bundle followed by a
+    # non-hyphen character (space, newline, or end of token).
+    grep -qE 'pg18-bundle[^-]|pg18-bundle$' <<< "$calls"
+}
+
+# ---------------------------------------------------------------------------
+# B-merge-captures-index-digest-and-writes-artifact: after bundle manifest
+# create, the index digest is captured (mock imagetools inspect --raw →
+# manifest) and the versionset artifact is written with
+# bundle_digest = sha256:<64hex>. Assert artifact content.
+# ---------------------------------------------------------------------------
+
+@test "B-merge-captures-index-digest-and-writes-artifact: artifact written with bundle_digest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        docker() { return 0; }
+        export -f docker
+
+        # Stable mock digest (64 hex chars).
+        _capture_bundle_digest() {
+            echo "sha256:cafebabe00000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    [ "$status" -eq 0 ]
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # bundle_digest must be the SHA256 returned by the mock.
+    local bd
+    bd=$(jq -r '.bundle_digest' "$artifact")
+    [ "$bd" = "sha256:cafebabe00000000000000000000000000000000000000000000000000000000" ]
+
+    # available must contain ceiling.
+    local av_ceiling
+    av_ceiling=$(jq -r '[.available[] | select(. == "2.27.1")] | length' "$artifact")
+    [ "$av_ceiling" -eq 1 ]
+
+    # resolved must match full set.
+    local res_count
+    res_count=$(jq '.resolved | length' "$artifact")
+    [ "$res_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------------------
+# B-merge-fail-closed: manifest-create or digest-capture failure → finalize
+# exits non-zero, NO artifact written.
+# ---------------------------------------------------------------------------
+
+@test "B-merge-fail-closed: imagetools create failure exits non-zero and no artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # imagetools create fails for all calls.
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+                echo "simulated imagetools create failure" >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Must fail (fail-closed).
+    [ "$status" -ne 0 ]
+
+    # No artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+@test "B-merge-fail-closed: digest capture failure exits non-zero and no artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # imagetools create succeeds but digest capture fails (returns non-OCI string).
+        docker() { return 0; }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "not-a-valid-digest"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Must fail — digest capture failure is fatal (fail-closed).
+    [ "$status" -ne 0 ]
+
+    # No artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}

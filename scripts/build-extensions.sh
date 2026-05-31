@@ -115,6 +115,7 @@ LIST_ONLY=false
 LOCAL_ONLY=false
 PULL_ONLY=false
 DRY_RUN=false
+FINALIZE_MULTIARCH=false
 
 usage() {
     cat <<EOF
@@ -135,6 +136,8 @@ Options:
   --local-only           Build locally without pushing to registry
   --pull-only            Pull images from registry (no build, no push)
   --dry-run              Show what would be done without executing
+  --finalize-multiarch   Merge per-arch suffixed images into multi-arch manifests
+                         and write the versionset artifact (stage B post-build step)
   -h, --help             Show this help
 
 Environment:
@@ -183,6 +186,10 @@ parse_args() {
                 ;;
             --pull-only)
                 PULL_ONLY=true
+                shift
+                ;;
+            --finalize-multiarch)
+                FINALIZE_MULTIARCH=true
                 shift
                 ;;
             -*)
@@ -1649,6 +1656,180 @@ _emit_versionset_artifact() {
     log_info "Version-set lineage (presence-based): $_vs_lineage_file"
 }
 
+# finalize_multiarch_manifests <config_file> <major_ver> <container_dir>
+#
+# Stage B (multi-arch): invoked after BOTH arch build legs finish.
+# For each resolver-backed (ext, major_ver) in scope:
+#   1. Re-resolves the version set (deterministic via resolver + retain_count).
+#   2. For each version: creates multi-arch manifest from -amd64 / -arm64 suffixed refs.
+#   3. Creates multi-arch bundle manifest from bundle-amd64 / bundle-arm64 refs.
+#   4. Captures the INDEX digest of the multi-arch bundle manifest.
+#   5. Writes the versionset artifact with bundle_digest = that index digest.
+#
+# Fail-closed: any imagetools create failure, or digest capture failure, or
+# ceiling absent from confirmed_available → fatal (no artifact written / stale deleted).
+#
+# Only extensions with a resolver-backed multi-version set (set_size > 1) and
+# an existing Dockerfile are processed.
+#
+# Called from main() when FINALIZE_MULTIARCH=true.
+# Does nothing under DRY_RUN.
+finalize_multiarch_manifests() {
+    local config_file="$1" major_ver="$2" container_dir="$3"
+
+    log_info "Stage B: merging per-arch manifests into multi-arch manifests (pg${major_ver})"
+
+    local ext_list
+    if [[ -n "${EXTENSION:-}" ]]; then
+        ext_list="$EXTENSION"
+    else
+        ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
+    fi
+
+    local _failed=false
+    local ext
+    while IFS= read -r ext; do
+        [[ -z "$ext" ]] && continue
+
+        local dockerfile="$container_dir/extensions/build/${ext}.Dockerfile"
+        [[ ! -f "$dockerfile" ]] && continue
+
+        # Only resolver-backed extensions produce a versionset artifact.
+        local _resolver_path
+        _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
+        [[ -z "$_resolver_path" ]] && continue
+
+        local ceiling version_set_json
+        ceiling=$(ext_config "$ext" "version" "$config_file")
+
+        if ! version_set_json=$(_resolve_cached "$ext" "$major_ver" "$config_file"); then
+            log_error "$ext: resolver failed in finalize-multiarch — cannot produce multi-arch manifests (fail-closed)"
+            _failed=true
+            continue
+        fi
+
+        # Validate: must be semver + ceiling present.
+        if ! validate_semver_set_json "$version_set_json" "$ceiling"; then
+            log_error "$ext: semver/ceiling validation failed in finalize-multiarch (fail-closed)"
+            _failed=true
+            continue
+        fi
+
+        local set_size
+        set_size=$(echo "$version_set_json" | jq 'length')
+        if [[ "$set_size" -le 1 ]]; then
+            # Single-version: no bundle needed; delete any stale artifact.
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            continue
+        fi
+
+        # Step 1: merge per-version multi-arch manifests.
+        local _confirmed_available=()
+        local _excluded_entries=()
+        local ver
+        while IFS= read -r ver; do
+            local ver_image_base ver_amd64 ver_arm64 ver_multiarch
+            ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
+            ver_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
+            ver_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
+            ver_multiarch="$ver_image_base"  # un-suffixed = multi-arch target
+
+            log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $ver_amd64 + $ver_arm64"
+            local _create_rc=0
+            if ! $DOCKER buildx imagetools create \
+                -t "$ver_multiarch" \
+                "$ver_amd64" "$ver_arm64" 2>&1; then
+                _create_rc=$?
+                log_error "$ext $ver pg${major_ver}: imagetools create for version manifest failed (rc=$_create_rc) — fail-closed"
+                _failed=true
+                break
+            fi
+
+            _confirmed_available+=("$ver")
+        done < <(echo "$version_set_json" | jq -r '.[]')
+
+        # If any per-version create failed, abort this extension.
+        if [[ "$_failed" == "true" ]]; then
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            break
+        fi
+
+        # Ceiling must be in confirmed_available.
+        local _ceiling_ok=false
+        local _ca
+        for _ca in "${_confirmed_available[@]+"${_confirmed_available[@]}"}"; do
+            if [[ "$_ca" == "$ceiling" ]]; then
+                _ceiling_ok=true
+                break
+            fi
+        done
+        if [[ "$_ceiling_ok" == "false" ]] || [[ ${#_confirmed_available[@]} -le 1 ]]; then
+            log_info "$ext pg${major_ver}: confirmed_available is empty or ceiling ($ceiling) absent after per-version merges — skipping bundle+artifact"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            continue
+        fi
+
+        # Step 2: merge bundle multi-arch manifest.
+        local _bundle_image_base
+        _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
+        local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
+        local _bundle_amd64="${_bundle_base_tag}-amd64"
+        local _bundle_arm64="${_bundle_base_tag}-arm64"
+        local _bundle_multiarch="$_bundle_base_tag"  # un-suffixed
+
+        log_info "$ext pg${major_ver}: imagetools create $_bundle_multiarch from $_bundle_amd64 + $_bundle_arm64"
+        local _bundle_create_rc=0
+        if ! $DOCKER buildx imagetools create \
+            -t "$_bundle_multiarch" \
+            "$_bundle_amd64" "$_bundle_arm64" 2>&1; then
+            _bundle_create_rc=$?
+            log_error "$ext pg${major_ver}: bundle manifest create failed (rc=$_bundle_create_rc) — fail-closed"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            _failed=true
+            break
+        fi
+        log_success "Bundle multi-arch manifest created: $_bundle_multiarch"
+
+        # Step 3: capture INDEX digest of the multi-arch bundle manifest.
+        local _index_digest
+        _index_digest=$(_capture_bundle_digest "$_bundle_multiarch") || true
+        if ! is_valid_oci_digest "$_index_digest"; then
+            log_error "$ext pg${major_ver}: bundle multi-arch index digest capture failed or malformed (got: '$(_sanitize_for_log "${_index_digest}")') — fail-closed"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            _failed=true
+            break
+        fi
+        log_info "$ext pg${major_ver}: bundle index digest: $_index_digest"
+
+        # Step 4: write versionset artifact with bundle_digest = index digest.
+        local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+        mkdir -p "${ROOT_DIR}/.build-lineage"
+
+        local _available_json _excluded_json _resolved_json
+        _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+        _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
+        _resolved_json=$(echo "$version_set_json" | jq '.')
+
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            --arg bundle_digest "$_index_digest" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, bundle_digest:$bundle_digest}' \
+            > "$_vs_lineage_file"
+        log_success "Versionset artifact written: $_vs_lineage_file"
+
+    done <<< "$ext_list"
+
+    if [[ "$_failed" == "true" ]]; then
+        return 1
+    fi
+    return 0
+}
+
 main() {
     parse_args "$@"
 
@@ -1666,6 +1847,18 @@ main() {
     if [[ "$LIST_ONLY" == "true" ]]; then
         list_extension_status "$config_file" "$major_ver"
         exit 0
+    fi
+
+    # Handle finalize-multiarch mode (stage B: merge per-arch manifests, write artifact).
+    # This is run AFTER both arch build legs have finished; does NOT build images.
+    if [[ "$FINALIZE_MULTIARCH" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_info "[DRY-RUN] Would merge per-arch manifests into multi-arch manifests for pg${major_ver}"
+            exit 0
+        fi
+        local _fm_rc=0
+        finalize_multiarch_manifests "$config_file" "$major_ver" "$container_dir" || _fm_rc=$?
+        exit "$_fm_rc"
     fi
 
     # Check registry auth (unless local-only or dry-run)
