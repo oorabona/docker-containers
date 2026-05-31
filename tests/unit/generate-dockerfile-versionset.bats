@@ -335,24 +335,23 @@ EOF
         "ghcr.io" "testowner"
 
     # Must self-heal to multi-version (NOT single-version ceiling fallback).
-    # RED before fix: exits 0 with 1 FROM stage (single-version).
-    # GREEN after fix: exits 0 with single bundle COPY (multi-version from self-heal).
     [ "$status" -eq 0 ]
 
-    # No per-version FROM ... AS stages
+    # No per-version FROM ... AS stages (single-version path bypassed)
     local per_ver_from_count
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    # Exactly ONE bundle COPY — version coverage preserved in the bundle
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # AP: self-heal emits per-version COPYs (not bundle COPY) — one pair per proved version.
+    # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
 
-    # Zero per-version COPY lines (versions are bundled, not emitted individually)
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    # No bundle COPY on self-heal path (AP: mutable bundle tag not used)
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "empty-available: artifact with available=[] + resolver fails → fail closed" {
@@ -639,20 +638,21 @@ EOF
     # Self-heal succeeds: must exit 0.
     [ "$status" -eq 0 ]
 
-    # Must produce single bundle COPY (no per-version FROM stages).
+    # No per-version FROM ... AS stages (single-version path bypassed).
     local per_ver_from_count
     per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
     [ "$per_ver_from_count" -eq 0 ]
 
-    # Single bundle COPY — version coverage preserved in the bundle image
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
 
-    # Zero per-version COPY lines
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    # No bundle COPY on self-heal path.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
@@ -767,15 +767,16 @@ EOF
     # Must exit 0 (self-heal succeeded).
     [ "$status" -eq 0 ]
 
-    # Must produce single bundle COPY — NOT a single-version fallback or per-version COPYs.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
 
-    # Zero per-version COPY lines
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    # No bundle COPY on self-heal path.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
@@ -798,10 +799,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY — version coverage preserved
+    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # No bundle COPY on self-heal path.
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "JJ-3-malformed-no-available: JSON missing .available key + resolver succeeds → self-heals" {
@@ -824,10 +830,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY — version coverage preserved
+    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # No bundle COPY on self-heal path.
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "JJ-4-malformed-resolver-fails: malformed artifact + resolver FAILS → fail closed (non-zero)" {
@@ -920,12 +931,19 @@ EOF
 
     # The controlled tmp dir must contain NO files after the call — the
     # self-heal path must not have left any orphaned temp file.
-    # RED before fix: a synthetic artifact lingers in $controlled_tmp.
-    # GREEN after fix: dir is empty.
     local leftover_count
     leftover_count=$(find "$controlled_tmp" -maxdepth 1 -type f | wc -l)
     rm -rf "$controlled_tmp"
     [ "$leftover_count" -eq 0 ]
+
+    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -970,6 +988,15 @@ EOF
     leftover_count=$(find "$controlled_tmp" -maxdepth 1 -type f | wc -l)
     rm -rf "$controlled_tmp"
     [ "$leftover_count" -eq 0 ]
+
+    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1050,16 +1077,12 @@ EOF
     #   - 2.27.1: PRESENT  (rc=0)
     #   - 2.25.0: PRESENT  (rc=0)
     #   - 2.23.0: ABSENT   (rc=1 — definitive not-found, musl-failed)
-    #   - bundle ref (:pg18-bundle): PRESENT (rc=0) — the bundle exists in registry
-    #     because the producer built it from the available set (2.25.0, 2.27.1).
-    #     AK-3: the self-heal path probes the bundle ref; it must return PRESENT
-    #     for the COPY to be emitted.
+    # AP: no bundle probe on self-heal path.
     _image_registry_probe_3state() {
         case "$1" in
             *pg18-2.27.1*) return 0 ;;
             *pg18-2.25.0*) return 0 ;;
             *pg18-2.23.0*) return 1 ;;  # definitively absent
-            *:pg18-bundle) return 0 ;;  # bundle exists (producer built it)
             *)             return 1 ;;
         esac
     }
@@ -1072,19 +1095,27 @@ EOF
         "ghcr.io" "testowner"
 
     # Definitively absent is the musl-failed / never-built case: must succeed.
+    # _sh_available == [2.25.0, 2.27.1] — ceiling present, count > 1.
     [ "$status" -eq 0 ]
 
-    # Must produce single bundle COPY (2.25.0 and 2.27.1 in bundle; 2.23.0 excluded
-    # but that is the producer's concern — consumer emits 1 bundle COPY regardless
-    # of how many available versions exist in the artifact, as long as ceiling is present).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # AP: self-heal emits per-version COPYs for the proved-present set (2.25.0, 2.27.1).
+    # 2.23.0 is definitively absent and must NOT appear.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 2 ]
 
-    # Zero per-version COPY lines
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/"
+
+    # 2.23.0 must NOT appear (definitively absent).
+    local absent_count
+    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    [ "$absent_count" -eq 0 ]
+
+    # No bundle COPY on self-heal path.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1299,14 +1330,19 @@ _run_registry_probe_3state() {
             'ghcr.io' 'testowner'
     "
 
-    # RED before fix: exits non-zero (registry probe fails, no local fallback).
-    # GREEN after fix: exits 0 (local daemon probe finds images, self-heals).
+    # Exits 0 (local daemon probe finds images, self-heals).
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY — version coverage preserved in the bundle
+    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Three versions proved present locally: 2.25.0, 2.26.0, 2.27.1.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # No bundle COPY on self-heal path.
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "PP-pull-only-self-heal: PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
@@ -1345,10 +1381,15 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY — version coverage preserved in the bundle
+    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # No bundle COPY on self-heal path.
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 @test "PP-local-only-image-absent-locally: LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
@@ -1849,7 +1890,9 @@ _run_registry_probe_3state() {
 # also emits a single bundle COPY (not per-version COPYs).
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-6: self-heal (no artifact) emits single bundle COPY, not per-version COPYs" {
+@test "BUNDLE-CON-6: self-heal (no artifact) emits per-version COPYs, not bundle COPY" {
+    # AP: self-heal path no longer uses the mutable bundle tag — it emits per-version
+    # COPYs from the proved-present per-version image refs instead.
     # No versionset file — self-heal must kick in.
 
     resolve_version_set() {
@@ -1868,28 +1911,30 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY
-    local bundle_copy_count
-    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_copy_count" -eq 1 ]
+    # AP: three per-version COPY --from= pairs (one /output/extension/ + one /output/lib/ each).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
 
-    # Zero per-version COPYs
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    local per_ver_lib_count
+    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
+    [ "$per_ver_lib_count" -eq 3 ]
+
+    # No bundle COPY on self-heal path.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
-# AK-selfheal-bundle-present: artifact absent, self-heal path resolves versions,
-# probes per-version images, then PROBES THE BUNDLE REF.
-# When the bundle ref is PRESENT → emit the bundle COPY (trusted invariant).
+# AK-selfheal-per-version-refs: artifact absent, self-heal path resolves versions,
+# probes per-version images, then emits per-version COPYs (AP fix).
+# The bundle ref is NOT probed and NOT referenced.
 #
-# RED before fix: self-heal emits the bundle COPY regardless of whether the bundle
-#   image actually exists — no bundle probe.
-# GREEN after fix: self-heal probes the bundle ref with _image_registry_probe_3state;
-#   PRESENT → emit COPY. (This test verifies the PRESENT case succeeds.)
+# AP: self-heal emits one COPY pair per proved-present per-version ref.
+# No bundle ref appears in the output.
 # ---------------------------------------------------------------------------
-@test "AK-selfheal-bundle-present: artifact absent, self-heal, bundle probe PRESENT → emits bundle COPY" {
+@test "AK-selfheal-per-version-refs: artifact absent, self-heal, all versions present → per-version COPYs, no bundle ref" {
     # No versionset artifact → forces self-heal path.
 
     resolve_version_set() {
@@ -1901,15 +1946,9 @@ _run_registry_probe_3state() {
     image_exists_in_registry() { return 0; }
     export -f image_exists_in_registry
 
-    # Bundle probe: the bundle ref is PRESENT (rc=0).
-    # Override _image_registry_probe_3state to return PRESENT for the bundle ref.
+    # _image_registry_probe_3state: all per-version refs PRESENT.
     _image_registry_probe_3state() {
-        # Bundle ref pattern: :pg<major>-bundle
-        if [[ "$1" == *":pg18-bundle"* ]]; then
-            return 0  # PRESENT
-        fi
-        # Per-version refs: also PRESENT (called for per-version availability check).
-        return 0
+        return 0  # PRESENT for all refs
     }
     export -f _image_registry_probe_3state
 
@@ -1919,91 +1958,48 @@ _run_registry_probe_3state() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Self-heal + bundle PRESENT → must succeed.
+    # Self-heal succeeds.
     [ "$status" -eq 0 ]
 
-    # Must emit exactly ONE bundle COPY.
+    # AP: must emit exactly 3 per-version /output/extension/ COPYs.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # AP: must emit exactly 3 per-version /output/lib/ COPYs.
+    local per_ver_lib_count
+    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
+    [ "$per_ver_lib_count" -eq 3 ]
+
+    # NO bundle ref anywhere in the output (AP: mutable bundle tag not used on self-heal).
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
-
-    # Zero per-version COPY lines.
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
-}
-
-# ---------------------------------------------------------------------------
-# AK-selfheal-bundle-absent-failclosed: artifact absent, self-heal, bundle probe
-# ABSENT or ERROR → generate_dockerfile fails closed (non-zero) with a clear
-# "bundle" message. NO COPY emitted against the missing/unverifiable bundle.
-#
-# RED before fix: self-heal always emits the bundle COPY line regardless of
-#   whether the bundle image actually exists — the ref is constructed and COPY
-#   emitted unconditionally after per-version availability is computed.
-# GREEN after fix: self-heal probes the bundle ref; ABSENT or ERROR → return 1
-#   with a "bundle image not found / not verifiable" error; no COPY emitted.
-#
-# Sub-case A: bundle probe ABSENT (rc=1) → fail closed.
-# Sub-case B: bundle probe ERROR (rc=2) → fail closed.
-# ---------------------------------------------------------------------------
-@test "AK-selfheal-bundle-absent-failclosed: artifact absent, self-heal, bundle probe ABSENT → fail closed, no COPY" {
-    # No versionset artifact → forces self-heal path.
-
-    resolve_version_set() {
-        echo '["2.23.0","2.25.0","2.27.1"]'
-    }
-    export -f resolve_version_set
-
-    # Per-version images present (so self-heal proceeds to the bundle probe step).
-    image_exists_in_registry() { return 0; }
-    export -f image_exists_in_registry
-
-    # Bundle probe: the bundle ref is ABSENT (rc=1 — definitively not present).
-    _image_registry_probe_3state() {
-        if [[ "$1" == *":pg18-bundle"* ]]; then
-            return 1  # ABSENT
-        fi
-        return 0  # Per-version refs are PRESENT.
-    }
-    export -f _image_registry_probe_3state
-
-    run generate_dockerfile \
-        "$TEST_TEMP_DIR/extensions/config.yaml" \
-        "$TEST_TEMP_DIR/Dockerfile.template" \
-        "timeseries" "18" \
-        "ghcr.io" "testowner"
-
-    # RED before fix: exits 0 and emits a COPY against a non-existent bundle.
-    # GREEN after fix: exits non-zero (fail closed — bundle not present).
-    [ "$status" -ne 0 ]
-
-    # The error message must mention "bundle" so the operator knows what to do.
-    [[ "$output" == *"bundle"* ]]
-
-    # No bundle COPY must appear in the output.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=.*:pg18-bundle" || true)
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
     [ "$bundle_count" -eq 0 ]
 }
 
-@test "AK-selfheal-bundle-error-failclosed: artifact absent, self-heal, bundle probe ERROR → fail closed, no COPY" {
+# ---------------------------------------------------------------------------
+# AK-selfheal-only-proved-versions: self-heal emits per-version COPYs ONLY for
+# the proved-present versions. Versions probed ABSENT are not emitted.
+# A version probed ERROR causes fail-closed (same as NN-3).
+#
+# AP: the bundle ref is never probed on the self-heal path.
+# These tests verify the per-version-probe routing that feeds _sh_available.
+# ---------------------------------------------------------------------------
+@test "AK-selfheal-only-proved-versions: absent version excluded, present versions emitted as per-version COPYs" {
     # No versionset artifact → forces self-heal path.
+    # 2.23.0: ABSENT; 2.25.0 and 2.27.1: PRESENT.
+    # _sh_available == [2.25.0, 2.27.1]; ceiling 2.27.1 present → multi-version.
 
     resolve_version_set() {
         echo '["2.23.0","2.25.0","2.27.1"]'
     }
     export -f resolve_version_set
 
-    image_exists_in_registry() { return 0; }
-    export -f image_exists_in_registry
-
-    # Bundle probe: ERROR (rc=2 — transient, cannot verify existence).
     _image_registry_probe_3state() {
-        if [[ "$1" == *":pg18-bundle"* ]]; then
-            return 2  # ERROR
-        fi
-        return 0  # Per-version refs are PRESENT.
+        case "$1" in
+            *pg18-2.23.0*) return 1 ;;  # ABSENT
+            *)             return 0 ;;  # PRESENT
+        esac
     }
     export -f _image_registry_probe_3state
 
@@ -2013,16 +2009,56 @@ _run_registry_probe_3state() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # RED before fix: exits 0 and emits a COPY against an unverifiable bundle.
-    # GREEN after fix: exits non-zero (fail closed — bundle not verifiable).
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 0 ]
 
-    # Must mention "bundle" in the error.
-    [[ "$output" == *"bundle"* ]]
+    # Only the 2 proved-present versions must appear (2.25.0 and 2.27.1).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 2 ]
+
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/"
+
+    # 2.23.0 must NOT appear.
+    local absent_count
+    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    [ "$absent_count" -eq 0 ]
+
+    # No bundle COPY on self-heal path.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}
+
+@test "AK-selfheal-error-version-failclosed: transient ERROR probe in self-heal → fail closed, no output" {
+    # No versionset artifact → forces self-heal path.
+    # One version returns ERROR (transient) → fail closed.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.23.0*) return 2 ;;  # ERROR (transient)
+            *)             return 0 ;;  # PRESENT
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Transient probe error → fail closed.
+    [ "$status" -ne 0 ]
 
     # No bundle COPY in output.
     local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=.*:pg18-bundle" || true)
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
     [ "$bundle_count" -eq 0 ]
 }
 
@@ -2399,4 +2435,174 @@ _write_versionset_with_digest() {
     local bundle_count
     bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" || true)
     [ "$bundle_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AP tests: self-heal per-version COPY emission (DEFECT AP fix)
+#
+# On the self-heal path (versionset artifact absent/malformed), generate_dockerfile
+# must emit one COPY --from=<per-version-ref> pair per proved-present version
+# instead of using the mutable bundle tag.  The artifact-present path (AM) is
+# unchanged: it still emits the digest-pinned bundle COPY.
+#
+# AP-selfheal-per-version-not-bundle:
+#   self-heal, _sh_available proves >1 versions present incl. ceiling →
+#   Dockerfile has per-version COPY lines and NO :pg18-bundle reference.
+#   RED before fix: bundle COPY emitted.  GREEN after: per-version COPYs only.
+#
+# AP-selfheal-only-proved-versions:
+#   a resolved version that probes ABSENT is NOT emitted; transient ERROR → fail closed.
+#
+# AP-artifact-path-still-bundle-digest:
+#   artifact PRESENT with bundle_digest → still the single digest-pinned bundle COPY.
+#   (AM regression — unchanged.)
+#
+# AP-selfheal-ceiling-present-enforced:
+#   self-heal, ceiling absent from _sh_available → fail closed (AO-4 still enforced).
+# ---------------------------------------------------------------------------
+
+@test "AP-selfheal-per-version-not-bundle: self-heal >1 proved-present versions → per-version COPYs, NO bundle tag" {
+    # No versionset artifact → forces self-heal path.
+    # _sh_available = [2.23.0, 2.25.0, 2.27.1] (all present, ceiling present, count > 1).
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must succeed.
+    [ "$status" -eq 0 ]
+
+    # Per-version COPYs: one /output/extension/ line per proved version.
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 3 ]
+
+    # Per-version COPYs: one /output/lib/ line per proved version.
+    local per_ver_lib_count
+    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
+    [ "$per_ver_lib_count" -eq 3 ]
+
+    # Destinations are version-subdirectoried: /tmp/ext/<ext>/<ver>/extension/ and /tmp/ext/<ext>/<ver>/lib/
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/extension/ /tmp/ext/timescaledb/2.23.0/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/ /tmp/ext/timescaledb/2.25.0/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/ /tmp/ext/timescaledb/2.27.1/extension/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/lib/ /tmp/ext/timescaledb/2.23.0/lib/"
+    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/lib/ /tmp/ext/timescaledb/2.27.1/lib/"
+
+    # NO :pg18-bundle reference anywhere in the generated Dockerfile.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}
+
+@test "AP-selfheal-only-proved-versions: absent version not emitted; transient ERROR fails closed" {
+    # Sub-case A: one version definitively absent → only proved-present versions emitted.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # 2.23.0: ABSENT; 2.25.0 and 2.27.1: PRESENT.
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.23.0*) return 1 ;;  # ABSENT
+            *)             return 0 ;;  # PRESENT
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Ceiling (2.27.1) is present, count=2 → multi-version per-version path.
+    [ "$status" -eq 0 ]
+
+    # Only proved-present versions must appear (2.25.0 and 2.27.1).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 2 ]
+
+    # 2.23.0 must NOT appear.
+    local absent_count
+    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    [ "$absent_count" -eq 0 ]
+
+    # No bundle ref.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}
+
+@test "AP-artifact-path-still-bundle-digest: artifact present with bundle_digest → digest-pinned bundle COPY unchanged" {
+    # AM regression: artifact-present path must still emit the digest-pinned bundle COPY.
+    # Self-heal is NOT triggered (valid artifact on disk).
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:cafebabe00000000000000000000000000000000000000000000000000000000"}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Artifact-present path: exactly ONE digest-pinned bundle COPY.
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle@sha256:cafebabe" || true)
+    [ "$pinned_count" -eq 1 ]
+
+    # NO per-version individual COPY lines (artifact path uses bundle, not per-version).
+    local per_ver_ext_count
+    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$per_ver_ext_count" -eq 0 ]
+}
+
+@test "AP-selfheal-ceiling-present-enforced: self-heal ceiling absent from proved set → fail closed" {
+    # AO-4 regression: ceiling-present enforcement still applies on self-heal path
+    # after the AP fix (per-version path).
+    # _sh_available = [2.25.0] only — ceiling 2.27.1 absent.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # Only 2.25.0 present; ceiling 2.27.1 absent.
+    _image_registry_probe_3state() {
+        case "$1" in
+            *pg18-2.25.0*) return 0 ;;  # PRESENT
+            *)             return 1 ;;  # ABSENT (including ceiling 2.27.1)
+        esac
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Ceiling absent → fail closed (AO-4 still enforced on AP path).
+    [ "$status" -ne 0 ]
+
+    # No per-version or bundle COPY must appear.
+    local copy_count
+    copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb" || true)
+    [ "$copy_count" -eq 0 ]
 }

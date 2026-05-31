@@ -687,66 +687,79 @@ generate_dockerfile() {
                         fi
                     done < <(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
-                    # Multi-version path: emit a SINGLE bundle COPY.
+                    # Multi-version path: two sub-cases depending on the data source.
+                    #
+                    # ARTIFACT-PRESENT path (AM/AN): emit a SINGLE digest-pinned bundle COPY.
                     # The bundle image (<registry>/<owner>/ext-<ext>:pg<major>-bundle) was
                     # assembled by the producer (build-extensions.sh) from all available
                     # per-version images.  Its internal layout is /<ver>/{extension,lib}/
                     # so COPY / /tmp/ext/<ext>/ lands each version at
                     # /tmp/ext/<ext>/<ver>/{extension,lib}/ — exactly the layout
-                    # that install_ext iterates.
+                    # that install_ext iterates.  The bundle is guaranteed by the producer
+                    # invariant (written atomically with the artifact) so no probe is needed.
                     #
-                    # AK-3: On the self-heal path (artifact absent/malformed, bundle NOT
-                    # guaranteed by the producer invariant), probe the bundle ref with the
-                    # 3-state registry probe before emitting the COPY.  On the artifact-
-                    # present path the bundle is guaranteed by the producer invariant — no
-                    # probe needed (and no probe cost on the fast path).
+                    # SELF-HEAL path (AP): artifact absent/malformed — the mutable bundle
+                    # tag (:pg<major>-bundle) can drift from the set we proved available.
+                    # Instead, emit one COPY --from=<per-version-ref> pair per version in
+                    # _sh_available (the proved-present set).  Per-version tags are
+                    # version-specific and cannot drift to a different retained set.
+                    # Source paths match the per-version image layout: /output/extension/
+                    # and /output/lib/.  Destinations mirror the bundle layout that
+                    # install_ext iterates: /tmp/ext/<ext>/<ver>/extension/ and
+                    # /tmp/ext/<ext>/<ver>/lib/.  NO bundle reference on the self-heal path.
                     local _bundle_copy_written=false
                     local raw_versions
                     raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
-                        local _bundle_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-bundle"
-
-                        # Self-heal path: probe the bundle ref before emitting the COPY.
-                        # The producer invariant does not hold here (no artifact on disk).
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
-                            local _bundle_probe_rc=0
-                            _image_registry_probe_3state "$_bundle_ref" || _bundle_probe_rc=$?
-                            if [[ "$_bundle_probe_rc" -ne 0 ]]; then
-                                log_error "generate_dockerfile: bundle image ${_bundle_ref} not found / not verifiable (probe rc=${_bundle_probe_rc}); run build-extensions to produce it or supply the version-set artifact"
-                                return 1
-                            fi
-                        fi
-
-                        # AM fix: use a digest-pinned COPY ref when the artifact has a
-                        # bundle_digest (publish path).  The digest is immutable and
-                        # consistent with the atomic invariant (written by the producer
-                        # only after a successful push).  LOCAL_ONLY artifacts omit
-                        # bundle_digest, so the tag-based fallback is correct there.
-                        #
-                        # AN fix: validate the digest with is_valid_oci_digest (strict
-                        # whole-string: sha256: + exactly 64 lowercase hex, no extra
-                        # content) before using it in the COPY line.  A present-but-
-                        # invalid digest signals a poisoned or corrupted artifact:
-                        # fail closed (log error, return 1) — do NOT emit a COPY with
-                        # an unvalidated digest, and do NOT silently fall back to the
-                        # tag (that would mask the corruption).  An absent bundle_digest
-                        # (LOCAL_ONLY case) → tag-based COPY, unchanged.
-                        local _bundle_digest
-                        _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
-                        local _bundle_copy_ref
-                        if [[ -n "$_bundle_digest" ]]; then
-                            if ! is_valid_oci_digest "$_bundle_digest"; then
-                                log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(printf '%s' "$_bundle_digest" | head -c 80)') — fail closed (possible artifact corruption or poisoning)"
-                                return 1
-                            fi
-                            _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"
+                            # AP: self-heal path — emit per-version COPYs from proved-present refs.
+                            # Each per-version image exposes /output/extension/ and /output/lib/.
+                            # Map to /tmp/ext/<ext>/<ver>/extension/ and /tmp/ext/<ext>/<ver>/lib/
+                            # so install_ext finds them at the expected layout.
+                            local _pv_ver
+                            while IFS= read -r _pv_ver; do
+                                [[ -z "$_pv_ver" ]] && continue
+                                local _pv_ref
+                                _pv_ref=$(ext_image_name "$ext_name" "$_pv_ver" "$pg_major" "$registry" "$owner")
+                                copies_block+="COPY --from=${_pv_ref} /output/extension/ /tmp/ext/${ext_name}/${_pv_ver}/extension/"$'\n'
+                                copies_block+="COPY --from=${_pv_ref} /output/lib/ /tmp/ext/${ext_name}/${_pv_ver}/lib/"$'\n'
+                            done <<< "$raw_versions"
+                            _bundle_copy_written=true
                         else
-                            _bundle_copy_ref="${_bundle_ref}"
-                        fi
+                            # Artifact-present path (AM/AN): single digest-pinned bundle COPY.
+                            local _bundle_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-bundle"
 
-                        copies_block+="COPY --from=${_bundle_copy_ref} / /tmp/ext/${ext_name}/"$'\n'
-                        _bundle_copy_written=true
+                            # AM fix: use a digest-pinned COPY ref when the artifact has a
+                            # bundle_digest (publish path).  The digest is immutable and
+                            # consistent with the atomic invariant (written by the producer
+                            # only after a successful push).  LOCAL_ONLY artifacts omit
+                            # bundle_digest, so the tag-based fallback is correct there.
+                            #
+                            # AN fix: validate the digest with is_valid_oci_digest (strict
+                            # whole-string: sha256: + exactly 64 lowercase hex, no extra
+                            # content) before using it in the COPY line.  A present-but-
+                            # invalid digest signals a poisoned or corrupted artifact:
+                            # fail closed (log error, return 1) — do NOT emit a COPY with
+                            # an unvalidated digest, and do NOT silently fall back to the
+                            # tag (that would mask the corruption).  An absent bundle_digest
+                            # (LOCAL_ONLY case) → tag-based COPY, unchanged.
+                            local _bundle_digest
+                            _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
+                            local _bundle_copy_ref
+                            if [[ -n "$_bundle_digest" ]]; then
+                                if ! is_valid_oci_digest "$_bundle_digest"; then
+                                    log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(printf '%s' "$_bundle_digest" | head -c 80)') — fail closed (possible artifact corruption or poisoning)"
+                                    return 1
+                                fi
+                                _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"
+                            else
+                                _bundle_copy_ref="${_bundle_ref}"
+                            fi
+
+                            copies_block+="COPY --from=${_bundle_copy_ref} / /tmp/ext/${ext_name}/"$'\n'
+                            _bundle_copy_written=true
+                        fi
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
                         local deps
