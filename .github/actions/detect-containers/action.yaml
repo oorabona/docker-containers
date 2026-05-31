@@ -190,11 +190,15 @@ runs:
 
         # Shared build-infra canary: if only shared build/cache logic changed
         # (no container dir), smoke-build postgres so that logic is exercised.
+        # scripts/resolvers/* are build inputs — a version_set resolver
+        # (e.g. timescaledb-ha) controls which retained extension versions the
+        # postgres image ships and its fail-closed behavior, so a resolver-only
+        # change must still rebuild and smoke postgres.
         shared_infra_changed=false
         while IFS= read -r file; do
           [[ -z "$file" ]] && continue
           case "$file" in
-            helpers/*|scripts/build-container.sh|scripts/build-extensions.sh|.github/actions/build-container/*|.github/actions/dockerhub-mirror/*)
+            helpers/*|scripts/build-container.sh|scripts/build-extensions.sh|scripts/resolvers/*|.github/actions/build-container/*|.github/actions/dockerhub-mirror/*)
               shared_infra_changed=true; break ;;
           esac
         done <<< "$changed_files"
