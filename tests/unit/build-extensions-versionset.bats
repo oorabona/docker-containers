@@ -13687,3 +13687,288 @@ EOF
 
     unset PR_TAG_SUFFIX ARCH_SUFFIX BUILD_PLATFORM
 }
+
+# ---------------------------------------------------------------------------
+# BG1-nonresolver-reuse-canonical: PR_TAG_SUFFIX=-pr42, non-resolver ext whose
+# canonical multi-arch manifest EXISTS (pr-scoped arch tags do NOT exist).
+# finalize_multiarch_manifests must REUSE the canonical manifest (no
+# imagetools create) and exit 0.
+#
+# RED before fix: unconditionally calls imagetools create from -pr42 arch tags
+#   which don't exist → imagetools create fails → job aborts (exit non-zero).
+# GREEN after fix: canonical manifest present → reuse (no imagetools create
+#   called for this ext), exit 0.
+# ---------------------------------------------------------------------------
+@test "BG1-nonresolver-reuse-canonical: PR context, canonical multi-arch manifest present, pr-scoped tags absent → reused, no imagetools create" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/bg1_imagetools.log"
+
+    # Config: pgvector is NON-resolver (no version_set.resolver key).
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Registry state: canonical multi-arch manifest exists (:pg18-0.8.0).
+        # PR-scoped arch tags (:pg18-0.8.0-amd64-pr42, :pg18-0.8.0-arm64-pr42) do NOT.
+        # _image_present_3state calls docker manifest inspect; mirror that here.
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                # Fail to expose any incorrect call: if imagetools create is called
+                # when the canonical manifest exists, the pr-scoped arch tags are absent
+                # and the create would fail in production.
+                return 1
+            fi
+            if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
+                local _ref=\"\$_d3\"
+                # Canonical multi-arch ref present (no arch suffix, no PR suffix).
+                if [[ \"\$_ref\" == *':pg18-0.8.0' && \"\$_ref\" != *'-amd64'* && \"\$_ref\" != *'-arm64'* && \"\$_ref\" != *'-pr42'* ]]; then
+                    return 0
+                fi
+                printf 'manifest unknown: manifest unknown\n' >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    # RED before fix: imagetools create fails on missing pr-scoped tags → exit non-zero.
+    # GREEN after fix: canonical manifest reused → exit 0.
+    [ "$status" -eq 0 ]
+
+    # imagetools create must NOT have been called for pgvector (canonical was reused).
+    local create_count=0
+    if [ -f "$imagetools_log" ]; then
+        create_count=$(wc -l < "$imagetools_log")
+    fi
+    [ "$create_count" -eq 0 ]
+
+    unset PR_TAG_SUFFIX
+}
+
+# ---------------------------------------------------------------------------
+# BG1-nonresolver-create-when-changed: PR context, non-resolver ext NOT in
+# canonical (built this PR, pr-scoped arch tags exist) → creates the
+# PR-scoped multi-arch manifest from the -pr42 arch tags.
+#
+# GREEN before AND after fix: when canonical is absent and pr-scoped arch tags
+# are present, imagetools create is called with the pr-scoped arch source tags.
+# ---------------------------------------------------------------------------
+@test "BG1-nonresolver-create-when-changed: PR context, canonical absent, pr-scoped arch tags present → creates PR-scoped manifest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/bg1_changed_imagetools.log"
+
+    # Config: pgvector is NON-resolver.
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Registry state: canonical absent; pr-scoped arch tags present.
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
+                local _ref=\"\$_d3\"
+                # Only pr-scoped arch tags are present.
+                if [[ \"\$_ref\" == *':pg18-0.8.0-amd64-pr42' || \"\$_ref\" == *':pg18-0.8.0-arm64-pr42' ]]; then
+                    return 0
+                fi
+                printf 'manifest unknown: manifest unknown\n' >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # imagetools create must have been called exactly once (for the pr-scoped manifest).
+    [ -f "$imagetools_log" ]
+    local create_count
+    create_count=$(wc -l < "$imagetools_log")
+    [ "$create_count" -eq 1 ]
+
+    # The call must reference pr-scoped arch tags as sources.
+    local call
+    call=$(cat "$imagetools_log")
+    [[ "$call" == *':pg18-0.8.0-amd64-pr42'* ]] || {
+        echo "FAIL: imagetools call does not contain -amd64-pr42 source. Got: $call"
+        false
+    }
+    [[ "$call" == *':pg18-0.8.0-arm64-pr42'* ]] || {
+        echo "FAIL: imagetools call does not contain -arm64-pr42 source. Got: $call"
+        false
+    }
+
+    unset PR_TAG_SUFFIX
+}
+
+# ---------------------------------------------------------------------------
+# BG1-push-nonresolver-canonical: PR_TAG_SUFFIX empty (push/dispatch) →
+# creates canonical manifest from -amd64/-arm64 stable tags (regression guard).
+# GREEN before AND after fix: push path is unchanged.
+# ---------------------------------------------------------------------------
+@test "BG1-push-nonresolver-canonical: PR_TAG_SUFFIX empty → creates canonical manifest from stable arch tags" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/bg1_push_imagetools.log"
+
+    # Config: pgvector is NON-resolver.
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX=''
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        docker() {
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    [ "$status" -eq 0 ]
+
+    # imagetools create must have been called once (canonical create on push).
+    [ -f "$imagetools_log" ]
+    local create_count
+    create_count=$(wc -l < "$imagetools_log")
+    [ "$create_count" -eq 1 ]
+
+    # The call must use stable -amd64 and -arm64 suffixed tags (no PR suffix).
+    local call
+    call=$(cat "$imagetools_log")
+    [[ "$call" == *':pg18-0.8.0-amd64'* ]] || {
+        echo "FAIL: imagetools call does not contain -amd64 tag. Got: $call"
+        false
+    }
+    [[ "$call" == *':pg18-0.8.0-arm64'* ]] || {
+        echo "FAIL: imagetools call does not contain -arm64 tag. Got: $call"
+        false
+    }
+    # Must NOT contain -pr suffix.
+    [[ "$call" != *'-pr42'* ]] || {
+        echo "FAIL: push path must not contain PR suffix. Got: $call"
+        false
+    }
+
+    unset PR_TAG_SUFFIX
+}

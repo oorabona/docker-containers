@@ -783,9 +783,16 @@ jobs:
         shell: bash
         env:
           YQ_VERSION: "v4.52.5"
+          YQ_WIN_SHA256: "56854978bed1785229c1c09c3a8843498300dd04a3861ea615ed194fccbe1984"
         run: |
           curl -fsSL -o "/usr/bin/yq.exe" \
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_windows_amd64.exe"
+          actual_sha256=$(powershell.exe -NoProfile -Command \
+            "(Get-FileHash -Algorithm SHA256 'C:\\Program Files\\Git\\usr\\bin\\yq.exe').Hash.ToLower()")
+          if [ "$actual_sha256" != "$YQ_WIN_SHA256" ]; then
+            echo "SHA256 mismatch for yq_windows_amd64.exe: expected $YQ_WIN_SHA256 got $actual_sha256" >&2
+            exit 1
+          fi
           yq --version
 
       - name: Verify yq (Linux)

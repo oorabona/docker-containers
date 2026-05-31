@@ -1976,12 +1976,37 @@ finalize_multiarch_manifests() {
         _resolver_path=$(yq -r ".extensions.${ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
 
         if [[ -z "$_resolver_path" ]]; then
-            # AW-1: Non-resolver extension (single configured version).
-            # Create the scoped multi-arch manifest target from scoped per-arch suffixed tags.
-            # On push/dispatch (PR_TAG_SUFFIX empty) → canonical un-suffixed target.
-            # On same-repo PR (PR_TAG_SUFFIX=-prN) → PR-scoped target, canonical unchanged.
+            # BG-1: Non-resolver extension (single configured version).
+            # On push/dispatch (PR_TAG_SUFFIX empty) → create canonical manifest from
+            #   stable suffixed tags (-amd64/-arm64). Unchanged behavior.
+            # On same-repo PR (PR_TAG_SUFFIX=-prN) → canonical-first reuse:
+            #   probe the canonical multi-arch manifest (no suffix). If PRESENT,
+            #   the extension is unchanged; reuse it read-only, no imagetools create.
+            #   If ABSENT, the extension was built this PR; create the PR-scoped
+            #   manifest from the PR-scoped arch tags (-amd64-prN / -arm64-prN).
+            #   Supply-chain: PRs never overwrite canonical (read-only reuse).
             local _ver_image_base
             _ver_image_base=$(ext_image_name "$ext" "$ceiling" "$major_ver")
+
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                # Probe canonical multi-arch manifest (no suffix, no arch suffix).
+                local _nr_canonical_rc=0
+                _image_present_3state "$_ver_image_base" || _nr_canonical_rc=$?
+
+                if [[ "$_nr_canonical_rc" -eq 2 ]]; then
+                    log_error "$ext $ceiling pg${major_ver}: transient registry probe error on canonical non-resolver ref — fail closed"
+                    _failed=true
+                    continue
+                fi
+
+                if [[ "$_nr_canonical_rc" -eq 0 ]]; then
+                    # Canonical manifest present: extension is unchanged, reuse read-only.
+                    log_info "$ext $ceiling pg${major_ver}: canonical manifest present — reused (unchanged, non-resolver)"
+                    continue
+                fi
+                # Canonical absent: extension was built this PR, fall through to create.
+            fi
+
             local _nr_src_amd64 _nr_src_arm64
             _nr_src_amd64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "amd64")")
             _nr_src_arm64=$(_scoped_tag "$(_arch_suffix_tag "$_ver_image_base" "arm64")")
