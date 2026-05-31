@@ -64,10 +64,21 @@ build_ext_image() {
 
     if [[ -n "${BUILD_PLATFORM:-}" ]]; then
         # CI per-arch leg: build for the specific platform using buildx.
-        # On a PR / NO_PUSH leg (do_push=false), use --load so the image stays in the
-        # local docker store for smoke validation without any registry write.
-        # On the publish leg (do_push=true / NO_PUSH unset), use --push so the
-        # suffixed tag lands in the registry for the stage-B manifest merge.
+        # Build and push are intentionally SEPARATE steps so their failure modes
+        # are distinguishable:
+        #   - compile (--load) failure → rc=1 (musl incompatibility tolerated for
+        #     non-ceiling versions by the caller).
+        #   - push failure (infra/auth/network) → rc=2 (FATAL for ALL versions,
+        #     ceiling AND non-ceiling, because it is not a compile incompatibility).
+        #
+        # BA-1: pushing extension images from same-repo PRs is a deliberate
+        # accepted trade-off.  Extensions require native compilation (musl/glibc),
+        # so rebuilding from scratch on the master merge leg would waste minutes of
+        # compile time per version per arch.  A single-maintainer repo with
+        # serialized auto-update PRs makes this safe: the trust boundary is the PR
+        # author, and the push is scoped to extension sub-images only (not the
+        # final consumer postgres image).  This diverges from the main-image
+        # PR-skip policy intentionally.
         local _ver_image
         _ver_image=$(ext_image_name "$ext_name" "$ext_version" "$pg_major")
         local _ver_tag
@@ -78,28 +89,35 @@ build_ext_image() {
         [[ "${NO_PUSH:-false}" == "true" ]] && _do_push_ext=false
         [[ "${LOCAL_ONLY:-false}" == "true" ]] && _do_push_ext=false
 
-        local _push_or_load="--push"
-        [[ "$_do_push_ext" == "false" ]] && _push_or_load="--load"
-
+        # Step 1: compile — always use --load (loads image into the local docker
+        # store of the native runner).  rc=1 on failure (compile / musl error).
         if ! $DOCKER buildx build \
             --platform "${BUILD_PLATFORM}" \
             -f "$dockerfile" \
             -t "$_ver_tag" \
-            "$_push_or_load" \
+            --load \
             --build-arg REMOTE_CR="${REMOTE_CR}" \
             --build-arg MAJOR_VERSION="$pg_major" \
             --build-arg EXT_VERSION="$ext_version" \
             --build-arg EXT_REPO="$ext_repo" \
             "$context_dir"; then
-            log_error "Docker buildx build failed for $ext_name $ext_version (pg${pg_major})"
-            return 1
+            log_error "Docker buildx build (compile) failed for $ext_name $ext_version (pg${pg_major})"
+            return 1  # compile failure
         fi
 
-        if [[ "$_do_push_ext" == "true" ]]; then
-            log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
-        else
+        if [[ "$_do_push_ext" == "false" ]]; then
             log_success "Built (local only): $_ver_tag (platform: ${BUILD_PLATFORM})"
+            return 0
         fi
+
+        # Step 2: push — separate from compile so push/auth/network failures are
+        # distinct from musl compile incompatibilities.  rc=2 on failure (infra).
+        if ! $DOCKER push "$_ver_tag"; then
+            log_error "Docker push failed for $ext_name $ext_version (pg${pg_major}) — infra/auth/network error"
+            return 2  # push failure (infra — FATAL for all versions, not just ceiling)
+        fi
+
+        log_success "Built+pushed: $_ver_tag (platform: ${BUILD_PLATFORM})"
         return 0
     fi
 
@@ -942,13 +960,25 @@ build_tag_push_extensions() {
             local _ver_start=$SECONDS
 
             # Attempt build for this version.
-            local compile_ok=true
-            if ! build_extension "$ext" "$config_file" "$major_ver" "$container_dir" "$version"; then
-                compile_ok=false
+            # build_extension returns:
+            #   0  — success (compile + push, or local build)
+            #   1  — compile failure (musl incompatibility or Dockerfile error)
+            #   2  — push failure (infra/auth/network; only on BUILD_PLATFORM path)
+            local _build_rc=0
+            build_extension "$ext" "$config_file" "$major_ver" "$container_dir" "$version" || _build_rc=$?
+
+            if [[ "$_build_rc" -eq 2 ]]; then
+                # Push failure (infra/auth/network) is FATAL for ALL versions —
+                # ceiling AND non-ceiling.  It is not a compile incompatibility and
+                # must never be silently excluded from the version set.
+                log_error "$ext $version push failed (infra error) — fatal regardless of ceiling"
+                failed+=("$ext@$version")
+                continue
             fi
 
-            if [[ "$compile_ok" == "false" ]]; then
-                # Compile failure: ceiling is fatal; non-ceiling is tolerated (musl compat).
+            if [[ "$_build_rc" -ne 0 ]]; then
+                # Compile failure (rc=1 or any other non-zero, non-2 code):
+                # ceiling is fatal; non-ceiling is tolerated (musl compat).
                 if [[ "$version" == "$ceiling" ]]; then
                     log_error "$ext $version (ceiling) build failed"
                     failed+=("$ext@$version")
@@ -959,7 +989,7 @@ build_tag_push_extensions() {
             fi
 
             # When BUILD_PLATFORM is set, build_ext_image (the override at the top of
-            # this file) already performed buildx build --platform --push with the
+            # this file) already performed buildx build --load + docker push for the
             # arch-suffixed tag.  The separate tag+push steps are for the local/plain
             # path only.
             if [[ -z "${BUILD_PLATFORM:-}" ]]; then
@@ -1843,23 +1873,37 @@ finalize_multiarch_manifests() {
             _ver_tag_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
             _ver_tag_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
 
-            local _amd64_ok=false _arm64_ok=false
-            image_exists_in_registry "$_ver_tag_amd64" 2>/dev/null && _amd64_ok=true
-            image_exists_in_registry "$_ver_tag_arm64" 2>/dev/null && _arm64_ok=true
+            # Use the 3-state probe to distinguish a definitive ABSENT (legitimate
+            # per-arch build miss → excluded for non-ceiling) from a transient ERROR
+            # (auth/429/network → fail-closed, do not silently shrink the version set).
+            local _amd64_rc=0 _arm64_rc=0
+            _image_present_3state "$_ver_tag_amd64" || _amd64_rc=$?
+            _image_present_3state "$_ver_tag_arm64" || _arm64_rc=$?
 
-            if [[ "$_amd64_ok" == "false" ]] || [[ "$_arm64_ok" == "false" ]]; then
+            # Transient probe error (rc=2) on either arch → fail closed immediately.
+            # Do not exclude the version; we do not know if it is genuinely absent.
+            if [[ "$_amd64_rc" -eq 2 ]] || [[ "$_arm64_rc" -eq 2 ]]; then
+                log_error "$ext $ver pg${major_ver}: transient registry probe error (amd64_rc=$_amd64_rc arm64_rc=$_arm64_rc) — fail closed"
+                _ext_failed=true
+                break
+            fi
+
+            # Definitive absence (rc=1) on either arch.
+            if [[ "$_amd64_rc" -eq 1 ]] || [[ "$_arm64_rc" -eq 1 ]]; then
                 if [[ "$ver" == "$ceiling" ]]; then
-                    log_error "$ext $ver pg${major_ver} (ceiling): suffixed tag missing on arch(es) — amd64=$_amd64_ok arm64=$_arm64_ok — fatal"
+                    log_error "$ext $ver pg${major_ver} (ceiling): suffixed tag missing on arch(es) — amd64_rc=$_amd64_rc arm64_rc=$_arm64_rc — fatal"
                     _ext_failed=true
                     break
                 else
-                    log_warning "$ext $ver pg${major_ver}: suffixed tag missing on arch(es) — amd64=$_amd64_ok arm64=$_arm64_ok — excluded"
+                    log_warning "$ext $ver pg${major_ver}: suffixed tag missing on arch(es) — amd64_rc=$_amd64_rc arm64_rc=$_arm64_rc — excluded"
                     _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"suffixed tag missing on one or more arches\"}")
                     continue
                 fi
             fi
 
-            # Both arch suffixed tags exist: create the un-suffixed multi-arch manifest.
+            # Both arch suffixed tags confirmed PRESENT (rc=0): create the un-suffixed
+            # multi-arch manifest.  A failure here is a registry infra error (the
+            # sources are confirmed present), not a build miss — fatal for all versions.
             local ver_multiarch="$ver_image_base"
             local _src_amd64 _src_arm64
             _src_amd64="$_ver_tag_amd64"
@@ -1871,15 +1915,12 @@ finalize_multiarch_manifests() {
                 -t "$ver_multiarch" \
                 "$_src_amd64" "$_src_arm64" 2>&1; then
                 _create_rc=$?
-                if [[ "$ver" == "$ceiling" ]]; then
-                    log_error "$ext $ver pg${major_ver} (ceiling): imagetools create failed (rc=$_create_rc) — fatal"
-                    _ext_failed=true
-                    break
-                else
-                    log_warning "$ext $ver pg${major_ver} (non-ceiling): imagetools create failed (rc=$_create_rc) — tolerated, recording in excluded"
-                    _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"manifest create failed\"}")
-                fi
-                continue
+                # Both sources were confirmed present by the probe; a create failure
+                # is a registry/infra error, NOT a missing-source exclusion.
+                # Fatal for ceiling AND non-ceiling (infra error, not build miss).
+                log_error "$ext $ver pg${major_ver}: imagetools create failed (rc=$_create_rc) — sources confirmed present, infra error — fatal"
+                _ext_failed=true
+                break
             fi
 
             _confirmed_available+=("$ver")

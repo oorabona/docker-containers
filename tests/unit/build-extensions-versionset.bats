@@ -10508,7 +10508,10 @@ EOF
     [[ "$call_content" == *"--load"* ]]
 }
 
-@test "AW2-push-true-regression: BUILD_PLATFORM + NO_PUSH unset → buildx uses --push (regression guard)" {
+@test "AW2-push-true-regression: BUILD_PLATFORM + NO_PUSH unset → buildx uses --load then docker push" {
+    # BA-2 contract: build (--load) and push (docker push) are separate steps.
+    # When do_push=true: buildx build --load compiles, then docker push sends to registry.
+    # The buildx build command must use --load (not --push); a separate docker push follows.
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local aw2_push_log="$tmpd/aw2_push_buildx.log"
@@ -10544,11 +10547,11 @@ EOF
     local call_content
     call_content=$(cat "$aw2_push_log")
 
-    # Must use --push when NO_PUSH is not set
-    [[ "$call_content" == *"--push"* ]]
+    # BA-2 contract: buildx build uses --load (compile step), not --push.
+    [[ "$call_content" == *"--load"* ]]
 
-    # Must NOT use --load
-    [[ "$call_content" != *"--load"* ]]
+    # A separate docker push must also have been called (push step).
+    grep -q "DOCKER_CALL push " "$aw2_push_log"
 }
 
 # ---------------------------------------------------------------------------
@@ -10641,14 +10644,17 @@ EOF
 #   set produces artifact; exit 0. (GREEN)
 # ---------------------------------------------------------------------------
 
-@test "AW4-excluded-version-not-fatal: non-ceiling version missing → excluded, ceiling merged, exit 0" {
+@test "AW4-excluded-version-not-fatal: non-ceiling source tag definitively absent → excluded, ceiling merged, exit 0" {
+    # BA-3 contract: a definitive ABSENT (not ERROR) on a non-ceiling suffixed
+    # source tag → excluded (legitimate per-arch build miss), not fatal.
+    # The 3-state probe returns ABSENT (rc=1) for the 2.25.0 -amd64 tag, PRESENT
+    # for all others.  This models a musl-excluded version where the per-arch
+    # stage-A job simply never pushed the -amd64 tag.
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
     chmod +x "${tmpd}/postgres/version.sh"
-
-    local imagetools_log="${tmpd}/imagetools_aw4.log"
 
     run bash -c "
         export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
@@ -10673,21 +10679,22 @@ EOF
         ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
         export -f ext_local_image_name
 
-        # imagetools create: fails for 2.25.0 (source not available — musl-excluded),
-        # succeeds for 2.26.0, 2.27.1 (ceiling), and the bundle.
-        # Detect the 2.25.0 create call: \$5 is the target tag (after -t).
+        # 2.25.0-amd64 is definitively absent (failed to build on musl).
+        # All other tags are present.
+        image_exists_in_registry() {
+            [[ \"\$1\" == *'pg18-2.25.0-amd64'* ]] && return 1 || return 0
+        }
+        export -f image_exists_in_registry
+
+        # 3-state: 2.25.0-amd64 definitively absent (rc=1); all others present (rc=0).
+        _image_present_3state() {
+            [[ \"\$1\" == *'pg18-2.25.0-amd64'* ]] && return 1 || return 0
+        }
+        export -f _image_present_3state
+
         docker() {
+            # imagetools create: succeeds for all (source tags are present)
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
-                echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
-                # The call is: docker buildx imagetools create -t <target> <src1> <src2>
-                # Positional: \$1=buildx \$2=imagetools \$3=create \$4=-t \$5=<target>
-                # Fail when the CREATE TARGET ends with ':pg18-2.25.0' (the un-suffixed
-                # multi-arch target whose arch-specific sources never built — musl failure).
-                local _tgt=''
-                [[ \$# -ge 5 ]] && _tgt=\"\$5\"
-                if [[ \"\$_tgt\" == *':pg18-2.25.0' ]]; then
-                    return 1
-                fi
                 return 0
             fi
             return 0
@@ -10709,8 +10716,7 @@ EOF
         main postgres --major-version 18 --finalize-multiarch
     "
 
-    # Before fix: any imagetools create failure → fatal → exit non-zero. RED.
-    # After fix:  non-ceiling failure tolerated → exit 0. GREEN.
+    # Definitive absent non-ceiling → excluded, NOT fatal → exit 0.
     [ "$status" -eq 0 ]
 
     # The versionset artifact must have been written.
@@ -10727,7 +10733,7 @@ EOF
     ceiling_present=$(jq '[.available[] | select(. == "2.27.1")] | length' "$artifact")
     [ "$ceiling_present" -eq 1 ]
 
-    # 2.25.0 must be in excluded (its manifest create failed)
+    # 2.25.0 must be in excluded (its -amd64 source tag is definitively absent)
     local excluded_count
     excluded_count=$(jq '.excluded | length' "$artifact")
     [ "$excluded_count" -ge 1 ]
@@ -10944,6 +10950,16 @@ EOF
         }
         export -f image_exists_in_registry
 
+        # 3-state probe: definitively absent (rc=1) for 2.25.0-arm64; present (rc=0) otherwise.
+        # Faithful to image_exists_in_registry above (no transient errors in this scenario).
+        _image_present_3state() {
+            case "$1" in
+                *2.25.0-arm64*) return 1 ;;  # ABSENT (definitive)
+                *)               return 0 ;;  # PRESENT
+            esac
+        }
+        export -f _image_present_3state
+
         docker() {
             if [[ "$2" == "imagetools" && "$3" == "create" ]]; then
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
@@ -11036,6 +11052,15 @@ EOF
             esac
         }
         export -f image_exists_in_registry
+
+        # 3-state: ceiling 2.27.1-arm64 definitively absent (rc=1); all others present (rc=0).
+        _image_present_3state() {
+            case "$1" in
+                *2.27.1-arm64*) return 1 ;;  # ABSENT (definitive)
+                *)               return 0 ;;  # PRESENT
+            esac
+        }
+        export -f _image_present_3state
 
         docker() { return 0; }
         export -f docker
@@ -11683,6 +11708,15 @@ EOF
         }
         export -f image_exists_in_registry
 
+        # 3-state: 2.25.0-arm64 definitively absent (rc=1); all others present (rc=0).
+        _image_present_3state() {
+            case "$1" in
+                *2.25.0-arm64*) return 1 ;;  # ABSENT (definitive)
+                *)               return 0 ;;  # PRESENT
+            esac
+        }
+        export -f _image_present_3state
+
         # Record buildx build calls to a log file for inspection.
         docker() {
             local _dcmd="${1:-}"
@@ -11853,4 +11887,561 @@ EOF
         echo "FAIL: versionset artifact should not be written for set_size==1"
         false
     }
+}
+
+# ---------------------------------------------------------------------------
+# BA-2: per-arch build (BUILD_PLATFORM set) separates compile (--load) from push.
+# A push/auth/network failure must be FATAL for ALL versions (ceiling AND
+# non-ceiling). It must NOT be tolerated as a musl compile incompatibility.
+# ---------------------------------------------------------------------------
+
+@test "BA2-push-fail-fatal: non-ceiling --load succeeds but push fails → FATAL (not excluded)" {
+    # Tests the REAL build_ext_image with BUILD_PLATFORM set.
+    # Before fix: buildx build --push is one op; non-zero = compile failure = tolerated
+    #             for non-ceiling → exit 0, version silently excluded.
+    # After fix:  build (--load) and push are separate; push failure → rc=2 →
+    #             caller treats as FATAL regardless of ceiling/non-ceiling.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local push_log="$tmpd/ba2_push_fatal.log"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # docker: buildx build --load SUCCEEDS (compile OK), push FAILS (infra error).
+        # Faithful mock: distinguishes compile from push by subcommand + flags.
+        docker() {
+            local _subcmd="${2:-}"
+            # buildx build --load: compile step — succeeds
+            if [[ "$1" == "buildx" && "$_subcmd" == "build" ]]; then
+                if [[ "$*" == *"--load"* ]]; then
+                    echo "DOCKER_LOAD $*" >> "'"$push_log"'"
+                    return 0
+                fi
+                # --push (old combined path): also fail-closed but should not be reached
+                echo "DOCKER_BUILD_PUSH $*" >> "'"$push_log"'"
+                return 0
+            fi
+            # docker push: push step — FAILS (auth/infra)
+            if [[ "$1" == "push" ]]; then
+                echo "DOCKER_PUSH_FAIL $*" >> "'"$push_log"'"
+                return 1
+            fi
+            # manifest inspect: absent (not yet pushed)
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_tag_push_extensions \
+            "'"$tmpd"'/postgres/extensions/config.yaml" \
+            18 "'"$tmpd"'/postgres" "true" "timescaledb"
+    '
+
+    # Push failure is FATAL — must NOT exit 0 (old tolerated behavior).
+    # Before fix: status=0 (push folded into compile step, non-ceiling tolerated).
+    # After fix:  status!=0 (push failure is infra error, always fatal).
+    [ "$status" -ne 0 ]
+
+    # Must have attempted the push (so the push-fail path was reached).
+    [ -f "$push_log" ]
+    grep -q "DOCKER_PUSH_FAIL" "$push_log"
+}
+
+@test "BA2-compile-fail-nonceiling-tolerated: non-ceiling --load (compile) fails → tolerated (exit 0)" {
+    # Regression guard: musl compile incompatibility on non-ceiling is still tolerated.
+    # Before and after fix: a compile failure (--load fails) for a non-ceiling version
+    # must remain tolerated → exit 0.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local build_log="$tmpd/ba2_compile_tolerated.log"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # docker: buildx build --load FAILS for 2.25.0 only (musl compile error).
+        # Push (separate step) is not reached because compile failed.
+        docker() {
+            local _subcmd="${2:-}"
+            if [[ "$1" == "buildx" && "$_subcmd" == "build" && "$*" == *"--load"* ]]; then
+                # Fail the compile for 2.25.0 (non-ceiling musl incompatibility).
+                if [[ "$*" == *"pg18-2.25.0"* ]]; then
+                    echo "COMPILE_FAIL_2.25.0" >> "'"$build_log"'"
+                    return 1
+                fi
+                echo "COMPILE_OK $*" >> "'"$build_log"'"
+                return 0
+            fi
+            # push step: succeeds for the versions that compiled
+            if [[ "$1" == "push" ]]; then
+                echo "PUSH_OK $*" >> "'"$build_log"'"
+                return 0
+            fi
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_tag_push_extensions \
+            "'"$tmpd"'/postgres/extensions/config.yaml" \
+            18 "'"$tmpd"'/postgres" "true" "timescaledb"
+    '
+
+    # Non-ceiling compile failure is tolerated → exit 0.
+    [ "$status" -eq 0 ]
+
+    # Compile must have been attempted for 2.25.0 and failed.
+    [ -f "$build_log" ]
+    grep -q "COMPILE_FAIL_2.25.0" "$build_log"
+
+    # Ceiling (2.27.1) must have compiled and pushed.
+    grep -q "PUSH_OK.*pg18-2.27.1-amd64" "$build_log"
+}
+
+@test "BA2-ceiling-compile-fail-fatal: ceiling --load (compile) fails → FATAL (exit non-zero)" {
+    # Ceiling compile failure must remain fatal regardless of the build/push split.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local build_log="$tmpd/ba2_ceiling_compile.log"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export BUILD_PLATFORM=linux/amd64
+        export ARCH_SUFFIX=amd64
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # docker: buildx build --load fails ONLY for ceiling (2.27.1).
+        docker() {
+            local _subcmd="${2:-}"
+            if [[ "$1" == "buildx" && "$_subcmd" == "build" && "$*" == *"--load"* ]]; then
+                if [[ "$*" == *"pg18-2.27.1"* ]]; then
+                    echo "COMPILE_FAIL_CEILING" >> "'"$build_log"'"
+                    return 1
+                fi
+                echo "COMPILE_OK $*" >> "'"$build_log"'"
+                return 0
+            fi
+            if [[ "$1" == "push" ]]; then
+                echo "PUSH_OK $*" >> "'"$build_log"'"
+                return 0
+            fi
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_tag_push_extensions \
+            "'"$tmpd"'/postgres/extensions/config.yaml" \
+            18 "'"$tmpd"'/postgres" "true" "timescaledb"
+    '
+
+    # Ceiling compile failure is always fatal.
+    [ "$status" -ne 0 ]
+
+    [ -f "$build_log" ]
+    grep -q "COMPILE_FAIL_CEILING" "$build_log"
+}
+
+# ---------------------------------------------------------------------------
+# BA-3: finalize_multiarch_manifests uses 3-state probe (fail-closed on ERROR).
+# Before fix: boolean image_exists_in_registry — a transient probe failure
+#             reads as "missing" → non-ceiling version silently excluded.
+# After fix:  _image_present_3state — ERROR (rc=2) → fail closed (fatal), NOT excluded.
+# ---------------------------------------------------------------------------
+
+@test "BA3-transient-probe-failclosed: finalize, transient 3-state ERROR probe → fail closed (not excluded)" {
+    # The test drives finalize_multiarch_manifests via main --finalize-multiarch.
+    # The suffixed-tag probe returns rc=2 (transient ERROR) for a NON-ceiling version.
+    # Before fix (boolean): rc≠0 → "missing" → non-ceiling excluded → exit 0 with reduced artifact.
+    # After fix (3-state):  rc=2 → ERROR → fail closed → exit non-zero, no reduced artifact.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # image_exists_in_registry: all tags present (PRESENT oracle — 3-state fast-path).
+        # Returns 0 for all so _image_present_3state fast-paths to PRESENT.
+        # Overridden below for the transient-error case via _image_present_3state.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # _image_present_3state: returns ERROR (rc=2) for the 2.25.0 -amd64 suffixed tag.
+        # All other tags return PRESENT (rc=0).
+        # This simulates a transient auth/network failure on one tag probe.
+        _image_present_3state() {
+            if [[ "$1" == *"pg18-2.25.0-amd64"* ]]; then
+                return 2  # ERROR (transient — fail-closed)
+            fi
+            return 0  # PRESENT
+        }
+        export -f _image_present_3state
+
+        docker() {
+            # imagetools create succeeds for all
+            if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then
+                return 0
+            fi
+            # buildx build (bundle): succeeds
+            if [[ "$1" == "buildx" && "$2" == "build" ]]; then
+                return 0
+            fi
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Before fix (boolean probe): exit 0, 2.25.0 silently excluded (RED).
+    # After fix (3-state probe):  exit non-zero, fail-closed (GREEN).
+    [ "$status" -ne 0 ]
+
+    # Must NOT have written a versionset artifact with a reduced set.
+    # A reduced artifact would silently drop 2.25.0 even though we do not know it is gone.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    if [ -f "$artifact" ]; then
+        local available_count
+        available_count=$(jq '.available | length' "$artifact")
+        # A reduced artifact (< 3) is the wrong behavior before the fix.
+        # After the fix, no artifact is written on transient error.
+        [ "$available_count" -ge 3 ] || {
+            echo "FAIL: artifact written with reduced available set (transient error not fail-closed)"
+            false
+        }
+    fi
+}
+
+@test "BA3-definitive-absent-excluded: definitive ABSENT non-ceiling → excluded; ceiling absent → fatal" {
+    # A definitive ABSENT (explicit not-found signal) on a NON-ceiling version is a
+    # legitimate per-arch build miss → excluded (unchanged behavior).
+    # A definitive ABSENT on the CEILING version → fatal (unchanged behavior).
+    # This test verifies both cases with 3-state probe.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # --- Part A: definitive absent non-ceiling → excluded, exit 0 ---
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # 2.25.0-amd64 is definitively absent (clean not-found); all others present.
+        image_exists_in_registry() {
+            [[ "$1" == *"pg18-2.25.0-amd64"* ]] && return 1 || return 0
+        }
+        export -f image_exists_in_registry
+
+        # 3-state: 2.25.0-amd64 → ABSENT (rc=1, definitive); all others → PRESENT (rc=0).
+        _image_present_3state() {
+            if [[ "$1" == *"pg18-2.25.0-amd64"* ]]; then
+                return 1  # ABSENT (definitive)
+            fi
+            return 0  # PRESENT
+        }
+        export -f _image_present_3state
+
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then return 0; fi
+            if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Definitive absent non-ceiling → excluded, NOT fatal → exit 0.
+    [ "$status" -eq 0 ]
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -ge 1 ]
+
+    local excl_versions
+    excl_versions=$(jq -r '.excluded[].version' "$artifact")
+    [[ "$excl_versions" == *"2.25.0"* ]]
+
+    # 2.27.1 (ceiling) must be available.
+    local avail
+    avail=$(jq -r '.available[]' "$artifact")
+    [[ "$avail" == *"2.27.1"* ]]
+}
+
+@test "BA3-imagetools-create-with-both-present-fatal: imagetools create fails when both sources confirmed present → FATAL" {
+    # When both -amd64 and -arm64 suffixed tags are confirmed PRESENT by the probe
+    # but imagetools create fails, that is a registry infra error → FATAL.
+    # Before fix: non-ceiling imagetools-create failure is tolerated → excluded.
+    # After fix:  sources confirmed PRESENT + create fails → infra error → FATAL.
+
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        resolve_version_set() { echo '"'"'["2.25.0","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # All suffixed tags confirmed PRESENT (both arches, all versions).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # 3-state: all tags PRESENT (rc=0).
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        docker() {
+            # imagetools create: FAILS for 2.25.0 (infra error — both sources present).
+            # Parse the -t <target> argument to identify which manifest is being created.
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+                local _target=""
+                local _i=4
+                while [[ "$_i" -le "$#" ]]; do
+                    local _arg="${!_i}"
+                    if [[ "$_arg" == "-t" ]]; then
+                        local _next=$(( _i + 1 ))
+                        _target="${!_next}"
+                        break
+                    fi
+                    (( _i++ )) || true
+                done
+                # Fail only when target is the un-suffixed pg18-2.25.0 manifest.
+                if [[ "$_target" == *"pg18-2.25.0"* && "$_target" != *"pg18-2.25.0-"* ]]; then
+                    echo "registry error: unexpected EOF" >&2
+                    return 1
+                fi
+                return 0
+            fi
+            if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
+            if [[ "$*" == *"manifest inspect"* ]]; then
+                echo "manifest unknown: manifest unknown" >&2
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+        skopeo() { echo "manifest unknown" >&2; return 1; }
+        export -f skopeo
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Both sources confirmed present + imagetools create fails → infra error → FATAL.
+    # Before fix: tolerated (exit 0, 2.25.0 in excluded).
+    # After fix:  fatal (exit non-zero).
+    [ "$status" -ne 0 ]
 }

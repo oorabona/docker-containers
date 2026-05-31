@@ -253,3 +253,51 @@ YAMLEOF
     last=$(echo "$output" | jq -r '.[-1]')
     [[ "$last" == "2.27.1" ]]
 }
+
+# ── BA-4: missing version in non-resolver ext → fail fast, NOT ["null"] ──────
+
+@test "BA4-null-version-failclosed: non-resolver ext with no version field → non-zero exit, no null in output" {
+    # Before fix: yq returns "null" for missing field → emit ["null"] → bogus set.
+    # After fix:  detect null/empty version → fail fast with non-zero exit.
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    # Config with an extension that has NO version field at all.
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  myext:
+    repo: "https://example.com/myext"
+YAMLEOF
+
+    run bash -c "source \"$HELPER\"; resolve_version_set myext 18 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    # Must fail (non-zero) — missing version is invalid config.
+    [[ "$status" -ne 0 ]]
+
+    # Output must NOT contain the string "null" as a version value.
+    [[ "$output" != *'"null"'* ]]
+    [[ "$output" != *'["null"]'* ]]
+}
+
+@test "BA4-empty-version-failclosed: non-resolver ext with empty version string → non-zero exit" {
+    # An extension with version: "" (empty string) must also fail fast, not emit [""].
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  myext:
+    version: ""
+    repo: "https://example.com/myext"
+YAMLEOF
+
+    run bash -c "source \"$HELPER\"; resolve_version_set myext 18 \"$tmp_config\""
+    rm -f "$tmp_config"
+
+    # Must fail — empty version is invalid config.
+    [[ "$status" -ne 0 ]]
+
+    # Output must not be a valid non-empty array with empty or null element.
+    [[ "$output" != *'[""]'* ]]
+}

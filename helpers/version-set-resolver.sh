@@ -44,7 +44,13 @@ resolve_version_set() {
     resolver_path=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" "${_config_file}")
 
     if [[ -z "$resolver_path" ]]; then
-        # No resolver configured — return single-version array
+        # No resolver configured — validate version before emitting single-version array.
+        # yq returns the literal string "null" for a missing field; an empty string also
+        # indicates invalid config.  Both cases → fail fast (the ext config is broken).
+        if [[ -z "$single_version" || "$single_version" == "null" ]]; then
+            echo "::error::version-set-resolver: .extensions.${ext_name}.version is missing or null in ${_config_file}" >&2
+            return 1
+        fi
         echo "[\"${single_version}\"]"
         return 0
     fi
