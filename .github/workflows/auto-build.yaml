@@ -268,6 +268,13 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
+      # BE-3 accepted trade-off: packages:write on same-repo PRs is deliberate.
+      # This is a single-maintainer repo; all same-repo PR authors are trusted
+      # (maintainer + upstream-monitor bot).  Forks are excluded by the job if:
+      # clause above and receive a read-only GITHUB_TOKEN.  The PR-suffix hygiene
+      # convention prevents PR images from overwriting canonical production tags,
+      # but the PR author already controls the scripts running in the job, so the
+      # suffix is not a security boundary — it is a rollback/audit convenience.
       packages: write
     # Serialize extension builds across runs — shared builder images race otherwise.
     concurrency:
@@ -361,7 +368,13 @@ jobs:
           # (master) PR_TAG_SUFFIX is empty → canonical refs published.
           # The shared registry build-cache lets master reuse the PR's compiled layers
           # (cache hit, no recompile) — safe because forks are excluded by the job if:.
-          PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
+          # BE-1: only set the suffix for same-repo PRs (where the -pr<N> images were
+          # actually built).  Fork PRs are excluded by the job if: clause above, so this
+          # path is only reached by push/dispatch (empty suffix → canonical) and same-repo
+          # PRs (suffix → -pr<N>).  Using the plain event_name check without the repo
+          # guard would set -pr<N> on fork PRs that skipped this job, causing the postgres
+          # build to reference images that were never produced.
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -540,7 +553,8 @@ jobs:
           REPO_OWNER: ${{ github.repository_owner }}
           # BB-1: must match the suffix used by the build-extensions stage A leg so
           # stage B probes the correct scoped per-arch refs and publishes scoped targets.
-          PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
+          # BE-1: same-repo-only guard mirrors the build-extensions expression.
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
         run: |
           chmod +x scripts/build-extensions.sh helpers/extension-utils.sh
 
@@ -725,7 +739,10 @@ jobs:
       # per-version COPY refs.  Must match the expression used by build-extensions and
       # merge-extension-manifests so the postgres smoke consumes the PR's own extension
       # images rather than the canonical (possibly stale) ones.
-      PR_TAG_SUFFIX: ${{ github.event_name == 'pull_request' && format('-pr{0}', github.event.pull_request.number) || '' }}
+      # BE-1: same-repo-only guard — fork PRs never produce -pr<N> images (build-extensions
+      # and merge-extension-manifests skip fork PRs), so their postgres build must use the
+      # canonical (empty suffix) refs already in the registry via self-heal.
+      PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:

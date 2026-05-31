@@ -621,7 +621,11 @@ generate_dockerfile() {
                 while IFS= read -r _sh_ver; do
                     [[ -z "$_sh_ver" ]] && continue
                     local _sh_image
-                    _sh_image=$(ext_image_name "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner")
+                    # BE-2: probe the SAME ref that will be emitted in the COPY line.
+                    # _scoped_ext_ref appends PR_TAG_SUFFIX when non-empty (same-repo PR),
+                    # or returns the ref unchanged (push/fork/dispatch with empty suffix).
+                    # Probe-ref == emit-ref in all cases.
+                    _sh_image=$(_scoped_ext_ref "$(ext_image_name "$ext_name" "$_sh_ver" "$pg_major" "$registry" "$owner")")
                     local _sh_rc=0
                     _image_registry_probe_3state "$_sh_image" || _sh_rc=$?
                     case "$_sh_rc" in

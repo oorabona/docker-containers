@@ -3231,3 +3231,128 @@ EOF
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# BE-2: self-heal availability probe must use the PR-scoped ref it emits.
+#
+# Defect: in the self-heal loop, _sh_image is built with ext_image_name (no
+# PR_TAG_SUFFIX) but the emitted COPY line uses _scoped_ext_ref (which appends
+# PR_TAG_SUFFIX).  On a same-repo PR (suffix=-pr42), the probe checks the
+# canonical tag (absent) and wrongly excludes or errors on the version, while
+# the COPY line would reference the -pr42 image that actually exists.
+#
+# Fix: apply _scoped_ext_ref to the ref passed to _image_registry_probe_3state
+# in the self-heal loop so probe-ref == emit-ref in all cases.
+#
+# BE2-selfheal-probes-scoped-ref:
+#   PR_TAG_SUFFIX=-pr42, no versionset artifact (forces self-heal).
+#   _image_registry_probe_3state mock asserts it is called with a -pr42 ref.
+#   RED before fix: probe called with canonical (no suffix) ref → assertion fails.
+#   GREEN after fix: probe called with -pr42 ref → assertion passes.
+#
+# BE2-push-probes-canonical:
+#   PR_TAG_SUFFIX empty (push/dispatch path).
+#   Probe must use canonical ref (no suffix).
+#   Regression guard — must stay green before and after the fix.
+# ---------------------------------------------------------------------------
+
+@test "BE2-selfheal-probes-scoped-ref: PR_TAG_SUFFIX=-pr42 → self-heal probe called on -pr42 ref (not canonical)" {
+    # No versionset artifact — forces self-heal path.
+    # PR_TAG_SUFFIX is set to -pr42 (same-repo PR scenario).
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export PR_TAG_SUFFIX='-pr42'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        # Track which refs the probe was called with.
+        # Return PRESENT (0) for -pr42 refs, ERROR (2) for canonical refs.
+        # RED before fix: probe gets canonical ref (no suffix) → returns ERROR (2) → fail closed.
+        # GREEN after fix: probe gets -pr42 ref → returns PRESENT (0) → self-heal succeeds.
+        _image_registry_probe_3state() {
+            if [[ \"\$1\" == *'-pr42'* ]]; then
+                return 0  # PRESENT — the PR-scoped image exists
+            else
+                return 2  # ERROR — canonical ref: probe should NOT be called here
+            fi
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+
+    # GREEN after fix: probe uses -pr42 ref → PRESENT → self-heal succeeds → exit 0.
+    # RED before fix: probe uses canonical ref → ERROR → fail closed → exit non-zero.
+    [ "$status" -eq 0 ]
+
+    # Self-heal emits per-version COPYs with -pr42 suffix (AP path).
+    local pr_copy_count
+    pr_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
+    [ "$pr_copy_count" -eq 2 ]
+
+    # No canonical (un-suffixed) COPY lines for timescaledb on self-heal path.
+    local canonical_copy_count
+    canonical_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+[^-] /output/extension/" || true)
+    [ "$canonical_copy_count" -eq 0 ]
+}
+
+@test "BE2-push-probes-canonical: PR_TAG_SUFFIX empty → self-heal probe uses canonical ref (regression)" {
+    # Push/dispatch path: PR_TAG_SUFFIX is empty.
+    # Probe must use canonical refs; scoped-ref logic must be a no-op.
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export PR_TAG_SUFFIX=''
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        # Return PRESENT for canonical refs, ERROR for any -pr<N> ref.
+        _image_registry_probe_3state() {
+            if [[ \"\$1\" == *'-pr'* ]]; then
+                return 2  # ERROR — scoped refs must NOT appear on the push path
+            fi
+            return 0  # PRESENT — canonical ref
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \
+            \"$tmpd/extensions/config.yaml\" \
+            \"$tmpd/Dockerfile.template\" \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    "
+
+    # Push path must succeed: canonical probe → PRESENT → self-heal succeeds.
+    [ "$status" -eq 0 ]
+
+    # AP: self-heal emits per-version COPYs with NO pr suffix.
+    local canonical_copy_count
+    canonical_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    [ "$canonical_copy_count" -eq 2 ]
+
+    # No -pr<N> suffixed COPY lines.
+    local pr_copy_count
+    pr_copy_count=$(echo "$output" | grep -cE "COPY --from=.*-pr[0-9]+ /output/extension/" || true)
+    [ "$pr_copy_count" -eq 0 ]
+}
