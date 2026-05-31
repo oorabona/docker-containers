@@ -150,12 +150,15 @@ build_ext_image() {
         # --cache-to writes when we have GHCR write access (_do_push_ext=true);
         # omitting --cache-to on LOCAL_ONLY/NO_PUSH paths avoids attempting writes
         # to a registry we cannot authenticate to in that context.
-        # A cache-to write failure is non-fatal in buildx (the build itself
-        # succeeds even if the cache upload fails), so no explicit error handling
-        # is needed here.
+        # The cache export must not be able to fail the build: a cache-to write
+        # error (registry/auth/network) would otherwise surface as a non-zero
+        # buildx exit and be misread as a compile/musl failure, silently dropping
+        # a retained non-ceiling version. ignore-error=true makes the export
+        # best-effort so only a genuine compile failure returns non-zero here;
+        # real infra failures are caught by the separate push step (rc=2, fatal).
         local _cache_flags=("--cache-from" "type=registry,ref=${_cache_ref}")
         if [[ "$_do_push_ext" == "true" ]]; then
-            _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max")
+            _cache_flags+=("--cache-to" "type=registry,ref=${_cache_ref},mode=max,ignore-error=true")
         fi
 
         if ! $DOCKER buildx build \

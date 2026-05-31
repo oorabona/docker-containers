@@ -176,11 +176,22 @@ on:
         default: false
         required: false
 
-# NOTE: No workflow-level concurrency — serialization is per-container/per-job
-# (see `concurrency` blocks on individual jobs below). This lets unrelated
-# container builds run in parallel (e.g. postgres and vector PRs merging at
-# the same time don't block each other), while same-container races are still
-# prevented (e.g. two postgres merges serialize, cancelling stale runs).
+# Serialize runs of this workflow on the same ref. The extension pipeline runs
+# in two stages — per-arch build (Stage A) then multi-arch merge (Stage B) —
+# and Stage A publishes mutable per-arch tags (-amd64 / -arm64) that Stage B
+# fuses into the final manifest. Without a run-level boundary a second run on
+# the same ref (a fast follow-up push or a re-run) could overwrite one arch tag
+# after the first run's Stage A finished but before its Stage B read it, so the
+# merge would combine tags from two commits. Cancelling the superseded run
+# before its merge runs closes that window. The group is keyed on github.ref,
+# so unrelated PRs (different branches) still build in parallel — the rationale
+# for keeping serialization per-job historically. Only PR runs cancel in
+# progress; push (master deploy) and workflow_call runs always run to
+# completion. The per-job `concurrency` blocks below add finer-grained
+# serialization within a run.
+concurrency:
+  group: auto-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   actions: read          # Required by actions/download-artifact and actions/cache (artifact + cache restore steps below)
