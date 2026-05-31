@@ -8479,3 +8479,306 @@ _run_an_producer() {
     push_count=$(_count_log_lines "$push_call_log")
     [ "$push_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AR-1: no-push CI build path must NOT write an artifact for an unpushed bundle.
+#
+# Scenario: versions were BUILT in this run (not all-cached), do_push=false via
+# NO_PUSH=true (fork PR), NOT LOCAL_ONLY, NOT PULL_ONLY.
+# Before fix: _bundle_and_write_artifact is called from build_tag_push_extensions
+#   without the no-push guard → artifact is written pointing at a bundle that
+#   was never pushed to the registry.
+# After fix: guard inside _bundle_and_write_artifact fires → no bundle push,
+#   no artifact written, any stale artifact deleted, exit 0.
+# ---------------------------------------------------------------------------
+@test "AR1-nopush-build-no-artifact: BUILD path, NO_PUSH=true, not LOCAL_ONLY — no artifact written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Pre-seed a stale artifact so we can verify it is deleted.
+    mkdir -p "${tmpd}/.build-lineage"
+    echo '{"stale":true}' > "${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=true CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions absent in registry — build loop will run.
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        # Builds succeed.
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build|push) return 0 ;;
+                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+        }
+        export -f _capture_bundle_digest
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites() { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed (no-push is not a fatal condition).
+    [ "$status" -eq 0 ]
+
+    # AR-1: artifact must NOT be written (and stale must be deleted).
+    [ ! -f "${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json" ]
+}
+
+# ---------------------------------------------------------------------------
+# AR-1 regression: LOCAL_ONLY=true (do_push=false) still writes an artifact
+# without a digest — existing behavior must be preserved.
+# ---------------------------------------------------------------------------
+@test "AR1-localonly-still-writes: LOCAL_ONLY=true, do_push=false — artifact written without digest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=true PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # LOCAL_ONLY: all versions already in local daemon.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'image' ]]; then return 0; fi
+            if [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]]; then return 0; fi
+            return 1
+        }
+        export -f docker
+        # LOCAL_ONLY: _capture_bundle_digest not called (no push) → unset is fine.
+        _capture_bundle_digest() { echo ''; return 0; }
+        export -f _capture_bundle_digest
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+        validate_prerequisites() { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --local-only
+    "
+
+    [ "$status" -eq 0 ]
+
+    # LOCAL_ONLY: artifact MUST be written (local consumption path).
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # No digest on LOCAL_ONLY path (bundle was not pushed).
+    local digest_field
+    digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
+    [ "$digest_field" = "absent" ]
+}
+
+# ---------------------------------------------------------------------------
+# AR-1 regression: do_push=true (normal publish path) — bundle pushed,
+# artifact written with digest.
+# ---------------------------------------------------------------------------
+@test "AR1-push-true-unchanged: do_push=true — bundle pushed, artifact with digest" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build|push) return 0 ;;
+                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+        _capture_bundle_digest() {
+            echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            return 0
+        }
+        export -f _capture_bundle_digest
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites() { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Publish path: artifact MUST be written.
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # Digest MUST be present on the publish path.
+    local digest_field
+    digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
+    [ "$digest_field" != "absent" ]
+    [[ "$digest_field" == sha256:* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AR-2: resolver output containing GHA workflow-command injection bytes must
+# be neutralized in the logged diagnostic when validation fails.
+#
+# The resolver returns output with an embedded newline followed by
+# ::stop-commands:: — a dangerous GHA workflow command. The log_error call
+# at the validation failure site must NOT emit a raw newline-prefixed
+# ::stop-commands:: sequence in its output (stdout/stderr).
+# ---------------------------------------------------------------------------
+@test "AR2-resolver-output-sanitized: malicious resolver output is defanged in log diagnostic" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local ar2_stderr="/tmp/ar2_resolver_stderr_$$.txt"
+
+    # Drive _resolve_cached in a subshell, redirecting stderr to a file so we can
+    # inspect the exact bytes emitted by log_error.
+    bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        # Resolver returns a JSON array where one element contains an embedded
+        # newline + GHA workflow command. The JSON is valid at the array/string-type
+        # level so it passes the first jq check, but the semver/ceiling check rejects
+        # the injection element — triggering the log_error with the raw result value.
+        resolve_version_set() {
+            printf '%s' '[\"2.27.1\",\"2.27.1\n::stop-commands::evil\"]'
+        }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        _resolve_cached timescaledb 18 \"$tmpd/postgres/extensions/config.yaml\" 2>\"$ar2_stderr\" || true
+    "
+
+    # Must have emitted a diagnostic (the log_error line for the validation failure).
+    local stderr_content
+    stderr_content=$(cat "$ar2_stderr" 2>/dev/null || true)
+    [[ "$stderr_content" == *"resolver for"* ]]
+
+    # The injection sequence must NOT appear as a line starting with :: in the output.
+    # GHA interprets any line whose first two characters are '::' as a workflow command.
+    # After sanitization, no line in the diagnostic may begin with '::'.
+    if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
+        echo "--- stderr_content ---"
+        printf '%s\n' "$stderr_content" | cat -A
+        return 1
+    fi
+
+    rm -f "$ar2_stderr"
+}

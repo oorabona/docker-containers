@@ -24,6 +24,23 @@ if ! declare -F resolve_version_set &>/dev/null; then
     source "$HELPERS_DIR/version-set-resolver.sh"
 fi
 
+# Sanitize an untrusted string for safe inclusion in a log message.
+# Neutralizes GHA workflow-command injection: a raw newline followed by '::command::'
+# is interpreted as a workflow command by the Actions runner.  Stripping/encoding CR
+# and LF prevents any injected text from starting a new line and being parsed as a
+# command.  '::' at the start of a line is the trigger; removing newlines defangs it.
+# Also escapes '%' first (mirrors the _esc ordering in timescaledb-ha.sh resolver)
+# so that %0A / %0D sequences in the source data are not re-expanded by the runner.
+# Usage: _sanitize_for_log <string>  (prints sanitized form to stdout)
+_sanitize_for_log() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    # Defang remaining '::' sequences that could be interpreted as workflow commands.
+    s="${s//::/%3A%3A}"
+    printf '%s' "$s"
+}
 
 # Get repository owner from git remote or environment
 get_repo_owner() {
@@ -555,7 +572,7 @@ generate_dockerfile() {
                 # This prevents the embedded-newline bypass where jq -r '.[]' splits a
                 # single element "2.25.0\n2.26.0" into two apparently-valid lines.
                 if ! validate_semver_set_json "$_sh_resolved_json" "$ext_version"; then
-                    log_error "generate_dockerfile: self-heal resolver for $ext_name returned invalid or above-ceiling set: $_sh_resolved_json"
+                    log_error "generate_dockerfile: self-heal resolver for $ext_name returned invalid or above-ceiling set: $(_sanitize_for_log "$_sh_resolved_json")"
                     return 1
                 fi
 
@@ -749,7 +766,7 @@ generate_dockerfile() {
                             local _bundle_copy_ref
                             if [[ -n "$_bundle_digest" ]]; then
                                 if ! is_valid_oci_digest "$_bundle_digest"; then
-                                    log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(printf '%s' "$_bundle_digest" | head -c 80)') — fail closed (possible artifact corruption or poisoning)"
+                                    log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(_sanitize_for_log "$(printf '%s' "$_bundle_digest" | head -c 80)")') — fail closed (possible artifact corruption or poisoning)"
                                     return 1
                                 fi
                                 _bundle_copy_ref="${_bundle_ref}@${_bundle_digest}"

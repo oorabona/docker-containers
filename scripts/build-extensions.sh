@@ -456,6 +456,22 @@ _bundle_and_write_artifact() {
     set_size=$(echo "$version_set_json" | jq 'length')
     [[ "$set_size" -le 1 ]] && return 0
 
+    # CI no-push guard: when do_push=false AND this is not a LOCAL_ONLY or PULL_ONLY
+    # recovery path, we are in a fork PR / CI smoke context where the package registry
+    # is read-only.  Neither a bundle push nor an artifact write is safe here — the
+    # bundle was never pushed so any artifact would reference an unpushed (local-only)
+    # bundle image, causing the downstream postgres build to fail.
+    # Delete any stale artifact so the downstream consumer self-heals to per-version COPYs.
+    # LOCAL_ONLY and PULL_ONLY callers pass do_push=false but still need a local bundle
+    # and artifact for local consumption — they are NOT affected by this guard.
+    if [[ "$do_push" != "true" ]] && \
+       [[ "${LOCAL_ONLY:-false}" != "true" ]] && \
+       [[ "${PULL_ONLY:-false}" != "true" ]]; then
+        log_info "$ext: skipping bundle+artifact (CI no-push context — do_push=false)"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
+
     # Load built-this-run set so a version pushed this run is counted PRESENT
     # regardless of propagation lag (identical to _emit_versionset_artifact's guard).
     local _built_this_run_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
@@ -959,7 +975,7 @@ _resolve_cached() {
     # If the resolver exits 0 but emits malformed output or an empty array,
     # treat it as a resolver failure (fail-closed) and do NOT cache the bad value.
     if ! echo "$result" | jq -e 'type == "array" and length > 0 and (all(.[]; type == "string"))' > /dev/null 2>&1; then
-        log_error "resolver for $ext returned invalid version set (not a non-empty string array): $result"
+        log_error "resolver for $ext returned invalid version set (not a non-empty string array): $(_sanitize_for_log "$result")"
         return 1
     fi
 
@@ -981,7 +997,7 @@ _resolve_cached() {
             local _ceiling_cached
             _ceiling_cached=$(yq -r ".extensions.${ext}.version" "${config_file}" 2>/dev/null || true)
             if ! validate_semver_set_json "$result" "$_ceiling_cached"; then
-                log_error "resolver for $ext returned set that fails whole-string semver/ceiling validation (injection guard): $result"
+                log_error "resolver for $ext returned set that fails whole-string semver/ceiling validation (injection guard): $(_sanitize_for_log "$result")"
                 return 1
             fi
         fi
@@ -1351,20 +1367,9 @@ _emit_final_versionset_pass() {
             [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
         fi
 
-        # CI PR smoke path: do_push=false AND not LOCAL_ONLY AND not PULL_ONLY.
-        # Skip bundle assembly and artifact write entirely — the PR postgres build
-        # self-heals to per-version COPYs (does not need the bundle).
-        # This prevents a docker push attempt on fork PRs with read-only packages (403).
-        if [[ "$_do_push_fp" == "false" ]] && \
-           [[ "${LOCAL_ONLY:-false}" != "true" ]] && \
-           [[ "${PULL_ONLY:-false}" != "true" ]]; then
-            log_info "$ext: skipping bundle+artifact (CI no-push context — do_push=false)"
-            continue
-        fi
-
         # Atomic: push bundle from confirmed_available, then write artifact from the
         # SAME set. _bundle_and_write_artifact handles the 3-state probe, fail-closed
-        # gates, stale artifact deletion, and ordering invariant.
+        # gates, stale artifact deletion, ordering invariant, and the CI no-push guard.
         local _bwa_rc=0
         _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$_do_push_fp" || _bwa_rc=$?
         if [[ "$_bwa_rc" -ne 0 ]]; then

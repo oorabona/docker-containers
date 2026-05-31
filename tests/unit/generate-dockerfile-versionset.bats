@@ -2675,3 +2675,72 @@ EOF
     bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
     [ "$bundle_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AR-2: a malformed bundle_digest containing GHA workflow-command injection
+# bytes must be defanged in the log diagnostic and the function must fail closed.
+#
+# A poisoned artifact has bundle_digest = "sha256:abc\n::add-mask::secret".
+# is_valid_oci_digest rejects this (not valid sha256:<64 hex>), so generate_dockerfile
+# must fail closed (exit non-zero). The log_error message must NOT contain a raw
+# newline immediately followed by ::add-mask:: (the injection form GHA interprets).
+# ---------------------------------------------------------------------------
+@test "AR2-digest-diagnostic-sanitized: malformed bundle_digest with injection bytes — fail closed, diagnostic defanged" {
+    # Artifact with 3 available versions (triggers bundle path) and a poisoned digest.
+    # The digest contains an embedded newline + GHA workflow command.
+    # We write it with a literal newline embedded in the JSON string value.
+    python3 -c "
+import json, os
+artifact = {
+    'ext': 'timescaledb',
+    'pg_major': '18',
+    'ceiling': '2.27.1',
+    'resolved': ['2.23.0', '2.25.0', '2.27.1'],
+    'available': ['2.23.0', '2.25.0', '2.27.1'],
+    'excluded': [],
+    'bundle_digest': 'sha256:abc\n::add-mask::secret'
+}
+path = os.path.join('$TEST_TEMP_DIR', '.build-lineage', 'ext-timescaledb-pg18-versionset.json')
+with open(path, 'w') as f:
+    json.dump(artifact, f)
+"
+
+    # Capture stderr by running generate_dockerfile in a subprocess that redirects
+    # stderr to a file — the inner redirect ensures we capture the log_error bytes.
+    local ar2_stderr="/tmp/ar2_digest_stderr_$$.txt"
+    local ar2_rc=0
+    bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+        ROOT_DIR='$TEST_TEMP_DIR'
+        export ROOT_DIR
+        generate_dockerfile \
+            '$TEST_TEMP_DIR/extensions/config.yaml' \
+            '$TEST_TEMP_DIR/Dockerfile.template' \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    " 2>"$ar2_stderr" || ar2_rc=$?
+
+    # Must fail closed: invalid digest → generate_dockerfile returns non-zero.
+    [ "$ar2_rc" -ne 0 ]
+
+    local stderr_content
+    stderr_content=$(cat "$ar2_stderr" 2>/dev/null || true)
+
+    # The log diagnostic must have been emitted (error message mentions bundle_digest).
+    [[ "$stderr_content" == *"bundle_digest"* ]]
+
+    # The injection sequence must NOT appear as a line starting with :: in the output.
+    # GHA interprets any line whose first two characters are '::' as a workflow command.
+    # After sanitization no line in the diagnostic may begin with '::'.
+    if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
+        echo "--- stderr_content ---"
+        printf '%s\n' "$stderr_content" | cat -A
+        return 1
+    fi
+
+    rm -f "$ar2_stderr"
+}
