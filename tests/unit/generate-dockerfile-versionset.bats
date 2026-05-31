@@ -3356,3 +3356,109 @@ EOF
     pr_copy_count=$(echo "$output" | grep -cE "COPY --from=.*-pr[0-9]+ /output/extension/" || true)
     [ "$pr_copy_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# BF-consumer-canonical-or-prscoped: for the single-version (non-resolver)
+# path in generate_dockerfile, the emitted FROM ref should prefer CANONICAL
+# when it exists, else fall back to PR-scoped.
+#
+# Scenario A: PR_TAG_SUFFIX=-pr42, canonical ext ref EXISTS in registry
+#   → FROM uses canonical ref (no -pr42 suffix).
+#
+# Scenario B: PR_TAG_SUFFIX=-pr42, canonical ext ref ABSENT in registry,
+#   PR-scoped exists
+#   → FROM uses PR-scoped ref (with -pr42 suffix).
+#
+# Supply-chain safety: PR only WRITES PR-scoped (build-extensions.sh outputs
+# pr-scoped tags). Canonical reads are read-only (already published).
+#
+# RED before fix: always emits PR-scoped ref (uses _scoped_ext_ref
+#   unconditionally), even when canonical exists.
+# GREEN after fix: canonical-or-PR-scoped resolution.
+# ---------------------------------------------------------------------------
+@test "BF-consumer-canonical-or-prscoped-A: PR with canonical ext present → FROM uses canonical ref" {
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=false PULL_ONLY=false
+        export PR_TAG_SUFFIX='-pr42'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        # pgvector (non-resolver): canonical ref EXISTS in registry.
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            # Canonical pgvector ref (no -pr suffix): present
+            if [[ \"\$ref\" == *'pg18-0.8.2' && \"\$ref\" != *'-pr42'* ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f image_exists_in_registry
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'vector' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -eq 0 ]
+
+    # FROM must reference canonical ref (no -pr42 suffix).
+    # RED before fix: emits ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42
+    # GREEN after fix: emits ghcr.io/testowner/ext-pgvector:pg18-0.8.2 (canonical)
+    local canonical_from_count
+    canonical_from_count=$(echo "$output" | grep -cE "FROM ghcr\.io/testowner/ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$" || true)
+    [ "$canonical_from_count" -eq 1 ]
+
+    # PR-scoped ref must NOT appear.
+    local pr_from_count
+    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    [ "$pr_from_count" -eq 0 ]
+}
+
+@test "BF-consumer-canonical-or-prscoped-B: PR with canonical absent but PR-scoped present → FROM uses PR-scoped ref" {
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export LOCAL_ONLY=false PULL_ONLY=false
+        export PR_TAG_SUFFIX='-pr42'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        # pgvector (non-resolver): canonical ref ABSENT; PR-scoped EXISTS in registry.
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            # PR-scoped pgvector ref: present
+            if [[ \"\$ref\" == *'pg18-0.8.2-pr42' ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f image_exists_in_registry
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'vector' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    [ "$status" -eq 0 ]
+
+    # FROM must reference PR-scoped ref (canonical absent, PR-scoped present).
+    local pr_from_count
+    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    [ "$pr_from_count" -eq 1 ]
+}

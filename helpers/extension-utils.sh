@@ -453,6 +453,47 @@ _scoped_ext_ref() {
     fi
 }
 
+# _resolve_existing_ext_ref <ext_name> <version> <pg_major> <registry> <owner>
+# BF fix (consumer side): resolve the correct image ref for a non-resolver
+# single-version extension FROM line in generate_dockerfile.
+#
+# Logic:
+#   If PR_TAG_SUFFIX is empty (push/dispatch):
+#     → return canonical ref unchanged (no probe needed).
+#   If PR_TAG_SUFFIX is non-empty (PR context):
+#     1. Probe the CANONICAL ref (no PR suffix):
+#        If PRESENT → version is unchanged, use canonical (read-only).
+#     2. Canonical absent → return PR-scoped ref (version built this PR or new).
+#
+# Supply-chain: PRs only WRITE PR-scoped refs. Reading canonical is read-only.
+# The self-heal per-version COPY path uses _scoped_ext_ref directly (that path
+# already probed presence before calling; canonical-then-PR logic lives here only
+# for the non-resolver single-version FROM line).
+#
+# Returns: the ref string to use (never empty — fallback to PR-scoped).
+_resolve_existing_ext_ref() {
+    local ext_name="$1" version="$2" pg_major="$3"
+    local registry="${4:-$(get_registry)}" owner="${5:-$(get_repo_owner)}"
+    local canonical_ref
+    canonical_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${version}"
+
+    if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
+        # Push/dispatch: always canonical.
+        printf '%s' "$canonical_ref"
+        return 0
+    fi
+
+    # PR context: prefer canonical if it already exists (unchanged version).
+    if image_exists_in_registry "$canonical_ref" 2>/dev/null; then
+        printf '%s' "$canonical_ref"
+        return 0
+    fi
+
+    # Canonical absent: use PR-scoped ref (new/changed version built this PR).
+    printf '%s%s' "$canonical_ref" "$PR_TAG_SUFFIX"
+    return 0
+}
+
 # Get list of extensions for a flavor, filtered by PG version compatibility
 # Excludes disabled extensions and those exceeding max_pg_version
 get_flavor_extensions() {
@@ -881,11 +922,12 @@ generate_dockerfile() {
 
             # Single-version path (no versionset artifact, or jq unavailable):
             # keep the original behavior — one stage, flat COPY paths.
-            # BC-1: apply PR_TAG_SUFFIX to the FROM image ref so a PR's postgres smoke
-            # consumes the PR's own extension image (not the canonical production one).
+            # BF fix (consumer): on a PR, prefer the canonical ref when it exists
+            # (unchanged version), else use PR-scoped (new/changed version built this PR).
+            # On push (PR_TAG_SUFFIX empty): always canonical (unchanged behavior).
             # The COPY uses the Docker stage alias (ext-${ext_name}) — no suffix needed.
             local image
-            image=$(_scoped_ext_ref "${registry}/${owner}/ext-${ext_name}:pg${pg_major}-${ext_version}")
+            image=$(_resolve_existing_ext_ref "$ext_name" "$ext_version" "$pg_major" "$registry" "$owner")
             stages_block+="FROM ${image} AS ext-${ext_name}"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/extension/ /tmp/ext/${ext_name}/extension/"$'\n'
             copies_block+="COPY --from=ext-${ext_name} /output/lib/ /tmp/ext/${ext_name}/lib/"$'\n'

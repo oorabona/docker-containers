@@ -13338,3 +13338,352 @@ EOF
     pr_count=$(echo "$buildx_line" | grep -c 'buildcache:pg18-amd64-pr' || true)
     [ "$pr_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# BF-pr-reuses-canonical-skips-unchanged: PR context, unchanged version
+# (canonical arch tag exists, PR-scoped tag absent) → version is SKIPPED.
+#
+# DEFECT: _should_build_extension / build_tag_push_extensions probes only the
+# PR-scoped tag (-pr42). On a fresh PR, no PR-scoped tags exist in the registry
+# yet → every retained version is "needs build" → rebuild ALL → timeout spike.
+#
+# FIX: check canonical arch ref first; if canonical present, version is
+# unchanged → SKIP (reuse read-only); otherwise check PR-scoped; else → BUILD.
+#
+# RED before fix: _should_build_extension returns 0 (build) even though
+#   the canonical arch tag exists (unchanged version).
+# GREEN after fix: canonical present → _should_build_extension returns 1 (skip).
+# ---------------------------------------------------------------------------
+@test "BF-pr-reuses-canonical-skips-unchanged: PR_TAG_SUFFIX=-pr42, canonical arch tag present, PR-scoped absent → SKIPPED" {
+    export PR_TAG_SUFFIX="-pr42"
+    export ARCH_SUFFIX="amd64"
+    export BUILD_PLATFORM="linux/amd64"
+
+    # Canonical arch tag (pg18-2.27.1-amd64) EXISTS; PR-scoped (pg18-2.27.1-amd64-pr42) does NOT.
+    image_exists_in_registry() {
+        local ref="$1"
+        # Canonical: pg18-2.27.1-amd64 (no PR suffix) → present
+        if [[ "$ref" == *"pg18-2.27.1-amd64" && "$ref" != *"-pr42"* ]]; then
+            return 0  # PRESENT (canonical)
+        fi
+        # PR-scoped or anything else → absent
+        return 1
+    }
+    export -f image_exists_in_registry
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run _should_build_extension "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # RED before fix: returns 0 (build) — probes PR-scoped only (absent) → rebuilds.
+    # GREEN after fix: returns 1 (skip) — canonical arch tag exists → unchanged, skip.
+    [ "$status" -eq 1 ]
+
+    unset PR_TAG_SUFFIX ARCH_SUFFIX BUILD_PLATFORM
+}
+
+# ---------------------------------------------------------------------------
+# BF-pr-builds-only-changed: PR with one NEW version (neither canonical nor
+# PR-scoped exists) and N unchanged (canonical arch tag exists).
+# Only the NEW version is built (PR-scoped); the N unchanged are skipped.
+# Assert: build count == 1.
+#
+# RED before fix: all N+1 versions are built (canonical check absent).
+# GREEN after fix: exactly 1 build (the new/changed version).
+# ---------------------------------------------------------------------------
+@test "BF-pr-builds-only-changed: PR_TAG_SUFFIX=-pr42, 1 new + 2 unchanged → only 1 build issued" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local build_calls="${tmpd}/build_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export ARCH_SUFFIX='amd64'
+        export BUILD_PLATFORM='linux/amd64'
+        export build_calls='${build_calls}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        # 3-version resolver: 2.23.0 (old), 2.25.0 (old), 2.27.1 (new ceiling)
+        resolve_version_set() { echo '[\"2.23.0\",\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Canonical arch tags exist for 2.23.0 and 2.25.0 (unchanged).
+        # 2.27.1 has NO canonical arch tag, NO PR-scoped tag (new version).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *'pg18-2.23.0-amd64') return 0 ;;
+                *'pg18-2.25.0-amd64') return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        # build_ext_image: record calls and succeed
+        build_ext_image() {
+            local ext_name=\"\$1\" ext_version=\"\$2\"
+            echo \"BUILD \${ext_name} \${ext_version}\" >> \"\$build_calls\"
+            return 0
+        }
+        export -f build_ext_image
+
+        docker() {
+            case \"\$1\" in
+                buildx) return 0 ;;
+                push)   return 0 ;;
+                manifest)
+                    printf 'manifest unknown: manifest unknown\n' >&2
+                    return 1
+                    ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # build_ext_image must have been called exactly ONCE (for 2.27.1 only).
+    # RED before fix: called 3 times (all versions rebuilt).
+    # GREEN after fix: called exactly 1 time (only the new version).
+    local build_count=0
+    if [ -f "${build_calls}" ]; then
+        build_count=$(wc -l < "${build_calls}")
+    fi
+    [ "$build_count" -eq 1 ]
+
+    # The one build must be for 2.27.1 (the new/changed version).
+    grep -q "BUILD timescaledb 2.27.1" "${build_calls}"
+
+    unset PR_TAG_SUFFIX ARCH_SUFFIX BUILD_PLATFORM
+}
+
+# ---------------------------------------------------------------------------
+# BF-bundle-mixes-canonical-and-prscoped: in finalize_multiarch_manifests,
+# unchanged versions (canonical multi-arch manifest exists) are REUSED without
+# re-creating their manifest. The new/changed version (no canonical manifest)
+# gets a PR-scoped manifest. The bundle buildx build sources =
+# canonical refs (unchanged) + PR-scoped ref (the bump).
+# The PR-scoped bundle is written; canonical bundle never overwritten from PR.
+#
+# RED before fix: finalize probes only PR-scoped arch tags; unchanged versions'
+#   canonical arch tags don't match → imagetools create fails or ALL are created.
+# GREEN after fix: canonical manifests for unchanged versions reused (no extra
+#   imagetools create); new version gets PR-scoped manifest; PR bundle written.
+# ---------------------------------------------------------------------------
+@test "BF-bundle-mixes-canonical-and-prscoped: unchanged versions reused from canonical, new version is PR-scoped, PR bundle written" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="${tmpd}/docker_calls.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export docker_calls='${docker_calls}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        # 3-version resolver: 2.23.0 and 2.25.0 are unchanged; 2.27.1 is new.
+        resolve_version_set() { echo '[\"2.23.0\",\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Registry state:
+        # - 2.23.0 and 2.25.0: canonical arch tags (-amd64/-arm64) exist (unchanged).
+        #   Their canonical multi-arch manifests (pg18-2.23.0, pg18-2.25.0) also exist.
+        # - 2.27.1: only PR-scoped arch tags (pg18-2.27.1-amd64-pr42, pg18-2.27.1-arm64-pr42).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *'pg18-2.23.0-amd64' | *'pg18-2.23.0-arm64') return 0 ;;
+                *'pg18-2.25.0-amd64' | *'pg18-2.25.0-arm64') return 0 ;;
+                *'pg18-2.27.1-amd64-pr42' | *'pg18-2.27.1-arm64-pr42') return 0 ;;
+                *'pg18-2.23.0' | *'pg18-2.25.0') return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        # docker mock: log all calls; for manifest inspect, return PRESENT/ABSENT
+        # based on image_exists_in_registry so _image_present_3state is faithful.
+        docker() {
+            echo \"DOCKER \$*\" >> \"\$docker_calls\"
+            local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
+                # Mirror image_exists_in_registry: absent refs emit 'manifest unknown'
+                local _ref=\"\$_d3\"
+                case \"\$_ref\" in
+                    *'pg18-2.23.0-amd64' | *'pg18-2.23.0-arm64') return 0 ;;
+                    *'pg18-2.25.0-amd64' | *'pg18-2.25.0-arm64') return 0 ;;
+                    *'pg18-2.27.1-amd64-pr42' | *'pg18-2.27.1-arm64-pr42') return 0 ;;
+                    *'pg18-2.23.0' | *'pg18-2.25.0') return 0 ;;
+                    *)
+                        printf 'manifest unknown: manifest unknown\n' >&2
+                        return 1
+                        ;;
+                esac
+            fi
+            return 0
+        }
+        export -f docker
+
+        _capture_bundle_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --finalize-multiarch
+    "
+
+    [ "$status" -eq 0 ]
+    [ -f "${docker_calls}" ]
+
+    # The PR-scoped bundle must be created (pg18-bundle-pr42).
+    local bundle_written
+    bundle_written=$(grep 'buildx build' "${docker_calls}" | grep 'pg18-bundle-pr42' || true)
+    [ -n "$bundle_written" ]
+
+    # The canonical bundle (pg18-bundle without -pr42) must NEVER be written from a PR.
+    local canonical_bundle
+    canonical_bundle=$(grep 'buildx build.*-t.*pg18-bundle' "${docker_calls}" \
+        | grep -v '\-pr42' || true)
+    [ -z "$canonical_bundle" ]
+
+    # For unchanged versions (2.23.0, 2.25.0): imagetools create must NOT be called
+    # because their canonical multi-arch manifests already exist.
+    local create_for_23
+    create_for_23=$(grep 'imagetools.*create.*2\.23\.0' "${docker_calls}" || true)
+    [ -z "$create_for_23" ]
+
+    local create_for_25
+    create_for_25=$(grep 'imagetools.*create.*2\.25\.0' "${docker_calls}" || true)
+    [ -z "$create_for_25" ]
+
+    # For the new version (2.27.1): imagetools create must create the PR-scoped manifest.
+    local create_for_27
+    create_for_27=$(grep 'imagetools.*create.*2\.27\.1' "${docker_calls}" || true)
+    [ -n "$create_for_27" ]
+    # The target must carry the PR suffix.
+    [[ "$create_for_27" == *"-pr42"* ]]
+
+    # Versionset artifact must have been written with all 3 versions available.
+    local vs_file="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$vs_file" ]
+    local avail_count
+    avail_count=$(jq '.available | length' "$vs_file")
+    [ "$avail_count" -eq 3 ]
+
+    unset PR_TAG_SUFFIX
+}
+
+# ---------------------------------------------------------------------------
+# BF-push-canonical-only: PR_TAG_SUFFIX empty (push/dispatch) →
+# prefilter checks canonical arch tags only (unchanged behavior).
+# Regression guard: ensure no canonicality-reuse logic breaks the push path.
+#
+# GREEN before and after fix: on push, canonical-only probing is unchanged.
+# ---------------------------------------------------------------------------
+@test "BF-push-canonical-only: PR_TAG_SUFFIX empty → canonical arch tags probed, unchanged version skipped" {
+    export PR_TAG_SUFFIX=""
+    export ARCH_SUFFIX="amd64"
+    export BUILD_PLATFORM="linux/amd64"
+
+    # Canonical arch tag (pg18-2.27.1-amd64) exists → version already built.
+    image_exists_in_registry() {
+        local ref="$1"
+        if [[ "$ref" == *"pg18-2.27.1-amd64"* ]]; then
+            return 0  # PRESENT (canonical)
+        fi
+        return 1
+    }
+    export -f image_exists_in_registry
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run _should_build_extension "timescaledb" "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR"
+
+    # Both before and after fix: canonical tag present → returns 1 (skip).
+    [ "$status" -eq 1 ]
+
+    unset PR_TAG_SUFFIX ARCH_SUFFIX BUILD_PLATFORM
+}

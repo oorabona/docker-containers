@@ -74,6 +74,59 @@ _scoped_tag() {
     fi
 }
 
+# _resolve_existing_arch_ref <ext_name> <version> <pg_major> <arch>
+# BF fix: on a PR (PR_TAG_SUFFIX non-empty), determine which ref to use for
+# a given per-arch version tag via a canonical-first probe.
+#
+# Logic:
+#   If PR_TAG_SUFFIX is empty (push/dispatch):
+#     → return the canonical arch ref unchanged (no lookup needed).
+#   If PR_TAG_SUFFIX is non-empty (PR context):
+#     1. Probe the CANONICAL arch ref (no PR suffix):
+#        <img>-<arch>  (e.g. :pg18-2.25.0-amd64)
+#        If PRESENT → version is unchanged, reuse canonical; return canonical ref.
+#     2. Probe the PR-scoped arch ref (with PR suffix):
+#        <img>-<arch>${PR_TAG_SUFFIX}  (e.g. :pg18-2.27.1-amd64-pr42)
+#        If PRESENT → version was built this PR; return PR-scoped ref.
+#     3. Neither present → version needs building; return empty string.
+#
+# Supply-chain safety: reading canonical is read-only. PRs only WRITE PR-scoped refs.
+# On push (empty suffix): canonical probe only (unchanged behavior).
+#
+# Returns: the ref string to use, or "" if neither canonical nor PR-scoped exists.
+# Exit code: always 0 (callers check the returned string for emptiness).
+_resolve_existing_arch_ref() {
+    local ext_name="$1" version="$2" pg_major="$3" arch="${4:-}"
+    local ver_image
+    ver_image=$(ext_image_name "$ext_name" "$version" "$pg_major")
+    local canonical_arch_ref
+    canonical_arch_ref=$(_arch_suffix_tag "$ver_image" "$arch")
+
+    if [[ -z "${PR_TAG_SUFFIX:-}" ]]; then
+        # Push/dispatch: always return canonical (caller decides build-or-skip).
+        printf '%s' "$canonical_arch_ref"
+        return 0
+    fi
+
+    # PR context: check canonical first (read-only reuse for unchanged versions).
+    if image_exists_in_registry "$canonical_arch_ref" 2>/dev/null; then
+        printf '%s' "$canonical_arch_ref"
+        return 0
+    fi
+
+    # Canonical absent: check PR-scoped (version built this PR).
+    local pr_arch_ref
+    pr_arch_ref=$(_scoped_tag "$canonical_arch_ref")
+    if image_exists_in_registry "$pr_arch_ref" 2>/dev/null; then
+        printf '%s' "$pr_arch_ref"
+        return 0
+    fi
+
+    # Neither present → needs building.
+    printf ''
+    return 0
+}
+
 # Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
 # This ensures the trusted CI registry root reaches extension builder stages.
 # When BUILD_PLATFORM is set (CI per-arch leg), uses `docker buildx build --platform`
@@ -1025,22 +1078,43 @@ build_tag_push_extensions() {
         while IFS= read -r version; do
             local ver_image
             ver_image=$(ext_image_name "$ext" "$version" "$major_ver")
-            # On the CI per-arch leg (ARCH_SUFFIX set), check presence of the
-            # arch-suffixed ref; locally (ARCH_SUFFIX empty) use the plain ref.
-            # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a
-            # canonical tag from a prior push run.
+
+            # Skip already-available versions.
+            # BF fix: on a PR (PR_TAG_SUFFIX non-empty), check the canonical arch tag
+            # first (unchanged version — read-only reuse) before the PR-scoped tag.
+            # On push (PR_TAG_SUFFIX empty): unchanged behavior via _image_needs_build.
+            # LOCAL_ONLY path: unchanged behavior via _image_needs_build.
             local _check_image
             _check_image=$(_scoped_tag "$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")")
 
-            # Skip already-available versions.
-            if ! _image_needs_build "$_check_image"; then
-                if [[ "$LOCAL_ONLY" == "true" ]]; then
+            if [[ "$LOCAL_ONLY" == "true" ]]; then
+                if ! _image_needs_build "$_check_image"; then
                     log_success "$ext $version already exists locally"
-                else
-                    log_success "$ext $version already exists in registry"
+                    _available_for_bundle+=("$version")
+                    continue
                 fi
-                _available_for_bundle+=("$version")
-                continue
+            elif [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                # PR context: check canonical arch tag first (unchanged version reuse).
+                local _canonical_arch_ref
+                _canonical_arch_ref=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
+                if [[ "$FORCE" != "true" ]] && image_exists_in_registry "$_canonical_arch_ref" 2>/dev/null; then
+                    log_success "$ext $version already exists in registry (canonical)"
+                    _available_for_bundle+=("$version")
+                    continue
+                fi
+                # Canonical absent: check PR-scoped tag (built this PR).
+                if [[ "$FORCE" != "true" ]] && image_exists_in_registry "$_check_image" 2>/dev/null; then
+                    log_success "$ext $version already exists in registry (pr-scoped)"
+                    _available_for_bundle+=("$version")
+                    continue
+                fi
+            else
+                # Push/dispatch (PR_TAG_SUFFIX empty): canonical probe only.
+                if ! _image_needs_build "$_check_image"; then
+                    log_success "$ext $version already exists in registry"
+                    _available_for_bundle+=("$version")
+                    continue
+                fi
             fi
 
             if [[ "$DRY_RUN" == "true" ]]; then
@@ -1469,13 +1543,11 @@ _should_build_extension() {
 
     if [[ "$set_size" -eq 1 ]]; then
         # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref.
-        # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a canonical
-        # tag from a prior push run.
-        local _check_image
-        _check_image=$(_scoped_tag "$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")")
+        local _check_image_single
+        _check_image_single=$(_scoped_tag "$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")")
 
         if [[ "$LOCAL_ONLY" == "true" ]]; then
-            if [[ "$FORCE" != "true" ]] && docker image inspect "$_check_image" &>/dev/null; then
+            if [[ "$FORCE" != "true" ]] && docker image inspect "$_check_image_single" &>/dev/null; then
                 log_success "$ext $version already exists locally"
                 return 1
             fi
@@ -1486,7 +1558,24 @@ _should_build_extension() {
             return 0
         fi
 
-        if image_exists_in_registry "$_check_image" 2>/dev/null; then
+        if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+            # BF fix: PR context — check canonical arch tag first (unchanged version reuse).
+            local _canonical_single
+            _canonical_single=$(_arch_suffix_tag "$image" "${ARCH_SUFFIX:-}")
+            if image_exists_in_registry "$_canonical_single" 2>/dev/null; then
+                log_success "$ext $version already exists in registry"
+                return 1
+            fi
+            # Canonical absent: check PR-scoped.
+            if image_exists_in_registry "$_check_image_single" 2>/dev/null; then
+                log_success "$ext $version already exists in registry"
+                return 1
+            fi
+            return 0
+        fi
+
+        # Push/dispatch (PR_TAG_SUFFIX empty): canonical probe only.
+        if image_exists_in_registry "$_check_image_single" 2>/dev/null; then
             log_success "$ext $version already exists in registry"
             return 1
         fi
@@ -1495,17 +1584,32 @@ _should_build_extension() {
     fi
 
     # Multi-version path: return 0 if any version in the set needs building.
-    # When ARCH_SUFFIX is set (CI per-arch leg), probe the arch-suffixed ref so
-    # a leftover un-suffixed tag from a prior run does not cause a false skip —
-    # the stage-B merge needs the suffixed source, not the un-suffixed one.
-    # Also apply PR_TAG_SUFFIX so a PR does not false-skip against a canonical tag.
+    # BF fix: on a PR (PR_TAG_SUFFIX non-empty), a version is "needs build" only when
+    # NEITHER its canonical arch tag (unchanged, read-only) NOR its PR-scoped arch tag
+    # (built this PR) exists in the registry. This prevents rebuilding all retained
+    # versions on a fresh PR where only the new/changed version is missing.
+    # On push (PR_TAG_SUFFIX empty): canonical probe only (unchanged behavior).
     local ver
     while IFS= read -r ver; do
-        local ver_image _check_ver_image
-        ver_image=$(ext_image_name "$ext" "$ver" "$major_ver")
-        _check_ver_image=$(_scoped_tag "$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")")
-        if _image_needs_build "$_check_ver_image"; then
-            return 0
+        local ver_image_mv
+        ver_image_mv=$(ext_image_name "$ext" "$ver" "$major_ver")
+        local _check_ver_image_mv
+        _check_ver_image_mv=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_mv" "${ARCH_SUFFIX:-}")")
+
+        if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+            # PR context: canonical-first check.
+            local _canonical_mv
+            _canonical_mv=$(_arch_suffix_tag "$ver_image_mv" "${ARCH_SUFFIX:-}")
+            if ! image_exists_in_registry "$_canonical_mv" 2>/dev/null && \
+               ! image_exists_in_registry "$_check_ver_image_mv" 2>/dev/null; then
+                # Neither canonical nor PR-scoped present → needs build.
+                return 0
+            fi
+        else
+            # Push/dispatch: canonical probe only.
+            if _image_needs_build "$_check_ver_image_mv"; then
+                return 0
+            fi
         fi
     done < <(echo "$version_set_json" | jq -r '.[]')
 
@@ -1955,23 +2059,67 @@ finalize_multiarch_manifests() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Step 1: compute AVAILABLE set = INTERSECTION of scoped -amd64 and -arm64 suffixed tags.
-        # Source tags carry PR_TAG_SUFFIX (set by stage A's per-arch build leg), so on a PR
-        # the probed refs are e.g. :pg18-2.27.1-amd64-pr42.  On push, PR_TAG_SUFFIX is empty
-        # and the stable un-scoped refs (:pg18-2.27.1-amd64) are probed as before.
-        # Per-version multi-arch manifest targets also carry PR_TAG_SUFFIX so canonical
-        # un-suffixed tags are NEVER written from a PR.
+        # Step 1: compute AVAILABLE set.
+        # BF fix: canonical-first resolution for the PR path.
+        #
+        # On push (PR_TAG_SUFFIX empty): probe canonical arch tags as before.
+        #
+        # On PR (PR_TAG_SUFFIX non-empty):
+        #   For each version, check if the canonical multi-arch manifest already
+        #   exists (version unchanged — was pushed in a prior push run).
+        #   - If canonical manifest EXISTS: reuse it (no imagetools create needed);
+        #     add to _confirmed_available with source=canonical. PR never overwrites
+        #     canonical (supply-chain safe: read-only).
+        #   - If canonical manifest ABSENT: check PR-scoped arch tags (built this PR).
+        #     If both present: create PR-scoped multi-arch manifest as before.
+        #     If either absent: exclude non-ceiling; fatal for ceiling.
+        #
+        # Bundle Dockerfile COPYs use the resolved source ref per version:
+        #   - unchanged versions → canonical multi-arch ref (e.g. :pg18-2.23.0)
+        #   - changed/new version → PR-scoped multi-arch ref (e.g. :pg18-2.27.1-pr42)
         local _confirmed_available=()
+        local _confirmed_sources=()   # parallel array: ref to use in bundle COPY per available version
         local _excluded_entries=()
         local _ext_failed=false
         local ver
         while IFS= read -r ver; do
             local ver_image_base
             ver_image_base=$(ext_image_name "$ext" "$ver" "$major_ver")
+
+            # BF: on a PR, check canonical multi-arch manifest first (unchanged version reuse).
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                # Probe the canonical multi-arch ref (no suffix).
+                local _canonical_ver_ref="$ver_image_base"
+                local _canonical_rc=0
+                _image_present_3state "$_canonical_ver_ref" || _canonical_rc=$?
+
+                if [[ "$_canonical_rc" -eq 2 ]]; then
+                    # Transient probe error on canonical → fail closed.
+                    log_error "$ext $ver pg${major_ver}: transient registry probe error on canonical ref — fail closed"
+                    _ext_failed=true
+                    break
+                fi
+
+                if [[ "$_canonical_rc" -eq 0 ]]; then
+                    # Canonical multi-arch manifest exists → unchanged version, reuse read-only.
+                    log_info "$ext $ver pg${major_ver}: canonical manifest present — reused (unchanged)"
+                    _confirmed_available+=("$ver")
+                    _confirmed_sources+=("$_canonical_ver_ref")
+                    continue
+                fi
+                # Canonical absent: fall through to PR-scoped arch tag probe below.
+            fi
+
             local _ver_tag_amd64 _ver_tag_arm64
-            # Probe the scoped per-arch refs that stage A published.
-            _ver_tag_amd64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "amd64")")
-            _ver_tag_arm64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "arm64")")
+            if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                # PR context: probe the PR-scoped arch tags (built this PR).
+                _ver_tag_amd64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "amd64")")
+                _ver_tag_arm64=$(_scoped_tag "$(_arch_suffix_tag "$ver_image_base" "arm64")")
+            else
+                # Push/dispatch: probe canonical arch tags as before.
+                _ver_tag_amd64=$(_arch_suffix_tag "$ver_image_base" "amd64")
+                _ver_tag_arm64=$(_arch_suffix_tag "$ver_image_base" "arm64")
+            fi
 
             # Use the 3-state probe to distinguish a definitive ABSENT (legitimate
             # per-arch build miss → excluded for non-ceiling) from a transient ERROR
@@ -2005,6 +2153,7 @@ finalize_multiarch_manifests() {
             # multi-arch manifest target from the scoped source tags.
             # On push (empty suffix): canonical un-suffixed target.
             # On PR: PR-scoped target (e.g. :pg18-2.27.1-pr42).
+            # Supply-chain: PRs write only PR-scoped targets; canonical unchanged.
             local ver_multiarch
             ver_multiarch=$(_scoped_tag "$ver_image_base")
             local _src_amd64 _src_arm64
@@ -2027,6 +2176,8 @@ finalize_multiarch_manifests() {
             fi
 
             _confirmed_available+=("$ver")
+            # BF: track the scoped ref so bundle COPY uses the right target per version.
+            _confirmed_sources+=("$ver_multiarch")
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Ceiling merge failed → fatal for this extension.
@@ -2084,12 +2235,20 @@ finalize_multiarch_manifests() {
         _bundle_df=$(mktemp)
         {
             printf 'FROM scratch\n'
-            local _bv
+            local _bv_idx=0 _bv
             for _bv in "${_confirmed_available[@]}"; do
                 local _bv_ref
-                # Bundle Dockerfile COPYs from the scoped per-version multi-arch manifests
-                # (just created in step 1 above).
-                _bv_ref=$(_scoped_tag "$(ext_image_name "$ext" "$_bv" "$major_ver")")
+                # BF: use the resolved source ref for each version from _confirmed_sources.
+                # - unchanged versions: canonical multi-arch ref (e.g. :pg18-2.23.0)
+                # - new/changed version: PR-scoped multi-arch ref (e.g. :pg18-2.27.1-pr42)
+                # On push (PR_TAG_SUFFIX empty): all refs are canonical (no change).
+                if [[ "${#_confirmed_sources[@]}" -gt "$_bv_idx" ]]; then
+                    _bv_ref="${_confirmed_sources[$_bv_idx]}"
+                else
+                    # Fallback (should not happen): use scoped ref.
+                    _bv_ref=$(_scoped_tag "$(ext_image_name "$ext" "$_bv" "$major_ver")")
+                fi
+                _bv_idx=$(( _bv_idx + 1 ))
                 printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_bv_ref" "$_bv"
                 printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_bv_ref" "$_bv"
             done
