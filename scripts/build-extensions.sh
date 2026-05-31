@@ -690,7 +690,7 @@ assemble_and_push_bundle() {
         local _captured_digest
         _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
         if ! is_valid_oci_digest "$_captured_digest"; then
-            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed or is malformed (got: '${_captured_digest}') — cannot write immutable artifact ref; fail closed"
+            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed or is malformed (got: '$(_sanitize_for_log "${_captured_digest}")') — cannot write immutable artifact ref; fail closed"
             return 2
         fi
         log_info "Bundle digest: $_captured_digest"
@@ -704,13 +704,25 @@ assemble_and_push_bundle() {
 }
 
 # _capture_bundle_digest <bundle_ref>
-# Captures the content digest of a pushed bundle image using docker buildx imagetools.
-# Returns the sha256:... digest string on stdout on success, exits non-zero on failure.
+# Captures the content digest of a pushed bundle image using the raw-manifest
+# hashing pattern (the same proven approach used by the build-container action).
+# Returns the sha256:... digest string on stdout on success; returns empty string
+# and a non-zero exit when the raw manifest cannot be retrieved.
 # Separated from assemble_and_push_bundle so tests can override it independently
 # without needing to replicate the full docker() mock for buildx.
+#
+# The --format '{{.Manifest.Digest}}' template field is intentionally NOT used:
+# it is empty for some image types and version-dependent in CI, making it
+# unreliable as the primary capture method.
 _capture_bundle_digest() {
     local _ref="$1"
-    $DOCKER buildx imagetools inspect "$_ref" --format '{{.Manifest.Digest}}' 2>/dev/null
+    local _raw_manifest
+    _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null) || true
+    if [[ -n "$_raw_manifest" ]]; then
+        printf 'sha256:%s' "$(printf '%s' "$_raw_manifest" | sha256sum | awk '{print $1}')"
+    else
+        return 1
+    fi
 }
 
 # Build, tag, and optionally push a list of extensions. Exits 1 if any fail.

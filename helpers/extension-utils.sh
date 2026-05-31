@@ -645,7 +645,7 @@ generate_dockerfile() {
                     local _single_avail
                     _single_avail=$(echo "$_versionset_json" | jq -r '.available[0] // empty' 2>/dev/null || true)
                     if [[ "$_single_avail" != "$ext_version" ]]; then
-                        log_error "generate_dockerfile: $ext_name pg${pg_major}: single available version '${_single_avail:-<none>}' is not the ceiling ${ext_version} — ceiling image is absent or artifact is corrupt, fail closed"
+                        log_error "generate_dockerfile: $ext_name pg${pg_major}: single available version '$(_sanitize_for_log "${_single_avail:-<none>}")' is not the ceiling ${ext_version} — ceiling image is absent or artifact is corrupt, fail closed"
                         return 1
                     fi
                     # available == [ceiling]: single-version path is safe; fall through.
@@ -691,7 +691,7 @@ generate_dockerfile() {
                     while IFS= read -r _val_ver; do
                         [[ -z "$_val_ver" ]] && continue
                         if ! is_strict_semver "$_val_ver"; then
-                            log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name is not strict semver — refusing to emit unsafe stage"
+                            log_error "generate_dockerfile: available[] entry '$(_sanitize_for_log "${_val_ver}")' for $ext_name is not strict semver — refusing to emit unsafe stage"
                             return 1
                         fi
                         # above-ceiling check: if sort -V puts _val_ver AFTER ext_version,
@@ -699,7 +699,7 @@ generate_dockerfile() {
                         local _highest
                         _highest=$(printf '%s\n%s\n' "$_val_ver" "$ext_version" | sort -V | tail -1)
                         if [[ "$_highest" != "$ext_version" && "$_highest" == "$_val_ver" ]]; then
-                            log_error "generate_dockerfile: available[] entry '${_val_ver}' for $ext_name exceeds ceiling ${ext_version} — refusing to emit above-pin stage"
+                            log_error "generate_dockerfile: available[] entry '$(_sanitize_for_log "${_val_ver}")' for $ext_name exceeds ceiling ${ext_version} — refusing to emit above-pin stage"
                             return 1
                         fi
                     done < <(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)

@@ -2744,3 +2744,151 @@ with open(path, 'w') as f:
 
     rm -f "$ar2_stderr"
 }
+
+# ---------------------------------------------------------------------------
+# AS-2: _single_avail (extension-utils.sh ~648) log path sanitization.
+#
+# Scenario: artifact has available:["1.2.3\n::warning::pwn"] — a single entry
+# that contains an embedded GHA workflow-command injection.
+# The value is != ceiling (2.27.1), so generate_dockerfile must fail closed
+# (AO-4 guard). The log_error diagnostic at that site must NOT emit the raw
+# newline+:: sequence — it must be sanitized first.
+#
+# RED before fix: _single_avail is logged raw (no _sanitize_for_log).
+# GREEN after fix: _single_avail is wrapped in _sanitize_for_log before logging.
+# ---------------------------------------------------------------------------
+@test "AS2-single-avail-log-sanitized: artifact single-available with injection bytes — fail closed, log defanged" {
+    # Write artifact with a poisoned single-entry available array.
+    # We embed a literal newline in the JSON string using python3 for correctness.
+    python3 -c "
+import json, os
+artifact = {
+    'ext': 'timescaledb',
+    'pg_major': '18',
+    'ceiling': '2.27.1',
+    'resolved': ['2.27.1'],
+    'available': ['1.2.3\n::warning::pwn'],
+    'excluded': []
+}
+path = os.path.join('$TEST_TEMP_DIR', '.build-lineage', 'ext-timescaledb-pg18-versionset.json')
+with open(path, 'w') as f:
+    json.dump(artifact, f)
+"
+
+    local sa_stderr="/tmp/as2_single_avail_stderr_$$.txt"
+    local sa_rc=0
+    bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+        ROOT_DIR='$TEST_TEMP_DIR'
+        export ROOT_DIR
+        generate_dockerfile \
+            '$TEST_TEMP_DIR/extensions/config.yaml' \
+            '$TEST_TEMP_DIR/Dockerfile.template' \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    " 2>"$sa_stderr" || sa_rc=$?
+
+    # Must fail closed: single available != ceiling → non-zero exit.
+    [ "$sa_rc" -ne 0 ]
+
+    local stderr_content
+    stderr_content=$(cat "$sa_stderr" 2>/dev/null || true)
+
+    # The diagnostic must have been emitted (mentions the extension or single available).
+    [[ "$stderr_content" == *"timescaledb"* ]]
+
+    # The injection sequence must NOT appear as a line starting with :: in stderr.
+    if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
+        echo "--- stderr_content ---"
+        printf '%s\n' "$stderr_content" | cat -A
+        rm -f "$sa_stderr"
+        return 1
+    fi
+
+    rm -f "$sa_stderr"
+}
+
+# ---------------------------------------------------------------------------
+# AS-2: _val_ver (extension-utils.sh ~694/~702) log path sanitization.
+#
+# The per-element validation loop logs _val_ver when is_strict_semver fails
+# or when the above-ceiling check fails. Since validate_semver_set_json runs
+# first and catches injection at the JSON-array level, the only realistic way
+# for a poisoned _val_ver to reach the log is if validate_semver_set_json is
+# bypassed (e.g. future refactor, misconfiguration). This test exercises the
+# log sanitization at the _val_ver site by mocking validate_semver_set_json
+# to return 0 (simulate bypass), then feeding a value with injection bytes to
+# the per-element loop via a crafted artifact.
+#
+# Strategy: write an artifact where the per-element jq -r '.available[]' output
+# would contain injection bytes when validate_semver_set_json is bypassed.
+# We mock validate_semver_set_json to always return 0, then write an artifact
+# whose available[] first entry is "9.99.0::stop-commands::x" — a value that:
+#   1. Passes (mocked) validate_semver_set_json
+#   2. Fails is_strict_semver (non-semver chars after version) → log_error at ~694
+#   3. Contains GHA injection chars that must be sanitized
+# ---------------------------------------------------------------------------
+@test "AS2-valver-log-sanitized: per-element resolved version with injection bytes — log defanged" {
+    # The injection vector at the _val_ver log site uses echo -e expansion:
+    # a value like "2.25.0\n::stop-commands::x" (with a literal backslash-n, not a
+    # real newline) is logged via echo -e which expands \n to a real newline, causing
+    # "::stop-commands::x" to start a new GHA-interpreted line.
+    # JSON encoding: "2.25.0\\n::stop-commands::x" (JSON \\n = literal backslash-n in output).
+    # jq -r reads this as the 18-char string "2.25.0\n::..." (no real newline),
+    # IFS= read -r reads the whole line (no real newline to split on),
+    # is_strict_semver rejects it → log_error at ~694 logs the raw value.
+    # Without _sanitize_for_log: echo -e expands \n → injection lands on new line.
+    # With _sanitize_for_log: \n is encoded as %0A → echo -e emits "%0A", no new line.
+    # Mock validate_semver_set_json to return 0 so the per-element loop is reached.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" \
+        <<'ARTIFACT_EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0\\n::stop-commands::x","2.27.1"],"excluded":[]}
+ARTIFACT_EOF
+
+    local vv_stderr="/tmp/as2_valver_stderr_$$.txt"
+    local vv_rc=0
+    bash -c "
+        source '$HELPERS_DIR/extension-utils.sh'
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+        ROOT_DIR='$TEST_TEMP_DIR'
+        export ROOT_DIR
+        # Mock validate_semver_set_json to return 0 (simulate JSON-level bypass)
+        # so the per-element _val_ver loop is reached with the poisoned value.
+        validate_semver_set_json() { return 0; }
+        export -f validate_semver_set_json
+        generate_dockerfile \
+            '$TEST_TEMP_DIR/extensions/config.yaml' \
+            '$TEST_TEMP_DIR/Dockerfile.template' \
+            'timeseries' '18' \
+            'ghcr.io' 'testowner'
+    " 2>"$vv_stderr" || vv_rc=$?
+
+    # Must fail closed: is_strict_semver rejects the poisoned entry.
+    [ "$vv_rc" -ne 0 ]
+
+    local stderr_content
+    stderr_content=$(cat "$vv_stderr" 2>/dev/null || true)
+
+    # A diagnostic about the bad entry must have been emitted.
+    [[ -n "$stderr_content" ]]
+
+    # The injection sequence must NOT appear as a line starting with :: in stderr.
+    # RED before fix: log_error "'${_val_ver}'" logs the raw string → echo -e expands
+    # \n → "::stop-commands::x" starts a new line interpreted by GHA as a command.
+    # GREEN after fix: _sanitize_for_log wraps _val_ver → \n → %0A, :: → %3A%3A.
+    if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
+        echo "--- stderr_content ---"
+        printf '%s\n' "$stderr_content" | cat -A
+        rm -f "$vv_stderr"
+        return 1
+    fi
+
+    rm -f "$vv_stderr"
+}

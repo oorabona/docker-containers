@@ -8782,3 +8782,266 @@ _run_an_producer() {
 
     rm -f "$ar2_stderr"
 }
+
+# ---------------------------------------------------------------------------
+# AS-1: _capture_bundle_digest uses raw-manifest + sha256sum, not the
+#        unreliable --format '{{.Manifest.Digest}}' template field.
+#
+# AS1-digest-via-raw-manifest: when --raw returns a manifest, the produced
+# digest is sha256:<64 lowercase hex> and is recorded in the artifact.
+# RED before fix: the mock only stubs --raw; the old template-field path
+# returns empty → is_valid_oci_digest rejects → fatal even after a good push.
+# GREEN after fix: --raw output is hashed → valid sha256:<64hex> digest.
+# ---------------------------------------------------------------------------
+@test "AS1-digest-via-raw-manifest: --raw returns manifest → valid sha256 digest in artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build|push) return 0 ;;
+                buildx)
+                    # imagetools inspect: only --raw is stubbed; --format must NOT be called
+                    if [[ \"\$*\" == *'--raw'* ]]; then
+                        printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}'
+                        return 0
+                    fi
+                    # If old --format path is exercised, return empty to make test RED
+                    return 0
+                    ;;
+                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites() { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    local digest_field
+    digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
+
+    # Must be a valid OCI digest (sha256: + 64 lowercase hex).
+    [[ "$digest_field" =~ ^sha256:[0-9a-f]{64}$ ]]
+}
+
+# ---------------------------------------------------------------------------
+# AS1-empty-raw-manifest-fatal: when --raw returns empty, digest capture
+# produces an empty string → is_valid_oci_digest rejects → fail closed
+# (assemble_and_push_bundle returns non-zero, no artifact written).
+# ---------------------------------------------------------------------------
+@test "AS1-empty-raw-manifest-fatal: --raw returns empty → digest empty → fail closed (exit non-zero, no artifact)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build|push) return 0 ;;
+                buildx)
+                    # imagetools inspect --raw returns empty (simulates CI failure case)
+                    if [[ \"\$*\" == *'--raw'* ]]; then
+                        printf ''
+                        return 1
+                    fi
+                    return 0
+                    ;;
+                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites() { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Empty raw-manifest → empty digest → fail closed.
+    [ "$status" -ne 0 ]
+
+    # No artifact must have been written (fail closed).
+    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# AS-2: the failure-log site in assemble_and_push_bundle that logs the
+# captured digest must sanitize the value before logging.
+#
+# AS2-digest-failure-log-sanitized: when the captured digest is a malformed
+# multi-line string "sha256:abc\n::add-mask::x", the logged failure message
+# must NOT contain a raw newline followed by ::add-mask:: (the GHA injection
+# form). The function must still fail closed (non-zero exit, no artifact).
+# RED before fix: log_error logs the raw _captured_digest without sanitization.
+# GREEN after fix: log_error wraps _captured_digest in _sanitize_for_log.
+# ---------------------------------------------------------------------------
+@test "AS2-digest-failure-log-sanitized: malformed digest with injection bytes — fail closed, log defanged" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local as2_stderr="/tmp/as2_digest_stderr_$$.txt"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    bash -c "
+        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }; export -f build_ext_image
+        tag_ext_image()  { return 0; };  export -f tag_ext_image
+        push_ext_image() { return 0; };  export -f push_ext_image
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            case \"\$_dcmd\" in
+                build|push) return 0 ;;
+                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f docker
+
+        # _capture_bundle_digest returns a malformed multi-line value with
+        # an embedded GHA workflow command injection attempt.
+        _capture_bundle_digest() {
+            printf 'sha256:abc\n::add-mask::x'
+            return 0
+        }
+        export -f _capture_bundle_digest
+
+        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites() { return 0; }; export -f validate_prerequisites
+        check_registry_auth()     { return 0; }; export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    " 2>"$as2_stderr" || true
+
+    local stderr_content
+    stderr_content=$(cat "$as2_stderr" 2>/dev/null || true)
+
+    # The log must mention the digest failure (the error diagnostic was emitted).
+    [[ "$stderr_content" == *"digest"* ]]
+
+    # The injection sequence must NOT appear as a line starting with :: in stderr.
+    # GHA interprets any line beginning with '::' as a workflow command.
+    if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
+        echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
+        echo "--- stderr_content ---"
+        printf '%s\n' "$stderr_content" | cat -A
+        rm -f "$as2_stderr"
+        return 1
+    fi
+
+    rm -f "$as2_stderr"
+}
