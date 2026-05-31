@@ -3126,8 +3126,12 @@ EOF
 #   all carry -pr42.  Confirmed for each version in the proved-present set.
 #   RED before fix: per-version refs use canonical tags.  GREEN after: -pr42 appended.
 # ---------------------------------------------------------------------------
-@test "BC1-consumer-pr-scopes-selfheal: PR_TAG_SUFFIX=-pr42 → self-heal per-version COPY refs carry -pr42" {
+@test "BC1-consumer-pr-scopes-selfheal: PR_TAG_SUFFIX=-pr42, all canonical refs absent → self-heal COPY refs carry -pr42" {
     # No versionset artifact → self-heal path for timescaledb.
+    # PR context (PR_TAG_SUFFIX=-pr42): both versions were built THIS PR.
+    # Faithful mock: canonical refs are ABSENT (rc=1); PR-scoped refs are PRESENT (rc=0).
+    # Canonical-first probe: canonical absent → try PR-scoped → PRESENT → emit PR-scoped.
+    # Correct production behavior: COPY lines carry -pr42 (canonical-first + PR-scoped fallback).
     export PR_TAG_SUFFIX="-pr42"
 
     resolve_version_set() {
@@ -3135,9 +3139,14 @@ EOF
     }
     export -f resolve_version_set
 
-    # All versions proved present.
-    image_exists_in_registry() { return 0; }
-    export -f image_exists_in_registry
+    # Faithful mock: canonical absent, PR-scoped present (versions built this PR, no prior push).
+    _image_registry_probe_3state() {
+        case "$1" in
+            *-pr42) return 0 ;;  # PR-scoped: PRESENT
+            *)      return 1 ;;  # canonical: ABSENT (definitive not-found)
+        esac
+    }
+    export -f _image_registry_probe_3state
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -3150,18 +3159,12 @@ EOF
     [ "$status" -eq 0 ]
 
     # AP path: per-version COPY lines for each proved version.
-    # Each per-version ref must carry -pr42.
+    # Canonical absent + PR-scoped present → each per-version ref must carry -pr42.
     local per_ver_ext_count
     per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    # Canonical per-version refs (no -pr suffix) must NOT appear in COPY --from= lines.
-    # All per-version COPYs must carry -pr42; if any canonical ref appears, count > 0.
-    local canonical_copy_lines
-    canonical_copy_lines=$(echo "$output" | grep -E "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ " || true)
-    [ -z "$canonical_copy_lines" ]
-
-    # Both expected refs present.
+    # Both expected pr42 refs present.
     echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/extension/"
     echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/extension/"
 }
@@ -3256,9 +3259,12 @@ EOF
 #   Regression guard — must stay green before and after the fix.
 # ---------------------------------------------------------------------------
 
-@test "BE2-selfheal-probes-scoped-ref: PR_TAG_SUFFIX=-pr42 → self-heal probe called on -pr42 ref (not canonical)" {
+@test "BE2-selfheal-probes-scoped-ref: PR_TAG_SUFFIX=-pr42, canonical ABSENT → probe falls back to -pr42 ref" {
     # No versionset artifact — forces self-heal path.
     # PR_TAG_SUFFIX is set to -pr42 (same-repo PR scenario).
+    # Canonical-first behavior (BI-1 fix): probe canonical first; if ABSENT (rc=1),
+    # probe PR-scoped; if PRESENT (rc=0), use PR-scoped ref.
+    # Faithful mock: canonical → ABSENT (rc=1, not ERROR), PR-scoped → PRESENT (rc=0).
     local tmpd="$TEST_TEMP_DIR"
 
     run bash -c "
@@ -3274,15 +3280,14 @@ EOF
         resolve_version_set() { echo '[\"2.25.0\",\"2.27.1\"]'; }
         export -f resolve_version_set
 
-        # Track which refs the probe was called with.
-        # Return PRESENT (0) for -pr42 refs, ERROR (2) for canonical refs.
-        # RED before fix: probe gets canonical ref (no suffix) → returns ERROR (2) → fail closed.
-        # GREEN after fix: probe gets -pr42 ref → returns PRESENT (0) → self-heal succeeds.
+        # Faithful mock for canonical-first canonical-absent scenario:
+        # canonical refs → ABSENT (rc=1, definitive not-found — version not yet in canonical).
+        # PR-scoped refs → PRESENT (rc=0, built this PR).
         _image_registry_probe_3state() {
             if [[ \"\$1\" == *'-pr42'* ]]; then
                 return 0  # PRESENT — the PR-scoped image exists
             else
-                return 2  # ERROR — canonical ref: probe should NOT be called here
+                return 1  # ABSENT — canonical does not exist (version built only on this PR)
             fi
         }
         export -f _image_registry_probe_3state
@@ -3294,16 +3299,15 @@ EOF
             'ghcr.io' 'testowner'
     "
 
-    # GREEN after fix: probe uses -pr42 ref → PRESENT → self-heal succeeds → exit 0.
-    # RED before fix: probe uses canonical ref → ERROR → fail closed → exit non-zero.
+    # Canonical absent → fall back to PR-scoped → PRESENT → self-heal succeeds → exit 0.
     [ "$status" -eq 0 ]
 
-    # Self-heal emits per-version COPYs with -pr42 suffix (AP path).
+    # Self-heal emits per-version COPYs with -pr42 suffix (AP path, canonical absent → PR-scoped).
     local pr_copy_count
     pr_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
     [ "$pr_copy_count" -eq 2 ]
 
-    # No canonical (un-suffixed) COPY lines for timescaledb on self-heal path.
+    # No canonical (un-suffixed) COPY lines for timescaledb (canonical was absent for all versions).
     local canonical_copy_count
     canonical_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+[^-] /output/extension/" || true)
     [ "$canonical_copy_count" -eq 0 ]
@@ -3461,4 +3465,167 @@ EOF
     local pr_from_count
     pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
     [ "$pr_from_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# BI-1 self-heal canonical-first: on a PR with PR_TAG_SUFFIX=-pr42, when the
+# versionset artifact is absent/malformed, unchanged retained versions that exist
+# ONLY under the canonical tag (NOT under -pr42) must be probed + emitted as
+# CANONICAL (not as -pr42, which would be absent and cause the version to be
+# silently dropped).
+#
+# BI1-selfheal-unchanged-canonical: unchanged version (canonical present, no -pr42)
+#   INCLUDED in output as canonical COPY ref.
+#
+# RED before fix: probed as -pr42 → absent → omitted.
+# GREEN after fix: canonical-first probe → canonical present → emitted as canonical.
+# ---------------------------------------------------------------------------
+@test "BI1-selfheal-unchanged-canonical: self-heal on PR, unchanged version has canonical only — included as canonical" {
+    # No versionset artifact — triggers self-heal.
+    # PR_TAG_SUFFIX=-pr42: this is a same-repo PR context.
+    # Version set: 2.23.0 (unchanged, canonical only) + 2.27.1 (bumped, pr42 only).
+    # image_exists_in_registry: canonical present for 2.23.0, pr42 present for 2.27.1.
+
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export PR_TAG_SUFFIX='-pr42'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        resolve_version_set() {
+            echo '[\"2.23.0\",\"2.27.1\"]'
+        }
+        export -f resolve_version_set
+
+        # 2.23.0: canonical present, NO pr42 tag.
+        # 2.27.1: canonical absent, pr42 present (built this PR).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.23.0)      return 0 ;;   # canonical present
+                *pg18-2.23.0-pr42) return 1 ;;   # pr42 absent
+                *pg18-2.27.1)      return 1 ;;   # canonical absent
+                *pg18-2.27.1-pr42) return 0 ;;   # pr42 present (built this PR)
+                *)                 return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        _image_registry_probe_3state() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.23.0)      return 0 ;;
+                *pg18-2.23.0-pr42) return 1 ;;
+                *pg18-2.27.1)      return 1 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'timeseries' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    # Self-heal must succeed.
+    [ "$status" -eq 0 ]
+
+    # 2.23.0 must be emitted as the CANONICAL ref (no -pr42 suffix).
+    local canonical_copy_count
+    canonical_copy_count=$(echo "$output" | grep -c 'ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/extension/' || true)
+    [ "$canonical_copy_count" -eq 1 ] || {
+        echo "FAIL: 2.23.0 must appear as canonical ref in COPY line. Output was:"
+        echo "$output"
+        false
+    }
+
+    # 2.23.0 must NOT appear with -pr42 suffix in any COPY line.
+    local pr_copy_count
+    pr_copy_count=$(echo "$output" | grep -c 'pg18-2.23.0-pr42' || true)
+    [ "$pr_copy_count" -eq 0 ] || {
+        echo "FAIL: 2.23.0 must not appear as pr42-scoped ref. Output was:"
+        echo "$output"
+        false
+    }
+
+    # 2.27.1 (bumped, built this PR) must appear as PR-scoped ref.
+    local pr42_count
+    pr42_count=$(echo "$output" | grep -c 'pg18-2.27.1-pr42 /output/extension/' || true)
+    [ "$pr42_count" -eq 1 ] || {
+        echo "FAIL: 2.27.1 must appear as pr42-scoped ref. Output was:"
+        echo "$output"
+        false
+    }
+}
+
+@test "BI1-selfheal-bump-prscoped: self-heal on PR, bumped version has pr42 only — emitted pr-scoped" {
+    # Complements BI1-selfheal-unchanged-canonical: the bumped version (2.27.1)
+    # exists ONLY under the PR-scoped tag. It must be emitted as -pr42.
+    local tmpd="$TEST_TEMP_DIR"
+
+    run bash -c "
+        export PR_TAG_SUFFIX='-pr42'
+        export ROOT_DIR=\"$tmpd\"
+
+        source \"$HELPERS_DIR/extension-utils.sh\"
+
+        get_registry()   { echo 'ghcr.io'; }
+        get_repo_owner() { echo 'testowner'; }
+        export -f get_registry get_repo_owner
+
+        # Single bumped version only (ceiling only — self-heal single-version path).
+        resolve_version_set() {
+            echo '[\"2.27.1\"]'
+        }
+        export -f resolve_version_set
+
+        # 2.27.1: canonical absent, pr42 present.
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.27.1)      return 1 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        _image_registry_probe_3state() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.27.1)      return 1 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f _image_registry_probe_3state
+
+        generate_dockerfile \\
+            \"$tmpd/extensions/config.yaml\" \\
+            \"$tmpd/Dockerfile.template\" \\
+            'timeseries' '18' \\
+            'ghcr.io' 'testowner'
+    "
+
+    # Single-version set: available_count == 1 → single-version path in generate_dockerfile.
+    # The FROM line must reference the pr42-scoped ref since canonical is absent.
+    [ "$status" -eq 0 ]
+
+    # The FROM stage must use the pr42-scoped ref.
+    local pr42_from_count
+    pr42_from_count=$(echo "$output" | grep -c 'ext-timescaledb:pg18-2.27.1-pr42' || true)
+    [ "$pr42_from_count" -ge 1 ] || {
+        echo "FAIL: bumped version must be emitted as pr42-scoped ref. Output was:"
+        echo "$output"
+        false
+    }
 }

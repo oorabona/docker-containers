@@ -727,6 +727,15 @@ _bundle_and_write_artifact() {
     fi
 
     # Single 3-state pass: compute confirmed_available from resolved set.
+    #
+    # BI-2 fix: canonical-first, PR-aware availability probe.
+    # On a same-repo PR (PR_TAG_SUFFIX non-empty), a version may have been built in
+    # an EARLIER run of this PR and exists ONLY under the PR-scoped tag.  The
+    # canonical probe alone returns ABSENT, incorrectly excluding the version and
+    # causing the artifact to be deleted — breaking PR rerun idempotency.
+    # Fix: if the canonical probe returns ABSENT AND PR_TAG_SUFFIX is non-empty,
+    # also probe the PR-scoped ref; if PRESENT there, version is confirmed-available.
+    # On push/dispatch (PR_TAG_SUFFIX empty), only the canonical probe runs (unchanged).
     local _confirmed_available=()
     local _excluded_entries=()
     local _probe_error=false
@@ -745,7 +754,28 @@ _bundle_and_write_artifact() {
                     _confirmed_available+=("$_cv")
                     ;;
                 1)
-                    _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
+                    # Canonical absent: on a PR, also check the PR-scoped ref.
+                    if [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
+                        local _cv_pr_image
+                        _cv_pr_image=$(_scoped_tag "$_cv_image")
+                        local _pr_probe_rc=0
+                        _image_present_3state "$_cv_pr_image" || _pr_probe_rc=$?
+                        case "$_pr_probe_rc" in
+                            0)
+                                # PR-scoped ref present (built in an earlier run of this PR).
+                                _confirmed_available+=("$_cv")
+                                ;;
+                            1)
+                                _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
+                                ;;
+                            *)
+                                log_error "$ext: PR-scoped registry probe for $_cv (pg${major_ver}) returned ERROR — cannot determine availability; fail-closed"
+                                _probe_error=true
+                                ;;
+                        esac
+                    else
+                        _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
+                    fi
                     ;;
                 *)
                     log_error "$ext: registry probe for $_cv (pg${major_ver}) returned ERROR — cannot determine availability; fail-closed"

@@ -14262,3 +14262,155 @@ EOF
 
     unset FORCE PR_TAG_SUFFIX ARCH_SUFFIX
 }
+
+# ---------------------------------------------------------------------------
+# BI-2 PR-rerun idempotent: on a same-PR rerun (PR_TAG_SUFFIX=-pr42), a version
+# that was built in an EARLIER run of the same PR exists only under the pr42 tag
+# (not canonical, not in _BUILT_THIS_RUN_DIR for this rerun).
+# _bundle_and_write_artifact must treat it as available (pr-scoped probe fallback),
+# NOT exclude it due to canonical-only check.
+#
+# Correct behavior: if canonical OR pr-scoped ref exists, version is confirmed-available.
+# Bug behavior: canonical-only probe → version absent → excluded → artifact deleted
+#              (ceiling may appear absent) → downstream silently loses retained versions.
+#
+# Mock contract:
+#   - ext_image_name: returns canonical ref (no suffix)
+#   - image_exists_in_registry: returns 0 for pr42-scoped refs, 1 for canonical
+#   - _btr_set: empty (simulates rerun, nothing built in this invocation)
+#
+# RED before fix: 2.25.0 pr42 not found by canonical-only probe → excluded →
+#   confirmed_available=[2.27.1] (size=1) → artifact deleted (single-version path).
+# GREEN after fix: canonical-first probe → canonical absent → PR-scoped fallback →
+#   pr42 found → 2.25.0 included → confirmed=[2.25.0,2.27.1] → artifact written.
+# ---------------------------------------------------------------------------
+@test "BI2-pr-rerun-idempotent: PR rerun — version built in earlier run (pr42 only) stays available" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # PR_TAG_SUFFIX=-pr42; ARCH_SUFFIX empty (final single-arch path, not per-arch leg).
+    # version set: [2.25.0, 2.27.1]; 2.27.1 is the ceiling.
+    # Registry state (earlier run of this PR built 2.25.0):
+    #   - 2.25.0 canonical: ABSENT  (never pushed to canonical; this is a PR)
+    #   - 2.25.0 pr42:      PRESENT (built + pushed in earlier run of this PR)
+    #   - 2.27.1 canonical: ABSENT
+    #   - 2.27.1 pr42:      PRESENT (ceiling, built in earlier run of this PR)
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export ARCH_SUFFIX=''
+
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Canonical refs absent; PR-scoped refs present (built in earlier run of this PR).
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.25.0-pr42) return 0 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;   # canonical: absent
+            esac
+        }
+        export -f image_exists_in_registry
+
+        # 3-state probe mirrors image_exists_in_registry for this test.
+        _image_present_3state() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.25.0-pr42) return 0 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        docker() { [[ \"\$1\" == 'build' || \"\$1\" == 'push' ]] && return 0; return 1; }
+        export -f docker
+        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_bundle_digest
+        skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
+        export -f skopeo
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must succeed — the rerun must not fail due to wrongly excluding pr42-only versions.
+    [ "$status" -eq 0 ]
+
+    # The versionset artifact MUST be present.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ] || {
+        echo "FAIL: versionset artifact must be written on PR rerun. Got status=$status"
+        false
+    }
+
+    # available must contain BOTH 2.25.0 AND 2.27.1 (ceiling).
+    local available_count
+    available_count=$(jq '.available | length' "$artifact")
+    [ "$available_count" -eq 2 ] || {
+        echo "FAIL: available must have 2 entries (2.25.0 and 2.27.1). Got $available_count. Artifact: $(cat "$artifact")"
+        false
+    }
+
+    # 2.25.0 must be in available (the version built in an earlier run of this PR).
+    local has_2250
+    has_2250=$(jq -r '.available[] | select(. == "2.25.0")' "$artifact")
+    [ "$has_2250" = "2.25.0" ] || {
+        echo "FAIL: 2.25.0 must be in available (built in earlier PR run). Artifact: $(cat "$artifact")"
+        false
+    }
+
+    # 2.27.1 (ceiling) must be in available.
+    local has_ceiling
+    has_ceiling=$(jq -r '.available[] | select(. == "2.27.1")' "$artifact")
+    [ "$has_ceiling" = "2.27.1" ] || {
+        echo "FAIL: ceiling 2.27.1 must be in available. Artifact: $(cat "$artifact")"
+        false
+    }
+
+    # excluded must be empty.
+    local excluded_count
+    excluded_count=$(jq '.excluded | length' "$artifact")
+    [ "$excluded_count" -eq 0 ] || {
+        echo "FAIL: excluded must be empty for PR rerun where all pr42 refs present. Artifact: $(cat "$artifact")"
+        false
+    }
+
+    unset PR_TAG_SUFFIX ARCH_SUFFIX
+}
