@@ -760,7 +760,10 @@ jobs:
       # rather than the stale canonical ones for non-resolver extensions (e.g.
       # pgvector).  generate_dockerfile sets FORCE=true when REBUILD is
       # "force" or "all", which is then read by ext_ref_resolve.
-      REBUILD: ${{ env.REBUILD_MODE }}
+      # The `env` context is not available inside a job-level `env:` block, so
+      # this inlines the same expression that defines the workflow-level
+      # REBUILD_MODE (see the top-level `env:`) rather than referencing it.
+      REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
     runs-on: ${{ matrix.build.os == 'windows' && 'windows-latest' || matrix.runner }}
     timeout-minutes: ${{ matrix.build.os == 'windows' && 120 || 60 }}
     strategy:
