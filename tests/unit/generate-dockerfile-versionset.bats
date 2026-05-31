@@ -1048,11 +1048,16 @@ EOF
     #   - 2.27.1: PRESENT  (rc=0)
     #   - 2.25.0: PRESENT  (rc=0)
     #   - 2.23.0: ABSENT   (rc=1 — definitive not-found, musl-failed)
+    #   - bundle ref (:pg18-bundle): PRESENT (rc=0) — the bundle exists in registry
+    #     because the producer built it from the available set (2.25.0, 2.27.1).
+    #     AK-3: the self-heal path probes the bundle ref; it must return PRESENT
+    #     for the COPY to be emitted.
     _image_registry_probe_3state() {
         case "$1" in
             *pg18-2.27.1*) return 0 ;;
             *pg18-2.25.0*) return 0 ;;
             *pg18-2.23.0*) return 1 ;;  # definitively absent
+            *:pg18-bundle) return 0 ;;  # bundle exists (producer built it)
             *)             return 1 ;;
         esac
     }
@@ -1870,4 +1875,151 @@ _run_registry_probe_3state() {
     local per_ver_count
     per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
     [ "$per_ver_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-selfheal-bundle-present: artifact absent, self-heal path resolves versions,
+# probes per-version images, then PROBES THE BUNDLE REF.
+# When the bundle ref is PRESENT → emit the bundle COPY (trusted invariant).
+#
+# RED before fix: self-heal emits the bundle COPY regardless of whether the bundle
+#   image actually exists — no bundle probe.
+# GREEN after fix: self-heal probes the bundle ref with _image_registry_probe_3state;
+#   PRESENT → emit COPY. (This test verifies the PRESENT case succeeds.)
+# ---------------------------------------------------------------------------
+@test "AK-selfheal-bundle-present: artifact absent, self-heal, bundle probe PRESENT → emits bundle COPY" {
+    # No versionset artifact → forces self-heal path.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # Per-version images present.
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    # Bundle probe: the bundle ref is PRESENT (rc=0).
+    # Override _image_registry_probe_3state to return PRESENT for the bundle ref.
+    _image_registry_probe_3state() {
+        # Bundle ref pattern: :pg<major>-bundle
+        if [[ "$1" == *":pg18-bundle"* ]]; then
+            return 0  # PRESENT
+        fi
+        # Per-version refs: also PRESENT (called for per-version availability check).
+        return 0
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Self-heal + bundle PRESENT → must succeed.
+    [ "$status" -eq 0 ]
+
+    # Must emit exactly ONE bundle COPY.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    [ "$bundle_count" -eq 1 ]
+
+    # Zero per-version COPY lines.
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
+    [ "$per_ver_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-selfheal-bundle-absent-failclosed: artifact absent, self-heal, bundle probe
+# ABSENT or ERROR → generate_dockerfile fails closed (non-zero) with a clear
+# "bundle" message. NO COPY emitted against the missing/unverifiable bundle.
+#
+# RED before fix: self-heal always emits the bundle COPY line regardless of
+#   whether the bundle image actually exists — the ref is constructed and COPY
+#   emitted unconditionally after per-version availability is computed.
+# GREEN after fix: self-heal probes the bundle ref; ABSENT or ERROR → return 1
+#   with a "bundle image not found / not verifiable" error; no COPY emitted.
+#
+# Sub-case A: bundle probe ABSENT (rc=1) → fail closed.
+# Sub-case B: bundle probe ERROR (rc=2) → fail closed.
+# ---------------------------------------------------------------------------
+@test "AK-selfheal-bundle-absent-failclosed: artifact absent, self-heal, bundle probe ABSENT → fail closed, no COPY" {
+    # No versionset artifact → forces self-heal path.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    # Per-version images present (so self-heal proceeds to the bundle probe step).
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    # Bundle probe: the bundle ref is ABSENT (rc=1 — definitively not present).
+    _image_registry_probe_3state() {
+        if [[ "$1" == *":pg18-bundle"* ]]; then
+            return 1  # ABSENT
+        fi
+        return 0  # Per-version refs are PRESENT.
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits a COPY against a non-existent bundle.
+    # GREEN after fix: exits non-zero (fail closed — bundle not present).
+    [ "$status" -ne 0 ]
+
+    # The error message must mention "bundle" so the operator knows what to do.
+    [[ "$output" == *"bundle"* ]]
+
+    # No bundle COPY must appear in the output.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=.*:pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
+}
+
+@test "AK-selfheal-bundle-error-failclosed: artifact absent, self-heal, bundle probe ERROR → fail closed, no COPY" {
+    # No versionset artifact → forces self-heal path.
+
+    resolve_version_set() {
+        echo '["2.23.0","2.25.0","2.27.1"]'
+    }
+    export -f resolve_version_set
+
+    image_exists_in_registry() { return 0; }
+    export -f image_exists_in_registry
+
+    # Bundle probe: ERROR (rc=2 — transient, cannot verify existence).
+    _image_registry_probe_3state() {
+        if [[ "$1" == *":pg18-bundle"* ]]; then
+            return 2  # ERROR
+        fi
+        return 0  # Per-version refs are PRESENT.
+    }
+    export -f _image_registry_probe_3state
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # RED before fix: exits 0 and emits a COPY against an unverifiable bundle.
+    # GREEN after fix: exits non-zero (fail closed — bundle not verifiable).
+    [ "$status" -ne 0 ]
+
+    # Must mention "bundle" in the error.
+    [[ "$output" == *"bundle"* ]]
+
+    # No bundle COPY in output.
+    local bundle_count
+    bundle_count=$(echo "$output" | grep -c "COPY --from=.*:pg18-bundle" || true)
+    [ "$bundle_count" -eq 0 ]
 }

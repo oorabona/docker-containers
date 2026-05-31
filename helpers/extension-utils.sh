@@ -496,7 +496,13 @@ generate_dockerfile() {
             # variable, no temp file) or by reading the on-disk artifact.  The
             # downstream block reads exclusively from this variable — no temp files
             # are created or left behind.
+            # _versionset_from_selfheal tracks whether _versionset_json came from
+            # the self-heal path (artifact absent/malformed) vs the on-disk artifact.
+            # Only the self-heal path needs a bundle-ref probe (AK-3): the on-disk
+            # artifact path is trusted — the producer invariant guarantees the bundle
+            # exists when the artifact was written.
             local _versionset_json=""
+            local _versionset_from_selfheal=false
 
             if [[ -n "$_resolver_path" ]] && { [[ ! -f "$versionset_file" ]] || [[ "$_artifact_valid" -eq 0 ]]; }; then
                 if [[ "$_artifact_valid" -eq 0 ]] && [[ -f "$versionset_file" ]]; then
@@ -573,6 +579,9 @@ generate_dockerfile() {
                     --argjson resolved "$_sh_resolved_json" \
                     --argjson available "$_sh_avail_json" \
                     '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:[]}')
+                # Mark that this came from the self-heal path so the downstream
+                # emission block probes the bundle ref before emitting the COPY.
+                _versionset_from_selfheal=true
             elif [[ -f "$versionset_file" ]] && [[ "$_artifact_valid" -eq 1 ]] && command -v jq &>/dev/null; then
                 _versionset_json=$(< "$versionset_file")
             fi
@@ -635,12 +644,30 @@ generate_dockerfile() {
                     # so COPY / /tmp/ext/<ext>/ lands each version at
                     # /tmp/ext/<ext>/<ver>/{extension,lib}/ — exactly the layout
                     # that install_ext iterates.
+                    #
+                    # AK-3: On the self-heal path (artifact absent/malformed, bundle NOT
+                    # guaranteed by the producer invariant), probe the bundle ref with the
+                    # 3-state registry probe before emitting the COPY.  On the artifact-
+                    # present path the bundle is guaranteed by the producer invariant — no
+                    # probe needed (and no probe cost on the fast path).
                     local _bundle_copy_written=false
                     local raw_versions
                     raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
                         local _bundle_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-bundle"
+
+                        # Self-heal path: probe the bundle ref before emitting the COPY.
+                        # The producer invariant does not hold here (no artifact on disk).
+                        if [[ "$_versionset_from_selfheal" == "true" ]]; then
+                            local _bundle_probe_rc=0
+                            _image_registry_probe_3state "$_bundle_ref" || _bundle_probe_rc=$?
+                            if [[ "$_bundle_probe_rc" -ne 0 ]]; then
+                                log_error "generate_dockerfile: bundle image ${_bundle_ref} not found / not verifiable (probe rc=${_bundle_probe_rc}); run build-extensions to produce it or supply the version-set artifact"
+                                return 1
+                            fi
+                        fi
+
                         copies_block+="COPY --from=${_bundle_ref} / /tmp/ext/${ext_name}/"$'\n'
                         _bundle_copy_written=true
 

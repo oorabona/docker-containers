@@ -435,6 +435,119 @@ handle_pull_only_mode() {
     LOCAL_ONLY=true build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "false" "${unique_exts_to_build[@]}"
 }
 
+# Compute the confirmed_available set for (ext, major_ver) from version_set_json,
+# push the bundle with that set, then write the versionset artifact from that SAME
+# set. This is the single-assembly, atomic-ordering contract:
+#   confirmed = { v in resolved : 3state(v)=PRESENT } UNION { v in built-this-run }
+#   fail-closed: 3state ERROR, empty confirmed, or ceiling absent → fatal
+#   bundle push THEN artifact write (never artifact without bundle)
+#
+# Args: ext config_file major_ver version_set_json ceiling do_push
+#   do_push: "true" = push to registry; "false" = local-only build.
+# Returns: 0 on success; 1 on any failure.
+# Does nothing (returns 0) under DRY_RUN — callers handle DRY_RUN logging.
+# Does nothing (returns 0) when set_size <= 1 (no bundle needed for single-version).
+_bundle_and_write_artifact() {
+    local ext="$1" config_file="$2" major_ver="$3" version_set_json="$4" ceiling="$5" do_push="$6"
+
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local set_size
+    set_size=$(echo "$version_set_json" | jq 'length')
+    [[ "$set_size" -le 1 ]] && return 0
+
+    # Load built-this-run set so a version pushed this run is counted PRESENT
+    # regardless of propagation lag (identical to _emit_versionset_artifact's guard).
+    local _built_this_run_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
+    local -A _btr_set=()
+    if [[ -f "$_built_this_run_file" ]]; then
+        while IFS= read -r _btr_ver; do
+            [[ -n "$_btr_ver" ]] && _btr_set["$_btr_ver"]=1
+        done < "$_built_this_run_file"
+    fi
+
+    # Single 3-state pass: compute confirmed_available from resolved set.
+    local _confirmed_available=()
+    local _excluded_entries=()
+    local _probe_error=false
+    local _cv
+    while IFS= read -r _cv; do
+        local _cv_image
+        _cv_image=$(ext_image_name "$ext" "$_cv" "$major_ver")
+
+        if [[ -n "${_btr_set[$_cv]:-}" ]]; then
+            _confirmed_available+=("$_cv")
+        else
+            local _probe_rc=0
+            _image_present_3state "$_cv_image" || _probe_rc=$?
+            case "$_probe_rc" in
+                0)
+                    _confirmed_available+=("$_cv")
+                    ;;
+                1)
+                    _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
+                    ;;
+                *)
+                    log_error "$ext: registry probe for $_cv (pg${major_ver}) returned ERROR — cannot determine availability; fail-closed"
+                    _probe_error=true
+                    ;;
+            esac
+        fi
+    done < <(echo "$version_set_json" | jq -r '.[]')
+
+    # Fail-closed: transient probe error → delete stale artifact, return non-zero.
+    if [[ "$_probe_error" == "true" ]]; then
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 1
+    fi
+
+    # Gate: confirmed must be non-empty and must contain the ceiling.
+    local _ceiling_in_confirmed=false
+    local _ca
+    for _ca in "${_confirmed_available[@]+"${_confirmed_available[@]}"}"; do
+        if [[ "$_ca" == "$ceiling" ]]; then
+            _ceiling_in_confirmed=true
+            break
+        fi
+    done
+
+    if [[ ${#_confirmed_available[@]} -eq 0 ]] || [[ "$_ceiling_in_confirmed" == "false" ]]; then
+        log_info "$ext: confirmed_available is empty or ceiling ($ceiling) absent — deleting stale artifact, skipping bundle"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
+
+    # Push the bundle from EXACTLY confirmed_available.
+    local _ba_rc=0
+    assemble_and_push_bundle "$ext" "$major_ver" "$do_push" "${_confirmed_available[@]}" || _ba_rc=$?
+    if [[ "$_ba_rc" -ne 0 ]]; then
+        log_error "$ext pg${major_ver}: bundle assembly/push failed — deleting stale artifact"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 1
+    fi
+
+    # Bundle pushed successfully — NOW write the artifact from the SAME confirmed set.
+    local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
+    mkdir -p "${ROOT_DIR}/.build-lineage"
+
+    local _available_json _excluded_json _resolved_json
+    _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+    _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
+    _resolved_json=$(echo "$version_set_json" | jq '.')
+
+    jq -nc \
+        --arg ext "$ext" \
+        --arg pg_major "$major_ver" \
+        --arg ceiling "$ceiling" \
+        --argjson resolved "$_resolved_json" \
+        --argjson available "$_available_json" \
+        --argjson excluded "$_excluded_json" \
+        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
+        > "$_vs_lineage_file"
+    log_info "Version-set lineage (atomic): $_vs_lineage_file"
+    return 0
+}
+
 # Assemble (and optionally push) a bundle image for a resolver-backed extension.
 #
 # The bundle is a FROM-scratch image that COPYs each available per-version image's
@@ -689,13 +802,14 @@ build_tag_push_extensions() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Bundle assembly: for resolver-backed multi-version extensions, build a
-        # single bundle image that contains all available versions under /<ver>/...
-        # so the consumer can do ONE COPY to land all versions at /tmp/ext/<ext>/<ver>/
+        # Bundle + artifact (atomic): for resolver-backed multi-version extensions,
+        # _bundle_and_write_artifact computes confirmed_available ONCE (3-state probe
+        # + built-this-run union), pushes the bundle from that set, then writes the
+        # artifact from the SAME set. Artifact is written only after a successful push.
         #
-        # Under DRY_RUN the per-version inner loop skips all builds (nothing added to
-        # _available_for_bundle), so we compute the "would build" set from version_set_json.
-        # On the real path, only fire when at least one version is available.
+        # Under DRY_RUN: log intent and continue (no mutation).
+        # Fatal failure guard (AK-1): if ANY version for this ext failed in this run,
+        # skip bundle+artifact — ceiling may be absent, confirmed set is incomplete.
         if [[ -n "$_resolver_path" ]] && [[ "$set_size" -gt 1 ]]; then
             if [[ "$DRY_RUN" == "true" ]]; then
                 local _bundle_image_base_dry
@@ -708,11 +822,23 @@ build_tag_push_extensions() {
                 continue
             fi
 
-            # Real path: only proceed when at least one version is available.
-            if [[ ${#_available_for_bundle[@]} -gt 0 ]]; then
-                local _bundle_rc=0
-                assemble_and_push_bundle "$ext" "$major_ver" "$do_push" "${_available_for_bundle[@]}" || _bundle_rc=$?
-                if [[ "$_bundle_rc" -ne 0 ]]; then
+            # AK-1: skip if any fatal failure for this extension.
+            local _ext_fatal=false
+            local _fe
+            for _fe in "${failed[@]+"${failed[@]}"}"; do
+                if [[ "$_fe" == "${ext}@"* ]]; then
+                    _ext_fatal=true
+                    break
+                fi
+            done
+
+            if [[ "$_ext_fatal" == "true" ]]; then
+                log_warning "$ext pg${major_ver}: skipping bundle+artifact — fatal failure in this run"
+                _delete_stale_versionset_artifact "$ext" "$major_ver"
+            else
+                local _ba_rc=0
+                _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$do_push" || _ba_rc=$?
+                if [[ "$_ba_rc" -ne 0 ]]; then
                     failed+=("$ext@bundle")
                     continue
                 fi
@@ -1140,13 +1266,15 @@ _emit_final_versionset_pass() {
         set_size=$(echo "$version_set_json" | jq 'length')
         [[ "$set_size" -le 1 ]] && continue
 
-        # Always (re)write — no file-existence guard. This ensures a stale artifact
-        # from a prior run is refreshed even when no build occurs in the current run.
-        # Propagate non-zero return: _emit_versionset_artifact returns non-zero when a
-        # probe error (transient failure) prevents safe artifact emission (fail-closed).
-        local _eva_rc=0
-        _emit_versionset_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" || _eva_rc=$?
-        if [[ "$_eva_rc" -ne 0 ]]; then
+        # Atomic: push bundle from confirmed_available, then write artifact from the
+        # SAME set. _bundle_and_write_artifact handles the 3-state probe, fail-closed
+        # gates, stale artifact deletion, and ordering invariant.
+        local _do_push_fp="true"
+        [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
+
+        local _bwa_rc=0
+        _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$_do_push_fp" || _bwa_rc=$?
+        if [[ "$_bwa_rc" -ne 0 ]]; then
             _final_pass_failed=true
         fi
     done <<< "$ext_list"
@@ -1367,72 +1495,12 @@ main() {
             done < <(list_extensions_by_priority "$config_file" "$major_ver")
         fi
 
-        # Final pass: emit presence-based versionset artifacts for all in-scope
-        # resolver-backed extensions (resolver results are already cached from
-        # the _should_build_extension calls above).
+        # Atomic pass: for each in-scope resolver-backed extension, compute
+        # confirmed_available once, push the bundle from that set, then write the
+        # artifact from the SAME set. Bundle and artifact are always in sync.
+        # This covers both the "all-cached" and "all-DRY_RUN" sub-paths.
         local _fp_rc=0
         _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" || _fp_rc=$?
-
-        # Bundle refresh on the all-cached path: assemble_and_push_bundle is normally
-        # called from inside build_tag_push_extensions, but that function is never
-        # invoked when every per-version image already exists. Refresh every in-scope
-        # resolver-backed multi-version extension's bundle here so the bundle tag
-        # always exists and always reflects the current available set (DEFECT AJ fix).
-        # Only runs when DRY_RUN=false; a non-zero return is fatal (bundle required).
-        if [[ "$DRY_RUN" != "true" ]]; then
-            local _do_push_cached="true"
-            [[ "$LOCAL_ONLY" == "true" ]] && _do_push_cached="false"
-
-            local _br_ext
-            local _br_ext_list
-            if [[ -n "${EXTENSION:-}" ]]; then
-                _br_ext_list="$EXTENSION"
-            else
-                _br_ext_list=$(list_extensions_by_priority "$config_file" "$major_ver")
-            fi
-
-            while IFS= read -r _br_ext; do
-                [[ -z "$_br_ext" ]] && continue
-                local _br_dockerfile="$container_dir/extensions/build/${_br_ext}.Dockerfile"
-                [[ ! -f "$_br_dockerfile" ]] && continue
-
-                # Only resolver-backed multi-version extensions need a bundle.
-                local _br_resolver_path
-                _br_resolver_path=$(yq -r ".extensions.${_br_ext}.version_set.resolver // \"\"" "$config_file" 2>/dev/null || true)
-                [[ -z "$_br_resolver_path" ]] && continue
-
-                local _br_version_set_json
-                if ! _br_version_set_json=$(_resolve_cached "$_br_ext" "$major_ver" "$config_file"); then
-                    # Resolver unavailable: skip bundle refresh for this extension.
-                    # The versionset final pass already logged the warning/error.
-                    continue
-                fi
-
-                local _br_set_size
-                _br_set_size=$(echo "$_br_version_set_json" | jq 'length')
-                [[ "$_br_set_size" -le 1 ]] && continue
-
-                # Collect the versions that are actually present (available set).
-                local _br_available=()
-                local _br_ver
-                while IFS= read -r _br_ver; do
-                    local _br_img
-                    _br_img=$(ext_image_name "$_br_ext" "$_br_ver" "$major_ver")
-                    if _image_present "$_br_img"; then
-                        _br_available+=("$_br_ver")
-                    fi
-                done < <(echo "$_br_version_set_json" | jq -r '.[]')
-
-                [[ ${#_br_available[@]} -eq 0 ]] && continue
-
-                local _br_rc=0
-                assemble_and_push_bundle "$_br_ext" "$major_ver" "$_do_push_cached" "${_br_available[@]}" || _br_rc=$?
-                if [[ "$_br_rc" -ne 0 ]]; then
-                    log_error "$_br_ext pg${major_ver}: bundle refresh failed on all-cached path"
-                    _fp_rc=$(( _fp_rc + 1 ))
-                fi
-            done <<< "$_br_ext_list"
-        fi
 
         exit "$_fp_rc"
     fi

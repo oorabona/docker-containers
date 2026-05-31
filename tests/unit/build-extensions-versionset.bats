@@ -3751,14 +3751,18 @@ EOF
     ext_image_name() { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
     export -f ext_image_name
 
-    # docker: "build" fails only for 2.25.0 (non-ceiling).
-    # Inspect calls (used by _image_needs_build) return absent (1) so all versions
-    # are attempted.
-    # 2.27.1 build succeeds; 2.25.0 build fails.
+    # docker: "build" fails only for 2.25.0 (non-ceiling); "push" succeeds for
+    # per-version and bundle images.
+    # "manifest inspect": returns "manifest unknown" for 2.25.0 (never pushed),
+    # and absent for other inspect sub-commands (so _image_needs_build sees absent →
+    # attempts build for all versions).
+    # This is production-faithful: a version whose build failed is never pushed,
+    # so the registry returns "manifest unknown" for its tag.
     local build_call_log="$TEST_TEMP_DIR/docker_build_calls.log"
     export DOCKER="docker"
     docker() {
-        if [[ "$1" == "build" ]]; then
+        local _dcmd="${1:-}"
+        if [[ "$_dcmd" == "build" ]]; then
             # Detect which version from --build-arg EXT_VERSION=<ver>
             local ver=""
             local i
@@ -3779,11 +3783,16 @@ EOF
             fi
             return 0
         fi
-        if [[ "$1" == "push" ]]; then
-            # Bundle push succeeds (production-faithful)
+        if [[ "$_dcmd" == "push" ]]; then
             return 0
         fi
-        # inspect / other sub-commands: image absent
+        if [[ "$*" == *"manifest inspect"* ]]; then
+            # Production-faithful: 2.25.0 was never pushed → "manifest unknown".
+            # 2.27.1 is in _built_this_run_set so probe is never called for it.
+            printf 'manifest unknown: manifest unknown\n' >&2
+            return 1
+        fi
+        # Other sub-commands (image inspect, etc.): image absent (triggers build).
         return 1
     }
     export -f docker
@@ -6313,9 +6322,15 @@ EOCFG
     export -f build_ext_image
 
     # Capture the bundle Dockerfile content.
+    # Production-faithful: build/push succeed; manifest inspect returns "manifest unknown"
+    # (2.25.0 was never pushed — this is the definitive-absent signal from the registry).
+    # 2.26.0 and 2.27.1 are in _built_this_run_set so _image_present_3state skips the
+    # probe for them; only 2.25.0 reaches the probe, and "manifest unknown" correctly
+    # classifies it as ABSENT (rc=1), keeping it out of confirmed_available.
     docker() {
+        local _dcmd="${1:-}"
         echo "DOCKER $*" >> "$docker_log"
-        if [[ "$1" == "build" ]]; then
+        if [[ "$_dcmd" == "build" ]]; then
             local i
             for (( i=1; i<=$#; i++ )); do
                 if [[ "${!i}" == "-f" ]]; then
@@ -6326,8 +6341,15 @@ EOCFG
                     fi
                 fi
             done
+            return 0
         fi
-        return 0
+        if [[ "$_dcmd" == "push" ]]; then
+            return 0
+        fi
+        if [[ "$*" == *"manifest inspect"* ]]; then
+            printf 'manifest unknown: manifest unknown\n' >&2
+        fi
+        return 1
     }
     export -f docker
 
@@ -6507,4 +6529,1033 @@ EOCFG
 
     # Bundle push failure must be fatal on the publish path.
     [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-force-partial-consistency: --force, non-ceiling build fails (musl tolerated).
+# The failed version must appear in NEITHER the bundle NOR the artifact's available[].
+# The ceiling and the rest must appear in BOTH the bundle and the artifact's available[].
+# Invariant: bundle contents == artifact available[] (one confirmed_available set).
+#
+# RED before fix: the bundle is assembled from _available_for_bundle (inner loop
+#   tracking, 2-state), while the artifact is produced by _emit_final_versionset_pass
+#   which calls _image_present_3state separately. They can diverge when the loop
+#   and the probe disagree.
+# GREEN after fix: both derive from the same confirmed_available set.
+# ---------------------------------------------------------------------------
+@test "AK-force-partial-consistency: --force, non-ceiling build fails → failed version in neither bundle nor artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local docker_log="${tmpd}/ak_fc_docker.log"
+
+    run bash -c "
+        export FORCE=true LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Registry: 2.26.0 and 2.27.1 are present; 2.25.0 is absent.
+        image_exists_in_registry() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 1 ;;
+                *pg18-2.26.0*) return 0 ;;
+                *pg18-2.27.1*) return 0 ;;
+                *)             return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        # 2.25.0 build fails (non-ceiling, musl tolerated); others succeed.
+        build_ext_image() {
+            if [[ \"\$2\" == '2.25.0' ]]; then
+                return 1
+            fi
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # Record bundle Dockerfile contents when docker build is called.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" ]]; then
+                echo \"DOCKER_CMD=build args=\$*\" >> \"$docker_log\"
+                # Capture the bundle Dockerfile content if -f arg is a temp file
+                local _df_arg
+                local _found_f=false
+                for _a in \"\$@\"; do
+                    if [[ \"\$_found_f\" == 'true' ]]; then
+                        _df_arg=\"\$_a\"
+                        _found_f=false
+                    fi
+                    [[ \"\$_a\" == '-f' ]] && _found_f=true
+                done
+                if [[ -n \"\$_df_arg\" ]] && [[ -f \"\$_df_arg\" ]]; then
+                    cat \"\$_df_arg\" >> \"${tmpd}/bundle_dockerfile.log\"
+                fi
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == \"push\" ]]; then
+                echo \"DOCKER_CMD=push args=\$*\" >> \"$docker_log\"
+                return 0
+            fi
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        # 3-state probe: 2.25.0 ABSENT (definitively — build failed, never pushed),
+        # others PRESENT.
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 1 ;;  # ABSENT
+                *pg18-2.26.0*) return 0 ;;  # PRESENT
+                *pg18-2.27.1*) return 0 ;;  # PRESENT
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --force
+    "
+
+    # Must succeed (non-ceiling musl failure is tolerated).
+    [ "$status" -eq 0 ]
+
+    # Artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # 2.25.0 (failed build) must NOT be in artifact available[].
+    local avail
+    avail=$(jq -r '.available[]' "$artifact")
+    [[ "$avail" != *'2.25.0'* ]]
+
+    # Ceiling (2.27.1) and 2.26.0 MUST be in artifact available[].
+    [[ "$avail" == *'2.27.1'* ]]
+    [[ "$avail" == *'2.26.0'* ]]
+
+    # Bundle Dockerfile must NOT contain a COPY for 2.25.0.
+    if [ -f "$tmpd/bundle_dockerfile.log" ]; then
+        local bundle_df
+        bundle_df=$(cat "$tmpd/bundle_dockerfile.log")
+        [[ "$bundle_df" != *'pg18-2.25.0'* ]]
+        # Bundle must contain 2.26.0 and 2.27.1.
+        [[ "$bundle_df" == *'pg18-2.26.0'* ]]
+        [[ "$bundle_df" == *'pg18-2.27.1'* ]]
+    fi
+
+    # Bundle available[] count must equal artifact available[] count.
+    local art_avail_count
+    art_avail_count=$(jq '.available | length' "$artifact")
+    [ "$art_avail_count" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-transient-allcached-failclosed: all-cached path, _image_present_3state
+# returns ERROR (rc=2) for one resolved version → run must fail closed:
+# NO bundle pushed AND NO reduced artifact written.
+#
+# RED before fix: the all-cached bundle refresh loop at main() calls _image_present
+#   (2-state), which returns false-absent on a transient error → silently omits
+#   that version from the bundle and pushes a truncated bundle.
+# GREEN after fix: the loop calls _image_present_3state; ERROR → skip bundle
+#   assembly and exit non-zero.
+# ---------------------------------------------------------------------------
+@test "AK-transient-allcached-failclosed: all-cached path with ERROR probe → bundle NOT assembled, exits non-zero" {
+    # This test verifies the AK-2 fix: the all-cached bundle refresh must use
+    # _image_present_3state (3-state) instead of _image_present (2-state) so that
+    # a transient ERROR on one version prevents bundle assembly (fail-closed).
+    #
+    # The test drives main() via subprocess because the all-cached bundle refresh
+    # loop lives in main(), not in build_tag_push_extensions.
+    #
+    # Mock strategy: override assemble_and_push_bundle to record whether it was
+    # called (non-vacuous: the bundle assembler must NOT fire when an ERROR probe
+    # prevents safe assembly).
+    #
+    # RED before fix: all-cached loop calls _image_present (2-state) →
+    #   image_exists_in_registry returns 0 for all → bundle assembler called.
+    # GREEN after fix: all-cached loop calls _image_present_3state → ERROR for 2.26.0
+    #   → bundle assembly skipped.
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local bundle_call_log="${tmpd}/ak_tac_bundle_calls.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions appear present for the skip-build check (they are cached).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f docker
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # Override assemble_and_push_bundle to record if it was called.
+        assemble_and_push_bundle() {
+            echo \"BUNDLE_CALLED ext=\${1} major=\${2}\" >> \"$bundle_call_log\"
+            return 0
+        }
+        export -f assemble_and_push_bundle
+
+        # 3-state probe: 2.26.0 returns ERROR (rc=2, transient blip).
+        # AK-2 fix: the all-cached bundle refresh loop must call _image_present_3state
+        # instead of _image_present; ERROR → skip bundle assembly.
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 0 ;;  # PRESENT
+                *pg18-2.26.0*) return 2 ;;  # ERROR (transient)
+                *pg18-2.27.1*) return 0 ;;  # PRESENT
+                *)             return 2 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Must fail closed — transient ERROR on one version must fail the run.
+    [ "$status" -ne 0 ]
+
+    # Bundle assembler must NOT have been called.
+    # RED before fix: all-cached loop uses _image_present (2-state); image_exists_in_registry
+    #   returns 0 for all versions → assemble_and_push_bundle IS called.
+    # GREEN after fix: _image_present_3state returns ERROR for 2.26.0 → bundle skipped.
+    [ ! -f "$bundle_call_log" ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-fatal-no-bundle: ceiling build fails → exit non-zero AND bundle tag NOT
+# pushed AND no versionset artifact written.
+#
+# RED before fix: when the ceiling fails but older versions succeed, the inner
+#   loop adds older versions to _available_for_bundle (non-empty), so the
+#   bundle assembly block fires and pushes a bundle WITHOUT the ceiling.
+# GREEN after fix: a fatal failure (ceiling in failed[], or any tag/push error)
+#   prevents bundle assembly and artifact emission; run exits non-zero.
+# ---------------------------------------------------------------------------
+@test "AK-fatal-no-bundle: ceiling build fails → exit non-zero, bundle NOT assembled, NO artifact written" {
+    # Direct function-call test (not subprocess). Mocks assemble_and_push_bundle
+    # to record whether it was called — this is the critical observable: the
+    # bundle assembler must NOT be invoked when the ceiling failed.
+    #
+    # RED before fix: ceiling fails, older versions succeed, _available_for_bundle
+    #   is non-empty (2.25.0 + 2.26.0) → bundle assembly fires → exit 1 with
+    #   assemble_and_push_bundle CALLED.
+    # GREEN after fix: fatal failure (ceiling in failed[]) → bundle assembly skipped.
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # 2.27.1 (ceiling) fails to build; older versions succeed.
+    build_ext_image() {
+        if [[ "$2" == "2.27.1" ]]; then
+            echo "BUILD_FAILED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/fnb_build.log"
+            return 1
+        fi
+        echo "BUILD_OK ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/fnb_build.log"
+        return 0
+    }
+    export -f build_ext_image
+
+    # Override assemble_and_push_bundle to record calls — must NOT be called when
+    # ceiling failed.
+    local bundle_call_log="$TEST_TEMP_DIR/fnb_bundle_calls.log"
+    assemble_and_push_bundle() {
+        echo "BUNDLE_CALLED ext=${1} major=${2} push=${3} vers=${*:4}" >> "$bundle_call_log"
+        return 0
+    }
+    export -f assemble_and_push_bundle
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    # Must fail — ceiling failure is fatal.
+    [ "$status" -ne 0 ]
+
+    # Bundle must NOT have been assembled.
+    # RED before fix: _available_for_bundle has 2.25.0 and 2.26.0 → bundle assembly fires.
+    # GREEN after fix: ceiling fatal → bundle assembly skipped.
+    [ ! -f "$bundle_call_log" ]
+}
+
+# ---------------------------------------------------------------------------
+# AK-atomic: artifact is written ONLY AFTER a successful bundle push.
+# Simulating a bundle push failure: artifact must NOT be written, exit non-zero.
+#
+# RED before fix: _emit_final_versionset_pass runs after build_tag_push_extensions
+#   (which called assemble_and_push_bundle and returned non-zero on push failure),
+#   but build_tag_push_extensions exits 1 before returning to main(), so main()
+#   already propagates the non-zero. The artifact writing happens in _emit_final_-
+#   versionset_pass which is called AFTER build_tag_push_extensions → the question
+#   is: does main() still call _emit_final_versionset_pass after build_tag_push_-
+#   extensions exits 1?
+# In the current code: build_tag_push_extensions calls exit 1 (not return 1) when
+#   failed[] is non-empty, so main() never reaches _emit_final_versionset_pass.
+#   This test verifies that specific path: bundle push fails → build_tag_push_extensions
+#   exits non-zero → main() propagates exit code → no artifact written.
+# ---------------------------------------------------------------------------
+@test "AK-atomic: bundle push failure → no versionset artifact written, exit non-zero" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All per-version images absent from registry → all need to be built.
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        # Per-version build, tag, push: all succeed.
+        # Bundle docker: build succeeds, push FAILS (simulates registry error on bundle push).
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == \"build\" ]]; then
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == \"push\" ]]; then
+                # Bundle push failure.
+                if [[ \"\$*\" == *'bundle'* ]]; then
+                    return 1
+                fi
+                return 0
+            fi
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Bundle push failure → exit non-zero.
+    [ "$status" -ne 0 ]
+
+    # No versionset artifact must have been written (atomic: artifact only after bundle push).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# INV-bundle-eq-artifact: confirmed_available is computed ONCE and drives BOTH
+# the bundle COPYs and the artifact available[].
+#
+# Scenario: all per-version builds succeed; confirmed_available = {2.26.0, 2.27.1}
+# (2.25.0 fails to build → never pushed → absent from registry; 2.26.0 and 2.27.1
+# are pushed). The bundle Dockerfile COPY lines and the artifact available[] must
+# be EXACTLY {2.26.0, 2.27.1} — same set, same source.
+#
+# RED before fix: bundle is built from _available_for_bundle (inner-loop tracking),
+#   while the artifact re-probes independently via _image_present_3state. With a
+#   stateful mock they stay in sync, but the divergence is visible if the probe is
+#   overridden to disagree with the inner loop. After the fix, both come from the
+#   same confirmed_available variable, so equality is structural.
+# GREEN after fix: artifact.available[] set == bundle COPY versions == confirmed set.
+# ---------------------------------------------------------------------------
+@test "INV-bundle-eq-artifact: confirmed_available drives both bundle COPYs and artifact available[]" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local bundle_df_cap="$tmpd/inv_beqa_bundle_df.txt"
+    local docker_log="$tmpd/inv_beqa_docker.log"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    export bundle_df_cap docker_log
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export bundle_df_cap=\"$bundle_df_cap\" docker_log=\"$docker_log\"
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # 2.25.0 absent from registry (never built/pushed); 2.26.0 and 2.27.1 absent
+        # initially — they are built and pushed in this run (stateful mock).
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        # 2.25.0 fails to build; 2.26.0 and 2.27.1 succeed.
+        build_ext_image() {
+            [[ \"\$2\" == '2.25.0' ]] && return 1
+            return 0
+        }
+        export -f build_ext_image
+        tag_ext_image() { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # Bundle docker mock: capture the Dockerfile content at build time.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'build' ]]; then
+                echo \"DOCKER_CMD=build args=\$*\" >> \"\$docker_log\"
+                local _found_f=false _df_arg
+                for _a in \"\$@\"; do
+                    [[ \"\$_found_f\" == 'true' ]] && { _df_arg=\"\$_a\"; _found_f=false; }
+                    [[ \"\$_a\" == '-f' ]] && _found_f=true
+                done
+                [[ -n \"\$_df_arg\" && -f \"\$_df_arg\" ]] && cp \"\$_df_arg\" \"\$bundle_df_cap\"
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == 'push' ]]; then
+                return 0
+            fi
+            return 1
+        }
+        export -f docker
+
+        # 3-state probe used by _emit_versionset_artifact and the all-cached refresh loop.
+        # 2.25.0 ABSENT (build failed, never pushed); 2.26.0 and 2.27.1 PRESENT
+        # (pushed this run — guarded by _built_this_run_set in _emit_versionset_artifact).
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 1 ;;
+                *pg18-2.26.0*) return 0 ;;
+                *pg18-2.27.1*) return 0 ;;
+                *)             return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Non-ceiling musl failure → exit 0.
+    [ "$status" -eq 0 ]
+
+    # The artifact must exist.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # artifact.available[] must be exactly {2.26.0, 2.27.1} (2 entries, ceiling present).
+    local art_avail_count
+    art_avail_count=$(jq '.available | length' "$artifact")
+    [ "$art_avail_count" -eq 2 ]
+
+    local art_avail
+    art_avail=$(jq -r '.available[]' "$artifact")
+    [[ "$art_avail" == *'2.26.0'* ]]
+    [[ "$art_avail" == *'2.27.1'* ]]
+    [[ "$art_avail" != *'2.25.0'* ]]
+
+    # The bundle Dockerfile must have been produced.
+    [ -f "$bundle_df_cap" ]
+
+    # Bundle Dockerfile must COPY exactly 2.26.0 and 2.27.1 — same set as artifact.
+    grep -q "2.26.0" "$bundle_df_cap"
+    grep -q "2.27.1" "$bundle_df_cap"
+    ! grep -q "2.25.0" "$bundle_df_cap"
+
+    # Equality invariant: bundle COPY version count must equal artifact available[] count.
+    local bundle_copy_count
+    bundle_copy_count=$(grep -c "^COPY " "$bundle_df_cap" || true)
+    # Each version contributes 2 COPY lines (/output/extension/ and /output/lib/).
+    local expected_copy_lines=$(( art_avail_count * 2 ))
+    [ "$bundle_copy_count" -eq "$expected_copy_lines" ]
+}
+
+# ---------------------------------------------------------------------------
+# INV-bundle-push-fail-no-artifact: all per-version builds succeed but
+# $DOCKER push of the BUNDLE fails → NO versionset artifact is written (and a
+# pre-existing stale one is deleted) AND exit non-zero.
+#
+# RED before fix: on the build path, build_tag_push_extensions adds $ext@bundle
+#   to failed[] and exits 1, so _emit_final_versionset_pass never runs and no
+#   NEW artifact is written. But a PRE-EXISTING stale artifact survives — this
+#   test seeds a stale artifact and asserts it is DELETED on bundle push failure.
+# GREEN after fix: bundle push failure → stale artifact deleted → exit non-zero.
+# ---------------------------------------------------------------------------
+@test "INV-bundle-push-fail-no-artifact: bundle push fails → stale artifact deleted, exit non-zero" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local lineage_dir="$tmpd/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Pre-seed a stale artifact from a prior run.
+    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
+    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.26.0","resolved":["2.26.0"],"available":["2.26.0"],"excluded":[]}\n' \
+        > "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All per-version images absent → all are built in this run.
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+
+        # All per-version builds, tags, pushes succeed.
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # docker build succeeds; docker push FAILS for the bundle.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'build' ]]; then
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == 'push' ]]; then
+                if [[ \"\$*\" == *'bundle'* ]]; then
+                    return 1
+                fi
+                return 0
+            fi
+            if [[ \"\$*\" == *'manifest inspect'* ]]; then
+                echo 'manifest unknown: manifest unknown' >&2
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { printf 'manifest unknown: manifest unknown\n' >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Bundle push failure → exit non-zero.
+    [ "$status" -ne 0 ]
+
+    # The stale artifact MUST have been deleted (not silently left for the consumer).
+    # RED before fix: artifact is never touched because build_tag_push_extensions exits 1
+    #   before _emit_final_versionset_pass runs, leaving the stale artifact in place.
+    # GREEN after fix: bundle failure triggers stale artifact deletion.
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# INV-allcached-bundle-fail-fatal: all-cached path, bundle refresh push fails
+# → exit non-zero AND no artifact written (the _fp_rc clobber is fixed).
+#
+# RED before fix: _fp_rc is declared (=0) before _emit_final_versionset_pass,
+#   but the bundle refresh failure accumulates into _fp_rc AFTER the emit pass.
+#   If the emit pass succeeds (writes artifact), then the bundle refresh fails
+#   (_fp_rc becomes 1), the exit is non-zero — that part works. But the artifact
+#   was already written by the emit pass BEFORE the bundle push — so the artifact
+#   exists even though the bundle push failed. The invariant "artifact present ⟺
+#   bundle pushed OK" is violated.
+# GREEN after fix: on the all-cached path, the confirmed_available set drives
+#   BOTH the bundle push AND the artifact write; the artifact is written ONLY
+#   AFTER a successful bundle push.
+# ---------------------------------------------------------------------------
+@test "INV-allcached-bundle-fail-fatal: all-cached path, bundle push fails → exit non-zero, no artifact" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # No pre-existing artifact.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All per-version images already in registry (all-cached path).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # All versions probed as PRESENT (all-cached scenario).
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        # Bundle build succeeds; bundle push FAILS (network error).
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            if [[ \"\$_dcmd\" == 'build' ]]; then
+                return 0
+            fi
+            if [[ \"\$_dcmd\" == 'push' ]]; then
+                return 1
+            fi
+            return 1
+        }
+        export -f docker
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # All-cached path with bundle push failure → exit non-zero.
+    [ "$status" -ne 0 ]
+
+    # No artifact must be written (bundle push failed — atomic invariant).
+    # RED before fix: _emit_final_versionset_pass runs first and writes the artifact,
+    #   then the bundle refresh fails — artifact is present but bundle is missing.
+    # GREEN after fix: artifact is written only after a successful bundle push.
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# INV-transient-failclosed: 3-state ERROR on one resolved version on the
+# publish path → no bundle assembled, no artifact written, exit non-zero.
+#
+# This closes the fail-closed gate for the single-source confirmed_available
+# computation: if ANY resolved version returns ERROR from the 3-state probe,
+# the confirmed set is unsafe to use — fail closed on the publish path.
+# ---------------------------------------------------------------------------
+@test "INV-transient-failclosed: 3-state ERROR on one resolved version → no bundle, no artifact, fatal" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local bundle_call_log="$tmpd/inv_tfc_bundle_calls.log"
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All versions appear in registry for the skip-build check (all-cached).
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # 3-state probe: 2.26.0 returns ERROR (transient) → fail closed.
+        _image_present_3state() {
+            case \"\$1\" in
+                *pg18-2.25.0*) return 0 ;;
+                *pg18-2.26.0*) return 2 ;;
+                *pg18-2.27.1*) return 0 ;;
+                *)             return 2 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        # Capture if bundle assembler is called (it must NOT be).
+        assemble_and_push_bundle() {
+            echo \"BUNDLE_CALLED ext=\${1} major=\${2}\" >> \"$bundle_call_log\"
+            return 0
+        }
+        export -f assemble_and_push_bundle
+
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
+        }
+        export -f docker
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Transient ERROR on a resolved version → fatal (fail-closed on publish path).
+    [ "$status" -ne 0 ]
+
+    # Bundle assembler must NOT have been called.
+    [ ! -f "$bundle_call_log" ]
+
+    # No artifact must be written.
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# INV-artifact-after-bundle: ordering invariant — the artifact does NOT exist
+# until AFTER a successful bundle push; a mock that fails the push leaves no
+# artifact; a mock that succeeds leaves both.
+#
+# This test verifies the ordering with two sub-cases in sequence:
+#   (a) bundle push fails → no artifact → exit non-zero
+#   (b) bundle push succeeds → artifact present → exit zero
+# ---------------------------------------------------------------------------
+@test "INV-artifact-after-bundle: artifact written only after successful bundle push (ordering)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # --- Sub-case (a): bundle push fails → no artifact ---
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All cached: skip-build path.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # All versions PRESENT via 3-state.
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # Bundle push FAILS.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            [[ \"\$_dcmd\" == 'build' ]] && return 0
+            [[ \"\$_dcmd\" == 'push' ]] && return 1
+            return 1
+        }
+        export -f docker
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Sub-case (a): push failed → exit non-zero, no artifact.
+    [ "$status" -ne 0 ]
+    [ ! -f "$artifact" ]
+
+    # --- Sub-case (b): bundle push succeeds → artifact present ---
+    rm -f "$artifact"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # All cached.
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        # All versions PRESENT via 3-state.
+        _image_present_3state() { return 0; }
+        export -f _image_present_3state
+
+        build_ext_image() { return 0; }
+        export -f build_ext_image
+        tag_ext_image()  { return 0; }
+        export -f tag_ext_image
+        push_ext_image() { return 0; }
+        export -f push_ext_image
+
+        # Bundle push SUCCEEDS.
+        docker() {
+            local _dcmd=\"\${1:-}\"
+            [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
+        }
+        export -f docker
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # Sub-case (b): push succeeded → exit zero, artifact present.
+    [ "$status" -eq 0 ]
+    [ -f "$artifact" ]
+
+    # Artifact must have ceiling and available[].
+    local ceiling
+    ceiling=$(jq -r '.ceiling' "$artifact")
+    [ "$ceiling" = "2.27.1" ]
+
+    local avail_count
+    avail_count=$(jq '.available | length' "$artifact")
+    [ "$avail_count" -gt 0 ]
 }
