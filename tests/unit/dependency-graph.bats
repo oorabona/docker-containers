@@ -290,6 +290,57 @@ _write_lineage() {
 }
 
 # ---------------------------------------------------------------------------
+# FIX 2 regression lock: stderr banner from './make list' must NOT enter the
+# valid-container set.
+#
+# './make list' can emit a banner like "✅ Found 'docker-compose', continuing."
+# on stderr.  The old code captured stderr via 2>&1, causing banner tokens
+# (Found, docker-compose, continuing.) to be treated as valid container names.
+# _depgraph_is_internal_ref would then wrongly classify an external ref like
+# "ghcr.io/oorabona/Found:latest" as internal, perturbing cascade gating.
+#
+# The fix (a) discards stderr (2>/dev/null) and (b) filters stdout to lines
+# matching ^[a-z0-9_-]+$ before joining.
+#
+# This test creates a temp PROJECT_ROOT with a ./make shim that:
+#   - prints a banner on stderr ("✅ Found 'docker-compose', continuing.")
+#   - prints two container names on stdout ("php\ndebian\n")
+# It then asserts the result contains php and debian but NOT any banner token.
+#
+# Mutation guards:
+#   MG-F2a: reverting 2>/dev/null → 2>&1: banner leaks into output; "Found"
+#            appears in the valid-container set and this test fails.
+#   MG-F2b: removing the grep -E filter: banner tokens on stdout (if any)
+#            would not be stripped; test would catch future regressions.
+# ---------------------------------------------------------------------------
+
+@test "depgraph: valid_containers — stderr banner NOT captured into container set (FIX 2)" {
+    unset _DEPGRAPH_CONTAINERS_OVERRIDE
+    local mock_root="$TEST_TEMP_DIR/fix2_root"
+    mkdir -p "$mock_root"
+    # ./make shim: stderr banner + two valid container names on stdout
+    printf '#!/usr/bin/env bash\nprintf '"'"'✅ Found '"'"'"'"'"'docker-compose'"'"'"'"'"', continuing.\n'"'"' >&2\nprintf '"'"'php\ndebian\n'"'"'\n' \
+        > "$mock_root/make"
+    chmod +x "$mock_root/make"
+
+    run env -u _DEPGRAPH_CONTAINERS_OVERRIDE \
+        bash -c "
+            PROJECT_ROOT='$mock_root'
+            source '${HELPERS_DIR}/dependency-graph.sh'
+            _depgraph_valid_containers
+        "
+    [ "$status" -eq 0 ]
+    # Valid container names must be present
+    [[ "$output" == *"php"* ]]
+    [[ "$output" == *"debian"* ]]
+    # Banner tokens must NOT appear in the container set
+    [[ "$output" != *"Found"* ]]
+    [[ "$output" != *"docker-compose"* ]]
+    [[ "$output" != *"continuing"* ]]
+    [[ "$output" != *"✅"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Defect C fix: _depgraph_project_owner — test hook and fail-closed
 # ---------------------------------------------------------------------------
 

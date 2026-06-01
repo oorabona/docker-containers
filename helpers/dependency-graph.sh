@@ -51,15 +51,19 @@ _depgraph_valid_containers() {
         printf '%s' "$_DEPGRAPH_CONTAINERS_OVERRIDE"
     else
         local _make_out
-        if ! _make_out=$(cd "$PROJECT_ROOT" && ./make list 2>&1); then
+        if ! _make_out=$(cd "$PROJECT_ROOT" && ./make list 2>/dev/null); then
             echo "::error::Failed to enumerate project containers via './make list'" >&2
             return 1
         fi
+        # Filter to strict container-name lines only (defense in depth: drops any
+        # banner/diagnostic output that may have leaked into stdout, same charset
+        # as the validator in cascade-resolver.yaml line 76).
+        _make_out=$(printf '%s' "$_make_out" | grep -E '^[a-z0-9_-]+$' || true)
         if [[ -z "$_make_out" ]]; then
             echo "::error::'./make list' returned empty container set" >&2
             return 1
         fi
-        printf '%s' "$(echo "$_make_out" | tr '\n' ' ')"
+        printf '%s' "$(printf '%s' "$_make_out" | tr '\n' ' ')"
     fi
 }
 

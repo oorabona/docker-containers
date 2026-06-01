@@ -1541,3 +1541,44 @@ EOF
     ! [[ "$output" == *"::error::"* ]]
 }
 
+# ---------------------------------------------------------------------------
+# FIX 1 regression lock: unblock-children job must use the GitHub App token
+# for all GH_TOKEN usages, NOT secrets.GITHUB_TOKEN.
+#
+# A merge performed with GITHUB_TOKEN does NOT trigger downstream push-based
+# workflows (GitHub recursion-prevention).  The unblock-children job enables
+# auto-merge on child PRs; those child PRs must subsequently trigger the
+# "Auto Build & Push" workflow to publish the child image.  Using GITHUB_TOKEN
+# would silently break the depth≥2 cascade.
+#
+# The upstream-monitor.yaml sibling jobs already use the App token for the
+# same reason.  This test locks the invariant structurally so a future edit
+# cannot regress to GITHUB_TOKEN without the test catching it.
+#
+# Mutation guards:
+#   MG-F1a: reverting one GH_TOKEN line to secrets.GITHUB_TOKEN →
+#            grep for secrets.GITHUB_TOKEN finds a match → test fails.
+#   MG-F1b: removing the app-token step entirely →
+#            grep for create-github-app-token finds nothing → test fails.
+# ---------------------------------------------------------------------------
+
+@test "FIX1: cascade-resolver unblock-children uses App token, not secrets.GITHUB_TOKEN (regression-lock)" {
+    local workflow=".github/workflows/cascade-resolver.yaml"
+    local wf_path="${PROJECT_ROOT}/${workflow}"
+
+    # The workflow file must exist
+    [ -f "$wf_path" ]
+
+    # The App token generation step must be present in the workflow
+    grep -q "actions/create-github-app-token" "$wf_path"
+
+    # The app-token step id must be present
+    grep -q "id: app-token" "$wf_path"
+
+    # Both GH_TOKEN usages in the unblock-children job must use the App token output
+    grep -q "steps.app-token.outputs.token" "$wf_path"
+
+    # secrets.GITHUB_TOKEN must NOT appear anywhere in this file
+    # (the only token used is the App token)
+    ! grep -q "secrets.GITHUB_TOKEN" "$wf_path"
+}
