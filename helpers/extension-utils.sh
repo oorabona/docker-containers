@@ -1010,7 +1010,10 @@ generate_dockerfile() {
                             return 1
                         fi
                         stages_block+="${_ecs_output%%---ECS-COPIES---*}"
-                        copies_block+="${_ecs_output##*---ECS-COPIES---$'\n'}"
+                        # Command substitution strips the trailing newline, so the copies
+                        # part would be appended without a newline terminator, causing the
+                        # next extension's COPY to concatenate onto the same line.
+                        copies_block+="${_ecs_output##*---ECS-COPIES---$'\n'}"$'\n'
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
                         local deps
