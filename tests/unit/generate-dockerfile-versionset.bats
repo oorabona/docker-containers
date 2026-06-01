@@ -85,8 +85,12 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: write a versionset fixture under .build-lineage/
+# Helpers: write versionset fixtures under .build-lineage/
 # ---------------------------------------------------------------------------
+
+# _write_versionset: write a versionset artifact WITHOUT version_digests.
+# Used for tests where version_digests is absent (LOCAL_ONLY / pre-finalize path).
+# The consumer falls back to tag-based refs (ext_image_name) without probing.
 _write_versionset() {
     local ext="$1"
     local pg_major="$2"
@@ -108,37 +112,48 @@ _write_versionset() {
 EOF
 }
 
-# ---------------------------------------------------------------------------
-# Test 1: multi-version — 3 available → ONE bundle COPY, NO per-version FROM stages
-# ---------------------------------------------------------------------------
-@test "multi-version: 3 available versions produce 3 direct COPY --from= lines, NO per-version FROM stages" {
-    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+# _write_versionset_with_digests: write a versionset artifact WITH version_digests.
+# Used for tests that exercise the digest-pinned collector stage (CI/publish path).
+# Assigns a deterministic fake digest per version (sha256:00..00<ver-index>0..0).
+_write_versionset_with_digests() {
+    local ext="$1"
+    local pg_major="$2"
+    shift 2
+    local -a available_arr=("$@")
 
-    run generate_dockerfile \
-        "$TEST_TEMP_DIR/extensions/config.yaml" \
-        "$TEST_TEMP_DIR/Dockerfile.template" \
-        "timeseries" "18" \
-        "ghcr.io" "testowner"
+    local arr_json="["
+    local first=1
+    for v in "${available_arr[@]}"; do
+        [[ "$first" -eq 0 ]] && arr_json+=","
+        arr_json+="\"$v\""
+        first=0
+    done
+    arr_json+="]"
 
-    [ "$status" -eq 0 ]
+    # Build version_digests: assign fake-but-valid sha256 per version (64 lowercase hex chars)
+    local vd_json="{"
+    local idx=1
+    local vd_first=1
+    for v in "${available_arr[@]}"; do
+        [[ "$vd_first" -eq 0 ]] && vd_json+=","
+        # Deterministic valid digest: sha256:000...0<idx as 2-digit hex padded to 64>
+        local hex_idx
+        hex_idx=$(printf '%064x' "$idx")
+        vd_json+="\"${v}\":\"sha256:${hex_idx}\""
+        vd_first=0
+        idx=$((idx + 1))
+    done
+    vd_json+="}"
 
-    # No per-version FROM ... AS stage lines for the resolver-backed extension
-    local per_ver_from_count
-    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
-    [ "$per_ver_from_count" -eq 0 ]
-
-    # Exactly ONE bundle COPY covers all available versions (single layer)
-    local bundle_copy_count
-    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_copy_count" -eq 1 ]
-
-    # Zero per-version COPY lines for individual version tags
-    local per_ver_copy_count
-    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_copy_count" -eq 0 ]
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-${ext}-pg${pg_major}-versionset.json" <<EOF
+{"ext":"${ext}","pg_major":"${pg_major}","ceiling":"${available_arr[-1]}","resolved":${arr_json},"available":${arr_json},"excluded":[],"version_digests":${vd_json}}
+EOF
 }
 
-@test "multi-version: COPY --from= refs are full image refs (host/path:tag), NOT bareword stage names" {
+# ---------------------------------------------------------------------------
+# Test 1: multi-version — 3 available → collector stage + ONE final-stage COPY
+# ---------------------------------------------------------------------------
+@test "multi-version: 3 available versions → FROM scratch AS ext_collect_timescaledb + 1 final COPY" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -149,22 +164,47 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Every COPY --from= for timescaledb must use a full image ref (host/path:tag pattern)
-    # A bareword like "ext-timescaledb-2_23_0" would NOT match this pattern.
+    # One collector stage declared (FROM scratch AS ext_collect_timescaledb)
+    local collector_from_count
+    collector_from_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_from_count" -eq 1 ]
+
+    # Exactly ONE final-stage COPY from the collector (single exported layer)
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
+
+    # Three per-version COPYs inside the collector (one per available version)
+    local collector_ver_count
+    collector_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-.* /output/ /.+" || true)
+    [ "$collector_ver_count" -eq 3 ]
+}
+
+@test "multi-version: COPY --from= refs inside collector are full image refs (host/path:tag)" {
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Every COPY --from= inside the collector stage must use a full image ref.
+    # A bareword stage alias would NOT match the ghcr.io/...:.+ pattern.
     while IFS= read -r copy_line; do
         [[ -z "$copy_line" ]] && continue
-        # Extract the --from= value
         local from_ref
         from_ref=$(echo "$copy_line" | sed -n 's/.*--from=\([^ ]*\).*/\1/p')
-        # Must contain a registry host (has a slash before the first colon), a colon, and a tag
         [[ "$from_ref" =~ ghcr\.io/.+:.+ ]]
-    done < <(echo "$output" | grep "COPY --from=.*ext-timescaledb" || true)
+    done < <(echo "$output" | grep "COPY --from=.*ext-timescaledb.*pg18-" || true)
 }
 
-@test "multi-version: COPYs go into per-version subdirs /tmp/ext/timescaledb/<ver>/" {
-    # The bundle COPY lands at /tmp/ext/timescaledb/ so the bundle's internal
-    # /<ver>/{extension,lib}/ structure arrives at /tmp/ext/timescaledb/<ver>/
-    # which is exactly the layout install_ext iterates.
+@test "multi-version: final-stage COPY lands at /tmp/ext/timescaledb/ preserving per-version layout" {
+    # The collector COPY --from=ext_collect_timescaledb / /tmp/ext/<ext>/
+    # combined with the collector's internal /<ver>/ dirs produces
+    # /tmp/ext/<ext>/<ver>/{extension,lib}/ which install_ext iterates.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -175,17 +215,13 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # The single bundle COPY lands at /tmp/ext/timescaledb/ — version coverage
-    # is preserved because the bundle contains /<ver>/{extension,lib}/ for every
-    # available version.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
+    # Final-stage COPY lands at /tmp/ext/timescaledb/
+    echo "$output" | grep -qx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
 }
 
-@test "multi-version: ceiling version 2.27.1 appears LAST (ascending order, COPY lines)" {
-    # With the bundle approach, ordering is handled by the producer (bundle Dockerfile
-    # lists versions ascending). The consumer emits exactly ONE COPY; version ordering
-    # is no longer observable in the consumer output.
-    # This test verifies the consumer still succeeds and emits the bundle COPY.
+@test "multi-version: ceiling version 2.27.1 — collector stage succeeds, single final COPY" {
+    # Collector approach makes version ordering inside the final stage irrelevant:
+    # the collector's layers are not exported. Test that consumer still succeeds.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -196,13 +232,13 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY present
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
+    # Collector stage present
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
 
-    # Zero per-version COPY lines (order no longer needs asserting in the consumer)
-    local per_ver_copy_count
-    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_copy_count" -eq 0 ]
+    # Exactly ONE final-stage COPY
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -265,20 +301,20 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # timescaledb: NO per-version FROM ... AS stages
-    local ts_from_count
-    ts_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
-    [ "$ts_from_count" -eq 0 ]
+    # timescaledb: collector stage present
+    local ts_collector_count
+    ts_collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$ts_collector_count" -eq 1 ]
 
-    # timescaledb: exactly ONE bundle COPY covering all available versions
+    # timescaledb: exactly ONE final-stage COPY from collector
     local ts_bundle_count
-    ts_bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
+    ts_bundle_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
     [ "$ts_bundle_count" -eq 1 ]
 
-    # timescaledb: zero per-version COPY lines
+    # timescaledb: per-version COPYs are INSIDE the collector (3 versions in stages_block)
     local ts_per_ver_count
-    ts_per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$ts_per_ver_count" -eq 0 ]
+    ts_per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    [ "$ts_per_ver_count" -eq 3 ]
 
     # pgvector: exactly 1 FROM stage (single-version, non-resolver path unchanged)
     local pv_count
@@ -290,6 +326,73 @@ EOF
 
     # pgvector must NOT have version-subdirectory paths
     ! echo "$output" | grep -q "/tmp/ext/pgvector/0\."
+}
+
+# ---------------------------------------------------------------------------
+# NL-1: trailing-newline stripping by command substitution must not concatenate
+#        the collector final COPY with the next extension's COPY line.
+#
+# Mutation caught: removing the `$'\n'` appended to copies_block after the
+# command-substitution `${_ecs_output##*---ECS-COPIES---$'\n'}` in
+# generate_dockerfile. Without that `$'\n'`, bash command-substitution strips the
+# trailing newline from _emit_collector_stage's output, causing the final
+# collector COPY to be concatenated with the immediately following extension's
+# first line:
+#   COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/COPY --from=...
+#
+# The flavor under test (multi_mixed) places timescaledb (multi-version,
+# collector path) before pgvector (single-version, flat-copy path). The
+# timescaledb final COPY and the pgvector FROM must each appear on their own
+# line — a concatenated line is the exact bug signature.
+#
+# RED (before fix): the final COPY line contains "timescaledb/COPY" and the
+#   whole-line match for the clean COPY fails → test fails.
+# GREEN (after fix): each COPY/FROM is on its own whole line.
+# ---------------------------------------------------------------------------
+@test "NL-1: collector final COPY is on its own line, not concatenated with the next extension (trailing-newline bug)" {
+    # Mutation caught: removing `$'\n'` after copies_block+= in generate_dockerfile
+    # causes command-substitution to strip the trailing newline, concatenating
+    # COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/ with the
+    # next extension's COPY line.
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "multi_mixed" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # BUG SIGNATURE: the collector final COPY must NOT appear merged with the next
+    # extension's COPY on the same line. This is the exact string the bug produces.
+    local bug_line_count
+    bug_line_count=$(echo "$output" | grep -cF "timescaledb/COPY" || true)
+    [ "$bug_line_count" -eq 0 ] || {
+        echo "FAIL: collector COPY concatenated with next line (trailing-newline bug). Output:"
+        echo "$output"
+        false
+    }
+
+    # PRIMARY ORACLE: the collector final COPY must be on its OWN exact line.
+    # grep -x requires the ENTIRE line to match — a concatenated line fails.
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ] || {
+        echo "FAIL: expected exactly 1 whole-line match for collector final COPY. Got: $final_copy_count. Output:"
+        echo "$output"
+        false
+    }
+
+    # SECONDARY ORACLE: the pgvector FROM stage must also be on its own exact line.
+    # A non-zero count here proves it was not absorbed into the preceding COPY line.
+    local pv_from_count
+    pv_from_count=$(echo "$output" | grep -cx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector" || true)
+    [ "$pv_from_count" -eq 1 ] || {
+        echo "FAIL: pgvector FROM must be on its own line. Got: $pv_from_count. Output:"
+        echo "$output"
+        false
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -337,21 +440,21 @@ EOF
     # Must self-heal to multi-version (NOT single-version ceiling fallback).
     [ "$status" -eq 0 ]
 
-    # No per-version FROM ... AS stages (single-version path bypassed)
-    local per_ver_from_count
-    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
-    [ "$per_ver_from_count" -eq 0 ]
+    # Collector stage present (FROM scratch AS ext_collect_timescaledb)
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY) — one pair per proved version.
+    # Self-heal path emits per-version COPYs INSIDE the collector stage.
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path (AP: mutable bundle tag not used)
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector (no bundle tag in output)
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "empty-available: artifact with available=[] + resolver fails → fail closed" {
@@ -420,6 +523,44 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# FIX3: tag-based fallback (no-version_digests artifact) must use the caller's
+#       explicit registry/owner, not the default get_registry()/get_repo_owner().
+#
+# Before fix: ext_image_name called without registry/owner → uses get_registry()
+#   and get_repo_owner() → wrong repo when caller passed explicit overrides.
+# After fix:  ext_image_name called with "$registry" "$owner" → honors caller args.
+#
+# Test strategy: generate_dockerfile with explicit registry="custom.io" and
+#   owner="customowner" against a no-version_digests artifact (LOCAL_ONLY/old path).
+#   All per-version COPY --from= refs inside the collector must use custom.io/customowner.
+# ---------------------------------------------------------------------------
+@test "FIX3-tag-fallback-uses-explicit-registry-owner: no-digests artifact refs use caller registry/owner" {
+    # No-version_digests artifact (LOCAL_ONLY / old build path).
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "custom.io" "customowner"
+
+    [ "$status" -eq 0 ]
+
+    # Collector stage must be present (3 versions → multi-version path).
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+
+    # Every per-version COPY inside the collector must use custom.io/customowner.
+    local copy_count
+    copy_count=$(echo "$output" | grep -cxE "COPY --from=custom\.io/customowner/ext-timescaledb:pg18-[0-9].* /output/ /.+" || true)
+    [ "$copy_count" -eq 3 ]
+
+    # Must NOT use the default get_registry() value (ghcr.io) set up in setup().
+    local wrong_count
+    wrong_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9].* /output/ /.+" || true)
+    [ "$wrong_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Test Y: production cwd/PROJECT_ROOT path — artifact found via PROJECT_ROOT
 #         even when ROOT_DIR is unset and cwd is a container subdirectory.
 #
@@ -479,12 +620,16 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Must find artifact via PROJECT_ROOT → bundle COPY path (single COPY, not single-version FROM).
+    # Must find artifact via PROJECT_ROOT → collector stage path (not single-version FROM).
     # RED before fix: 1 FROM stage (single-version fallback because artifact not found).
-    # GREEN after fix: 1 bundle COPY (multi-version from artifact found via PROJECT_ROOT).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # GREEN after fix: collector stage + 1 final COPY (multi-version from artifact via PROJECT_ROOT).
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -514,8 +659,8 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "Z-ceiling-present: ceiling in available[] → multi-version path succeeds" {
-    # Sanity: ceiling IS present → normal multi-version success with bundle COPY.
+@test "Z-ceiling-present: ceiling in available[] → collector stage + single final COPY" {
+    # Sanity: ceiling IS present → normal multi-version success with collector stage.
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -526,10 +671,14 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Single bundle COPY (all 3 versions are in the bundle)
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # Collector stage present + single final COPY
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -638,21 +787,21 @@ EOF
     # Self-heal succeeds: must exit 0.
     [ "$status" -eq 0 ]
 
-    # No per-version FROM ... AS stages (single-version path bypassed).
-    local per_ver_from_count
-    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
-    [ "$per_ver_from_count" -eq 0 ]
+    # Collector stage present (self-heal funnels into same emitter)
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Self-heal emits per-version COPYs INSIDE the collector stage (/output/ → /<ver>/).
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector (no pg18-bundle in output)
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "EE-a-2-resolver-fails: resolver-backed ext + no artifact + resolver fails → fail closed" {
@@ -767,16 +916,16 @@ EOF
     # Must exit 0 (self-heal succeeded).
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    # Self-heal emits per-version COPYs INSIDE the collector stage.
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "JJ-2-malformed-garbage: non-JSON garbage artifact + resolver succeeds → self-heals to multi-version" {
@@ -799,15 +948,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "JJ-3-malformed-no-available: JSON missing .available key + resolver succeeds → self-heals" {
@@ -830,15 +979,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs, NOT a bundle COPY.
+    # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "JJ-4-malformed-resolver-fails: malformed artifact + resolver FAILS → fail closed (non-zero)" {
@@ -876,10 +1025,14 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # All 3 valid versions → single bundle COPY (no per-version FROM stages or individual COPYs).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # All 3 valid versions → collector stage + single final COPY.
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -936,14 +1089,14 @@ EOF
     rm -rf "$controlled_tmp"
     [ "$leftover_count" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -989,14 +1142,14 @@ EOF
     rm -rf "$controlled_tmp"
     [ "$leftover_count" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1098,24 +1251,29 @@ EOF
     # _sh_available == [2.25.0, 2.27.1] — ceiling present, count > 1.
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs for the proved-present set (2.25.0, 2.27.1).
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # Self-heal emits per-version COPYs for the proved-present set (2.25.0, 2.27.1).
     # 2.23.0 is definitively absent and must NOT appear.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/"
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
 
-    # 2.23.0 must NOT appear (definitively absent).
+    # 2.23.0 must NOT appear in the collector (definitively absent).
     local absent_count
     absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
     [ "$absent_count" -eq 0 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1333,16 +1491,15 @@ _run_registry_probe_3state() {
     # Exits 0 (local daemon probe finds images, self-heals).
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Self-heal emits per-version COPYs inside the collector stage.
     # Three versions proved present locally: 2.25.0, 2.26.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "PP-pull-only-self-heal: PULL_ONLY=true + images present locally → generate_dockerfile self-heals" {
@@ -1381,15 +1538,14 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs (not bundle COPY).
+    # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
 }
 
 @test "PP-local-only-image-absent-locally: LOCAL_ONLY=true + image NOT in local daemon → generate_dockerfile fails closed" {
@@ -1563,15 +1719,14 @@ _run_registry_probe_3state() {
     # Must succeed — valid artifact requires no skopeo.
     [ "$status" -eq 0 ]
 
-    # Must produce single bundle COPY (non-vacuous: proves artifact was consumed).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # Must produce collector stage + single final COPY (non-vacuous: proves artifact was consumed).
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # No per-version COPY lines (version coverage is in the bundle, not individual COPYs).
-    local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1660,10 +1815,10 @@ _run_registry_probe_3state() {
 
 # ---------------------------------------------------------------------------
 # AG-5: regression guard — valid versionset artifact with 3 clean elements
-# still produces exactly 3 FROM stages (chokepoint must not break happy path).
+# still produces collector stage + single final COPY (chokepoint must not break happy path).
 # ---------------------------------------------------------------------------
 
-@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> 3 direct COPY --from= lines" {
+@test "AG-5-valid-artifact-still-works: clean available[] with 3 valid elements -> collector stage + 1 final COPY" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1674,20 +1829,20 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # No per-version FROM ... AS stages
-    local per_ver_from_count
-    per_ver_from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-" || true)
-    [ "$per_ver_from_count" -eq 0 ]
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # Single bundle COPY (chokepoint must not break happy path; version coverage in bundle).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_count" -eq 1 ]
+    # Single final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 
-    # Zero per-version COPY lines
+    # Three per-version COPYs inside the collector
     local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_count" -eq 0 ]
+    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    [ "$per_ver_count" -eq 3 ]
 }
 
 @test "SS-jq-absent: jq not on PATH + resolver-backed ext + valid artifact → fail-fast with 'jq' in error message" {
@@ -1736,14 +1891,14 @@ _run_registry_probe_3state() {
 
 # ---------------------------------------------------------------------------
 # BUNDLE-CON-1: resolver-backed ext with 3 available versions →
-# generated Dockerfile has EXACTLY ONE COPY --from=<bundle-ref> / /tmp/ext/<ext>/
-# and ZERO per-version COPY/FROM lines.
+# generated Dockerfile has a collector stage (FROM scratch AS ext_collect_<ext>)
+# with 3 per-version COPYs inside, and EXACTLY ONE final-stage COPY from the collector.
 #
-# RED before: N per-version COPY pairs (2N lines)
-# GREEN after: 1 bundle COPY line
+# The per-version COPYs are inside the collector stage (not exported layers).
+# The final stage sees exactly 1 COPY from the collector (1 exported layer).
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-1: 3 available versions → exactly 1 bundle COPY, 0 per-version refs" {
+@test "BUNDLE-CON-1: 3 available versions → collector stage + exactly 1 final COPY" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1754,29 +1909,29 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # Exactly ONE COPY --from=<bundle-ref> landing at /tmp/ext/timescaledb/
-    local bundle_copy_count
-    bundle_copy_count=$(echo "$output" | grep -c "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$bundle_copy_count" -eq 1 ]
+    # One collector stage declared
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # ZERO per-version COPY lines referencing individual version tags (pg18-2.X.Y)
+    # Exactly ONE final-stage COPY from the collector
+    local final_copy_count
+    final_copy_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_copy_count" -eq 1 ]
+
+    # Three per-version COPYs inside the collector (one per available version)
     local per_ver_copy_count
-    per_ver_copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$per_ver_copy_count" -eq 0 ]
-
-    # ZERO per-version FROM ... AS stages for timescaledb
-    local per_ver_from_count
-    per_ver_from_count=$(echo "$output" | grep -cE "^FROM .*ext-timescaledb:pg18-[0-9]" || true)
-    [ "$per_ver_from_count" -eq 0 ]
+    per_ver_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    [ "$per_ver_copy_count" -eq 3 ]
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-2: the bundle COPY places files at /tmp/ext/<ext>/
-# so that /<ver>/... in the bundle lands at /tmp/ext/<ext>/<ver>/...
-# which is the layout install_ext iterates.
+# BUNDLE-CON-2: the final-stage COPY places the collector's content at
+# /tmp/ext/<ext>/ so that /<ver>/ dirs inside the collector land at
+# /tmp/ext/<ext>/<ver>/ which is the layout install_ext iterates.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-2: bundle COPY destination is /tmp/ext/timescaledb/ (installs at correct path)" {
+@test "BUNDLE-CON-2: collector COPY destination is /tmp/ext/timescaledb/ (installs at correct path)" {
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1787,18 +1942,16 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # The single COPY must land at /tmp/ext/timescaledb/ so bundle's
-    # /<ver>/{extension,lib}/ becomes /tmp/ext/timescaledb/<ver>/{extension,lib}/
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/"
+    # The final-stage COPY lands at /tmp/ext/timescaledb/
+    echo "$output" | grep -qx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-CON-3: bundle ref is derived identically by producer and consumer.
-# Consumer must use ext_image_name base + :pg<major>-bundle suffix.
-# The ref in the generated COPY must match the producer's naming scheme.
+# BUNDLE-CON-3: the collector stage name is derived from the extension name.
+# Consumer emits "FROM scratch AS ext_collect_<ext>".
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-3: bundle ref in generated COPY uses correct scheme ghcr.io/<owner>/ext-<ext>:pg<major>-bundle" {
+@test "BUNDLE-CON-3: collector stage name is ext_collect_timescaledb" {
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1809,8 +1962,8 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # Full bundle ref must appear in the output
-    echo "$output" | grep -q "ghcr.io/testowner/ext-timescaledb:pg18-bundle"
+    # Collector stage name must appear
+    echo "$output" | grep -q "FROM scratch AS ext_collect_timescaledb"
 }
 
 # ---------------------------------------------------------------------------
@@ -1847,7 +2000,7 @@ _run_registry_probe_3state() {
 # timescaledb COPYs, one pgvector FROM.
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-5: mixed flavor — timescaledb bundle COPY + pgvector single-version unchanged" {
+@test "BUNDLE-CON-5: mixed flavor — timescaledb collector + pgvector single-version unchanged" {
     _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -1858,20 +2011,14 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # timescaledb: exactly one bundle COPY
-    local ts_bundle_count
-    ts_bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/")
-    [ "$ts_bundle_count" -eq 1 ]
+    # timescaledb: collector stage + single final COPY
+    local ts_collector_count
+    ts_collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$ts_collector_count" -eq 1 ]
 
-    # timescaledb: zero per-version FROM stages
-    local ts_from_count
-    ts_from_count=$(echo "$output" | grep -cE "^FROM .*ext-timescaledb:pg18-[0-9]" || true)
-    [ "$ts_from_count" -eq 0 ]
-
-    # timescaledb: zero per-version COPY lines
-    local ts_per_ver_count
-    ts_per_ver_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+" || true)
-    [ "$ts_per_ver_count" -eq 0 ]
+    local ts_final_count
+    ts_final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$ts_final_count" -eq 1 ]
 
     # pgvector: exactly one FROM stage (single-version path unchanged)
     local pv_from_count
@@ -1880,19 +2027,15 @@ _run_registry_probe_3state() {
 
     # pgvector: flat COPY paths
     echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
-
-    # pgvector: no bundle COPY
-    ! echo "$output" | grep -q "ext-pgvector:pg18-bundle"
 }
 
 # ---------------------------------------------------------------------------
 # BUNDLE-CON-6: self-heal path (no artifact) for resolver-backed ext
-# also emits a single bundle COPY (not per-version COPYs).
+# also emits a collector stage + 1 final COPY (not a mutable bundle tag).
 # ---------------------------------------------------------------------------
 
-@test "BUNDLE-CON-6: self-heal (no artifact) emits per-version COPYs, not bundle COPY" {
-    # AP: self-heal path no longer uses the mutable bundle tag — it emits per-version
-    # COPYs from the proved-present per-version image refs instead.
+@test "BUNDLE-CON-6: self-heal (no artifact) emits collector stage + 1 final COPY" {
+    # Self-heal uses the same collector emitter as the artifact-present path.
     # No versionset file — self-heal must kick in.
 
     resolve_version_set() {
@@ -1911,19 +2054,20 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # AP: three per-version COPY --from= pairs (one /output/extension/ + one /output/lib/ each).
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # Three per-version COPYs inside the collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    local per_ver_lib_count
-    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
-    [ "$per_ver_lib_count" -eq 3 ]
-
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1961,20 +2105,20 @@ _run_registry_probe_3state() {
     # Self-heal succeeds.
     [ "$status" -eq 0 ]
 
-    # AP: must emit exactly 3 per-version /output/extension/ COPYs.
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # 3 per-version COPYs inside collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # AP: must emit exactly 3 per-version /output/lib/ COPYs.
-    local per_ver_lib_count
-    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
-    [ "$per_ver_lib_count" -eq 3 ]
-
-    # NO bundle ref anywhere in the output (AP: mutable bundle tag not used on self-heal).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2011,23 +2155,28 @@ _run_registry_probe_3state() {
 
     [ "$status" -eq 0 ]
 
-    # Only the 2 proved-present versions must appear (2.25.0 and 2.27.1).
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # Only the 2 proved-present versions must appear inside the collector.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/"
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
 
-    # 2.23.0 must NOT appear.
+    # 2.23.0 must NOT appear inside the collector.
     local absent_count
     absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
     [ "$absent_count" -eq 0 ]
 
-    # No bundle COPY on self-heal path.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 @test "AK-selfheal-error-version-failclosed: transient ERROR probe in self-heal → fail closed, no output" {
@@ -2107,17 +2256,15 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AM-consumer-digest-pin: artifact present with bundle_digest → generated
-# Dockerfile COPYs from <bundle-ref>@<digest> (immutable, pinned reference).
+# AM-consumer-digest-pin: artifact present with version_digests → generated
+# Dockerfile collector stage COPYs from <repo>@<digest> (immutable, pinned).
 #
-# RED before fix: COPY uses only the mutable tag <bundle-ref>, no @sha256:...
-# GREEN after fix: COPY uses <bundle-ref>@sha256:... (digest-pinned).
+# version_digests: {"2.25.0":"sha256:<64hex>", "2.27.1":"sha256:<64hex>"}
+# Each per-version COPY inside the collector uses the digest-pinned ref.
 # ---------------------------------------------------------------------------
-@test "AM-consumer-digest-pin: artifact with bundle_digest → COPY from repo@digest (no tag segment)" {
-    # Artifact: multi-version with bundle_digest.
-    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
-{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:deadbeef00000000000000000000000000000000000000000000000000000000"}
-EOF
+@test "AM-consumer-digest-pin: artifact with version_digests → collector COPYs use repo@digest refs" {
+    # Artifact: multi-version with version_digests.
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -2127,31 +2274,29 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # BB-1 Part 3: COPY uses repo@digest (no tag segment) — addressable regardless
-    # of whether the bundle was produced by a PR (pr-scoped tag) or push (canonical tag).
-    # Must NOT contain ":pg18-bundle@" (old tag-ref@digest format).
-    local old_format_count
-    old_format_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-bundle@sha256:" || true)
-    [ "$old_format_count" -eq 0 ]
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # Must contain the repo@digest format (no tag between image name and @digest).
+    # Per-version COPYs must use repo@digest format inside the collector.
     local pinned_count
-    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:" || true)
-    [ "$pinned_count" -eq 1 ]
+    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    [ "$pinned_count" -eq 2 ]
 
-    # The full repo@digest ref must contain the exact digest from the artifact.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:deadbeef"
+    # Final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
-# AM-consumer-no-digest-tag-fallback: artifact present WITHOUT bundle_digest
-# (local/LOCAL_ONLY-produced artifact) → COPY uses tag-based reference only
-# (no @sha256:, no failure).
+# AM-consumer-no-digest-tag-fallback: artifact present WITHOUT version_digests
+# (LOCAL_ONLY-produced artifact) → collector COPYs use tag-based references.
 # ---------------------------------------------------------------------------
-@test "AM-consumer-no-digest-tag-fallback: artifact without bundle_digest → tag-based COPY, no @ pin" {
-    # Artifact: multi-version, no bundle_digest (LOCAL_ONLY-produced case).
+@test "AM-consumer-no-digest-tag-fallback: artifact without version_digests → tag-based refs in collector" {
+    # Artifact: multi-version, no version_digests (LOCAL_ONLY-produced case).
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
-    # _write_versionset does not include bundle_digest — the artifact is a plain object.
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -2161,44 +2306,42 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # Must emit exactly ONE bundle COPY (tag-based, no digest pin).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
-    [ "$bundle_count" -eq 1 ]
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
 
-    # Must NOT contain any @sha256: (no digest pinning when digest absent).
+    # Tag-based refs (no @sha256: in the per-version COPYs inside the collector).
     local pinned_count
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]
+
+    # Still has 2 per-version COPYs inside collector
+    local per_ver_count
+    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    [ "$per_ver_count" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
 # AN-consumer: strict OCI digest validation at the consumer boundary.
 #
-# bundle_digest flows from the artifact into COPY --from=<ref>@<digest>.
-# A poisoned artifact can put whitespace/newlines/extra tokens in bundle_digest
-# and inject arbitrary Dockerfile instructions.
+# version_digests[ver] flows from the artifact into COPY --from=<repo>@<digest>
+# inside the collector stage. A poisoned artifact can inject arbitrary content.
 #
-# Fix: `is_valid_oci_digest` validates the whole-string before use:
+# Fix: `is_valid_oci_digest` validates whole-string before use:
 #   EXACTLY sha256: followed by EXACTLY 64 lowercase hex chars, nothing else.
 #
-# AN-consumer-rejects-malformed-digest: poisoned bundle_digest (embedded
-#   newline + RUN evil, wrong length, uppercase, extra chars) → generate_dockerfile
-#   FAILS CLOSED (non-zero, no injected text in any emitted line).
-#   RED before (injected into COPY), GREEN after.
-#
-# AN-consumer-accepts-valid-digest: valid digest → COPY --from=<ref>@sha256:<64hex>
-#   (regression — AM digest-pin still works).
-#
-# AN-consumer-absent-digest-tag: no bundle_digest in artifact → tag-based COPY
-#   (LOCAL_ONLY case, unchanged).
+# AN tests verify that malformed per-version digests cause fail-closed,
+# valid digests produce digest-pinned collector COPYs, and absent version_digests
+# falls back to tag-based refs.
 # ---------------------------------------------------------------------------
 
-# Helper: write a versionset artifact that contains bundle_digest.
-_write_versionset_with_digest() {
+# Helper: write a versionset artifact with a specific (potentially malformed)
+# digest for the FIRST version in the available list.  Used by AN injection tests.
+_write_versionset_with_malformed_ver_digest() {
     local ext="$1"
     local pg_major="$2"
-    local digest="$3"
+    local bad_digest="$3"
     shift 3
     local -a available_arr=("$@")
 
@@ -2211,78 +2354,79 @@ _write_versionset_with_digest() {
     done
     arr_json+="]"
 
+    # Write with a valid digest for the last version and the bad_digest for the first.
+    local first_ver="${available_arr[0]}"
+    local last_ver="${available_arr[-1]}"
+    local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
+
     # Use printf to write the digest value literally (handles embedded newlines).
     local tmp_digest_file
     tmp_digest_file=$(mktemp)
-    printf '%s' "$digest" > "$tmp_digest_file"
+    printf '%s' "$bad_digest" > "$tmp_digest_file"
+
+    local bad_val
+    bad_val=$(cat "$tmp_digest_file")
+    rm -f "$tmp_digest_file"
+
+    # Build version_digests JSON with bad_val for first_ver
+    local vd_json="{\"${first_ver}\":$(jq -n --arg d "$bad_val" '$d')}"
+    # If there is a second version, add a valid digest for it
+    if [[ "${#available_arr[@]}" -ge 2 ]]; then
+        vd_json="{\"${first_ver}\":$(jq -n --arg d "$bad_val" '$d'),\"${last_ver}\":\"${good_digest}\"}"
+    fi
 
     jq -nc \
         --arg ext "$ext" \
         --arg pg_major "$pg_major" \
-        --arg ceiling "${available_arr[-1]}" \
+        --arg ceiling "$last_ver" \
         --argjson resolved "$arr_json" \
         --argjson available "$arr_json" \
-        --rawfile bundle_digest "$tmp_digest_file" \
-        '{ext:$ext,pg_major:$pg_major,ceiling:$ceiling,resolved:$resolved,available:$available,excluded:[],bundle_digest:($bundle_digest|rtrimstr("\n"))}' \
+        --argjson version_digests "$vd_json" \
+        '{ext:$ext,pg_major:$pg_major,ceiling:$ceiling,resolved:$resolved,available:$available,excluded:[],version_digests:$version_digests}' \
         > "$TEST_TEMP_DIR/.build-lineage/ext-${ext}-pg${pg_major}-versionset.json"
-    rm -f "$tmp_digest_file"
 }
 
-@test "AN-consumer-rejects-embedded-newline-injection: bundle_digest with newline+RUN evil → fail closed, injected text absent" {
-    # Poisoned digest: valid-looking sha256 prefix + embedded newline + injected directive.
-    # An attacker who controls the artifact can put this in bundle_digest to inject
-    # a RUN instruction into the generated Dockerfile.
+@test "AN-consumer-rejects-embedded-newline-injection: version_digests with newline+RUN evil → fail closed" {
+    # Poisoned digest for one version: valid-looking sha256 prefix + embedded newline + injected directive.
     local evil_digest
     evil_digest=$(printf 'sha256:0000000000000000000000000000000000000000000000000000000000000000\nRUN evil')
-    _write_versionset_with_digest "timescaledb" "18" "$evil_digest" "2.25.0" "2.27.1"
+    _write_versionset_with_malformed_ver_digest "timescaledb" "18" "$evil_digest" "2.25.0" "2.27.1"
 
-    # Use --separate-stderr so $output contains only stdout (Dockerfile content)
-    # and $stderr contains error messages. This prevents the log_error message
-    # (which quotes the malformed digest for diagnostics) from being mistaken
-    # for injected Dockerfile content in the evil_count assertion.
     run --separate-stderr generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # RED before fix: exits 0, "RUN evil" appears in stdout (injected into Dockerfile).
-    # GREEN after fix: exits non-zero (fail closed — malformed digest rejected).
+    # Must fail closed — malformed digest rejected.
     [ "$status" -ne 0 ]
 
-    # The injected token must NEVER appear in the Dockerfile stdout (primary oracle).
-    # $output is stdout-only with --separate-stderr; error messages go to $stderr.
+    # Injected text must NOT appear in stdout.
     local evil_count
     evil_count=$(printf '%s' "$output" | grep -c "RUN evil" || true)
     [ "$evil_count" -eq 0 ]
 }
 
-@test "AN-consumer-rejects-uppercase-hex: uppercase digest → fail closed" {
-    # sha256: followed by 64 uppercase hex chars — fails strict validator (must be lowercase).
+@test "AN-consumer-rejects-uppercase-hex: uppercase digest in version_digests → fail closed" {
     local bad_digest="sha256:DEADBEEF00000000000000000000000000000000000000000000000000000000"
-    _write_versionset_with_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
+    _write_versionset_with_malformed_ver_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
 
-    # Use --separate-stderr so $output contains Dockerfile stdout only.
     run --separate-stderr generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
         "$TEST_TEMP_DIR/Dockerfile.template" \
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # RED before fix: exits 0, emits COPY with uppercase digest (unvalidated).
-    # GREEN after fix: exits non-zero.
     [ "$status" -ne 0 ]
 
-    # The uppercase hex must not appear in any COPY line in the Dockerfile stdout.
     local upper_count
     upper_count=$(printf '%s' "$output" | grep -c "DEADBEEF" || true)
     [ "$upper_count" -eq 0 ]
 }
 
-@test "AN-consumer-rejects-short-hash: sha256:<63hex> too-short → fail closed" {
-    # 63 hex chars — one char short of a valid sha256 digest.
+@test "AN-consumer-rejects-short-hash: sha256:<63hex> in version_digests → fail closed" {
     local bad_digest="sha256:000000000000000000000000000000000000000000000000000000000000000"
-    _write_versionset_with_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
+    _write_versionset_with_malformed_ver_digest "timescaledb" "18" "$bad_digest" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -2293,10 +2437,9 @@ _write_versionset_with_digest() {
     [ "$status" -ne 0 ]
 }
 
-@test "AN-consumer-accepts-valid-digest: valid sha256:<64lowercase-hex> → repo@digest COPY emitted" {
-    # Proper OCI digest — must produce a pinned COPY --from=<repo>@sha256:<64hex> (no tag).
-    local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
-    _write_versionset_with_digest "timescaledb" "18" "$good_digest" "2.25.0" "2.27.1"
+@test "AN-consumer-accepts-valid-digest: valid version_digests → per-version repo@digest COPYs inside collector" {
+    # Proper OCI digest — must produce collector stage with digest-pinned per-version COPYs.
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -2304,15 +2447,19 @@ _write_versionset_with_digest() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Regression: valid digest must succeed.
     [ "$status" -eq 0 ]
 
-    # BB-1 Part 3: COPY must use repo@digest format (no tag segment).
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb@${good_digest} / /tmp/ext/timescaledb/"
+    # Collector stage present
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+
+    # Digest-pinned COPYs inside the collector
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    [ "$pinned_count" -eq 2 ]
 }
 
-@test "AN-consumer-absent-digest-tag: no bundle_digest in artifact → tag-based COPY, no @ pin" {
-    # LOCAL_ONLY-produced artifact: no bundle_digest field.
+@test "AN-consumer-absent-digest-tag: no version_digests in artifact → tag-based refs in collector" {
+    # LOCAL_ONLY-produced artifact: no version_digests field.
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -2323,12 +2470,10 @@ _write_versionset_with_digest() {
 
     [ "$status" -eq 0 ]
 
-    # Tag-based COPY (no digest pin).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
-    [ "$bundle_count" -eq 1 ]
+    # Collector stage still present (tag-based fallback)
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
 
-    # No @sha256: in output.
+    # No @sha256: in output (tag-based refs, no pinning when version_digests absent).
     local pinned_count
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]
@@ -2467,7 +2612,7 @@ _write_versionset_with_digest() {
 #   self-heal, ceiling absent from _sh_available → fail closed (AO-4 still enforced).
 # ---------------------------------------------------------------------------
 
-@test "AP-selfheal-per-version-not-bundle: self-heal >1 proved-present versions → per-version COPYs, NO bundle tag" {
+@test "AP-selfheal-per-version-not-bundle: self-heal >1 proved-present versions → collector stage, no bundle tag" {
     # No versionset artifact → forces self-heal path.
     # _sh_available = [2.23.0, 2.25.0, 2.27.1] (all present, ceiling present, count > 1).
 
@@ -2485,30 +2630,22 @@ _write_versionset_with_digest() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Must succeed.
     [ "$status" -eq 0 ]
 
-    # Per-version COPYs: one /output/extension/ line per proved version.
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # 3 per-version COPYs inside the collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
-    # Per-version COPYs: one /output/lib/ line per proved version.
-    local per_ver_lib_count
-    per_ver_lib_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/lib/" || true)
-    [ "$per_ver_lib_count" -eq 3 ]
-
-    # Destinations are version-subdirectoried: /tmp/ext/<ext>/<ver>/extension/ and /tmp/ext/<ext>/<ver>/lib/
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/extension/ /tmp/ext/timescaledb/2.23.0/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/extension/ /tmp/ext/timescaledb/2.25.0/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/extension/ /tmp/ext/timescaledb/2.27.1/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/lib/ /tmp/ext/timescaledb/2.23.0/lib/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/lib/ /tmp/ext/timescaledb/2.27.1/lib/"
-
-    # NO :pg18-bundle reference anywhere in the generated Dockerfile.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 @test "AP-selfheal-only-proved-versions: absent version not emitted; transient ERROR fails closed" {
@@ -2534,32 +2671,28 @@ _write_versionset_with_digest() {
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Ceiling (2.27.1) is present, count=2 → multi-version per-version path.
     [ "$status" -eq 0 ]
 
-    # Only proved-present versions must appear (2.25.0 and 2.27.1).
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # Only proved-present versions inside collector (2.25.0 and 2.27.1).
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
     # 2.23.0 must NOT appear.
     local absent_count
     absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
     [ "$absent_count" -eq 0 ]
-
-    # No bundle ref.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
 }
 
-@test "AP-artifact-path-still-bundle-digest: artifact present with bundle_digest → repo@digest COPY (no tag segment)" {
-    # AM regression: artifact-present path must still emit a digest-pinned COPY.
-    # BB-1 Part 3: the ref is repo@digest (no tag segment) — tag-agnostic.
-    # Self-heal is NOT triggered (valid artifact on disk).
-    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
-{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:cafebabe00000000000000000000000000000000000000000000000000000000"}
-EOF
+@test "AP-artifact-path-still-version-digests: artifact with version_digests → digest-pinned collector COPYs" {
+    # AM regression: artifact-present path must still emit digest-pinned refs inside the collector.
+    # Self-heal is NOT triggered (valid artifact on disk with version_digests).
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -2569,20 +2702,18 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # BB-1 Part 3: exactly ONE repo@digest COPY (no tag segment before @sha256:).
+    # Collector stage present
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+
+    # Digest-pinned per-version COPYs inside the collector (2 versions)
     local pinned_count
-    pinned_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:cafebabe" || true)
-    [ "$pinned_count" -eq 1 ]
+    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    [ "$pinned_count" -eq 2 ]
 
-    # Must NOT contain the old tag-ref format (:pg18-bundle@sha256:).
-    local old_format_count
-    old_format_count=$(echo "$output" | grep -c ":pg18-bundle@sha256:" || true)
-    [ "$old_format_count" -eq 0 ]
-
-    # NO per-version individual COPY lines (artifact path uses bundle, not per-version).
-    local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
-    [ "$per_ver_ext_count" -eq 0 ]
+    # Exactly ONE final-stage COPY from collector
+    local final_count
+    final_count=$(echo "$output" | grep -cx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/" || true)
+    [ "$final_count" -eq 1 ]
 }
 
 @test "AP-selfheal-ceiling-present-enforced: self-heal ceiling absent from proved set → fail closed" {
@@ -2689,18 +2820,16 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# AR-2: a malformed bundle_digest containing GHA workflow-command injection
+# AR-2: a malformed version_digests entry containing GHA workflow-command injection
 # bytes must be defanged in the log diagnostic and the function must fail closed.
 #
-# A poisoned artifact has bundle_digest = "sha256:abc\n::add-mask::secret".
-# is_valid_oci_digest rejects this (not valid sha256:<64 hex>), so generate_dockerfile
-# must fail closed (exit non-zero). The log_error message must NOT contain a raw
-# newline immediately followed by ::add-mask:: (the injection form GHA interprets).
+# A poisoned artifact has version_digests["2.23.0"] = "sha256:abc\n::add-mask::secret".
+# is_valid_oci_digest rejects this, so generate_dockerfile must fail closed (exit
+# non-zero). The log_error message must NOT contain a raw newline immediately followed
+# by ::add-mask:: (the injection form GHA interprets).
 # ---------------------------------------------------------------------------
-@test "AR2-digest-diagnostic-sanitized: malformed bundle_digest with injection bytes — fail closed, diagnostic defanged" {
-    # Artifact with 3 available versions (triggers bundle path) and a poisoned digest.
-    # The digest contains an embedded newline + GHA workflow command.
-    # We write it with a literal newline embedded in the JSON string value.
+@test "AR2-digest-diagnostic-sanitized: malformed version_digests entry with injection bytes — fail closed, diagnostic defanged" {
+    # Artifact with 3 available versions and a poisoned digest for one version.
     python3 -c "
 import json, os
 artifact = {
@@ -2710,15 +2839,17 @@ artifact = {
     'resolved': ['2.23.0', '2.25.0', '2.27.1'],
     'available': ['2.23.0', '2.25.0', '2.27.1'],
     'excluded': [],
-    'bundle_digest': 'sha256:abc\n::add-mask::secret'
+    'version_digests': {
+        '2.23.0': 'sha256:abc\n::add-mask::secret',
+        '2.25.0': 'sha256:' + 'a' * 64,
+        '2.27.1': 'sha256:' + 'b' * 64
+    }
 }
 path = os.path.join('$TEST_TEMP_DIR', '.build-lineage', 'ext-timescaledb-pg18-versionset.json')
 with open(path, 'w') as f:
     json.dump(artifact, f)
 "
 
-    # Capture stderr by running generate_dockerfile in a subprocess that redirects
-    # stderr to a file — the inner redirect ensures we capture the log_error bytes.
     local ar2_stderr="/tmp/ar2_digest_stderr_$$.txt"
     local ar2_rc=0
     bash -c "
@@ -2741,12 +2872,10 @@ with open(path, 'w') as f:
     local stderr_content
     stderr_content=$(cat "$ar2_stderr" 2>/dev/null || true)
 
-    # The log diagnostic must have been emitted (error message mentions bundle_digest).
-    [[ "$stderr_content" == *"bundle_digest"* ]]
+    # The log diagnostic must have been emitted (error message mentions version_digests).
+    [[ "$stderr_content" == *"version_digests"* ]]
 
     # The injection sequence must NOT appear as a line starting with :: in the output.
-    # GHA interprets any line whose first two characters are '::' as a workflow command.
-    # After sanitization no line in the diagnostic may begin with '::'.
     if printf '%s\n' "$stderr_content" | grep -qE '^::'; then
         echo "FAIL: log output contains a line starting with '::' — GHA injection not neutralized"
         echo "--- stderr_content ---"
@@ -2962,9 +3091,9 @@ ARTIFACT_EOF
     # Must succeed — reduced set with ceiling present is not a fatal error.
     [ "$status" -eq 0 ]
 
-    # AP: per-version COPYs for the 2 proved-present versions (2.25.0 and 2.27.1).
+    # Self-heal emits per-version COPYs for the 2 proved-present versions inside collector.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
     # A reduction warning must have been emitted.
@@ -3006,24 +3135,13 @@ ARTIFACT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# BB1-consumer-repo-digest: artifact with bundle_digest → consumer COPY uses
-# <registry>/<owner>/ext-<ext>@<digest> (repo + digest, NO tag segment).
-# This is addressable in the repo regardless of which tag (pr-scoped or
-# canonical) points to it — the SAME artifact works from both PR and master.
-#
-# RED before fix: COPY uses <bundle-ref>@<digest> where <bundle-ref> includes
-#   the tag segment (:pg18-bundle). A digest ref with a tag is still
-#   tag-dependent notation — Docker resolves by digest but pulls tag namespace.
-#   More importantly: if the tag was -pr42-scoped, a later canonical master run
-#   would need the artifact regenerated.
-# GREEN after fix: COPY uses <registry>/<owner>/ext-<ext>@<digest> (no tag),
-#   which is a pure-digest reference valid across any tag scope.
+# BB1-consumer-repo-digest: artifact with version_digests → each per-version
+# COPY inside the collector uses <registry>/<owner>/ext-<ext>@<digest>
+# (repo + digest, NO tag segment). Pure-digest references are valid across
+# any tag scope (PR-scoped or canonical).
 # ---------------------------------------------------------------------------
-@test "BB1-consumer-repo-digest: bundle_digest in artifact → COPY ref is repo@digest (no tag segment)" {
-    # Artifact: multi-version with bundle_digest.
-    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
-{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:deadbeef00000000000000000000000000000000000000000000000000000000"}
-EOF
+@test "BB1-consumer-repo-digest: version_digests in artifact → per-version COPYs are repo@digest (no tag segment)" {
+    _write_versionset_with_digests "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
         "$TEST_TEMP_DIR/extensions/config.yaml" \
@@ -3033,23 +3151,20 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # GREEN: COPY ref must be repo@digest format (no tag segment like :pg18-bundle).
-    # The ref must be ghcr.io/testowner/ext-timescaledb@sha256:deadbeef...
-    # with NO colon-delimited tag between the image name and the @digest.
-    local copy_line
-    copy_line=$(echo "$output" | grep "COPY --from=.*timescaledb.*deadbeef" || true)
-    [ -n "$copy_line" ]
+    # All per-version COPYs must use repo@digest format (no tag segment).
+    local copy_lines
+    copy_lines=$(echo "$output" | grep "COPY --from=.*timescaledb@sha256:" || true)
+    [ -n "$copy_lines" ]
 
-    # Must NOT contain ":pg18-bundle" before the @digest.
-    [[ "$copy_line" != *":pg18-bundle@"* ]]
+    # No ":pg" before @sha256: (no tag segment in the ref).
+    local tagged_digest_count
+    tagged_digest_count=$(echo "$output" | grep -c ":pg.*@sha256:" || true)
+    [ "$tagged_digest_count" -eq 0 ]
 
-    # Must contain the bare repo path + @digest.
-    [[ "$copy_line" == *"ghcr.io/testowner/ext-timescaledb@sha256:deadbeef"* ]]
-
-    # Exactly one such COPY line.
+    # 2 such digest-pinned COPYs (one per version in the collector stage)
     local copy_count
     copy_count=$(echo "$output" | grep -c "ghcr.io/testowner/ext-timescaledb@sha256:" || true)
-    [ "$copy_count" -eq 1 ]
+    [ "$copy_count" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -3169,15 +3284,15 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # AP path: per-version COPY lines for each proved version.
+    # Self-heal emits per-version COPYs inside collector with -pr42 suffix.
     # Canonical absent + PR-scoped present → each per-version ref must carry -pr42.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /.+" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    # Both expected pr42 refs present.
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/extension/"
-    echo "$output" | grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/extension/"
+    # Both expected pr42 refs present inside collector.
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/ /2.25.0/"
+    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/ /2.27.1/"
 }
 
 # ---------------------------------------------------------------------------
@@ -3187,23 +3302,21 @@ EOF
 # ABSENT and PRESENT-EMPTY to the empty string — falling back to the mutable
 # bundle tag.  BC-3 requires distinguishing:
 #   - FIELD ABSENT    → allowed LOCAL_ONLY tag fallback (exit 0)
-#   - FIELD PRESENT but empty string → FAIL CLOSED (exit non-zero)
+#   - FIELD PRESENT but empty digest string → FAIL CLOSED (exit non-zero)
 #   - FIELD PRESENT but not valid OCI digest → FAIL CLOSED (already AN-covered)
 #
 # BC3-empty-digest-failclosed:
-#   artifact has {"bundle_digest":""} (present, empty string) →
+#   artifact has version_digests["2.25.0"]="" (present, empty string) →
 #   generate_dockerfile FAILS CLOSED (non-zero).
-#   RED before fix: falls back to mutable tag (exits 0).
-#   GREEN after: exits non-zero (field present but invalid → fail closed).
 #
 # BC3-absent-digest-tag-fallback:
-#   artifact has NO bundle_digest key → tag-based COPY, exit 0 (LOCAL_ONLY case).
+#   artifact has NO version_digests key → tag-based refs, exit 0 (LOCAL_ONLY case).
 #   Must remain GREEN (regression guard).
 # ---------------------------------------------------------------------------
-@test "BC3-empty-digest-failclosed: bundle_digest present-but-empty string → fail closed (no mutable-tag fallback)" {
-    # Artifact with bundle_digest field present but set to empty string.
+@test "BC3-empty-digest-failclosed: version_digests entry present-but-empty → fail closed" {
+    # Artifact with version_digests having one empty-string value.
     cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
-{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":""}
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"version_digests":{"2.25.0":"","2.27.1":"sha256:abcdef0000000000000000000000000000000000000000000000000000000000"}}
 EOF
 
     run generate_dockerfile \
@@ -3212,18 +3325,12 @@ EOF
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # RED before fix: exits 0 (falls through to mutable bundle tag).
-    # GREEN after fix: exits non-zero (field present, value invalid → fail closed).
+    # Field present with empty value → fail closed.
     [ "$status" -ne 0 ]
-
-    # The mutable bundle tag must NOT appear in any COPY line (no fallback).
-    local bundle_tag_count
-    bundle_tag_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" || true)
-    [ "$bundle_tag_count" -eq 0 ]
 }
 
-@test "BC3-absent-digest-tag-fallback: NO bundle_digest key in artifact → tag-based COPY, exit 0 (LOCAL_ONLY regression)" {
-    # LOCAL_ONLY-produced artifact: bundle_digest key is completely absent.
+@test "BC3-absent-digest-tag-fallback: NO version_digests key in artifact → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
+    # LOCAL_ONLY-produced artifact: version_digests key is completely absent.
     _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
 
     run generate_dockerfile \
@@ -3232,15 +3339,72 @@ EOF
         "timeseries" "18" \
         "ghcr.io" "testowner"
 
-    # Must succeed (LOCAL_ONLY case — key absent is allowed).
+    # Must succeed (LOCAL_ONLY case — key absent → tag-based refs in collector).
     [ "$status" -eq 0 ]
 
-    # Must emit exactly ONE mutable bundle tag COPY (no digest pin).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle / /tmp/ext/timescaledb/" || true)
-    [ "$bundle_count" -eq 1 ]
+    # Collector stage present with tag-based refs
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
 
-    # No @sha256: anywhere.
+    # No @sha256: anywhere (tag-based fallback, no digest pin).
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$pinned_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# BD-1: legacy artifact with bundle_digest but no version_digests must fail
+# closed — the consumer must not silently downgrade to mutable tag refs.
+#
+# A pre-collector pushed artifact carries bundle_digest (the old single-image
+# schema) but no version_digests.  The tag-fallback path in generate_dockerfile
+# is valid ONLY for artifacts that have NEITHER key (genuine local/no-push).
+# When bundle_digest is present but version_digests is absent, the artifact was
+# produced by an old push path and must be rejected so the operator rebuilds.
+#
+# BD1-legacy-bundle-digest-failclosed:
+#   artifact has bundle_digest key but no version_digests → generate_dockerfile
+#   exits non-zero (fail-closed); no Dockerfile emitted.
+#
+# BD1-neither-key-tag-fallback:
+#   artifact has neither bundle_digest nor version_digests → tag-based refs,
+#   exit 0 (LOCAL_ONLY regression guard — must stay green).
+# ---------------------------------------------------------------------------
+@test "BD1-legacy-bundle-digest-failclosed: bundle_digest present, no version_digests → fail closed, no Dockerfile" {
+    # Legacy artifact: has bundle_digest (old schema) but no version_digests.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must fail closed — legacy artifact must not silently downgrade to tag refs.
+    [ "$status" -ne 0 ]
+
+    # No @sha256: in output (should be empty / no Dockerfile emitted).
+    local digest_pin_count
+    digest_pin_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$digest_pin_count" -eq 0 ]
+}
+
+@test "BD1-neither-key-tag-fallback: no bundle_digest, no version_digests → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
+    # LOCAL_ONLY artifact: neither key present → tag-based fallback, exit 0.
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Collector stage present with tag-based refs (no digest pin).
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+
     local pinned_count
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
     [ "$pinned_count" -eq 0 ]
@@ -3313,14 +3477,19 @@ EOF
     # Canonical absent → fall back to PR-scoped → PRESENT → self-heal succeeds → exit 0.
     [ "$status" -eq 0 ]
 
-    # Self-heal emits per-version COPYs with -pr42 suffix (AP path, canonical absent → PR-scoped).
+    # Collector stage present
+    local collector_count
+    collector_count=$(echo "$output" | grep -cx "FROM scratch AS ext_collect_timescaledb" || true)
+    [ "$collector_count" -eq 1 ]
+
+    # Self-heal emits per-version COPYs inside collector with -pr42 suffix.
     local pr_copy_count
-    pr_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/extension/" || true)
+    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /.+" || true)
     [ "$pr_copy_count" -eq 2 ]
 
-    # No canonical (un-suffixed) COPY lines for timescaledb (canonical was absent for all versions).
+    # No canonical (un-suffixed) per-version COPYs (canonical was absent for all versions).
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+[^-] /output/extension/" || true)
+    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+[^-].* /output/ /.+" || true)
     [ "$canonical_copy_count" -eq 0 ]
 }
 
@@ -3361,14 +3530,14 @@ EOF
     # Push path must succeed: canonical probe → PRESENT → self-heal succeeds.
     [ "$status" -eq 0 ]
 
-    # AP: self-heal emits per-version COPYs with NO pr suffix.
+    # Self-heal emits per-version COPYs inside collector with NO pr suffix.
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/extension/" || true)
+    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
     [ "$canonical_copy_count" -eq 2 ]
 
-    # No -pr<N> suffixed COPY lines.
+    # No -pr<N> suffixed COPY lines inside collector.
     local pr_copy_count
-    pr_copy_count=$(echo "$output" | grep -cE "COPY --from=.*-pr[0-9]+ /output/extension/" || true)
+    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*-pr[0-9]+ /output/ /.+" || true)
     [ "$pr_copy_count" -eq 0 ]
 }
 
@@ -3549,16 +3718,16 @@ EOF
     # Self-heal must succeed.
     [ "$status" -eq 0 ]
 
-    # 2.23.0 must be emitted as the CANONICAL ref (no -pr42 suffix).
+    # 2.23.0 must be emitted as the CANONICAL ref (no -pr42 suffix) inside the collector.
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -c 'ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/extension/' || true)
+    canonical_copy_count=$(echo "$output" | grep -c 'ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /' || true)
     [ "$canonical_copy_count" -eq 1 ] || {
-        echo "FAIL: 2.23.0 must appear as canonical ref in COPY line. Output was:"
+        echo "FAIL: 2.23.0 must appear as canonical ref in collector COPY. Output was:"
         echo "$output"
         false
     }
 
-    # 2.23.0 must NOT appear with -pr42 suffix in any COPY line.
+    # 2.23.0 must NOT appear with -pr42 suffix.
     local pr_copy_count
     pr_copy_count=$(echo "$output" | grep -c 'pg18-2.23.0-pr42' || true)
     [ "$pr_copy_count" -eq 0 ] || {
@@ -3567,9 +3736,9 @@ EOF
         false
     }
 
-    # 2.27.1 (bumped, built this PR) must appear as PR-scoped ref.
+    # 2.27.1 (bumped, built this PR) must appear as PR-scoped ref inside the collector.
     local pr42_count
-    pr42_count=$(echo "$output" | grep -c 'pg18-2.27.1-pr42 /output/extension/' || true)
+    pr42_count=$(echo "$output" | grep -c 'pg18-2.27.1-pr42 /output/ /' || true)
     [ "$pr42_count" -eq 1 ] || {
         echo "FAIL: 2.27.1 must appear as pr42-scoped ref. Output was:"
         echo "$output"

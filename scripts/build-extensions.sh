@@ -617,19 +617,21 @@ handle_pull_only_mode() {
     LOCAL_ONLY=true build_tag_push_extensions "$config_file" "$major_ver" "$container_dir" "false" "${unique_exts_to_build[@]}"
 }
 
-# Compute the confirmed_available set for (ext, major_ver) from version_set_json,
-# push the bundle with that set, then write the versionset artifact from that SAME
-# set. This is the single-assembly, atomic-ordering contract:
+# Compute the confirmed_available set for (ext, major_ver) from version_set_json
+# and write the versionset artifact (without version_digests — multi-arch index
+# digests are not available on the per-arch build path; finalize_multiarch_manifests
+# writes the canonical artifact with version_digests after merging both arches).
+#
+# Contract:
 #   confirmed = { v in resolved : 3state(v)=PRESENT } UNION { v in built-this-run }
 #   fail-closed: 3state ERROR, empty confirmed, or ceiling absent → fatal
-#   bundle push THEN artifact write (never artifact without bundle)
 #
 # Args: ext config_file major_ver version_set_json ceiling do_push
-#   do_push: "true" = push to registry; "false" = local-only build.
+#   do_push: "true" = push to registry; "false" = local-only / CI smoke.
 # Returns: 0 on success; 1 on any failure.
 # Does nothing (returns 0) under DRY_RUN — callers handle DRY_RUN logging.
 # When set_size <= 1: deletes any stale versionset artifact and returns 0
-#   (no bundle needed for single-version; consumer self-heals to single-version path).
+#   (single-version; consumer uses single-version path).
 _bundle_and_write_artifact() {
     local ext="$1" config_file="$2" major_ver="$3" version_set_json="$4" ceiling="$5" do_push="$6"
 
@@ -644,31 +646,36 @@ _bundle_and_write_artifact() {
 
     # CI no-push guard: when do_push=false AND this is not a LOCAL_ONLY or PULL_ONLY
     # recovery path, we are in a fork PR / CI smoke context where the package registry
-    # is read-only.  Neither a bundle push nor an artifact write is safe here — the
-    # bundle was never pushed so any artifact would reference an unpushed (local-only)
-    # bundle image, causing the downstream postgres build to fail.
-    # Delete any stale artifact so the downstream consumer self-heals to per-version COPYs.
-    # LOCAL_ONLY and PULL_ONLY callers pass do_push=false but still need a local bundle
-    # and artifact for local consumption — they are NOT affected by this guard.
+    # is read-only.  Delete any stale artifact so the downstream consumer self-heals.
+    # LOCAL_ONLY and PULL_ONLY callers pass do_push=false but still need an artifact
+    # for local consumption — they are NOT affected by this guard.
     if [[ "$do_push" != "true" ]] && \
        [[ "${LOCAL_ONLY:-false}" != "true" ]] && \
        [[ "${PULL_ONLY:-false}" != "true" ]]; then
-        log_info "$ext: skipping bundle+artifact (CI no-push context — do_push=false)"
+        log_info "$ext: skipping artifact (CI no-push context — do_push=false)"
         _delete_stale_versionset_artifact "$ext" "$major_ver"
         return 0
     fi
 
-    # AV-2 double-bundle guard: record that this (ext, major_ver) bundle was assembled
-    # on the BUILD PATH so _emit_final_versionset_pass can skip it (preventing the same
-    # bundle from being assembled twice in a single run).
+    # AV-2 double-write guard: record that this (ext, major_ver) artifact was written
+    # on the BUILD PATH so _emit_final_versionset_pass can skip it (preventing a
+    # second write in the same run).
     # Sentinel file: ${_BUILT_THIS_RUN_DIR}/bundle-<ext>-<major_ver>
-    # Written BEFORE the bundle assembly so the final pass never re-enters here for
-    # the same key even if _bundle_and_write_artifact is called from the build path.
     local _bundle_sentinel="${_BUILT_THIS_RUN_DIR}/bundle-${ext}-${major_ver}"
     printf '1' > "$_bundle_sentinel"
 
+    # ARCH_SUFFIX defer: on a CI per-arch leg the multi-arch index digests are not
+    # yet available.  The manifest-merge step (finalize_multiarch_manifests) writes
+    # the canonical artifact with version_digests after merging both arches.
+    # Defer here — delete any stale artifact so the consumer does not use old data.
+    if [[ -n "${ARCH_SUFFIX:-}" ]]; then
+        log_info "$ext pg${major_ver}: ARCH_SUFFIX=${ARCH_SUFFIX} — deferring versionset artifact to manifest-merge step"
+        _delete_stale_versionset_artifact "$ext" "$major_ver"
+        return 0
+    fi
+
     # Load built-this-run set so a version pushed this run is counted PRESENT
-    # regardless of propagation lag (identical to _emit_versionset_artifact's guard).
+    # regardless of propagation lag.
     local _built_this_run_file="${_BUILT_THIS_RUN_DIR:-/dev/null}/${ext}-${major_ver}"
     local -A _btr_set=()
     if [[ -f "$_built_this_run_file" ]]; then
@@ -678,26 +685,14 @@ _bundle_and_write_artifact() {
     fi
 
     # Single 3-state pass: compute confirmed_available from resolved set.
-    #
-    # BI-2 fix: canonical-first, PR-aware availability probe.
-    # On a same-repo PR (PR_TAG_SUFFIX non-empty), a version may have been built in
-    # an EARLIER run of this PR and exists ONLY under the PR-scoped tag.  The
-    # canonical probe alone returns ABSENT, incorrectly excluding the version and
-    # causing the artifact to be deleted — breaking PR rerun idempotency.
-    # Fix: if the canonical probe returns ABSENT AND PR_TAG_SUFFIX is non-empty,
-    # also probe the PR-scoped ref; if PRESENT there, version is confirmed-available.
-    # On push/dispatch (PR_TAG_SUFFIX empty), only the canonical probe runs (unchanged).
-    # Single 3-state pass: compute confirmed_available from resolved set.
-    #
-    # BI-2 fix: canonical-first, PR-aware availability probe.
-    # On a same-repo PR (PR_TAG_SUFFIX non-empty), a version may have been built in
-    # an EARLIER run of this PR and exists ONLY under the PR-scoped tag.  The
-    # canonical probe alone returns ABSENT, incorrectly excluding the version and
-    # causing the artifact to be deleted — breaking PR rerun idempotency.
-    # Fix: if the canonical probe returns ABSENT AND PR_TAG_SUFFIX is non-empty,
-    # also probe the PR-scoped ref; if PRESENT there, version is confirmed-available.
-    # On push/dispatch (PR_TAG_SUFFIX empty), only the canonical probe runs (unchanged).
+    # BI-2: canonical-first, PR-aware availability probe.
+    # _confirmed_refs maps each confirmed version to the EXACT ref that was
+    # confirmed available (canonical or PR-scoped).  The digest-capture step
+    # MUST use this ref, not an independently-reconstructed canonical ref,
+    # so that on a PR where only -prNN tags exist the digest is captured from
+    # the ref that is actually present.
     local _confirmed_available=()
+    local -A _confirmed_refs=()
     local _excluded_entries=()
     local _probe_error=false
     local _cv
@@ -707,12 +702,16 @@ _bundle_and_write_artifact() {
 
         if [[ -n "${_btr_set[$_cv]:-}" ]]; then
             _confirmed_available+=("$_cv")
+            # Built this run: image was pushed as the scoped ref (PR-scoped on PR,
+            # canonical on push/dispatch).  The multi-arch tag has no arch suffix.
+            _confirmed_refs["$_cv"]=$(_scoped_tag "$_cv_image")
         else
             local _probe_rc=0
             _image_present_3state "$_cv_image" || _probe_rc=$?
             case "$_probe_rc" in
                 0)
                     _confirmed_available+=("$_cv")
+                    _confirmed_refs["$_cv"]="$_cv_image"
                     ;;
                 1)
                     # Canonical absent: on a PR, also check the PR-scoped ref.
@@ -723,8 +722,8 @@ _bundle_and_write_artifact() {
                         _image_present_3state "$_cv_pr_image" || _pr_probe_rc=$?
                         case "$_pr_probe_rc" in
                             0)
-                                # PR-scoped ref present (built in an earlier run of this PR).
                                 _confirmed_available+=("$_cv")
+                                _confirmed_refs["$_cv"]="$_cv_pr_image"
                                 ;;
                             1)
                                 _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
@@ -763,47 +762,65 @@ _bundle_and_write_artifact() {
     done
 
     if [[ ${#_confirmed_available[@]} -eq 0 ]] || [[ "$_ceiling_in_confirmed" == "false" ]]; then
-        log_info "$ext: confirmed_available is empty or ceiling ($ceiling) absent — deleting stale artifact, skipping bundle"
+        log_info "$ext: confirmed_available is empty or ceiling ($ceiling) absent — deleting stale artifact"
         _delete_stale_versionset_artifact "$ext" "$major_ver"
         return 0
     fi
 
-    # AO-1: if only one version is confirmed available (the ceiling only, non-ceiling
-    # versions were musl-failed or absent), do NOT assemble a bundle — a 1-version
-    # bundle is unused by the consumer (available_count <= 1 falls through to the
-    # single-version path in generate_dockerfile).  A bundle push or digest-capture
-    # failure on a 1-version bundle would fail CI for no benefit.
-    # Delete any stale artifact so the consumer self-heals cleanly; return 0 (not fatal).
+    # AO-1: only one version confirmed available — consumer uses single-version path.
     if [[ ${#_confirmed_available[@]} -le 1 ]]; then
-        log_info "$ext: only ${#_confirmed_available[@]} version(s) confirmed available — skipping bundle (consumer uses single-version path), deleting stale artifact"
+        log_info "$ext: only ${#_confirmed_available[@]} version(s) confirmed available — deleting stale artifact (consumer uses single-version path)"
         _delete_stale_versionset_artifact "$ext" "$major_ver"
         return 0
     fi
 
-    # Push the bundle from EXACTLY confirmed_available.
-    local _ba_rc=0
-    assemble_and_push_bundle "$ext" "$major_ver" "$do_push" "${_confirmed_available[@]}" || _ba_rc=$?
-    if [[ "$_ba_rc" -ne 0 ]]; then
-        log_error "$ext pg${major_ver}: bundle assembly/push failed — deleting stale artifact"
-        _delete_stale_versionset_artifact "$ext" "$major_ver"
-        return 1
+    # Invariant: version_digests is present IFF do_push=true (non-ARCH_SUFFIX path).
+    # A pushed artifact MUST carry version_digests so the consumer can emit digest-
+    # pinned COPY --from= refs.  Omitting version_digests is correct ONLY when the
+    # artifact was not pushed (LOCAL_ONLY / PULL_ONLY / do_push=false).
+    # The consumer's tag-fallback for a no-version_digests artifact relies on this
+    # invariant: it is safe ONLY for local/no-push artifacts; a pushed artifact that
+    # lacks version_digests would cause the consumer to emit mutable-tag refs,
+    # silently regressing the digest-pinned ref guarantee.
+    local _version_digests_json="null"
+    if [[ "$do_push" == "true" ]]; then
+        # Capture the pushed digest for each confirmed-available version.
+        # Use _confirmed_refs["ver"] — the exact ref that was confirmed available
+        # during the probe loop — rather than reconstructing the canonical ref.
+        # This ensures digest capture succeeds on PRs where only the PR-scoped
+        # ref exists and the canonical tag is absent.
+        # Fail-closed: if any digest is missing or malformed, abort — a partial
+        # version_digests map would leave some versions tag-pinned, which violates
+        # the invariant.
+        local _vd_entries=()
+        local _vd_ver
+        for _vd_ver in "${_confirmed_available[@]+"${_confirmed_available[@]}"}"; do
+            local _vd_confirmed_ref
+            _vd_confirmed_ref="${_confirmed_refs[$_vd_ver]:-}"
+            if [[ -z "$_vd_confirmed_ref" ]]; then
+                log_error "$ext: no confirmed ref stored for $_vd_ver ($major_ver) — internal error; fail-closed"
+                _delete_stale_versionset_artifact "$ext" "$major_ver"
+                return 1
+            fi
+            local _vd_digest
+            _vd_digest=$(_capture_index_digest "$_vd_confirmed_ref") || true
+            if ! is_valid_oci_digest "${_vd_digest:-}"; then
+                log_error "$ext: digest capture failed for $_vd_ver ($major_ver) ref=$_vd_confirmed_ref — cannot write pushed artifact without valid digest; fail-closed"
+                _delete_stale_versionset_artifact "$ext" "$major_ver"
+                return 1
+            fi
+            _vd_entries+=("$(printf '%s' "$_vd_ver" | jq -Rr @json):$(printf '%s' "$_vd_digest" | jq -Rr @json)")
+        done
+        # Build the version_digests JSON object from collected entries.
+        _version_digests_json="{$(IFS=,; printf '%s' "${_vd_entries[*]+"${_vd_entries[*]}"}") }"
+        # Validate that jq can parse the constructed object.
+        if ! echo "$_version_digests_json" | jq -e 'type == "object"' > /dev/null 2>&1; then
+            log_error "$ext: constructed version_digests JSON is invalid — fail-closed"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            return 1
+        fi
     fi
 
-    # ARCH_SUFFIX defer: on a CI per-arch leg (ARCH_SUFFIX non-empty) the bundle was
-    # pushed with a platform-suffixed tag (e.g. :pg18-bundle-amd64).  The multi-arch
-    # manifest-merge step (stage B, NOT this change) will create the unsuffixed
-    # :pg18-bundle index and write the final versionset artifact with the index digest.
-    # Defer the artifact write here so stage B has a clean slate — no artifact from a
-    # single-arch leg should pre-empt the multi-arch one.
-    # We still delete any stale artifact so the consumer does not silently use old data.
-    if [[ -n "${ARCH_SUFFIX:-}" ]]; then
-        log_info "$ext pg${major_ver}: ARCH_SUFFIX=${ARCH_SUFFIX} — bundle pushed as suffixed ref; deferring versionset artifact to manifest-merge step"
-        _delete_stale_versionset_artifact "$ext" "$major_ver"
-        unset _BUNDLE_DIGEST
-        return 0
-    fi
-
-    # Bundle pushed successfully — NOW write the artifact from the SAME confirmed set.
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
     mkdir -p "${ROOT_DIR}/.build-lineage"
 
@@ -812,24 +829,8 @@ _bundle_and_write_artifact() {
     _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
     _resolved_json=$(echo "$version_set_json" | jq '.')
 
-    # AM fix: include bundle_digest in the artifact when available (publish path).
-    # _BUNDLE_DIGEST is set by assemble_and_push_bundle after a successful push.
-    # On LOCAL_ONLY/no-push paths, _BUNDLE_DIGEST is unset or empty — omit the field.
-    local _artifact_digest="${_BUNDLE_DIGEST:-}"
-    unset _BUNDLE_DIGEST
-
-    if [[ -n "$_artifact_digest" ]]; then
-        jq -nc \
-            --arg ext "$ext" \
-            --arg pg_major "$major_ver" \
-            --arg ceiling "$ceiling" \
-            --argjson resolved "$_resolved_json" \
-            --argjson available "$_available_json" \
-            --argjson excluded "$_excluded_json" \
-            --arg bundle_digest "$_artifact_digest" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, bundle_digest:$bundle_digest}' \
-            > "$_vs_lineage_file"
-    else
+    if [[ "$_version_digests_json" == "null" ]]; then
+        # No-push path: omit version_digests (local/no-push artifact).
         jq -nc \
             --arg ext "$ext" \
             --arg pg_major "$major_ver" \
@@ -839,145 +840,36 @@ _bundle_and_write_artifact() {
             --argjson excluded "$_excluded_json" \
             '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
             > "$_vs_lineage_file"
+        log_info "Version-set lineage (build path, no-push — no version_digests): $_vs_lineage_file"
+    else
+        # Pushed path: include version_digests so consumer emits digest-pinned refs.
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            --argjson version_digests "$_version_digests_json" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests}' \
+            > "$_vs_lineage_file"
+        log_info "Version-set lineage (build path, pushed — with version_digests): $_vs_lineage_file"
     fi
-    log_info "Version-set lineage (atomic): $_vs_lineage_file"
     return 0
 }
 
-# Assemble (and optionally push) a bundle image for a resolver-backed extension.
-#
-# The bundle is a FROM-scratch image that COPYs each available per-version image's
-# /output/extension/ and /output/lib/ layers under /<ver>/ so the consumer can do
-# a single COPY --from=ext-<ext>:pg<major>-bundle to land all versions.
-#
-# This is intentionally cheap: no compilation occurs — only COPY layers from the
-# per-version refs that already exist in the registry (or local store on LOCAL_ONLY).
-# Idempotent: rebuilding with the same available set produces the same content.
-#
-# Called from TWO sites:
-#   1. build_tag_push_extensions — after the per-version inner loop (build path).
-#   2. main() — on the all-cached path where build_tag_push_extensions is not called
-#      but the bundle must still be refreshed to match the current available set.
-#
-# Args: ext major_ver do_push avail_ver1 [avail_ver2 ...]
-#   do_push: "true" → push to registry after build; "false" → build locally only.
-#   avail_ver*: the versions to include in the bundle (must be non-empty).
-#
-# Returns: 0 on success, 1 on build or push failure (caller adds to failed[]).
-# Does NOT call exit directly; callers propagate the failure.
-# Under DRY_RUN=true, logs what would happen and returns 0 (callers handle DRY_RUN
-# before calling this function on the real path — this guard is defense-in-depth).
-assemble_and_push_bundle() {
-    local ext="$1" major_ver="$2" do_push="$3"
-    shift 3
-    local avail_versions=("$@")
-
-    if [[ "$DRY_RUN" == "true" ]]; then
-        local _bundle_image_base_d
-        _bundle_image_base_d=$(ext_image_name "$ext" "dummy" "$major_ver")
-        local _bundle_base_tag_d="${_bundle_image_base_d%:*}:pg${major_ver}-bundle"
-        local _bundle_ref_d
-        _bundle_ref_d=$(_arch_suffix_tag "$_bundle_base_tag_d" "${ARCH_SUFFIX:-}")
-        log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref_d (versions: ${avail_versions[*]})"
-        [[ "$do_push" == "true" ]] && log_info "[DRY-RUN] Would push bundle $_bundle_ref_d"
-        return 0
-    fi
-
-    local _bundle_image_base
-    _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
-    local _bundle_base_tag="${_bundle_image_base%:*}:pg${major_ver}-bundle"
-    local _bundle_ref
-    _bundle_ref=$(_arch_suffix_tag "$_bundle_base_tag" "${ARCH_SUFFIX:-}")
-
-    local _bundle_df
-    # CI per-arch leg (ARCH_SUFFIX set): the bundle is built by stage B
-    # (finalize_multiarch_manifests) from the merged per-version multi-arch manifests,
-    # not here. Skip the bundle build/push on a per-arch leg; only the local/single-arch
-    # path (ARCH_SUFFIX empty) builds the bundle directly.
-    if [[ -n "${ARCH_SUFFIX:-}" ]]; then
-        log_info "$ext pg${major_ver}: per-arch leg — bundle deferred to stage-B finalize step"
-        return 0
-    fi
-
-    _bundle_df=$(mktemp)
-
-    {
-        printf 'FROM scratch\n'
-        local _bver
-        for _bver in "${avail_versions[@]}"; do
-            # Local/single-arch path (ARCH_SUFFIX empty): reference the plain un-suffixed
-            # per-version image built on this host.
-            local _per_ver_ref
-            _per_ver_ref=$(ext_image_name "$ext" "$_bver" "$major_ver")
-            printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_per_ver_ref" "$_bver"
-            printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_per_ver_ref" "$_bver"
-        done
-    } > "$_bundle_df"
-
-    log_info "Building bundle $ext pg${major_ver}: $_bundle_ref"
-
-    local _bundle_ctx
-    _bundle_ctx=$(mktemp -d)
-
-    local _bundle_build_ok=true
-    if ! $DOCKER build -t "$_bundle_ref" -f "$_bundle_df" "$_bundle_ctx"; then
-        _bundle_build_ok=false
-    fi
-
-    rm -f "$_bundle_df"
-    rm -rf "$_bundle_ctx"
-
-    if [[ "$_bundle_build_ok" == "false" ]]; then
-        log_error "$ext pg${major_ver} bundle build failed"
-        return 1
-    fi
-
-    log_success "Bundle built: $_bundle_ref"
-
-    local _pushed=false
-    if [[ "$do_push" == "true" ]]; then
-        if ! $DOCKER push "$_bundle_ref"; then
-            log_error "$ext pg${major_ver} bundle push failed"
-            return 1
-        fi
-        log_success "Bundle pushed: $_bundle_ref"
-        _pushed=true
-    fi
-
-    if [[ "$_pushed" == "true" ]]; then
-        # Capture the digest of the pushed bundle image. The consumer emits a
-        # digest-pinned COPY --from=<ref>@<digest> for reproducibility.
-        # Digest capture failure after a successful push is fatal: the caller cannot
-        # construct an immutable reference without the digest.  Fail closed here;
-        # the caller (_bundle_and_write_artifact) propagates the non-zero return.
-        local _captured_digest
-        _captured_digest=$(_capture_bundle_digest "$_bundle_ref") || true
-        if ! is_valid_oci_digest "$_captured_digest"; then
-            log_error "$ext pg${major_ver}: bundle pushed but digest capture failed or is malformed (got: '$(_sanitize_for_log "${_captured_digest}")') — cannot write immutable artifact ref; fail closed"
-            return 2
-        fi
-        log_info "Bundle digest: $_captured_digest"
-
-        # Export so _bundle_and_write_artifact can read it without a subshell.
-        _BUNDLE_DIGEST="$_captured_digest"
-        export _BUNDLE_DIGEST
-    fi
-
-    return 0
-}
-
-# _capture_bundle_digest <bundle_ref>
-# Captures the content digest of a pushed bundle image using the raw-manifest
-# hashing pattern (the same proven approach used by the build-container action).
-# Returns the sha256:... digest string on stdout on success; returns empty string
-# and a non-zero exit when the raw manifest cannot be retrieved.
-# Separated from assemble_and_push_bundle so tests can override it independently
-# without needing to replicate the full docker() mock for buildx.
+# _capture_index_digest <image_ref>
+# Captures the content digest of a pushed multi-arch index manifest using the
+# raw-manifest hashing pattern (the same proven approach used by the
+# build-container action).
+# Returns the sha256:... digest string on stdout on success; returns non-zero
+# when the raw manifest cannot be retrieved.
+# Separated so tests can override it independently.
 #
 # The --format '{{.Manifest.Digest}}' template field is intentionally NOT used:
 # it is empty for some image types and version-dependent in CI, making it
 # unreliable as the primary capture method.
-_capture_bundle_digest() {
+_capture_index_digest() {
     local _ref="$1"
     local _raw_manifest
     _raw_manifest=$($DOCKER buildx imagetools inspect "$_ref" --raw 2>/dev/null) || true
@@ -1060,10 +952,6 @@ build_tag_push_extensions() {
         # _cleanup_stale_duration_files is a no-op under DRY_RUN.
         _cleanup_stale_duration_files "$ext" "$major_ver"
 
-        # Track versions that are available (built this loop OR pre-existing) for
-        # the bundle assembly step below.  Populated inside the inner loop.
-        local _available_for_bundle=()
-
         # Inner loop over each version oldest→newest.
         local version
         while IFS= read -r version; do
@@ -1081,7 +969,6 @@ build_tag_push_extensions() {
             if [[ "$LOCAL_ONLY" == "true" ]]; then
                 if ! _image_needs_build "$_check_image"; then
                     log_success "$ext $version already exists locally"
-                    _available_for_bundle+=("$version")
                     continue
                 fi
             elif [[ -n "${PR_TAG_SUFFIX:-}" ]]; then
@@ -1090,20 +977,17 @@ build_tag_push_extensions() {
                 _canonical_arch_ref=$(_arch_suffix_tag "$ver_image" "${ARCH_SUFFIX:-}")
                 if [[ "$FORCE" != "true" ]] && image_exists_in_registry "$_canonical_arch_ref" 2>/dev/null; then
                     log_success "$ext $version already exists in registry (canonical)"
-                    _available_for_bundle+=("$version")
                     continue
                 fi
                 # Canonical absent: check PR-scoped tag (built this PR).
                 if [[ "$FORCE" != "true" ]] && image_exists_in_registry "$_check_image" 2>/dev/null; then
                     log_success "$ext $version already exists in registry (pr-scoped)"
-                    _available_for_bundle+=("$version")
                     continue
                 fi
             else
                 # Push/dispatch (PR_TAG_SUFFIX empty): canonical probe only.
                 if ! _image_needs_build "$_check_image"; then
                     log_success "$ext $version already exists in registry"
-                    _available_for_bundle+=("$version")
                     continue
                 fi
             fi
@@ -1170,9 +1054,6 @@ build_tag_push_extensions() {
 
             log_success "$ext $version completed successfully"
 
-            # Mark available for bundle assembly.
-            _available_for_bundle+=("$version")
-
             # Record this version as built-this-run so _emit_versionset_artifact
             # can union it with the registry probe (guards against GHCR lag).
             if [[ "$DRY_RUN" != "true" ]]; then
@@ -1212,25 +1093,19 @@ build_tag_push_extensions() {
             fi
         done < <(echo "$version_set_json" | jq -r '.[]')
 
-        # Bundle + artifact (atomic): for resolver-backed multi-version extensions,
+        # Artifact write (atomic): for resolver-backed multi-version extensions,
         # _bundle_and_write_artifact computes confirmed_available ONCE (3-state probe
-        # + built-this-run union), pushes the bundle from that set, then writes the
-        # artifact from the SAME set. Artifact is written only after a successful push.
+        # + built-this-run union) and writes the versionset artifact from that set.
+        # When do_push=true (non-ARCH_SUFFIX path): version_digests is captured and
+        # written here so the consumer can emit digest-pinned COPY --from= refs.
+        # When ARCH_SUFFIX is set (CI per-arch leg): artifact is deferred to
+        # finalize_multiarch_manifests which captures multi-arch index digests.
         #
-        # Under DRY_RUN: log intent and continue (no mutation).
+        # Under DRY_RUN: skip (no mutation).
         # Fatal failure guard (AK-1): if ANY version for this ext failed in this run,
-        # skip bundle+artifact — ceiling may be absent, confirmed set is incomplete.
+        # skip artifact — ceiling may be absent, confirmed set is incomplete.
         if [[ -n "$_resolver_path" ]] && [[ "$set_size" -gt 1 ]]; then
-            if [[ "$DRY_RUN" == "true" ]]; then
-                local _bundle_image_base_dry
-                _bundle_image_base_dry=$(ext_image_name "$ext" "dummy" "$major_ver")
-                local _bundle_ref_dry="${_bundle_image_base_dry%:*}:pg${major_ver}-bundle"
-                local _dry_all_versions
-                _dry_all_versions=$(echo "$version_set_json" | jq -r '.[]' | tr '\n' ' ')
-                log_info "[DRY-RUN] Would build bundle $ext pg${major_ver}: $_bundle_ref_dry (versions: ${_dry_all_versions})"
-                log_info "[DRY-RUN] Would push bundle $_bundle_ref_dry"
-                continue
-            fi
+            [[ "$DRY_RUN" == "true" ]] && continue
 
             # AK-1: skip if any fatal failure for this extension.
             local _ext_fatal=false
@@ -1243,13 +1118,13 @@ build_tag_push_extensions() {
             done
 
             if [[ "$_ext_fatal" == "true" ]]; then
-                log_warning "$ext pg${major_ver}: skipping bundle+artifact — fatal failure in this run"
+                log_warning "$ext pg${major_ver}: skipping artifact — fatal failure in this run"
                 _delete_stale_versionset_artifact "$ext" "$major_ver"
             else
                 local _ba_rc=0
                 _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$do_push" || _ba_rc=$?
                 if [[ "$_ba_rc" -ne 0 ]]; then
-                    failed+=("$ext@bundle")
+                    failed+=("$ext@artifact")
                     continue
                 fi
             fi
@@ -1673,11 +1548,9 @@ _cleanup_stale_duration_files() {
 # Args: config_file major_ver container_dir [_ignored_single_ext] [do_push]
 #   Arg 4 (_ignored_single_ext): accepted for backward compatibility but unused —
 #     scoping is driven exclusively by the global $EXTENSION variable.
-#   Arg 5 (do_push): "true" = push bundle to registry; "false" = no push.
-#     When do_push="false" AND not LOCAL_ONLY AND not PULL_ONLY (CI PR smoke),
-#     the bundle assembly and artifact write are SKIPPED entirely — the all-cached
-#     CI PR path must exit cleanly without any GHCR write attempt.
-#     When do_push="false" AND (LOCAL_ONLY OR PULL_ONLY): assemble locally, no push.
+#   Arg 5 (do_push): "true" = write artifact; "false" + not LOCAL_ONLY/PULL_ONLY →
+#     CI PR smoke: skip artifact entirely (registry read-only, no artifact write).
+#     do_push="false" + LOCAL_ONLY or PULL_ONLY → write artifact (local recovery).
 #     Defaults to re-deriving from LOCAL_ONLY/PULL_ONLY when arg 5 is absent
 #     (backward compatibility with callers that do not pass do_push).
 # Does nothing under DRY_RUN.
@@ -1743,10 +1616,6 @@ _emit_final_versionset_pass() {
         # Determine the effective do_push for this final pass.
         # Use arg 5 when provided (threaded from main()); otherwise re-derive from
         # LOCAL_ONLY/PULL_ONLY for backward compatibility with direct callers.
-        # Three-way contract:
-        #   do_push=true                         → assemble + push bundle + write artifact.
-        #   do_push=false + LOCAL_ONLY/PULL_ONLY → assemble locally, no push (recovery).
-        #   do_push=false + not LOCAL_ONLY/PULL_ONLY → CI PR smoke: skip bundle entirely.
         local _do_push_fp
         if [[ -n "${5:-}" ]]; then
             _do_push_fp="$5"
@@ -1755,21 +1624,21 @@ _emit_final_versionset_pass() {
             [[ "${LOCAL_ONLY:-false}" == "true" || "${PULL_ONLY:-false}" == "true" ]] && _do_push_fp="false"
         fi
 
-        # AV-2 single-bundle guard: if _bundle_and_write_artifact was already called for
+        # AV-2 single-write guard: if _bundle_and_write_artifact was already called for
         # this (ext, major_ver) on the BUILD PATH (in build_tag_push_extensions), a
         # sentinel file was written to ${_BUILT_THIS_RUN_DIR}/bundle-<ext>-<major_ver>.
-        # Skip the final pass for this (ext, major_ver) to prevent assembling the bundle
-        # a second time in the same run.  The all-cached path (no build) writes no
-        # sentinel, so those always go through the final pass as before.
+        # Skip the final pass for this (ext, major_ver) to prevent a second write
+        # in the same run.  The all-cached path (no build) writes no sentinel, so
+        # those always go through the final pass as before.
         local _bundle_sentinel_fp="${_BUILT_THIS_RUN_DIR}/bundle-${ext}-${major_ver}"
         if [[ -f "$_bundle_sentinel_fp" ]]; then
-            log_info "$ext pg${major_ver}: bundle already assembled on build path — skipping final pass for this extension (AV-2 guard)"
+            log_info "$ext pg${major_ver}: artifact already written on build path — skipping final pass for this extension (AV-2 guard)"
             continue
         fi
 
-        # Atomic: push bundle from confirmed_available, then write artifact from the
-        # SAME set. _bundle_and_write_artifact handles the 3-state probe, fail-closed
-        # gates, stale artifact deletion, ordering invariant, and the CI no-push guard.
+        # Write the versionset artifact. _bundle_and_write_artifact handles the
+        # 3-state probe, fail-closed gates, stale artifact deletion, and the
+        # CI no-push guard.
         local _bwa_rc=0
         _bundle_and_write_artifact "$ext" "$config_file" "$major_ver" "$version_set_json" "$ceiling" "$_do_push_fp" || _bwa_rc=$?
         if [[ "$_bwa_rc" -ne 0 ]]; then
@@ -1959,7 +1828,7 @@ _consolidate_version_duration_file() {
 #
 #   Non-resolver extensions (single configured version):
 #     Creates the un-suffixed multi-arch manifest from stable suffixed tags
-#     (-amd64 / -arm64). No bundle, no versionset artifact.
+#     (-amd64 / -arm64). No collector stage, no versionset artifact.
 #
 #   Resolver-backed extensions:
 #     1. Re-resolves the version set (deterministic via resolver + retain_count).
@@ -1970,16 +1839,17 @@ _consolidate_version_duration_file() {
 #     3. Creates per-version multi-arch manifests from the stable suffixed tags
 #        for all AVAILABLE versions (including cached versions not rebuilt this
 #        run — their suffixed tags persist in the registry from prior runs).
-#     4. For set_size == 1 (single-version resolver result): still creates the
+#     4. Immediately after each per-version manifest creation: captures the
+#        index digest via _capture_index_digest and verifies both linux/amd64 and
+#        linux/arm64 are covered; fail-closed on capture/validation/platform miss.
+#     5. For set_size == 1 (single-version resolver result): still creates the
 #        un-suffixed per-version manifest so the consumer's single-version path
-#        finds it. No bundle needed.
-#     5. For available count >= 2: builds the multi-arch bundle image via
-#        buildx build --platform linux/amd64,linux/arm64 from the AVAILABLE
-#        per-version multi-arch manifests (un-suffixed, just created).
-#        Each platform's bundle layer gets that platform's .so from the
-#        per-version manifest — no QEMU/compilation needed, file-copy only.
-#     6. Captures the INDEX digest of the bundle manifest.
-#     7. Writes the versionset artifact with bundle_digest = that index digest.
+#        finds it. No collector needed.
+#     6. For available count >= 2: writes the versionset artifact with a
+#        version_digests map {"<ver>":"sha256:..."} covering all available versions.
+#        The consumer (generate_dockerfile) uses these digests to emit a collector
+#        stage (FROM scratch AS ext_collect_<ext>) with one digest-pinned COPY per
+#        version, and exactly ONE COPY --from=ext_collect_<ext> in the final stage.
 #
 # Stable-tag merge rationale: digest-pinned merge (reverted AX-1/AY-1 approach)
 # was dropped because it excluded cached versions (not rebuilt this run, so no
@@ -2002,7 +1872,7 @@ _consolidate_version_duration_file() {
 # race probability is near zero. This trade-off is explicit and documented here.
 #
 # Fail-closed: ceiling missing on either arch, imagetools create failure for
-# ceiling, bundle build/push failure, or digest capture failure → fatal.
+# ceiling, index digest capture/platform-check failure → fatal.
 # Non-ceiling failures are tolerated (musl-compat contract from stage A).
 #
 # Called from main() when FINALIZE_MULTIARCH=true.
@@ -2132,9 +2002,9 @@ finalize_multiarch_manifests() {
         #   Any rc 2 → fail closed.
         #   Either rc 1 → absent on that arch → exclude non-ceiling; fatal for ceiling.
         local _confirmed_available=()
-        local _confirmed_sources=()   # parallel array: ref to use in bundle COPY per available version
         local _excluded_entries=()
         local _ext_failed=false
+        local -A _ver_index_digests=()  # version → multi-arch index digest
         local ver
         while IFS= read -r ver; do
             # When FORCE=true: skip reuse check, always create fresh manifest from arch tags.
@@ -2150,11 +2020,35 @@ finalize_multiarch_manifests() {
                 fi
 
                 if [[ "$_ma_rc" -eq 0 ]]; then
-                    # Multi-arch manifest present → reuse (canonical or PR-scoped).
+                    # Multi-arch manifest present → attempt reuse (canonical or PR-scoped).
+                    # Capture its index digest for the version_digests artifact map.
                     log_info "$ext $ver pg${major_ver}: manifest present — reused (unchanged)"
-                    _confirmed_available+=("$ver")
-                    _confirmed_sources+=("$_ma_ref")
-                    continue
+                    local _reuse_digest _reuse_digest_rc=0
+                    _reuse_digest=$(_capture_index_digest "$_ma_ref") || _reuse_digest_rc=$?
+                    if [[ "$_reuse_digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$_reuse_digest"; then
+                        log_error "$ext $ver pg${major_ver}: reused manifest digest capture failed (got: '$(_sanitize_for_log "${_reuse_digest:-<empty>}")') — fail closed"
+                        _ext_failed=true
+                        break
+                    fi
+                    # Verify the reused manifest covers both target platforms.
+                    # If it is single-arch (legacy / pre-multi-arch), fall through to the
+                    # CREATE path to rebuild it from this run's per-arch legs instead of
+                    # blindly accepting a stale single-arch manifest.
+                    local _reuse_inspect_out _reuse_inspect_rc=0
+                    _reuse_inspect_out=$($DOCKER buildx imagetools inspect "$_ma_ref" 2>&1) || _reuse_inspect_rc=$?
+                    if [[ "$_reuse_inspect_rc" -ne 0 ]]; then
+                        log_error "$ext $ver pg${major_ver}: imagetools inspect failed on reused manifest ref (rc=$_reuse_inspect_rc) — transient infra error — fail closed"
+                        _ext_failed=true
+                        break
+                    fi
+                    if echo "$_reuse_inspect_out" | grep -q "linux/amd64" && \
+                       echo "$_reuse_inspect_out" | grep -q "linux/arm64"; then
+                        _confirmed_available+=("$ver")
+                        _ver_index_digests["$ver"]="$_reuse_digest"
+                        continue
+                    fi
+                    log_warning "$ext $ver pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
+                    # Fall through to the CREATE path below.
                 fi
             fi
 
@@ -2218,8 +2112,38 @@ finalize_multiarch_manifests() {
                 break
             fi
 
+            # Capture the multi-arch index digest immediately after creation.
+            local _ver_digest _ver_digest_rc=0
+            _ver_digest=$(_capture_index_digest "$ver_multiarch") || _ver_digest_rc=$?
+            if [[ "$_ver_digest_rc" -ne 0 ]] || ! is_valid_oci_digest "$_ver_digest"; then
+                log_error "$ext $ver pg${major_ver}: index digest capture failed after imagetools create (got: '$(_sanitize_for_log "${_ver_digest:-<empty>}")') — fail closed"
+                _ext_failed=true
+                break
+            fi
+            # Verify the created manifest covers both target platforms.
+            local _inspect_out _inspect_rc=0
+            _inspect_out=$($DOCKER buildx imagetools inspect "$ver_multiarch" 2>&1) || _inspect_rc=$?
+            if [[ "$_inspect_rc" -ne 0 ]]; then
+                log_error "$ext $ver pg${major_ver}: imagetools inspect failed after manifest create (rc=$_inspect_rc) — transient infra error — fail closed"
+                _ext_failed=true
+                break
+            fi
+            if ! echo "$_inspect_out" | grep -q "linux/amd64" || \
+               ! echo "$_inspect_out" | grep -q "linux/arm64"; then
+                if [[ "$ver" == "$ceiling" ]]; then
+                    log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
+                    _ext_failed=true
+                    break
+                else
+                    log_warning "$ext $ver pg${major_ver}: created manifest does not cover both arches (intersection) — excluded"
+                    _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"created manifest missing one or more arches (intersection)\"}")
+                    continue
+                fi
+            fi
+            log_info "$ext $ver pg${major_ver}: index digest: $_ver_digest"
+
             _confirmed_available+=("$ver")
-            _confirmed_sources+=("$ver_multiarch")
+            _ver_index_digests["$ver"]="$_ver_digest"
         done < <(echo "$version_set_json" | jq -r '.[]')
 
         # Ceiling merge failed → fatal for this extension.
@@ -2239,106 +2163,69 @@ finalize_multiarch_manifests() {
             fi
         done
         if [[ "$_ceiling_ok" == "false" ]] || [[ ${#_confirmed_available[@]} -eq 0 ]]; then
-            log_info "$ext pg${major_ver}: confirmed_available is empty or ceiling ($ceiling) absent after per-version merges — skipping bundle+artifact"
+            log_info "$ext pg${major_ver}: confirmed_available is empty or ceiling ($ceiling) absent after per-version merges — skipping artifact"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
         # For set_size == 1 (single-version resolver): the per-version multi-arch manifest
-        # was already created above (ceiling). No bundle needed; consumer uses single-version
-        # path. Delete any stale versionset artifact. (AZ-4 fix: manifest IS created above.)
+        # was already created above (ceiling). Consumer uses single-version path.
+        # Delete any stale versionset artifact. (AZ-4 fix: manifest IS created above.)
         if [[ "$set_size" -le 1 ]]; then
-            log_info "$ext pg${major_ver}: single-version resolver result — per-version manifest created, no bundle needed"
+            log_info "$ext pg${major_ver}: single-version resolver result — per-version manifest created, no collector needed"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
-        # Only one version confirmed available — no bundle (consumer uses single-version path).
+        # Only one version confirmed available — consumer uses single-version path.
         if [[ ${#_confirmed_available[@]} -le 1 ]]; then
-            log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — skipping bundle (consumer uses single-version path)"
+            log_info "$ext pg${major_ver}: only ${#_confirmed_available[@]} version(s) available — consumer uses single-version path"
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             continue
         fi
 
-        # Step 2: build the multi-arch bundle from the AVAILABLE per-version multi-arch
-        # manifests (scoped, just created above). Each platform's bundle layer gets
-        # that platform's .so via the per-version manifest's platform selection.
-        # This is file-copy only (no compilation), so buildx multi-platform on the amd64
-        # merge runner works without QEMU. The bundle contains EXACTLY the available set.
-        local _bundle_image_base
-        _bundle_image_base=$(ext_image_name "$ext" "dummy" "$major_ver")
-        local _bundle_base_tag_canonical="${_bundle_image_base%:*}:pg${major_ver}-bundle"
-        # Apply PR_TAG_SUFFIX to the bundle tag so PR runs publish a scoped bundle ref
-        # and never overwrite the canonical :pg<major>-bundle tag.
-        local _bundle_base_tag
-        _bundle_base_tag=$(_scoped_tag "$_bundle_base_tag_canonical")
-
-        local _bundle_df
-        _bundle_df=$(mktemp)
-        {
-            printf 'FROM scratch\n'
-            local _bv_idx=0 _bv
-            for _bv in "${_confirmed_available[@]}"; do
-                local _bv_ref
-                # BF: use the resolved source ref for each version from _confirmed_sources.
-                # - unchanged versions: canonical multi-arch ref (e.g. :pg18-2.23.0)
-                # - new/changed version: PR-scoped multi-arch ref (e.g. :pg18-2.27.1-pr42)
-                # On push (PR_TAG_SUFFIX empty): all refs are canonical (no change).
-                if [[ "${#_confirmed_sources[@]}" -gt "$_bv_idx" ]]; then
-                    _bv_ref="${_confirmed_sources[$_bv_idx]}"
-                else
-                    # Fallback (should not happen): use scoped ref.
-                    _bv_ref=$(_scoped_tag "$(ext_image_name "$ext" "$_bv" "$major_ver")")
-                fi
-                _bv_idx=$(( _bv_idx + 1 ))
-                printf 'COPY --from=%s /output/extension/ /%s/extension/\n' "$_bv_ref" "$_bv"
-                printf 'COPY --from=%s /output/lib/ /%s/lib/\n' "$_bv_ref" "$_bv"
-            done
-        } > "$_bundle_df"
-
-        local _bundle_ctx
-        _bundle_ctx=$(mktemp -d)
-
-        log_info "$ext pg${major_ver}: buildx build --platform linux/amd64,linux/arm64 -t $_bundle_base_tag (bundle from available: ${_confirmed_available[*]})"
-        local _bundle_build_rc=0
-        $DOCKER buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -t "$_bundle_base_tag" \
-            -f "$_bundle_df" \
-            --push \
-            "$_bundle_ctx" 2>&1 \
-            || _bundle_build_rc=$?
-        if [[ "$_bundle_build_rc" -ne 0 ]]; then
-            log_error "$ext pg${major_ver}: bundle buildx build failed (rc=$_bundle_build_rc) — fail-closed"
-            rm -f "$_bundle_df"
-            rm -rf "$_bundle_ctx"
+        # Validate: every version in confirmed_available must have a valid index digest.
+        local _digest_ok=true
+        local _dv
+        for _dv in "${_confirmed_available[@]}"; do
+            if ! is_valid_oci_digest "${_ver_index_digests[$_dv]:-}"; then
+                log_error "$ext pg${major_ver}: version $(_sanitize_for_log "$_dv") missing valid index digest — fail closed"
+                _digest_ok=false
+            fi
+        done
+        if [[ "$_digest_ok" == "false" ]]; then
             _delete_stale_versionset_artifact "$ext" "$major_ver"
             _failed=true
             continue
         fi
-        rm -f "$_bundle_df"
-        rm -rf "$_bundle_ctx"
-        log_success "Bundle multi-arch image built+pushed: $_bundle_base_tag"
 
-        # Step 3: capture INDEX digest of the bundle manifest.
-        local _index_digest
-        _index_digest=$(_capture_bundle_digest "$_bundle_base_tag") || true
-        if ! is_valid_oci_digest "$_index_digest"; then
-            log_error "$ext pg${major_ver}: bundle index digest capture failed or malformed (got: '$(_sanitize_for_log "${_index_digest}")') — fail-closed"
-            _delete_stale_versionset_artifact "$ext" "$major_ver"
-            _failed=true
-            continue
-        fi
-        log_info "$ext pg${major_ver}: bundle index digest: $_index_digest"
-
-        # Step 4: write versionset artifact with bundle_digest = index digest.
+        # Write versionset artifact with version_digests map (version → index digest).
+        # The consumer (generate_dockerfile) uses these digests to emit
+        # digest-pinned COPY --from= lines in the collector stage.
         local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
         mkdir -p "${ROOT_DIR}/.build-lineage"
 
-        local _available_json _excluded_json _resolved_json
+        local _available_json _excluded_json _resolved_json _version_digests_json
         _available_json=$(printf '%s\n' "${_confirmed_available[@]+"${_confirmed_available[@]}"}" | jq -Rsc 'split("\n") | map(select(. != ""))')
         _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
         _resolved_json=$(echo "$version_set_json" | jq '.')
+
+        # Build version_digests JSON object: {"<ver>":"sha256:..."}
+        local _vd_args=()
+        local _vd_obj='{'
+        local _vd_first=true
+        for _dv in "${_confirmed_available[@]}"; do
+            local _vd_digest="${_ver_index_digests[$_dv]}"
+            _vd_args+=(--arg "vd_ver_${#_vd_args[@]}" "$_dv" --arg "vd_dig_${#_vd_args[@]}" "$_vd_digest")
+            if [[ "$_vd_first" == "true" ]]; then
+                _vd_obj+="\"${_dv}\":\"${_vd_digest}\""
+                _vd_first=false
+            else
+                _vd_obj+=",\"${_dv}\":\"${_vd_digest}\""
+            fi
+        done
+        _vd_obj+='}'
+        _version_digests_json="$_vd_obj"
 
         jq -nc \
             --arg ext "$ext" \
@@ -2347,8 +2234,8 @@ finalize_multiarch_manifests() {
             --argjson resolved "$_resolved_json" \
             --argjson available "$_available_json" \
             --argjson excluded "$_excluded_json" \
-            --arg bundle_digest "$_index_digest" \
-            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, bundle_digest:$bundle_digest}' \
+            --argjson version_digests "$_version_digests_json" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests}' \
             > "$_vs_lineage_file"
         log_success "Versionset artifact written: $_vs_lineage_file"
 
@@ -2400,8 +2287,8 @@ main() {
     # LOCAL_ONLY=true → local-only build, no push (recovery path).
     # PULL_ONLY=true  → pull-only build, no push (final pass writes local artifact).
     # NO_PUSH=true    → explicit no-push context (e.g. CI fork PR with read-only
-    #                   package permissions); bundle and artifact are skipped.
-    # do_push=false + not LOCAL_ONLY/PULL_ONLY → CI PR smoke: skip bundle + artifact.
+    #                   package permissions); artifact write is skipped.
+    # do_push=false + not LOCAL_ONLY/PULL_ONLY → CI PR smoke: skip artifact write.
     local do_push="true"
     [[ "$LOCAL_ONLY" == "true" ]] && do_push="false"
     [[ "$PULL_ONLY" == "true" ]] && do_push="false"
@@ -2473,12 +2360,10 @@ main() {
             done < <(list_extensions_by_priority "$config_file" "$major_ver")
         fi
 
-        # Atomic pass: for each in-scope resolver-backed extension, compute
-        # confirmed_available once, push the bundle from that set, then write the
-        # artifact from the SAME set. Bundle and artifact are always in sync.
+        # Write versionset artifacts for all in-scope resolver-backed extensions.
         # This covers both the "all-cached" and "all-DRY_RUN" sub-paths.
         # Pass do_push so the final pass honors the same push decision as the
-        # rest of main() — prevents the all-cached path from pushing on CI PR smoke.
+        # rest of main() — prevents the all-cached path from writing on CI PR smoke.
         local _fp_rc=0
         _emit_final_versionset_pass "$config_file" "$major_ver" "$container_dir" "${EXTENSION:-}" "$do_push" || _fp_rc=$?
 

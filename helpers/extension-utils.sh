@@ -8,6 +8,7 @@
 
 set -euo pipefail
 
+
 # Source shared logging utilities (provides log_info, log_success, log_warning, log_error)
 HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F log_info &>/dev/null; then
@@ -367,10 +368,10 @@ is_strict_semver() {
 # the newline, not at the true end of the string — are safely rejected.
 #
 # This is the single shared validator used by BOTH:
-#   - The producer (assemble_and_push_bundle in build-extensions.sh) — after
-#     _capture_bundle_digest, before writing the artifact.
+#   - The producer (finalize_multiarch_manifests in build-extensions.sh) — after
+#     _capture_index_digest, before writing version_digests in the artifact.
 #   - The consumer (generate_dockerfile in extension-utils.sh) — after reading
-#     .bundle_digest from the artifact, before inserting into COPY --from=.
+#     version_digests from the artifact, before inserting into COPY --from=.
 #
 # Any value that does not satisfy the whole-string pattern is treated as
 # malformed/poisoned, regardless of whether it has the sha256: prefix.
@@ -427,8 +428,10 @@ validate_semver_set_json() {
 
 # ============================================================================
 # Flavor-aware Dockerfile generation
-# Instead of building N bundle images, we template the main Dockerfile
-# to only include FROM/COPY for extensions relevant to each flavor+PG version
+# Templates the main Dockerfile to only include FROM/COPY stages relevant
+# to each flavor+PG version. Multi-version extensions use a collector stage
+# (FROM scratch AS ext_collect_<ext>) to absorb per-version COPYs, exposing
+# exactly one final-stage COPY regardless of the retained version count.
 # ============================================================================
 
 # _scoped_ext_ref <base_ref>
@@ -570,6 +573,63 @@ get_flavor_extensions() {
     ' "$config_file"
 }
 
+# _emit_collector_stage <ext> <ver_ref_list>
+#
+# Emit a consume-time collector build stage for a multi-version resolver-backed
+# extension.  The collector stage absorbs all per-version COPYs; its layers are
+# NOT exported because it is an intermediate stage.  The final stage does ONE
+# COPY from the collector → exactly one exported layer regardless of version count.
+#
+# Output to stdout (two sections separated by the delimiter line "---ECS-COPIES---"):
+#   <stages_block>     — FROM scratch AS ext_collect_<ext> + COPY --from per version
+#   ---ECS-COPIES---
+#   <copies_block>     — COPY --from=ext_collect_<ext> / /tmp/ext/<ext>/
+#
+# Caller captures stdout and splits on the delimiter to obtain stages_block and copies_block.
+#
+# Portable bash-4.0 pattern (no local -n namerefs, which require bash 4.3+):
+#   <ver_ref_list> is a newline-delimited list of "<version>\t<ref>" pairs.
+#   Caller serializes its version→ref map as "<ver>\t<ref>\n..." and passes it.
+#
+# Args:
+#   $1  ext          extension name (e.g. "timescaledb")
+#   $2  ver_ref_list newline-delimited "<version>\t<ref>" pairs
+#
+# Returns 0 on success (output on stdout), 1 on validation failure (logged, no output).
+_emit_collector_stage() {
+    local _ecs_ext="$1"
+    local _ecs_ver_ref_list="$2"
+
+    if [[ -z "$_ecs_ver_ref_list" ]]; then
+        log_error "_emit_collector_stage: empty ref list for ${_ecs_ext} — fail closed"
+        return 1
+    fi
+
+    # Sanitize extension name for the stage alias (Docker stage names: [a-zA-Z0-9_-]).
+    local _ecs_stage_name="ext_collect_${_ecs_ext//[^a-zA-Z0-9_]/_}"
+
+    local _ecs_stage_block="FROM scratch AS ${_ecs_stage_name}"$'\n'
+    local _ecs_line
+    while IFS= read -r _ecs_line; do
+        [[ -z "$_ecs_line" ]] && continue
+        local _ecs_ver="${_ecs_line%%	*}"
+        local _ecs_ref="${_ecs_line#*	}"
+        if [[ -z "$_ecs_ver" ]] || [[ -z "$_ecs_ref" ]] || [[ "$_ecs_ver" == "$_ecs_ref" ]]; then
+            log_error "_emit_collector_stage: malformed or empty ref for ${_ecs_ext} — fail closed"
+            return 1
+        fi
+        # Sanitize version for use as a path component.
+        local _ecs_ver_safe="${_ecs_ver//[^a-zA-Z0-9._-]/_}"
+        _ecs_stage_block+="COPY --from=${_ecs_ref} /output/ /${_ecs_ver_safe}/"$'\n'
+    done <<< "$_ecs_ver_ref_list"
+
+    # Print stage block, delimiter, then copy line.
+    printf '%s' "${_ecs_stage_block}"
+    printf '%s\n' "---ECS-COPIES---"
+    printf 'COPY --from=%s / /tmp/ext/%s/\n' "${_ecs_stage_name}" "${_ecs_ext}"
+    return 0
+}
+
 # Generate a Dockerfile from a template by injecting extension FROM/COPY blocks
 # Template must contain markers:
 #   # @@EXTENSION_STAGES@@   → replaced by FROM ext-* AS ext-* lines
@@ -686,9 +746,9 @@ generate_dockerfile() {
             # are created or left behind.
             # _versionset_from_selfheal tracks whether _versionset_json came from
             # the self-heal path (artifact absent/malformed) vs the on-disk artifact.
-            # Only the self-heal path needs a bundle-ref probe (AK-3): the on-disk
-            # artifact path is trusted — the producer invariant guarantees the bundle
-            # exists when the artifact was written.
+            # Both paths feed the same collector emitter; the data source controls
+            # whether digest-pinned refs (artifact with version_digests) or tag-based
+            # refs (self-heal, no digest map) are used.
             local _versionset_json=""
             local _versionset_from_selfheal=false
 
@@ -793,7 +853,7 @@ generate_dockerfile() {
                     --argjson available "$_sh_avail_json" \
                     '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:[]}')
                 # Mark that this came from the self-heal path so the downstream
-                # emission block probes the bundle ref before emitting the COPY.
+                # emission block uses tag-based refs (no digest map available).
                 _versionset_from_selfheal=true
             elif [[ -f "$versionset_file" ]] && [[ "$_artifact_valid" -eq 1 ]] && command -v jq &>/dev/null; then
                 _versionset_json=$(< "$versionset_file")
@@ -822,12 +882,10 @@ generate_dockerfile() {
                     # available == [ceiling]: single-version path is safe; fall through.
                 fi
 
-                # AL fix: use the bundle path ONLY when more than one version is
-                # available.  When available_count == 1 (the ceiling only), the
-                # producer never builds a bundle (set_size<=1 early return in
-                # _bundle_and_write_artifact), so referencing a non-existent bundle
-                # would fail the postgres build.  Fall through to the single-version
-                # path instead, which works correctly for set_size==1.
+                # Use the collector emitter when more than one version is available.
+                # When available_count == 1 (the ceiling only), no collector is needed
+                # (_bundle_and_write_artifact early-returns for set_size<=1).
+                # Fall through to the single-version path which works for set_size==1.
                 if [[ "$available_count" -gt 1 ]]; then
                     # Validate the available[] array at the JSON level BEFORE any jq -r
                     # iteration. This prevents the embedded-newline bypass where a single
@@ -875,105 +933,103 @@ generate_dockerfile() {
                         fi
                     done < <(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
-                    # Multi-version path: two sub-cases depending on the data source.
+                    # Multi-version path: build a {version → ref} map, then call
+                    # _emit_collector_stage to emit:
+                    #   INTO stages_block: FROM scratch AS ext_collect_<ext>
+                    #                      COPY --from=<ref> /output/ /<ver>/   (one per version)
+                    #   INTO copies_block: COPY --from=ext_collect_<ext> / /tmp/ext/<ext>/
                     #
-                    # ARTIFACT-PRESENT path (AM/AN): emit a SINGLE digest-pinned bundle COPY.
-                    # The bundle image (<registry>/<owner>/ext-<ext>:pg<major>-bundle) was
-                    # assembled by the producer (build-extensions.sh) from all available
-                    # per-version images.  Its internal layout is /<ver>/{extension,lib}/
-                    # so COPY / /tmp/ext/<ext>/ lands each version at
-                    # /tmp/ext/<ext>/<ver>/{extension,lib}/ — exactly the layout
-                    # that install_ext iterates.  The bundle is guaranteed by the producer
-                    # invariant (written atomically with the artifact) so no probe is needed.
-                    #
-                    # SELF-HEAL path (AP): artifact absent/malformed — the mutable bundle
-                    # tag (:pg<major>-bundle) can drift from the set we proved available.
-                    # Instead, emit one COPY --from=<per-version-ref> pair per version in
-                    # _sh_available (the proved-present set).  Per-version tags are
-                    # version-specific and cannot drift to a different retained set.
-                    # Source paths match the per-version image layout: /output/extension/
-                    # and /output/lib/.  Destinations mirror the bundle layout that
-                    # install_ext iterates: /tmp/ext/<ext>/<ver>/extension/ and
-                    # /tmp/ext/<ext>/<ver>/lib/.  NO bundle reference on the self-heal path.
-                    local _bundle_copy_written=false
+                    # Two data sources feed the same emitter:
+                    #   Artifact-present: use <registry>/<owner>/ext-<ext>@<version_digests[ver]>
+                    #     (fail-closed if any version in available[] is missing from version_digests
+                    #     or its digest is malformed).
+                    #   Self-heal (artifact absent): use _sh_emit_ref_map[ver] from ext_ref_resolve
+                    #     (the degraded path — no digest map without the artifact; tag resolution
+                    #     is the accepted fallback).
+
                     local raw_versions
                     raw_versions=$(echo "$_versionset_json" | jq -r '.available[]' 2>/dev/null || true)
 
                     if [[ -n "$raw_versions" ]]; then
+                        # Build version→ref map for the emitter.
+                        # Use the global _ECS_REF_MAP (bash-4.0 portable; no local -n namerefs
+                        # which require bash 4.3+).  Reset before population to avoid stale
+                        # entries from a previous extension in the same generate_dockerfile call.
+                        # Build a serialized version→ref list (tab-delimited "<ver>\t<ref>" lines).
+                        # Portable bash-4.0 pattern: no local -n namerefs (require bash 4.3+);
+                        # no global associative arrays (unreliable across forked subshells when
+                        # sourced inside a function scope). Serializing as a string passes cleanly.
+                        local _ecs_ver_ref_list=""
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
-                            # AP: self-heal path — emit per-version COPYs from proved-present refs.
-                            # _sh_emit_ref_map[ver] was populated by ext_ref_resolve in the probe
-                            # loop above (canonical-first, PR-scoped fallback, FORCE-aware).
-                            local _pv_ver
-                            while IFS= read -r _pv_ver; do
-                                [[ -z "$_pv_ver" ]] && continue
-                                local _pv_ref="${_sh_emit_ref_map[$_pv_ver]:-}"
-                                if [[ -z "$_pv_ref" ]]; then
-                                    # Should not happen: every version in available[] was resolved by ext_ref_resolve.
-                                    log_error "generate_dockerfile: AP self-heal emit: no resolved ref for $ext_name $_pv_ver pg${pg_major} — fail closed"
+                            # Self-heal path: refs already resolved by ext_ref_resolve above.
+                            local _sh_mv
+                            while IFS= read -r _sh_mv; do
+                                [[ -z "$_sh_mv" ]] && continue
+                                local _sh_mv_ref="${_sh_emit_ref_map[$_sh_mv]:-}"
+                                if [[ -z "$_sh_mv_ref" ]]; then
+                                    log_error "generate_dockerfile: self-heal emit: no resolved ref for $ext_name $_sh_mv pg${pg_major} — fail closed"
                                     return 1
                                 fi
-                                copies_block+="COPY --from=${_pv_ref} /output/extension/ /tmp/ext/${ext_name}/${_pv_ver}/extension/"$'\n'
-                                copies_block+="COPY --from=${_pv_ref} /output/lib/ /tmp/ext/${ext_name}/${_pv_ver}/lib/"$'\n'
+                                _ecs_ver_ref_list+="${_sh_mv}	${_sh_mv_ref}"$'\n'
                             done <<< "$raw_versions"
-                            _bundle_copy_written=true
                         else
-                            # Artifact-present path (AM/AN): single digest-pinned bundle COPY.
-                            local _bundle_ref="${registry}/${owner}/ext-${ext_name}:pg${pg_major}-bundle"
+                            # Artifact-present path: use version_digests for digest-pinned refs.
+                            local _vd_field_present
+                            _vd_field_present=$(echo "$_versionset_json" | jq -r 'if has("version_digests") then "yes" else "no" end' 2>/dev/null || echo "no")
 
-                            # AM fix: use a digest-pinned COPY ref when the artifact has a
-                            # bundle_digest (publish path).  The digest is immutable and
-                            # consistent with the atomic invariant (written by the producer
-                            # only after a successful push).  LOCAL_ONLY artifacts omit
-                            # bundle_digest, so the tag-based fallback is correct there.
-                            #
-                            # AN fix: validate the digest with is_valid_oci_digest (strict
-                            # whole-string: sha256: + exactly 64 lowercase hex, no extra
-                            # content) before using it in the COPY line.  A present-but-
-                            # invalid digest signals a poisoned or corrupted artifact:
-                            # fail closed (log error, return 1) — do NOT emit a COPY with
-                            # an unvalidated digest, and do NOT silently fall back to the
-                            # tag (that would mask the corruption).  An absent bundle_digest
-                            # (LOCAL_ONLY case) → tag-based COPY, unchanged.
-                            #
-                            # BB-1 Part 3: when bundle_digest is present, reference the
-                            # bundle by REPO + DIGEST only (no tag segment).  A digest
-                            # reference is addressable in the repo regardless of which tag
-                            # (pr-scoped or canonical) points to it, so the SAME artifact
-                            # works whether produced by a PR or a push/dispatch run.
-                            # Format: <registry>/<owner>/ext-<name>@sha256:<64hex>
-                            # The tag-based fallback (no bundle_digest) is unchanged —
-                            # LOCAL_ONLY artifacts use the un-suffixed bundle tag directly.
-                            # BC-3: distinguish FIELD-ABSENT from FIELD-PRESENT-BUT-EMPTY.
-                            # jq '.bundle_digest // empty' maps both absent and "" to empty
-                            # string — that would allow present-but-empty to fall through to
-                            # the mutable tag fallback, defeating atomic pinning.
-                            # Use has("bundle_digest") to detect field presence explicitly:
-                            #   - Field ABSENT   → LOCAL_ONLY case → tag-based fallback (allowed).
-                            #   - Field PRESENT  → value must be a valid OCI digest; empty or
-                            #                      non-conforming value → FAIL CLOSED.
-                            local _bundle_digest_field_present
-                            _bundle_digest_field_present=$(echo "$_versionset_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
-                            local _bundle_digest
-                            _bundle_digest=$(echo "$_versionset_json" | jq -r '.bundle_digest // empty' 2>/dev/null || true)
-                            local _bundle_copy_ref
-                            if [[ "$_bundle_digest_field_present" == "yes" ]]; then
-                                # Field present: value must be a valid OCI digest.
-                                if ! is_valid_oci_digest "$_bundle_digest"; then
-                                    log_error "generate_dockerfile: bundle_digest for $ext_name pg${pg_major} is present but malformed or contains invalid content ('$(_sanitize_for_log "$(printf '%s' "$_bundle_digest" | head -c 80)")') — fail closed (possible artifact corruption or poisoning)"
+                            # Guard: a legacy pushed artifact carries bundle_digest but no
+                            # version_digests.  Silently falling back to mutable tag refs for
+                            # such an artifact would regress the digest-pinned guarantee.
+                            # Fail closed so the operator rebuilds under the new schema.
+                            # The tag-fallback path is valid ONLY when neither key is present
+                            # (genuine local/no-push build — producer invariant).
+                            if [[ "$_vd_field_present" == "no" ]]; then
+                                local _bd_field_present
+                                _bd_field_present=$(echo "$_versionset_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
+                                if [[ "$_bd_field_present" == "yes" ]]; then
+                                    log_error "generate_dockerfile: $ext_name pg${pg_major} artifact has bundle_digest but no version_digests — this is a legacy pre-collector artifact; rebuild under the new schema to restore digest-pinned refs"
                                     return 1
                                 fi
-                                # Repo-only digest ref (no tag segment) — valid for both
-                                # PR-scoped and canonical bundles sharing the same digest.
-                                _bundle_copy_ref="${registry}/${owner}/ext-${ext_name}@${_bundle_digest}"
-                            else
-                                # Field absent (LOCAL_ONLY case) → tag-based fallback.
-                                _bundle_copy_ref="${_bundle_ref}"
                             fi
 
-                            copies_block+="COPY --from=${_bundle_copy_ref} / /tmp/ext/${ext_name}/"$'\n'
-                            _bundle_copy_written=true
+                            local _art_ver
+                            while IFS= read -r _art_ver; do
+                                [[ -z "$_art_ver" ]] && continue
+                                if [[ "$_vd_field_present" == "yes" ]]; then
+                                    # Artifact has version_digests: require a valid digest per version.
+                                    local _art_digest
+                                    _art_digest=$(echo "$_versionset_json" | jq -r --arg v "$_art_ver" '.version_digests[$v] // empty' 2>/dev/null || true)
+                                    if ! is_valid_oci_digest "$_art_digest"; then
+                                        log_error "generate_dockerfile: version_digests[$_art_ver] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_art_digest:-}" | head -c 80)")') — fail closed"
+                                        return 1
+                                    fi
+                                    _ecs_ver_ref_list+="${_art_ver}	${registry}/${owner}/ext-${ext_name}@${_art_digest}"$'\n'
+                                else
+                                    # Artifact lacks version_digests (LOCAL_ONLY / no-push build path):
+                                    # construct a tag-based ref using the caller's explicit registry/owner
+                                    # so the ref targets the correct repo even when the caller passed
+                                    # registry/owner overrides.
+                                    # This tag-fallback is correct ONLY for the not-pushed (local) case;
+                                    # a pushed artifact always has version_digests (producer invariant:
+                                    # version_digests absent ⟺ artifact was not pushed).
+                                    local _art_plain_ref
+                                    _art_plain_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner")
+                                    _ecs_ver_ref_list+="${_art_ver}	${_art_plain_ref}"$'\n'
+                                fi
+                            done <<< "$raw_versions"
                         fi
+
+                        # Emit the collector stage and single final-stage COPY.
+                        # _emit_collector_stage outputs stages and copies separated by ---ECS-COPIES---
+                        local _ecs_output
+                        if ! _ecs_output=$(_emit_collector_stage "$ext_name" "$_ecs_ver_ref_list"); then
+                            return 1
+                        fi
+                        stages_block+="${_ecs_output%%---ECS-COPIES---*}"
+                        # Command substitution strips the trailing newline, so the copies
+                        # part would be appended without a newline terminator, causing the
+                        # next extension's COPY to concatenate onto the same line.
+                        copies_block+="${_ecs_output##*---ECS-COPIES---$'\n'}"$'\n'
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
                         local deps
