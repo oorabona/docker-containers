@@ -99,6 +99,9 @@ extensions:
       - openssl-dev
     shared_preload: true
     priority: 3
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 12
   pg_cron:
     version: "1.6.7"
     description: "Cron-based job scheduling inside PostgreSQL"
@@ -121,6 +124,12 @@ extensions:
     repo: "postgis/postgis"
     build_deps:
       - build-base
+      # bison (yacc) + flex (lex) generate the WKT/WKB parser and lexer
+      # (lwin_wkt_parse.c / lwin_wkt_lex.c). The source is a git checkout via
+      # autogen.sh, which does not ship the pre-generated files a release tarball
+      # would, so both are required at build time ("No yacc found, cannot build parser").
+      - bison
+      - flex
       - geos-dev
       - proj-dev
       - gdal-dev

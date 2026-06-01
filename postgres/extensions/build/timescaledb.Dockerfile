@@ -30,6 +30,7 @@ RUN apk add --no-cache \
     llvm19-dev \
     cmake \
     git \
+    krb5-dev \
     openssl-dev \
     icu-dev \
     && ln -sf /usr/bin/clang-19 /usr/bin/clang \

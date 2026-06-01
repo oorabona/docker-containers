@@ -218,6 +218,8 @@ When using `--local-only`, extensions are:
 
 This allows the postgres build to find extensions via `COPY --from=ghcr.io/...` without requiring registry access.
 
+A local `timeseries` or `full` postgres build resolves the retained TimescaleDB version set via skopeo (the documented local requirement, see `postgres/README.md`) or consumes a CI-produced version-set artifact. When the resolver is unavailable locally, the build does **not** silently produce a reduced-retention image — it fails fast asking for skopeo or the artifact. Install skopeo (`apt install skopeo` / `brew install skopeo`) and run the extension build before the postgres build.
+
 ### Required Permissions
 
 For pushing to GHCR locally:
