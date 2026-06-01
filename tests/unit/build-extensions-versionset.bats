@@ -13716,3 +13716,236 @@ _mock_probe_outcomes() {
     [ "$rc" -eq 1 ]
     unset PR_TAG_SUFFIX FORCE
 }
+
+# ---------------------------------------------------------------------------
+# INSPECT-FAIL: imagetools inspect failure is treated as a transient infra
+# error and causes finalize_multiarch_manifests to fail closed (exit non-zero).
+#
+# Before fix: both inspect sites used `|| true`, swallowing the exit code.
+# An inspect failure yielded empty output → the arch-coverage grep saw no
+# linux/amd64 or linux/arm64 → the version was silently excluded (non-ceiling)
+# or treated as genuinely single-arch, writing a REDUCED versionset artifact.
+#
+# After fix: inspect failure → _ext_failed=true → abort → no reduced artifact.
+#
+# This test drives the CREATE path (multi-arch manifest absent → per-arch tags
+# confirmed PRESENT → imagetools create SUCCEEDS → imagetools inspect FAILS).
+# Non-ceiling version: the old code would have silently excluded it and
+# continued; the fixed code must fail closed (exit non-zero, no artifact).
+# ---------------------------------------------------------------------------
+@test "INSPECT-FAIL: imagetools inspect failure on CREATE path → fail closed (no reduced artifact)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export FINALIZE_MULTIARCH=true
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve:
+        #   arch=\"\"    → rc 1 (multi-arch manifest absent → trigger CREATE path)
+        #   arch=\"amd64\" / arch=\"arm64\" → rc 0 with a stable arch-suffixed ref
+        # This drives the CREATE path in finalize_multiarch_manifests.
+        ext_ref_resolve() {
+            local _ext=\"\$1\" _ver=\"\$2\" _maj=\"\$3\" _arch=\"\${4:-}\"
+            if [[ -z \"\$_arch\" ]]; then
+                return 1  # multi-arch absent → proceed to CREATE
+            fi
+            printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' \"\$_ext\" \"\$_maj\" \"\$_ver\" \"\$_arch\"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        # _capture_index_digest: returns a valid digest (create succeeded)
+        _capture_index_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_index_digest
+
+        # docker:
+        #   buildx imagetools create  → succeeds (per-arch tags confirmed PRESENT)
+        #   buildx imagetools inspect → FAILS (transient infra error — the bug site)
+        #   everything else           → fail (not needed)
+        docker() {
+            local _cmd=\"\${1:-}\" _sub=\"\${2:-}\" _subsub=\"\${3:-}\"
+            if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' ]]; then
+                if [[ \"\$_subsub\" == 'create' ]]; then
+                    return 0
+                fi
+                if [[ \"\$_subsub\" == 'inspect' ]]; then
+                    printf 'error: transient registry failure\\n' >&2
+                    return 1
+                fi
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # CORE ASSERTION: inspect failure on any version must cause fail-closed (exit non-zero).
+    # Before fix: exit 0, version silently excluded, reduced artifact written.
+    # After fix:  exit non-zero, no reduced artifact.
+    [ "$status" -ne 0 ]
+
+    # The versionset artifact must NOT exist: inspect failure must not produce a
+    # reduced artifact (writing available=[2.26.0,2.27.1] while silently dropping
+    # 2.25.0 is the exact pre-fix data-loss scenario this test guards against).
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
+# INSPECT-FAIL REUSE PATH: imagetools inspect failure on the REUSE path
+# (multi-arch manifest already present → reuse attempted → inspect FAILS).
+#
+# Before fix: both inspect sites used `|| true`, swallowing the exit code.
+# An inspect failure yielded empty output → arch-coverage grep saw nothing →
+# the version fell through to the CREATE path (or was silently excluded).
+# Either way a transient infra error produced a different artifact than the
+# correct, fully-available set.
+#
+# After fix: inspect failure → _ext_failed=true → abort → no artifact.
+#
+# This test drives the REUSE path:
+#   ext_ref_resolve(arch="") → rc 0 (manifest present)
+#   _capture_index_digest    → succeeds
+#   imagetools inspect       → rc 1 (transient infra error — the bug site)
+# Non-ceiling version: the old code would fall through to CREATE; the fixed
+# code must fail closed (exit non-zero, no artifact).
+# ---------------------------------------------------------------------------
+@test "INSPECT-FAIL: imagetools inspect failure on REUSE path → fail closed (no reduced artifact)" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export FINALIZE_MULTIARCH=true
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve:
+        #   arch=\"\"    → rc 0 with a ref (multi-arch manifest PRESENT → trigger REUSE path)
+        #   arch=*      → rc 0 with arch-suffixed ref (per-arch tags also present)
+        # This drives the REUSE path in finalize_multiarch_manifests.
+        ext_ref_resolve() {
+            local _ext=\"\$1\" _ver=\"\$2\" _maj=\"\$3\" _arch=\"\${4:-}\"
+            if [[ -z \"\$_arch\" ]]; then
+                printf 'ghcr.io/test/ext-%s:pg%s-%s' \"\$_ext\" \"\$_maj\" \"\$_ver\"
+                return 0  # manifest PRESENT → enter reuse path
+            fi
+            printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' \"\$_ext\" \"\$_maj\" \"\$_ver\" \"\$_arch\"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        # _capture_index_digest: succeeds (reuse digest captured without issue)
+        _capture_index_digest() {
+            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            return 0
+        }
+        export -f _capture_index_digest
+
+        # docker:
+        #   buildx imagetools inspect → FAILS (transient infra error — the bug site)
+        #   buildx imagetools create  → not expected to be called (reuse path fails first)
+        #   everything else           → fail (not needed)
+        docker() {
+            local _cmd=\"\${1:-}\" _sub=\"\${2:-}\" _subsub=\"\${3:-}\"
+            if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' ]]; then
+                if [[ \"\$_subsub\" == 'inspect' ]]; then
+                    printf 'error: transient registry failure\\n' >&2
+                    return 1
+                fi
+                if [[ \"\$_subsub\" == 'create' ]]; then
+                    return 0
+                fi
+            fi
+            return 1
+        }
+        export -f docker
+
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+        image_exists_in_registry() { return 1; }
+        export -f image_exists_in_registry
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    # CORE ASSERTION: inspect failure on the REUSE path must cause fail-closed (exit non-zero).
+    # Before fix: inspect rc was swallowed by || true, empty output fell through to CREATE
+    # path (or silently excluded the version), producing a reduced or incorrect artifact.
+    # After fix: non-zero inspect rc → _ext_failed=true → no artifact written.
+    [ "$status" -ne 0 ]
+
+    # The versionset artifact must NOT exist: a transient inspect failure must never
+    # produce any artifact (reduced or full), as the set of confirmed-available versions
+    # is unknown.
+    [ ! -f "$artifact" ]
+}

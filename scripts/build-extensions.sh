@@ -2034,8 +2034,13 @@ finalize_multiarch_manifests() {
                     # If it is single-arch (legacy / pre-multi-arch), fall through to the
                     # CREATE path to rebuild it from this run's per-arch legs instead of
                     # blindly accepting a stale single-arch manifest.
-                    local _reuse_inspect_out
-                    _reuse_inspect_out=$($DOCKER buildx imagetools inspect "$_ma_ref" 2>/dev/null) || true
+                    local _reuse_inspect_out _reuse_inspect_rc=0
+                    _reuse_inspect_out=$($DOCKER buildx imagetools inspect "$_ma_ref" 2>&1) || _reuse_inspect_rc=$?
+                    if [[ "$_reuse_inspect_rc" -ne 0 ]]; then
+                        log_error "$ext $ver pg${major_ver}: imagetools inspect failed on reused manifest ref (rc=$_reuse_inspect_rc) — transient infra error — fail closed"
+                        _ext_failed=true
+                        break
+                    fi
                     if echo "$_reuse_inspect_out" | grep -q "linux/amd64" && \
                        echo "$_reuse_inspect_out" | grep -q "linux/arm64"; then
                         _confirmed_available+=("$ver")
@@ -2116,8 +2121,13 @@ finalize_multiarch_manifests() {
                 break
             fi
             # Verify the created manifest covers both target platforms.
-            local _inspect_out
-            _inspect_out=$($DOCKER buildx imagetools inspect "$ver_multiarch" 2>/dev/null) || true
+            local _inspect_out _inspect_rc=0
+            _inspect_out=$($DOCKER buildx imagetools inspect "$ver_multiarch" 2>&1) || _inspect_rc=$?
+            if [[ "$_inspect_rc" -ne 0 ]]; then
+                log_error "$ext $ver pg${major_ver}: imagetools inspect failed after manifest create (rc=$_inspect_rc) — transient infra error — fail closed"
+                _ext_failed=true
+                break
+            fi
             if ! echo "$_inspect_out" | grep -q "linux/amd64" || \
                ! echo "$_inspect_out" | grep -q "linux/arm64"; then
                 if [[ "$ver" == "$ceiling" ]]; then
