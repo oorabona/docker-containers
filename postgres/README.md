@@ -296,7 +296,7 @@ default_statistics_target = 100
 | hypopg | 1.4.2 | Hypothetical indexes | analytics, full | PostgreSQL |
 | pg_qualstats | 2.1.3 | Predicate statistics | analytics, full | PostgreSQL |
 | PostGIS | 3.6.2 | Geospatial types and functions | analytics, timeseries, spatial, full | GPL-2.0 |
-| TimescaleDB | 2.25.1 | Time-series database | timeseries, full | Apache-2.0 + TSL |
+| TimescaleDB | 2.27.1 | Time-series database | timeseries, full | Apache-2.0 + TSL |
 | Citus | 14.0.0 | Distributed PostgreSQL | distributed, full | AGPL-3.0 |
 | pg_cron | 1.6.7 | Job scheduler | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
 | pg_ivm | 1.13 | Incremental materialized views | vector, analytics, timeseries, spatial, distributed, full | PostgreSQL |
@@ -314,6 +314,40 @@ Analytics and full flavors also include:
 - `pg_buffercache` - Shared buffer inspection
 - `pg_prewarm` - Buffer cache preloading
 - `file_fdw` / `postgres_fdw` - Foreign data wrappers (full only)
+
+## TimescaleDB Version Retention
+
+**Why this exists.** TimescaleDB uses a version-agnostic loader: on first backend access it `dlopen`s the exact `timescaledb-<version>.so` recorded in the database's `pg_extension` catalog. If the image shipped only the current `.so`, a persisted database created on an *older* TimescaleDB version would become **unstartable** after an image upgrade (`FATAL: could not access file "$libdir/timescaledb-<old>.so"`). To prevent that, the `timeseries` and `full` flavors retain a window of TimescaleDB versions.
+
+**What is retained.** The image ships up to `version_set.retain_count` (default **12**) of the most-recent TimescaleDB versions per PostgreSQL major that successfully build for the Alpine/musl platform. A persisted database on any version within that window **starts without any migration** — PostgreSQL loads the `.so` matching the catalog version. Versions that fail to compile under musl are tolerated and excluded; they are recorded in the versionset artifact (`.build-lineage/ext-timescaledb-pg<major>-versionset.json`, `excluded[]`) and not shipped. The retain count is configurable via `version_set.retain_count` in `postgres/extensions/config.yaml`. The retained window is derived from the upstream `timescale/timescaledb-ha` support matrix, so it differs per PostgreSQL major (a TimescaleDB version that never supported a given PostgreSQL major is not retained for it):
+
+| PostgreSQL major | Upstream support window (floor → ceiling) | Default image retains |
+|------------------|-------------------------------------------|-----------------------|
+| 18               | 2.23.0 → 2.27.1                           | up to 12 most-recent  |
+| 17               | 2.17.2 → 2.27.1                           | up to 12 most-recent  |
+| 16               | 2.13.0 → 2.27.1                           | up to 12 most-recent  |
+
+The table shows the upstream support window per PostgreSQL major. The shipped image retains the **12 most-recent** versions from that window (configurable via `version_set.retain_count` in `postgres/extensions/config.yaml`). Databases on versions older than the retained window use `ALTER EXTENSION timescaledb UPDATE` to migrate to the ceiling.
+
+The ceiling — currently **2.27.1** — is the pinned version in `postgres/extensions/config.yaml`; the floor and retained count track upstream and refresh automatically as new TimescaleDB versions are released and the pin is bumped.
+
+The `timescaledb.control` file sets `default_version` to the pinned ceiling, so a fresh `CREATE EXTENSION timescaledb` installs the latest version.
+
+**How retained versions are shipped.** All retained versions for a given PostgreSQL major are assembled into a single per-major bundle image (`ghcr.io/<owner>/ext-timescaledb:pg<major>-bundle`). The bundle stores each version's files under `/<ver>/{extension,lib}/`. The postgres Dockerfile consumes the bundle with one `COPY --from=<bundle> / /tmp/ext/timescaledb/` instruction — one layer regardless of how many versions are retained (up to `retain_count` default **12**). The `install_ext` shell function in the Dockerfile iterates `/tmp/ext/timescaledb/` subdirectories and installs each version's `.so`; the ceiling version's `.control` file is written last so `default_version` reflects the pinned ceiling. To move an existing database to a newer version, run `ALTER EXTENSION timescaledb UPDATE;` (see below).
+
+> **Local build requirement:** Building the `timeseries` or `full` flavors locally (e.g. `./make build postgres --flavor timeseries`) requires **`skopeo`** on the build host. When the versionset artifact is not present (it is produced by the CI extension build job), the Dockerfile generator resolves the retained TimescaleDB set by querying the upstream registry via `skopeo list-tags`. Install with `sudo apt-get install -y skopeo` (Debian/Ubuntu) or `brew install skopeo` (macOS). macOS also requires **GNU coreutils** (`brew install coreutils`) because the version-set resolution uses `sort -V`, which is not available in the BSD sort shipped with macOS.
+
+### Moving an existing database to the pinned version
+
+To upgrade TimescaleDB in a persisted database (e.g. after pulling an image with a newer ceiling), connect to each database that has TimescaleDB installed and run:
+
+```sql
+ALTER EXTENSION timescaledb UPDATE;
+```
+
+The migration SQL for all retained versions is bundled in the image. The database continues to start on the old `.so` until you run this command — no forced migration on boot.
+
+> **Note:** `/docker-entrypoint-initdb.d/` scripts run only on a **fresh** (empty) data directory and have no effect on existing volumes. To upgrade TimescaleDB in an existing database, always use the manual `ALTER EXTENSION` command above.
 
 ## Security
 
