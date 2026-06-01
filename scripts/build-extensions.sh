@@ -763,8 +763,44 @@ _bundle_and_write_artifact() {
         return 0
     fi
 
-    # Write the artifact without version_digests (multi-arch index digests are only
-    # available after finalize_multiarch_manifests merges both arch legs).
+    # Invariant: version_digests is present IFF do_push=true (non-ARCH_SUFFIX path).
+    # A pushed artifact MUST carry version_digests so the consumer can emit digest-
+    # pinned COPY --from= refs.  Omitting version_digests is correct ONLY when the
+    # artifact was not pushed (LOCAL_ONLY / PULL_ONLY / do_push=false).
+    # The consumer's tag-fallback for a no-version_digests artifact relies on this
+    # invariant: it is safe ONLY for local/no-push artifacts; a pushed artifact that
+    # lacks version_digests would cause the consumer to emit mutable-tag refs,
+    # silently regressing the digest-pinned ref guarantee.
+    local _version_digests_json="null"
+    if [[ "$do_push" == "true" ]]; then
+        # Capture the pushed digest for each confirmed-available version.
+        # Fail-closed: if any digest is missing or malformed, abort — a partial
+        # version_digests map would leave some versions tag-pinned, which violates
+        # the invariant.
+        local _vd_entries=()
+        local _vd_ver
+        for _vd_ver in "${_confirmed_available[@]+"${_confirmed_available[@]}"}"; do
+            local _vd_image
+            _vd_image=$(ext_image_name "$ext" "$_vd_ver" "$major_ver")
+            local _vd_digest
+            _vd_digest=$(_capture_index_digest "$_vd_image") || true
+            if ! is_valid_oci_digest "${_vd_digest:-}"; then
+                log_error "$ext: digest capture failed for $_vd_ver ($major_ver) — cannot write pushed artifact without valid digest; fail-closed"
+                _delete_stale_versionset_artifact "$ext" "$major_ver"
+                return 1
+            fi
+            _vd_entries+=("$(printf '%s' "$_vd_ver" | jq -Rr @json):$(printf '%s' "$_vd_digest" | jq -Rr @json)")
+        done
+        # Build the version_digests JSON object from collected entries.
+        _version_digests_json="{$(IFS=,; printf '%s' "${_vd_entries[*]+"${_vd_entries[*]}"}") }"
+        # Validate that jq can parse the constructed object.
+        if ! echo "$_version_digests_json" | jq -e 'type == "object"' > /dev/null 2>&1; then
+            log_error "$ext: constructed version_digests JSON is invalid — fail-closed"
+            _delete_stale_versionset_artifact "$ext" "$major_ver"
+            return 1
+        fi
+    fi
+
     local _vs_lineage_file="${ROOT_DIR}/.build-lineage/ext-${ext}-pg${major_ver}-versionset.json"
     mkdir -p "${ROOT_DIR}/.build-lineage"
 
@@ -773,16 +809,32 @@ _bundle_and_write_artifact() {
     _excluded_json="[$(IFS=,; echo "${_excluded_entries[*]+"${_excluded_entries[*]}"}")]"
     _resolved_json=$(echo "$version_set_json" | jq '.')
 
-    jq -nc \
-        --arg ext "$ext" \
-        --arg pg_major "$major_ver" \
-        --arg ceiling "$ceiling" \
-        --argjson resolved "$_resolved_json" \
-        --argjson available "$_available_json" \
-        --argjson excluded "$_excluded_json" \
-        '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
-        > "$_vs_lineage_file"
-    log_info "Version-set lineage (build path, no version_digests yet): $_vs_lineage_file"
+    if [[ "$_version_digests_json" == "null" ]]; then
+        # No-push path: omit version_digests (local/no-push artifact).
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded}' \
+            > "$_vs_lineage_file"
+        log_info "Version-set lineage (build path, no-push — no version_digests): $_vs_lineage_file"
+    else
+        # Pushed path: include version_digests so consumer emits digest-pinned refs.
+        jq -nc \
+            --arg ext "$ext" \
+            --arg pg_major "$major_ver" \
+            --arg ceiling "$ceiling" \
+            --argjson resolved "$_resolved_json" \
+            --argjson available "$_available_json" \
+            --argjson excluded "$_excluded_json" \
+            --argjson version_digests "$_version_digests_json" \
+            '{ext:$ext, pg_major:$pg_major, ceiling:$ceiling, resolved:$resolved, available:$available, excluded:$excluded, version_digests:$version_digests}' \
+            > "$_vs_lineage_file"
+        log_info "Version-set lineage (build path, pushed — with version_digests): $_vs_lineage_file"
+    fi
     return 0
 }
 
@@ -1024,7 +1076,10 @@ build_tag_push_extensions() {
         # Artifact write (atomic): for resolver-backed multi-version extensions,
         # _bundle_and_write_artifact computes confirmed_available ONCE (3-state probe
         # + built-this-run union) and writes the versionset artifact from that set.
-        # version_digests (multi-arch index digests) are added by finalize_multiarch_manifests.
+        # When do_push=true (non-ARCH_SUFFIX path): version_digests is captured and
+        # written here so the consumer can emit digest-pinned COPY --from= refs.
+        # When ARCH_SUFFIX is set (CI per-arch leg): artifact is deferred to
+        # finalize_multiarch_manifests which captures multi-arch index digests.
         #
         # Under DRY_RUN: skip (no mutation).
         # Fatal failure guard (AK-1): if ANY version for this ext failed in this run,

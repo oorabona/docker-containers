@@ -8,6 +8,7 @@
 
 set -euo pipefail
 
+
 # Source shared logging utilities (provides log_info, log_success, log_warning, log_error)
 HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F log_info &>/dev/null; then
@@ -572,43 +573,35 @@ get_flavor_extensions() {
     ' "$config_file"
 }
 
-# _emit_collector_stage <ext> <stages_var> <copies_var> <ref_map_var> <pg_major>
+# _emit_collector_stage <ext> <ver_ref_list>
 #
 # Emit a consume-time collector build stage for a multi-version resolver-backed
 # extension.  The collector stage absorbs all per-version COPYs; its layers are
 # NOT exported because it is an intermediate stage.  The final stage does ONE
 # COPY from the collector → exactly one exported layer regardless of version count.
 #
-# Stage emitted into <stages_var> (substituted at @@EXTENSION_STAGES@@):
-#   FROM scratch AS ext_collect_<ext>
-#   COPY --from=<ref> /output/ /<ver>/     # one COPY per version (whole /output/)
+# Output to stdout (two sections separated by the delimiter line "---ECS-COPIES---"):
+#   <stages_block>     — FROM scratch AS ext_collect_<ext> + COPY --from per version
+#   ---ECS-COPIES---
+#   <copies_block>     — COPY --from=ext_collect_<ext> / /tmp/ext/<ext>/
 #
-# Copy emitted into <copies_var> (substituted at @@EXTENSION_COPIES@@):
-#   COPY --from=ext_collect_<ext> / /tmp/ext/<ext>/
+# Caller captures stdout and splits on the delimiter to obtain stages_block and copies_block.
 #
-# Layout: /output/ already contains extension/ and lib/, so after the collector
-# COPY the layout is /<ver>/extension/ + /<ver>/lib/ inside the stage, and
-# /tmp/ext/<ext>/<ver>/{extension,lib}/ in the final image — exactly what
-# install_ext (postgres/Dockerfile:92–119, multi-version branch) expects.
+# Portable bash-4.0 pattern (no local -n namerefs, which require bash 4.3+):
+#   <ver_ref_list> is a newline-delimited list of "<version>\t<ref>" pairs.
+#   Caller serializes its version→ref map as "<ver>\t<ref>\n..." and passes it.
 #
 # Args:
-#   ext         extension name (e.g. "timescaledb")
-#   stages_var  name of the variable to append the stages block to (nameref)
-#   copies_var  name of the variable to append the copies block to (nameref)
-#   ref_map_var name of the associative array mapping version → emit ref (nameref)
-#   pg_major    PG major version (for sanitisation only; not emitted directly)
+#   $1  ext          extension name (e.g. "timescaledb")
+#   $2  ver_ref_list newline-delimited "<version>\t<ref>" pairs
 #
-# Returns 0 on success, 1 on validation failure (logged).
+# Returns 0 on success (output on stdout), 1 on validation failure (logged, no output).
 _emit_collector_stage() {
     local _ecs_ext="$1"
-    local -n _ecs_stages="$2"
-    local -n _ecs_copies="$3"
-    local -n _ecs_ref_map="$4"
-    # pg_major is unused directly in the output but kept for caller clarity
-    # local _ecs_pg_major="$5"  # unused
+    local _ecs_ver_ref_list="$2"
 
-    if [[ ${#_ecs_ref_map[@]} -eq 0 ]]; then
-        log_error "_emit_collector_stage: empty ref map for ${_ecs_ext} — fail closed"
+    if [[ -z "$_ecs_ver_ref_list" ]]; then
+        log_error "_emit_collector_stage: empty ref list for ${_ecs_ext} — fail closed"
         return 1
     fi
 
@@ -616,20 +609,24 @@ _emit_collector_stage() {
     local _ecs_stage_name="ext_collect_${_ecs_ext//[^a-zA-Z0-9_]/_}"
 
     local _ecs_stage_block="FROM scratch AS ${_ecs_stage_name}"$'\n'
-    local _ecs_ver
-    for _ecs_ver in "${!_ecs_ref_map[@]}"; do
-        local _ecs_ref="${_ecs_ref_map[$_ecs_ver]}"
-        if [[ -z "$_ecs_ref" ]]; then
-            log_error "_emit_collector_stage: empty ref for ${_ecs_ext} version ${_ecs_ver} — fail closed"
+    local _ecs_line
+    while IFS= read -r _ecs_line; do
+        [[ -z "$_ecs_line" ]] && continue
+        local _ecs_ver="${_ecs_line%%	*}"
+        local _ecs_ref="${_ecs_line#*	}"
+        if [[ -z "$_ecs_ver" ]] || [[ -z "$_ecs_ref" ]] || [[ "$_ecs_ver" == "$_ecs_ref" ]]; then
+            log_error "_emit_collector_stage: malformed or empty ref for ${_ecs_ext} — fail closed"
             return 1
         fi
         # Sanitize version for use as a path component.
         local _ecs_ver_safe="${_ecs_ver//[^a-zA-Z0-9._-]/_}"
         _ecs_stage_block+="COPY --from=${_ecs_ref} /output/ /${_ecs_ver_safe}/"$'\n'
-    done
+    done <<< "$_ecs_ver_ref_list"
 
-    _ecs_stages+="${_ecs_stage_block}"
-    _ecs_copies+="COPY --from=${_ecs_stage_name} / /tmp/ext/${_ecs_ext}/"$'\n'
+    # Print stage block, delimiter, then copy line.
+    printf '%s' "${_ecs_stage_block}"
+    printf '%s\n' "---ECS-COPIES---"
+    printf 'COPY --from=%s / /tmp/ext/%s/\n' "${_ecs_stage_name}" "${_ecs_ext}"
     return 0
 }
 
@@ -955,7 +952,14 @@ generate_dockerfile() {
 
                     if [[ -n "$raw_versions" ]]; then
                         # Build version→ref map for the emitter.
-                        local -A _emit_ref_map=()
+                        # Use the global _ECS_REF_MAP (bash-4.0 portable; no local -n namerefs
+                        # which require bash 4.3+).  Reset before population to avoid stale
+                        # entries from a previous extension in the same generate_dockerfile call.
+                        # Build a serialized version→ref list (tab-delimited "<ver>\t<ref>" lines).
+                        # Portable bash-4.0 pattern: no local -n namerefs (require bash 4.3+);
+                        # no global associative arrays (unreliable across forked subshells when
+                        # sourced inside a function scope). Serializing as a string passes cleanly.
+                        local _ecs_ver_ref_list=""
                         if [[ "$_versionset_from_selfheal" == "true" ]]; then
                             # Self-heal path: refs already resolved by ext_ref_resolve above.
                             local _sh_mv
@@ -966,7 +970,7 @@ generate_dockerfile() {
                                     log_error "generate_dockerfile: self-heal emit: no resolved ref for $ext_name $_sh_mv pg${pg_major} — fail closed"
                                     return 1
                                 fi
-                                _emit_ref_map["$_sh_mv"]="$_sh_mv_ref"
+                                _ecs_ver_ref_list+="${_sh_mv}	${_sh_mv_ref}"$'\n'
                             done <<< "$raw_versions"
                         else
                             # Artifact-present path: use version_digests for digest-pinned refs.
@@ -983,23 +987,30 @@ generate_dockerfile() {
                                         log_error "generate_dockerfile: version_digests[$_art_ver] for $ext_name pg${pg_major} is absent or malformed ('$(_sanitize_for_log "$(printf '%s' "${_art_digest:-}" | head -c 80)")') — fail closed"
                                         return 1
                                     fi
-                                    _emit_ref_map["$_art_ver"]="${registry}/${owner}/ext-${ext_name}@${_art_digest}"
+                                    _ecs_ver_ref_list+="${_art_ver}	${registry}/${owner}/ext-${ext_name}@${_art_digest}"$'\n'
                                 else
-                                    # Artifact predates version_digests (LOCAL_ONLY or old build path):
-                                    # construct a tag-based ref directly — no probing needed since
-                                    # the artifact's available[] already proves the image was present
-                                    # when the artifact was written.
+                                    # Artifact lacks version_digests (LOCAL_ONLY / no-push build path):
+                                    # construct a tag-based ref using the caller's explicit registry/owner
+                                    # so the ref targets the correct repo even when the caller passed
+                                    # registry/owner overrides (FIX 3: pass registry+owner to ext_image_name).
+                                    # This tag-fallback is correct ONLY for the not-pushed (local) case;
+                                    # a pushed artifact always has version_digests (producer invariant:
+                                    # version_digests absent ⟺ artifact was not pushed).
                                     local _art_plain_ref
-                                    _art_plain_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major")
-                                    _emit_ref_map["$_art_ver"]="$_art_plain_ref"
+                                    _art_plain_ref=$(ext_image_name "$ext_name" "$_art_ver" "$pg_major" "$registry" "$owner")
+                                    _ecs_ver_ref_list+="${_art_ver}	${_art_plain_ref}"$'\n'
                                 fi
                             done <<< "$raw_versions"
                         fi
 
                         # Emit the collector stage and single final-stage COPY.
-                        if ! _emit_collector_stage "$ext_name" stages_block copies_block _emit_ref_map "$pg_major"; then
+                        # _emit_collector_stage outputs stages and copies separated by ---ECS-COPIES---
+                        local _ecs_output
+                        if ! _ecs_output=$(_emit_collector_stage "$ext_name" "$_ecs_ver_ref_list"); then
                             return 1
                         fi
+                        stages_block+="${_ecs_output%%---ECS-COPIES---*}"
+                        copies_block+="${_ecs_output##*---ECS-COPIES---$'\n'}"
 
                         # Collect runtime_deps (if any) — unchanged from single-version path
                         local deps

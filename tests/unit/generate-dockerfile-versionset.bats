@@ -456,6 +456,44 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# FIX3: tag-based fallback (no-version_digests artifact) must use the caller's
+#       explicit registry/owner, not the default get_registry()/get_repo_owner().
+#
+# Before fix: ext_image_name called without registry/owner → uses get_registry()
+#   and get_repo_owner() → wrong repo when caller passed explicit overrides.
+# After fix:  ext_image_name called with "$registry" "$owner" → honors caller args.
+#
+# Test strategy: generate_dockerfile with explicit registry="custom.io" and
+#   owner="customowner" against a no-version_digests artifact (LOCAL_ONLY/old path).
+#   All per-version COPY --from= refs inside the collector must use custom.io/customowner.
+# ---------------------------------------------------------------------------
+@test "FIX3-tag-fallback-uses-explicit-registry-owner: no-digests artifact refs use caller registry/owner" {
+    # No-version_digests artifact (LOCAL_ONLY / old build path).
+    _write_versionset "timescaledb" "18" "2.23.0" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "custom.io" "customowner"
+
+    [ "$status" -eq 0 ]
+
+    # Collector stage must be present (3 versions → multi-version path).
+    echo "$output" | grep -q "^FROM scratch AS ext_collect_timescaledb"
+
+    # Every per-version COPY inside the collector must use custom.io/customowner.
+    local copy_count
+    copy_count=$(echo "$output" | grep -cE "COPY --from=custom\.io/customowner/ext-timescaledb:pg18-[0-9]" || true)
+    [ "$copy_count" -eq 3 ]
+
+    # Must NOT use the default get_registry() value (ghcr.io) set up in setup().
+    local wrong_count
+    wrong_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]" || true)
+    [ "$wrong_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Test Y: production cwd/PROJECT_ROOT path — artifact found via PROJECT_ROOT
 #         even when ROOT_DIR is unset and cwd is a container subdirectory.
 #

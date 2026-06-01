@@ -413,6 +413,92 @@ _count_log_lines() {
 }
 
 # ---------------------------------------------------------------------------
+# FIX1: pushed artifact (do_push=true, no ARCH_SUFFIX) must include version_digests
+# for every available version.
+#
+# Invariant: version_digests absent ⟺ artifact was NOT pushed.
+# A pushed artifact without version_digests would cause the consumer to emit
+# mutable-tag refs, silently regressing the digest-pinned ref guarantee.
+#
+# Before fix: _bundle_and_write_artifact omits version_digests on the non-ARCH_SUFFIX
+# push path → consumer falls back to tag-based refs (wrong for a pushed artifact).
+# After fix: version_digests is captured and included for every available version.
+# ---------------------------------------------------------------------------
+
+@test "FIX1-push-has-digests: do_push=true artifact includes version_digests for every available version" {
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    # _capture_index_digest already mocked in _setup_default_mocks to return a valid
+    # fixed digest (sha256:000...0).  All versions available — no build failures.
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Artifact must exist (written by _bundle_and_write_artifact on the push path).
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # version_digests must be present (pushed artifact invariant: absent ⟺ not pushed).
+    local vd_present
+    vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
+    [ "$vd_present" = "yes" ]
+
+    # version_digests must contain an entry for EVERY available version.
+    local available_count vd_count
+    available_count=$(jq '.available | length' "$artifact")
+    vd_count=$(jq '.version_digests | length' "$artifact")
+    [ "$available_count" -eq "$vd_count" ]
+
+    # Every version in available[] must have a valid sha256 digest.
+    local all_valid
+    all_valid=$(jq -r '.available[] as $v | .version_digests[$v] // "MISSING" | test("^sha256:[0-9a-f]{64}$")' "$artifact" \
+        | sort -u)
+    [ "$all_valid" = "true" ]
+}
+
+@test "FIX1-no-push-no-digests: do_push=false artifact omits version_digests (local/no-push invariant)" {
+    export LOCAL_ONLY=true
+
+    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
+    export -f resolve_version_set
+
+    ext_config() {
+        case "$2" in
+            version) echo "2.27.1" ;;
+            repo)    echo "https://github.com/timescale/timescaledb" ;;
+            *)       echo "" ;;
+        esac
+    }
+    export -f ext_config
+
+    run build_tag_push_extensions \
+        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "false" "timescaledb"
+
+    [ "$status" -eq 0 ]
+
+    # Artifact must exist (LOCAL_ONLY allows artifact write on the no-push path).
+    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # version_digests must be ABSENT (no-push path; consumer uses tag-based refs).
+    local vd_present
+    vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
+    [ "$vd_present" = "no" ]
+}
+
+# ---------------------------------------------------------------------------
 # M1: resolver call-count — resolve_version_set called AT MOST ONCE per
 # (ext, pg_major) even though both _should_build_extension and
 # build_tag_push_extensions consume the result.
