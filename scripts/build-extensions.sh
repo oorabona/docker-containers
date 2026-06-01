@@ -2000,7 +2000,7 @@ finalize_multiarch_manifests() {
                 fi
 
                 if [[ "$_ma_rc" -eq 0 ]]; then
-                    # Multi-arch manifest present → reuse (canonical or PR-scoped).
+                    # Multi-arch manifest present → attempt reuse (canonical or PR-scoped).
                     # Capture its index digest for the version_digests artifact map.
                     log_info "$ext $ver pg${major_ver}: manifest present — reused (unchanged)"
                     local _reuse_digest _reuse_digest_rc=0
@@ -2010,18 +2010,20 @@ finalize_multiarch_manifests() {
                         _ext_failed=true
                         break
                     fi
-                    # Verify manifest covers both target platforms.
+                    # Verify the reused manifest covers both target platforms.
+                    # If it is single-arch (legacy / pre-multi-arch), fall through to the
+                    # CREATE path to rebuild it from this run's per-arch legs instead of
+                    # blindly accepting a stale single-arch manifest.
                     local _reuse_inspect_out
                     _reuse_inspect_out=$($DOCKER buildx imagetools inspect "$_ma_ref" 2>/dev/null) || true
-                    if ! echo "$_reuse_inspect_out" | grep -q "linux/amd64" || \
-                       ! echo "$_reuse_inspect_out" | grep -q "linux/arm64"; then
-                        log_error "$ext $ver pg${major_ver}: reused manifest does not cover both linux/amd64 and linux/arm64 — fail closed"
-                        _ext_failed=true
-                        break
+                    if echo "$_reuse_inspect_out" | grep -q "linux/amd64" && \
+                       echo "$_reuse_inspect_out" | grep -q "linux/arm64"; then
+                        _confirmed_available+=("$ver")
+                        _ver_index_digests["$ver"]="$_reuse_digest"
+                        continue
                     fi
-                    _confirmed_available+=("$ver")
-                    _ver_index_digests["$ver"]="$_reuse_digest"
-                    continue
+                    log_warning "$ext $ver pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
+                    # Fall through to the CREATE path below.
                 fi
             fi
 
@@ -2098,9 +2100,15 @@ finalize_multiarch_manifests() {
             _inspect_out=$($DOCKER buildx imagetools inspect "$ver_multiarch" 2>/dev/null) || true
             if ! echo "$_inspect_out" | grep -q "linux/amd64" || \
                ! echo "$_inspect_out" | grep -q "linux/arm64"; then
-                log_error "$ext $ver pg${major_ver}: created manifest does not cover both linux/amd64 and linux/arm64 — fail closed"
-                _ext_failed=true
-                break
+                if [[ "$ver" == "$ceiling" ]]; then
+                    log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
+                    _ext_failed=true
+                    break
+                else
+                    log_warning "$ext $ver pg${major_ver}: created manifest does not cover both arches (intersection) — excluded"
+                    _excluded_entries+=("{\"version\":\"${ver}\",\"reason\":\"created manifest missing one or more arches (intersection)\"}")
+                    continue
+                fi
             fi
             log_info "$ext $ver pg${major_ver}: index digest: $_ver_digest"
 

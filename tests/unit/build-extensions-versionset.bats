@@ -9488,6 +9488,351 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# SIMP-reuse-single-arch-falls-through: REUSE path finds a single-arch canonical
+# manifest → falls through to CREATE (re-creates from per-arch legs), exit 0.
+# The reused manifest covers only linux/amd64; per-arch legs exist for both arches.
+# ---------------------------------------------------------------------------
+@test "SIMP-reuse-single-arch-falls-through: single-arch reused manifest triggers re-create from per-arch legs" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+    export docker_calls
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        # 2.27.1 is the only version (ceiling = only version)
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve: un-suffixed manifest is PRESENT (so reuse path is entered);
+        # per-arch suffixed tags are also PRESENT (so CREATE succeeds after fall-through).
+        ext_ref_resolve() {
+            local _ext="$1" _ver="$2" _pg="$3" _arch="${4:-}"
+            if [[ -z "$_arch" ]]; then
+                # Un-suffixed multi-arch ref → PRESENT (triggers reuse attempt)
+                echo "ghcr.io/test/ext-${_ext}:pg${_pg}-${_ver}"
+                return 0
+            fi
+            echo "ghcr.io/test/ext-${_ext}:pg${_pg}-${_ver}-${_arch}"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        _capture_index_digest() {
+            echo "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            return 0
+        }
+        export -f _capture_index_digest
+
+        # docker mock:
+        # - imagetools inspect: first call returns amd64-ONLY (reuse check);
+        #                       subsequent calls return both arches (create-path check).
+        #   Call count tracked via counter file: inspect runs inside a subshell so
+        #   in-memory variables do not persist between calls.
+        # - imagetools create: succeeds, recorded
+        # - manifest: absent
+        _inspect_count_file="'"$tmpd"'/inspect_count.txt"
+        echo 0 > "$_inspect_count_file"
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+                local _cnt
+                _cnt=$(cat "$_inspect_count_file" 2>/dev/null || echo 0)
+                _cnt=$(( _cnt + 1 ))
+                echo "$_cnt" > "$_inspect_count_file"
+                if [[ "$_cnt" -eq 1 ]]; then
+                    # First inspect = reuse check: single-arch (amd64 only)
+                    printf "linux/amd64\n"
+                else
+                    # Subsequent inspects = create-path check: both arches
+                    printf "linux/amd64\nlinux/arm64\n"
+                fi
+                return 0
+            fi
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                return 0
+            fi
+            if [[ "${1:-}" == "manifest" ]]; then
+                echo "manifest unknown" >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Build must succeed (ceiling re-created from per-arch legs after reuse fell through).
+    [ "$status" -eq 0 ]
+
+    # imagetools create must have been called (not blindly reused the single-arch manifest).
+    [ -f "$docker_calls" ]
+    local create_calls
+    create_calls=$(grep 'imagetools create' "$docker_calls" || true)
+    [ -n "$create_calls" ]
+
+    # inspect must have been called at least twice (reuse check + create-path check).
+    local inspect_count
+    inspect_count=$(grep -c 'imagetools inspect' "$docker_calls" || true)
+    [ "$inspect_count" -ge 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# SIMP-nonceil-single-arch-create-excluded: non-ceiling version whose
+# imagetools create produces a single-arch manifest → EXCLUDED (exit 0).
+# Ceiling (both arches) → merged; artifact omits excluded version.
+# ---------------------------------------------------------------------------
+@test "SIMP-nonceil-single-arch-create-excluded: non-ceiling single-arch create is excluded, ceiling merged, exit 0" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local docker_calls="$tmpd/docker_calls.log"
+    export docker_calls
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export docker_calls="'"$docker_calls"'"
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        # 2.23.1 = non-ceiling (will be excluded); 2.26.0 + 2.27.1 = remaining two versions
+        resolve_version_set() { echo '"'"'["2.23.1","2.26.0","2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve:
+        #  - un-suffixed manifest: ABSENT for all (force CREATE path)
+        #  - per-arch suffixed tags: PRESENT for both versions on both arches
+        ext_ref_resolve() {
+            local _ext="$1" _ver="$2" _pg="$3" _arch="${4:-}"
+            if [[ -z "$_arch" ]]; then
+                return 1  # un-suffixed absent → enter CREATE path
+            fi
+            echo "ghcr.io/test/ext-${_ext}:pg${_pg}-${_ver}-${_arch}"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        _capture_index_digest() {
+            echo "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            return 0
+        }
+        export -f _capture_index_digest
+
+        # docker mock:
+        # - imagetools inspect for 2.23.1: returns only linux/amd64 (single-arch result)
+        # - imagetools inspect for 2.27.1: returns both arches
+        # - imagetools create: succeeds
+        # - manifest: absent
+        docker() {
+            echo "DOCKER $*" >> "$docker_calls"
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+                local _ref="${*: -1}"
+                if [[ "$_ref" == *"2.23.1"* ]]; then
+                    # Non-ceiling: inspect shows only amd64 after create
+                    printf "linux/amd64\n"
+                else
+                    printf "linux/amd64\nlinux/arm64\n"
+                fi
+                return 0
+            fi
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                return 0
+            fi
+            if [[ "${1:-}" == "manifest" ]]; then
+                echo "manifest unknown" >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Non-ceiling single-arch → excluded; ceiling merged → exit 0.
+    [ "$status" -eq 0 ]
+
+    # Versionset artifact must exist (ceiling merged).
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+
+    # 2.23.1 must be in excluded[].
+    local excluded_versions
+    excluded_versions=$(jq -r '.excluded[].version' "$artifact")
+    [[ "$excluded_versions" == *"2.23.1"* ]]
+
+    # 2.27.1 (ceiling) must be in available[].
+    local available_versions
+    available_versions=$(jq -r '.available[]' "$artifact")
+    [[ "$available_versions" == *"2.27.1"* ]]
+    [[ "$available_versions" != *"2.23.1"* ]]
+
+    # version_digests must contain 2.27.1 but NOT 2.23.1.
+    local vd_keys
+    vd_keys=$(jq -r '.version_digests | keys[]' "$artifact")
+    [[ "$vd_keys" == *"2.27.1"* ]]
+    [[ "$vd_keys" != *"2.23.1"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# SIMP-ceiling-single-arch-create-fatal: ceiling version whose imagetools create
+# produces a single-arch manifest → fatal (exit non-zero). No artifact written.
+# ---------------------------------------------------------------------------
+@test "SIMP-ceiling-single-arch-create-fatal: ceiling single-arch create is fatal" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    run bash -c '
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        cd "'"$sd"'"
+        source ./build-extensions.sh
+        export ROOT_DIR="'"$tmpd"'"
+
+        # Single version = ceiling only
+        resolve_version_set() { echo '"'"'["2.27.1"]'"'"'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case "$2" in
+                version) echo "2.27.1" ;;
+                repo)    echo "https://github.com/timescale/timescaledb" ;;
+                *)       echo "" ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name()       { echo "ghcr.io/test/ext-${1}:pg${3}-${2}"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve:
+        #  - un-suffixed: ABSENT → CREATE path entered
+        #  - per-arch: PRESENT for both arches
+        ext_ref_resolve() {
+            local _ext="$1" _ver="$2" _pg="$3" _arch="${4:-}"
+            if [[ -z "$_arch" ]]; then
+                return 1
+            fi
+            echo "ghcr.io/test/ext-${_ext}:pg${_pg}-${_ver}-${_arch}"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        image_exists_in_registry() { return 0; }
+        export -f image_exists_in_registry
+
+        _capture_index_digest() {
+            echo "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            return 0
+        }
+        export -f _capture_index_digest
+
+        # docker mock: imagetools inspect returns only linux/amd64 (ceiling single-arch)
+        docker() {
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+                printf "linux/amd64\n"
+                return 0
+            fi
+            if [[ "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                return 0
+            fi
+            if [[ "${1:-}" == "manifest" ]]; then
+                echo "manifest unknown" >&2
+                return 1
+            fi
+            return 0
+        }
+        export -f docker
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+
+        validate_prerequisites()  { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()     { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo "timescaledb"; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18 --finalize-multiarch
+    '
+
+    # Ceiling single-arch after create → fatal.
+    [ "$status" -ne 0 ]
+
+    # No versionset artifact must be written.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ ! -f "$artifact" ]
+}
+
+# ---------------------------------------------------------------------------
 # AX3-duration-consolidated: per-arch duration files for a version
 # (amd64=100s, arm64=140s) → canonical artifact gets one duration file with
 # MAX policy (140s); the consolidated duration_seconds is 140.
