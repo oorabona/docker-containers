@@ -278,12 +278,29 @@ _depgraph_get_deps() {
             fi
         fi
 
-        # Mark that at least one real lineage entry exists (suppresses config.yaml fallback)
-        found_any=true
-
         local base_ref
         base_ref=$(jq -r '.base_image_ref // empty' "$lineage_file" 2>/dev/null || true)
-        [[ -n "$base_ref" ]] || continue
+
+        # A lineage entry is authoritative (may suppress config.yaml fallback) only
+        # when its base_image_ref is present AND fully resolved.  An empty ref, or
+        # one carrying an unresolved ${...} placeholder (other than the trusted
+        # ${REMOTE_CR}/ prefix), is non-informative and must not set found_any.
+        # SC2016 disabled: single-quote assignments store literal ${ strings intentionally
+        # shellcheck disable=SC2016
+        local _dollar_brace='${'
+        # shellcheck disable=SC2016
+        local _remote_cr_prefix='${REMOTE_CR}/'
+        if [[ -z "$base_ref" ]] || \
+           { [[ "$base_ref" == *"${_dollar_brace}"* ]] && \
+             [[ "$base_ref" != "${_remote_cr_prefix}"* ]]; }; then
+            # Non-authoritative placeholder — skip without setting found_any so the
+            # config.yaml fallback can still fire for this container.
+            continue
+        fi
+
+        # Mark that at least one authoritative lineage entry exists
+        # (suppresses config.yaml fallback)
+        found_any=true
 
         local parent _iref_rc
         parent=$(_depgraph_is_internal_ref "$base_ref" "$valid_containers")

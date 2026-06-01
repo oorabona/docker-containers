@@ -1182,3 +1182,156 @@ EOF
     [ "$status" -eq 0 ]
     [ "$output" = "php" ]
 }
+
+# ---------------------------------------------------------------------------
+# Defect P regression lock: placeholder base_image_ref must NOT suppress
+# the config.yaml fallback (PR #559 regression)
+#
+# When a container's ONLY active lineage file has a placeholder
+# base_image_ref (e.g. "ghcr.io/oorabona/debian:${DEBIAN_TAG}"), the file
+# is non-authoritative: it carries no resolved dep.  found_any must NOT be
+# set for such files; the config.yaml fallback must still fire.
+#
+# Without the fix, found_any=true is set before inspecting base_image_ref,
+# so the fallback is suppressed and _depgraph_get_deps returns empty — the
+# container is misclassified as a leaf and auto-merged without
+# cascade:waiting-for-<dep> protection.
+#
+# Mutation guards:
+#   MG-P1: reverting found_any=true to before the placeholder check →
+#           test 1 (the bug) returns "" instead of "debian" (FAIL).
+#   MG-P2: treating ${REMOTE_CR}/... as a placeholder →
+#           test 2 (REMOTE_CR authoritative) returns "" instead of "debian" (FAIL).
+# ---------------------------------------------------------------------------
+
+@test "depgraph: Defect P — placeholder base_image_ref falls through to config.yaml fallback" {
+    # web-shell has a lineage file with a placeholder ref that cannot be
+    # resolved (${DEBIAN_TAG} is not ${REMOTE_CR}).  config.yaml declares
+    # the same internal ref in resolvable form — fallback must detect it.
+    #
+    # This test was RED before the Defect P fix and GREEN after.
+    local isolated_dir="$TEST_TEMP_DIR/defectp_webshell"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Lineage file: placeholder ref — non-authoritative
+    printf '{"container":"web-shell","tag":"1.7.7","base_image_ref":"ghcr.io/oorabona/debian:${DEBIAN_TAG}","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7.json"
+
+    # config.yaml: the resolved-form internal ref that the fallback should find
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        _depgraph_get_deps web-shell 2>/dev/null
+    "
+    # Without the fix: returns "" (placeholder suppresses fallback → misclassified leaf)
+    # With the fix: returns "debian" (fallback fires because placeholder is non-authoritative)
+    [ "$status" -eq 0 ]
+    [ "$output" = "debian" ]
+}
+
+@test "depgraph: Defect P — \${REMOTE_CR}/debian:trixie is authoritative (no fallback needed)" {
+    # A lineage file with ${REMOTE_CR}/debian:trixie IS authoritative — REMOTE_CR is
+    # a CI-resolved trusted prefix, not a placeholder.  found_any must be set; the
+    # config.yaml fallback must NOT be consulted (verify no double-dep or misbehaviour).
+    local isolated_dir="$TEST_TEMP_DIR/defectp_remotecr"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Lineage file: ${REMOTE_CR}/debian:trixie — authoritative
+    # SC2016: single-quote stores literal ${REMOTE_CR} string intentionally
+    # shellcheck disable=SC2016
+    printf '{"container":"web-shell","tag":"1.7.7","base_image_ref":"${REMOTE_CR}/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7.json"
+
+    # config.yaml also has a debian ref — must NOT double-count
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        _depgraph_get_deps web-shell 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
+    # dep=debian from the lineage file; dedup ensures exactly one occurrence
+    [ "$output" = "debian" ]
+}
+
+@test "depgraph: Defect P — resolved external ref is still a leaf (no fallback)" {
+    # A lineage file with a resolved external ref (library/alpine:3.21) is
+    # authoritative — it tells us the base is external, so found_any=true and
+    # config.yaml fallback must NOT run.  Result: empty deps (leaf).
+    local isolated_dir="$TEST_TEMP_DIR/defectp_extleaf"
+    mkdir -p "$isolated_dir/containerA"
+
+    _write_lineage "containerA" "1.0" "library/alpine:3.21"
+
+    # config.yaml has an internal ref — must NOT fire because lineage is authoritative
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/containerA/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='containerA debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        _depgraph_get_deps containerA 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
+    # External resolved ref → leaf → empty deps; config.yaml NOT consulted
+    [ "$output" = "" ]
+}
+
+@test "depgraph: Defect P — placeholder + resolved-internal in same container → dep captured once" {
+    # One placeholder lineage file (non-authoritative) + one resolved-internal file
+    # (authoritative).  The resolved file sets found_any=true and captures the dep;
+    # the placeholder does not block the loop.  Dedup: dep appears exactly once.
+    local isolated_dir="$TEST_TEMP_DIR/defectp_mixed"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Placeholder file (non-authoritative)
+    printf '{"container":"web-shell","tag":"1.7.7","base_image_ref":"ghcr.io/testowner/debian:${DEBIAN_TAG}","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7.json"
+
+    # Resolved-internal file (authoritative)
+    printf '{"container":"web-shell","tag":"1.7.7-debian","base_image_ref":"ghcr.io/testowner/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian.json"
+
+    # config.yaml also references debian — must NOT add a second occurrence
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        deps=\$(_depgraph_get_deps web-shell 2>/dev/null)
+        echo \"\$deps\" | tr ' ' '\n' | grep -c '^debian$'
+    "
+    [ "$status" -eq 0 ]
+    # debian must appear exactly once (dedup; fallback NOT consulted)
+    [ "$output" = "1" ]
+}
