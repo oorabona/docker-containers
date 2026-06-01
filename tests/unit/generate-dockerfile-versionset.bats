@@ -3352,6 +3352,65 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# BD-1: legacy artifact with bundle_digest but no version_digests must fail
+# closed — the consumer must not silently downgrade to mutable tag refs.
+#
+# A pre-collector pushed artifact carries bundle_digest (the old single-image
+# schema) but no version_digests.  The tag-fallback path in generate_dockerfile
+# is valid ONLY for artifacts that have NEITHER key (genuine local/no-push).
+# When bundle_digest is present but version_digests is absent, the artifact was
+# produced by an old push path and must be rejected so the operator rebuilds.
+#
+# BD1-legacy-bundle-digest-failclosed:
+#   artifact has bundle_digest key but no version_digests → generate_dockerfile
+#   exits non-zero (fail-closed); no Dockerfile emitted.
+#
+# BD1-neither-key-tag-fallback:
+#   artifact has neither bundle_digest nor version_digests → tag-based refs,
+#   exit 0 (LOCAL_ONLY regression guard — must stay green).
+# ---------------------------------------------------------------------------
+@test "BD1-legacy-bundle-digest-failclosed: bundle_digest present, no version_digests → fail closed, no Dockerfile" {
+    # Legacy artifact: has bundle_digest (old schema) but no version_digests.
+    cat > "$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json" <<'EOF'
+{"ext":"timescaledb","pg_major":"18","ceiling":"2.27.1","resolved":["2.25.0","2.27.1"],"available":["2.25.0","2.27.1"],"excluded":[],"bundle_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+EOF
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    # Must fail closed — legacy artifact must not silently downgrade to tag refs.
+    [ "$status" -ne 0 ]
+
+    # No @sha256: in output (should be empty / no Dockerfile emitted).
+    local digest_pin_count
+    digest_pin_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$digest_pin_count" -eq 0 ]
+}
+
+@test "BD1-neither-key-tag-fallback: no bundle_digest, no version_digests → tag-based refs, exit 0 (LOCAL_ONLY regression)" {
+    # LOCAL_ONLY artifact: neither key present → tag-based fallback, exit 0.
+    _write_versionset "timescaledb" "18" "2.25.0" "2.27.1"
+
+    run generate_dockerfile \
+        "$TEST_TEMP_DIR/extensions/config.yaml" \
+        "$TEST_TEMP_DIR/Dockerfile.template" \
+        "timeseries" "18" \
+        "ghcr.io" "testowner"
+
+    [ "$status" -eq 0 ]
+
+    # Collector stage present with tag-based refs (no digest pin).
+    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+
+    local pinned_count
+    pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
+    [ "$pinned_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # BE-2: self-heal availability probe must use the PR-scoped ref it emits.
 #
 # Defect: in the self-heal loop, _sh_image is built with ext_image_name (no

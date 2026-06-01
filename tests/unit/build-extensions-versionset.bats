@@ -13328,6 +13328,151 @@ EOF
     unset PR_TAG_SUFFIX ARCH_SUFFIX
 }
 
+# ---------------------------------------------------------------------------
+# PR-scoped digest capture: when canonical is absent and only the PR-scoped
+# ref exists, _bundle_and_write_artifact must capture the digest from the
+# PR-scoped ref (not the absent canonical ref).
+#
+# Scenario: PR_TAG_SUFFIX=-pr42, ARCH_SUFFIX empty (final local path).
+# Version set: [2.25.0, 2.27.1]. Canonical refs absent; PR-scoped refs present.
+# do_push=true → version_digests must be captured.
+#
+# Pre-fix: digest capture reconstructed the canonical ref → skopeo/docker on
+#   canonical (absent) → digest empty → fail-closed → artifact write fails.
+# Post-fix: digest capture uses _confirmed_refs[ver] (PR-scoped ref) →
+#   digest captured from pr42 ref → artifact written with valid version_digests.
+# ---------------------------------------------------------------------------
+@test "PR-scoped-digest-capture: canonical absent, pr42 only → digest from pr42 ref, artifact has version_digests" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+
+    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
+    chmod +x "${tmpd}/postgres/version.sh"
+
+    # Record which refs _capture_index_digest was called with.
+    local digest_log="${tmpd}/digest_calls.log"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export PR_TAG_SUFFIX='-pr42'
+        export ARCH_SUFFIX=''
+
+        cd \"$sd\"
+        source ./build-extensions.sh
+        export ROOT_DIR=\"$tmpd\"
+
+        resolve_version_set() { echo '[\"2.25.0\",\"2.27.1\"]'; }
+        export -f resolve_version_set
+
+        ext_config() {
+            case \"\$2\" in
+                version) echo '2.27.1' ;;
+                repo)    echo 'https://github.com/timescale/timescaledb' ;;
+                *)       echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # Canonical refs absent; PR-scoped refs present.
+        image_exists_in_registry() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.25.0-pr42) return 0 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f image_exists_in_registry
+
+        _image_present_3state() {
+            local ref=\"\$1\"
+            case \"\$ref\" in
+                *pg18-2.25.0-pr42) return 0 ;;
+                *pg18-2.27.1-pr42) return 0 ;;
+                *)                 return 1 ;;
+            esac
+        }
+        export -f _image_present_3state
+
+        # Capture which ref is probed; return a deterministic digest based on the ref.
+        _capture_index_digest() {
+            local ref=\"\$1\"
+            printf 'DIGEST_CALLED %s\n' \"\$ref\" >> \"$digest_log\"
+            if [[ \"\$ref\" == *-pr42 ]]; then
+                echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+                return 0
+            fi
+            # Canonical ref (absent) — must not be reached after fix.
+            printf '' >&2
+            return 1
+        }
+        export -f _capture_index_digest
+
+        docker() { local _dk=\"\$1\"; case \"\$_dk\" in build|push) return 0;; manifest|buildx) echo 'manifest unknown' >&2; return 1;; *) return 1;; esac; }
+        export -f docker
+        skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
+        export -f skopeo
+        build_ext_image()   { return 0; }
+        export -f build_ext_image
+        tag_ext_image()     { return 0; }
+        export -f tag_ext_image
+        push_ext_image()    { return 0; }
+        export -f push_ext_image
+        validate_prerequisites() { return 0; }
+        export -f validate_prerequisites
+        check_registry_auth()    { return 0; }
+        export -f check_registry_auth
+        list_extensions_by_priority() { echo 'timescaledb'; }
+        export -f list_extensions_by_priority
+
+        main postgres --major-version 18
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Artifact must exist with version_digests.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ] || {
+        echo "FAIL: artifact must be written. status=$status output=$output"
+        false
+    }
+
+    local vd_present
+    vd_present=$(jq -r 'if has("version_digests") then "yes" else "no" end' "$artifact")
+    [ "$vd_present" = "yes" ] || {
+        echo "FAIL: artifact must have version_digests. content=$(cat "$artifact")"
+        false
+    }
+
+    # All digests must be the pr42 value (not empty / not from absent canonical).
+    local all_valid
+    all_valid=$(jq -r '.available[] as $v | .version_digests[$v] // "MISSING" | test("^sha256:[0-9a-f]{64}$")' "$artifact" | sort -u)
+    [ "$all_valid" = "true" ] || {
+        echo "FAIL: every version_digests entry must be a valid sha256. content=$(cat "$artifact")"
+        false
+    }
+
+    # _capture_index_digest must have been called ONLY with pr42-scoped refs.
+    [ -f "$digest_log" ] || {
+        echo "FAIL: digest_calls.log not written — _capture_index_digest was never called"
+        false
+    }
+    local non_pr42_calls
+    non_pr42_calls=$(grep -cv -- '-pr42' "$digest_log" || true)
+    [ "$non_pr42_calls" -eq 0 ] || {
+        echo "FAIL: _capture_index_digest called with non-pr42 ref. digest_calls.log:"
+        cat "$digest_log"
+        false
+    }
+
+    unset PR_TAG_SUFFIX ARCH_SUFFIX
+}
+
 # ===========================================================================
 # ext_ref_resolve exhaustive unit matrix
 #

@@ -976,6 +976,22 @@ generate_dockerfile() {
                             # Artifact-present path: use version_digests for digest-pinned refs.
                             local _vd_field_present
                             _vd_field_present=$(echo "$_versionset_json" | jq -r 'if has("version_digests") then "yes" else "no" end' 2>/dev/null || echo "no")
+
+                            # Guard: a legacy pushed artifact carries bundle_digest but no
+                            # version_digests.  Silently falling back to mutable tag refs for
+                            # such an artifact would regress the digest-pinned guarantee.
+                            # Fail closed so the operator rebuilds under the new schema.
+                            # The tag-fallback path is valid ONLY when neither key is present
+                            # (genuine local/no-push build — producer invariant).
+                            if [[ "$_vd_field_present" == "no" ]]; then
+                                local _bd_field_present
+                                _bd_field_present=$(echo "$_versionset_json" | jq -r 'if has("bundle_digest") then "yes" else "no" end' 2>/dev/null || echo "no")
+                                if [[ "$_bd_field_present" == "yes" ]]; then
+                                    log_error "generate_dockerfile: $ext_name pg${pg_major} artifact has bundle_digest but no version_digests — this is a legacy pre-collector artifact; rebuild under the new schema to restore digest-pinned refs"
+                                    return 1
+                                fi
+                            fi
+
                             local _art_ver
                             while IFS= read -r _art_ver; do
                                 [[ -z "$_art_ver" ]] && continue
@@ -992,7 +1008,7 @@ generate_dockerfile() {
                                     # Artifact lacks version_digests (LOCAL_ONLY / no-push build path):
                                     # construct a tag-based ref using the caller's explicit registry/owner
                                     # so the ref targets the correct repo even when the caller passed
-                                    # registry/owner overrides (FIX 3: pass registry+owner to ext_image_name).
+                                    # registry/owner overrides.
                                     # This tag-fallback is correct ONLY for the not-pushed (local) case;
                                     # a pushed artifact always has version_digests (producer invariant:
                                     # version_digests absent ⟺ artifact was not pushed).

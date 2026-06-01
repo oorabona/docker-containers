@@ -686,7 +686,13 @@ _bundle_and_write_artifact() {
 
     # Single 3-state pass: compute confirmed_available from resolved set.
     # BI-2: canonical-first, PR-aware availability probe.
+    # _confirmed_refs maps each confirmed version to the EXACT ref that was
+    # confirmed available (canonical or PR-scoped).  The digest-capture step
+    # MUST use this ref, not an independently-reconstructed canonical ref,
+    # so that on a PR where only -prNN tags exist the digest is captured from
+    # the ref that is actually present.
     local _confirmed_available=()
+    local -A _confirmed_refs=()
     local _excluded_entries=()
     local _probe_error=false
     local _cv
@@ -696,12 +702,16 @@ _bundle_and_write_artifact() {
 
         if [[ -n "${_btr_set[$_cv]:-}" ]]; then
             _confirmed_available+=("$_cv")
+            # Built this run: image was pushed as the scoped ref (PR-scoped on PR,
+            # canonical on push/dispatch).  The multi-arch tag has no arch suffix.
+            _confirmed_refs["$_cv"]=$(_scoped_tag "$_cv_image")
         else
             local _probe_rc=0
             _image_present_3state "$_cv_image" || _probe_rc=$?
             case "$_probe_rc" in
                 0)
                     _confirmed_available+=("$_cv")
+                    _confirmed_refs["$_cv"]="$_cv_image"
                     ;;
                 1)
                     # Canonical absent: on a PR, also check the PR-scoped ref.
@@ -713,6 +723,7 @@ _bundle_and_write_artifact() {
                         case "$_pr_probe_rc" in
                             0)
                                 _confirmed_available+=("$_cv")
+                                _confirmed_refs["$_cv"]="$_cv_pr_image"
                                 ;;
                             1)
                                 _excluded_entries+=("{\"version\":\"${_cv}\",\"reason\":\"not available\"}")
@@ -774,18 +785,27 @@ _bundle_and_write_artifact() {
     local _version_digests_json="null"
     if [[ "$do_push" == "true" ]]; then
         # Capture the pushed digest for each confirmed-available version.
+        # Use _confirmed_refs["ver"] — the exact ref that was confirmed available
+        # during the probe loop — rather than reconstructing the canonical ref.
+        # This ensures digest capture succeeds on PRs where only the PR-scoped
+        # ref exists and the canonical tag is absent.
         # Fail-closed: if any digest is missing or malformed, abort — a partial
         # version_digests map would leave some versions tag-pinned, which violates
         # the invariant.
         local _vd_entries=()
         local _vd_ver
         for _vd_ver in "${_confirmed_available[@]+"${_confirmed_available[@]}"}"; do
-            local _vd_image
-            _vd_image=$(ext_image_name "$ext" "$_vd_ver" "$major_ver")
+            local _vd_confirmed_ref
+            _vd_confirmed_ref="${_confirmed_refs[$_vd_ver]:-}"
+            if [[ -z "$_vd_confirmed_ref" ]]; then
+                log_error "$ext: no confirmed ref stored for $_vd_ver ($major_ver) — internal error; fail-closed"
+                _delete_stale_versionset_artifact "$ext" "$major_ver"
+                return 1
+            fi
             local _vd_digest
-            _vd_digest=$(_capture_index_digest "$_vd_image") || true
+            _vd_digest=$(_capture_index_digest "$_vd_confirmed_ref") || true
             if ! is_valid_oci_digest "${_vd_digest:-}"; then
-                log_error "$ext: digest capture failed for $_vd_ver ($major_ver) — cannot write pushed artifact without valid digest; fail-closed"
+                log_error "$ext: digest capture failed for $_vd_ver ($major_ver) ref=$_vd_confirmed_ref — cannot write pushed artifact without valid digest; fail-closed"
                 _delete_stale_versionset_artifact "$ext" "$major_ver"
                 return 1
             fi
