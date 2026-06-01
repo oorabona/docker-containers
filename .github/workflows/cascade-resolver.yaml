@@ -72,8 +72,11 @@ jobs:
           fi
           # Extract container name from the first matching PR's head branch name.
           # Also require the base-digest-drift label so only bot-created drift PRs are recognised.
+          # Trust boundary: the drift PR must target master AND have its head branch in THIS repo
+          # (not a fork).  If .head.repo is null (deleted fork), treat as not same-repo.
           container=$(echo "$pr_json" | jq -r \
-            '.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | .head.ref' \
+            --arg repo "${GH_REPO}" \
+            '.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref' \
             | head -1 | sed 's#^update/base-digest-##')
           if [[ -z "$container" ]]; then
             echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
@@ -88,7 +91,8 @@ jobs:
           # Cross-verify the PR was actually merged.
           is_merged=$(echo "$pr_json" | jq -r \
             --arg ref "update/base-digest-${container}" \
-            '.[] | select(.head.ref == $ref) | .merged_at // empty' \
+            --arg repo "${GH_REPO}" \
+            '.[] | select(.head.ref == $ref) | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .merged_at // empty' \
             | head -1)
           if [[ -z "$is_merged" ]]; then
             echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
@@ -112,8 +116,8 @@ jobs:
             --label "cascade:waiting-for-${PARENT}" \
             --label "base-digest-drift" \
             --state open \
-            --json number,isCrossRepository \
-            --jq '.[] | select(.isCrossRepository == false) | .number'); then
+            --json number,isCrossRepository,baseRefName,headRefName \
+            --jq '.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'); then
             echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
             exit 1
           fi

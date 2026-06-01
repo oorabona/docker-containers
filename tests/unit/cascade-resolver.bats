@@ -40,8 +40,8 @@ if ! children=$(gh pr list \
   --label "cascade:waiting-for-${PARENT}" \
   --label "base-digest-drift" \
   --state open \
-  --json number,isCrossRepository \
-  --jq '"'"'.[] | select(.isCrossRepository == false) | .number'"'"'); then
+  --json number,isCrossRepository,baseRefName,headRefName \
+  --jq '"'"'.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'"'"'); then
   echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
   exit 1
 fi
@@ -499,17 +499,20 @@ echo "::notice::Parent container image published: ${container} (commit ${HEAD_SH
 echo "name=${container}" >> "$GITHUB_OUTPUT"
 '
 
-# Updated body mirroring Defect B fix: also requires base-digest-drift label.
+# Updated body mirroring current workflow: requires base-digest-drift label,
+# base.ref == master, and head in same repo (trust boundary hardening).
 IDENTIFY_PARENT_BODY_LABELED='
 HEAD_SHA="${1:?HEAD_SHA required}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-owner/repo}"
+GH_REPO="${GH_REPO:-${GITHUB_REPOSITORY}}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 if ! pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls"); then
     echo "::error::Failed to query PRs for commit ${HEAD_SHA}"
     exit 1
 fi
 container=$(echo "$pr_json" | jq -r \
-    '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | .head.ref'"'"' \
+    --arg repo "${GH_REPO}" \
+    '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref'"'"' \
     | head -1 | sed '"'"'s#^update/base-digest-##'"'"')
 if [[ -z "$container" ]]; then
     echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
@@ -522,7 +525,8 @@ if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
 fi
 is_merged=$(echo "$pr_json" | jq -r \
     --arg ref "update/base-digest-${container}" \
-    '"'"'.[] | select(.head.ref == $ref) | .merged_at // empty'"'"' \
+    --arg repo "${GH_REPO}" \
+    '"'"'.[] | select(.head.ref == $ref) | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .merged_at // empty'"'"' \
     | head -1)
 if [[ -z "$is_merged" ]]; then
     echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
@@ -1012,13 +1016,13 @@ _run_eval_parent_state() {
 
 # Parent PR has correct branch + base-digest-drift label → identified
 @test "resolver: PR-metadata — drift PR with base-digest-drift label → parent identified" {
-    # Mock returns PR with the label
+    # Mock returns PR with the label, targeting master, head in same repo
     mkdir -p "$TEST_TEMP_DIR/bin"
     local mock="$TEST_TEMP_DIR/bin/gh"
     printf '#!/usr/bin/env bash\n' > "$mock"
     cat >> "$mock" << 'MOCK_BODY'
 if [[ "$1" == "api" && "$2" == *"/commits/"*"/pulls" ]]; then
-    echo '[{"number":42,"head":{"ref":"update/base-digest-debian"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'
+    echo '[{"number":42,"head":{"ref":"update/base-digest-debian","repo":{"full_name":"owner/repo"}},"base":{"ref":"master"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'
     exit 0
 fi
 exit 0
@@ -1032,7 +1036,7 @@ MOCK_BODY
     local script="$TEST_TEMP_DIR/identify_parent_labeled.sh"
     printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$IDENTIFY_PARENT_BODY_LABELED" > "$script"
     chmod +x "$script"
-    GITHUB_OUTPUT="$output_file" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
+    GITHUB_OUTPUT="$output_file" GH_REPO="owner/repo" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
     [ "$status" -eq 0 ]
     grep -q "name=debian" "$output_file"
 }
@@ -1044,8 +1048,8 @@ MOCK_BODY
     printf '#!/usr/bin/env bash\n' > "$mock"
     cat >> "$mock" << 'MOCK_BODY'
 if [[ "$1" == "api" && "$2" == *"/commits/"*"/pulls" ]]; then
-    # PR has correct branch but only unrelated labels
-    echo '[{"number":42,"head":{"ref":"update/base-digest-debian"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"some-other-label"}]}]'
+    # PR has correct branch, same-repo, targets master but only unrelated labels
+    echo '[{"number":42,"head":{"ref":"update/base-digest-debian","repo":{"full_name":"owner/repo"}},"base":{"ref":"master"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"some-other-label"}]}]'
     exit 0
 fi
 exit 0
@@ -1058,11 +1062,101 @@ MOCK_BODY
     local script="$TEST_TEMP_DIR/identify_parent_labeled.sh"
     printf '#!/usr/bin/env bash\nset -uo pipefail\n%s\n' "$IDENTIFY_PARENT_BODY_LABELED" > "$script"
     chmod +x "$script"
-    GITHUB_OUTPUT="$output_file" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
+    GITHUB_OUTPUT="$output_file" GH_REPO="owner/repo" GITHUB_REPOSITORY="owner/repo" run "$script" "abc1234"
     [ "$status" -eq 0 ]
     # Container not identified → name= (empty)
     grep -q "name=" "$output_file"
     [[ "$output" == *"Nothing to unblock"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Trust-boundary regression locks (FIX A + FIX B hardening)
+#
+# FIX A — children lookup: baseRefName + headRefName filters added.
+# FIX B — parent ID: base.ref == master + head.repo.full_name same-repo guard.
+# ---------------------------------------------------------------------------
+
+# FIX A / Child lookup — structural jq tests against the new selector.
+
+# A child PR targeting a feature branch (not master) must NOT be returned.
+@test "trust-boundary FIX-A: child with baseRefName != master excluded from unblock list" {
+    run bash -c '
+        json='"'"'[{"number":10,"isCrossRepository":false,"baseRefName":"master","headRefName":"update/base-digest-consumer"},{"number":11,"isCrossRepository":false,"baseRefName":"feat/something","headRefName":"update/base-digest-consumer"}]'"'"'
+        result=$(echo "$json" | jq -r '"'"'.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'"'"')
+        echo "$result"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == "10" ]]
+    [[ "$output" != *"11"* ]]
+}
+
+# A child PR whose head branch does NOT match the bot pattern must NOT be returned.
+@test "trust-boundary FIX-A: child with headRefName not matching bot pattern excluded" {
+    run bash -c '
+        json='"'"'[{"number":10,"isCrossRepository":false,"baseRefName":"master","headRefName":"update/base-digest-consumer"},{"number":12,"isCrossRepository":false,"baseRefName":"master","headRefName":"fix/manual-hotfix"}]'"'"'
+        result=$(echo "$json" | jq -r '"'"'.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'"'"')
+        echo "$result"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == "10" ]]
+    [[ "$output" != *"12"* ]]
+}
+
+# A legitimate child (base master, head matches bot pattern, same-repo) IS returned.
+@test "trust-boundary FIX-A: legitimate child (master base, bot head) IS returned" {
+    run bash -c '
+        json='"'"'[{"number":99,"isCrossRepository":false,"baseRefName":"master","headRefName":"update/base-digest-consumer"}]'"'"'
+        result=$(echo "$json" | jq -r '"'"'.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'"'"')
+        echo "$result"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "99" ]
+}
+
+# FIX B / Parent identification — structural jq tests against the new selector.
+
+# A merged PR whose base.ref is not master must NOT be identified as a parent.
+@test "trust-boundary FIX-B: parent PR with base.ref != master NOT accepted" {
+    run bash -c '
+        pr_json='"'"'[{"number":42,"head":{"ref":"update/base-digest-debian","repo":{"full_name":"owner/repo"}},"base":{"ref":"feat/staging"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'"'"'
+        result=$(echo "$pr_json" | jq -r --arg repo "owner/repo" '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref'"'"')
+        echo "${#result}"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+# A merged PR from a fork (head.repo.full_name != this repo) must NOT be accepted.
+@test "trust-boundary FIX-B: parent PR from fork (head.repo.full_name != repo) NOT accepted" {
+    run bash -c '
+        pr_json='"'"'[{"number":43,"head":{"ref":"update/base-digest-debian","repo":{"full_name":"attacker/forked-repo"}},"base":{"ref":"master"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'"'"'
+        result=$(echo "$pr_json" | jq -r --arg repo "owner/repo" '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref'"'"')
+        echo "${#result}"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+# A PR with null head.repo (deleted fork) must be treated as not same-repo (fail-closed).
+@test "trust-boundary FIX-B: parent PR with null head.repo treated as not same-repo (fail-closed)" {
+    run bash -c '
+        pr_json='"'"'[{"number":44,"head":{"ref":"update/base-digest-debian","repo":null},"base":{"ref":"master"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'"'"'
+        result=$(echo "$pr_json" | jq -r --arg repo "owner/repo" '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref'"'"')
+        echo "${#result}"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+# A legitimate same-repo merged drift PR (base master, same-repo head, label, merged) IS accepted.
+@test "trust-boundary FIX-B: legitimate same-repo parent PR IS accepted (no regression)" {
+    run bash -c '
+        pr_json='"'"'[{"number":45,"head":{"ref":"update/base-digest-debian","repo":{"full_name":"owner/repo"}},"base":{"ref":"master"},"merged_at":"2026-05-28T10:00:00Z","labels":[{"name":"base-digest-drift"}]}]'"'"'
+        result=$(echo "$pr_json" | jq -r --arg repo "owner/repo" '"'"'.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref'"'"')
+        echo "$result"
+    '
+    [ "$status" -eq 0 ]
+    [ "$output" = "update/base-digest-debian" ]
 }
 
 # ---------------------------------------------------------------------------
