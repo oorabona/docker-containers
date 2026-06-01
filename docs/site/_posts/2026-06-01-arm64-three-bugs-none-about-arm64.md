@@ -106,3 +106,11 @@ Cold builds are where latent debt lives. The cache had been answering "does it b
 - **Staying current cuts both ways.** The same drift detection that keeps the base fresh is what pulled `yacc` out from under postgis. Worth it — but plan for it. My follow-up is a guard that asserts the published version matches the declared one, so the next substrate shift can't pass quietly.
 
 Three commits later the build went green — every flavour, both architectures, all the way through to the multi-arch manifests. None of these bugs were about arm64. arm64 just turned the lights on.
+
+## Postscript: it un-bricked a real database
+
+The feature under all this — shipping a *window* of retained TimescaleDB `.so` files instead of just the current one — wasn't abstract. A Postgres container of mine had been half-dead for weeks: the volume's catalog recorded TimescaleDB **2.25.2**, the image had long since moved to **2.27.1**, and every query touching the extension died with `could not access file "timescaledb-2.25.2"`. The server reported *healthy* the entire time — its healthcheck only runs `pg_isready`, which never loads the extension.
+
+The fix was undramatic, which is the point. Pull the new image (it now ships 2.23.1 through 2.27.1 side by side), recreate the container against the **same volume** — the backend found the exact `.so` its catalog asked for, the extension loaded, and a single `ALTER EXTENSION timescaledb UPDATE` walked it up to 2.27.1. Same data, no dump/restore, no surgery.
+
+That's the whole detour paying for itself: three bugs surfaced on the way to shipping it, none of them about arm64 — and at the end, a database that had been stuck for weeks just came back.
