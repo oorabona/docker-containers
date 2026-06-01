@@ -136,14 +136,14 @@ _setup_default_mocks() {
     }
     export -f ext_local_image_name
 
-    # _capture_bundle_digest: returns a stable digest on success (production-faithful:
+    # _capture_index_digest: returns a stable digest on success (production-faithful:
     # a successful push always has a retrievable digest; tests that need failure
     # override this function directly).
-    _capture_bundle_digest() {
+    _capture_index_digest() {
         echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         return 0
     }
-    export -f _capture_bundle_digest
+    export -f _capture_index_digest
 
     # resolve_version_set: default → single-version (overridden per-test)
     resolve_version_set() {
@@ -516,8 +516,8 @@ _count_log_lines() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image()      { echo \"BUILD ext=\$1 ver=\$2\" >> '${build_log}'; return 0; }
         export -f build_ext_image
         tag_ext_image()        { return 0; }
@@ -609,8 +609,8 @@ _count_log_lines() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image() { return 0; }
@@ -1009,8 +1009,8 @@ _count_log_lines() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -1412,8 +1412,8 @@ _count_log_lines() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/cached1_build.log\"
@@ -1524,8 +1524,8 @@ _count_log_lines() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         skopeo() {
             echo 'manifest unknown: manifest unknown' >&2
@@ -1686,8 +1686,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -1789,8 +1789,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -1889,8 +1889,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         # All versions pulled successfully → no fallback builds needed
         pull_ext_image() { return 0; }
@@ -1904,8 +1904,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
@@ -2014,8 +2014,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2098,8 +2098,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/staleness_build.log\"
@@ -2212,8 +2212,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2348,8 +2348,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2459,8 +2459,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2584,8 +2584,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
         export -f skopeo
@@ -2695,8 +2695,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
         export -f skopeo
@@ -2846,8 +2846,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -2949,8 +2949,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
@@ -3038,8 +3038,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo 'BUILD_CALLED' >> \"$tmpd/ff1_build.log\"
@@ -3169,8 +3169,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3265,8 +3265,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
 
@@ -3356,8 +3356,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3457,8 +3457,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo 'SHOULD_NOT_BUILD' >> \"$tmpd/hh2_build.log\"
@@ -3738,8 +3738,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -3904,11 +3904,11 @@ EOF
     export DOCKER
 
     # Production-faithful: a successful push always has a retrievable digest.
-    _capture_bundle_digest() {
+    _capture_index_digest() {
         echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         return 0
     }
-    export -f _capture_bundle_digest
+    export -f _capture_index_digest
 
     # tag_ext_image / push_ext_image must record calls for the ceiling version
     tag_ext_image() {
@@ -4152,8 +4152,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$pgv_build_log\"
@@ -4235,8 +4235,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
             return 0
@@ -4315,8 +4315,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"\$build_log\"
             return 0
@@ -4418,8 +4418,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image()  { return 0; }
@@ -4513,8 +4513,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image() { return 0; }
         export -f build_ext_image
         tag_ext_image()  { return 0; }
@@ -4594,8 +4594,8 @@ _run_3state_probe() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         # skopeo mock: mirrors the tightened classification.
         skopeo() {
             local _not_found_pat='manifest unknown|name unknown|repository name not known|no such manifest'
@@ -4816,8 +4816,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -4965,8 +4965,8 @@ _run_emit_versionset() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
         export -f skopeo
     '
@@ -5005,8 +5005,8 @@ _run_emit_versionset() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         skopeo() { printf "manifest unknown: manifest unknown\n" >&2; return 1; }
         export -f skopeo
     '
@@ -5042,8 +5042,8 @@ _run_emit_versionset() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         skopeo() { printf "toomanyrequests: pull rate limit\n" >&2; return 1; }
         export -f skopeo
     '
@@ -5072,8 +5072,8 @@ _run_emit_versionset() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
     '
 
     run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1" "true"
@@ -5101,8 +5101,8 @@ _run_emit_versionset() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
     '
 
     run _run_emit_versionset "$mocks" '["2.25.0","2.26.0","2.27.1"]' "2.27.1"
@@ -5499,8 +5499,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo \"BUILD ext=\${1} ver=\${2}\" >> \"$build_log\"
@@ -5582,8 +5582,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         pull_ext_image() { return 0; }
         export -f pull_ext_image
@@ -5660,8 +5660,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -5733,8 +5733,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -6023,8 +6023,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         build_ext_image()  { return 0; }
         export -f build_ext_image
         tag_ext_image()    { return 0; }
@@ -6086,171 +6086,6 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# BUNDLE-1: resolver-backed ext with 3 available versions → after the
-# per-version build/tag/push loop, a bundle image is built AND pushed.
-# Bundle ref: ghcr.io/test/ext-timescaledb:pg18-bundle
-# Bundle build uses $DOCKER (DRY_RUN-aware).
-# ---------------------------------------------------------------------------
-
-@test "BUNDLE-1: 3 available versions → bundle built and pushed after per-version loop" {
-    local docker_log="$TEST_TEMP_DIR/bundle1_docker.log"
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    # Use $DOCKER="docker" (default from logging.sh) so the docker() function is called.
-    # The docker() mock records all calls including bundle build/push.
-    docker() {
-        echo "DOCKER_CMD=$1 ARGS=${*:2}" >> "$docker_log"
-        return 0
-    }
-    export -f docker
-    export docker_log
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
-
-    [ "$status" -eq 0 ]
-
-    # $DOCKER build must have been called with the bundle ref
-    [ -f "$docker_log" ]
-    grep -q "DOCKER_CMD=build" "$docker_log"
-    grep -q "pg18-bundle" "$docker_log"
-
-    # $DOCKER push must have been called with the bundle ref
-    grep -q "DOCKER_CMD=push" "$docker_log"
-}
-
-# ---------------------------------------------------------------------------
-# BUNDLE-2: DRY_RUN=true → bundle docker build/push command is echoed,
-# no real docker invocation.
-# ---------------------------------------------------------------------------
-
-@test "BUNDLE-2: DRY_RUN=true → bundle build+push commands echoed, not executed" {
-    export DRY_RUN=true
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    # Under DRY_RUN, $DOCKER is "echo docker" — capture that output
-    local real_build_log="$TEST_TEMP_DIR/bundle2_real_build.log"
-    build_ext_image() {
-        echo "REAL_BUILD ext=${1} ver=${2}" >> "$real_build_log"
-        return 0
-    }
-    export -f build_ext_image
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
-
-    [ "$status" -eq 0 ]
-
-    # Under DRY_RUN no real build occurred (build_ext_image not called)
-    local real_count
-    real_count=$(_count_log_lines "$real_build_log")
-    [ "$real_count" -eq 0 ]
-
-    # Output must mention the bundle ref (echoed, not executed)
-    [[ "$output" == *"pg18-bundle"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# BUNDLE-3: LOCAL_ONLY=true → bundle is built locally, NOT pushed.
-# ---------------------------------------------------------------------------
-
-@test "BUNDLE-3: LOCAL_ONLY=true → bundle built locally, push NOT called" {
-    export LOCAL_ONLY=true
-
-    local docker_log="$TEST_TEMP_DIR/bundle3_docker.log"
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    docker() {
-        echo "DOCKER $*" >> "$docker_log"
-        return 0
-    }
-    export -f docker
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "false" "timescaledb"
-
-    [ "$status" -eq 0 ]
-
-    # Bundle build must have been called
-    [ -f "$docker_log" ]
-    grep -q "build.*pg18-bundle" "$docker_log"
-
-    # Bundle push must NOT have been called
-    ! grep -q "push.*pg18-bundle" "$docker_log"
-}
-
-# ---------------------------------------------------------------------------
-# BUNDLE-4: bundle build failure is fatal on the publish path (do_push=true).
-# ---------------------------------------------------------------------------
-
-@test "BUNDLE-4: bundle build failure → exit non-zero (fatal on publish path)" {
-    local docker_call_count=0
-    local docker_log="$TEST_TEMP_DIR/bundle4_docker.log"
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    # Per-version build/tag/push succeed; bundle docker build fails
-    docker() {
-        local cmd="$1"
-        echo "DOCKER $*" >> "$docker_log"
-        if [[ "$cmd" == "build" ]] && grep -q "bundle" <(echo "$*"); then
-            return 1
-        fi
-        return 0
-    }
-    export -f docker
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
-
-    # Bundle build failure must be fatal (non-zero exit)
-    [ "$status" -ne 0 ]
-}
-
-# ---------------------------------------------------------------------------
 # BUNDLE-5: empty available set → NO bundle is built.
 # If all per-version builds fail (e.g. ceiling fatal), available is empty
 # and build_tag_push_extensions should exit non-zero without building a bundle.
@@ -6294,435 +6129,6 @@ EOCFG
     if [ -f "$docker_log" ]; then
         ! grep -q "bundle" "$docker_log"
     fi
-}
-
-# ---------------------------------------------------------------------------
-# BUNDLE-6: bundle Dockerfile content — FROM scratch + per-version COPYs.
-# Verify the producer writes a bundle Dockerfile with the correct structure:
-#   FROM scratch
-#   COPY --from=<per-version-ref> /output/extension/ /<ver>/extension/
-#   COPY --from=<per-version-ref> /output/lib/ /<ver>/lib/
-# for each available version.
-# ---------------------------------------------------------------------------
-
-@test "BUNDLE-6: bundle Dockerfile has FROM scratch + per-version layout COPYs" {
-    local docker_log="$TEST_TEMP_DIR/bundle6_docker.log"
-    local bundle_df_capture="$TEST_TEMP_DIR/bundle6_df.txt"
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    # Capture the -f <dockerfile> path from the bundle docker build call,
-    # then copy its contents for assertion.
-    docker() {
-        echo "DOCKER $*" >> "$docker_log"
-        # When this is the bundle build call, capture the Dockerfile content.
-        if [[ "$1" == "build" ]]; then
-            local i
-            for (( i=1; i<=$#; i++ )); do
-                if [[ "${!i}" == "-f" ]]; then
-                    local next=$(( i + 1 ))
-                    local df_path="${!next}"
-                    if [[ -f "$df_path" ]]; then
-                        cp "$df_path" "$bundle_df_capture"
-                    fi
-                fi
-            done
-        fi
-        return 0
-    }
-    export -f docker
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
-
-    [ "$status" -eq 0 ]
-
-    # Bundle Dockerfile must exist and have been captured
-    [ -f "$bundle_df_capture" ]
-
-    # First line must be FROM scratch
-    local first_line
-    first_line=$(head -1 "$bundle_df_capture")
-    [ "$first_line" = "FROM scratch" ]
-
-    # Must contain per-version COPY lines: /output/extension/ -> /<ver>/extension/
-    grep -q "COPY --from=.*pg18-2.25.0.*/output/extension/ /2.25.0/extension/" "$bundle_df_capture"
-    grep -q "COPY --from=.*pg18-2.26.0.*/output/lib/ /2.26.0/lib/" "$bundle_df_capture"
-    grep -q "COPY --from=.*pg18-2.27.1.*/output/extension/ /2.27.1/extension/" "$bundle_df_capture"
-
-    # Must NOT use FROM scratch as anything other than the first line
-    local scratch_count
-    scratch_count=$(grep -c "FROM scratch" "$bundle_df_capture")
-    [ "$scratch_count" -eq 1 ]
-}
-
-# ---------------------------------------------------------------------------
-# AJ-1: all-cached path still assembles and pushes the bundle.
-# When ALL per-version images already exist in the registry, _should_build_extension
-# returns 1 (skip) and build_tag_push_extensions is never called. Before the fix,
-# the bundle is never (re)assembled on this path. After the fix, assemble_and_push_bundle
-# is called from main() after the all-cached early-exit, so the bundle always exists
-# and always reflects the current available[].
-#
-# RED before fix:  bundle docker build/push NOT called on all-cached path.
-# GREEN after fix: bundle docker build/push IS called even when no per-version build runs.
-# ---------------------------------------------------------------------------
-
-@test "AJ-all-cached-still-builds-bundle: all-cached path assembles and pushes the bundle" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-    local docker_log="$tmpd/aj1_docker.log"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    export docker_log
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        export docker_log=\"$docker_log\"
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All per-version images already in registry — per-version build loop is skipped.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        # Record docker calls.
-        docker() {
-            echo \"DOCKER_CMD=\$1 ARGS=\${*:2}\" >> \"\$docker_log\"
-            return 0
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        build_ext_image() {
-            echo 'BUILD_CALLED' >> \"$tmpd/aj1_build.log\"
-            return 0
-        }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    [ "$status" -eq 0 ]
-
-    # No per-version build must have occurred (all-cached).
-    local build_count
-    build_count=$(_count_log_lines "$tmpd/aj1_build.log")
-    [ "$build_count" -eq 0 ]
-
-    # Bundle docker build MUST have been called (AJ fix assertion).
-    # Before fix: docker_log absent or has no bundle entry → RED.
-    # After fix:  docker build pg18-bundle present → GREEN.
-    [ -f "$docker_log" ]
-    grep -q "DOCKER_CMD=build" "$docker_log"
-    grep -q "pg18-bundle" "$docker_log"
-
-    # Bundle docker push MUST have been called on the publish path.
-    grep -q "DOCKER_CMD=push" "$docker_log"
-}
-
-# ---------------------------------------------------------------------------
-# AJ-2: bundle assembled from the AVAILABLE set (not a stale or larger set).
-# The bundle Dockerfile must COPY exactly the versions that are currently
-# available in the registry — no more, no fewer.
-#
-# Scenario: resolved set = [2.25.0, 2.26.0, 2.27.1]; 2.25.0 is absent
-# from the registry (musl-failed previously); 2.26.0 and 2.27.1 are present.
-# The all-cached path (2.26.0 and 2.27.1 are cached, 2.25.0 never built) runs
-# because _should_build_extension sees 2.25.0 absent — wait, 2.25.0 is absent
-# so _should_build_extension returns 0 (needs build). Adjust: available = those
-# currently present; we use the build path but confirm the bundle only copies
-# from available versions (not from 2.25.0 which fails to build).
-#
-# Strategy: 3-version resolver; 2.25.0 build fails (musl); 2.26.0 and 2.27.1
-# succeed. Bundle Dockerfile must only contain COPYs for 2.26.0 and 2.27.1.
-# ---------------------------------------------------------------------------
-
-@test "AJ-bundle-matches-available: bundle Dockerfile copies only available versions" {
-    local docker_log="$TEST_TEMP_DIR/aj2_docker.log"
-    local bundle_df_capture="$TEST_TEMP_DIR/aj2_df.txt"
-
-    resolve_version_set() { echo '["2.25.0","2.26.0","2.27.1"]'; }
-    export -f resolve_version_set
-
-    ext_config() {
-        case "$2" in
-            version) echo "2.27.1" ;;
-            repo)    echo "https://github.com/timescale/timescaledb" ;;
-            *)       echo "" ;;
-        esac
-    }
-    export -f ext_config
-
-    # 2.25.0 fails to build (musl incompatibility)
-    build_ext_image() {
-        if [[ "$2" == "2.25.0" ]]; then
-            return 1
-        fi
-        echo "BUILD_CALLED ext=${1} ver=${2}" >> "$TEST_TEMP_DIR/build_calls.log"
-        return 0
-    }
-    export -f build_ext_image
-
-    # Capture the bundle Dockerfile content.
-    # Production-faithful: build/push succeed; manifest inspect returns "manifest unknown"
-    # (2.25.0 was never pushed — this is the definitive-absent signal from the registry).
-    # 2.26.0 and 2.27.1 are in _built_this_run_set so _image_present_3state skips the
-    # probe for them; only 2.25.0 reaches the probe, and "manifest unknown" correctly
-    # classifies it as ABSENT (rc=1), keeping it out of confirmed_available.
-    docker() {
-        local _dcmd="${1:-}"
-        echo "DOCKER $*" >> "$docker_log"
-        if [[ "$_dcmd" == "build" ]]; then
-            local i
-            for (( i=1; i<=$#; i++ )); do
-                if [[ "${!i}" == "-f" ]]; then
-                    local next=$(( i + 1 ))
-                    local df_path="${!next}"
-                    if [[ -f "$df_path" ]]; then
-                        cp "$df_path" "$bundle_df_capture"
-                    fi
-                fi
-            done
-            return 0
-        fi
-        if [[ "$_dcmd" == "push" ]]; then
-            return 0
-        fi
-        if [[ "$*" == *"manifest inspect"* ]]; then
-            printf 'manifest unknown: manifest unknown\n' >&2
-        fi
-        return 1
-    }
-    export -f docker
-
-    run build_tag_push_extensions \
-        "$CONFIG_FILE" "$MAJOR_VER" "$CONTAINER_DIR" "true" "timescaledb"
-
-    [ "$status" -eq 0 ]
-
-    # Bundle Dockerfile must have been captured.
-    [ -f "$bundle_df_capture" ]
-
-    # Must contain COPY lines for the available versions (2.26.0 and 2.27.1).
-    grep -q "2.26.0" "$bundle_df_capture"
-    grep -q "2.27.1" "$bundle_df_capture"
-
-    # Must NOT contain a COPY for the failed (unavailable) version 2.25.0.
-    ! grep -q "2.25.0" "$bundle_df_capture"
-}
-
-# ---------------------------------------------------------------------------
-# AJ-3: all-cached + LOCAL_ONLY=true → bundle is built, NOT pushed.
-# On the all-cached path with LOCAL_ONLY, the bundle must be assembled from
-# the available per-version images (already in local store from prior pulls/builds),
-# but must not be pushed to the registry.
-# ---------------------------------------------------------------------------
-
-@test "AJ-local-only-no-push: all-cached + LOCAL_ONLY=true → bundle built, not pushed" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-    local docker_log="$tmpd/aj3_docker.log"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    export docker_log
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=true DRY_RUN=false CONTAINER=postgres
-        export docker_log=\"$docker_log\"
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # LOCAL_ONLY: all versions present locally (docker image inspect returns 0).
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            echo \"DOCKER_CMD=\$_dcmd ARGS=\${*:2}\" >> \"\$docker_log\"
-            if [[ \"\$_dcmd\" == \"image\" ]]; then
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == \"build\" || \"\$_dcmd\" == \"push\" ]]; then
-                return 0
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        # image_exists_in_registry not consulted in LOCAL_ONLY mode for per-version skip check
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        build_ext_image() {
-            echo 'BUILD_CALLED' >> \"$tmpd/aj3_build.log\"
-            return 0
-        }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18 --local-only
-    "
-
-    [ "$status" -eq 0 ]
-
-    # Bundle docker build MUST have been called.
-    [ -f "$docker_log" ]
-    grep -q "DOCKER_CMD=build" "$docker_log"
-    grep -q "pg18-bundle" "$docker_log"
-
-    # Bundle docker push must NOT have been called (LOCAL_ONLY=true).
-    ! grep -qE "DOCKER_CMD=push.*pg18-bundle|DOCKER_CMD=push.+bundle" "$docker_log"
-}
-
-# ---------------------------------------------------------------------------
-# AJ-4: bundle push failure on the publish path is fatal (exit non-zero).
-# After the all-cached path assembles the bundle, if the push fails the run
-# must exit non-zero so CI does not silently succeed with a missing bundle tag.
-# ---------------------------------------------------------------------------
-
-@test "AJ-publish-bundle-failure-fatal: bundle push failure on publish path exits non-zero" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All per-version images already in registry.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        # Bundle build succeeds; bundle push FAILS (registry error).
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == \"build\" ]]; then
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == \"push\" ]]; then
-                return 1
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()   { return 0; }
-        export -f tag_ext_image
-        push_ext_image()  { return 0; }
-        export -f push_ext_image
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Bundle push failure must be fatal on the publish path.
-    [ "$status" -ne 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -6825,8 +6231,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -6957,8 +6363,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -7072,464 +6478,6 @@ EOCFG
 }
 
 # ---------------------------------------------------------------------------
-# AK-atomic: artifact is written ONLY AFTER a successful bundle push.
-# Simulating a bundle push failure: artifact must NOT be written, exit non-zero.
-#
-# RED before fix: _emit_final_versionset_pass runs after build_tag_push_extensions
-#   (which called assemble_and_push_bundle and returned non-zero on push failure),
-#   but build_tag_push_extensions exits 1 before returning to main(), so main()
-#   already propagates the non-zero. The artifact writing happens in _emit_final_-
-#   versionset_pass which is called AFTER build_tag_push_extensions → the question
-#   is: does main() still call _emit_final_versionset_pass after build_tag_push_-
-#   extensions exits 1?
-# In the current code: build_tag_push_extensions calls exit 1 (not return 1) when
-#   failed[] is non-empty, so main() never reaches _emit_final_versionset_pass.
-#   This test verifies that specific path: bundle push fails → build_tag_push_extensions
-#   exits non-zero → main() propagates exit code → no artifact written.
-# ---------------------------------------------------------------------------
-@test "AK-atomic: bundle push failure → no versionset artifact written, exit non-zero" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All per-version images absent from registry → all need to be built.
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        # Per-version build, tag, push: all succeed.
-        # Bundle docker: build succeeds, push FAILS (simulates registry error on bundle push).
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == \"build\" ]]; then
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == \"push\" ]]; then
-                # Bundle push failure.
-                if [[ \"\$*\" == *'bundle'* ]]; then
-                    return 1
-                fi
-                return 0
-            fi
-            if [[ \"\$*\" == *'manifest inspect'* ]]; then
-                echo 'manifest unknown: manifest unknown' >&2
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Bundle push failure → exit non-zero.
-    [ "$status" -ne 0 ]
-
-    # No versionset artifact must have been written (atomic: artifact only after bundle push).
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
-# INV-bundle-eq-artifact: confirmed_available is computed ONCE and drives BOTH
-# the bundle COPYs and the artifact available[].
-#
-# Scenario: all per-version builds succeed; confirmed_available = {2.26.0, 2.27.1}
-# (2.25.0 fails to build → never pushed → absent from registry; 2.26.0 and 2.27.1
-# are pushed). The bundle Dockerfile COPY lines and the artifact available[] must
-# be EXACTLY {2.26.0, 2.27.1} — same set, same source.
-#
-# RED before fix: bundle is built from _available_for_bundle (inner-loop tracking),
-#   while the artifact re-probes independently via _image_present_3state. With a
-#   stateful mock they stay in sync, but the divergence is visible if the probe is
-#   overridden to disagree with the inner loop. After the fix, both come from the
-#   same confirmed_available variable, so equality is structural.
-# GREEN after fix: artifact.available[] set == bundle COPY versions == confirmed set.
-# ---------------------------------------------------------------------------
-@test "INV-bundle-eq-artifact: confirmed_available drives both bundle COPYs and artifact available[]" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-    local bundle_df_cap="$tmpd/inv_beqa_bundle_df.txt"
-    local docker_log="$tmpd/inv_beqa_docker.log"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    export bundle_df_cap docker_log
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        export bundle_df_cap=\"$bundle_df_cap\" docker_log=\"$docker_log\"
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # 2.25.0 absent from registry (never built/pushed); 2.26.0 and 2.27.1 absent
-        # initially — they are built and pushed in this run (stateful mock).
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        # 2.25.0 fails to build; 2.26.0 and 2.27.1 succeed.
-        build_ext_image() {
-            [[ \"\$2\" == '2.25.0' ]] && return 1
-            return 0
-        }
-        export -f build_ext_image
-        tag_ext_image() { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        # Bundle docker mock: capture the Dockerfile content at build time.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == 'build' ]]; then
-                echo \"DOCKER_CMD=build args=\$*\" >> \"\$docker_log\"
-                local _found_f=false _df_arg
-                for _a in \"\$@\"; do
-                    [[ \"\$_found_f\" == 'true' ]] && { _df_arg=\"\$_a\"; _found_f=false; }
-                    [[ \"\$_a\" == '-f' ]] && _found_f=true
-                done
-                [[ -n \"\$_df_arg\" && -f \"\$_df_arg\" ]] && cp \"\$_df_arg\" \"\$bundle_df_cap\"
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == 'push' ]]; then
-                return 0
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        # 3-state probe used by _emit_versionset_artifact and the all-cached refresh loop.
-        # 2.25.0 ABSENT (build failed, never pushed); 2.26.0 and 2.27.1 PRESENT
-        # (pushed this run — guarded by _built_this_run_set in _emit_versionset_artifact).
-        _image_present_3state() {
-            case \"\$1\" in
-                *pg18-2.25.0*) return 1 ;;
-                *pg18-2.26.0*) return 0 ;;
-                *pg18-2.27.1*) return 0 ;;
-                *)             return 1 ;;
-            esac
-        }
-        export -f _image_present_3state
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Non-ceiling musl failure → exit 0.
-    [ "$status" -eq 0 ]
-
-    # The artifact must exist.
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-
-    # artifact.available[] must be exactly {2.26.0, 2.27.1} (2 entries, ceiling present).
-    local art_avail_count
-    art_avail_count=$(jq '.available | length' "$artifact")
-    [ "$art_avail_count" -eq 2 ]
-
-    local art_avail
-    art_avail=$(jq -r '.available[]' "$artifact")
-    [[ "$art_avail" == *'2.26.0'* ]]
-    [[ "$art_avail" == *'2.27.1'* ]]
-    [[ "$art_avail" != *'2.25.0'* ]]
-
-    # The bundle Dockerfile must have been produced.
-    [ -f "$bundle_df_cap" ]
-
-    # Bundle Dockerfile must COPY exactly 2.26.0 and 2.27.1 — same set as artifact.
-    grep -q "2.26.0" "$bundle_df_cap"
-    grep -q "2.27.1" "$bundle_df_cap"
-    ! grep -q "2.25.0" "$bundle_df_cap"
-
-    # Equality invariant: bundle COPY version count must equal artifact available[] count.
-    local bundle_copy_count
-    bundle_copy_count=$(grep -c "^COPY " "$bundle_df_cap" || true)
-    # Each version contributes 2 COPY lines (/output/extension/ and /output/lib/).
-    local expected_copy_lines=$(( art_avail_count * 2 ))
-    [ "$bundle_copy_count" -eq "$expected_copy_lines" ]
-}
-
-# ---------------------------------------------------------------------------
-# INV-bundle-push-fail-no-artifact: all per-version builds succeed but
-# $DOCKER push of the BUNDLE fails → NO versionset artifact is written (and a
-# pre-existing stale one is deleted) AND exit non-zero.
-#
-# RED before fix: on the build path, build_tag_push_extensions adds $ext@bundle
-#   to failed[] and exits 1, so _emit_final_versionset_pass never runs and no
-#   NEW artifact is written. But a PRE-EXISTING stale artifact survives — this
-#   test seeds a stale artifact and asserts it is DELETED on bundle push failure.
-# GREEN after fix: bundle push failure → stale artifact deleted → exit non-zero.
-# ---------------------------------------------------------------------------
-@test "INV-bundle-push-fail-no-artifact: bundle push fails → stale artifact deleted, exit non-zero" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    local lineage_dir="$tmpd/.build-lineage"
-    mkdir -p "$lineage_dir"
-
-    # Pre-seed a stale artifact from a prior run.
-    local artifact="$lineage_dir/ext-timescaledb-pg18-versionset.json"
-    printf '{"ext":"timescaledb","pg_major":"18","ceiling":"2.26.0","resolved":["2.26.0"],"available":["2.26.0"],"excluded":[]}\n' \
-        > "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All per-version images absent → all are built in this run.
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        # All per-version builds, tags, pushes succeed.
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        # docker build succeeds; docker push FAILS for the bundle.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == 'build' ]]; then
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == 'push' ]]; then
-                if [[ \"\$*\" == *'bundle'* ]]; then
-                    return 1
-                fi
-                return 0
-            fi
-            if [[ \"\$*\" == *'manifest inspect'* ]]; then
-                echo 'manifest unknown: manifest unknown' >&2
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Bundle push failure → exit non-zero.
-    [ "$status" -ne 0 ]
-
-    # The stale artifact MUST have been deleted (not silently left for the consumer).
-    # RED before fix: artifact is never touched because build_tag_push_extensions exits 1
-    #   before _emit_final_versionset_pass runs, leaving the stale artifact in place.
-    # GREEN after fix: bundle failure triggers stale artifact deletion.
-    [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
-# INV-allcached-bundle-fail-fatal: all-cached path, bundle refresh push fails
-# → exit non-zero AND no artifact written (the _fp_rc clobber is fixed).
-#
-# RED before fix: _fp_rc is declared (=0) before _emit_final_versionset_pass,
-#   but the bundle refresh failure accumulates into _fp_rc AFTER the emit pass.
-#   If the emit pass succeeds (writes artifact), then the bundle refresh fails
-#   (_fp_rc becomes 1), the exit is non-zero — that part works. But the artifact
-#   was already written by the emit pass BEFORE the bundle push — so the artifact
-#   exists even though the bundle push failed. The invariant "artifact present ⟺
-#   bundle pushed OK" is violated.
-# GREEN after fix: on the all-cached path, the confirmed_available set drives
-#   BOTH the bundle push AND the artifact write; the artifact is written ONLY
-#   AFTER a successful bundle push.
-# ---------------------------------------------------------------------------
-@test "INV-allcached-bundle-fail-fatal: all-cached path, bundle push fails → exit non-zero, no artifact" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    # No pre-existing artifact.
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All per-version images already in registry (all-cached path).
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        # All versions probed as PRESENT (all-cached scenario).
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        # Bundle build succeeds; bundle push FAILS (network error).
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            if [[ \"\$_dcmd\" == 'build' ]]; then
-                return 0
-            fi
-            if [[ \"\$_dcmd\" == 'push' ]]; then
-                return 1
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # All-cached path with bundle push failure → exit non-zero.
-    [ "$status" -ne 0 ]
-
-    # No artifact must be written (bundle push failed — atomic invariant).
-    # RED before fix: _emit_final_versionset_pass runs first and writes the artifact,
-    #   then the bundle refresh fails — artifact is present but bundle is missing.
-    # GREEN after fix: artifact is written only after a successful bundle push.
-    [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
 # INV-transient-failclosed: 3-state ERROR on one resolved version on the
 # publish path → no bundle assembled, no artifact written, exit non-zero.
 #
@@ -7606,8 +6554,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -7627,167 +6575,6 @@ EOCFG
 
     # No artifact must be written.
     [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
-# INV-artifact-after-bundle: ordering invariant — the artifact does NOT exist
-# until AFTER a successful bundle push; a mock that fails the push leaves no
-# artifact; a mock that succeeds leaves both.
-#
-# This test verifies the ordering with two sub-cases in sequence:
-#   (a) bundle push fails → no artifact → exit non-zero
-#   (b) bundle push succeeds → artifact present → exit zero
-# ---------------------------------------------------------------------------
-@test "INV-artifact-after-bundle: artifact written only after successful bundle push (ordering)" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    # --- Sub-case (a): bundle push fails → no artifact ---
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All cached: skip-build path.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        # All versions PRESENT via 3-state.
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        # Bundle push FAILS.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            [[ \"\$_dcmd\" == 'build' ]] && return 0
-            [[ \"\$_dcmd\" == 'push' ]] && return 1
-            return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Sub-case (a): push failed → exit non-zero, no artifact.
-    [ "$status" -ne 0 ]
-    [ ! -f "$artifact" ]
-
-    # --- Sub-case (b): bundle push succeeds → artifact present ---
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All cached.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-
-        # All versions PRESENT via 3-state.
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()  { return 0; }
-        export -f tag_ext_image
-        push_ext_image() { return 0; }
-        export -f push_ext_image
-
-        # Bundle push SUCCEEDS.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            [[ \"\$_dcmd\" == 'build' || \"\$_dcmd\" == 'push' ]] && return 0 || return 1
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        validate_prerequisites()  { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()     { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Sub-case (b): push succeeded → exit zero, artifact present.
-    [ "$status" -eq 0 ]
-    [ -f "$artifact" ]
-
-    # Artifact must have ceiling and available[].
-    local ceiling
-    ceiling=$(jq -r '.ceiling' "$artifact")
-    [ "$ceiling" = "2.27.1" ]
-
-    local avail_count
-    avail_count=$(jq '.available | length' "$artifact")
-    [ "$avail_count" -gt 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -7855,8 +6642,8 @@ EOCFG
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()      { return 0; }
         export -f validate_prerequisites
@@ -7883,361 +6670,6 @@ EOCFG
     # from the bundle assembly path.  The per-version build goes through build_ext_image()
     # (overridden separately), NOT through docker() directly, so bundle_call_log is clean.
     [ ! -f "$bundle_call_log" ]
-}
-
-# ---------------------------------------------------------------------------
-# AM-artifact-records-digest: resolver-backed ext, set>1, bundle push succeeds
-# → the written versionset artifact contains a non-empty bundle_digest field.
-# RED before fix: artifact has no bundle_digest field.
-# GREEN after fix: artifact.bundle_digest matches the sha256 returned by the
-# digest-capture mock.
-# ---------------------------------------------------------------------------
-@test "AM-artifact-records-digest: bundle push succeeds → artifact contains non-empty bundle_digest" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All images present so no build is needed; triggered via all-cached path.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()   { return 0; }
-        export -f tag_ext_image
-        push_ext_image()  { return 0; }
-        export -f push_ext_image
-
-        # Bundle build+push succeed; digest capture succeeds.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            case \"\$_dcmd\" in
-                build) return 0 ;;
-                push)  return 0 ;;
-                buildx)
-                    # imagetools inspect --format '{{.Manifest.Digest}}' → emit a digest
-                    if [[ \"\$*\" == *'imagetools'* && \"\$*\" == *'inspect'* ]]; then
-                        echo 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890'
-                        return 0
-                    fi
-                    return 1
-                    ;;
-                *)     return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
-
-        validate_prerequisites()      { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()         { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    [ "$status" -eq 0 ]
-
-    # Artifact must be present.
-    [ -f "$artifact" ]
-
-    # Must contain a non-empty bundle_digest field.
-    # RED before fix: .bundle_digest is null/absent.
-    # GREEN after fix: .bundle_digest == 'sha256:abcdef...'
-    local digest
-    digest=$(jq -r '.bundle_digest // empty' "$artifact")
-    [[ -n "$digest" ]]
-    [[ "$digest" == sha256:* ]]
-}
-
-# ---------------------------------------------------------------------------
-# AM-digest-capture-fail-fatal: bundle push succeeds but digest capture fails
-# → fail closed: no artifact written, exit non-zero.
-# RED before fix: artifact is written (no digest capture, no digest field).
-# GREEN after fix: digest capture failure after push is fatal — no artifact.
-# ---------------------------------------------------------------------------
-@test "AM-digest-capture-fail-fatal: bundle push OK but digest capture fails → no artifact, exit non-zero" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()   { return 0; }
-        export -f tag_ext_image
-        push_ext_image()  { return 0; }
-        export -f push_ext_image
-
-        # Bundle build+push succeed; digest capture FAILS.
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            case \"\$_dcmd\" in
-                build) return 0 ;;
-                push)  return 0 ;;
-                buildx)
-                    # imagetools inspect → simulate failure (e.g. transient registry error)
-                    if [[ \"\$*\" == *'imagetools'* && \"\$*\" == *'inspect'* ]]; then
-                        echo 'error: manifest unknown' >&2
-                        return 1
-                    fi
-                    return 1
-                    ;;
-                *)     return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-
-        validate_prerequisites()      { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()         { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # RED before fix: exits 0 (artifact written without digest).
-    # GREEN after fix: exits non-zero (fail closed — cannot guarantee immutable ref).
-    [ "$status" -ne 0 ]
-
-    # No artifact must be written (digest capture failed → fail-closed, no partial artifact).
-    [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
-# AN-producer: strict OCI digest validation at the producer boundary.
-#
-# _capture_bundle_digest output flows directly into the artifact bundle_digest
-# field and from there into the generated Dockerfile COPY line.  A poisoned
-# or malformed value (uppercase hex, short hash, embedded whitespace/newline,
-# extra tokens after the hash) must be rejected BEFORE the artifact is written.
-#
-# Fix: `is_valid_oci_digest` validates the whole captured string:
-#   - MUST match exactly: sha256: followed by exactly 64 lowercase hex chars
-#   - Embedded newlines MUST be rejected (bash $= in =~ can match before \n)
-#   - Zero trailing content allowed
-#
-# AN-producer-rejects-malformed-digest: each malformed form → FATAL, no artifact.
-# AN-producer-accepts-valid: proper sha256:<64hex> → artifact written (regression).
-# ---------------------------------------------------------------------------
-
-# Helper: drive _bundle_and_write_artifact in a subprocess via main() so the
-# artifact write gate is exercised. All versions present in registry (no build
-# needed), digest injected via _capture_bundle_digest mock.
-_run_an_producer() {
-    # Args: <digest_to_return>
-    local digest_value="$1"
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    # version.sh so detect_major_version can run
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        # All versions in registry — no builds needed, just bundle + artifact.
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-        _image_present_3state() { return 0; }
-        export -f _image_present_3state
-
-        build_ext_image() { return 0; }
-        export -f build_ext_image
-        tag_ext_image()   { return 0; }
-        export -f tag_ext_image
-        push_ext_image()  { return 0; }
-        export -f push_ext_image
-
-        # Bundle build+push succeed; digest is what we control.
-        docker() {
-            local _dc=\"\${1:-}\"
-            case \"\$_dc\" in
-                build) return 0 ;;
-                push)  return 0 ;;
-                *) return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-
-        # _capture_bundle_digest returns the digest under test.
-        _capture_bundle_digest() {
-            printf '%s' '$digest_value'
-            return 0
-        }
-        export -f _capture_bundle_digest
-
-        validate_prerequisites()      { return 0; }
-        export -f validate_prerequisites
-        check_registry_auth()         { return 0; }
-        export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-}
-
-@test "AN-producer-rejects-uppercase-hex: sha256:DEADBEEF... uppercase → FATAL, no artifact" {
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    # Uppercase hex — should be rejected (valid OCI digest is lowercase only)
-    local bad_digest="sha256:DEADBEEF00000000000000000000000000000000000000000000000000000000"
-    _run_an_producer "$bad_digest"
-
-    # RED before fix: exits 0, artifact written with uppercase digest.
-    # GREEN after fix: exits non-zero (strict validator rejects uppercase hex).
-    [ "$status" -ne 0 ]
-    # Artifact must NOT be written.
-    [ ! -f "$artifact" ]
-}
-
-@test "AN-producer-rejects-short-hash: sha256:<63hex> too short → FATAL, no artifact" {
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    # 63 hex chars — one short of a valid sha256 digest
-    local bad_digest="sha256:000000000000000000000000000000000000000000000000000000000000000"
-    _run_an_producer "$bad_digest"
-
-    [ "$status" -ne 0 ]
-    [ ! -f "$artifact" ]
-}
-
-@test "AN-producer-rejects-extra-tokens: sha256:<64hex> extra trailing content → FATAL, no artifact" {
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    # Valid digest followed by extra content (e.g. injected Dockerfile directive)
-    local bad_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000 extra"
-    _run_an_producer "$bad_digest"
-
-    [ "$status" -ne 0 ]
-    [ ! -f "$artifact" ]
-}
-
-@test "AN-producer-rejects-embedded-newline: sha256:<64hex>\\nRUN evil → FATAL, no artifact" {
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    # Digest with embedded newline followed by a Dockerfile injection attempt.
-    # This is the canonical newline bypass: bash "=~" matches $ before \n.
-    local bad_digest
-    bad_digest=$(printf 'sha256:0000000000000000000000000000000000000000000000000000000000000000\nRUN evil')
-    _run_an_producer "$bad_digest"
-
-    [ "$status" -ne 0 ]
-    [ ! -f "$artifact" ]
-}
-
-@test "AN-producer-accepts-valid: proper sha256:<64lowercase-hex> → artifact written" {
-    local artifact="$TEST_TEMP_DIR/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    local good_digest="sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
-    _run_an_producer "$good_digest"
-
-    # Regression: a valid digest must succeed.
-    [ "$status" -eq 0 ]
-    # Artifact must be written.
-    [ -f "$artifact" ]
-    # The artifact must contain the exact valid digest.
-    local recorded
-    recorded=$(jq -r '.bundle_digest' "$artifact")
-    [ "$recorded" = "$good_digest" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -8333,8 +6765,8 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()      { return 0; }
         export -f validate_prerequisites
@@ -8427,10 +6859,10 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo 'manifest unknown' >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
         build_ext_image() { return 0; }; export -f build_ext_image
         tag_ext_image()  { return 0; };  export -f tag_ext_image
         push_ext_image() { return 0; };  export -f push_ext_image
@@ -8456,176 +6888,6 @@ _run_an_producer() {
     [ ! -f "$artifact" ]
 }
 
-@test "AQ1-master-allcached-pushes: all-cached + do_push=true (master) → bundle pushed + artifact written" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    local push_call_log="${tmpd}/aq1master_push.log"
-    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        # NO NO_PUSH — master/publish path, do_push=true by default.
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-        docker() {
-            local _cmd=\"\${1:-}\"
-            if [[ \"\$_cmd\" == 'push' || \"\$_cmd\" == 'build' ]]; then
-                echo \"DOCKER_\${_cmd^^}\" >> \"$push_call_log\"
-                return 0
-            fi
-            if [[ \"\$*\" == *'buildx'* ]]; then
-                echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
-                return 0
-            fi
-            if [[ \"\$*\" == *'manifest inspect'* ]]; then
-                echo 'manifest unknown: manifest unknown' >&2
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo 'manifest unknown' >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() {
-            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
-        }
-        export -f _capture_bundle_digest
-        build_ext_image() { return 0; }; export -f build_ext_image
-        tag_ext_image()  { return 0; };  export -f tag_ext_image
-        push_ext_image() { return 0; };  export -f push_ext_image
-        validate_prerequisites()  { return 0; }; export -f validate_prerequisites
-        check_registry_auth()     { return 0; }; export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-        main postgres --major-version 18
-    "
-
-    [ "$status" -eq 0 ]
-
-    # Publish path: docker push MUST have been called for the bundle.
-    local push_count
-    push_count=$(_count_log_lines "$push_call_log")
-    [ "$push_count" -gt 0 ]
-
-    # Artifact MUST be written.
-    [ -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
-# AX4: same-repo PR / push — NO_PUSH unset → do_push=true → build+push.
-#
-# Context: the workflow previously set NO_PUSH=true for ALL pull_request events,
-# which prevented pushing on same-repo PRs even though they have packages:write.
-# AX-4 reverts that: fork PRs are excluded by the job if: clause, so
-# build-extensions only runs for push/dispatch and same-repo PRs.  On those
-# events NO_PUSH is not set → do_push=true → build+push happens normally.
-#
-# This test is a regression guard confirming the revert: with NO_PUSH unset
-# (same-repo PR or push context) the script pushes the bundle and writes the
-# versionset artifact — the full end-to-end smoke path.
-# ---------------------------------------------------------------------------
-@test "AX4-samerepo-pr-pushes: NO_PUSH unset (same-repo PR / push) → do_push=true → bundle pushed + artifact written" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    local push_call_log="${tmpd}/ax4_samerepo_push.log"
-    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    rm -f "$artifact"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false CONTAINER=postgres
-        # NO_PUSH is intentionally NOT set — simulates same-repo PR or push context
-        # where the workflow no longer sets NO_PUSH (AX-4 revert).
-        unset NO_PUSH
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-        image_exists_in_registry() { return 0; }
-        export -f image_exists_in_registry
-        docker() {
-            local _cmd=\"\${1:-}\"
-            if [[ \"\$_cmd\" == 'push' || \"\$_cmd\" == 'build' ]]; then
-                echo \"DOCKER_\${_cmd^^}\" >> \"$push_call_log\"
-                return 0
-            fi
-            if [[ \"\$*\" == *'buildx'* ]]; then
-                echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
-                return 0
-            fi
-            if [[ \"\$*\" == *'manifest inspect'* ]]; then
-                echo 'manifest unknown: manifest unknown' >&2
-            fi
-            return 1
-        }
-        export -f docker
-        skopeo() { echo 'manifest unknown' >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() {
-            echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
-        }
-        export -f _capture_bundle_digest
-        build_ext_image() { return 0; }; export -f build_ext_image
-        tag_ext_image()  { return 0; };  export -f tag_ext_image
-        push_ext_image() { return 0; };  export -f push_ext_image
-        validate_prerequisites()  { return 0; }; export -f validate_prerequisites
-        check_registry_auth()     { return 0; }; export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-        main postgres --major-version 18
-    "
-
-    # Must exit cleanly.
-    [ "$status" -eq 0 ]
-
-    # AX4 regression: docker push MUST have been called (do_push=true path).
-    # Before revert: NO_PUSH=true would suppress push. After revert: push fires.
-    local push_count
-    push_count=$(_count_log_lines "$push_call_log")
-    [ "$push_count" -gt 0 ]
-
-    # Artifact MUST be written (versionset consumed by postgres build-and-push).
-    [ -f "$artifact" ]
-}
 
 # ---------------------------------------------------------------------------
 # AX4 defensive: NO_PUSH=true still suppresses push (script honors it even
@@ -8680,10 +6942,10 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo 'manifest unknown' >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
         build_ext_image() { return 0; }; export -f build_ext_image
         tag_ext_image()  { return 0; };  export -f tag_ext_image
         push_ext_image() { return 0; };  export -f push_ext_image
@@ -8749,10 +7011,10 @@ _run_an_producer() {
         export -f skopeo
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
         build_ext_image() { return 0; }; export -f build_ext_image
         tag_ext_image()  { return 0; };  export -f tag_ext_image
         push_ext_image() { return 0; };  export -f push_ext_image
@@ -8839,10 +7101,10 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
         skopeo() { printf 'manifest unknown\n' >&2; return 1; }
         export -f skopeo
 
@@ -8907,9 +7169,9 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        # LOCAL_ONLY: _capture_bundle_digest not called (no push) → unset is fine.
-        _capture_bundle_digest() { echo ''; return 0; }
-        export -f _capture_bundle_digest
+        # LOCAL_ONLY: _capture_index_digest not called (no push) → unset is fine.
+        _capture_index_digest() { echo ''; return 0; }
+        export -f _capture_index_digest
         image_exists_in_registry() { return 1; }
         export -f image_exists_in_registry
         skopeo() { printf 'manifest unknown\n' >&2; return 1; }
@@ -8936,87 +7198,6 @@ _run_an_producer() {
     local digest_field
     digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
     [ "$digest_field" = "absent" ]
-}
-
-# ---------------------------------------------------------------------------
-# AR-1 regression: do_push=true (normal publish path) — bundle pushed,
-# artifact written with digest.
-# ---------------------------------------------------------------------------
-@test "AR1-push-true-unchanged: do_push=true — bundle pushed, artifact with digest" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        build_ext_image() { return 0; }; export -f build_ext_image
-        tag_ext_image()  { return 0; };  export -f tag_ext_image
-        push_ext_image() { return 0; };  export -f push_ext_image
-
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            case \"\$_dcmd\" in
-                build|push) return 0 ;;
-                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
-                *) return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { echo manifest unknown >&2; return 1; }
-        export -f skopeo
-        _capture_bundle_digest() {
-            echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-            return 0
-        }
-        export -f _capture_bundle_digest
-        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
-        export -f skopeo
-
-        validate_prerequisites() { return 0; }; export -f validate_prerequisites
-        check_registry_auth()     { return 0; }; export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    [ "$status" -eq 0 ]
-
-    # Publish path: artifact MUST be written.
-    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-
-    # Digest MUST be present on the publish path.
-    local digest_field
-    digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
-    [ "$digest_field" != "absent" ]
-    [[ "$digest_field" == sha256:* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -9081,172 +7262,6 @@ _run_an_producer() {
 }
 
 # ---------------------------------------------------------------------------
-# AS-1: _capture_bundle_digest uses raw-manifest + sha256sum, not the
-#        unreliable --format '{{.Manifest.Digest}}' template field.
-#
-# AS1-digest-via-raw-manifest: when --raw returns a manifest, the produced
-# digest is sha256:<64 lowercase hex> and is recorded in the artifact.
-# RED before fix: the mock only stubs --raw; the old template-field path
-# returns empty → is_valid_oci_digest rejects → fatal even after a good push.
-# GREEN after fix: --raw output is hashed → valid sha256:<64hex> digest.
-# ---------------------------------------------------------------------------
-@test "AS1-digest-via-raw-manifest: --raw returns manifest → valid sha256 digest in artifact" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        build_ext_image() { return 0; }; export -f build_ext_image
-        tag_ext_image()  { return 0; };  export -f tag_ext_image
-        push_ext_image() { return 0; };  export -f push_ext_image
-
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            case \"\$_dcmd\" in
-                build|push) return 0 ;;
-                buildx)
-                    # imagetools inspect: only --raw is stubbed; --format must NOT be called
-                    if [[ \"\$*\" == *'--raw'* ]]; then
-                        printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}'
-                        return 0
-                    fi
-                    # If old --format path is exercised, return empty to make test RED
-                    return 0
-                    ;;
-                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
-                *) return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
-        export -f skopeo
-
-        validate_prerequisites() { return 0; }; export -f validate_prerequisites
-        check_registry_auth()     { return 0; }; export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    [ "$status" -eq 0 ]
-
-    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ -f "$artifact" ]
-
-    local digest_field
-    digest_field=$(jq -r '.bundle_digest // "absent"' "$artifact")
-
-    # Must be a valid OCI digest (sha256: + 64 lowercase hex).
-    [[ "$digest_field" =~ ^sha256:[0-9a-f]{64}$ ]]
-}
-
-# ---------------------------------------------------------------------------
-# AS1-empty-raw-manifest-fatal: when --raw returns empty, digest capture
-# produces an empty string → is_valid_oci_digest rejects → fail closed
-# (assemble_and_push_bundle returns non-zero, no artifact written).
-# ---------------------------------------------------------------------------
-@test "AS1-empty-raw-manifest-fatal: --raw returns empty → digest empty → fail closed (exit non-zero, no artifact)" {
-    local tmpd="$TEST_TEMP_DIR"
-    local sd="$SCRIPTS_DIR"
-
-    printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
-    chmod +x "${tmpd}/postgres/version.sh"
-
-    run bash -c "
-        export FORCE=false LOCAL_ONLY=false PULL_ONLY=false DRY_RUN=false NO_PUSH=false CONTAINER=postgres
-        cd \"$sd\"
-        source ./build-extensions.sh
-        export ROOT_DIR=\"$tmpd\"
-
-        resolve_version_set() { echo '[\"2.25.0\",\"2.26.0\",\"2.27.1\"]'; }
-        export -f resolve_version_set
-
-        ext_config() {
-            case \"\$2\" in
-                version) echo '2.27.1' ;;
-                repo)    echo 'https://github.com/timescale/timescaledb' ;;
-                *)       echo '' ;;
-            esac
-        }
-        export -f ext_config
-
-        ext_image_name()       { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
-        export -f ext_image_name
-        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
-        export -f ext_local_image_name
-
-        image_exists_in_registry() { return 1; }
-        export -f image_exists_in_registry
-
-        build_ext_image() { return 0; }; export -f build_ext_image
-        tag_ext_image()  { return 0; };  export -f tag_ext_image
-        push_ext_image() { return 0; };  export -f push_ext_image
-
-        docker() {
-            local _dcmd=\"\${1:-}\"
-            case \"\$_dcmd\" in
-                build|push) return 0 ;;
-                buildx)
-                    # imagetools inspect --raw returns empty (simulates CI failure case)
-                    if [[ \"\$*\" == *'--raw'* ]]; then
-                        printf ''
-                        return 1
-                    fi
-                    return 0
-                    ;;
-                manifest) printf 'manifest unknown\n' >&2; return 1 ;;
-                *) return 1 ;;
-            esac
-        }
-        export -f docker
-        skopeo() { printf 'manifest unknown\n' >&2; return 1; }
-        export -f skopeo
-
-        validate_prerequisites() { return 0; }; export -f validate_prerequisites
-        check_registry_auth()     { return 0; }; export -f check_registry_auth
-        list_extensions_by_priority() { echo 'timescaledb'; }
-        export -f list_extensions_by_priority
-
-        main postgres --major-version 18
-    "
-
-    # Empty raw-manifest → empty digest → fail closed.
-    [ "$status" -ne 0 ]
-
-    # No artifact must have been written (fail closed).
-    local artifact="${tmpd}/.build-lineage/ext-timescaledb-pg18-versionset.json"
-    [ ! -f "$artifact" ]
-}
-
-# ---------------------------------------------------------------------------
 # AS-2: the failure-log site in assemble_and_push_bundle that logs the
 # captured digest must sanitize the value before logging.
 #
@@ -9307,13 +7322,13 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        # _capture_bundle_digest returns a malformed multi-line value with
+        # _capture_index_digest returns a malformed multi-line value with
         # an embedded GHA workflow command injection attempt.
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             printf 'sha256:abc\n::add-mask::x'
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         skopeo() { printf 'manifest unknown\n' >&2; return 1; }
         export -f skopeo
@@ -9538,8 +7553,8 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -9624,8 +7639,8 @@ _run_an_producer() {
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -9701,11 +7716,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo "BUILD_EXT_CALLED $*" >> "'"$docker_calls"'"
@@ -9797,11 +7812,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         build_ext_image() {
             echo "BUILD_EXT_CALLED $*" >> "'"$docker_calls"'"
@@ -9893,11 +7908,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -10013,11 +8028,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         build_ext_image() { return 0; }
         export -f build_ext_image
@@ -10050,24 +8065,27 @@ _run_an_producer() {
 
     [ "$status" -eq 0 ]
 
-    # Bundle assembled EXACTLY ONCE (AV-2 fix).
-    # Before fix: build_tag_push_extensions + _emit_final_versionset_pass both assemble => count=2 (RED).
-    # After fix:  final pass skips ext already bundled on the build path => count=1 (GREEN).
+    # AV-2 double-write guard: artifact written EXACTLY ONCE on the build path.
+    # build_tag_push_extensions writes it; _emit_final_versionset_pass is skipped
+    # for that ext via the sentinel file.
+    # No bundle is built — collector approach eliminates the bundle image entirely.
     local bundle_count
     bundle_count=$(_count_log_lines "$bundle_build_log")
-    [ "$bundle_count" -eq 1 ]
+    [ "$bundle_count" -eq 0 ]
+
+    # Artifact must exist (written by _bundle_and_write_artifact on the build path)
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
 }
 
 # ---------------------------------------------------------------------------
 # B-merge-creates-multiarch: finalize --finalize-multiarch for an ext with
-# versions [a,b,ceiling] invokes imagetools create for each version AND the
-# bundle, merging -amd64 + -arm64 suffixed refs into un-suffixed targets.
+# versions [a,b,ceiling] invokes imagetools create for each version, captures
+# per-version index digests (via imagetools inspect) + validates both platforms,
+# and writes the versionset artifact with version_digests. NO bundle build.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version and builds bundle via buildx" {
-    # SIMP-merge-from-stable-tags: imagetools create uses stable SUFFIXED TAG refs
-    # (ext:pg18-2.25.0-amd64, ext:pg18-2.25.0-arm64), not @digest refs.
-    # Bundle is built via buildx build --platform, not imagetools create.
+@test "B-merge-creates-multiarch: finalize-multiarch calls imagetools create for each version, captures index digests, no bundle build" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
     local docker_calls="$tmpd/docker_calls.log"
@@ -10105,18 +8123,25 @@ _run_an_producer() {
         # multi-arch manifests are absent (stage B creates them).
         image_exists_in_registry() {
             local ref="$1"
-            # Per-arch tags (ending in -amd64 or -arm64): PRESENT
             [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]]
         }
         export -f image_exists_in_registry
 
-        # Mock docker to record all calls; succeed for all.
-        # manifest inspect returns manifest-unknown for absent un-suffixed refs.
+        # Mock docker:
+        # - manifest: returns not-found (un-suffixed manifests absent; stage B creates them)
+        # - buildx imagetools create: succeeds (merges per-arch into multi-arch)
+        # - buildx imagetools inspect: returns output containing both platforms
+        #   (needed by the platform-coverage check)
         docker() {
             echo "DOCKER $*" >> "$docker_calls"
             if [[ "$1" == "manifest" ]]; then
                 echo "manifest unknown: manifest unknown" >&2
                 return 1
+            fi
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                # Return fake inspect output with both platforms (platform-coverage check)
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
             fi
             return 0
         }
@@ -10124,11 +8149,12 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        # Stable mock: valid index digest returned by _capture_index_digest
+        _capture_index_digest() {
             echo "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10146,9 +8172,7 @@ _run_an_producer() {
     local calls
     calls=$(cat "$docker_calls")
 
-    # SIMP-merge-from-stable-tags: imagetools create for per-version merges MUST use
-    # stable suffixed TAG refs (not @digest refs). Verify the -amd64 and -arm64
-    # suffixed tag refs appear in the imagetools create calls.
+    # imagetools create for per-version merges MUST use stable suffixed TAG refs.
     [[ "$calls" == *"pg18-2.25.0-amd64"* ]]
     [[ "$calls" == *"pg18-2.25.0-arm64"* ]]
     [[ "$calls" == *"pg18-2.26.0-amd64"* ]]
@@ -10159,31 +8183,29 @@ _run_an_producer() {
     digest_lines=$(grep 'imagetools.*create' "$docker_calls" | grep '@sha256:' || true)
     [ -z "$digest_lines" ]
 
-    # Bundle must be built via buildx build --platform, NOT imagetools create.
-    # SIMP-bundle-from-available: bundle build uses --platform and --push.
-    grep -q 'buildx build.*--platform' "$docker_calls"
-    grep -q '\-\-push' "$docker_calls"
+    # NO bundle build via buildx build --platform (bundle approach removed).
+    local bundle_build_lines
+    bundle_build_lines=$(grep 'buildx build' "$docker_calls" || true)
+    [ -z "$bundle_build_lines" ]
 
-    # The bundle must NOT be assembled via imagetools create (old per-arch approach).
-    # pg18-bundle-amd64 and pg18-bundle-arm64 are not referenced in any imagetools create.
-    local bundle_imagetools_lines
-    bundle_imagetools_lines=$(grep 'imagetools.*create' "$docker_calls" | grep 'pg18-bundle' || true)
-    [ -z "$bundle_imagetools_lines" ]
+    # The pg18-bundle tag must NOT appear anywhere in the calls (bundle approach removed).
+    local bundle_ref_lines
+    bundle_ref_lines=$(grep 'pg18-bundle' "$docker_calls" || true)
+    [ -z "$bundle_ref_lines" ]
 
-    # Un-suffixed multi-arch targets must be in the imagetools create calls (the -t flag).
-    [[ "$calls" == *"-t "* ]]
-    # pg18-bundle (un-suffixed) must appear in the buildx build call.
-    grep -qE 'pg18-bundle' "$docker_calls"
+    # imagetools inspect must have been called (for digest capture + platform check)
+    local inspect_lines
+    inspect_lines=$(grep 'imagetools inspect' "$docker_calls" || true)
+    [ -n "$inspect_lines" ]
 }
 
 # ---------------------------------------------------------------------------
-# B-merge-captures-index-digest-and-writes-artifact: after bundle manifest
-# create, the index digest is captured (mock imagetools inspect --raw →
-# manifest) and the versionset artifact is written with
-# bundle_digest = sha256:<64hex>. Assert artifact content.
+# B-merge-captures-index-digest-and-writes-artifact: finalize-multiarch captures
+# per-version index digests and writes the versionset artifact with
+# version_digests = {"<ver>":"sha256:<64hex>", ...}. Assert artifact content.
 # ---------------------------------------------------------------------------
 
-@test "B-merge-captures-index-digest-and-writes-artifact: artifact written with bundle_digest" {
+@test "B-merge-captures-index-digest-and-writes-artifact: artifact written with version_digests map" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
 
@@ -10217,17 +8239,24 @@ _run_an_producer() {
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 0; }
+        # Mock docker: imagetools inspect returns platform output; everything else succeeds.
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
         # Stable mock digest (64 hex chars).
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:cafebabe00000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10235,8 +8264,6 @@ _run_an_producer() {
         export -f check_registry_auth
         list_extensions_by_priority() { echo "timescaledb"; }
         export -f list_extensions_by_priority
-        skopeo() { echo "manifest unknown" >&2; return 1; }
-        export -f skopeo
 
         main postgres --major-version 18 --finalize-multiarch
     '
@@ -10246,10 +8273,20 @@ _run_an_producer() {
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
     [ -f "$artifact" ]
 
-    # bundle_digest must be the SHA256 returned by the mock.
-    local bd
-    bd=$(jq -r '.bundle_digest' "$artifact")
-    [ "$bd" = "sha256:cafebabe00000000000000000000000000000000000000000000000000000000" ]
+    # version_digests must be present (object with per-version digests).
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$artifact" 2>/dev/null || echo 0)
+    [ "$vd_count" -eq 3 ]
+
+    # Each version must have the mock digest value.
+    local vd_2251
+    vd_2251=$(jq -r '.version_digests["2.25.0"]' "$artifact" 2>/dev/null || echo "")
+    [ "$vd_2251" = "sha256:cafebabe00000000000000000000000000000000000000000000000000000000" ]
+
+    # bundle_digest must NOT be present (replaced by version_digests).
+    local has_bundle_digest
+    has_bundle_digest=$(jq 'has("bundle_digest")' "$artifact" 2>/dev/null || echo "false")
+    [ "$has_bundle_digest" = "false" ]
 
     # available must contain ceiling.
     local av_ceiling
@@ -10326,11 +8363,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10390,11 +8427,11 @@ _run_an_producer() {
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "not-a-valid-digest"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10498,8 +8535,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10598,6 +8635,11 @@ EOF
                 echo \"IMAGETOOLS_CREATE \${*}\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
+                # Platform check: return both platforms so the check passes
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$1\" == 'manifest' ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -10608,8 +8650,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -10633,9 +8675,9 @@ EOF
     [[ "$create_content" == *"pg18-2.25.0-amd64"* ]]
     [[ "$create_content" == *"pg18-2.26.0-amd64"* ]]
     [[ "$create_content" == *"pg18-2.27.1-amd64"* ]]
-    # bundle is built via buildx build, NOT imagetools create
-    [[ "$create_content" != *"pg18-bundle-amd64"* ]] || {
-        echo "FAIL: bundle was assembled via imagetools create instead of buildx build"
+    # no bundle via imagetools create (bundle approach removed)
+    [[ "$create_content" != *"pg18-bundle"* ]] || {
+        echo "FAIL: bundle ref appeared in imagetools create calls"
         false
     }
 
@@ -10895,6 +8937,11 @@ EOF
             if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'create' ]]; then
                 return 0
             fi
+            # imagetools inspect: return both platforms (platform-coverage check)
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$1\" == 'manifest' ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -10905,8 +8952,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11004,6 +9051,11 @@ EOF
                 fi
                 return 0
             fi
+            # imagetools inspect: return both platforms (platform-coverage check)
+            if [[ \"\$2\" == 'imagetools' && \"\$3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$1\" == 'manifest' ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -11014,8 +9066,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11085,6 +9137,10 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
+            if [[ "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             if [[ "$1" == "manifest" ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -11095,8 +9151,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11201,6 +9257,10 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_calls_log"'"
                 return 0
             fi
+            if [[ "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             if [[ "$1" == "manifest" ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -11211,8 +9271,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11318,8 +9378,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11391,13 +9451,19 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 0; }
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11492,6 +9558,10 @@ EOF
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dcmd\" == 'buildx' && \"\${2:-}\" == 'imagetools' && \"\${3:-}\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             if [[ \"\$_dcmd\" == 'manifest' ]]; then
                 echo \"manifest unknown: manifest unknown\" >&2
                 return 1
@@ -11501,8 +9571,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         list_extensions_by_priority() { echo 'pgvector'; }
         export -f list_extensions_by_priority
@@ -11580,8 +9650,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         list_extensions_by_priority() { echo 'pgvector'; }
         export -f list_extensions_by_priority
@@ -11631,18 +9701,18 @@ EOF
             return 0
         fi
         if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
-            # Return raw manifest JSON so _capture_bundle_digest can hash it
+            # Return raw manifest JSON so _capture_index_digest can hash it
             printf '{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}\n'
             return 0
         fi
         return 0
     }
     export -f docker
-    _capture_bundle_digest() {
+    _capture_index_digest() {
         echo "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         return 0
     }
-    export -f _capture_bundle_digest
+    export -f _capture_index_digest
 
     local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
     rm -rf "$lineage_dir"
@@ -11782,7 +9852,7 @@ EOF
                     return 0
                 fi
                 if [[ \"\${3:-}\" == 'inspect' ]]; then
-                    printf '{\"schemaVersion\":2}\n'
+                    printf 'linux/amd64\nlinux/arm64\n'
                     return 0
                 fi
             fi
@@ -11791,8 +9861,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
 
         list_extensions_by_priority() { echo 'timescaledb'; }
         export -f list_extensions_by_priority
@@ -11877,16 +9947,22 @@ EOF
         image_exists_in_registry() { return 0; }
         export -f image_exists_in_registry
 
-        docker() { return 0; }
+        docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
+            return 0
+        }
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:cafecafe00000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -11928,10 +10004,14 @@ EOF
         false
     }
 
-    # bundle_digest must be set (bundle was built).
-    local bd
-    bd=$(jq -r '.bundle_digest // empty' "$artifact")
-    [ -n "$bd" ]
+    # version_digests must be set (per-version index digests written by finalize).
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$artifact" 2>/dev/null || echo 0)
+    [ "$vd_count" -ge 2 ] || {
+        echo "FAIL: version_digests has fewer than 2 entries (expected 2.25.0 + 2.27.1)"
+        jq '.' "$artifact"
+        false
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -11939,9 +10019,10 @@ EOF
 # amd64,arm64) from AVAILABLE per-version multi-arch manifests. An excluded
 # version is NOT in the bundle COPY list. (AZ-1 regression guard)
 # ---------------------------------------------------------------------------
-@test "SIMP-bundle-from-available: stage-B bundle uses buildx build from available manifests, excluded version absent" {
+@test "SIMP-bundle-from-available: stage-B uses only available versions in version_digests; excluded version absent" {
     local tmpd="$TEST_TEMP_DIR"
     local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/simp_available_imagetools.log"
     local buildx_log="$tmpd/buildx_build.log"
 
     printf '#!/bin/bash\necho "18.0"\n' > "${tmpd}/postgres/version.sh"
@@ -11990,11 +10071,15 @@ EOF
         _image_present_3state() { _image_registry_probe_3state "$@"; }
         export -f _image_present_3state
 
-        # Record buildx build calls to a log file for inspection.
+        # Record imagetools create calls; return both platforms for inspect.
         docker() {
             local _dcmd="${1:-}"
-            if [[ "$_dcmd" == "buildx" && "${2:-}" == "build" ]]; then
-                echo "BUILDX_BUILD $*" >> "'"$buildx_log"'"
+            if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "create" ]]; then
+                echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
+                return 0
+            fi
+            if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
                 return 0
             fi
             if [[ "$_dcmd" == "manifest" ]]; then
@@ -12007,11 +10092,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:dddddddd00000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12027,13 +10112,18 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # A buildx build call must exist (bundle is built via buildx, not imagetools create).
-    [ -f "$buildx_log" ]
-    grep -q 'BUILDX_BUILD' "$buildx_log"
+    # imagetools create must have been called for available versions (2.26.0 + 2.27.1).
+    [ -f "$imagetools_log" ]
+    grep -q 'pg18-2.26.0' "$imagetools_log"
+    grep -q 'pg18-2.27.1' "$imagetools_log"
 
-    # The buildx build call must use --platform linux/amd64,linux/arm64 and --push.
-    grep -q '\-\-platform' "$buildx_log"
-    grep -q '\-\-push' "$buildx_log"
+    # 2.25.0 (excluded: arm64 absent) must NOT appear in imagetools create calls.
+    local excl_imagetools
+    excl_imagetools=$(grep '2.25.0' "$imagetools_log" || true)
+    [ -z "$excl_imagetools" ]
+
+    # No bundle build via buildx build --platform (bundle approach removed).
+    [ ! -f "$buildx_log" ] || ! grep -q 'BUILDX_BUILD' "$buildx_log"
 
     # The versionset artifact must list only available versions (not excluded 2.25.0).
     local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
@@ -12059,6 +10149,11 @@ EOF
     local excl_count
     excl_count=$(jq -r '[.excluded[] | select(.version == "2.25.0")] | length' "$artifact")
     [ "$excl_count" -eq 1 ]
+
+    # version_digests must be present and contain only available versions.
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$artifact" 2>/dev/null || echo 0)
+    [ "$vd_count" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -12115,6 +10210,10 @@ EOF
                 echo "IMAGETOOLS_CREATE $*" >> "'"$imagetools_log"'"
                 return 0
             fi
+            if [[ "$_dcmd" == "buildx" && "${2:-}" == "imagetools" && "${3:-}" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             if [[ "$_dcmd" == "manifest" ]]; then
                 echo manifest unknown >&2
                 return 1
@@ -12125,8 +10224,8 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"; return 0; }
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12508,11 +10607,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12599,6 +10698,10 @@ EOF
         export -f _image_present_3state
 
         docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             if [[ "$1" == "buildx" && "$2" == "imagetools" ]]; then return 0; fi
             if [[ "$1" == "buildx" && "$2" == "build" ]]; then return 0; fi
             if [[ "$*" == *"manifest inspect"* ]]; then
@@ -12611,11 +10714,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12734,11 +10837,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12802,10 +10905,19 @@ EOF
         ext_local_image_name() { echo "localhost/ext-builder-${1}:pg${2}"; }
         export -f ext_local_image_name
 
-        image_exists_in_registry() { return 0; }
+        # Faithful: per-arch suffixed tags present (both canonical and PR-scoped);
+        # un-suffixed multi-arch manifests ABSENT (canonical never existed, stage B creates PR-scoped).
+        image_exists_in_registry() {
+            local ref="$1"
+            [[ "$ref" =~ -amd64$ ]] || [[ "$ref" =~ -arm64$ ]] || [[ "$ref" == *-pr42 ]]
+        }
         export -f image_exists_in_registry
 
         docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             echo "DOCKER $*" >> "$docker_calls"
             return 0
         }
@@ -12813,11 +10925,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12850,23 +10962,23 @@ EOF
         [[ "$target_ref" == *"-pr42" ]]
     done <<< "$target_lines"
 
-    # Bundle: the buildx build -t ref must carry -pr42.
-    local bundle_ref_in_calls
-    bundle_ref_in_calls=$(grep 'buildx build' "$docker_calls" | grep 'pg18-bundle' || true)
-    [[ "$bundle_ref_in_calls" == *"-pr42"* ]]
+    # No bundle build calls (bundle approach removed — collector is consume-time).
+    local bundle_calls
+    bundle_calls=$(grep 'pg18-bundle' "$docker_calls" || true)
+    [ -z "$bundle_calls" ]
 
-    # Canonical refs (no -pr suffix) must NEVER appear in imagetools create -t lines.
-    # The canonical tags are :pg18-2.27.1 and :pg18-bundle (no suffix).
-    # They must not appear as -t targets — only the suffixed versions are targets.
+    # Canonical refs (no -pr suffix) must NEVER appear as -t targets in imagetools create.
     local canon_target_lines
     canon_target_lines=$(grep 'imagetools.*create.*-t ' "$docker_calls" \
         | grep -v '\-pr42' | grep 'pg18-2' || true)
     [ -z "$canon_target_lines" ]
 
-    local canon_bundle_target
-    canon_bundle_target=$(grep 'buildx build.*-t ' "$docker_calls" \
-        | grep 'pg18-bundle' | grep -v '\-pr42' || true)
-    [ -z "$canon_bundle_target" ]
+    # versionset artifact must be written with version_digests.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$artifact" 2>/dev/null || echo 0)
+    [ "$vd_count" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -12917,6 +11029,10 @@ EOF
         export -f image_exists_in_registry
 
         docker() {
+            if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+                printf "linux/amd64\nlinux/arm64\n"
+                return 0
+            fi
             echo "DOCKER $*" >> "$docker_calls"
             if [[ "$1" == "manifest" ]]; then
                 echo manifest unknown >&2
@@ -12928,11 +11044,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -12952,12 +11068,21 @@ EOF
 
     # Canonical per-version target refs must appear (no -pr suffix).
     [[ "$calls" == *"pg18-2.27.1"* ]]
-    # Bundle must appear without a -pr suffix.
-    grep -q 'pg18-bundle' "$docker_calls"
+    # No bundle ref (bundle approach removed — collector is consume-time).
+    local bundle_calls
+    bundle_calls=$(grep 'pg18-bundle' "$docker_calls" || true)
+    [ -z "$bundle_calls" ]
     # No -pr suffix refs should appear at all.
     local pr_refs
     pr_refs=$(grep '\-pr[0-9]' "$docker_calls" || true)
     [ -z "$pr_refs" ]
+
+    # Artifact must be written with version_digests.
+    local artifact="$tmpd/.build-lineage/ext-timescaledb-pg18-versionset.json"
+    [ -f "$artifact" ]
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$artifact" 2>/dev/null || echo 0)
+    [ "$vd_count" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -13016,11 +11141,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -13370,11 +11495,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -13551,11 +11676,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -13637,11 +11762,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         validate_prerequisites()  { return 0; }
         export -f validate_prerequisites
@@ -13801,11 +11926,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -13900,13 +12025,17 @@ EOF
         }
         export -f image_exists_in_registry
 
-        # docker mock: log all calls; for manifest inspect, return PRESENT/ABSENT
-        # based on image_exists_in_registry so _image_present_3state is faithful.
+        # docker mock: log all calls; for imagetools inspect, return both platforms.
+        # For manifest inspect, mirror image_exists_in_registry for faithful 3-state.
         docker() {
-            echo \"DOCKER \$*\" >> \"\$docker_calls\"
             local _dc=\"\${1:-}\" _d2=\"\${2:-}\" _d3=\"\${3:-}\"
+            # imagetools inspect: return both platforms (platform-coverage check)
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
+            echo \"DOCKER \$*\" >> \"\$docker_calls\"
             if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
-                # Mirror image_exists_in_registry: absent refs emit 'manifest unknown'
                 local _ref=\"\$_d3\"
                 case \"\$_ref\" in
                     *'pg18-2.23.0-amd64' | *'pg18-2.23.0-arm64') return 0 ;;
@@ -13925,11 +12054,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
@@ -13947,19 +12076,13 @@ EOF
     [ "$status" -eq 0 ]
     [ -f "${docker_calls}" ]
 
-    # The PR-scoped bundle must be created (pg18-bundle-pr42).
+    # No bundle build (bundle approach removed — collector is consume-time).
     local bundle_written
-    bundle_written=$(grep 'buildx build' "${docker_calls}" | grep 'pg18-bundle-pr42' || true)
-    [ -n "$bundle_written" ]
-
-    # The canonical bundle (pg18-bundle without -pr42) must NEVER be written from a PR.
-    local canonical_bundle
-    canonical_bundle=$(grep 'buildx build.*-t.*pg18-bundle' "${docker_calls}" \
-        | grep -v '\-pr42' || true)
-    [ -z "$canonical_bundle" ]
+    bundle_written=$(grep 'buildx build' "${docker_calls}" | grep 'pg18-bundle' || true)
+    [ -z "$bundle_written" ]
 
     # For unchanged versions (2.23.0, 2.25.0): imagetools create must NOT be called
-    # because their canonical multi-arch manifests already exist.
+    # because their canonical multi-arch manifests already exist (REUSE path).
     local create_for_23
     create_for_23=$(grep 'imagetools.*create.*2\.23\.0' "${docker_calls}" || true)
     [ -z "$create_for_23" ]
@@ -13981,6 +12104,11 @@ EOF
     local avail_count
     avail_count=$(jq '.available | length' "$vs_file")
     [ "$avail_count" -eq 3 ]
+
+    # version_digests must have all 3 entries.
+    local vd_count
+    vd_count=$(jq '.version_digests | length' "$vs_file" 2>/dev/null || echo 0)
+    [ "$vd_count" -eq 3 ]
 
     unset PR_TAG_SUFFIX
 }
@@ -14464,7 +12592,8 @@ EOF
                 return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
-                echo '{\"schemaVersion\":2}' && return 0
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
             fi
             if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'build' ]]; then
                 return 0
@@ -14476,11 +12605,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         list_extensions_by_priority() { echo 'timescaledb'; }
         export -f list_extensions_by_priority
@@ -14575,6 +12704,10 @@ EOF
                 echo \"IMAGETOOLS_CALLED: \$*\" >> \"\$imagetools_log\"
                 return 0
             fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                printf 'linux/amd64\nlinux/arm64\n'
+                return 0
+            fi
             return 0
         }
         export -f docker
@@ -14582,11 +12715,11 @@ EOF
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
 
-        _capture_bundle_digest() {
+        _capture_index_digest() {
             echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
             return 0
         }
-        export -f _capture_bundle_digest
+        export -f _capture_index_digest
 
         list_extensions_by_priority() { echo 'timescaledb'; }
         export -f list_extensions_by_priority
@@ -14698,8 +12831,8 @@ EOF
         export -f docker
         skopeo() { echo manifest unknown >&2; return 1; }
         export -f skopeo
-        _capture_bundle_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
-        export -f _capture_bundle_digest
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
         skopeo() { echo 'manifest unknown: manifest unknown' >&2; return 1; }
         export -f skopeo
 
