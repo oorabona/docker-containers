@@ -17,6 +17,8 @@ ARG REMOTE_CR
 ARG EXT_VERSION
 ARG EXT_REPO
 ARG MAJOR_VERSION
+# Provided automatically by buildx (amd64 / arm64); selects the OPTFLAGS baseline below.
+ARG TARGETARCH
 
 # Validate required build args
 RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
@@ -40,10 +42,17 @@ RUN git clone --branch v${EXT_VERSION} --depth 1 \
 
 WORKDIR /build/pgvector
 
-# Build with optimizations
-# pgvector supports SIMD optimizations on modern CPUs
-RUN make clean && \
-    make OPTFLAGS="-march=x86-64-v2 -O3" PG_CONFIG=/usr/local/bin/pg_config && \
+# Build with optimizations. pgvector uses SIMD, so pick a portable per-arch
+# baseline: -march=x86-64-v2 is an x86-64-only microarchitecture level that gcc
+# rejects on arm64, so select armv8-a (the arm64 baseline, includes NEON) there
+# and fall back to plain -O3 for any other target.
+RUN case "${TARGETARCH}" in \
+        amd64) OPTFLAGS="-march=x86-64-v2 -O3" ;; \
+        arm64) OPTFLAGS="-march=armv8-a -O3" ;; \
+        *)     OPTFLAGS="-O3" ;; \
+    esac && \
+    make clean && \
+    make OPTFLAGS="$OPTFLAGS" PG_CONFIG=/usr/local/bin/pg_config && \
     make install DESTDIR=/install
 
 # Prepare output structure
