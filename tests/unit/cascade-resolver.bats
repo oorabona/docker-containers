@@ -1582,3 +1582,68 @@ EOF
     # (the only token used is the App token)
     ! grep -q "secrets.GITHUB_TOKEN" "$wf_path"
 }
+
+# ---------------------------------------------------------------------------
+# FIX 1 structural lock: unblock-children job must set GH_REPO on BOTH steps
+# so that `gh pr list`, `gh pr view`, `gh pr edit`, `gh pr merge`, `gh pr comment`
+# resolve the correct repository without a local git checkout.
+#
+# The workflow is triggered by workflow_run and has NO actions/checkout step.
+# Without GH_REPO, all `gh pr ...` subcommands fail at runtime (no local git
+# context to infer the repo), and children are never unblocked.
+#
+# Mutation guards:
+#   MG-GHR1: removing GH_REPO from "Identify parent..." step env →
+#             grep finds only 1 occurrence → test fails.
+#   MG-GHR2: removing GH_REPO from "Unblock children" step env →
+#             grep finds only 1 occurrence → test fails.
+#   MG-GHR3: removing both → grep finds 0 occurrences → test fails.
+# ---------------------------------------------------------------------------
+
+@test "FIX1: cascade-resolver unblock-children — GH_REPO set in both step envs (no-checkout repo context)" {
+    local workflow=".github/workflows/cascade-resolver.yaml"
+    local wf_path="${PROJECT_ROOT}/${workflow}"
+
+    # The workflow file must exist
+    [ -f "$wf_path" ]
+
+    # GH_REPO: ${{ github.repository }} must appear at least twice:
+    # once in "Identify parent container from associated PR" env block,
+    # once in "Unblock children" env block.
+    local gh_repo_count
+    gh_repo_count=$(grep -c 'GH_REPO:' "$wf_path")
+    [ "$gh_repo_count" -ge 2 ]
+
+    # The value must be the github.repository expression (not hardcoded)
+    grep -q 'GH_REPO:.*github\.repository' "$wf_path"
+
+    # Both the "Identify parent" step and the "Unblock children" step must have it.
+    # Verify by checking that both step names appear BEFORE the corresponding GH_REPO
+    # lines.  We do this by confirming that GH_REPO appears after each step name in
+    # the file (structural proximity check using line numbers).
+    local identify_line gh_repo_lines unblock_line
+    identify_line=$(grep -n 'Identify parent container from associated PR' "$wf_path" | head -1 | cut -d: -f1)
+    unblock_line=$(grep -n 'name: Unblock children' "$wf_path" | head -1 | cut -d: -f1)
+    [[ -n "$identify_line" ]]
+    [[ -n "$unblock_line" ]]
+
+    # At least one GH_REPO line must fall between identify_line and unblock_line
+    local found_in_identify=false
+    while IFS= read -r lnum; do
+        if [[ "$lnum" -gt "$identify_line" && "$lnum" -lt "$unblock_line" ]]; then
+            found_in_identify=true
+            break
+        fi
+    done < <(grep -n 'GH_REPO:' "$wf_path" | cut -d: -f1)
+    [ "$found_in_identify" = "true" ]
+
+    # At least one GH_REPO line must fall after unblock_line
+    local found_in_unblock=false
+    while IFS= read -r lnum; do
+        if [[ "$lnum" -gt "$unblock_line" ]]; then
+            found_in_unblock=true
+            break
+        fi
+    done < <(grep -n 'GH_REPO:' "$wf_path" | cut -d: -f1)
+    [ "$found_in_unblock" = "true" ]
+}

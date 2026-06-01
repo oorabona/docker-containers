@@ -703,7 +703,32 @@ for container in "${_container_order[@]}"; do
             printf '::error::Failed to compute internal_deps for %s; cannot make cascade decision\n' \
                 "$(_escape_gha_command "$container")" >&2
         fi
-        exit 1
+        # Emit the container as an error-only record, discarding any already-assembled
+        # variant fragments for this run.  Rationale: internal_deps is unavailable, so
+        # we cannot classify this container as a leaf (empty deps) or consumer (non-empty
+        # deps).  Emitting internal_deps:[] would be an unsafe leaf — it could trigger
+        # auto-merge against a stale parent.  Mirroring __CONTAINER_SKIP__ semantics
+        # (single status:error variant, no internal_deps, excluded from leaf/consumer
+        # matrices) is the only safe option.  Downstream _eval_parent_state State B0
+        # treats the container as in_flux when it appears in CURRENT_ERROR_SET.
+        _dg_err_container_safe=$(_sanitize_for_json "$container")
+        _dg_err_reason_safe=$(_sanitize_for_json "dep_graph_unavailable")
+        _dg_err_variant_json=$(jq -cn \
+            --arg variant_tag     "" \
+            --arg status          "error" \
+            --arg error_reason    "$_dg_err_reason_safe" \
+            '{variant_tag: $variant_tag, status: $status, error_reason: $error_reason}')
+        _dg_err_container_json=$(jq -cn \
+            --arg container    "$_dg_err_container_safe" \
+            --argjson variants "[${_dg_err_variant_json}]" \
+            '{container: $container, variants: $variants}')
+        if [[ "$first_container" == "true" ]]; then
+            first_container=false
+        else
+            output+=","
+        fi
+        output+="$_dg_err_container_json"
+        continue
     }
     rm -f "$_depgraph_err_tmp"
     _internal_deps_json="[]"

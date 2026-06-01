@@ -3326,7 +3326,11 @@ STUBEOF
 # The detect script must propagate this as a non-zero exit rather than silently
 # producing internal_deps=[] and bypassing cascade gating.
 # ---------------------------------------------------------------------------
-@test "internal_deps: dep-graph helper failure → detect script exits non-zero (fail-closed)" {
+@test "internal_deps: dep-graph helper failure → detect exits 0, container emitted as error record (F2 regression-lock)" {
+    # FIX 2: dep-graph failure must NOT abort the whole run (old behaviour: exit 1).
+    # The failing container must be surfaced as status:error with error_reason:dep_graph_unavailable
+    # and no internal_deps field — so it is excluded from the leaf/consumer matrices and
+    # downstream _eval_parent_state State B0 treats it as in_flux (conservative).
     local fake_root="$TEST_TEMP_DIR/depgraph-fail"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
@@ -3352,14 +3356,161 @@ STUB
     chmod +x "$fake_root/make"
 
     local rc=0
+    local result
     # _VALID_CONTAINERS_OVERRIDE set so detect script's own validation passes (only myapp processed),
     # but _DEPGRAPH_CONTAINERS_OVERRIDE unset so _depgraph_valid_containers hits the failing ./make list.
-    cd "$fake_root" && \
+    result=$(cd "$fake_root" && \
         _VALID_CONTAINERS_OVERRIDE="myapp" \
-        bash scripts/detect-base-digest-drift.sh ".build-lineage" >/dev/null 2>/dev/null || rc=$?
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
 
-    # Must exit non-zero — cannot silently produce cascade-blind output
-    [ "$rc" -ne 0 ]
+    # Must exit 0 — single container failure must not abort the whole run (FIX 2)
+    [ "$rc" -eq 0 ]
+
+    # Output must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # myapp must appear in output (as an error record, not dropped)
+    container=$(printf '%s' "$result" | jq -r '.[0].container')
+    [ "$container" = "myapp" ]
+
+    # Status must be "error"
+    status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status_val" = "error" ]
+
+    # error_reason must be dep_graph_unavailable
+    err_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')
+    [ "$err_reason" = "dep_graph_unavailable" ]
+
+    # internal_deps must NOT be present (no empty-deps leaf)
+    has_internal_deps=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_internal_deps" = "false" ]
+}
+
+# ---------------------------------------------------------------------------
+# F2 multi-container resilience: one container's _depgraph_get_deps fails,
+# the other containers must still appear with their normal records.
+#
+# Invariants:
+#   IV-F2a: overall exit code is 0 (not aborted)
+#   IV-F2b: failing container is surfaced as status:error, error_reason:dep_graph_unavailable
+#   IV-F2c: failing container does NOT have internal_deps field (no unsafe leaf)
+#   IV-F2d: succeeding container still appears with its normal drift/unchanged record
+#   IV-F2e: succeeding container IS NOT emitted as normal record with internal_deps:[]
+#            (it has internal_deps because dep-graph succeeded for it)
+#
+# Strategy: patch helpers/dependency-graph.sh in a fake root so _depgraph_get_deps
+# returns rc=2 only for the failing container name.  The bridge (_VALID_CONTAINERS_OVERRIDE
+# → _DEPGRAPH_CONTAINERS_OVERRIDE) is bypassed by setting _DEPGRAPH_CONTAINERS_OVERRIDE
+# explicitly; but then _depgraph_get_deps enters test-mode (__TEST_NO_FILTER__) and does
+# NOT call ./make list-builds.  To force a per-container failure in the output-assembly
+# loop (line 696), we patch _depgraph_get_deps in the copied helper.
+# ---------------------------------------------------------------------------
+@test "F2: multi-container run — one dep-graph failure is isolated, other container proceeds" {
+    local fake_root="$TEST_TEMP_DIR/depgraph-fail-multi"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+
+    # Patch dependency-graph.sh: _depgraph_get_deps fails for "failcontainer",
+    # succeeds (returns empty deps = leaf) for any other container.
+    # We copy the real helper and then append a wrapper that overrides _depgraph_get_deps.
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+    cat >> "$fake_root/helpers/dependency-graph.sh" <<'PATCH'
+
+# TEST PATCH: override _depgraph_get_deps to fail for the named container
+_depgraph_get_deps() {
+    local container="$1"
+    if [[ "$container" == "failcontainer" ]]; then
+        printf '::error::_depgraph_get_deps: injected failure for %s\n' "$container" >&2
+        return 2
+    fi
+    # All other containers have no internal deps (external base refs only)
+    printf ''
+    return 0
+}
+PATCH
+
+    # failcontainer: drifts (recorded != current) — has an external base ref
+    cat > "$fake_root/.build-lineage/failcontainer-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "failcontainer",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # okcontainer: also drifts — external base ref
+    cat > "$fake_root/.build-lineage/okcontainer-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "okcontainer",
+  "tag": "1.0",
+  "base_image_ref": "debian:trixie-slim",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    # ./make list succeeds (for _depgraph_valid_containers in non-test-mode)
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "list" ]]; then
+    printf 'failcontainer\nokcontainer\n'
+fi
+STUB
+    chmod +x "$fake_root/make"
+
+    # Probe: returns a fresh digest (different from recorded) for both containers
+    local probe_stub="$TEST_TEMP_DIR/probe-f2-multi"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local rc=0
+    local result
+    result=$(cd "$fake_root" && \
+        _VALID_CONTAINERS_OVERRIDE="$(printf 'failcontainer\nokcontainer')" \
+        PROBE_CMD="$probe_stub" \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
+
+    # IV-F2a: overall exit 0 — one container failure must not abort the run
+    [ "$rc" -eq 0 ]
+
+    # Output must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Both containers must appear in the output
+    total=$(printf '%s' "$result" | jq 'length')
+    [ "$total" -eq 2 ]
+
+    # IV-F2b: failcontainer surfaced as status:error with dep_graph_unavailable reason
+    fail_status=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "failcontainer") | .variants[0].status')
+    [ "$fail_status" = "error" ]
+
+    fail_reason=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "failcontainer") | .variants[0].error_reason')
+    [ "$fail_reason" = "dep_graph_unavailable" ]
+
+    # IV-F2c: failcontainer does NOT have internal_deps (no unsafe empty-deps leaf)
+    fail_has_deps=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "failcontainer") | has("internal_deps")')
+    [ "$fail_has_deps" = "false" ]
+
+    # IV-F2d: okcontainer appears with a normal drift record
+    ok_status=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "okcontainer") | .variants[0].status')
+    [ "$ok_status" = "drift" ]
+
+    # IV-F2e: okcontainer has internal_deps field (dep-graph succeeded) with empty array (no internal refs)
+    ok_has_deps=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "okcontainer") | has("internal_deps")')
+    [ "$ok_has_deps" = "true" ]
+
+    ok_deps_len=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "okcontainer") | .internal_deps | length')
+    [ "$ok_deps_len" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------

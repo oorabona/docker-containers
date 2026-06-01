@@ -54,6 +54,7 @@ jobs:
         id: parent
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           # Verify the triggering commit is a squash-merge of a drift PR by consulting
@@ -100,6 +101,7 @@ jobs:
         if: steps.parent.outputs.name != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
           # Safe: PARENT comes from the output of the previous step (regex-validated above)
           PARENT: ${{ steps.parent.outputs.name }}
         run: |
