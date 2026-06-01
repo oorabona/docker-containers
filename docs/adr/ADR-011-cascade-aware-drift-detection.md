@@ -79,22 +79,23 @@ Public API:
 **In `upstream-monitor.yaml` (two-job split)**:
 1. `detect-digest-drift` emits `drift_matrix_leaves` (no internal deps) and `drift_matrix_consumers` (have internal deps)
 2. `open-drift-prs-leaves` (job 1): processes leaf containers — no cascade gating needed, auto-merge immediately
-3. `open-drift-prs-consumers` (job 2): `needs: [open-drift-prs-leaves]` — by construction, all parent PRs are already created before any consumer matrix item starts
-4. Within job 2, `_eval_parent_state` checks parent PR state (State 1) and GHCR image freshness (State 2); if in_flux → add `cascade:waiting-for-<parent>` label
+3. `open-drift-prs-consumers` (job 2): `needs: [open-drift-prs-leaves]` — every leaf (parent) PR is created before any consumer matrix item starts
+4. Within job 2, `_eval_parent_state` classifies each project-internal parent; if not `ready` → add `cascade:waiting-for-<parent>` label
 
-**GHCR as source of truth (r20 simplification)**: the original implementation chained two GitHub API queries (`gh api commits?path=...` + `gh api actions/runs?head_sha=...`) to indirectly answer "is the parent's rebuild done?". This introduced two failure classes:
-- **M2 aged-out deadlock**: Actions runs vanish after 90-day retention → no run found → conservative `in_flux` → permanent cascade label.
-- **M1 multi-level matrix race**: matrix order is not a topological sort, so consumer-of-consumer scenarios (A→B→C) had ordering races where C evaluated B's state before B's run finished.
+**Parent-readiness — `_eval_parent_state` (fail-closed state machine)**: each internal parent of a drifting consumer is evaluated in order, defaulting to `in_flux` (wait) whenever the answer is uncertain:
+- **State A — open drift PR?** `gh pr list --head update/base-digest-<parent> --label base-digest-drift --base master --state open` (fork PRs excluded). An open parent PR ⇒ `in_flux`. A `gh` failure ⇒ fail-closed (`return 2`; the cascade loop exits non-zero) — it must never silently fall through to State B.
+- **State B0 — parent probe errored this run?** parent ∈ `CURRENT_ERROR_SET` ⇒ `in_flux` (unknown state).
+- **State B — parent in the drift set?** parent ∉ `CURRENT_DRIFT_SET` (and no open PR, no probe error) ⇒ it was cleanly rebuilt in a prior run and GHCR holds the stable image ⇒ `ready`. parent ∈ `CURRENT_DRIFT_SET` but no open PR yet ⇒ conservative `in_flux`. `CURRENT_DRIFT_SET` is **repo-wide / unfiltered** (Defect E fix), so a scoped `workflow_dispatch` cannot false-negative a still-drifting parent into `ready`.
+- **State C — no drift snapshot** (`CURRENT_DRIFT_SET` unset) ⇒ conservative `in_flux`.
 
-The fix: GHCR IS the source of truth. `gh api users/<owner>/packages/container/<parent>/versions` returns the most-recent version's `updated_at` timestamp. Compared lexicographically against `GITHUB_RUN_STARTED_AT` (ISO 8601 sorts correctly as a string): newer → ready, older → in_flux. Both M1 and M2 dissolve because the signal is external (GHCR) and not coupled to matrix execution timing or Actions retention. Net: ~55 LOC removed, 5-state evaluation collapsed to 2 states, 1 API query per parent instead of 2.
+A GHCR package-freshness probe was attempted (r26) and **reverted (r27, Defect O)**: `gh api users/<owner>/packages/container/<parent>/versions` returns the most-recently-*created* version regardless of tag, so a concurrent push of an unrelated tag (`php:8.4` while a child consumes `php:8.3`) yields a false-ready that could auto-merge a child against a stale parent. State B's drift-set membership is the safe substitute, regression-locked in `cascade-resolver.bats` (the function body must not call `packages/container`).
 
-**Topological ordering by construction**: the `needs:` chain replaces the former post-hoc cleanup approach (State 0 loop + reconciliation job). No race window exists — job 2 cannot start until job 1 finishes.
+**Ordering across dependency depth**: the `needs: [open-drift-prs-leaves]` barrier guarantees leaf parents' PRs exist before consumers run, but `internal_deps` is **direct** parents only — so a consumer-of-consumer (A→B→C, with B and C both in the consumers job) is **not** ordered by the job split. Depth ≥ 2 is made safe by State B (C finds B in the repo-wide drift set → `in_flux` → `cascade:waiting-for-B`) plus the cascade-resolver unblocking C after B's image actually publishes — not by topological job ordering.
 
 **In `cascade-resolver.yaml` (workflow)**:
-- Trigger: `pull_request.closed` on master, filtered to `base-digest-drift` PRs
-- Extracts `container:<name>` label from merged parent PR
-- Finds all open PRs with `cascade:waiting-for-<name>` label
-- Enables auto-merge + removes cascade label + posts comment
+- Trigger: `workflow_run` of "Auto Build & Push" on `master`, `conclusion == success` — fires only after the parent image is actually pushed to GHCR. (The earlier `pull_request.closed` trigger fired before the image existed, so a child rebuild could still pull the stale parent digest.)
+- Identifies the parent from the triggering commit via `gh api commits/<sha>/pulls`: a PR whose head branch is `update/base-digest-<container>`, carries the `base-digest-drift` label, and has `merged_at` set (PR metadata, not the spoofable commit subject).
+- Removes ONLY that parent's `cascade:waiting-for-<parent>` label from each waiting child, then **re-reads the child's labels live** and enables auto-merge only when no `cascade:waiting-for-*` labels remain (multi-parent gating, last-finisher race-safe).
 
 ### CLI validation: `./make list-deps <container>`
 
@@ -124,10 +125,10 @@ helpers/dependency-graph.sh          ←── single source of truth
                    │     ▲ needs: [detect-digest-drift]
                    ├── open-drift-prs-consumers         (consumers: have internal deps)
                    │     ▲ needs: [detect-digest-drift, open-drift-prs-leaves]
-                   │     │  → topological invariant true by construction
-                   │     └── _eval_parent_state (State 1: open PR / State 2: GHCR timestamp)
+                   │     │  → leaf parents' PRs exist before consumers run (depth ≥ 2 via State B + resolver)
+                   │     └── _eval_parent_state (A: open PR → B0: probe error → B: drift-set → C: no snapshot; fail-closed)
                    │
-                   └── cascade-resolver.yaml            (unblocks children when parent merges)
+                   └── cascade-resolver.yaml            (workflow_run on master build success → unblocks children once parent image publishes)
 ```
 
 ## Failure Modes
@@ -174,6 +175,19 @@ false-ready that allows the child to auto-merge against a stale parent image.
 The per-tag label scheme is tracked as a future improvement (open an issue if this race
 window produces repeated operator pain in practice).
 
+### Stranded label on double `gh` failure in the resolver's live recheck
+
+When a parent's master rebuild unblocks a child, `cascade-resolver` removes that parent's
+wait label and then **re-reads the child's labels live** to decide whether all parents are
+resolved. If that live re-read fails, it falls back to the pre-removal snapshot minus the
+just-removed parent. In the narrow case where two parents finish near-simultaneously AND
+both runs' live re-reads fail, each falls back to a snapshot that still shows the sibling's
+label → neither enables auto-merge → the child is stranded. The direction is conservative
+(never a premature merge against a stale parent), but because both parents have already
+completed, no further `workflow_run` fires to self-heal this child — it clears on the next
+monitor cron run or by operator action (`gh pr edit <N> --remove-label cascade:waiting-for-<parent>`),
+same as the snapshot-race limitation above.
+
 ## Test Strategy
 
 - `tests/unit/dependency-graph.bats` (14 tests): DAG inference, transitive closure, cycle detection,
@@ -182,10 +196,12 @@ window produces repeated operator pain in practice).
 - `tests/unit/detect-base-digest-drift.bats` (+4 tests for internal_deps, +3 tests for matrix split):
   `internal_deps` field presence, empty for external-only, multi-dep arrays, unchanged container
   still has field; two-phase split (leaves/consumers jq selectors), backwards-compat csv aggregation
-- `tests/unit/cascade-resolver.bats` (r20 GHCR-based tests): State 1 (open PR), State 2 (GHCR
-  fresh/stale/absent/api-error), trust boundaries (fork exclusion, label filter), multi-level DAG
-  simulation (matrix-order independence), packages/container API called (not commits/runs APIs),
-  two-phase structural invariants (no `CURRENT_DRIFT_SET` loop, State 1 via gh pr list)
+- `tests/unit/cascade-resolver.bats`: parent identification via PR metadata (branch +
+  `base-digest-drift` label + `merged_at`; fork / non-merged / api-failure all fail-closed);
+  `_eval_parent_state` States A/B0/B/C, including the **r27 regression-locks** asserting the
+  `packages/container` GHCR API is NOT called; multi-parent live-recheck race (last-finisher
+  enables auto-merge; recheck failure falls back to the snapshot decision); trust boundaries
+  (fork `isCrossRepository` exclusion, label filter); Defect B/C/D/E/F/P/R fail-closed locks
 - Manual validation: `./make list-deps <container>` for all 13 containers
 
 ## Current DAG (as of 2026-05-28)
