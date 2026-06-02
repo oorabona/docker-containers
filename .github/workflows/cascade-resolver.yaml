@@ -57,6 +57,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          set -euo pipefail
           # Verify the triggering commit is a squash-merge of a drift PR by consulting
           # PR metadata — NOT the commit subject alone (which is spoofable by merge-right
           # holders crafting a commit matching the base-digest-drift(<name>) pattern).

@@ -1553,3 +1553,106 @@ EOF
     run bash -c "grep -qE 'BASH_SOURCE\[?0\]?.*lineage-utils|_depgraph_dir.*lineage-utils' '${depgraph_file}'"
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# FIX 2: No-lineage container falls through to config.yaml fallback.
+#
+# A container that has NOT been built yet has no lineage files.  Before Fix 2,
+# _depgraph_get_deps ran ./make list-builds first; when that returned empty it
+# failed closed (rc=2), never reaching the config.yaml fallback — breaking
+# `./make list-deps <new-container>` and contradicting the documented ADR claim
+# that new containers fall through to config.yaml.
+#
+# Fix 2: glob lineage files FIRST; skip the active-tag filter (and its
+# fail-closed list-builds call) when no non-sidecar lineage files exist.
+#
+# Mutation guards:
+#   MG-F2a: removing the no-lineage short-circuit (always running active-tag
+#            filter) → when list-builds returns empty, function returns rc=2
+#            instead of proceeding to config.yaml (test catches it).
+#   MG-F2b: weakening the Defect-N fail-closed (lineage-present + list-builds
+#            failure → not rc=2) → stale retired-variant lineage could be
+#            resurrected (second test catches it).
+# ---------------------------------------------------------------------------
+
+@test "F2: no-lineage new container with config.yaml internal dep → returns dep via config fallback (exit 0)" {
+    # Container "newcontainer" has NO lineage files (never built).
+    # Its config.yaml references an internal base → dep must be returned via config fallback.
+    # Uses ${REMOTE_CR}/debian pattern (matches the config-fallback grep and resolves
+    # without a git remote lookup, since ${REMOTE_CR}/ is a trusted prefix in
+    # _depgraph_is_internal_ref that bypasses owner resolution).
+    local fake_root="$TEST_TEMP_DIR/fake-root-f2"
+    mkdir -p "$fake_root/newcontainer"
+    # config.yaml with an internal base_image reference via ${REMOTE_CR} prefix.
+    # ${REMOTE_CR}/ is a trusted prefix in _depgraph_is_internal_ref that resolves
+    # without a git remote lookup — no GITHUB_REPOSITORY_OWNER needed in test.
+    cat > "$fake_root/newcontainer/config.yaml" <<'CONFIGEOF'
+base_image: "${REMOTE_CR}/debian:trixie"
+CONFIGEOF
+
+    # No lineage files for newcontainer — none created
+    local alt_lineage="$TEST_TEMP_DIR/.build-lineage-f2"
+    mkdir -p "$alt_lineage"
+
+    run bash -c "
+        export _DEPGRAPH_CONTAINERS_OVERRIDE='newcontainer debian'
+        export _DEPGRAPH_LINEAGE_DIR='${alt_lineage}'
+        export PROJECT_ROOT='${fake_root}'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps newcontainer
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "debian" ]
+}
+
+@test "F2: no-lineage container with no config.yaml internal dep → empty deps, exit 0 (not rc=2)" {
+    # Container has no lineage and no internal dep in config.yaml → empty string, exit 0.
+    local fake_root="$TEST_TEMP_DIR/fake-root-f2b"
+    mkdir -p "$fake_root/newcontainer"
+    cat > "$fake_root/newcontainer/config.yaml" <<'EOF'
+base_image: "library/debian:trixie"
+EOF
+
+    local alt_lineage="$TEST_TEMP_DIR/.build-lineage-f2b"
+    mkdir -p "$alt_lineage"
+
+    run bash -c "
+        export _DEPGRAPH_CONTAINERS_OVERRIDE='newcontainer'
+        export _DEPGRAPH_LINEAGE_DIR='${alt_lineage}'
+        export PROJECT_ROOT='${fake_root}'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps newcontainer
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+@test "F2 Defect-N lock: lineage-present + list-builds failure still fails closed (rc=2)" {
+    # Regression lock for Defect N: when lineage files DO exist but list-builds
+    # fails, the function MUST return rc=2 (fail-closed) — not fall through to
+    # the config.yaml fallback.  This prevents stale retired-variant lineage from
+    # being treated as authoritative.
+    local fake_root="$TEST_TEMP_DIR/fake-root-f2c"
+    mkdir -p "$fake_root"
+
+    # Lineage file EXISTS for "wordpress" — active-tag filter is engaged.
+    local alt_lineage="$TEST_TEMP_DIR/.build-lineage-f2c"
+    mkdir -p "$alt_lineage"
+    printf '{"container":"wordpress","tag":"6.9-alpine","base_image_ref":"ghcr.io/oorabona/php:8.3","base_image_digest":"sha256:%064d"}' \
+        0 > "$alt_lineage/wordpress-6.9-alpine.json"
+
+    # list-builds stub: exits 1 (simulates failure)
+    mkdir -p "$fake_root/make-stub"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$fake_root/make"
+    chmod +x "$fake_root/make"
+
+    run bash -c "
+        export _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_LINEAGE_DIR='${alt_lineage}'
+        export PROJECT_ROOT='${fake_root}'
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    # Must return rc=2 (fail-closed), not rc=0
+    [ "$status" -eq 2 ]
+}

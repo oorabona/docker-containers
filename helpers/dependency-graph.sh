@@ -209,6 +209,28 @@ _depgraph_get_deps() {
     }
     local lineage_dir="${_DEPGRAPH_LINEAGE_DIR:-${PROJECT_ROOT}/.build-lineage}"
 
+    # Glob lineage files FIRST — the active-tag filter only makes sense when files
+    # exist (it drops stale entries from existing lineage).  For a container with NO
+    # lineage files yet (e.g. not yet built) the filter must be skipped so the
+    # function falls through to the config.yaml fallback.
+    shopt -s nullglob
+    local lineage_files=("${lineage_dir}/${container}-"*.json "${lineage_dir}/${container}.json")
+    shopt -u nullglob
+
+    # Determine whether any non-sidecar lineage files exist BEFORE running the
+    # active-tag filter.  The filter is only meaningful (and its fail-closed
+    # semantics only applicable) when lineage files are present.
+    local _has_lineage=false
+    local _lf
+    for _lf in "${lineage_files[@]}"; do
+        [[ -f "$_lf" ]] || continue
+        local _bn; _bn="$(basename "$_lf")"
+        if ! is_lineage_sidecar "$_bn"; then
+            _has_lineage=true
+            break
+        fi
+    done
+
     # ---------------------------------------------------------------------------
     # Active-tag filter (Defect N fix)
     #
@@ -227,13 +249,23 @@ _depgraph_get_deps() {
     # On failure, _depgraph_get_deps returns rc=2 and the caller skips this container
     # for this cron run.  Operator re-runs the workflow once the underlying issue is fixed.
     #
+    # FIX 2: When NO lineage files exist for the container (not yet built), skip the
+    # active-tag filter entirely and proceed directly to the config.yaml fallback.
+    # The filter's purpose is to drop stale entries from EXISTING lineage; with no
+    # lineage there is nothing to filter and ./make list-builds is irrelevant.
+    # The Defect-N fail-closed guarantee (lineage-present + list-builds failure → rc=2)
+    # is preserved: it only triggers when _has_lineage=true.
+    #
     # Test hook: _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_<container> (hyphens → underscores)
     # Set to a newline-separated list to bypass ./make list-builds in tests.
     # Set to __TEST_NO_FILTER__ to disable filtering entirely (legacy test mode).
     # ---------------------------------------------------------------------------
     local _active_tags_for_filter=""
     local _at_filter_override_var="_DEPGRAPH_ACTIVE_TAGS_OVERRIDE_${container//-/_}"
-    if [[ -n "${!_at_filter_override_var+x}" ]]; then
+    if [[ "$_has_lineage" == "false" ]]; then
+        # No lineage files — skip the active-tag filter; fall through to config.yaml.
+        _active_tags_for_filter="__TEST_NO_FILTER__"
+    elif [[ -n "${!_at_filter_override_var+x}" ]]; then
         # Test hook: use override verbatim (may be empty or __TEST_NO_FILTER__)
         _active_tags_for_filter="${!_at_filter_override_var}"
     elif [[ -n "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
@@ -243,6 +275,7 @@ _depgraph_get_deps() {
         _active_tags_for_filter="__TEST_NO_FILTER__"
     else
         # Production mode: enumerate active tags via ./make list-builds — FAIL-CLOSED.
+        # Only reached when _has_lineage=true (lineage files exist to filter).
         local _lb_out _lb_rc=0
         _lb_out=$(cd "${PROJECT_ROOT}" && ./make list-builds "$container" current 2>/dev/null) || _lb_rc=$?
         if [[ $_lb_rc -ne 0 ]]; then
@@ -257,10 +290,6 @@ _depgraph_get_deps() {
             return 2
         fi
     fi
-
-    shopt -s nullglob
-    local lineage_files=("${lineage_dir}/${container}-"*.json "${lineage_dir}/${container}.json")
-    shopt -u nullglob
 
     local found_any=false
     local _saw_nonauthoritative=false

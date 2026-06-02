@@ -3587,3 +3587,184 @@ EOF
     [[ "$drift_containers_csv" != *"["* ]]
     [[ "$drift_containers_csv" != *" "* ]]
 }
+
+# ---------------------------------------------------------------------------
+# FIX 1a: Positive charset gate — container name with shell metacharacter is
+# rejected at matrix admission.
+#
+# A container name like "web;rm" passes grep -xF if the canonical list contains
+# "web;rm" (e.g. a symlink in the project root), but it is still dangerous to
+# emit into a drift matrix where it could be interpolated into shell.  The
+# charset gate ^[a-z0-9_-]+$ rejects it regardless of the canonical list.
+#
+# Mutation guard: removing the charset gate causes the metachar container to
+# appear in the output (the test catches the regression).
+# ---------------------------------------------------------------------------
+@test "F1a: container name with semicolon (web;rm) is rejected, excluded from output" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a"
+    mkdir -p "$lineage_dir"
+
+    # Lineage file claiming container name "web;rm" — shell metacharacter
+    cat > "$lineage_dir/web-rm-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "web;rm",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Override valid containers to include the dangerous name so grep -xF would
+    # pass if the charset gate did not exist — the gate is what we are testing.
+    local stderr_log="$TEST_TEMP_DIR/f1a-stderr.log"
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="web;rm" \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log"
+    )
+
+    # Output must be empty: the container was rejected before processing
+    [ "$result" = "[]" ]
+
+    # A ::warning:: must have been emitted to stderr naming the invalid chars
+    grep -q '::warning::' "$stderr_log"
+}
+
+@test "F1a: container name with only valid chars (web-shell) passes the charset gate" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a-valid"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/web-shell-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "web-shell",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe returns same digest → unchanged (no drift), but the container must NOT
+    # be rejected by the charset gate.
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-same-f1a"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local stderr_log="$TEST_TEMP_DIR/f1a-valid-stderr.log"
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="web-shell" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log"
+    )
+
+    # Valid name must not be rejected by the charset gate
+    ! grep -q 'invalid characters' "$stderr_log"
+    # Container must appear in output (unchanged status is OK)
+    container_in_output=$(printf '%s' "$result" | jq -r '.[0].container // empty')
+    [ "$container_in_output" = "web-shell" ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 3: LINEAGE_DIR propagation to dependency-graph helper
+#
+# When the detector is invoked with an alternate LINEAGE_DIR, the dep-graph
+# helper must read from THAT directory, not from the default .build-lineage.
+# Before Fix 3, _DEPGRAPH_LINEAGE_DIR was never set by the detector, so the
+# helper fell back to PROJECT_ROOT/.build-lineage regardless of the CLI arg.
+# ---------------------------------------------------------------------------
+@test "F3: alternate LINEAGE_DIR is propagated to dep-graph — deps reflect alt-dir lineage" {
+    # Alt lineage dir: contains a wordpress entry whose base is php (internal dep).
+    # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona so
+    # _depgraph_is_internal_ref can classify it without a git remote lookup.
+    local alt_lineage="$TEST_TEMP_DIR/.build-lineage-alt"
+    mkdir -p "$alt_lineage"
+
+    # wordpress lineage in ALT dir: depends on php via ghcr.io ref
+    jq -n '{
+      lineage_schema_version: 2,
+      container: "wordpress",
+      tag: "6.9-alpine",
+      base_image_ref: "ghcr.io/oorabona/php:8.3",
+      base_image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' > "$alt_lineage/wordpress-6.9-alpine.json"
+
+    # Default lineage dir (PROJECT_ROOT/.build-lineage): empty — dep-graph must
+    # NOT read from here when alt_lineage is passed to the detector.
+    local default_lineage="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$default_lineage"
+
+    # Probe: returns a different digest so wordpress shows drift (needed for
+    # the detector to reach the dep-graph call)
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-f3"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    # GITHUB_REPOSITORY_OWNER: allows _depgraph_project_owner to resolve the
+    # owner without a git remote in the synthetic PROJECT_ROOT.
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="wordpress
+php" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress php" \
+        GITHUB_REPOSITORY_OWNER="oorabona" \
+        PROBE_CMD="$probe_stub" \
+        PROJECT_ROOT="$TEST_TEMP_DIR" \
+        bash "${DETECTOR_SCRIPT}" "$alt_lineage" 2>/dev/null
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+
+    # internal_deps for wordpress must contain "php" — read from alt_lineage.
+    # The detector emits .internal_deps as a JSON array; the workflow computes
+    # internal_deps_csv via join(",").  Assert against the array here.
+    internal_deps_json=$(printf '%s' "$result" | jq -c \
+        '.[] | select(.container=="wordpress") | .internal_deps')
+    # Must be a non-empty JSON array containing "php"
+    [[ "$internal_deps_json" != "null" && "$internal_deps_json" != "[]" ]]
+    php_present=$(printf '%s' "$internal_deps_json" | jq -r 'index("php") != null')
+    [ "$php_present" = "true" ]
+}
+
+@test "F3: default LINEAGE_DIR (no alt arg) still works — dep-graph reads default dir" {
+    # No positional arg → LINEAGE_DIR defaults to PROJECT_ROOT/.build-lineage.
+    # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona.
+    local default_lineage="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$default_lineage"
+
+    jq -n '{
+      lineage_schema_version: 2,
+      container: "wordpress",
+      tag: "6.9-alpine",
+      base_image_ref: "ghcr.io/oorabona/php:8.3",
+      base_image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' > "$default_lineage/wordpress-6.9-alpine.json"
+
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-f3-default"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="wordpress
+php" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress php" \
+        GITHUB_REPOSITORY_OWNER="oorabona" \
+        PROBE_CMD="$probe_stub" \
+        PROJECT_ROOT="$TEST_TEMP_DIR" \
+        bash "${DETECTOR_SCRIPT}" 2>/dev/null
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # internal_deps must be a JSON array containing "php"
+    internal_deps_json=$(printf '%s' "$result" | jq -c \
+        '.[] | select(.container=="wordpress") | .internal_deps')
+    [[ "$internal_deps_json" != "null" && "$internal_deps_json" != "[]" ]]
+    php_present=$(printf '%s' "$internal_deps_json" | jq -r 'index("php") != null')
+    [ "$php_present" = "true" ]
+}

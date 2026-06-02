@@ -1452,7 +1452,10 @@ jobs:
           chmod +x scripts/detect-base-digest-drift.sh
           # Unique temp paths per matrix entry — no cross-container contamination
           # across sequential runs on the same runner.
-          drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
+          # FIX 1b: use shell env var $CONTAINER (set in step env above) instead of
+          # GHA template expression ${{ matrix.container }} so the value passes through
+          # the runner environment rather than being interpolated into the script text.
+          drift_file="/tmp/drift-${{ github.run_id }}-${CONTAINER}.json"
           # Detector emits ::error:: lines to stderr for visibility; capture stdout
           # and check exit code + JSON validity before processing.
           detect_rc=0
@@ -1476,7 +1479,8 @@ jobs:
           # Fix r8-2: scope error_count to current matrix container only.
           # Without the .container filter, a transient probe failure on any
           # unrelated container blocks PR creation for every other container.
-          error_count=$(echo "$drift_json" | jq --arg c "${{ matrix.container }}" \
+          # FIX 1b: use shell env var $CONTAINER for jq --arg (not ${{ matrix.container }}).
+          error_count=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
             '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
             echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
@@ -1746,7 +1750,10 @@ jobs:
           chmod +x scripts/detect-base-digest-drift.sh
           # Unique temp paths per matrix entry — no cross-container contamination
           # across sequential runs on the same runner.
-          drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
+          # FIX 1b: use shell env var $CONTAINER (set in step env above) instead of
+          # GHA template expression ${{ matrix.container }} so the value passes through
+          # the runner environment rather than being interpolated into the script text.
+          drift_file="/tmp/drift-${{ github.run_id }}-${CONTAINER}.json"
           # Detector emits ::error:: lines to stderr for visibility; capture stdout
           # and check exit code + JSON validity before processing.
           detect_rc=0
@@ -1770,7 +1777,8 @@ jobs:
           # Fix r8-2: scope error_count to current matrix container only.
           # Without the .container filter, a transient probe failure on any
           # unrelated container blocks PR creation for every other container.
-          error_count=$(echo "$drift_json" | jq --arg c "${{ matrix.container }}" \
+          # FIX 1b: use shell env var $CONTAINER for jq --arg (not ${{ matrix.container }}).
+          error_count=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
             '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
             echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2

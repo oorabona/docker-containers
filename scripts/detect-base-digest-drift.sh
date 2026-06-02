@@ -330,6 +330,17 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
+    # Positive charset gate: container names must consist only of lowercase
+    # alphanumerics, underscores, and hyphens.  ./make list is directory-derived
+    # and does NOT guarantee this invariant; a symlink or unusual directory could
+    # pass grep -xF while containing shell metacharacters.  Rejecting here ensures
+    # NO container reaching the emitted drift matrices can contain metacharacters.
+    if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+        printf '::warning::Rejecting lineage entry %s: container name contains invalid characters: %s\n' \
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        continue
+    fi
+
     # Validate container name against canonical list (poisoning prevention)
     # A corrupted entry (e.g. container: "docs", container: ".github", or a path
     # with "/") could otherwise cause the bot to act on non-container directories.
@@ -686,6 +697,12 @@ for container in "${_container_order[@]}"; do
     if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" && -z "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
         _DEPGRAPH_CONTAINERS_OVERRIDE="$(printf '%s' "${_VALID_CONTAINERS_OVERRIDE}" | tr '\n' ' ')"
         export _DEPGRAPH_CONTAINERS_OVERRIDE
+    fi
+    # FIX 3: propagate LINEAGE_DIR so dependency-graph reads from the same
+    # directory the detector used for variant discovery.  Only set when the
+    # caller has not already provided _DEPGRAPH_LINEAGE_DIR (test-hook respect).
+    if [[ -z "${_DEPGRAPH_LINEAGE_DIR:-}" ]]; then
+        export _DEPGRAPH_LINEAGE_DIR="$LINEAGE_DIR"
     fi
     #
     # NOTE: use a temp file for stderr capture + explicit exit-code check instead

@@ -1741,3 +1741,51 @@ EOF
     done < <(grep -n 'GH_REPO:' "$wf_path" | cut -d: -f1)
     [ "$found_in_unblock" = "true" ]
 }
+
+# ---------------------------------------------------------------------------
+# FIX 4: pipefail on "Identify parent container from associated PR" step
+#
+# The container extraction pipeline is:
+#   jq ... | head -1 | sed ...
+# Without set -o pipefail a jq failure is masked by head/sed succeeding,
+# producing an empty container name silently treated as "no drift PR" (no-op).
+#
+# Fix: add `set -euo pipefail` at the top of the step's run: script so any
+# command in the pipeline that fails propagates its exit code.
+#
+# Mutation guard: removing set -o pipefail from the step → this structural
+# test FAILS, catching the regression before it reaches production.
+# ---------------------------------------------------------------------------
+@test "F4: 'Identify parent' step in cascade-resolver.yaml has set -o pipefail" {
+    local wf_path="${BATS_TEST_DIRNAME}/../../.github/workflows/cascade-resolver.yaml"
+    [[ -f "$wf_path" ]] || skip "cascade-resolver.yaml not found at $wf_path"
+
+    # Locate the "Identify parent container" step's run: block.
+    # We assert that set -euo pipefail (or set -o pipefail) appears in the
+    # run: block BEFORE the first | head -1 pipeline call (which is part of the
+    # jq ... \n | head -1 multi-line pipeline).
+    #
+    # The pipeline spans multiple lines:
+    #   container=$(echo "$pr_json" | jq -r \
+    #     ...flags... \
+    #     '...filter...' \
+    #     | head -1 | sed '...')
+    # So we search for '| head -1' rather than 'jq.*| head' on one line.
+
+    local identify_line
+    identify_line=$(grep -n 'Identify parent container from associated PR' "$wf_path" | head -1 | cut -d: -f1)
+    [[ -n "$identify_line" ]] || { echo "Step 'Identify parent container' not found in cascade-resolver.yaml" >&2; return 1; }
+
+    # set -euo pipefail (or set -o pipefail) must appear after the step name line
+    local pipefail_line
+    pipefail_line=$(awk -v start="$identify_line" 'NR > start && /set -.*pipefail/ { print NR; exit }' "$wf_path")
+    [[ -n "$pipefail_line" ]] || { echo "set -o pipefail not found in 'Identify parent' step" >&2; return 1; }
+
+    # '| head -1' must appear AFTER the set -o pipefail line (multi-line pipeline)
+    local head_line
+    head_line=$(awk -v start="$identify_line" 'NR > start && /\| head -1/ { print NR; exit }' "$wf_path")
+    [[ -n "$head_line" ]] || { echo "'| head -1' pipeline not found in 'Identify parent' step" >&2; return 1; }
+
+    # pipefail_line < head_line: pipefail is set before the risky pipeline
+    [ "$pipefail_line" -lt "$head_line" ]
+}
