@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# Establish a canonical PROJECT_ROOT from $0 BEFORE sourcing any helper.
+# This overrides any inherited/stale/malicious PROJECT_ROOT from the environment.
+# PROJECT_ROOT is a DATA-lookup variable (where .build-lineage / config.yaml live)
+# and is intentionally overridable by tests — but $0 (this file) always lives at
+# the repo root, so this is the authoritative ground truth.
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+export PROJECT_ROOT
+
 export DOCKER_CLI_EXPERIMENTAL=enabled
 NPROC=$(nproc)
 export NPROC

@@ -123,10 +123,16 @@ _write_lineage() {
     _write_lineage "wordpress" "latest" "ghcr.io/someowner/php:latest"
     local isolated_dir="$TEST_TEMP_DIR/isolated_owner_fail_r23"
     mkdir -p "$isolated_dir"
+    # Note: make now sets PROJECT_ROOT from $0 (security fix, Part 1), so setting
+    # PROJECT_ROOT in the subprocess environment no longer controls which git repo
+    # _depgraph_project_owner queries.  We disable git remote lookup by pointing
+    # GIT_DIR at a non-repository path, ensuring all three owner-resolution paths
+    # fail (no override, no GITHUB_REPOSITORY_OWNER, no usable git remote).
     run bash -c "
         unset _DEPGRAPH_OWNER_OVERRIDE
         unset GITHUB_REPOSITORY_OWNER
-        PROJECT_ROOT='${isolated_dir}'
+        GIT_DIR='${isolated_dir}/.git'
+        export GIT_DIR
         _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
         export _DEPGRAPH_CONTAINERS_OVERRIDE
         _DEPGRAPH_LINEAGE_DIR='$TEST_TEMP_DIR/lineage'
@@ -176,4 +182,40 @@ _write_lineage() {
     # Output must contain our error message, NOT 'not a registered container'
     ! [[ "$output" == *"not a registered container"* ]]
     [[ "$output" == *"Failed to enumerate registered containers"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Security: PROJECT_ROOT=/tmp ./make list must succeed despite bogus env var.
+#
+# Before the fix, `make` inherited PROJECT_ROOT from the environment and passed
+# it to dependency-graph.sh before setting it from $0.  dependency-graph.sh then
+# sourced "${PROJECT_ROOT}/helpers/lineage-utils.sh" — with PROJECT_ROOT=/tmp,
+# this path does not exist and `./make list` failed with rc=1.
+#
+# After the fix, `make` establishes PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# at the very top (before any source), so the inherited value is overridden and
+# all helpers source from the real repo root.
+#
+# Mutation guard:
+#   MG-PR: removing the PROJECT_ROOT= assignment at the top of `make` → this
+#          test fails (./make list exits non-zero when PROJECT_ROOT=/tmp).
+# ---------------------------------------------------------------------------
+
+@test "make list: PROJECT_ROOT=/tmp ./make list succeeds and lists real containers" {
+    # Invoke ./make list with a bogus inherited PROJECT_ROOT from the repo root.
+    # make establishes its own PROJECT_ROOT from $0 at startup, so the inherited
+    # /tmp value is overridden and helpers are sourced from the real repo root.
+    # The output must be non-empty and must NOT contain a lineage-utils.sh error.
+    #
+    # Note: list_containers relies on the cwd being the project root (it uses
+    # find "$base" and then sed/cut which require relative paths).  The ./make
+    # invocation pattern is always from the repo root; this test preserves that
+    # convention and specifically tests that the bogus PROJECT_ROOT is harmless.
+    run bash -c "cd '${PROJECT_ROOT}' && PROJECT_ROOT='/tmp' ./make list 2>&1"
+    [ "$status" -eq 0 ]
+    # Output must contain at least one real container name
+    [[ "$output" == *"ansible"* ]] || [[ "$output" == *"debian"* ]] || [[ "$output" == *"postgres"* ]]
+    # Must NOT contain the broken-source error
+    ! [[ "$output" == *"lineage-utils.sh: No such file"* ]]
+    ! [[ "$output" == *"cannot open"* ]]
 }

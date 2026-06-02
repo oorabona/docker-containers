@@ -1489,3 +1489,67 @@ EOF
     # Only debian from lineage; php from config.yaml must NOT appear
     [ "$output" = "debian" ]
 }
+
+# ---------------------------------------------------------------------------
+# Security: source-hijack prevention via BASH_SOURCE in dependency-graph.sh
+#
+# When PROJECT_ROOT is inherited from the environment and points at a
+# non-project path (e.g. /tmp), dependency-graph.sh must still source its
+# SIBLING lineage-utils.sh from its real on-disk location (via BASH_SOURCE),
+# NOT from ${PROJECT_ROOT}/helpers/lineage-utils.sh.
+#
+# Defect: before the fix, line 41 was:
+#   source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
+# A stale/malicious PROJECT_ROOT (e.g. /tmp) would either:
+#   a) execute an attacker-controlled file — source-hijack, and
+#   b) fail with "No such file or directory", breaking ./make.
+#
+# Fix: resolve the sibling via _depgraph_dir (BASH_SOURCE[0] dirname), so
+# PROJECT_ROOT plays no role in selecting which code is sourced.
+#
+# Mutation guards:
+#   MG-SH1: reverting to `source "${PROJECT_ROOT}/helpers/lineage-utils.sh"` →
+#            test 1 (bogus PROJECT_ROOT, source succeeds + function available) FAILS:
+#            source errors out because /tmp/helpers/lineage-utils.sh doesn't exist.
+#   MG-SH2: same revert → test 2 (structural grep) FAILS: pattern not present.
+# ---------------------------------------------------------------------------
+
+@test "depgraph: source-hijack prevention — bogus PROJECT_ROOT does not break sourcing of lineage-utils.sh" {
+    # Source dependency-graph.sh with PROJECT_ROOT=/tmp.
+    # lineage-utils.sh does NOT exist under /tmp/helpers/; if the source line
+    # still uses PROJECT_ROOT, sourcing fails.  With BASH_SOURCE fix it succeeds.
+    #
+    # This test is RED against the unfixed code (source fails with rc!=0) and
+    # GREEN with the fix (sibling resolved from BASH_SOURCE, source succeeds).
+    #
+    # Verify that is_lineage_sidecar (defined in lineage-utils.sh) is available
+    # after sourcing — proving the real sibling was loaded, not a stub.
+    run bash -c "
+        PROJECT_ROOT='/tmp'
+        export PROJECT_ROOT
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        # is_lineage_sidecar is defined in lineage-utils.sh; its presence proves
+        # the real sibling was sourced (not a non-existent /tmp/helpers/lineage-utils.sh)
+        declare -f is_lineage_sidecar > /dev/null
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "depgraph: source-hijack prevention — dependency-graph.sh sources lineage-utils.sh via BASH_SOURCE, not PROJECT_ROOT" {
+    # Structural assertion: the source line in dependency-graph.sh must reference
+    # _depgraph_dir (derived from BASH_SOURCE) and NOT ${PROJECT_ROOT}/helpers/lineage-utils.sh.
+    #
+    # This is a RED test against the unfixed code and a green test after the fix.
+    # It catches a revert that restores the vulnerable pattern.
+    local depgraph_file="${HELPERS_DIR}/dependency-graph.sh"
+
+    # Must NOT contain the vulnerable pattern
+    run bash -c "grep -qF '\${PROJECT_ROOT}/helpers/lineage-utils.sh' '${depgraph_file}'"
+    [ "$status" -ne 0 ]
+
+    # Must contain the safe BASH_SOURCE-based pattern
+    run bash -c "grep -qE 'BASH_SOURCE\[?0\]?.*lineage-utils|_depgraph_dir.*lineage-utils' '${depgraph_file}'"
+    [ "$status" -eq 0 ]
+}

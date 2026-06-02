@@ -36,9 +36,16 @@ fi
 
 # ---------------------------------------------------------------------------
 # Source lineage-utils for is_lineage_sidecar
+#
+# Resolve the sibling helper from THIS file's own directory (BASH_SOURCE),
+# never via PROJECT_ROOT. PROJECT_ROOT is a data-lookup override and must not
+# select which code is sourced (source-hijack / breaks when PROJECT_ROOT is
+# stale or set to a test fixture path).
 # ---------------------------------------------------------------------------
+_depgraph_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./lineage-utils.sh
-source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
+source "${_depgraph_dir}/lineage-utils.sh"
+unset _depgraph_dir
 
 # ---------------------------------------------------------------------------
 # _depgraph_valid_containers
