@@ -491,6 +491,15 @@ _process_container() {
         return 0
     fi
 
+    # list_versions masks yq parse errors (|| echo "") and always returns rc 0,
+    # so validate the file directly here: a malformed or schema-broken
+    # variants.yaml must fail closed (exit 2), not silently yield "no versions".
+    if ! yq -e '.versions[].tag' "$variants_file" >/dev/null 2>&1; then
+        echo "::error::version-drift: variants.yaml for ${container} failed to parse or declares no .versions[].tag" >&2
+        _HAS_ERROR=true
+        return 0
+    fi
+
     # List all declared version tags.
     # Distinguish parse/tool failure (non-zero exit) from genuinely empty result.
     local versions

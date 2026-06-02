@@ -2151,6 +2151,97 @@ MAKE_EOF
     [ "$exit2_in_prereq" -ge 2 ]
 }
 
+# ---------------------------------------------------------------------------
+# FAILOPEN-FIX4 — variants.yaml parse validation (fail-closed on malformed or
+# schema-broken variants.yaml)
+#
+# list_versions masks yq errors (|| echo "") and always returns rc 0; a broken
+# variants.yaml previously yielded empty versions → silently reported clean.
+# The fix adds a direct yq -e '.versions[].tag' guard BEFORE list_versions.
+# ---------------------------------------------------------------------------
+
+@test "FAILOPEN-FIX4: malformed variants.yaml (invalid YAML) → script exits 2, not 0" {
+    # A container whose variants.yaml is not parseable YAML must not be
+    # reported as clean.  The script must fail-closed: exit 2 (_HAS_ERROR).
+    local root="${TEST_TEMP_DIR}/malformed-project"
+    local cdir="${root}/malformed-container"
+    mkdir -p "$cdir"
+
+    # Write intentionally broken YAML (unclosed bracket)
+    printf 'versions: [unclosed\n' > "${cdir}/variants.yaml"
+
+    # Stub ./make list
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    echo "malformed-container"
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # Probe stub is irrelevant (validation fires before any probe call)
+    local probe
+    probe=$(_make_probe_stub "__default__" "present")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="malformed-container" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Must exit 2 (fail-closed), not 0 (silent false-clean)
+    [ "$status" -eq 2 ]
+
+    # The JSON output array must contain no in_sync or drift rows for this container
+    # (the container was skipped as errored, not checked)
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local sync_for_malformed
+    sync_for_malformed=$(printf '%s' "$output" | jq '[.[] | select(.name=="malformed-container" and .status=="in_sync")] | length')
+    [ "$sync_for_malformed" -eq 0 ]
+}
+
+@test "FAILOPEN-FIX4: schema-broken variants.yaml (valid YAML, no .versions) → script exits 2, not 0" {
+    # A container whose variants.yaml is valid YAML but lacks .versions[].tag
+    # entries must also fail-closed: exit 2 (_HAS_ERROR), not report clean.
+    local root="${TEST_TEMP_DIR}/schema-broken-project"
+    local cdir="${root}/schema-broken-container"
+    mkdir -p "$cdir"
+
+    # Valid YAML structure but no 'versions' key at all
+    printf 'build:\n  version_retention: 3\nno_versions_key: true\n' > "${cdir}/variants.yaml"
+
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    echo "schema-broken-container"
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    local probe
+    probe=$(_make_probe_stub "__default__" "present")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="schema-broken-container" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Must exit 2 (fail-closed), not 0 (silent false-clean)
+    [ "$status" -eq 2 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local sync_for_schema_broken
+    sync_for_schema_broken=$(printf '%s' "$output" | jq '[.[] | select(.name=="schema-broken-container" and .status=="in_sync")] | length')
+    [ "$sync_for_schema_broken" -eq 0 ]
+}
+
 @test "NEW-FIX1-pg-versions-parse-fail: yq failure reading pg_versions → exit 2, not silent exit 0" {
     # The pg_versions read in _process_extensions uses a raw yq call (not wrapped
     # in || echo ""), so a yq parse failure there is directly detectable.
