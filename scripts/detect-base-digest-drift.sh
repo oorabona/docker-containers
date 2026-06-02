@@ -78,6 +78,7 @@ _escape_gha_command() {
 # Argument parsing
 # ---------------------------------------------------------------------------
 BASELINE_ONLY=false
+CONTAINER_FILTER=""
 LINEAGE_DIR="${PROJECT_ROOT}/.build-lineage"
 
 while [[ $# -gt 0 ]]; do
@@ -85,6 +86,14 @@ while [[ $# -gt 0 ]]; do
         --baseline-only)
             BASELINE_ONLY=true
             shift
+            ;;
+        --container)
+            if [[ -z "${2:-}" ]]; then
+                echo "::error::--container requires a value" >&2
+                exit 1
+            fi
+            CONTAINER_FILTER="$2"
+            shift 2
             ;;
         -*)
             echo "::error::Unknown flag: $1" >&2
@@ -171,6 +180,39 @@ _probe_digest() {
     rm -f "$probe_stderr"
     printf '%s' "$digest"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# _probe_digest_cached — memoizing wrapper around _probe_digest
+#
+# IMPORTANT: this function must NOT be called via $(...) command substitution
+# because bash command substitution runs in a subshell and writes to the
+# child's copy of _DIGEST_CACHE only — the parent never sees the update.
+# Instead, callers use the output variable pattern:
+#
+#   _probe_digest_cached_out=""
+#   if _probe_digest_cached "$ref"; then
+#       use "$_probe_digest_cached_out"
+#   fi
+#
+# Cache key = verbatim base_image_ref string (no normalization).
+# Successes are cached immediately; failures are left uncached so a transient
+# registry error does not permanently suppress drift detection for a ref.
+# ---------------------------------------------------------------------------
+_probe_digest_cached_out=""   # output variable — set on success
+_probe_digest_cached() {
+    local image_ref="$1"
+    if [[ -v _DIGEST_CACHE[$image_ref] ]]; then
+        _probe_digest_cached_out="${_DIGEST_CACHE[$image_ref]}"
+        return 0
+    fi
+    local digest
+    if digest=$(_probe_digest "$image_ref"); then
+        _DIGEST_CACHE[$image_ref]="$digest"
+        _probe_digest_cached_out="$digest"
+        return 0
+    fi
+    return 1   # failures left UNCACHED (smallest semantic change)
 }
 
 # ---------------------------------------------------------------------------
@@ -304,6 +346,7 @@ fi
 
 declare -A _container_variants  # container_name -> newline-separated JSON fragments
 declare -a _container_order     # ordered list of unique container names seen
+declare -A _DIGEST_CACHE        # verbatim base_image_ref -> probed digest (successes only)
 
 for lineage_file in "${lineage_files[@]}"; do
     basename_file="$(basename "$lineage_file")"
@@ -338,6 +381,13 @@ for lineage_file in "${lineage_files[@]}"; do
     if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
         printf '::warning::Rejecting lineage entry %s: container name contains invalid characters: %s\n' \
             "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        continue
+    fi
+
+    # Per-container scope: skip lineage entries for other containers (filter on the
+    # validated .container JSON field, NOT the filename). Placed before the probe so
+    # non-matching containers cost zero registry probes.
+    if [[ -n "$CONTAINER_FILTER" && "$container" != "$CONTAINER_FILTER" ]]; then
         continue
     fi
 
@@ -593,10 +643,16 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Probe current digest
+    # Probe current digest (memoized: same ref probed at most once per run).
+    # Use the output-variable pattern — NOT $(...) — so _DIGEST_CACHE writes
+    # propagate to the parent shell (command substitution creates a subshell
+    # whose variable writes are lost on exit).
     current_digest=""
     probe_failed=false
-    if ! current_digest=$(_probe_digest "$base_image_ref"); then
+    _probe_digest_cached_out=""
+    if _probe_digest_cached "$base_image_ref"; then
+        current_digest="$_probe_digest_cached_out"
+    else
         probe_failed=true
     fi
 
