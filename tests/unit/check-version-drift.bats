@@ -863,12 +863,15 @@ SKOPEO_EOF
     printf '%s' "$bin_dir"
 }
 
-@test "FIX2-probe: skopeo exits 0 → real probe returns present → in_sync" {
+@test "FIX2-probe: skopeo exits 0 + OCI index manifest → real probe returns present → in_sync" {
+    # Real skopeo inspect --raw always emits the manifest JSON on stdout when exit 0.
+    # The stub must faithfully model that: emit a valid multi-arch index manifest.
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
     local fake_bin
-    fake_bin=$(_make_fake_skopeo 0 "")
+    fake_bin=$(_make_skopeo_with_manifest \
+        '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}')
 
     run --separate-stderr env \
         PATH="${fake_bin}:${PATH}" \
@@ -944,6 +947,219 @@ SKOPEO_EOF
     local skopeo_ref_count
     skopeo_ref_count=$(grep -c 'skopeo' "$DRIFT_SCRIPT" || true)
     [ "$skopeo_ref_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE tests — verify that _vdrift_probe_published classifies
+# manifests by mediaType, not merely by skopeo exit code.
+#
+# Stub pattern: create a fake skopeo on PATH that outputs chosen JSON on stdout
+# and exits 0 (to simulate skopeo inspect --raw returning a manifest body).
+# The existing _make_fake_skopeo only prints to stderr; these helpers also
+# emit a manifest body on stdout.
+# ---------------------------------------------------------------------------
+
+# Helper: create a PATH-stub skopeo that prints manifest JSON on stdout + exits 0.
+_make_skopeo_with_manifest() {
+    local manifest_json="$1"   # JSON string to print on stdout
+    local bin_dir="${TEST_TEMP_DIR}/skopeo-stub-$$"
+    mkdir -p "$bin_dir"
+    # Write manifest to a temp file to avoid quoting hell in heredoc
+    local manifest_file="${bin_dir}/manifest.json"
+    printf '%s' "$manifest_json" > "$manifest_file"
+    cat > "${bin_dir}/skopeo" <<SKOPEO_EOF
+#!/usr/bin/env bash
+cat "${manifest_file}"
+exit 0
+SKOPEO_EOF
+    chmod +x "${bin_dir}/skopeo"
+    printf '%s' "$bin_dir"
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-1: OCI image index → present → in_sync, exit 0
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-1: skopeo returns OCI index → present → in_sync + exit 0" {
+    local root
+    root=$(_make_temp_project "myapp" "3.1.0")
+
+    local index_manifest
+    index_manifest='{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+
+    local fake_bin
+    fake_bin=$(_make_skopeo_with_manifest "$index_manifest")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="myapp" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local sync_count
+    sync_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="in_sync")] | length')
+    [ "$sync_count" -eq 1 ]
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-2: single-image manifest for Linux tag → absent → drift, exit 1
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-2: skopeo returns single-arch manifest for Linux tag → absent → drift + exit 1" {
+    local root
+    root=$(_make_temp_project "myapp" "3.1.0")
+
+    local single_manifest
+    single_manifest='{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}'
+
+    local fake_bin
+    fake_bin=$(_make_skopeo_with_manifest "$single_manifest")
+
+    # Old bump epoch → absent maps to drift
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="myapp" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 1 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 1 ]
+
+    local in_sync_count
+    in_sync_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="in_sync")] | length')
+    [ "$in_sync_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-3: single-image manifest for Windows tag → present → in_sync, exit 0
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-3: skopeo returns single-arch manifest for Windows tag → present → in_sync + exit 0" {
+    # Windows images are legitimately single-arch; tag contains "windows"
+    local root
+    root=$(_make_temp_project "github-runner" "2.321.0-windows-ltsc2022")
+
+    local single_manifest
+    single_manifest='{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}'
+
+    local fake_bin
+    fake_bin=$(_make_skopeo_with_manifest "$single_manifest")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="github-runner" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local sync_count
+    sync_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="in_sync")] | length')
+    [ "$sync_count" -eq 1 ]
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-4: skopeo exits 0 but non-JSON output → error → exit 2
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-4: skopeo exits 0 with non-JSON output → error → exit 2" {
+    local root
+    root=$(_make_temp_project "myapp" "3.1.0")
+
+    # Create a fake skopeo that outputs garbage (non-JSON) and exits 0
+    local bin_dir="${TEST_TEMP_DIR}/skopeo-garbage-$$"
+    mkdir -p "$bin_dir"
+    cat > "${bin_dir}/skopeo" <<'SKOPEO_EOF'
+#!/usr/bin/env bash
+printf 'this is not json at all\n'
+exit 0
+SKOPEO_EOF
+    chmod +x "${bin_dir}/skopeo"
+
+    run --separate-stderr env \
+        PATH="${bin_dir}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="myapp" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 2 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-5: existing absent (manifest unknown stderr) stub still works
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-5: skopeo exits 1 + 'manifest unknown' stderr → absent → drift (unchanged)" {
+    local root
+    root=$(_make_temp_project "myapp" "3.1.0")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: manifest unknown")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="myapp" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 1 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# MULTIARCH-PROBE-6: existing network error stub still works
+# ---------------------------------------------------------------------------
+@test "MULTIARCH-PROBE-6: skopeo exits 1 + network error stderr → error → exit 2 (unchanged)" {
+    local root
+    root=$(_make_temp_project "myapp" "3.1.0")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: connecting to registry: dial tcp: connection refused")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="myapp" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 2 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

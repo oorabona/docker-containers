@@ -220,37 +220,90 @@ _vdrift_probe_published() {
         return 0
     fi
 
-    # Real probe: use skopeo inspect --raw to get a 3-state outcome.
+    # Real probe: use skopeo inspect --raw to get the raw manifest JSON, then
+    # classify by mediaType to require a multi-arch index for Linux tags.
     #
     # skopeo is always available in CI (installed by the build jobs) and is
     # already used elsewhere in this repo (extension-utils.sh, base-cache-utils.sh).
     #
     # Classification:
-    #   present — skopeo exits 0 (manifest found)
-    #   absent  — skopeo exits non-zero AND stderr matches a known "not found" pattern:
-    #               "manifest unknown", "was deleted or has expired", HTTP 404
-    #   error   — any other non-zero exit (auth failure, network error, 5xx, etc.)
+    #   present — manifest is an OCI image index
+    #               (application/vnd.oci.image.index.v1+json) OR Docker manifest
+    #               list (application/vnd.docker.distribution.manifest.list.v2+json)
+    #             OR tag contains "windows" (single-arch Windows images are
+    #               legitimately single-platform)
+    #   absent  — manifest is a single-image manifest
+    #               (application/vnd.oci.image.manifest.v1+json or
+    #                application/vnd.docker.distribution.manifest.v2+json)
+    #               for a non-Windows Linux tag — the tag exists but only as a
+    #               single-arch placeholder, not the published multi-arch image.
+    #             OR skopeo exits non-zero AND stderr matches a known "not found"
+    #               pattern: "manifest unknown", "was deleted or has expired", HTTP 404
+    #   error   — skopeo exits 0 but manifest JSON is unparseable, OR any other
+    #               non-zero exit (auth failure, network error, 5xx, etc.)
     #
-    # Falls back to a token+curl HEAD approach when skopeo is not on PATH.
+    # Falls back to a token+curl approach when skopeo is not on PATH.
     if command -v skopeo >/dev/null 2>&1; then
-        local sk_stderr sk_rc
-        sk_stderr=$(skopeo inspect --raw "docker://${full_ref}" 2>&1 >/dev/null) \
+        local sk_stdout sk_stderr sk_rc
+        # Capture both stdout (raw manifest JSON) and stderr (error messages).
+        # stderr goes to a private mktemp file (not a predictable /tmp path) to
+        # avoid a symlink race in the world-writable temp dir.
+        local _sk_err_tmp
+        _sk_err_tmp=$(mktemp)
+        sk_stdout=$(skopeo inspect --raw "docker://${full_ref}" 2>"$_sk_err_tmp") \
             && sk_rc=0 || sk_rc=$?
-        if [[ "$sk_rc" -eq 0 ]]; then
-            printf 'present'
+        sk_stderr=$(cat "$_sk_err_tmp" 2>/dev/null || true)
+        rm -f "$_sk_err_tmp"
+
+        if [[ "$sk_rc" -ne 0 ]]; then
+            # Distinguish manifest-not-found from transport/auth errors.
+            if printf '%s' "$sk_stderr" | grep -qiE \
+                'manifest unknown|was deleted or has expired|404|not found|does not exist'; then
+                printf 'absent'
+            else
+                printf 'error'
+            fi
             return 0
         fi
-        # Distinguish manifest-not-found from transport/auth errors.
-        if printf '%s' "$sk_stderr" | grep -qiE \
-            'manifest unknown|was deleted or has expired|404|not found|does not exist'; then
-            printf 'absent'
-        else
+
+        # rc=0: classify manifest by mediaType.
+        local media_type
+        media_type=$(printf '%s' "$sk_stdout" | jq -r '.mediaType // empty' 2>/dev/null) || true
+
+        if [[ -z "$media_type" ]]; then
+            # Unparseable or missing mediaType → fail-closed
             printf 'error'
+            return 0
         fi
+
+        case "$media_type" in
+            application/vnd.oci.image.index.v1+json|\
+            application/vnd.docker.distribution.manifest.list.v2+json)
+                # Multi-arch index → present
+                printf 'present'
+                ;;
+            application/vnd.oci.image.manifest.v1+json|\
+            application/vnd.docker.distribution.manifest.v2+json)
+                # Single-arch manifest — Windows tags are legitimately single-platform
+                if [[ "$tag" == *windows* ]]; then
+                    printf 'present'
+                else
+                    # Linux tag backed only by a single-arch placeholder — treat as absent
+                    # so partial/failed multi-arch publishes are flagged as drift.
+                    printf '::warning::version-drift: %s single-arch manifest where multi-arch expected\n' \
+                        "$(_escape_gha_command "${full_ref}")" >&2
+                    printf 'absent'
+                fi
+                ;;
+            *)
+                # Unknown mediaType → fail-closed
+                printf 'error'
+                ;;
+        esac
         return 0
     fi
 
-    # skopeo not available: fall back to authenticated manifest HEAD via curl.
+    # skopeo not available: fall back to authenticated manifest GET via curl.
     # We need registry-utils sourced for ghcr_get_token; do it lazily.
     if [[ -z "${_VDRIFT_REGISTRY_UTILS_LOADED:-}" ]]; then
         # shellcheck source=../helpers/registry-utils.sh
@@ -267,18 +320,62 @@ _vdrift_probe_published() {
         return 0
     fi
 
-    local http_status
-    http_status=$(curl -sf -o /dev/null -w '%{http_code}' \
+    local curl_body curl_http_status
+    # Capture body and status together; use -w to append status after body.
+    # The body is the raw manifest JSON; the last line is the HTTP status code.
+    local curl_out
+    curl_out=$(curl -s \
         -H "Authorization: Bearer ${token}" \
-        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+        -w '\n__HTTP_STATUS__:%{http_code}' \
         "https://ghcr.io/v2/${owner}/${image_name}/manifests/${tag}" \
         2>/dev/null) || true
 
-    case "$http_status" in
-        200|201)            printf 'present' ;;
-        404|400)            printf 'absent' ;;
-        ""|000|5*|401|403)  printf 'error' ;;
-        *)                  printf 'error' ;;
+    curl_http_status=$(printf '%s' "$curl_out" | grep -oE '__HTTP_STATUS__:[0-9]+$' | cut -d: -f2 || true)
+    curl_body=$(printf '%s' "$curl_out" | sed '$s/__HTTP_STATUS__:[0-9]*$//' | sed '/^$/d' || true)
+
+    case "$curl_http_status" in
+        404|400)
+            printf 'absent'
+            return 0
+            ;;
+        ""|000|5*|401|403)
+            printf 'error'
+            return 0
+            ;;
+        200|201)
+            # Got a response — classify by mediaType, same as skopeo path
+            local curl_media_type
+            curl_media_type=$(printf '%s' "$curl_body" | jq -r '.mediaType // empty' 2>/dev/null) || true
+
+            if [[ -z "$curl_media_type" ]]; then
+                printf 'error'
+                return 0
+            fi
+
+            case "$curl_media_type" in
+                application/vnd.oci.image.index.v1+json|\
+                application/vnd.docker.distribution.manifest.list.v2+json)
+                    printf 'present'
+                    ;;
+                application/vnd.oci.image.manifest.v1+json|\
+                application/vnd.docker.distribution.manifest.v2+json)
+                    if [[ "$tag" == *windows* ]]; then
+                        printf 'present'
+                    else
+                        printf '::warning::version-drift: %s single-arch manifest where multi-arch expected\n' \
+                            "$(_escape_gha_command "${full_ref}")" >&2
+                        printf 'absent'
+                    fi
+                    ;;
+                *)
+                    printf 'error'
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'error'
+            ;;
     esac
 }
 
