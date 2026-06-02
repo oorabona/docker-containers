@@ -2766,3 +2766,70 @@ GH_EOF
     # Empty array → no drift rows → must return 0
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# SECFIX1 — version-drift.yaml security hardening (checkout pin + token scoping)
+#
+# FIX 1 structural:
+#   a) checkout step pins ref to refs/heads/master
+#   b) create-github-app-token step sets permission-issues: write (token is scoped)
+# FIX 3 structural:
+#   c) exit-2 error message no longer claims "GHCR connectivity" as sole cause
+# ---------------------------------------------------------------------------
+
+@test "SECFIX1a: version-drift.yaml checkout step pins ref to refs/heads/master" {
+    [ -f "$DRIFT_YAML" ]
+
+    # Extract the checkout step block.
+    local checkout_block
+    checkout_block=$(awk '
+        /Checkout repository/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$DRIFT_YAML" || true)
+
+    # The checkout step must contain ref: refs/heads/master
+    local ref_count
+    ref_count=$(printf '%s' "$checkout_block" | grep -cF 'refs/heads/master' || true)
+    [ "$ref_count" -ge 1 ]
+}
+
+@test "SECFIX1b: version-drift.yaml create-github-app-token step sets permission-issues: write (token is scoped, not unscoped)" {
+    [ -f "$DRIFT_YAML" ]
+
+    # Extract the Generate App token step block.
+    local token_block
+    token_block=$(awk '
+        /Generate App token/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$DRIFT_YAML" || true)
+
+    # Must contain permission-issues: write
+    local perm_issues_count
+    perm_issues_count=$(printf '%s' "$token_block" | grep -cF 'permission-issues: write' || true)
+    [ "$perm_issues_count" -ge 1 ]
+
+    # Must NOT have a bare create-github-app-token block with only app-id and
+    # private-key (i.e. the block must have at least one permission-* key).
+    local permission_key_count
+    permission_key_count=$(printf '%s' "$token_block" | grep -cE 'permission-[a-z]+:' || true)
+    [ "$permission_key_count" -ge 1 ]
+}
+
+@test "SECFIX1c: version-drift.yaml exit-2 message does not hardcode 'GHCR connectivity' as sole cause" {
+    [ -f "$DRIFT_YAML" ]
+
+    # The exit-2 handler message must NOT say "check GHCR connectivity" as the
+    # ONLY cause — that was inaccurate for resolver failures and missing prerequisites.
+    local old_message_count
+    old_message_count=$(grep -cF 'check GHCR connectivity' "$DRIFT_YAML" || true)
+    [ "$old_message_count" -eq 0 ]
+
+    # The new message must mention probe error, resolver failure, and/or prerequisite.
+    local new_message_count
+    new_message_count=$(grep -cE 'probe error|resolver failure|missing prerequisite' "$DRIFT_YAML" || true)
+    [ "$new_message_count" -ge 1 ]
+}

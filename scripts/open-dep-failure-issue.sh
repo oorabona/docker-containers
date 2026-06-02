@@ -379,7 +379,7 @@ BODY
 #   container   — optional single-container name; empty string for sweep mode
 #
 # Required env vars (subset of the standard set used by this script):
-#   GH_TOKEN / GITHUB_TOKEN  (either is accepted)
+#   GH_TOKEN  (required; set at source-time via the `: "${GH_TOKEN:?}" guard)
 #   GITHUB_REPOSITORY
 #   GITHUB_RUN_ID
 #   GITHUB_SERVER_URL

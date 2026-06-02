@@ -26,11 +26,18 @@ jobs:
     name: Sweep declared-vs-published version drift
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Restrict execution to the master branch for both scheduled and manual runs.
+    # A workflow_dispatch on a feature branch would otherwise execute
+    # branch-controlled scripts with the broad-permission App token.
+    if: github.ref == 'refs/heads/master' || github.event_name == 'schedule'
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          # Always check out master so a dispatch on any branch still runs
+          # master's scripts with the App token, not attacker-modified branch code.
+          ref: refs/heads/master
 
       # App token required so issue creation/comment triggers downstream
       # notifications correctly (GITHUB_TOKEN-authored issues are muted for
@@ -41,6 +48,10 @@ jobs:
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          # Least-privilege: the sweep reads the repo (checkout) and writes issues.
+          # GHCR probes use secrets.GITHUB_TOKEN via docker/login-action, not this token.
+          permission-contents: read
+          permission-issues: write
 
       - name: Install yq
         shell: bash
@@ -112,9 +123,10 @@ jobs:
           printf '%s' "${drift_json:-[]}" > /tmp/drift-sweep.json
 
           if [[ "$sweep_rc" -eq 2 ]]; then
-            # Probe error: fail the job loudly so the schedule operator notices.
-            # This is NOT advisory — a broken probe means we have no visibility.
-            echo "::error::version-drift sweep: probe error (exit 2) — check GHCR connectivity"
+            # Probe error, resolver failure, or missing prerequisite: fail loudly
+            # so the schedule operator notices.  This is NOT advisory — any of
+            # these conditions mean we have no visibility into drift state.
+            echo "::error::version-drift sweep failed (exit 2): probe error, resolver failure, or missing prerequisite — see the ::error:: annotations above"
             exit 2
           fi
 
