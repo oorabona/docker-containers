@@ -1293,7 +1293,7 @@ jobs:
     needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6

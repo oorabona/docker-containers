@@ -661,6 +661,9 @@ fi
 
 if [[ "$MODE" == "post-build" ]]; then
     _process_container "$GHCR_OWNER" "$CONTAINER_ARG"
+    if [[ "$CONTAINER_ARG" == "postgres" ]]; then
+        _process_extensions "$GHCR_OWNER"
+    fi
 else
     # Sweep mode: all containers + extensions
     containers=""

@@ -386,7 +386,8 @@ BODY
 #   GITHUB_SHA
 #
 # Outputs: "created #N" | "commented #N" | "dry-run #0" | "" (no drift rows)
-# Exit codes: 0 always
+# Exit codes: 0 on success (issue created/refreshed, or no drift rows);
+#             non-zero when gh issue create/comment fails after retries.
 # ---------------------------------------------------------------------------
 open_version_drift_issue() {
     local drift_json="$1"

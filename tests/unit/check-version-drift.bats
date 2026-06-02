@@ -1708,3 +1708,172 @@ MAKE_EOF
     bare_or_true=$(printf '%s' "$advisory_block" | grep 'open_version_drift_issue' | grep -c '|| true' || true)
     [ "$bare_or_true" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# GATE-FIX1 — post-build mode checks postgres extensions when container=postgres
+# ---------------------------------------------------------------------------
+
+# Helper: create a temp project root with postgres container + extension config.
+# The extension "postgis" is declared at version "3.6.3" for pg17.
+# Returns the temp root path on stdout.
+_make_postgres_project() {
+    local root="${TEST_TEMP_DIR}/pg-project-$$"
+    mkdir -p "${root}/postgres/extensions"
+    mkdir -p "${root}/postgres"
+
+    # Minimal variants.yaml for postgres itself
+    cat > "${root}/postgres/variants.yaml" <<'YAML'
+build:
+  version_retention: 3
+versions:
+  - tag: "17-alpine"
+YAML
+
+    # Extension config: postgis standard extension (no version_set resolver)
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  postgis:
+    version: "3.6.3"
+YAML
+
+    # Stub ./make list
+    cat > "${root}/make" <<MAKE_EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "list" ]]; then
+    echo "postgres"
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    printf '%s' "$root"
+}
+
+# ---------------------------------------------------------------------------
+# GATE-FIX1-a: --mode post-build --container postgres checks declared extension
+#              version; absent extension → drift row, exit 1
+# ---------------------------------------------------------------------------
+@test "GATE-FIX1-a: post-build postgres checks extensions — absent ext version → drift + exit 1" {
+    local root
+    root=$(_make_postgres_project)
+
+    # postgres container image is present; ext-postgis:pg17-3.6.3 is absent (old bump)
+    local probe
+    probe=$(_make_probe_stub \
+        "ghcr.io/testowner/postgres:17-alpine" "present" \
+        "__default__" "absent")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode post-build --container postgres --json
+
+    # Extension drift detected → exit 1
+    [ "$status" -eq 1 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    # Must have at least one extension drift row
+    local ext_drift_count
+    ext_drift_count=$(printf '%s' "$output" | jq '[.[] | select(.kind=="extension" and .status=="drift")] | length')
+    [ "$ext_drift_count" -ge 1 ]
+
+    # The drift row must reference the postgis extension
+    local ext_name
+    ext_name=$(printf '%s' "$output" | jq -r '[.[] | select(.kind=="extension" and .status=="drift")] | .[0].name')
+    [[ "$ext_name" == *"postgis"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# GATE-FIX1-b: --mode post-build --container postgres, extension in_sync → exit 0
+# ---------------------------------------------------------------------------
+@test "GATE-FIX1-b: post-build postgres checks extensions — published ext → in_sync + exit 0" {
+    local root
+    root=$(_make_postgres_project)
+
+    # Both postgres image AND ext-postgis:pg17-3.6.3 present
+    local probe
+    probe=$(_make_probe_stub \
+        "ghcr.io/testowner/postgres:17-alpine" "present" \
+        "ghcr.io/testowner/ext-postgis:pg17-3.6.3" "present" \
+        "__default__" "absent")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode post-build --container postgres --json
+
+    [ "$status" -eq 0 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    # Must have an extension in_sync row
+    local ext_sync_count
+    ext_sync_count=$(printf '%s' "$output" | jq '[.[] | select(.kind=="extension" and .status=="in_sync")] | length')
+    [ "$ext_sync_count" -ge 1 ]
+
+    # No drift rows at all
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# GATE-FIX1-c: --mode post-build --container <non-postgres> does NOT run extension checks
+# ---------------------------------------------------------------------------
+@test "GATE-FIX1-c: post-build non-postgres container does NOT run extension checks" {
+    local root
+    root=$(_make_temp_project "nginx" "1.25.0")
+
+    # Stub probe: nginx present; any extension probe returns error (would fail the test
+    # if extension checks ran for non-postgres containers)
+    local probe
+    probe=$(_make_probe_stub \
+        "ghcr.io/testowner/nginx:1.25.0" "present" \
+        "__default__" "error")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode post-build --container nginx --json
+
+    # No extension check ran → exit 0 (only the nginx container row, in_sync)
+    [ "$status" -eq 0 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    # No extension rows
+    local ext_count
+    ext_count=$(printf '%s' "$output" | jq '[.[] | select(.kind=="extension")] | length')
+    [ "$ext_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# GATE-FIX2 — structural: summary job timeout-minutes >= 15
+# ---------------------------------------------------------------------------
+@test "GATE-FIX2: summary job timeout-minutes is >= 15" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # Extract the timeout-minutes value from the summary job block.
+    # The summary job starts at "  summary:" and its timeout-minutes appears within a few lines.
+    local timeout_val
+    timeout_val=$(awk '
+        /^  summary:/ { in_summary=1 }
+        in_summary && /timeout-minutes:/ {
+            match($0, /timeout-minutes:[[:space:]]*([0-9]+)/, arr)
+            print arr[1]
+            exit
+        }
+        in_summary && /^  [a-z][a-z]/ && !/^  summary:/ { exit }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    [ -n "$timeout_val" ]
+    [ "$timeout_val" -ge 15 ]
+}
