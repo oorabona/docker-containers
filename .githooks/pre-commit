@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — local actionlint gate for workflow changes
+#
+# Runs actionlint on every staged workflow file before a commit is recorded.
+# Mirrors the CI "Actionlint" job exactly: SHELLCHECK_OPTS=--severity=error +
+# bare `actionlint -no-color` (auto-discovery, covers both *.yaml and *.yml,
+# excludes composite actions under .github/actions/ by location).
+#
+# Degradation contract:
+#   • No workflow files staged  → exit 0 silently (fast path, no delay).
+#   • actionlint not on PATH    → warn + exit 0 (CI is the guarantee).
+#   • actionlint finds issues   → exit 1 (commit blocked with bypass hint).
+#
+# LIMITATION: actionlint lints on-disk files, not the git index.  In the
+# common workflow (edit → stage → commit) staged == on-disk, so this is fine.
+# Unstaged hunks to workflow files could theoretically be linted here but
+# aren't — reconstructing the index tree would add complexity; the CI job
+# catches any residual divergence.
+
+set -euo pipefail
+
+# Git already runs hooks from the worktree root, but make it explicit so a
+# manual invocation from a subdirectory still lints the whole repo (actionlint
+# auto-discovery is cwd-relative).
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# ── Step 1: check for staged workflow files ──────────────────────────────────
+staged_workflows="$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
+
+if [ -z "${staged_workflows}" ]; then
+  exit 0
+fi
+
+# ── Step 2: graceful skip if actionlint is not installed ─────────────────────
+if ! command -v actionlint > /dev/null 2>&1; then
+  printf '\033[33mactionlint not found — skipping local workflow lint (CI will still check).\033[0m\n' >&2
+  printf 'Install: https://github.com/rhysd/actionlint/blob/main/docs/install.md\n' >&2
+  exit 0
+fi
+
+# ── Step 3: run actionlint exactly as CI does ────────────────────────────────
+# No path args: auto-discovery lints all .github/workflows/*.{yaml,yml} and
+# excludes .github/actions/ composite files (see actionlint.yaml header note 3).
+# -config-file /dev/null: ignore any in-repo .github/actionlint.yaml so a branch
+# can't add `ignore:` patterns that silently weaken the gate (matches CI).
+export SHELLCHECK_OPTS="--severity=error"
+if actionlint -no-color -config-file /dev/null; then
+  printf 'actionlint: workflows compile clean.\n'
+  exit 0
+else
+  printf '\nHint: to bypass in an emergency use `git commit --no-verify`.\n' >&2
+  printf 'Note: the CI Actionlint job will still enforce this gate on the PR/push.\n' >&2
+  exit 1
+fi

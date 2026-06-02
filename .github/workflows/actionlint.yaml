@@ -73,5 +73,9 @@ jobs:
           set -euo pipefail
           # No path args: actionlint auto-discovers all .github/workflows/*.{yaml,yml}
           # and excludes composite actions by location. See header note (3).
-          ./actionlint -no-color
+          # -config-file /dev/null: ignore any in-repo .github/actionlint.yaml so a
+          # branch can't add `ignore:` patterns that silently weaken this gate
+          # (a config-only change wouldn't even re-trigger this job). Wanting an
+          # actionlint config later is a deliberate edit to THIS line, reviewed.
+          ./actionlint -no-color -config-file /dev/null
           echo "✅ actionlint: workflows compile clean" >> "$GITHUB_STEP_SUMMARY"
