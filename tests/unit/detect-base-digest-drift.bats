@@ -3768,3 +3768,208 @@ php" \
     php_present=$(printf '%s' "$internal_deps_json" | jq -r 'index("php") != null')
     [ "$php_present" = "true" ]
 }
+
+# ---------------------------------------------------------------------------
+# Helper: create a counting probe stub that serves fixture responses AND
+# records one invocation per ref under a counter directory.
+#
+# Usage: _make_counting_probe_stub <responses_dir> <counter_dir>
+#
+# Each invocation appends a line to <counter_dir>/<ref_key> so callers can
+# assert `wc -l` to verify dedup.  The counter file name uses the same
+# key normalization as _make_probe_stub (':' and '/' → '-').
+# ---------------------------------------------------------------------------
+_make_counting_probe_stub() {
+    local responses_dir="$1"
+    local counter_dir="$2"
+    local stub_path="$TEST_TEMP_DIR/bin/probe-counting-stub"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$stub_path" <<STUB_EOF
+#!/usr/bin/env bash
+image_ref="\$1"
+responses_dir="${responses_dir}"
+counter_dir="${counter_dir}"
+
+key="\$(printf '%s' "\$image_ref" | tr ':/' '--')"
+response_file="\${responses_dir}/\${key}.json"
+
+# Bump the per-ref counter (one line per invocation)
+mkdir -p "\${counter_dir}"
+printf '%s\n' "\${image_ref}" >> "\${counter_dir}/\${key}"
+
+if [[ -f "\$response_file" ]]; then
+    cat "\$response_file"
+    exit 0
+else
+    echo "stub: no fixture for '\$image_ref' (expected \$response_file)" >&2
+    exit 1
+fi
+STUB_EOF
+    chmod +x "$stub_path"
+    printf '%s' "$stub_path"
+}
+
+# ---------------------------------------------------------------------------
+# MG5: Probe dedup — same base_image_ref probed at most once per run
+#
+# Scenario-3 has two foo variants (1.0-alpine and 1.0-alpine2) that both use
+# base_image_ref = "alpine:3.21".  With memoization, the real probe runs
+# exactly once for that ref.  Both variants must still receive the correct
+# status (drift, since recorded=aaa... but current=ccc...).
+# Mutation guard: deleting the _DIGEST_CACHE lookup would make the counter
+# reach 2 (one per variant), failing the [ "$count" -eq 1 ] assertion.
+# ---------------------------------------------------------------------------
+@test "scenario-3: probe dedup — shared base_image_ref probed exactly once (guard MG5)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-3"
+    local counter_dir="$TEST_TEMP_DIR/probe-counters"
+    local probe_stub
+    probe_stub=$(_make_counting_probe_stub "${fixture_dir}/responses" "$counter_dir")
+
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Counter file for alpine:3.21 must exist and have exactly 1 line
+    counter_file="${counter_dir}/alpine-3.21"
+    [ -f "$counter_file" ]
+    count=$(wc -l < "$counter_file")
+    [ "$count" -eq 1 ]
+}
+
+@test "scenario-3: probe dedup — both variants still receive correct drift status (guard MG5)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-3"
+    local counter_dir="$TEST_TEMP_DIR/probe-counters-b"
+    local probe_stub
+    probe_stub=$(_make_counting_probe_stub "${fixture_dir}/responses" "$counter_dir")
+
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "${fixture_dir}/lineage-cache")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Both variants share alpine:3.21; recorded=aaa... but current=ccc... -> drift
+    v1_status=$(printf '%s' "$result" | \
+        jq -r '.[0].variants[] | select(.variant_tag == "1.0-alpine") | .status')
+    [ "$v1_status" = "drift" ]
+
+    v2_status=$(printf '%s' "$result" | \
+        jq -r '.[0].variants[] | select(.variant_tag == "1.0-alpine2") | .status')
+    [ "$v2_status" = "drift" ]
+}
+
+# ---------------------------------------------------------------------------
+# MG6: --container scope filter
+#
+# Scenario-2 has two containers: foo (alpine + debian) and bar (ubuntu + rocky).
+# Running with --container foo must:
+#   1. Emit exactly one container record (foo)
+#   2. bar must be absent from output
+#   3. The counting stub must show ZERO invocations for refs that belong ONLY
+#      to bar (ubuntu:24.04, rockylinux:9) -- the skip happens before the probe
+# Mutation guard: deleting the `continue` skip would cause bar to appear in
+# output and the ubuntu/rocky counters to be non-zero.
+# ---------------------------------------------------------------------------
+@test "scenario-2: --container foo — output contains only foo (guard MG6)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
+    local counter_dir="$TEST_TEMP_DIR/mg6-counters"
+    local probe_stub
+    probe_stub=$(_make_counting_probe_stub "${fixture_dir}/responses" "$counter_dir")
+
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" --container foo "${fixture_dir}/lineage-cache")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Exactly one container record
+    length=$(printf '%s' "$result" | jq 'length')
+    [ "$length" -eq 1 ]
+
+    # The record is for foo
+    container_name=$(printf '%s' "$result" | jq -r '.[0].container')
+    [ "$container_name" = "foo" ]
+}
+
+@test "scenario-2: --container foo — bar is absent from output (guard MG6)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
+    local probe_stub
+    probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
+
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" --container foo "${fixture_dir}/lineage-cache")
+
+    # bar must not appear anywhere in output
+    bar_count=$(printf '%s' "$result" | jq '[.[] | select(.container == "bar")] | length')
+    [ "$bar_count" -eq 0 ]
+}
+
+@test "scenario-2: --container foo — bar's refs are NOT probed (skip before probe, guard MG6)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
+    local counter_dir="$TEST_TEMP_DIR/mg6-skip-counters"
+    local probe_stub
+    probe_stub=$(_make_counting_probe_stub "${fixture_dir}/responses" "$counter_dir")
+
+    PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" --container foo "${fixture_dir}/lineage-cache" >/dev/null
+
+    # Refs used only by bar: ubuntu:24.04 and rockylinux:9
+    # Their counter files must NOT exist (zero invocations)
+    [ ! -f "${counter_dir}/ubuntu-24.04" ]
+    [ ! -f "${counter_dir}/rockylinux-9" ]
+}
+
+@test "scenario-2: --container nonexistent — empty output (fail-safe)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-2"
+    local probe_stub
+    probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
+
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" --container nonexistent "${fixture_dir}/lineage-cache")
+
+    # Non-matching filter -> no entries -> empty array
+    [ "$result" = "[]" ]
+}
+
+# MG6 field-vs-filename: filtering uses the .container JSON field, NOT the
+# filename stem.  Scenario-4 has a file named "wrongname-1.0-alpine.json"
+# whose .container field is "foo".  A filename-based filter would miss it;
+# a field-based filter finds it.
+@test "scenario-4: --container foo finds entry whose filename stem is 'wrongname' (field-not-filename, guard MG6)" {
+    local fixture_dir="${FIXTURES_DIR_DRIFT}/scenario-4"
+    local probe_stub
+    probe_stub=$(_make_probe_stub "${fixture_dir}/responses")
+
+    # "wrongname" is not in _VALID_CONTAINERS_OVERRIDE; "foo" is.
+    # The file is wrongname-1.0-alpine.json but .container = "foo".
+    result=$(PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" --container foo "${fixture_dir}/lineage-cache")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Must find the entry via the .container field, not filename
+    length=$(printf '%s' "$result" | jq 'length')
+    [ "$length" -eq 1 ]
+
+    container_name=$(printf '%s' "$result" | jq -r '.[0].container')
+    [ "$container_name" = "foo" ]
+}
+
+# ---------------------------------------------------------------------------
+# Arg parsing: --container edge cases
+# ---------------------------------------------------------------------------
+@test "arg-parsing: --container with no following value exits 1" {
+    run bash "${DETECTOR_SCRIPT}" --container 2>/dev/null
+    [ "$status" -eq 1 ]
+}
+
+@test "arg-parsing: --container with no following value emits ::error:: to stderr" {
+    local stderr_log="$TEST_TEMP_DIR/container-noarg-stderr.log"
+    bash "${DETECTOR_SCRIPT}" --container 2>"$stderr_log" >/dev/null || true
+
+    grep -q '::error::' "$stderr_log"
+}
+
+@test "arg-parsing: unknown flag -x still exits 1" {
+    run bash "${DETECTOR_SCRIPT}" -x 2>/dev/null
+    [ "$status" -eq 1 ]
+}

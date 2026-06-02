@@ -1215,9 +1215,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
       - name: Install yq
         shell: bash
         run: |
@@ -1430,9 +1427,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
       - name: Install yq
         shell: bash
         run: |
@@ -1459,7 +1453,7 @@ jobs:
           # Detector emits ::error:: lines to stderr for visibility; capture stdout
           # and check exit code + JSON validity before processing.
           detect_rc=0
-          ./scripts/detect-base-digest-drift.sh > "$drift_file" || detect_rc=$?
+          ./scripts/detect-base-digest-drift.sh --container "$CONTAINER" > "$drift_file" || detect_rc=$?
           if [[ $detect_rc -ne 0 ]]; then
             echo "::error::detect-base-digest-drift.sh exited with $detect_rc — aborting PR" >&2
             exit 1
@@ -1728,9 +1722,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
       - name: Install yq
         shell: bash
         run: |
@@ -1757,7 +1748,7 @@ jobs:
           # Detector emits ::error:: lines to stderr for visibility; capture stdout
           # and check exit code + JSON validity before processing.
           detect_rc=0
-          ./scripts/detect-base-digest-drift.sh > "$drift_file" || detect_rc=$?
+          ./scripts/detect-base-digest-drift.sh --container "$CONTAINER" > "$drift_file" || detect_rc=$?
           if [[ $detect_rc -ne 0 ]]; then
             echo "::error::detect-base-digest-drift.sh exited with $detect_rc — aborting PR" >&2
             exit 1
