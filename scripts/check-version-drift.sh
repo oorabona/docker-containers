@@ -57,6 +57,8 @@ fi
 # ---------------------------------------------------------------------------
 # shellcheck source=../helpers/variant-utils.sh
 source "${_vdrift_self_dir}/../helpers/variant-utils.sh"
+# shellcheck source=../helpers/extension-utils.sh
+source "${_vdrift_self_dir}/../helpers/extension-utils.sh"
 
 # ---------------------------------------------------------------------------
 # _escape_gha_command <value>
@@ -489,9 +491,14 @@ _process_container() {
         return 0
     fi
 
-    # List all declared version tags
+    # List all declared version tags.
+    # Distinguish parse/tool failure (non-zero exit) from genuinely empty result.
     local versions
-    versions=$(list_versions "$container_dir" 2>/dev/null || true)
+    if ! versions=$(list_versions "$container_dir" 2>/dev/null); then
+        echo "::error::version-drift: failed to read declared versions for ${container} (yq/parse error)" >&2
+        _HAS_ERROR=true
+        return 0
+    fi
 
     if [[ -z "$versions" ]]; then
         return 0
@@ -551,46 +558,55 @@ _process_extensions() {
         return 0
     fi
 
-    # Read PG major versions
+    # Read PG major versions — distinguish tool failure from genuinely empty config.
     local pg_majors
-    pg_majors=$(yq -r '.pg_versions[]' "$ext_config" 2>/dev/null || true)
+    if ! pg_majors=$(yq -r '.pg_versions[]' "$ext_config" 2>/dev/null); then
+        echo "::error::version-drift: failed to read pg_versions from ${ext_config} (yq/parse error)" >&2
+        _HAS_ERROR=true
+        return 0
+    fi
     if [[ -z "$pg_majors" ]]; then
         return 0
     fi
 
-    # Read extension names
-    local ext_names
-    ext_names=$(yq -r '.extensions | keys | .[]' "$ext_config" 2>/dev/null || true)
-    if [[ -z "$ext_names" ]]; then
-        return 0
-    fi
+    # Enumerate extension names per PG major using the build's filter function
+    # (list_extensions_by_priority), which excludes disabled extensions and those
+    # with max_pg_version < pg_major.  This matches exactly what the build publishes.
+    while IFS= read -r pg_major; do
+        [[ -z "$pg_major" ]] && continue
 
-    while IFS= read -r ext_name; do
-        [[ -z "$ext_name" ]] && continue
+        local ext_names
+        if ! ext_names=$(list_extensions_by_priority "$ext_config" "$pg_major" 2>/dev/null); then
+            echo "::error::version-drift: failed to list extensions for pg${pg_major} from ${ext_config} (yq/parse error)" >&2
+            _HAS_ERROR=true
+            continue
+        fi
 
-        # Check if this extension has a version_set resolver (timescaledb pattern)
-        local has_resolver
-        has_resolver=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" \
-            "$ext_config" 2>/dev/null || true)
+        if [[ -z "$ext_names" ]]; then
+            continue
+        fi
 
-        if [[ -n "$has_resolver" ]]; then
-            # Timescaledb-style: check the resolver window per PG major
-            while IFS= read -r pg_major; do
-                [[ -z "$pg_major" ]] && continue
-                _check_timescaledb_extension "$owner" "$ext_name" "$pg_major" "$ext_config"
-            done <<< "$pg_majors"
-        else
-            # Standard extension: single declared version from config
-            local ext_version
-            ext_version=$(yq -r ".extensions.${ext_name}.version // \"\"" \
+        while IFS= read -r ext_name; do
+            [[ -z "$ext_name" ]] && continue
+
+            # Check if this extension has a version_set resolver (timescaledb pattern)
+            local has_resolver
+            has_resolver=$(yq -r ".extensions.${ext_name}.version_set.resolver // \"\"" \
                 "$ext_config" 2>/dev/null || true)
 
-            if [[ -z "$ext_version" || "$ext_version" == "null" ]]; then
-                continue
-            fi
+            if [[ -n "$has_resolver" ]]; then
+                # Timescaledb-style: check the resolver window per PG major
+                _check_timescaledb_extension "$owner" "$ext_name" "$pg_major" "$ext_config"
+            else
+                # Standard extension: single declared version from config
+                local ext_version
+                ext_version=$(yq -r ".extensions.${ext_name}.version // \"\"" \
+                    "$ext_config" 2>/dev/null || true)
 
-            while IFS= read -r pg_major; do
-                [[ -z "$pg_major" ]] && continue
+                if [[ -z "$ext_version" || "$ext_version" == "null" ]]; then
+                    continue
+                fi
+
                 local tag="pg${pg_major}-${ext_version}"
                 local ext_image_name="ext-${ext_name}"
                 local probe_result
@@ -617,9 +633,9 @@ _process_extensions() {
                         _append_row "extension" "$row_name" "$tag" "" "error"
                         ;;
                 esac
-            done <<< "$pg_majors"
-        fi
-    done <<< "$ext_names"
+            fi
+        done <<< "$ext_names"
+    done <<< "$pg_majors"
 }
 
 # ---------------------------------------------------------------------------
@@ -750,6 +766,20 @@ _emit_output() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Prerequisite check — fail-closed on missing tools
+# Both yq and jq are required for declared-version enumeration and JSON output.
+# A missing tool causes silent false-clean results; we must exit 2 explicitly.
+# ---------------------------------------------------------------------------
+if ! command -v yq >/dev/null 2>&1; then
+    echo "::error::version-drift: required tool 'yq' not found on PATH — cannot run guard" >&2
+    exit 2
+fi
+if ! command -v jq >/dev/null 2>&1; then
+    echo "::error::version-drift: required tool 'jq' not found on PATH — cannot run guard" >&2
+    exit 2
+fi
 
 if ! GHCR_OWNER=$(_vdrift_ghcr_owner); then
     echo "::error::version-drift: GHCR owner resolution failed — cannot run guard" >&2

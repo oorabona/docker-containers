@@ -2093,3 +2093,307 @@ MAKE_EOF
     [ -n "$timeout_val" ]
     [ "$timeout_val" -ge 15 ]
 }
+
+# ---------------------------------------------------------------------------
+# NEW-FIX1 — fail-closed on missing tools
+# ---------------------------------------------------------------------------
+
+@test "NEW-FIX1-yq-missing: yq absent from PATH → script exits 2, not 0 (not silent false-clean)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    # Build a PATH that contains jq but NOT yq.
+    local fake_bin="${TEST_TEMP_DIR}/no-yq-bin-$$"
+    mkdir -p "$fake_bin"
+    # Copy jq (or symlink the real one) so jq is available but yq is not.
+    # We do NOT create a yq stub → command -v yq will fail.
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Must fail-closed: exit 2, never exit 0 (silent false-clean)
+    [ "$status" -eq 2 ]
+
+    # stderr must mention yq
+    [[ "$stderr" == *"yq"* ]]
+}
+
+@test "NEW-FIX1-jq-missing-structural: script has command -v jq prerequisite check → would exit 2 if absent" {
+    # Structural test: verify the script contains the fail-closed jq prerequisite check.
+    # (A functional test that removes jq from PATH is not reliably portable across
+    # environments where jq shares /bin with bash itself; structural is the right oracle here.)
+
+    # The script must contain "command -v jq" (the prerequisite check)
+    local jq_check_count
+    jq_check_count=$(grep -cE 'command -v jq' "$DRIFT_SCRIPT" || true)
+    [ "$jq_check_count" -ge 1 ]
+
+    # The jq check must be followed by an exit 2 in the same branch
+    # (verify both appear in the prerequisite section before main logic)
+    local prereq_block
+    prereq_block=$(awk '
+        /Prerequisite check/ { capture=1 }
+        capture && /GHCR owner/ { capture=0 }
+        capture { print }
+    ' "$DRIFT_SCRIPT" || true)
+
+    local jq_in_prereq
+    jq_in_prereq=$(printf '%s' "$prereq_block" | grep -c 'command -v jq' || true)
+    [ "$jq_in_prereq" -ge 1 ]
+
+    local exit2_in_prereq
+    exit2_in_prereq=$(printf '%s' "$prereq_block" | grep -c 'exit 2' || true)
+    [ "$exit2_in_prereq" -ge 2 ]
+}
+
+@test "NEW-FIX1-pg-versions-parse-fail: yq failure reading pg_versions → exit 2, not silent exit 0" {
+    # The pg_versions read in _process_extensions uses a raw yq call (not wrapped
+    # in || echo ""), so a yq parse failure there is directly detectable.
+    # Verify: a fake yq that exits non-zero causes the extension sweep to exit 2.
+    local root="${TEST_TEMP_DIR}/pg-parse-fail-project-$$"
+    mkdir -p "${root}/postgres/extensions"
+
+    # Valid YAML but the fake yq will fail on it anyway
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  pgvector:
+    version: "0.8.0"
+YAML
+
+    # Stub ./make list — empty (only extension sweep matters)
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    printf ''
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # Create a fake yq on PATH that always exits non-zero (simulates parse error).
+    local fake_bin="${TEST_TEMP_DIR}/fail-yq-bin-$$"
+    mkdir -p "$fake_bin"
+    cat > "${fake_bin}/yq" <<'YQ_EOF'
+#!/usr/bin/env bash
+exit 1
+YQ_EOF
+    chmod +x "${fake_bin}/yq"
+
+    local probe
+    probe=$(_make_probe_stub "__default__" "present")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # pg_versions read failure must exit 2 (fail-closed), not 0 (false-clean)
+    [ "$status" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# NEW-FIX2 — extension sweep respects disabled/max_pg_version filters
+# ---------------------------------------------------------------------------
+
+@test "NEW-FIX2-disabled: disabled extension is NOT checked for drift" {
+    # Config with two extensions: pgvector (enabled) and citus (disabled: true).
+    # citus would generate a drift row if enumerated; only pgvector must appear.
+    local root="${TEST_TEMP_DIR}/disabled-ext-project-$$"
+    mkdir -p "${root}/postgres/extensions"
+
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  pgvector:
+    version: "0.8.0"
+  citus:
+    version: "12.1.6"
+    disabled: true
+YAML
+
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    printf ''
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # pgvector present; any citus probe returns error (would fail test if called)
+    local probe
+    probe=$(_make_probe_stub \
+        "ghcr.io/testowner/ext-pgvector:pg17-0.8.0" "present" \
+        "__default__" "error")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # citus was disabled → its probe (error) was never called → exit 0
+    [ "$status" -eq 0 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    # No citus rows
+    local citus_count
+    citus_count=$(printf '%s' "$output" | jq '[.[] | select(.name | contains("citus"))] | length')
+    [ "$citus_count" -eq 0 ]
+
+    # pgvector must be in_sync
+    local pgvector_status
+    pgvector_status=$(printf '%s' "$output" | jq -r '.[] | select(.name | contains("pgvector")) | .status')
+    [ "$pgvector_status" = "in_sync" ]
+}
+
+@test "NEW-FIX2-max-pg-version: extension with max_pg_version < pg_major is NOT checked for drift" {
+    # Config: pgvector (no max_pg_version) and pg_cron (max_pg_version: 16).
+    # For pg17, pg_cron is incompatible → must not appear in results.
+    local root="${TEST_TEMP_DIR}/maxpg-ext-project-$$"
+    mkdir -p "${root}/postgres/extensions"
+
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  pgvector:
+    version: "0.8.0"
+  pg_cron:
+    version: "1.6.4"
+    max_pg_version: 16
+YAML
+
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    printf ''
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # pgvector present; pg_cron probe returns error (must not be called)
+    local probe
+    probe=$(_make_probe_stub \
+        "ghcr.io/testowner/ext-pgvector:pg17-0.8.0" "present" \
+        "__default__" "error")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # pg_cron was incompatible → its probe (error) never called → exit 0
+    [ "$status" -eq 0 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    # No pg_cron rows
+    local pg_cron_count
+    pg_cron_count=$(printf '%s' "$output" | jq '[.[] | select(.name | contains("pg_cron"))] | length')
+    [ "$pg_cron_count" -eq 0 ]
+
+    # pgvector must be in_sync
+    local pgvector_status
+    pgvector_status=$(printf '%s' "$output" | jq -r '.[] | select(.name | contains("pgvector")) | .status')
+    [ "$pgvector_status" = "in_sync" ]
+}
+
+# ---------------------------------------------------------------------------
+# NEW-FIX3 — undeterminable bump epoch defaults to drift, not in_flight
+# ---------------------------------------------------------------------------
+
+@test "NEW-FIX3-no-commit: git log finds no commit for declaring file → absent version is drift (not in_flight)" {
+    # When _VDRIFT_BUMP_EPOCH_OVERRIDE is NOT set and git log returns empty
+    # (no commit tracked for the file), the fallback must be epoch=0 → drift.
+    # We use a fresh temp git repo with no commits touching variants.yaml so
+    # that 'git log -1 -- <file>' returns nothing.
+
+    local root="${TEST_TEMP_DIR}/no-commit-project-$$"
+    local cdir="${root}/mycontainer"
+    mkdir -p "$cdir"
+
+    cat > "${cdir}/variants.yaml" <<'YAML'
+build:
+  version_retention: 3
+versions:
+  - tag: "5.0.0"
+YAML
+
+    cat > "${root}/make" <<MAKE_EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "list" ]]; then
+    echo "mycontainer"
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # Initialize an empty git repo (no commits → git log returns empty for any file).
+    git -C "$root" init -q
+    git -C "$root" config user.email "test@test.com"
+    git -C "$root" config user.name "Test"
+    # Do NOT commit variants.yaml → git log -1 -- mycontainer/variants.yaml returns ""
+
+    local probe
+    probe=$(_make_probe_stub "__default__" "absent")
+
+    # Do NOT set _VDRIFT_BUMP_EPOCH_OVERRIDE → the script calls git log
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="mycontainer" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json --grace-hours 6
+
+    # Undeterminable epoch → epoch=0 → elapsed=now >> grace → drift, exit 1
+    [ "$status" -eq 1 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -ge 1 ]
+
+    # Must NOT be in_flight
+    local in_flight_count
+    in_flight_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="in_flight")] | length')
+    [ "$in_flight_count" -eq 0 ]
+}
+
+@test "NEW-FIX3-workflow: summary job checkout uses fetch-depth: 0 (full git history)" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # The summary job checkout must use fetch-depth: 0 so git log
+    # can find the actual bump commit regardless of shallow-clone depth.
+    # Extract the summary job's checkout step and verify fetch-depth: 0.
+    local summary_checkout_block
+    summary_checkout_block=$(awk '
+        /^  summary:/ { in_summary=1 }
+        in_summary && /Checkout repository/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    [ -n "$summary_checkout_block" ]
+
+    local fetch_depth_val
+    fetch_depth_val=$(printf '%s' "$summary_checkout_block" | grep 'fetch-depth:' | awk '{print $2}')
+    [ "$fetch_depth_val" = "0" ]
+}
