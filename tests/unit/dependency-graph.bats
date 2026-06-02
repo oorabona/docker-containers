@@ -1656,3 +1656,102 @@ EOF
     # Must return rc=2 (fail-closed), not rc=0
     [ "$status" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# Security: GHA workflow-command injection prevention (r8 fix)
+#
+# ::notice::/:error:: lines that interpolate values from lineage JSON, git
+# remotes, or container-name arguments must escape the interpolated data via
+# _escape_gha_command before emitting it.  Without escaping, a crafted lineage
+# file whose .tag field contains "\n::error::INJECTED" would produce two
+# separate workflow commands on stderr — the second being attacker-controlled.
+#
+# Test 1 — injection lock on ::notice:: "skipping stale lineage" path:
+#   A lineage file whose .tag value contains a newline + a ::error:: payload.
+#   Set up the active-tag filter so this file is treated as stale (tag not in
+#   active set).  Assert:
+#     a) the emitted stderr does NOT contain a raw second workflow-command line
+#        (i.e. no bare "::error::INJECTED" on its own line), and
+#     b) the dangerous content appears escaped as "%0A" (not as a literal \n).
+#   This test is RED before the fix (injection lands as a second command line)
+#   and GREEN after (newline percent-encoded into the single notice line).
+#
+# Test 2 — injection lock on ::error:: "Owner resolution failed" path:
+#   A base_image_ref from a lineage file that contains "::set-env::" payload.
+#   Owner resolution fails (isolated PROJECT_ROOT) so the error path fires.
+#   Assert the payload appears URL-encoded on the single error line, not as a
+#   separate command.
+#
+# Mutation guards:
+#   MG-INJ1: removing _escape_gha_command wrap on _file_tag at the ::notice::
+#             line → test 1 FAILS (raw newline + injected command on stderr).
+#   MG-INJ2: removing _escape_gha_command wrap on base_ref at the ::error::
+#             line → test 2 FAILS (raw "::set-env::" appears as own command).
+# ---------------------------------------------------------------------------
+
+@test "Security: GHA injection lock — stale-lineage ::notice:: escapes newline in .tag (Defect INJ1)" {
+    # Arrange: lineage file whose .tag contains a JSON-encoded newline + injected command
+    # (using JSON \n so jq decodes it to a literal newline in the extracted value).
+    # The active-tag filter is set to "2.0" so this file (tag contains "v1"+newline) is stale.
+    # _depgraph_get_deps will emit the ::notice:: for the stale file; the tag value
+    # must be escaped via _escape_gha_command before interpolation into the message.
+    local lineage_file="${_DEPGRAPH_LINEAGE_DIR}/wordpress-crafted.json"
+    # JSON \n → jq outputs literal newline; without escaping, ::error::INJECTED
+    # becomes a second workflow command on its own line in the emitted ::notice::.
+    printf '{"container":"wordpress","tag":"v1\\n::error::INJECTED","base_image_ref":"ghcr.io/oorabona/php:latest","base_image_digest":"sha256:%064d"}' \
+        "0" > "$lineage_file"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=oorabona
+        export _DEPGRAPH_OWNER_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        _DEPGRAPH_CONTAINERS_OVERRIDE='php wordpress'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        # Active set has '2.0' only — the crafted tag (v1+newline+payload) is stale → notice fires
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_wordpress='2.0'
+        export _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_wordpress
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    # The notice must have been emitted (stale tag scenario)
+    [[ "$output" == *"::notice::"* ]]
+    # The injected payload must NOT appear as a bare second workflow command
+    # (i.e. no line that starts with "::error::INJECTED" on its own)
+    [[ "$output" != *$'\n::error::INJECTED'* ]]
+    # The newline in the tag must have been percent-encoded → %0A present in output
+    [[ "$output" == *"%0A"* ]]
+}
+
+@test "Security: GHA injection lock — owner-resolution ::error:: escapes ::set-env:: payload in base_image_ref (Defect INJ2)" {
+    # Arrange: lineage file whose base_image_ref contains a ::set-env:: injection payload
+    # (JSON-encoded \n so jq parses it and returns a literal newline in the value).
+    # Owner resolution will fail (isolated PROJECT_ROOT, no git remote) → the
+    # "Owner resolution failed; cannot classify '...'" ::error:: line fires.
+    # The base_image_ref value must be escaped before interpolation.
+    local lineage_file="${_DEPGRAPH_LINEAGE_DIR}/wordpress-injected.json"
+    # Use JSON \n escape so jq decodes it to a literal newline in the extracted value.
+    printf '{"container":"wordpress","tag":"latest","base_image_ref":"ghcr.io/someowner/php:latest\\n::set-env name=PATH::hacked","base_image_digest":"sha256:%064d"}' \
+        "0" > "$lineage_file"
+
+    local isolated_dir="$TEST_TEMP_DIR/isolated_inj2"
+    mkdir -p "$isolated_dir"
+
+    run bash -c "
+        unset _DEPGRAPH_OWNER_OVERRIDE
+        unset GITHUB_REPOSITORY_OWNER
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        source '${HELPERS_DIR}/dependency-graph.sh'
+        _depgraph_get_deps wordpress
+    "
+    # The error path fires (non-zero exit due to owner failure)
+    [ "$status" -ne 0 ]
+    # The ::set-env:: payload must NOT appear as a bare separate workflow command
+    [[ "$output" != *$'\n::set-env'* ]]
+    # The newline must be percent-encoded in the error output
+    [[ "$output" == *"%0A"* ]]
+}

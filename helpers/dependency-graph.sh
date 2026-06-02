@@ -48,6 +48,30 @@ source "${_depgraph_dir}/lineage-utils.sh"
 unset _depgraph_dir
 
 # ---------------------------------------------------------------------------
+# _escape_gha_command <value>
+#
+# Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
+# workflow command.  Without this, a newline/CR/`%` in the value could
+# terminate the command early and inject another (e.g. `::set-env::`,
+# `::add-mask::`, `::stop-commands::`).  Mapping per GitHub runner spec:
+#   %  → %25
+#   \n → %0A
+#   \r → %0D
+#
+# Pattern sourced from helpers/base-cache-utils.sh::_escape_gha_command;
+# inlined here to avoid importing the full base-cache helper (which has
+# set -euo pipefail and sources logging.sh/variant-utils.sh at parse time,
+# breaking this file's explicit no-pipefail contract).
+# ---------------------------------------------------------------------------
+_escape_gha_command() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\n'/%0A}"
+    s="${s//$'\r'/%0D}"
+    printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------------
 # _depgraph_valid_containers
 #
 # Returns (echo) space-separated list of valid container names.
@@ -104,7 +128,7 @@ _depgraph_project_owner() {
         printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
-    echo "::error::Cannot parse project owner from git remote URL: ${remote_url}" >&2
+    printf '::error::Cannot parse project owner from git remote URL: %s\n' "$(_escape_gha_command "$remote_url")" >&2
     return 1
 }
 
@@ -280,13 +304,13 @@ _depgraph_get_deps() {
         _lb_out=$(cd "${PROJECT_ROOT}" && ./make list-builds "$container" current 2>/dev/null) || _lb_rc=$?
         if [[ $_lb_rc -ne 0 ]]; then
             printf '::error::_depgraph_get_deps: ./make list-builds %s failed (rc=%s); refusing to proceed (fail-closed)\n' \
-                "$container" "$_lb_rc" >&2
+                "$(_escape_gha_command "$container")" "$_lb_rc" >&2
             return 2
         fi
         _active_tags_for_filter=$(printf '%s' "$_lb_out" | jq -r '.[].tag // empty' 2>/dev/null | sort -u || echo "")
         if [[ -z "$_active_tags_for_filter" ]]; then
             printf '::error::_depgraph_get_deps: ./make list-builds %s returned no tags; refusing to proceed (fail-closed)\n' \
-                "$container" >&2
+                "$(_escape_gha_command "$container")" >&2
             return 2
         fi
     fi
@@ -310,7 +334,7 @@ _depgraph_get_deps() {
             _file_tag=$(jq -r '.tag // empty' "$lineage_file" 2>/dev/null || true)
             if [[ -n "$_file_tag" ]] && ! grep -qxF -- "$_file_tag" <<<"$_active_tags_for_filter"; then
                 printf '::notice::_depgraph_get_deps: skipping stale lineage %s (tag %s not in active matrix)\n' \
-                    "$(basename "$lineage_file")" "$_file_tag" >&2
+                    "$(_escape_gha_command "$(basename "$lineage_file")")" "$(_escape_gha_command "$_file_tag")" >&2
                 continue
             fi
         fi
@@ -345,7 +369,7 @@ _depgraph_get_deps() {
         parent=$(_depgraph_is_internal_ref "$base_ref" "$valid_containers")
         _iref_rc=$?
         if [[ $_iref_rc -eq 2 ]]; then
-            echo "::error::Owner resolution failed; cannot classify '${base_ref}' — aborting dep scan" >&2
+            printf '::error::Owner resolution failed; cannot classify '"'"'%s'"'"' — aborting dep scan\n' "$(_escape_gha_command "$base_ref")" >&2
             return 2
         fi
         [[ -n "$parent" ]] || continue
@@ -385,7 +409,7 @@ _depgraph_get_deps() {
                 parent=$(_depgraph_is_internal_ref "$ref" "$valid_containers")
                 _iref_rc=$?
                 if [[ $_iref_rc -eq 2 ]]; then
-                    echo "::error::Owner resolution failed; cannot classify '${ref}' — aborting dep scan" >&2
+                    printf '::error::Owner resolution failed; cannot classify '"'"'%s'"'"' — aborting dep scan\n' "$(_escape_gha_command "$ref")" >&2
                     return 2
                 fi
                 [[ -n "$parent" ]] || continue
@@ -436,7 +460,7 @@ _depgraph_get_deps_transitive() {
         deps=$(_depgraph_get_deps "$node")
         _deps_rc=$?
         if [[ $_deps_rc -ne 0 ]]; then
-            echo "::error::_depgraph_get_deps failed for ${node} (rc=${_deps_rc}) during transitive dep traversal; aborting (fail-closed)" >&2
+            printf '::error::_depgraph_get_deps failed for %s (rc=%s) during transitive dep traversal; aborting (fail-closed)\n' "$(_escape_gha_command "$node")" "$_deps_rc" >&2
             return $_deps_rc
         fi
         if [[ -n "$deps" ]]; then
@@ -486,7 +510,7 @@ _depgraph_get_consumers() {
         deps=$(_depgraph_get_deps "$c")
         _deps_rc=$?
         if [[ $_deps_rc -ne 0 ]]; then
-            echo "::error::_depgraph_get_deps failed for ${c} (rc=${_deps_rc}) during consumer scan; aborting (fail-closed)" >&2
+            printf '::error::_depgraph_get_deps failed for %s (rc=%s) during consumer scan; aborting (fail-closed)\n' "$(_escape_gha_command "$c")" "$_deps_rc" >&2
             return $_deps_rc
         fi
         if [[ " $deps " == *" $target "* ]]; then
@@ -520,7 +544,7 @@ _depgraph_validate_no_cycles() {
         deps=$(_depgraph_get_deps "$node")
         _deps_rc=$?
         if [[ $_deps_rc -ne 0 ]]; then
-            echo "::error::_depgraph_get_deps failed for ${node} (rc=${_deps_rc}) during cycle detection; aborting (fail-closed)" >&2
+            printf '::error::_depgraph_get_deps failed for %s (rc=%s) during cycle detection; aborting (fail-closed)\n' "$(_escape_gha_command "$node")" "$_deps_rc" >&2
             return $_deps_rc
         fi
         local dep
@@ -554,7 +578,7 @@ _depgraph_validate_no_cycles() {
                 return $_top_rc
             fi
             if [[ "$cycle_found" == "true" ]]; then
-                printf '::error::Cycle detected in container dependency graph: %s\n' "$cycle_path" >&2
+                printf '::error::Cycle detected in container dependency graph: %s\n' "$(_escape_gha_command "$cycle_path")" >&2
                 return 1
             fi
         fi
