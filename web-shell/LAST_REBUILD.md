@@ -14,3 +14,10 @@
 - Variant: 1.7.7, base ghcr.io/oorabona/debian:trixie
   Old digest: sha256:71c64df41ec01236a8f764c0835fdf38622fda7786a69c38aff488963223cc44
   New digest: sha256:e61311795be9179e10e9d5d115b540c8560a4757791375ef28520df9a3586d39
+
+<!-- drift-content-hash: ca8b11479ffb8be0 run:26843891757 -->
+## base-digest-drift (2026-06-02)
+
+- Variant: 1.7.7-ubuntu, base ghcr.io/oorabona/library/ubuntu:noble
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
