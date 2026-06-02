@@ -1293,12 +1293,12 @@ jobs:
     needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Generate workflow summary
         id: summary
@@ -1462,6 +1462,133 @@ jobs:
               exit "$rc"
             fi
           fi
+
+      - name: Log in to GHCR (summary job)
+        # Required so skopeo can read private GHCR packages during the advisory
+        # drift check.  Skipped on pull_request (same guard as the advisory step
+        # below) because GITHUB_TOKEN is read-only on packages for PRs.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Install skopeo (summary job)
+        # skopeo is used by check-version-drift.sh for GHCR manifest probes.
+        # The GHCR login above stores credentials that skopeo honours when
+        # reading private packages.  Without skopeo the script falls back to
+        # the curl path, which does not use the docker login.
+        # continue-on-error: the advisory drift check tolerates a missing skopeo
+        # (falls back to curl); an apt failure must not block an otherwise-green build.
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Install yq (summary job)
+        # Required by check-version-drift.sh → helpers/variant-utils.sh.
+        # Without yq the declared-version enumeration returns empty → silent
+        # false-clean.  Same checksum-verified pin used by other jobs.
+        # continue-on-error: if the yq download/checksum fails the advisory drift
+        # step yields empty results (absorbed by its own continue-on-error).
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Check version drift (advisory)
+        # Advisory: never fails the build. Opens/refreshes a version-drift issue
+        # when declared versions are absent from GHCR beyond the grace window.
+        # Probe errors emit ::warning:: and are skipped (fail-closed visibility
+        # without blocking master).
+        # Sourcing open-dep-failure-issue.sh is intentionally avoided here to
+        # prevent its source-time :? guards from requiring irrelevant env vars
+        # (COMMIT_SUBJECT, etc.). open_version_drift_issue is called directly
+        # from that file's function namespace via a targeted source after the
+        # required vars are stubbed, or inlined below.
+        #
+        # Security: only run on push/workflow_dispatch.  On pull_request events
+        # the checked-out PR content could modify scripts/check-version-drift.sh
+        # or scripts/open-dep-failure-issue.sh, which are sourced/run here with
+        # a write-capable GH_TOKEN (PR-pwn).
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_SHA: ${{ github.sha }}
+          # Stub the source-time :? guards in open-dep-failure-issue.sh that
+          # are irrelevant to open_version_drift_issue (never read by it).
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          COMMIT_SUBJECT: "advisory-drift-check"
+          # Containers detected by the build matrix (JSON array, may be empty)
+          DETECTED_CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
+        run: |
+          chmod +x scripts/check-version-drift.sh scripts/open-dep-failure-issue.sh
+          # shellcheck source=helpers/logging.sh
+          source helpers/logging.sh
+
+          containers_json="$DETECTED_CONTAINERS"
+          if [[ -z "$containers_json" || "$containers_json" == "[]" || "$containers_json" == "null" ]]; then
+            echo "::notice::version-drift advisory: no containers detected, skipping"
+            exit 0
+          fi
+
+          # Iterate each container name — pass via env var, never interpolate
+          # GHA template expressions into the shell body (injection-safe).
+          while IFS= read -r cname; do
+            [[ -z "$cname" ]] && continue
+
+            # Validate container name before use in GHA workflow commands.
+            # Names must match ^[a-z0-9_-]+$; anything else is skipped with a warning.
+            # The rejected value is NOT interpolated into the annotation (injection-safe).
+            if ! [[ "$cname" =~ ^[a-z0-9_-]+$ ]]; then
+              printf '::warning::version-drift advisory: skipping a container whose name failed ^[a-z0-9_-]+$ validation\n'
+              continue
+            fi
+
+            CONTAINER="$cname"
+            export CONTAINER
+
+            drift_json=""
+            drift_rc=0
+            # Do NOT suppress stderr (2>/dev/null) — the script emits
+            # ::warning::/::notice:: annotations to stderr that must reach the runner.
+            # Capture stdout (--json) into drift_json; let stderr flow through.
+            drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
+              bash scripts/check-version-drift.sh \
+              --mode post-build --container "$CONTAINER" --json) || drift_rc=$?
+
+            if [[ "$drift_rc" -eq 2 ]]; then
+              echo "::warning::version-drift advisory: probe error for ${CONTAINER} — skipping"
+              continue
+            fi
+
+            # drift_rc 0 (clean) or 1 (drift) — open/refresh issue on drift.
+            # Source open-dep-failure-issue.sh inside a subshell so its top-level
+            # "set -euo pipefail" does not leak into this step's outer shell.
+            # Advisory: never fail the build, but surface a warning if the
+            # issue open/refresh itself failed so the lost alert is visible.
+            advisory_issue_rc=0
+            ( source helpers/retry.sh
+              # shellcheck disable=SC1091
+              source scripts/open-dep-failure-issue.sh
+              open_version_drift_issue "$drift_json" "$CONTAINER" ) || advisory_issue_rc=$?
+            if [[ "$advisory_issue_rc" -ne 0 ]]; then
+              echo "::warning::version-drift advisory: drift detected but issue open/refresh failed (rc=${advisory_issue_rc})"
+            fi
+          done < <(printf '%s' "$containers_json" | jq -r '.[]' 2>/dev/null || true)
 
   cache-lineage:
     name: Cache build lineage
