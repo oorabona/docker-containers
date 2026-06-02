@@ -239,10 +239,12 @@ _vdrift_probe_published() {
     #                application/vnd.docker.distribution.manifest.v2+json)
     #               for a non-Windows Linux tag — the tag exists but only as a
     #               single-arch placeholder, not the published multi-arch image.
-    #             OR skopeo exits non-zero AND stderr matches a known "not found"
-    #               pattern: "manifest unknown", "was deleted or has expired", HTTP 404
+    #             OR skopeo exits non-zero AND stderr matches a manifest-specific
+    #               "not found" pattern: "manifest unknown" / MANIFEST_UNKNOWN, or
+    #               "was deleted or has expired".
     #   error   — skopeo exits 0 but manifest JSON is unparseable, OR any other
-    #               non-zero exit (auth failure, network error, 5xx, etc.)
+    #               non-zero exit (auth failure, network error, credential errors,
+    #               5xx, etc.) — anything whose stderr is NOT a manifest-absent message.
     #
     # Falls back to a token+curl approach when skopeo is not on PATH.
     if command -v skopeo >/dev/null 2>&1; then
@@ -258,9 +260,12 @@ _vdrift_probe_published() {
         rm -f "$_sk_err_tmp"
 
         if [[ "$sk_rc" -ne 0 ]]; then
-            # Distinguish manifest-not-found from transport/auth errors.
+            # Distinguish manifest-not-found from transport/auth/tooling errors.
+            # Only manifest-specific messages map to absent; everything else is error
+            # (fail-closed): credential helper failures, "command not found", auth-endpoint
+            # 404s, network errors, and 5xx responses all remain in the error branch.
             if printf '%s' "$sk_stderr" | grep -qiE \
-                'manifest unknown|was deleted or has expired|404|not found|does not exist'; then
+                'manifest unknown|MANIFEST_UNKNOWN|was deleted or has expired'; then
                 printf 'absent'
             else
                 printf 'error'

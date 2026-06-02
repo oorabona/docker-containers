@@ -398,6 +398,16 @@ open_version_drift_issue() {
         return 0
     fi
 
+    # Validate that drift_json is a JSON array before parsing.
+    # An empty/whitespace value is a legitimate no-op (handled above).
+    # A non-empty value that does not parse as a JSON array indicates a caller bug
+    # or upstream truncation — fail loudly so the sweep's issue_rc check fires.
+    if [[ -n "${drift_json//[[:space:]]/}" ]] && \
+        ! printf '%s' "$drift_json" | jq -e 'type=="array"' >/dev/null 2>&1; then
+        echo "::error::open_version_drift_issue: drift_json is not valid JSON array" >&2
+        return 1
+    fi
+
     # Count drift rows
     local drift_count
     drift_count=$(printf '%s' "$drift_json" | jq '[.[] | select(.status=="drift")] | length' 2>/dev/null || echo "0")

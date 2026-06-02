@@ -2488,3 +2488,281 @@ MAKE_EOF
     fetch_depth_val=$(printf '%s' "$summary_checkout_block" | grep 'fetch-depth:' | awk '{print $2}')
     [ "$fetch_depth_val" = "0" ]
 }
+
+# ---------------------------------------------------------------------------
+# NARROW-ABSENT-1 — credential helper error → error (not absent)
+#
+# stderr = "error: getting credentials: credential helper not found"
+# skopeo exits non-zero.  The old broad matcher ('not found') mapped this to
+# absent → false drift alert.  The narrow matcher must return error → exit 2.
+# ---------------------------------------------------------------------------
+@test "NARROW-ABSENT-1: skopeo fails with 'credential helper not found' → error → exit 2 (not absent/drift)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "error: getting credentials: credential helper not found")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Must be error (exit 2), not absent/drift (exit 1)
+    [ "$status" -eq 2 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
+
+    # Must NOT have produced a drift row
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# NARROW-ABSENT-2 — "command not found" → error (not absent)
+#
+# Simulates a PATH/tooling failure on the registry side (the client binary
+# itself is not found, or a helper binary is missing).
+# ---------------------------------------------------------------------------
+@test "NARROW-ABSENT-2: skopeo fails with 'command not found' stderr → error → exit 2 (not absent/drift)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "skopeo: command not found")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 2 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# NARROW-ABSENT-3 — auth-endpoint 404 (not a manifest-unknown) → error
+#
+# "unexpected http status 404" appears when skopeo hits the auth endpoint
+# (e.g. /token) and gets a 404, NOT when the manifest itself is missing.
+# The old broad '404' alternative misclassified this as absent.
+# ---------------------------------------------------------------------------
+@test "NARROW-ABSENT-3: skopeo fails with auth-endpoint 'unexpected http status 404' → error → exit 2 (not absent/drift)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: reading manifest: unexpected http status 404 on auth endpoint")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 2 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# NARROW-ABSENT-4 (regression) — "manifest unknown" → absent → drift (no change)
+# ---------------------------------------------------------------------------
+@test "NARROW-ABSENT-4: skopeo fails with 'manifest unknown' stderr → absent → drift + exit 1 (unchanged)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: manifest unknown")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 1 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# NARROW-ABSENT-5 (regression) — "was deleted or has expired" → absent → drift
+# ---------------------------------------------------------------------------
+@test "NARROW-ABSENT-5: skopeo fails with 'was deleted or has expired' stderr → absent → drift + exit 1 (unchanged)" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: tag was deleted or has expired")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 1 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# DRIFT-JSON-VALID-1 — malformed drift_json → open_version_drift_issue returns 1
+#
+# A non-empty but unparseable drift_json must return non-zero (fail loudly),
+# not silently no-op as if there were no drift rows.
+# ---------------------------------------------------------------------------
+@test "DRIFT-JSON-VALID-1: open_version_drift_issue with malformed drift_json returns non-zero" {
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-json-valid-$$"
+    mkdir -p "$fake_bin"
+
+    # gh stub (must NOT be called — the json guard fires before gh is invoked)
+    cat > "${fake_bin}/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+printf 'gh called unexpectedly\n' >&2
+exit 1
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '{not json' 'foo'
+        "
+
+    # Must return non-zero — malformed JSON must not silently no-op
+    [ "$status" -ne 0 ]
+
+    # Must NOT have created or commented on any issue
+    [[ "$output" != *"created #"* ]]
+    [[ "$output" != *"commented #"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# DRIFT-JSON-VALID-2 — empty drift_json → open_version_drift_issue returns 0 (no-op)
+#
+# An empty/whitespace drift_json is a legitimate no-op and must still return 0.
+# ---------------------------------------------------------------------------
+@test "DRIFT-JSON-VALID-2: open_version_drift_issue with empty drift_json returns 0 (no-op)" {
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-empty-json-$$"
+    mkdir -p "$fake_bin"
+
+    cat > "${fake_bin}/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+printf 'gh called unexpectedly\n' >&2
+exit 1
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '' 'foo'
+        "
+
+    # Empty drift_json → no-op → must return 0
+    [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# DRIFT-JSON-VALID-3 — "[]" drift_json → open_version_drift_issue returns 0 (no-op)
+# ---------------------------------------------------------------------------
+@test "DRIFT-JSON-VALID-3: open_version_drift_issue with '[]' drift_json returns 0 (no-op)" {
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-empty-array-$$"
+    mkdir -p "$fake_bin"
+
+    cat > "${fake_bin}/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+printf 'gh called unexpectedly\n' >&2
+exit 1
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '[]' 'foo'
+        "
+
+    # Empty array → no drift rows → must return 0
+    [ "$status" -eq 0 ]
+}
