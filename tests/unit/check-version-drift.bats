@@ -643,3 +643,98 @@ MAKE_EOF
     row_name=$(printf '%s' "$output" | jq -r '.[0].name')
     [ "$row_name" = "ext-timescaledb:pg17" ]
 }
+
+# ---------------------------------------------------------------------------
+# D5 — Structural wiring tests
+#
+# These tests grep the workflow files for required patterns; they do NOT run
+# the workflows.  They assert that the CI wiring described in ADR-012 is present
+# and injection-safe.
+# ---------------------------------------------------------------------------
+
+# Workflow file paths (resolved relative to this test file's location)
+REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+AUTO_BUILD_YAML="${REPO_ROOT}/.github/workflows/auto-build.yaml"
+DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
+
+# ---------------------------------------------------------------------------
+# Test D5-1: auto-build.yaml summary job invokes check-version-drift.sh in
+#            post-build mode.
+# ---------------------------------------------------------------------------
+@test "D5-1: auto-build.yaml summary job invokes check-version-drift.sh --mode post-build" {
+    [ -f "$AUTO_BUILD_YAML" ]
+    grep -q 'check-version-drift.sh' "$AUTO_BUILD_YAML"
+    grep -q -- '--mode post-build' "$AUTO_BUILD_YAML"
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-2: auto-build.yaml version-drift step is advisory (continue-on-error: true)
+#            and does NOT hard-exit on drift (no bare "exit 1" in advisory block).
+# ---------------------------------------------------------------------------
+@test "D5-2: auto-build.yaml version-drift step is advisory (continue-on-error: true, no hard exit on drift)" {
+    [ -f "$AUTO_BUILD_YAML" ]
+    grep -q 'continue-on-error: true' "$AUTO_BUILD_YAML"
+    # Extract the advisory step block and assert no unconditional "exit 1" for drift.
+    # awk collects lines from the advisory step marker until the next step/job heading.
+    local advisory_block
+    advisory_block=$(awk '/Check version drift \(advisory\)/,/^      - name:|^  [a-z]/' "$AUTO_BUILD_YAML" || true)
+    local hard_exit_on_drift
+    hard_exit_on_drift=$(printf '%s' "$advisory_block" | grep -cE '^\s*exit 1\b' || true)
+    [ "$hard_exit_on_drift" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-3: version-drift.yaml exists with schedule + workflow_dispatch triggers.
+# ---------------------------------------------------------------------------
+@test "D5-3: version-drift.yaml exists with schedule and workflow_dispatch triggers" {
+    [ -f "$DRIFT_YAML" ]
+    grep -q 'schedule:' "$DRIFT_YAML"
+    grep -q 'cron:' "$DRIFT_YAML"
+    grep -q 'workflow_dispatch:' "$DRIFT_YAML"
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-4: version-drift.yaml mints the GitHub App token via
+#            actions/create-github-app-token with BOT_APP_ID / BOT_APP_PRIVATE_KEY.
+# ---------------------------------------------------------------------------
+@test "D5-4: version-drift.yaml mints App token with BOT_APP_ID / BOT_APP_PRIVATE_KEY" {
+    [ -f "$DRIFT_YAML" ]
+    grep -q 'create-github-app-token' "$DRIFT_YAML"
+    grep -q 'BOT_APP_ID' "$DRIFT_YAML"
+    grep -q 'BOT_APP_PRIVATE_KEY' "$DRIFT_YAML"
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-5: version-drift.yaml invokes check-version-drift.sh --mode sweep.
+# ---------------------------------------------------------------------------
+@test "D5-5: version-drift.yaml runs check-version-drift.sh --mode sweep" {
+    [ -f "$DRIFT_YAML" ]
+    grep -q 'check-version-drift.sh' "$DRIFT_YAML"
+    grep -q -- '--mode sweep' "$DRIFT_YAML"
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-6: auto-build.yaml advisory step uses $CONTAINER env var in the shell
+#            body, not raw ${{ matrix.* }} template expressions (injection-safe).
+# ---------------------------------------------------------------------------
+@test "D5-6: auto-build.yaml advisory step uses \$CONTAINER env var, not \${{ matrix.* }} in shell body" {
+    [ -f "$AUTO_BUILD_YAML" ]
+    grep -q 'CONTAINER=' "$AUTO_BUILD_YAML"
+    # Extract the advisory step block and assert no ${{ matrix.* }} in it.
+    local advisory_block
+    advisory_block=$(awk '/Check version drift \(advisory\)/,/^      - name:|^  [a-z]/' "$AUTO_BUILD_YAML" || true)
+    local matrix_interp_count
+    matrix_interp_count=$(printf '%s' "$advisory_block" | grep -cE '\$\{\{ *matrix\.' || true)
+    [ "$matrix_interp_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test D5-7: version-drift.yaml sweep has no raw ${{ matrix.* }} in the run shell
+#            body (sweep is non-matrix; no matrix context exists).
+# ---------------------------------------------------------------------------
+@test "D5-7: version-drift.yaml sweep run block has no raw \${{ matrix.* }} in shell body" {
+    [ -f "$DRIFT_YAML" ]
+    local matrix_interp_count
+    matrix_interp_count=$(grep -cE '\$\{\{ *matrix\.' "$DRIFT_YAML" || true)
+    [ "$matrix_interp_count" -eq 0 ]
+}

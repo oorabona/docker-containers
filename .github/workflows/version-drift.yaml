@@ -1,0 +1,126 @@
+name: Version Drift Guard
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 9 AM UTC daily — after upstream-monitor (06:xx) completes
+  workflow_dispatch:
+    inputs:
+      grace_hours:
+        description: 'Grace window in hours (default: 6). Versions bumped within this window are in_flight, not drift.'
+        required: false
+        type: string
+        default: '6'
+
+# Never cancel a running sweep — partial results create misleading issue state.
+concurrency:
+  group: version-drift-sweep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  packages: read
+
+jobs:
+  sweep:
+    name: Sweep declared-vs-published version drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      # App token required so issue creation/comment triggers downstream
+      # notifications correctly (GITHUB_TOKEN-authored issues are muted for
+      # the token owner by GitHub design).
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Install yq
+        shell: bash
+        run: |
+          # Install yq on PATH — checksum-verified pin (mirrors upstream-monitor.yaml pattern).
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Log in to GitHub Container Registry
+        # skopeo / registry probes need GHCR auth for private packages.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Run version-drift sweep
+        id: sweep
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_SHA: ${{ github.sha }}
+          # Stub vars required by open-dep-failure-issue.sh source-time guards
+          # that are not used by open_version_drift_issue.
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          COMMIT_SUBJECT: "scheduled-drift-sweep"
+          # Grace hours — workflow_dispatch input or default 6
+          GRACE_HOURS: ${{ inputs.grace_hours || '6' }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          chmod +x scripts/check-version-drift.sh scripts/open-dep-failure-issue.sh
+          source helpers/logging.sh
+          source helpers/retry.sh
+          # shellcheck disable=SC1091
+          source scripts/open-dep-failure-issue.sh
+
+          # Validate GRACE_HOURS is a non-negative integer before use.
+          # Rejects any attacker-supplied non-numeric value from workflow_dispatch.
+          if ! [[ "$GRACE_HOURS" =~ ^[0-9]+$ ]]; then
+            echo "::error::GRACE_HOURS must be a non-negative integer, got: ${GRACE_HOURS}" >&2
+            exit 2
+          fi
+
+          drift_json=""
+          sweep_rc=0
+          drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
+            bash scripts/check-version-drift.sh \
+            --mode sweep --grace-hours "$GRACE_HOURS" --json 2>/dev/null) || sweep_rc=$?
+
+          echo "sweep_rc=${sweep_rc}" >> "$GITHUB_OUTPUT"
+          printf '%s' "${drift_json:-[]}" > /tmp/drift-sweep.json
+
+          if [[ "$sweep_rc" -eq 2 ]]; then
+            # Probe error: fail the job loudly so the schedule operator notices.
+            # This is NOT advisory — a broken probe means we have no visibility.
+            echo "::error::version-drift sweep: probe error (exit 2) — check GHCR connectivity"
+            exit 2
+          fi
+
+          if [[ "$sweep_rc" -eq 0 ]]; then
+            echo "::notice::version-drift sweep: all declared versions are in sync or in_flight"
+            exit 0
+          fi
+
+          # exit 1 → at least one drift row: open/refresh the issue
+          log_step "Opening/refreshing version-drift issue..."
+          open_version_drift_issue "$drift_json" "" || true
+
+      - name: Upload drift JSON (for audit / manual inspection)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: version-drift-sweep-${{ github.run_id }}
+          path: /tmp/drift-sweep.json
+          if-no-files-found: warn
+          retention-days: 7

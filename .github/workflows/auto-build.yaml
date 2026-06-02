@@ -1463,6 +1463,68 @@ jobs:
             fi
           fi
 
+      - name: Check version drift (advisory)
+        # Advisory: never fails the build. Opens/refreshes a version-drift issue
+        # when declared versions are absent from GHCR beyond the grace window.
+        # Probe errors emit ::warning:: and are skipped (fail-closed visibility
+        # without blocking master).
+        # Sourcing open-dep-failure-issue.sh is intentionally avoided here to
+        # prevent its source-time :? guards from requiring irrelevant env vars
+        # (COMMIT_SUBJECT, etc.). open_version_drift_issue is called directly
+        # from that file's function namespace via a targeted source after the
+        # required vars are stubbed, or inlined below.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_SHA: ${{ github.sha }}
+          # Stub the source-time :? guards in open-dep-failure-issue.sh that
+          # are irrelevant to open_version_drift_issue (never read by it).
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          COMMIT_SUBJECT: "advisory-drift-check"
+          # Containers detected by the build matrix (JSON array, may be empty)
+          DETECTED_CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
+        run: |
+          chmod +x scripts/check-version-drift.sh scripts/open-dep-failure-issue.sh
+          # Source only the helpers that open-dep-failure-issue.sh depends on
+          # (logging + retry), then source the script itself so open_version_drift_issue
+          # is available.  The source-time :? guards all have values from the env: block.
+          source helpers/logging.sh
+          source helpers/retry.sh
+          # shellcheck disable=SC1091
+          source scripts/open-dep-failure-issue.sh
+
+          containers_json="$DETECTED_CONTAINERS"
+          if [[ -z "$containers_json" || "$containers_json" == "[]" || "$containers_json" == "null" ]]; then
+            echo "::notice::version-drift advisory: no containers detected, skipping"
+            exit 0
+          fi
+
+          # Iterate each container name — pass via env var, never interpolate
+          # GHA template expressions into the shell body (injection-safe).
+          while IFS= read -r cname; do
+            [[ -z "$cname" ]] && continue
+            CONTAINER="$cname"
+            export CONTAINER
+
+            drift_json=""
+            drift_rc=0
+            drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
+              bash scripts/check-version-drift.sh \
+              --mode post-build --container "$CONTAINER" --json 2>/dev/null) || drift_rc=$?
+
+            if [[ "$drift_rc" -eq 2 ]]; then
+              echo "::warning::version-drift advisory: probe error for ${CONTAINER} — skipping"
+              continue
+            fi
+
+            # drift_rc 0 (clean) or 1 (drift) — open/refresh issue on drift
+            open_version_drift_issue "$drift_json" "$CONTAINER" || true
+          done < <(printf '%s' "$containers_json" | jq -r '.[]' 2>/dev/null || true)
+
   cache-lineage:
     name: Cache build lineage
     needs: [build-and-push, create-manifest]
