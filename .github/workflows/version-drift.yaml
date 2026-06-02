@@ -61,6 +61,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Install skopeo
+        # skopeo is used by check-version-drift.sh for GHCR manifest probes.
+        # The docker/login-action above stores credentials that skopeo honours
+        # when reading private packages.  Without skopeo the script falls back
+        # to the curl path, which does not use the docker login.
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
       - name: Run version-drift sweep
         id: sweep
         env:
@@ -93,9 +104,11 @@ jobs:
 
           drift_json=""
           sweep_rc=0
+          # Capture STDOUT (the --json array) into drift_json; let STDERR flow
+          # to the runner so ::warning::/ ::notice:: annotations are visible.
           drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
             bash scripts/check-version-drift.sh \
-            --mode sweep --grace-hours "$GRACE_HOURS" --json 2>/dev/null) || sweep_rc=$?
+            --mode sweep --grace-hours "$GRACE_HOURS" --json) || sweep_rc=$?
 
           echo "sweep_rc=${sweep_rc}" >> "$GITHUB_OUTPUT"
           printf '%s' "${drift_json:-[]}" > /tmp/drift-sweep.json

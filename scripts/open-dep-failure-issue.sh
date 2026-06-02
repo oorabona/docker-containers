@@ -404,18 +404,32 @@ open_version_drift_issue() {
         return 0
     fi
 
+    # Validate container name before using it in label arguments.
+    # An invalid name (e.g. containing spaces or shell metacharacters) must not
+    # reach --label dep:<container>.  Fall back to the label-less set and emit
+    # a single ::warning:: annotation.
+    local validated_container=""
+    if [[ -n "$container" ]]; then
+        if [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+            validated_container="$container"
+        else
+            printf '::warning::open_version_drift_issue: container name failed validation (^[a-z0-9_-]+$), omitting dep: label: %s\n' \
+                "$(printf '%s' "$container" | tr -dc '[:print:]' | cut -c1-64)" >&2
+        fi
+    fi
+
     # Build dedup label set
     local dedup_labels
-    if [[ -n "$container" ]]; then
-        dedup_labels="version-drift,automation,dep:${container}"
+    if [[ -n "$validated_container" ]]; then
+        dedup_labels="version-drift,automation,dep:${validated_container}"
     else
         dedup_labels="version-drift,automation"
     fi
 
     # Build issue title
     local issue_title
-    if [[ -n "$container" ]]; then
-        issue_title="Version drift detected — ${container}: ${drift_count} declared version(s) not published"
+    if [[ -n "$validated_container" ]]; then
+        issue_title="Version drift detected — ${validated_container}: ${drift_count} declared version(s) not published"
     else
         issue_title="Version drift detected — ${drift_count} declared version(s) not published"
     fi
@@ -474,20 +488,20 @@ VDRIFT_BODY
         --color "d93f0b" \
         --description "Declared version not published to GHCR" 2>/dev/null || true
 
-    if [[ -n "$container" ]]; then
+    if [[ -n "$validated_container" ]]; then
         # Ensure dep:<container> label exists (create best-effort)
-        gh label create "dep:${container}" \
+        gh label create "dep:${validated_container}" \
             --repo "$GITHUB_REPOSITORY" \
             --color "e4e669" \
-            --description "Dep-attributed build failures for ${container}" 2>/dev/null || true
+            --description "Dep-attributed build failures for ${validated_container}" 2>/dev/null || true
     fi
 
     # Search for open issue with dedup label set
     local existing_number=""
     local search_output
     local gh_label_args=("--label" "version-drift" "--label" "automation")
-    if [[ -n "$container" ]]; then
-        gh_label_args+=("--label" "dep:${container}")
+    if [[ -n "$validated_container" ]]; then
+        gh_label_args+=("--label" "dep:${validated_container}")
     fi
 
     if search_output=$(gh issue list \

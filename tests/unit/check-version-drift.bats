@@ -631,8 +631,9 @@ MAKE_EOF
         _VDRIFT_PROBE_OVERRIDE="$probe" \
         bash "$DRIFT_SCRIPT" --mode sweep --json
 
-    # window_empty counts as drift (exit 1)... unless probe would make it in_sync.
-    # window_empty is its own status; check it appears correctly.
+    # FIX 1: window_empty is fail-closed → exit 2 (not 0 or 1).
+    [ "$status" -eq 2 ]
+
     printf '%s' "$output" | jq '.' >/dev/null
 
     local window_empty_count
@@ -943,4 +944,280 @@ SKOPEO_EOF
     local skopeo_ref_count
     skopeo_ref_count=$(grep -c 'skopeo' "$DRIFT_SCRIPT" || true)
     [ "$skopeo_ref_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 1 — window_empty is fail-closed: resolver returns [] → exit 2
+# ---------------------------------------------------------------------------
+@test "FIX1: resolver returns [] → window_empty → fail-closed exit 2 (not silent exit 0)" {
+    local root="${TEST_TEMP_DIR}/tsdb-empty-array"
+    mkdir -p "${root}/postgres/extensions"
+
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 3
+YAML
+
+    # Resolver that returns the empty JSON array [] (not a bash non-zero exit)
+    mkdir -p "${root}/scripts/resolvers"
+    cat > "${root}/scripts/resolvers/timescaledb-ha.sh" <<'RESOLVER'
+#!/usr/bin/env bash
+printf '[]'
+RESOLVER
+    chmod +x "${root}/scripts/resolvers/timescaledb-ha.sh"
+
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    printf ''
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    local probe
+    probe=$(_make_probe_stub "__default__" "present")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # FIX 1: empty array from resolver → window_empty → _HAS_ERROR → exit 2.
+    # NOT exit 0 (silent false-clean) and NOT exit 1 (drift).
+    [ "$status" -eq 2 ]
+
+    printf '%s' "$output" | jq '.' >/dev/null
+
+    local window_empty_count
+    window_empty_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="window_empty")] | length')
+    [ "$window_empty_count" -eq 1 ]
+}
+
+@test "FIX1: window_empty accumulator sets _HAS_ERROR (not _HAS_DRIFT)" {
+    # Confirm that window_empty maps to exit 2, not exit 1.
+    # This catches a regression where someone makes it set _HAS_DRIFT instead.
+    # Use a failing resolver so no probe call is needed.
+    local root="${TEST_TEMP_DIR}/tsdb-nofile"
+    mkdir -p "${root}/postgres/extensions"
+
+    cat > "${root}/postgres/extensions/config.yaml" <<'YAML'
+pg_versions:
+  - "17"
+extensions:
+  timescaledb:
+    version: "2.27.1"
+    version_set:
+      resolver: "scripts/resolvers/missing-resolver.sh"
+      retain_count: 3
+YAML
+    # Resolver script does NOT exist → window_json will be empty
+
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    printf ''
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    local probe
+    probe=$(_make_probe_stub "__default__" "present")
+
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        _VDRIFT_PROBE_OVERRIDE="$probe" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Missing resolver file → empty window_json → window_empty → exit 2
+    [ "$status" -eq 2 ]
+
+    local window_empty_count
+    window_empty_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="window_empty")] | length')
+    [ "$window_empty_count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 2 — structural: skopeo is installed in both workflow files before the
+# drift-check step.
+# ---------------------------------------------------------------------------
+@test "FIX2-workflow: version-drift.yaml installs skopeo before Run version-drift sweep" {
+    [ -f "$DRIFT_YAML" ]
+
+    local skopeo_line sweep_line
+    skopeo_line=$(grep -n 'Install skopeo' "$DRIFT_YAML" | head -1 | cut -d: -f1)
+    sweep_line=$(grep -n 'Run version-drift sweep' "$DRIFT_YAML" | head -1 | cut -d: -f1)
+
+    [ -n "$skopeo_line" ]
+    [ -n "$sweep_line" ]
+    [ "$skopeo_line" -lt "$sweep_line" ]
+
+    # The install step must call apt-get install skopeo (mirrors build jobs)
+    grep -q 'apt-get install.*skopeo\|apt-get.*install.*skopeo' "$DRIFT_YAML"
+}
+
+@test "FIX2-workflow: auto-build.yaml summary job installs skopeo before Check version drift" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    local skopeo_line drift_line
+    skopeo_line=$(grep -n 'Install skopeo (summary job)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+    drift_line=$(grep -n 'Check version drift (advisory)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+
+    [ -n "$skopeo_line" ]
+    [ -n "$drift_line" ]
+    [ "$skopeo_line" -lt "$drift_line" ]
+}
+
+@test "FIX2-workflow: auto-build.yaml summary job has GHCR login before skopeo install" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    local login_line skopeo_line
+    login_line=$(grep -n 'Log in to GHCR (summary job)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+    skopeo_line=$(grep -n 'Install skopeo (summary job)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+
+    [ -n "$login_line" ]
+    [ -n "$skopeo_line" ]
+    [ "$login_line" -lt "$skopeo_line" ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 3 — structural: version-drift.yaml sweep does NOT suppress stderr.
+# ---------------------------------------------------------------------------
+@test "FIX3-workflow: version-drift.yaml sweep does not pipe drift-check through 2>/dev/null" {
+    [ -f "$DRIFT_YAML" ]
+
+    # The line that runs check-version-drift.sh in sweep mode must not redirect
+    # stderr to /dev/null.  Extract lines containing check-version-drift.sh and
+    # assert none of them end with 2>/dev/null on the same continuation.
+    local suppressed_count
+    suppressed_count=$(grep 'check-version-drift\.sh' "$DRIFT_YAML" \
+        | grep -c '2>/dev/null' || true)
+    [ "$suppressed_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 4 — open_version_drift_issue validates container name before labelling.
+# ---------------------------------------------------------------------------
+@test "FIX4: open_version_drift_issue with invalid container name does not reach dep: label" {
+    # Source the script in a controlled env (stub all gh calls and env guards)
+    # then call open_version_drift_issue with a bad container name.
+    # Assert that gh is never called with a dep: label containing the bad name.
+
+    local gh_log="${TEST_TEMP_DIR}/gh-calls.log"
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-bin-$$"
+    mkdir -p "$fake_bin"
+
+    # Fake gh that logs its arguments and succeeds
+    cat > "${fake_bin}/gh" <<GH_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${gh_log}"
+# Simulate issue list returning empty (no existing issues)
+if [[ "\${1:-}" == "issue" && "\${2:-}" == "list" ]]; then
+    printf '[]'
+fi
+# Simulate label create succeeding
+if [[ "\${1:-}" == "label" ]]; then
+    exit 0
+fi
+# Simulate issue create returning a number
+if [[ "\${1:-}" == "issue" && "\${2:-}" == "create" ]]; then
+    printf 'https://github.com/test/repo/issues/42\n'
+fi
+exit 0
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    # Build a minimal drift_json with one drift row
+    local drift_json='[{"kind":"container","name":"foo","declared":"1.0.0","published":"","status":"drift"}]'
+
+    # Source the script with required env vars stubbed; use the fake gh
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' 'invalid name with spaces'
+        "
+
+    # Must succeed (validation emits warning, falls back, does not abort)
+    [ "$status" -eq 0 ]
+
+    # gh must NOT have been called with a dep: label containing the bad name
+    if [ -f "$gh_log" ]; then
+        local bad_label_count
+        bad_label_count=$(grep -c 'dep:invalid name\|dep:invalid' "$gh_log" || true)
+        [ "$bad_label_count" -eq 0 ]
+    fi
+}
+
+@test "FIX4: open_version_drift_issue with valid container name uses dep: label" {
+    local gh_log="${TEST_TEMP_DIR}/gh-calls-valid.log"
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-bin-valid-$$"
+    mkdir -p "$fake_bin"
+
+    cat > "${fake_bin}/gh" <<GH_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${gh_log}"
+if [[ "\${1:-}" == "issue" && "\${2:-}" == "list" ]]; then
+    printf '[]'
+fi
+if [[ "\${1:-}" == "label" ]]; then
+    exit 0
+fi
+if [[ "\${1:-}" == "issue" && "\${2:-}" == "create" ]]; then
+    printf 'https://github.com/test/repo/issues/43\n'
+fi
+exit 0
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    local drift_json='[{"kind":"container","name":"myapp","declared":"2.0.0","published":"","status":"drift"}]'
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' 'myapp'
+        "
+
+    [ "$status" -eq 0 ]
+
+    # gh must have been called with dep:myapp label
+    if [ -f "$gh_log" ]; then
+        local good_label_count
+        good_label_count=$(grep -c 'dep:myapp' "$gh_log" || true)
+        [ "$good_label_count" -ge 1 ]
+    fi
 }

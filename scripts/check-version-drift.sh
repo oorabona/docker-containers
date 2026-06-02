@@ -28,7 +28,7 @@
 # Exit codes:
 #   0 — no drift rows (all in_sync, in_flight, window_ok)
 #   1 — at least one drift row
-#   2 — probe error (GHCR probe failed, fail-closed)
+#   2 — probe error OR window_empty (resolver failed/returned [] — fail-closed)
 #
 # Test seams:
 #   _VDRIFT_BUMP_EPOCH_OVERRIDE   — override git log bump timestamp (epoch seconds)
@@ -314,8 +314,9 @@ _append_row() {
     _ROWS_BUF+="$row"
 
     case "$status" in
-        drift)       _HAS_DRIFT=true ;;
-        error)       _HAS_ERROR=true ;;
+        drift)         _HAS_DRIFT=true ;;
+        error)         _HAS_ERROR=true ;;
+        window_empty)  _HAS_ERROR=true ;;
     esac
 
     # GHA annotations
