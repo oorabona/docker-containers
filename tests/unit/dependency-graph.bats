@@ -1335,3 +1335,157 @@ EOF
     # debian must appear exactly once (dedup; fallback NOT consulted)
     [ "$output" = "1" ]
 }
+
+# ---------------------------------------------------------------------------
+# Defect R regression lock: mixed resolved-external + placeholder-internal
+# in the same active variant set must not drop the internal dep.
+#
+# Scenario: container has TWO active lineage files —
+#   • one with a RESOLVED EXTERNAL ref (e.g. library/alpine:3.21)  → authoritative,
+#     sets found_any=true, contributes no internal dep (correct leaf for this variant)
+#   • one with a PLACEHOLDER INTERNAL ref (e.g. ghcr.io/<owner>/debian:${TAG}) →
+#     non-authoritative, sets _saw_nonauthoritative=true
+#
+# Before the fix: found_any=true suppressed the config.yaml fallback → internal
+# dep dropped → container classified as a cascade LEAF → auto-merged without
+# cascade:waiting-for-debian, rebuilding against a stale project-internal base.
+#
+# After the fix: _saw_nonauthoritative=true forces the config.yaml fallback to
+# run as a UNION with any lineage-derived deps → debian recovered.
+#
+# Mutation guards:
+#   MG-R1: reverting _saw_nonauthoritative flag + restoring "found_any==false" guard →
+#           test 1 (mixed external+placeholder) returns "" instead of "debian" (FAIL).
+#   MG-R2: removing dedup in config.yaml union path →
+#           test 2 (mixed, same parent) returns count>1 instead of "1" (FAIL).
+#   MG-R3: making _saw_nonauthoritative suppress found_any check →
+#           test 3 (all-authoritative no-regression) leaks config.yaml dep (FAIL).
+# ---------------------------------------------------------------------------
+
+@test "depgraph: Defect R — resolved-external + placeholder-internal → internal dep recovered via config.yaml" {
+    # This was RED before the _saw_nonauthoritative fix; GREEN after.
+    #
+    # Container web-shell has two active lineage variants:
+    #   alpine variant  → resolved external base (library/alpine:3.21): authoritative, sets found_any=true
+    #   debian variant  → placeholder internal base (ghcr.io/testowner/debian:${DEBIAN_TAG}): non-authoritative
+    #
+    # config.yaml declares the real resolved internal ref → fallback must recover it.
+    local isolated_dir="$TEST_TEMP_DIR/defectr_mixed_ext_placeholder"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Authoritative external lineage (sets found_any=true, no internal dep)
+    _write_lineage "web-shell" "1.7.7-alpine" "library/alpine:3.21"
+
+    # Non-authoritative placeholder lineage (internal dep hidden behind unresolved var)
+    printf '{"container":"web-shell","tag":"1.7.7-debian","base_image_ref":"ghcr.io/testowner/debian:${DEBIAN_TAG}","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian.json"
+
+    # config.yaml: resolved form of the internal ref — fallback must find it
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    # Active tags: both variants are active
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='1.7.7-alpine
+1.7.7-debian'
+        export _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        _depgraph_get_deps web-shell 2>/dev/null
+    "
+    [ "$status" -eq 0 ]
+    # Before fix: "" — found_any=true suppressed config.yaml fallback, internal dep dropped
+    # After fix:  "debian" — _saw_nonauthoritative unions config.yaml, internal dep recovered
+    [ "$output" = "debian" ]
+}
+
+@test "depgraph: Defect R — mixed resolved-internal + placeholder-internal (same parent) → dep once, no duplicates" {
+    # Container with two active lineage variants pointing at the same parent:
+    #   variant A: resolved internal  (ghcr.io/testowner/debian:trixie) — authoritative
+    #   variant B: placeholder internal (ghcr.io/testowner/debian:${DEBIAN_TAG}) — non-authoritative
+    #
+    # _saw_nonauthoritative fires → config.yaml consulted as union.
+    # config.yaml also carries the same debian ref.
+    # Dedup must ensure debian appears EXACTLY ONCE.
+    local isolated_dir="$TEST_TEMP_DIR/defectr_mixed_internal_placeholder"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Authoritative resolved-internal lineage
+    printf '{"container":"web-shell","tag":"1.7.7-debian","base_image_ref":"ghcr.io/testowner/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian.json"
+
+    # Non-authoritative placeholder lineage (same parent, unresolved tag)
+    printf '{"container":"web-shell","tag":"1.7.7-debian-arm","base_image_ref":"ghcr.io/testowner/debian:${DEBIAN_TAG}","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian-arm.json"
+
+    # config.yaml: same debian ref — must not double-count
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='1.7.7-debian
+1.7.7-debian-arm'
+        export _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        deps=\$(_depgraph_get_deps web-shell 2>/dev/null)
+        echo \"\$deps\" | tr ' ' '\n' | grep -c '^debian$'
+    "
+    [ "$status" -eq 0 ]
+    # debian must appear exactly once — union dedup prevents double-adding
+    [ "$output" = "1" ]
+}
+
+@test "depgraph: Defect R — no regression: all-authoritative no-placeholder → config.yaml NOT consulted for extra deps" {
+    # Container has two active lineage variants, BOTH fully resolved — no placeholder.
+    # One is an authoritative external (library/alpine:3.21) and one is an authoritative
+    # internal (ghcr.io/testowner/debian:trixie).
+    #
+    # _saw_nonauthoritative must remain false → config.yaml fallback must NOT run.
+    # A config.yaml entry that is NOT present in lineage (e.g. php) must NOT leak in.
+    local isolated_dir="$TEST_TEMP_DIR/defectr_allauth_noregression"
+    mkdir -p "$isolated_dir/web-shell"
+
+    # Authoritative external
+    _write_lineage "web-shell" "1.7.7-alpine" "library/alpine:3.21"
+
+    # Authoritative internal (resolved, no ${...} placeholder)
+    printf '{"container":"web-shell","tag":"1.7.7-debian","base_image_ref":"ghcr.io/testowner/debian:trixie","base_image_digest":"sha256:%064d"}' 0 \
+        > "${_DEPGRAPH_LINEAGE_DIR}/web-shell-1.7.7-debian.json"
+
+    # config.yaml has BOTH debian (already in lineage) AND php (NOT in lineage).
+    # After the fix, config.yaml must NOT be consulted → php must NOT appear.
+    printf 'base_image: "ghcr.io/testowner/debian:trixie"\nbuild_args:\n  PHP_IMAGE: "ghcr.io/testowner/php:8.4"\n' \
+        > "$isolated_dir/web-shell/config.yaml"
+
+    run bash -c "
+        _DEPGRAPH_OWNER_OVERRIDE=testowner
+        export _DEPGRAPH_OWNER_OVERRIDE
+        PROJECT_ROOT='${isolated_dir}'
+        _DEPGRAPH_CONTAINERS_OVERRIDE='web-shell debian php'
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+        _DEPGRAPH_LINEAGE_DIR='${_DEPGRAPH_LINEAGE_DIR}'
+        export _DEPGRAPH_LINEAGE_DIR
+        _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell='1.7.7-alpine
+1.7.7-debian'
+        export _DEPGRAPH_ACTIVE_TAGS_OVERRIDE_web_shell
+        source '${HELPERS_DIR}/dependency-graph.sh' 2>/dev/null
+        deps=\$(_depgraph_get_deps web-shell 2>/dev/null)
+        echo \"\$deps\" | tr ' ' '\n' | sort
+    "
+    [ "$status" -eq 0 ]
+    # Only debian from lineage; php from config.yaml must NOT appear
+    [ "$output" = "debian" ]
+}

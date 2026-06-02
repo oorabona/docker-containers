@@ -256,6 +256,7 @@ _depgraph_get_deps() {
     shopt -u nullglob
 
     local found_any=false
+    local _saw_nonauthoritative=false
     for lineage_file in "${lineage_files[@]}"; do
         [[ -f "$lineage_file" ]] || continue
         local basename_file
@@ -293,13 +294,15 @@ _depgraph_get_deps() {
         if [[ -z "$base_ref" ]] || \
            { [[ "$base_ref" == *"${_dollar_brace}"* ]] && \
              [[ "$base_ref" != "${_remote_cr_prefix}"* ]]; }; then
-            # Non-authoritative placeholder — skip without setting found_any so the
-            # config.yaml fallback can still fire for this container.
+            # Non-authoritative placeholder — lineage is INCOMPLETE for this container.
+            # Record that we saw a non-authoritative entry so the config.yaml fallback
+            # fires as a union even if another variant produced an authoritative entry
+            # (conservative: may over-include a dep, never under-include).
+            _saw_nonauthoritative=true
             continue
         fi
 
         # Mark that at least one authoritative lineage entry exists
-        # (suppresses config.yaml fallback)
         found_any=true
 
         local parent _iref_rc
@@ -318,12 +321,22 @@ _depgraph_get_deps() {
         fi
     done
 
-    # Fallback: parse config.yaml build_args AND base_image if no lineage exists.
+    # Fallback: parse config.yaml build_args AND base_image if no lineage exists OR
+    # if any active lineage entry was a non-authoritative placeholder.
+    #
+    # The non-authoritative case: in a mixed active-variant set, one variant may have
+    # a fully resolved external ref (setting found_any=true) while a different variant
+    # carries a placeholder for an INTERNAL parent (e.g. ghcr.io/<owner>/debian:${TAG}).
+    # Because found_any is true, the old guard "[[ found_any == false ]]" skipped
+    # config.yaml — dropping the internal dep and misclassifying the consumer as a leaf.
+    # Fix: union config.yaml whenever _saw_nonauthoritative=true, regardless of found_any.
+    # The dedup loop below ensures no dep appears twice.
+    #
     # Both fields can carry internal refs:
     #   build_args: key-value pairs injected into docker build --build-arg
     #   base_image: direct base image for Dockerfile FROM (e.g. wordpress, web-shell, github-runner)
     # The same four-prefix recognition applies to both fields.
-    if [[ "$found_any" == "false" ]]; then
+    if [[ "$found_any" == "false" || "$_saw_nonauthoritative" == "true" ]]; then
         local config_file="${PROJECT_ROOT}/${container}/config.yaml"
         if [[ -f "$config_file" ]]; then
             # Extract all string values from build_args AND base_image that look like internal refs
