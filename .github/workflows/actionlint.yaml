@@ -1,0 +1,81 @@
+# Actionlint — workflow compile-error gate
+#
+# (1) WHY THIS EXISTS
+#     Workflow YAML that passes YAML-lint and diff review can still fail at
+#     GitHub Actions parse time with a "startup_failure" — the #558 incident
+#     class (e.g. `context "env" is not allowed here` in an `if:` expression).
+#     bats, CodeQL, and the codex/copilot orthogonal gate all miss this class
+#     because they never interpret the workflow grammar.  actionlint does.
+#
+# (2) WHY SHELLCHECK_OPTS=--severity=error
+#     actionlint bundles shellcheck and runs it on every embedded `run:` block.
+#     At the default severity the repo has ~193 SC2086 (info) findings —
+#     intentional in GHA-controlled `run:` blocks where word-splitting is
+#     harmless.  At --severity=error those drop to 0 while the gate still
+#     catches genuinely broken embedded shell (error-level SC findings) and
+#     all workflow-grammar errors.  Verified: current repo → EXIT 0.
+#
+# (3) WHY AUTO-DISCOVERY (bare `actionlint`, no path args)
+#     Run from the repo root with no file arguments, actionlint discovers and
+#     lints every workflow under `.github/workflows/` — BOTH `*.yaml` and
+#     `*.yml` (GitHub loads both; an explicit `*.yaml` glob would silently skip
+#     a malformed `.yml` workflow and defeat the gate).  Auto-discovery scans
+#     only `.github/workflows/`, so composite action files under
+#     `.github/actions/*/action.yaml` are excluded by location — actionlint
+#     would otherwise parse them as workflows and emit false
+#     `"jobs"/"on" section is missing` errors.  No config file needed.
+
+name: Actionlint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # This job runs a downloaded third-party binary and never needs
+          # authenticated git after checkout — don't persist the token in
+          # local git config where that binary could read it.
+          persist-credentials: false
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          chmod +x ./actionlint
+          ./actionlint --version
+
+      - name: Run actionlint on workflows
+        env:
+          SHELLCHECK_OPTS: "--severity=error"
+        run: |
+          set -euo pipefail
+          # No path args: actionlint auto-discovers all .github/workflows/*.{yaml,yml}
+          # and excludes composite actions by location. See header note (3).
+          # -config-file /dev/null: ignore any in-repo .github/actionlint.yaml so a
+          # branch can't add `ignore:` patterns that silently weaken this gate
+          # (a config-only change wouldn't even re-trigger this job). Wanting an
+          # actionlint config later is a deliberate edit to THIS line, reviewed.
+          ./actionlint -no-color -config-file /dev/null
+          echo "✅ actionlint: workflows compile clean" >> "$GITHUB_STEP_SUMMARY"
