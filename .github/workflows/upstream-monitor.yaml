@@ -1178,6 +1178,11 @@ jobs:
       packages: read
     outputs:
       drift_containers: ${{ steps.detect.outputs.drift_containers }}
+      drift_matrix: ${{ steps.detect.outputs.drift_matrix }}
+      drift_matrix_leaves: ${{ steps.detect.outputs.drift_matrix_leaves }}
+      drift_matrix_consumers: ${{ steps.detect.outputs.drift_matrix_consumers }}
+      drift_containers_csv: ${{ steps.detect.outputs.drift_containers_csv }}
+      error_containers_csv: ${{ steps.detect.outputs.error_containers_csv }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1284,6 +1289,29 @@ jobs:
           # expose via `env:` (set above as REQUESTED_CONTAINER) so the value is
           # treated as data, never as code.  See OWASP / GitHub security hardening
           # docs on "Untrusted input in workflow expressions".
+          # Compute repo-wide drift_containers_csv from the UNFILTERED drift_json.
+          # This must happen BEFORE the REQUESTED_CONTAINER filter below, so that
+          # _eval_parent_state always sees the full drift picture regardless of how
+          # workflow_dispatch was scoped.  Without this split a scoped dispatch
+          # (e.g. requested_container=wordpress) would produce drift_containers_csv
+          # containing only "wordpress", causing State B to mark a still-drifting
+          # "php" parent as stable and auto-merging the child against a stale image.
+          drift_containers_all=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
+            || echo "[]")
+          drift_containers_csv=$(echo "$drift_containers_all" | jq -r 'join(",")')
+          echo "drift_containers_csv=${drift_containers_csv}" >> "$GITHUB_OUTPUT"
+
+          # Compute repo-wide error_containers_csv from the UNFILTERED drift_json.
+          # Containers with ANY variant status == "error" are those whose probe FAILED
+          # this run — their actual drift state is UNKNOWN.  Plumbed as CURRENT_ERROR_SET
+          # into the cascade-labels step so _eval_parent_state can treat an errored parent
+          # as in_flux (conservative: wait rather than auto-merge against unknown state).
+          error_containers_csv=$(echo "$drift_json" | jq -r \
+            '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+            || echo "")
+          echo "error_containers_csv=${error_containers_csv}" >> "$GITHUB_OUTPUT"
+
           if [[ -n "$REQUESTED_CONTAINER" ]]; then
             drift_json=$(echo "$drift_json" | jq --arg c "$REQUESTED_CONTAINER" '[.[] | select(.container == $c)]')
             if [[ "$(echo "$drift_json" | jq 'length')" == "0" ]]; then
@@ -1298,10 +1326,32 @@ jobs:
           fi
 
           # Extract container names with actionable drift (drift or legacy status)
+          # from the (possibly scoped) drift_json.  Used to build the PR-opening matrix;
+          # cascade gating uses drift_containers_csv computed above from the unfiltered set.
           drift_containers=$(echo "$drift_json" | jq -c \
             '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]' \
             || echo "[]")
           echo "drift_containers=${drift_containers}" >> "$GITHUB_OUTPUT"
+
+          # Build enriched matrix: include internal_deps_csv per container (used for leaf/consumer split)
+          drift_matrix=$(echo "$drift_json" | jq -c \
+            '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
+              {container: .container,
+               internal_deps_csv: ((.internal_deps // []) | join(","))}]' \
+            || echo "[]")
+          echo "drift_matrix=${drift_matrix}" >> "$GITHUB_OUTPUT"
+
+          # Two-job split (leaves vs consumers):
+          #   drift_matrix_leaves   — containers with no project-internal deps
+          #     consumed by open-drift-prs-leaves job
+          #   drift_matrix_consumers — containers with project-internal deps
+          #     consumed by open-drift-prs-consumers job, which has
+          #     `needs: [open-drift-prs-leaves]` so parent PRs are already
+          #     created before any consumer matrix item starts.
+          drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+          drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+          echo "drift_matrix_leaves=${drift_matrix_leaves}" >> "$GITHUB_OUTPUT"
+          echo "drift_matrix_consumers=${drift_matrix_consumers}" >> "$GITHUB_OUTPUT"
 
           count=$(echo "$drift_containers" | jq 'length')
           if [[ "$count" -gt 0 ]]; then
@@ -1310,13 +1360,13 @@ jobs:
             echo "::notice::No base image digest drift detected"
           fi
 
-  open-drift-prs:
-    name: Open drift PR for ${{ matrix.container }}
+  open-drift-prs-leaves:
+    name: Open drift PR (leaf) for ${{ matrix.container }}
     needs: [detect-digest-drift]
     if: |
       needs.detect-digest-drift.result == 'success' &&
-      needs.detect-digest-drift.outputs.drift_containers != '[]' &&
-      needs.detect-digest-drift.outputs.drift_containers != ''
+      needs.detect-digest-drift.outputs.drift_matrix_leaves != '[]' &&
+      needs.detect-digest-drift.outputs.drift_matrix_leaves != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Per-container concurrency lane: each matrix entry gets its own group so
@@ -1329,12 +1379,13 @@ jobs:
       cancel-in-progress: false
     strategy:
       matrix:
-        container: ${{ fromJson(needs.detect-digest-drift.outputs.drift_containers) }}
+        include: ${{ fromJson(needs.detect-digest-drift.outputs.drift_matrix_leaves) }}
       max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
       fail-fast: false  # One container's transient failure must not block others
     permissions:
       contents: write
       pull-requests: write
+      issues: write   # Required: gh label create in cascade-labels step (label creation is issues-scoped)
       packages: read  # Required: detect-base-digest-drift.sh re-runs inside this job and probes GHCR digests
     steps:
       - name: Checkout repository
@@ -1401,7 +1452,10 @@ jobs:
           chmod +x scripts/detect-base-digest-drift.sh
           # Unique temp paths per matrix entry — no cross-container contamination
           # across sequential runs on the same runner.
-          drift_file="/tmp/drift-${{ github.run_id }}-${{ matrix.container }}.json"
+          # FIX 1b: use shell env var $CONTAINER (set in step env above) instead of
+          # GHA template expression ${{ matrix.container }} so the value passes through
+          # the runner environment rather than being interpolated into the script text.
+          drift_file="/tmp/drift-${{ github.run_id }}-${CONTAINER}.json"
           # Detector emits ::error:: lines to stderr for visibility; capture stdout
           # and check exit code + JSON validity before processing.
           detect_rc=0
@@ -1425,7 +1479,8 @@ jobs:
           # Fix r8-2: scope error_count to current matrix container only.
           # Without the .container filter, a transient probe failure on any
           # unrelated container blocks PR creation for every other container.
-          error_count=$(echo "$drift_json" | jq --arg c "${{ matrix.container }}" \
+          # FIX 1b: use shell env var $CONTAINER for jq --arg (not ${{ matrix.container }}).
+          error_count=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
             '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
           if [[ "$error_count" -gt 0 ]]; then
             echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
@@ -1533,19 +1588,527 @@ jobs:
           title: "📦 base-digest-drift(${{ matrix.container }}): upstream base image rebase"
           body-path: ${{ steps.pr-body.outputs.pr_body_file }}
 
-      # Labels applied separately — peter-evans/create-pull-request has a race condition
+      # Labels applied in two steps — peter-evans/create-pull-request has a race condition
       # where addLabels fails with "Could not resolve to a node" on fresh PRs.
-      # Failure tolerance: if any label is missing from the repo (or transient gh
-      # error), emit a ::warning:: and continue.  The PR is the authoritative
-      # signal of drift; labels are nice-to-have triage metadata, not gating.
-      - name: Apply labels
+      #
+      # Step 1 (strict): applies the cascade-critical base-digest-drift label with retry.
+      # The cascade logic (_eval_parent_state, cascade-resolver.yaml) depends on this
+      # label as the canonical drift PR marker.  A transient gh failure here would leave
+      # the parent PR unlabelled, causing _eval_parent_state to miss it and the child to
+      # either merge too early or remain stuck permanently.  Fail-fast after 3 attempts.
+      #
+      # Step 2 (tolerant): applies triage-only labels (automation, container:<name>).
+      # These are nice-to-have metadata; the PR is the authoritative drift signal.
+      - name: Apply cascade-critical labels (strict)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          # Auto-create the canonical drift label if it doesn't exist yet.
+          # Idempotent: "already exists" is the success path, swallowed silently.
+          gh label create "base-digest-drift" \
+              --color "ff6b35" \
+              --description "Auto-detected base image digest drift (cron-opened PR)" 2>&1 \
+              | grep -v "already exists" || true
+          for attempt in 1 2 3; do
+            sleep $((attempt * 2))
+            if gh pr edit "$PR_NUMBER" --add-label "base-digest-drift" 2>&1; then
+              echo "::notice::Applied base-digest-drift label to PR #${PR_NUMBER} (attempt ${attempt})"
+              exit 0
+            fi
+            echo "::warning::Failed to apply base-digest-drift label to PR #${PR_NUMBER}, attempt ${attempt}"
+          done
+          echo "::error::Failed to apply base-digest-drift label to PR #${PR_NUMBER} after 3 attempts. Cascade detection requires this label. Aborting."
+          exit 1
+
+      - name: Apply labels (tolerant — triage metadata)
         if: steps.create-pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
           CONTAINER: ${{ matrix.container }}
         run: |
-          sleep 2
-          if ! gh pr edit "$PR_NUMBER" --add-label "base-digest-drift,automation,container:${CONTAINER}" 2>&1; then
-            echo "::warning::Failed to apply labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created successfully — continuing"
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,container:${CONTAINER}" 2>&1; then
+            echo "::warning::Failed to apply triage labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created and cascade label set — continuing"
+          fi
+
+      - name: Auto-merge (no cascade gate — leaf containers have no project-internal deps)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
+            echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
+          fi
+
+  open-drift-prs-consumers:
+    name: Open drift PR (consumer) for ${{ matrix.container }}
+    needs: [detect-digest-drift, open-drift-prs-leaves]
+    # always() is required for two reasons:
+    # 1. open-drift-prs-leaves is SKIPPED when no leaf container has drift (matrix
+    #    is empty). Without always(), GitHub Actions would cascade-skip this consumer
+    #    job too — dropping legitimate consumer-only drift runs on the floor.
+    # 2. open-drift-prs-leaves is a matrix job; its aggregate result is 'failure' if
+    #    ANY single entry fails (e.g. a transient API error on one leaf's PR creation).
+    #    Propagating that aggregate failure as a hard gate strands ALL consumer PRs,
+    #    including consumers that depend on entirely different leaves.  Per-container
+    #    correctness is enforced inside this job by State A (open PR check) and State
+    #    B0 (errored parent probe), so the aggregate leaves result is neither necessary
+    #    nor sufficient as a gate here.
+    # leaves result is not-cancelled is the right condition: success|skipped|failure all
+    # allow consumers to run; only cancellation (workflow abort) should stop them.
+    if: |
+      always() &&
+      needs.detect-digest-drift.result == 'success' &&
+      needs.open-drift-prs-leaves.result != 'cancelled' &&
+      needs.detect-digest-drift.outputs.drift_matrix_consumers != '[]' &&
+      needs.detect-digest-drift.outputs.drift_matrix_consumers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Per-container concurrency lane: each matrix entry gets its own group so
+    # GitHub's 1-running-1-pending limit does not cancel pending drift PRs for
+    # other containers when multiple containers drift simultaneously.
+    # The broader digest-drift-detect group (on detect-digest-drift job) still
+    # serialises the detect phase across concurrent workflow runs.
+    concurrency:
+      group: digest-drift-${{ matrix.container }}
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.detect-digest-drift.outputs.drift_matrix_consumers) }}
+      max-parallel: 1   # Serialize: same pattern as create-dependency-update-prs
+      fail-fast: false  # One container's transient failure must not block others
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write   # Required: gh label create in cascade-labels step (label creation is issues-scoped)
+      packages: read  # Required: detect-base-digest-drift.sh re-runs inside this job and probes GHCR digests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # App token required: GITHUB_TOKEN-authored PRs do not trigger downstream
+      # workflows (auto-build smoke check) by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Restore lineage cache
+        # Separate restore per matrix job: detect-digest-drift ran on a different runner.
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .build-lineage
+          key: build-lineage-${{ github.run_id }}
+          restore-keys: build-lineage-
+
+      - name: Log in to Docker Hub
+        # Re-detect probes registry anonymously without this; anonymous Docker Hub
+        # requests are rate-limited and can silently fail → false "no drift" result.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Log in to GitHub Container Registry
+        # Required when base_image_ref points to the GHCR mirror (ghcr.io/owner/*).
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Install yq
+        shell: bash
+        run: |
+          # Install yq on PATH for list-builds calls. Use checksum-verified
+          # version to prevent tampering in this write-capable workflow.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Re-detect drift for this container (idempotent)
+        id: drift-data
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          chmod +x scripts/detect-base-digest-drift.sh
+          # Unique temp paths per matrix entry — no cross-container contamination
+          # across sequential runs on the same runner.
+          # FIX 1b: use shell env var $CONTAINER (set in step env above) instead of
+          # GHA template expression ${{ matrix.container }} so the value passes through
+          # the runner environment rather than being interpolated into the script text.
+          drift_file="/tmp/drift-${{ github.run_id }}-${CONTAINER}.json"
+          # Detector emits ::error:: lines to stderr for visibility; capture stdout
+          # and check exit code + JSON validity before processing.
+          detect_rc=0
+          ./scripts/detect-base-digest-drift.sh > "$drift_file" || detect_rc=$?
+          if [[ $detect_rc -ne 0 ]]; then
+            echo "::error::detect-base-digest-drift.sh exited with $detect_rc — aborting PR" >&2
+            exit 1
+          fi
+          drift_json=$(cat "$drift_file")
+          if [[ -z "$drift_json" || "$drift_json" == "[]" ]]; then
+            echo "::warning::detect-base-digest-drift.sh output empty — skipping (no drift)" >&2
+            echo "has_drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Validate JSON structure before downstream jq queries
+          if ! jq -e '.[0] | has("container")' >/dev/null 2>&1 <<<"$drift_json"; then
+            echo "::error::detect-base-digest-drift.sh output is invalid JSON — aborting PR" >&2
+            exit 1
+          fi
+
+          # Fix r8-2: scope error_count to current matrix container only.
+          # Without the .container filter, a transient probe failure on any
+          # unrelated container blocks PR creation for every other container.
+          # FIX 1b: use shell env var $CONTAINER for jq --arg (not ${{ matrix.container }}).
+          error_count=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "error")] | length' 2>/dev/null || echo 0)
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::error::re-detect probe failed for $CONTAINER (${error_count} variant(s) errored) — skipping PR but not silently" >&2
+            exit 1
+          fi
+
+          # Check if this container actually has actionable drift
+          has_drift=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")] | length > 0')
+          echo "has_drift=${has_drift}" >> "$GITHUB_OUTPUT"
+          echo "drift_file=${drift_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Update LAST_REBUILD.md tracker
+        if: steps.drift-data.outputs.has_drift == 'true'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
+        run: |
+          chmod +x scripts/update-last-rebuild.sh
+          < "$DRIFT_FILE" ./scripts/update-last-rebuild.sh "$CONTAINER" "base-digest-drift"
+
+      - name: Build PR body
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: pr-body
+        env:
+          CONTAINER: ${{ matrix.container }}
+          DRIFT_FILE: ${{ steps.drift-data.outputs.drift_file }}
+        run: |
+          drift_json=$(cat "$DRIFT_FILE")
+          today=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          variants=$(echo "$drift_json" | jq -c \
+            --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[] | select(.status == "drift" or .status == "legacy")]')
+
+          variants_drifted=$(echo "$variants" | jq 'length')
+          variants_total=$(echo "$drift_json" | jq --arg c "$CONTAINER" \
+            '[.[] | select(.container == $c) | .variants[]] | length')
+
+          # Fix r7-3: unique per-matrix temp paths — no cross-container contamination
+          pr_body_file="/tmp/pr-body-${{ github.run_id }}-${CONTAINER}.md"
+          pr_frontmatter_file="/tmp/pr-frontmatter-${{ github.run_id }}-${CONTAINER}.txt"
+          pr_table_file="/tmp/pr-table-${{ github.run_id }}-${CONTAINER}.txt"
+
+          # YAML frontmatter (machine-parseable for downstream tooling)
+          {
+            printf 'drift_kind: base-digest\n'
+            printf 'container: %s\n' "$CONTAINER"
+            printf 'detected_at: %s\n' "$today"
+            printf 'variants_drifted: %s\n' "$variants_drifted"
+            printf 'variants_total: %s\n' "$variants_total"
+          } > "$pr_frontmatter_file"
+
+          # Build variant table.
+          # Fix 2 (gate r9): escape backticks and pipes in variant_tag and base_image_ref
+          # before embedding in the markdown table to prevent injection via poisoned lineage.
+          printf '| Variant tag | Base image ref | Old digest | New digest |\n' > "$pr_table_file"
+          printf '|-------------|----------------|------------|------------|\n' >> "$pr_table_file"
+          echo "$variants" | jq -r \
+            '.[] |
+              (.variant_tag | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_tag |
+              (.base_image_ref | gsub("`"; "\\`") | gsub("\\|"; "\\|")) as $safe_ref |
+              "| \($safe_tag) | \($safe_ref) | \(.recorded_digest // "unknown") | \(.current_digest // "(legacy)") |"' \
+            >> "$pr_table_file"
+
+          {
+            printf -- '---\n'
+            cat "$pr_frontmatter_file"
+            printf -- '---\n\n'
+            printf '# Base image digest drift — %s\n\n' "$CONTAINER"
+            cat "$pr_table_file"
+            printf '\n## Action\n\n'
+            printf 'Merging this PR appends a `## base-digest-drift` section to `%s/LAST_REBUILD.md`, which triggers `auto-build.yaml` via path filter. The rebuild captures the fresh base digest in the new lineage entry. Next-day cron sees match → no further drift PR.\n' "$CONTAINER"
+            printf '\n## Chained-on-own note\n\n'
+            printf "If \`%s\`'s base image is another project-produced container with an open base-digest-drift PR, prefer merging the upstream PR first to avoid a 2-day cascade.\n" "$CONTAINER"
+          } > "$pr_body_file"
+
+          echo "pr_body_file=${pr_body_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Import GPG key
+        # Repo requires signed commits (SECURITY.md §branch-protection). Mirror the
+        # pattern used by the dep-monitor PR step (lines ~467, ~1008) to ensure
+        # drift PRs also satisfy the signed-commit requirement.
+        if: steps.drift-data.outputs.has_drift == 'true'
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
+
+      - name: Open or update PR (branch-upsert)
+        if: steps.drift-data.outputs.has_drift == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
+          branch: update/base-digest-${{ matrix.container }}
+          delete-branch: true
+          commit-message: "build(${{ matrix.container }}): base image digest drift — trigger rebuild"
+          committer: Olivier ORABONA <oorabona@users.noreply.github.com>
+          title: "📦 base-digest-drift(${{ matrix.container }}): upstream base image rebase"
+          body-path: ${{ steps.pr-body.outputs.pr_body_file }}
+
+      # Labels applied in two steps — peter-evans/create-pull-request has a race condition
+      # where addLabels fails with "Could not resolve to a node" on fresh PRs.
+      #
+      # Step 1 (strict): applies the cascade-critical base-digest-drift label with retry.
+      # The cascade logic (_eval_parent_state, cascade-resolver.yaml) depends on this
+      # label as the canonical drift PR marker.  A transient gh failure here would leave
+      # the parent PR unlabelled, causing _eval_parent_state to miss it and the child to
+      # either merge too early or remain stuck permanently.  Fail-fast after 3 attempts.
+      #
+      # Step 2 (tolerant): applies triage-only labels (automation, container:<name>).
+      # These are nice-to-have metadata; the PR is the authoritative drift signal.
+      - name: Apply cascade-critical labels (strict)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          # Auto-create the canonical drift label if it doesn't exist yet.
+          # Idempotent: "already exists" is the success path, swallowed silently.
+          gh label create "base-digest-drift" \
+              --color "ff6b35" \
+              --description "Auto-detected base image digest drift (cron-opened PR)" 2>&1 \
+              | grep -v "already exists" || true
+          for attempt in 1 2 3; do
+            sleep $((attempt * 2))
+            if gh pr edit "$PR_NUMBER" --add-label "base-digest-drift" 2>&1; then
+              echo "::notice::Applied base-digest-drift label to PR #${PR_NUMBER} (attempt ${attempt})"
+              exit 0
+            fi
+            echo "::warning::Failed to apply base-digest-drift label to PR #${PR_NUMBER}, attempt ${attempt}"
+          done
+          echo "::error::Failed to apply base-digest-drift label to PR #${PR_NUMBER} after 3 attempts. Cascade detection requires this label. Aborting."
+          exit 1
+
+      - name: Apply labels (tolerant — triage metadata)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,container:${CONTAINER}" 2>&1; then
+            echo "::warning::Failed to apply triage labels to PR #${PR_NUMBER} (container=${CONTAINER}); PR created and cascade label set — continuing"
+          fi
+
+      # Strict cascade label application — separate from the tolerant "Apply labels"
+      # step above.  cascade:waiting-for-<parent> labels are consumed by the
+      # cascade-resolver workflow to find children when a parent merges.  If these
+      # labels fail to apply, the child PR will never be unblocked automatically.
+      # Therefore: fail this step (not just warn) if cascade labels cannot be applied.
+      # Labels are auto-created on first use so the repo does not need pre-seeded labels.
+      - name: Apply cascade labels (strict)
+        id: cascade-labels
+        if: steps.create-pr.outputs.pull-request-number && matrix.internal_deps_csv != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+          CURRENT_DRIFT_SET: ${{ needs.detect-digest-drift.outputs.drift_containers_csv }}
+          CURRENT_ERROR_SET: ${{ needs.detect-digest-drift.outputs.error_containers_csv }}
+        run: |
+          # Four-state parent evaluation: in_flux | ready
+          # Ordering: A → B0 → B → C
+          #
+          # STATE A: open drift PR → in_flux (parent is still being integrated)
+          #   Ground truth for "is there pending parent work?" — queried FIRST because it
+          #   is independent of how CURRENT_DRIFT_SET was scoped.  On a scoped
+          #   workflow_dispatch (e.g. requested_container=wordpress), drift_containers_csv
+          #   is now derived from the UNFILTERED drift_json (repo-wide truth), but State A
+          #   runs first anyway for safety.
+          #
+          # STATE B0: parent probe errored this run → in_flux (conservative)
+          #   A probe error means the parent's actual drift state is UNKNOWN — we cannot
+          #   distinguish "stable" from "drifting but unreachable".  Treating an unknown
+          #   parent as ready risks auto-merging a child against a stale parent image.
+          #   Conservative answer: wait (same as in_flux) until the next successful probe.
+          #
+          # STATE B: parent not in CURRENT_DRIFT_SET → stable (ready); OR parent IS in
+          #   CURRENT_DRIFT_SET but no open PR → conservative in_flux.
+          #   Only safe AFTER the open-PR check (A) and error check (B0): no open PR and
+          #   no probe error means the parent was cleanly stable this run.
+          #   CURRENT_DRIFT_SET is now repo-wide (Defect E fix), so the scoped-dispatch
+          #   false-negative that previously appeared here is eliminated.
+          #   NOTE: a GHCR-freshness check (r26, Defect O) was reverted in r27 because it
+          #   queried the most-recently-CREATED package version package-wide, which can be
+          #   a different tag from the one the child consumes.  See ADR-011 §Known Limitations.
+          #
+          # Labels are applied ONE PER gh-call (loop) so each label application is
+          # independently fail-fast.  gh pr edit --add-label accepts a comma-separated
+          # list OR repeated flags, but passing a space-separated string as one argument
+          # creates a single invalid label name — that bug is precisely what this loop avoids.
+          _eval_parent_state() {
+            local parent="$1"
+            # STATE A: Is there an open drift PR for this parent?
+            # Runs BEFORE the drift-set check (State B) — ground truth independent of
+            # how CURRENT_DRIFT_SET was scoped.
+            local open_pr _open_pr_raw _open_pr_rc
+            # Capture gh output separately so head cannot mask a gh API/auth failure —
+            # this step has no pipefail, so a pipeline's exit status is the last
+            # command's (head), not gh's.  Splitting capture and head-1 makes gh rc
+            # the authoritative failure signal.
+            _open_pr_raw=$(gh pr list \
+              --head "update/base-digest-${parent}" \
+              --label "base-digest-drift" \
+              --base master \
+              --state open \
+              --json number,isCrossRepository \
+              --jq '.[] | select(.isCrossRepository == false) | .number' 2>&1)
+            _open_pr_rc=$?
+            if [[ $_open_pr_rc -ne 0 ]]; then
+              echo "::error::gh pr list failed while checking parent ${parent} open-PR state (rc=${_open_pr_rc}): ${_open_pr_raw}"
+              return 2
+            fi
+            open_pr=$(printf '%s\n' "$_open_pr_raw" | head -1)
+            if [[ -n "$open_pr" ]]; then
+              echo "::notice::Parent ${parent} has open drift PR #${open_pr}"
+              echo "in_flux"
+              return 0
+            fi
+            # STATE B0: Did the parent probe ERROR this run?
+            # Only reached when there is no open drift PR (State A cleared above).
+            # An error means we genuinely don't know whether the parent's image matches
+            # what the child consumes; safer to wait than auto-merge against unknown state.
+            if [[ -n "${CURRENT_ERROR_SET:-}" ]]; then
+              local _parent_errored=0
+              for _c in ${CURRENT_ERROR_SET//,/ }; do
+                if [[ "$_c" == "$parent" ]]; then
+                  _parent_errored=1
+                  break
+                fi
+              done
+              if [[ $_parent_errored -eq 1 ]]; then
+                echo "::notice::Parent ${parent} probe errored this run — waiting conservatively"
+                echo "in_flux"
+                return 0
+              fi
+            fi
+            # STATE B: Is the parent in the current drift set?
+            # Only reached when there is no open drift PR (A) and no probe error (B0).
+            # If the parent is absent from CURRENT_DRIFT_SET, it was rebuilt in a prior run —
+            # GHCR already has the stable image. Short-circuit to ready.
+            if [[ -n "${CURRENT_DRIFT_SET:-}" ]]; then
+              local _parent_drifting=0
+              for _c in ${CURRENT_DRIFT_SET//,/ }; do
+                if [[ "$_c" == "$parent" ]]; then
+                  _parent_drifting=1
+                  break
+                fi
+              done
+              if [[ $_parent_drifting -eq 0 ]]; then
+                echo "::notice::Parent ${parent} has no open drift PR and is not in the current drift set — GHCR image is stable, ready"
+                echo "ready"
+                return 0
+              fi
+              # Parent IS in the drift snapshot, no open PR → conservative in_flux.
+              # A tag-specific GHCR freshness check is not safe here: the package-wide
+              # /versions API returns the most-recently-CREATED version regardless of tag,
+              # so a concurrent push of a different tag (e.g. php:8.4 while child needs php:8.3)
+              # would yield a false-ready.  See ADR-011 §Known Limitations for the full
+              # race-window analysis and the per-tag label scheme required to resolve it.
+              echo "::notice::Parent ${parent} is drifting this run, no open PR yet — waiting conservatively"
+              echo "in_flux"
+              return 0
+            fi
+            # STATE C (conservative in_flux): CURRENT_DRIFT_SET unset — no snapshot available.
+            # Cannot determine parent state; wait for the next successful cron run.
+            echo "::notice::Parent ${parent} is drifting this run but has no open PR yet — waiting"
+            echo "in_flux"
+            return 0
+          }
+          has_waiting=0
+          for parent in ${INTERNAL_DEPS//,/ }; do
+            parent_state=$(_eval_parent_state "$parent") || exit 1
+            # Extract only the last word of output (the state token); preceding lines are notices/warnings.
+            parent_state_token=$(echo "$parent_state" | grep -E '^(in_flux|ready)$' | tail -1)
+            if [[ -z "$parent_state_token" ]]; then
+              echo "::error::_eval_parent_state returned no recognizable state token for parent ${parent}; refusing to proceed (fail-closed)"
+              echo "Raw output: ${parent_state}"
+              exit 1
+            fi
+            if [[ "$parent_state_token" != "in_flux" ]]; then
+              # parent_state is "ready" — no cascade label needed for this parent
+              continue
+            fi
+            has_waiting=1
+            label="cascade:waiting-for-${parent}"
+            # Auto-create the label (idempotent; "already exists" is not an error).
+            gh label create "$label" \
+              --color "fbca04" \
+              --description "Cascade-aware drift wait: child PR is blocked on a parent drift PR" \
+              2>&1 | grep -v "already exists" || true
+            # STRICT: fail the step if this individual label cannot be applied.
+            # The cascade-resolver workflow depends on these labels to unblock the child later.
+            if ! gh pr edit "$PR_NUMBER" --add-label "$label" 2>&1; then
+              echo "::error::Failed to apply cascade label '${label}' to PR #${PR_NUMBER} — required for cascade-resolver workflow"
+              exit 1
+            fi
+            echo "::notice::Applied cascade label '${label}' to PR #${PR_NUMBER}"
+          done
+          if [[ "$has_waiting" -eq 0 ]]; then
+            echo "has_labels=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_labels=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Auto-merge with cascade-awareness
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CONTAINER: ${{ matrix.container }}
+          INTERNAL_DEPS: ${{ matrix.internal_deps_csv }}
+          CASCADE_LABELS_APPLIED: ${{ steps.cascade-labels.outputs.has_labels }}
+        run: |
+          # cascade-labels step already evaluated parent states with three-state logic.
+          # If it applied labels, the cascade-resolver workflow handles unblocking.
+          # If it did not (has_labels=false or step was skipped), all parents are ready.
+          if [[ "$CASCADE_LABELS_APPLIED" == "true" ]]; then
+            gh pr comment "$PR_NUMBER" --body "Cascade-aware merge: waiting for parent(s) drift PRs and their master rebuilds to complete. The cascade-resolver workflow will enable auto-merge once all parents resolve." 2>&1 || true
+            echo "::notice::PR #${PR_NUMBER} (${CONTAINER}) cascade-waiting — cascade-resolver will unblock"
+          else
+            # All parents are ready (ready state or no cascade triggered)
+            if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
+              echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
+            fi
           fi

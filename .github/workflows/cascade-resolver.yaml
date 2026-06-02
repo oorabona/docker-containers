@@ -1,0 +1,212 @@
+name: Cascade Resolver
+# Unblocks downstream drift PRs AFTER the upstream (parent) container's new image
+# is published to GHCR.
+#
+# Trigger: workflow_run of "Auto Build & Push" on master, conclusion=success.
+# This is the correct trigger — the parent image is only pushed by auto-build.yaml
+# running on master AFTER the drift PR merges.  The old pull_request:closed trigger
+# fired before the parent image was in GHCR, so child master rebuilds could still
+# pull the stale parent digest (race condition).
+#
+# Parent container identification: gh api commits/{sha}/pulls returns the PR(s)
+# associated with the triggering commit.  A PR whose headRefName matches
+# update/base-digest-<container> (the canonical branch set by peter-evans/create-pull-request)
+# identifies the drift PR.  The PR's merged_at is cross-verified.
+# Commits with no associated drift PR exit cleanly (nothing to unblock).
+#
+# Multi-parent gating: a child container may depend on several project-internal
+# parents, each generating a separate drift PR.  The child PR carries one
+# cascade:waiting-for-<parent> label per pending parent.  When a parent's master
+# rebuild succeeds, this workflow removes ONLY that parent's wait label, then
+# checks whether any other cascade:waiting-for-* labels remain.  Auto-merge is
+# enabled only when the child has no remaining wait labels (all parents resolved).
+#
+# If the parent PR was closed WITHOUT merging (abandoned), child PRs retain
+# their cascade:waiting-for-<parent> labels — a human must re-run the
+# upstream-monitor or manually remove the cascade:waiting-for-<parent> label.
+
+on:
+  workflow_run:
+    workflows: ["Auto Build & Push"]
+    branches: [master]
+    types: [completed]
+
+jobs:
+  unblock-children:
+    name: Unblock cascade-waiting drift PRs
+    # Only process successful auto-build runs on master.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # Required: gh pr edit --remove-label and gh pr comment are issues-scoped operations
+      issues: write
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Identify parent container from associated PR
+        id: parent
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Verify the triggering commit is a squash-merge of a drift PR by consulting
+          # PR metadata — NOT the commit subject alone (which is spoofable by merge-right
+          # holders crafting a commit matching the base-digest-drift(<name>) pattern).
+          #
+          # Verification chain:
+          #   1. workflow_run conclusion=success is already gated above.
+          #   2. Commits/{sha}/pulls returns the PR(s) associated with this commit.
+          #   3. A PR whose headRefName starts with update/base-digest- identifies a drift PR.
+          #   4. merged_at must be set (extra defence for non-PR pushes if branch-protection allows).
+          if ! pr_json=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls"); then
+            echo "::error::Failed to query PRs for commit ${HEAD_SHA}"
+            exit 1
+          fi
+          # Extract container name from the first matching PR's head branch name.
+          # Also require the base-digest-drift label so only bot-created drift PRs are recognised.
+          # Trust boundary: the drift PR must target master AND have its head branch in THIS repo
+          # (not a fork).  If .head.repo is null (deleted fork), treat as not same-repo.
+          container=$(echo "$pr_json" | jq -r \
+            --arg repo "${GH_REPO}" \
+            '.[] | select(.head.ref | startswith("update/base-digest-")) | select(.labels[]?.name == "base-digest-drift") | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .head.ref' \
+            | head -1 | sed 's#^update/base-digest-##')
+          if [[ -z "$container" ]]; then
+            echo "::notice::Commit ${HEAD_SHA} is not associated with a drift PR (no PR with update/base-digest-* branch). Nothing to unblock."
+            echo "name=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Validate format (defence in depth — rejects path traversal and injection).
+          if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+            echo "::error::Invalid container name extracted from PR branch: ${container}"
+            exit 1
+          fi
+          # Cross-verify the PR was actually merged.
+          is_merged=$(echo "$pr_json" | jq -r \
+            --arg ref "update/base-digest-${container}" \
+            --arg repo "${GH_REPO}" \
+            '.[] | select(.head.ref == $ref) | select(.base.ref == "master") | select((.head.repo // {full_name:""}).full_name == $repo) | .merged_at // empty' \
+            | head -1)
+          if [[ -z "$is_merged" ]]; then
+            echo "::error::Drift PR for ${container} is not merged (commit ${HEAD_SHA} mismatch)"
+            exit 1
+          fi
+          echo "::notice::Parent container image published: ${container} (commit ${HEAD_SHA}, verified via PR metadata)"
+          echo "name=${container}" >> "$GITHUB_OUTPUT"
+
+      - name: Unblock children
+        if: steps.parent.outputs.name != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          # Safe: PARENT comes from the output of the previous step (regex-validated above)
+          PARENT: ${{ steps.parent.outputs.name }}
+        run: |
+          # Find all open drift PRs waiting for this parent.
+          # gh pr list --label is an exact label match — no injection surface.
+          # Also require base-digest-drift label and exclude cross-repository PRs.
+          if ! children=$(gh pr list \
+            --label "cascade:waiting-for-${PARENT}" \
+            --label "base-digest-drift" \
+            --state open \
+            --json number,isCrossRepository,baseRefName,headRefName \
+            --jq '.[] | select(.isCrossRepository == false) | select(.baseRefName == "master") | select(.headRefName | startswith("update/base-digest-")) | .number'); then
+            echo "::error::Failed to query children waiting for ${PARENT}. Cascade resolution aborted; retry via workflow_dispatch or wait for next parent build."
+            exit 1
+          fi
+
+          if [[ -z "$children" ]]; then
+            echo "::notice::No cascade-waiting PRs for parent ${PARENT}"
+            exit 0
+          fi
+
+          for child in $children; do
+            echo "::notice::Processing child PR #${child} (was waiting for ${PARENT})"
+            # 1) Snapshot ALL cascade:waiting-for-* labels BEFORE any mutation.
+            #    STRICT: if the snapshot fails we cannot safely determine remaining count,
+            #    so skip this child entirely.  A gh pr view failure after removal would
+            #    leave the child with no wait labels AND no auto-merge — stranded.
+            #    Taking the snapshot first means: if removal later fails, we continue
+            #    (retry on next event); if removal succeeds, we already know the answer.
+            if ! labels_snapshot=$(gh pr view "$child" \
+              --json labels \
+              --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join("\n")' \
+              2>/dev/null); then
+              echo "::error::Cannot fetch labels for PR #${child}; skipping (will retry on next parent image publish)"
+              continue
+            fi
+            # Compute which wait labels would remain AFTER removing the current parent's label.
+            remaining_labels=""
+            while IFS= read -r _label; do
+              [[ -n "$_label" ]] || continue
+              [[ "$_label" == "cascade:waiting-for-${PARENT}" ]] && continue
+              remaining_labels="${remaining_labels} ${_label}"
+            done <<< "$labels_snapshot"
+            remaining_labels="${remaining_labels# }"  # strip leading space
+
+            # 2) Remove ONLY this parent's wait label.
+            if ! gh pr edit "$child" --remove-label "cascade:waiting-for-${PARENT}" 2>&1; then
+              echo "::warning::Failed to remove cascade:waiting-for-${PARENT} from #${child} — skipping"
+              continue
+            fi
+            # 3) Re-fetch labels POST-removal to detect concurrent removals by other
+            #    resolver runs (multiple parents completing close together can race:
+            #    each pre-removal snapshot shows "still waiting on the other", so
+            #    neither would enable auto-merge; the LIVE post-removal check sees
+            #    the actual remaining state and lets the last-finisher unblock).
+            if ! live_remaining=$(gh pr view "$child" \
+              --json labels \
+              --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | length' \
+              2>/dev/null); then
+              # Live check failed; fall back to the pre-removal snapshot decision.
+              # Conservative: if snapshot said "still waiting", that's still true; if
+              # snapshot said "all clear", trust it (we just removed the last label).
+              echo "::warning::Could not re-check labels for #${child} post-removal; falling back to snapshot decision"
+              live_remaining=""
+              # Convert snapshot-based string into a count for the decision branch below.
+              if [[ -n "$remaining_labels" ]]; then
+                live_remaining=1
+              else
+                live_remaining=0
+              fi
+            fi
+            if [[ "$live_remaining" -gt 0 ]]; then
+              # Still waiting on other parents (could be other labels from this run's
+              # snapshot, or labels added/remaining concurrently).
+              # Try to fetch the current label names for the comment body; ok if it fails.
+              if still_waiting=$(gh pr view "$child" \
+                --json labels \
+                --jq '[.labels[].name | select(startswith("cascade:waiting-for-"))] | join(", ")' \
+                2>/dev/null) && [[ -n "$still_waiting" ]]; then
+                echo "::notice::PR #${child} still waiting on: ${still_waiting}"
+              else
+                still_waiting="other parent(s)"
+                echo "::notice::PR #${child} still waiting on additional parents (live label fetch failed)"
+              fi
+              gh pr comment "$child" \
+                --body "Parent **${PARENT}** drift PR's master rebuild succeeded. Still waiting on: ${still_waiting}. Auto-merge will activate when all parents resolve." \
+                2>&1 || true
+            else
+              # All parent wait labels cleared (LIVE check confirms) — enable auto-merge.
+              # Multi-parent race-safe: even if a concurrent resolver run was processing the same
+              # child, the LAST one to finish sees all wait labels gone and triggers auto-merge.
+              if gh pr merge "$child" --squash --auto 2>&1; then
+                gh pr comment "$child" \
+                  --body "All parent drift PRs resolved + their master rebuilds succeeded. Auto-merge enabled — will merge once CI passes." \
+                  2>&1 || true
+              else
+                gh pr comment "$child" \
+                  --body "::warning:: Parent **${PARENT}** drift PR resolved, all cascade labels cleared, but auto-merge enable failed. Manual merge required." \
+                  2>&1 || true
+                echo "::warning::auto-merge failed for #${child}"
+              fi
+            fi
+          done

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# Establish a canonical PROJECT_ROOT from $0 BEFORE sourcing any helper.
+# This overrides any inherited/stale/malicious PROJECT_ROOT from the environment.
+# PROJECT_ROOT is a DATA-lookup variable (where .build-lineage / config.yaml live)
+# and is intentionally overridable by tests — but $0 (this file) always lives at
+# the repo root, so this is the authoritative ground truth.
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+export PROJECT_ROOT
+
 export DOCKER_CLI_EXPERIMENTAL=enabled
 NPROC=$(nproc)
 export NPROC
@@ -10,6 +18,7 @@ export DOCKEROPTS="${DOCKEROPTS:-}"
 source "$(dirname "$0")/helpers/logging.sh"
 source "$(dirname "$0")/helpers/registry-utils.sh"
 source "$(dirname "$0")/helpers/sbom-utils.sh"
+source "$(dirname "$0")/helpers/dependency-graph.sh"
 
 # Source focused utility scripts
 source "$(dirname "$0")/scripts/check-version.sh"
@@ -59,6 +68,7 @@ help() {
   log_help "lineage [target]" "Show build lineage JSON (all or specific container)"
   log_help "list-builds <target> [version]" "List all builds for a container (CI-ready JSON)"
   log_help "sbom <target> [tag]" "Generate SBOM for a container image (requires syft)"
+  log_help "list-deps <container>" "Show project-internal dependency graph (direct + transitive)"
   echo
   echo Where:
   log_help "[version]" "Version to use - defaults to 'latest' (auto-discover from upstream)"
@@ -75,6 +85,56 @@ list_containers() {
   for target in $targets ; do
     echo "$target"
   done
+}
+
+# Show project-internal dependency graph for a container
+list_deps() {
+  local container="${1:-}"
+  if [[ -z "$container" ]]; then
+    log_error "Usage: ./make list-deps <container>"
+    exit 1
+  fi
+
+  # Validate container name: must be a known project container.
+  # Use _depgraph_valid_containers which respects _DEPGRAPH_CONTAINERS_OVERRIDE
+  # (test hook) and falls back to ./make list from PROJECT_ROOT.
+  local valid_containers _vc_rc
+  valid_containers=$(_depgraph_valid_containers)
+  _vc_rc=$?
+  if [[ $_vc_rc -ne 0 ]]; then
+    log_error "Failed to enumerate registered containers (rc=${_vc_rc})"
+    exit $_vc_rc
+  fi
+  if [[ " $valid_containers " != *" $container "* ]]; then
+    log_error "Error: '$container' is not a registered container. Run './make list' to see valid set."
+    exit 1
+  fi
+
+  local direct transitive _rc
+  direct=$(_depgraph_get_deps "$container")
+  _rc=$?
+  if [[ $_rc -eq 2 ]]; then
+    log_error "Error: dependency graph owner resolution failed for '${container}' — cannot list deps"
+    return 2
+  fi
+  transitive=$(_depgraph_get_deps_transitive "$container")
+  _rc=$?
+  if [[ $_rc -eq 2 ]]; then
+    log_error "Error: dependency graph owner resolution failed for '${container}' during transitive scan"
+    return 2
+  fi
+
+  echo "container: $container"
+  if [[ -n "$direct" ]]; then
+    echo "direct: $direct"
+  else
+    echo "direct: (none — only external upstream)"
+  fi
+  if [[ -n "$transitive" ]]; then
+    echo "transitive (leaves first): $transitive"
+  else
+    echo "transitive: (none)"
+  fi
 }
 
 # Format bytes to human readable
@@ -678,6 +738,7 @@ case "${1:-}" in
   check-updates ) check_updates "${2:-}" ;;
   check-dep-updates ) check_dep_updates "${2:-}" ;;
   list ) list_containers ;;
+  list-deps ) list_deps "${2:-}" ;;
   sizes ) show_sizes "${2:-}" ;;
   lineage ) show_lineage "${2:-}" ;;
   list-builds ) shift; list_builds "$@" ;;

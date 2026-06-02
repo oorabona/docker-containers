@@ -49,6 +49,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # shellcheck source=../helpers/lineage-utils.sh
 source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
+# shellcheck source=../helpers/dependency-graph.sh
+source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 
 # ---------------------------------------------------------------------------
 # _escape_gha_command <value>
@@ -324,6 +326,17 @@ for lineage_file in "${lineage_files[@]}"; do
     # Explicit cntrl-char rejection at entry point closes that bypass entirely.
     if [[ "$container" =~ [[:cntrl:]] ]]; then
         printf '::warning::Rejecting lineage entry %s: container name contains control chars: %s\n' \
+            "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
+        continue
+    fi
+
+    # Positive charset gate: container names must consist only of lowercase
+    # alphanumerics, underscores, and hyphens.  ./make list is directory-derived
+    # and does NOT guarantee this invariant; a symlink or unusual directory could
+    # pass grep -xF while containing shell metacharacters.  Rejecting here ensures
+    # NO container reaching the emitted drift matrices can contain metacharacters.
+    if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+        printf '::warning::Rejecting lineage entry %s: container name contains invalid characters: %s\n' \
             "$(_escape_gha_command "$basename_file")" "$(_escape_gha_command "$container")" >&2
         continue
     fi
@@ -671,10 +684,81 @@ for container in "${_container_order[@]}"; do
         continue
     fi
 
+    # Compute project-internal deps for this container.
+    # _depgraph_get_deps returns space-separated names; convert to JSON array.
+    # Failure is fatal: a dep-graph error must not silently produce internal_deps=[]
+    # and bypass cascade gating.
+    #
+    # Test-mode bridge: _VALID_CONTAINERS_OVERRIDE (detect-script test hook) signals
+    # that synthetic container names are in use.  _depgraph_get_deps uses a separate
+    # test hook (_DEPGRAPH_CONTAINERS_OVERRIDE) to bypass ./make list-builds.  Bridge
+    # the two here so scenario tests that only set _VALID_CONTAINERS_OVERRIDE do not
+    # inadvertently trigger ./make list-builds for synthetic containers.
+    if [[ -n "${_VALID_CONTAINERS_OVERRIDE:-}" && -z "${_DEPGRAPH_CONTAINERS_OVERRIDE:-}" ]]; then
+        _DEPGRAPH_CONTAINERS_OVERRIDE="$(printf '%s' "${_VALID_CONTAINERS_OVERRIDE}" | tr '\n' ' ')"
+        export _DEPGRAPH_CONTAINERS_OVERRIDE
+    fi
+    # FIX 3: propagate LINEAGE_DIR so dependency-graph reads from the same
+    # directory the detector used for variant discovery.  Only set when the
+    # caller has not already provided _DEPGRAPH_LINEAGE_DIR (test-hook respect).
+    if [[ -z "${_DEPGRAPH_LINEAGE_DIR:-}" ]]; then
+        export _DEPGRAPH_LINEAGE_DIR="$LINEAGE_DIR"
+    fi
+    #
+    # NOTE: use a temp file for stderr capture + explicit exit-code check instead
+    # of `if ! var=$(cmd 2>&1)`.  The `if !` construct disables set -e inside the
+    # command substitution subshell (bash spec §3.7.5), so failures in nested
+    # helpers would not propagate.  Explicit `|| exit 1` is the portable fix.
+    _depgraph_err_tmp=$(mktemp)
+    _container_internal_deps=$(_depgraph_get_deps "$container" 2>"$_depgraph_err_tmp") || {
+        _depgraph_err_msg=$(cat "$_depgraph_err_tmp" 2>/dev/null || true)
+        rm -f "$_depgraph_err_tmp"
+        if [[ -n "$_depgraph_err_msg" ]]; then
+            printf '::error::dep-graph failed for %s: %s\n' \
+                "$(_escape_gha_command "$container")" "$(_escape_gha_command "$_depgraph_err_msg")" >&2
+        else
+            printf '::error::Failed to compute internal_deps for %s; cannot make cascade decision\n' \
+                "$(_escape_gha_command "$container")" >&2
+        fi
+        # Emit the container as an error-only record, discarding any already-assembled
+        # variant fragments for this run.  Rationale: internal_deps is unavailable, so
+        # we cannot classify this container as a leaf (empty deps) or consumer (non-empty
+        # deps).  Emitting internal_deps:[] would be an unsafe leaf — it could trigger
+        # auto-merge against a stale parent.  Mirroring __CONTAINER_SKIP__ semantics
+        # (single status:error variant, no internal_deps, excluded from leaf/consumer
+        # matrices) is the only safe option.  Downstream _eval_parent_state State B0
+        # treats the container as in_flux when it appears in CURRENT_ERROR_SET.
+        _dg_err_container_safe=$(_sanitize_for_json "$container")
+        _dg_err_reason_safe=$(_sanitize_for_json "dep_graph_unavailable")
+        _dg_err_variant_json=$(jq -cn \
+            --arg variant_tag     "" \
+            --arg status          "error" \
+            --arg error_reason    "$_dg_err_reason_safe" \
+            '{variant_tag: $variant_tag, status: $status, error_reason: $error_reason}')
+        _dg_err_container_json=$(jq -cn \
+            --arg container    "$_dg_err_container_safe" \
+            --argjson variants "[${_dg_err_variant_json}]" \
+            '{container: $container, variants: $variants}')
+        if [[ "$first_container" == "true" ]]; then
+            first_container=false
+        else
+            output+=","
+        fi
+        output+="$_dg_err_container_json"
+        continue
+    }
+    rm -f "$_depgraph_err_tmp"
+    _internal_deps_json="[]"
+    if [[ -n "$_container_internal_deps" ]]; then
+        _internal_deps_json=$(printf '%s' "$_container_internal_deps" | \
+            jq -Rc 'split(" ") | map(select(length > 0))' 2>/dev/null || echo "[]")
+    fi
+
     container_json=$(jq -cn \
         --arg container "$container" \
         --argjson variants "$variants_array" \
-        '{container: $container, variants: $variants}')
+        --argjson internal_deps "$_internal_deps_json" \
+        '{container: $container, internal_deps: $internal_deps, variants: $variants}')
 
     if [[ "$first_container" == "true" ]]; then
         first_container=false

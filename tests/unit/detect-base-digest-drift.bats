@@ -1132,6 +1132,87 @@ STUB_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Gate r10 — Defect A: drift_containers_csv output
+#
+# The workflow emits drift_containers_csv (comma-separated) alongside the JSON
+# drift_containers output so open-drift-prs can pass it as CURRENT_DRIFT_SET
+# env to _eval_parent_state for the matrix-ordering race guard (State 0).
+# This test verifies the CSV is derivable from the detector output and contains
+# all drifted containers separated by commas (no spaces, no brackets).
+# ---------------------------------------------------------------------------
+@test "r10: drift_containers_csv derivable from detector output — CSV form matches JSON list" {
+    export _VALID_CONTAINERS_OVERRIDE="foo
+bar"
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    # Two containers: foo drifted, bar drifted (different base images)
+    cat > "$lineage_dir/foo-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "foo",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    cat > "$lineage_dir/bar-2.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "bar",
+  "tag": "2.0",
+  "base_image_ref": "debian:trixie-slim",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    # Probe stub: returns a different digest for each ref (simulating real drift)
+    local stub_script="$TEST_TEMP_DIR/probe-r10"
+    cat > "$stub_script" <<'STUB_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    alpine:3.21)
+        printf '{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+        ;;
+    debian:trixie-slim)
+        printf '{"digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}'
+        ;;
+    *)
+        echo "unexpected ref: $1" >&2
+        exit 1
+        ;;
+esac
+STUB_EOF
+    chmod +x "$stub_script"
+
+    result=$(PROBE_CMD="$stub_script" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+
+    # Derive drift_containers JSON (as the workflow does)
+    drift_containers=$(printf '%s' "$result" | jq -c '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) | .container]')
+
+    # Derive drift_containers_csv (as the workflow does: jq -r 'join(",")')
+    drift_containers_csv=$(printf '%s' "$drift_containers" | jq -r 'join(",")')
+
+    # CSV must contain both containers, no JSON brackets, no spaces around commas
+    [[ "$drift_containers_csv" == *"foo"* ]]
+    [[ "$drift_containers_csv" == *"bar"* ]]
+    [[ "$drift_containers_csv" != *"["* ]]
+    [[ "$drift_containers_csv" != *" "* ]]
+
+    # CSV must parse back to the same set as the JSON list
+    csv_foo=$(printf '%s' "$drift_containers_csv" | tr ',' '\n' | grep -c '^foo$')
+    csv_bar=$(printf '%s' "$drift_containers_csv" | tr ',' '\n' | grep -c '^bar$')
+    [ "$csv_foo" -eq 1 ]
+    [ "$csv_bar" -eq 1 ]
+
+    # An empty drift set produces an empty CSV (not "null" or "[]")
+    empty_csv=$(printf '[]' | jq -r 'join(",")')
+    [ "$empty_csv" = "" ]
+}
+
+# ---------------------------------------------------------------------------
 # Fix r6-2: Workflow re-emit injection prevention
 # Regression guard: a base_image_ref with a percent-encoded newline (%0A)
 # would survive _sanitize_for_json (which only strips literal control chars)
@@ -1380,6 +1461,77 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Defect L regression lock: error_containers_csv derivation
+#
+# The detect-digest-drift step must emit error_containers_csv alongside
+# drift_containers_csv.  The jq expression is:
+#   '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")'
+# This test verifies that a drift_json with mixed status:error / status:drift
+# entries correctly populates only the errored containers in the CSV output,
+# and that the drifting containers are NOT included in error_containers_csv.
+# ---------------------------------------------------------------------------
+@test "DefectL: error_containers_csv jq — error containers appear, drift containers do not" {
+    # Simulate the drift_json that the workflow step has in memory.
+    # foo = all variants errored; bar = drifting; baz = stable.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "foo", "variants": [{"status": "error"}, {"status": "error"}]},
+  {"container": "bar", "variants": [{"status": "drift"}, {"status": "stable"}]},
+  {"container": "baz", "variants": [{"status": "stable"}]}
+]
+EOF
+)
+
+    # This is the exact jq expression used in the workflow step.
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    # foo must appear (has error variant)
+    [[ "$error_csv" == *"foo"* ]]
+    # bar must NOT appear (only drift, no error)
+    ! [[ "$error_csv" == *"bar"* ]]
+    # baz must NOT appear (stable only)
+    ! [[ "$error_csv" == *"baz"* ]]
+}
+
+@test "DefectL: error_containers_csv jq — mixed error+drift container appears in error CSV" {
+    # A container with both error and drift variants must appear in error_containers_csv.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "php", "variants": [{"status": "error"}, {"status": "drift"}]}
+]
+EOF
+)
+
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    [[ "$error_csv" == *"php"* ]]
+}
+
+@test "DefectL: error_containers_csv jq — empty when no errors" {
+    # When all containers are stable or drifting (no errors), error_containers_csv is empty.
+    local drift_json
+    drift_json=$(cat <<'EOF'
+[
+  {"container": "bar", "variants": [{"status": "drift"}]},
+  {"container": "baz", "variants": [{"status": "stable"}]}
+]
+EOF
+)
+
+    error_csv=$(printf '%s' "$drift_json" | jq -r \
+        '[.[] | select(.variants | any(.status == "error")) | .container] | join(",")' \
+        || echo "JQFAIL")
+
+    [ -z "$error_csv" ]
+}
+
+# ---------------------------------------------------------------------------
 # Fix r7-4a: ./make list hard-fail in detect-base-digest-drift.sh
 # Regression guard: when _VALID_CONTAINERS_OVERRIDE is explicitly empty (not set
 # at all, so the script falls through to ./make list), and ./make list fails,
@@ -1390,8 +1542,9 @@ EOF
     local fake_root="$TEST_TEMP_DIR/r7fix4a"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
-    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh — must exist in fake root
+    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh and dependency-graph.sh — must exist in fake root
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -1427,6 +1580,7 @@ STUB
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -2999,4 +3153,618 @@ EOF
     err_reason=$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')
     [ "$err_status" = "error" ]
     [ "$err_reason" = "untrusted_ref" ]
+}
+
+# ---------------------------------------------------------------------------
+# internal_deps field — cascade-aware drift detection
+# ---------------------------------------------------------------------------
+
+# Helper: create a probe stub returning a specific digest for all refs
+_make_internal_deps_probe() {
+    local digest="$1"
+    local stub_path="$TEST_TEMP_DIR/bin/probe-internal-deps-$$"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$stub_path" << STUBEOF
+#!/usr/bin/env bash
+printf '{"digest":"%s"}' "${digest}"
+exit 0
+STUBEOF
+    chmod +x "$stub_path"
+    printf '%s' "$stub_path"
+}
+
+@test "internal_deps: drift JSON contains internal_deps field per container" {
+    # Container "myapp" drifts; its base ref points to our "baseimg" container
+    local lineage_dir="$TEST_TEMP_DIR/lineage-intdeps"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/oorabona/baseimg:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0.json"
+
+    local fresh_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    result=$(export _VALID_CONTAINERS_OVERRIDE; _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseimg')" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myapp baseimg" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myapp="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    # Output is valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Container record has internal_deps field
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
+
+    # internal_deps includes baseimg
+    deps=$(printf '%s' "$result" | jq -r '.[0].internal_deps[]')
+    [ "$deps" = "baseimg" ]
+}
+
+@test "internal_deps: external-only drift container has empty internal_deps array" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-extonly"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myimage-1.0.json"
+
+    local fresh_digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
+
+    # External-only: array is empty
+    deps_len=$(printf '%s' "$result" | jq '.[0].internal_deps | length')
+    [ "$deps_len" -eq 0 ]
+}
+
+@test "internal_deps: multi-dep container lists all internal deps" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-multidep"
+    mkdir -p "$lineage_dir"
+
+    # myapp depends on both baseA and baseB
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0-a" \
+        --arg base_ref "ghcr.io/oorabona/baseA:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0-a.json"
+
+    jq -cn \
+        --arg container "myapp" \
+        --arg tag "1.0-b" \
+        --arg base_ref "ghcr.io/oorabona/baseB:latest" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myapp-1.0-b.json"
+
+    local fresh_digest="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$fresh_digest")
+
+    # Multi-line _ACTIVE_TAGS_OVERRIDE requires explicit export in subshell
+    result=$(
+        export _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseA\nbaseB')"
+        export _DEPGRAPH_CONTAINERS_OVERRIDE="myapp baseA baseB"
+        export _DEPGRAPH_LINEAGE_DIR="$lineage_dir"
+        export _ACTIVE_TAGS_OVERRIDE_myapp
+        _ACTIVE_TAGS_OVERRIDE_myapp="$(printf '1.0-a\n1.0-b')"
+        export PROBE_CMD="$probe_stub"
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir"
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    deps_len=$(printf '%s' "$result" | jq '.[0].internal_deps | length')
+    [ "$deps_len" -eq 2 ]
+
+    # Both baseA and baseB present
+    deps_sorted=$(printf '%s' "$result" | jq -r '.[0].internal_deps | sort | .[]')
+    [[ "$deps_sorted" == *"baseA"* ]]
+    [[ "$deps_sorted" == *"baseB"* ]]
+}
+
+@test "internal_deps: unchanged container still has internal_deps field" {
+    local lineage_dir="$TEST_TEMP_DIR/lineage-unchanged"
+    mkdir -p "$lineage_dir"
+
+    local same_digest="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "$same_digest" \
+        '{"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "${lineage_dir}/myimage-1.0.json"
+
+    local probe_stub
+    probe_stub=$(_make_internal_deps_probe "$same_digest")
+
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir")
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    has_field=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_field" = "true" ]
+}
+
+# ---------------------------------------------------------------------------
+# Defect B.1 fix: _depgraph_get_deps failure → detect script exits non-zero (fail-closed)
+#
+# When _DEPGRAPH_CONTAINERS_OVERRIDE is unset and _depgraph_valid_containers
+# (which calls ./make list) fails, the dep-graph helper returns non-zero.
+# The detect script must propagate this as a non-zero exit rather than silently
+# producing internal_deps=[] and bypassing cascade gating.
+# ---------------------------------------------------------------------------
+@test "internal_deps: dep-graph helper failure → detect exits 0, container emitted as error record (F2 regression-lock)" {
+    # FIX 2: dep-graph failure must NOT abort the whole run (old behaviour: exit 1).
+    # The failing container must be surfaced as status:error with error_reason:dep_graph_unavailable
+    # and no internal_deps field — so it is excluded from the leaf/consumer matrices and
+    # downstream _eval_parent_state State B0 treats it as in_flux (conservative).
+    local fake_root="$TEST_TEMP_DIR/depgraph-fail"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+
+    # A container with an internal-looking ref so _depgraph_get_deps must be called
+    cat > "$fake_root/.build-lineage/myapp-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "myapp",
+  "tag": "1.0",
+  "base_image_ref": "ghcr.io/oorabona/baseimg:latest",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # ./make list fails — dep-graph cannot enumerate containers
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+    chmod +x "$fake_root/make"
+
+    local rc=0
+    local result
+    # _VALID_CONTAINERS_OVERRIDE set so detect script's own validation passes (only myapp processed),
+    # but _DEPGRAPH_CONTAINERS_OVERRIDE unset so _depgraph_valid_containers hits the failing ./make list.
+    result=$(cd "$fake_root" && \
+        _VALID_CONTAINERS_OVERRIDE="myapp" \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
+
+    # Must exit 0 — single container failure must not abort the whole run (FIX 2)
+    [ "$rc" -eq 0 ]
+
+    # Output must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # myapp must appear in output (as an error record, not dropped)
+    container=$(printf '%s' "$result" | jq -r '.[0].container')
+    [ "$container" = "myapp" ]
+
+    # Status must be "error"
+    status_val=$(printf '%s' "$result" | jq -r '.[0].variants[0].status')
+    [ "$status_val" = "error" ]
+
+    # error_reason must be dep_graph_unavailable
+    err_reason=$(printf '%s' "$result" | jq -r '.[0].variants[0].error_reason')
+    [ "$err_reason" = "dep_graph_unavailable" ]
+
+    # internal_deps must NOT be present (no empty-deps leaf)
+    has_internal_deps=$(printf '%s' "$result" | jq '.[0] | has("internal_deps")')
+    [ "$has_internal_deps" = "false" ]
+}
+
+# ---------------------------------------------------------------------------
+# F2 multi-container resilience: one container's _depgraph_get_deps fails,
+# the other containers must still appear with their normal records.
+#
+# Invariants:
+#   IV-F2a: overall exit code is 0 (not aborted)
+#   IV-F2b: failing container is surfaced as status:error, error_reason:dep_graph_unavailable
+#   IV-F2c: failing container does NOT have internal_deps field (no unsafe leaf)
+#   IV-F2d: succeeding container still appears with its normal drift/unchanged record
+#   IV-F2e: succeeding container IS NOT emitted as normal record with internal_deps:[]
+#            (it has internal_deps because dep-graph succeeded for it)
+#
+# Strategy: patch helpers/dependency-graph.sh in a fake root so _depgraph_get_deps
+# returns rc=2 only for the failing container name.  The bridge (_VALID_CONTAINERS_OVERRIDE
+# → _DEPGRAPH_CONTAINERS_OVERRIDE) is bypassed by setting _DEPGRAPH_CONTAINERS_OVERRIDE
+# explicitly; but then _depgraph_get_deps enters test-mode (__TEST_NO_FILTER__) and does
+# NOT call ./make list-builds.  To force a per-container failure in the output-assembly
+# loop (line 696), we patch _depgraph_get_deps in the copied helper.
+# ---------------------------------------------------------------------------
+@test "F2: multi-container run — one dep-graph failure is isolated, other container proceeds" {
+    local fake_root="$TEST_TEMP_DIR/depgraph-fail-multi"
+    mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
+    cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+
+    # Patch dependency-graph.sh: _depgraph_get_deps fails for "failcontainer",
+    # succeeds (returns empty deps = leaf) for any other container.
+    # We copy the real helper and then append a wrapper that overrides _depgraph_get_deps.
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+    cat >> "$fake_root/helpers/dependency-graph.sh" <<'PATCH'
+
+# TEST PATCH: override _depgraph_get_deps to fail for the named container
+_depgraph_get_deps() {
+    local container="$1"
+    if [[ "$container" == "failcontainer" ]]; then
+        printf '::error::_depgraph_get_deps: injected failure for %s\n' "$container" >&2
+        return 2
+    fi
+    # All other containers have no internal deps (external base refs only)
+    printf ''
+    return 0
+}
+PATCH
+
+    # failcontainer: drifts (recorded != current) — has an external base ref
+    cat > "$fake_root/.build-lineage/failcontainer-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "failcontainer",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # okcontainer: also drifts — external base ref
+    cat > "$fake_root/.build-lineage/okcontainer-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "okcontainer",
+  "tag": "1.0",
+  "base_image_ref": "debian:trixie-slim",
+  "base_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+EOF
+
+    # ./make list succeeds (for _depgraph_valid_containers in non-test-mode)
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "list" ]]; then
+    printf 'failcontainer\nokcontainer\n'
+fi
+STUB
+    chmod +x "$fake_root/make"
+
+    # Probe: returns a fresh digest (different from recorded) for both containers
+    local probe_stub="$TEST_TEMP_DIR/probe-f2-multi"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local rc=0
+    local result
+    result=$(cd "$fake_root" && \
+        _VALID_CONTAINERS_OVERRIDE="$(printf 'failcontainer\nokcontainer')" \
+        PROBE_CMD="$probe_stub" \
+        bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
+
+    # IV-F2a: overall exit 0 — one container failure must not abort the run
+    [ "$rc" -eq 0 ]
+
+    # Output must be valid JSON
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # Both containers must appear in the output
+    total=$(printf '%s' "$result" | jq 'length')
+    [ "$total" -eq 2 ]
+
+    # IV-F2b: failcontainer surfaced as status:error with dep_graph_unavailable reason
+    fail_status=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "failcontainer") | .variants[0].status')
+    [ "$fail_status" = "error" ]
+
+    fail_reason=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "failcontainer") | .variants[0].error_reason')
+    [ "$fail_reason" = "dep_graph_unavailable" ]
+
+    # IV-F2c: failcontainer does NOT have internal_deps (no unsafe empty-deps leaf)
+    fail_has_deps=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "failcontainer") | has("internal_deps")')
+    [ "$fail_has_deps" = "false" ]
+
+    # IV-F2d: okcontainer appears with a normal drift record
+    ok_status=$(printf '%s' "$result" | \
+        jq -r '.[] | select(.container == "okcontainer") | .variants[0].status')
+    [ "$ok_status" = "drift" ]
+
+    # IV-F2e: okcontainer has internal_deps field (dep-graph succeeded) with empty array (no internal refs)
+    ok_has_deps=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "okcontainer") | has("internal_deps")')
+    [ "$ok_has_deps" = "true" ]
+
+    ok_deps_len=$(printf '%s' "$result" | \
+        jq '.[] | select(.container == "okcontainer") | .internal_deps | length')
+    [ "$ok_deps_len" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Two-phase matrix split (drift_matrix_leaves / drift_matrix_consumers)
+#
+# The detect-digest-drift job emits two matrix outputs split by whether
+# internal_deps_csv is empty.  The workflow derives them from drift_matrix
+# using jq selectors.  These tests verify the split logic is correct.
+# ---------------------------------------------------------------------------
+
+@test "matrix-split: container with empty internal_deps_csv lands in drift_matrix_leaves" {
+    export _VALID_CONTAINERS_OVERRIDE="alpine-app"
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$lineage_dir"
+    cat > "$lineage_dir/alpine-app-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "alpine-app",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+    local stub="$TEST_TEMP_DIR/probe-matrix-split-leaf"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'"'"'\n' > "$stub"
+    chmod +x "$stub"
+
+    drift_matrix=$(PROBE_CMD="$stub" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null | \
+        jq -c '[.[] | select(.variants | any(.status == "drift" or .status == "legacy")) |
+          {container: .container, internal_deps_csv: ((.internal_deps // []) | join(","))}]')
+
+    drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+    drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+
+    # alpine-app has no internal deps → must appear in leaves, not consumers
+    leaves_count=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "alpine-app")] | length')
+    consumers_count=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "alpine-app")] | length')
+    [ "$leaves_count" -eq 1 ]
+    [ "$consumers_count" -eq 0 ]
+}
+
+@test "matrix-split: container with non-empty internal_deps_csv lands in drift_matrix_consumers" {
+    # Simulate a drift_matrix JSON entry with internal_deps_csv set (as if detect script emitted it).
+    drift_matrix='[{"container":"wordpress","internal_deps_csv":"php"},{"container":"debian","internal_deps_csv":""}]'
+
+    drift_matrix_leaves=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv == "")]')
+    drift_matrix_consumers=$(echo "$drift_matrix" | jq -c '[.[] | select(.internal_deps_csv != "")]')
+
+    # wordpress has deps → consumers
+    wp_in_consumers=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "wordpress")] | length')
+    wp_in_leaves=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "wordpress")] | length')
+    [ "$wp_in_consumers" -eq 1 ]
+    [ "$wp_in_leaves" -eq 0 ]
+
+    # debian has no deps → leaves
+    deb_in_leaves=$(echo "$drift_matrix_leaves" | jq '[.[] | select(.container == "debian")] | length')
+    deb_in_consumers=$(echo "$drift_matrix_consumers" | jq '[.[] | select(.container == "debian")] | length')
+    [ "$deb_in_leaves" -eq 1 ]
+    [ "$deb_in_consumers" -eq 0 ]
+}
+
+@test "matrix-split: drift_containers_csv still aggregates both leaves and consumers" {
+    # Backwards compat: drift_containers_csv must cover all drifting containers,
+    # regardless of which job handles them.
+    drift_matrix='[{"container":"wordpress","internal_deps_csv":"php"},{"container":"debian","internal_deps_csv":""},{"container":"php","internal_deps_csv":""}]'
+
+    drift_containers=$(echo "$drift_matrix" | jq -c '[.[].container]')
+    drift_containers_csv=$(echo "$drift_containers" | jq -r 'join(",")')
+
+    [[ "$drift_containers_csv" == *"wordpress"* ]]
+    [[ "$drift_containers_csv" == *"debian"* ]]
+    [[ "$drift_containers_csv" == *"php"* ]]
+    # No JSON brackets, no spaces
+    [[ "$drift_containers_csv" != *"["* ]]
+    [[ "$drift_containers_csv" != *" "* ]]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 1a: Positive charset gate — container name with shell metacharacter is
+# rejected at matrix admission.
+#
+# A container name like "web;rm" passes grep -xF if the canonical list contains
+# "web;rm" (e.g. a symlink in the project root), but it is still dangerous to
+# emit into a drift matrix where it could be interpolated into shell.  The
+# charset gate ^[a-z0-9_-]+$ rejects it regardless of the canonical list.
+#
+# Mutation guard: removing the charset gate causes the metachar container to
+# appear in the output (the test catches the regression).
+# ---------------------------------------------------------------------------
+@test "F1a: container name with semicolon (web;rm) is rejected, excluded from output" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a"
+    mkdir -p "$lineage_dir"
+
+    # Lineage file claiming container name "web;rm" — shell metacharacter
+    cat > "$lineage_dir/web-rm-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "web;rm",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Override valid containers to include the dangerous name so grep -xF would
+    # pass if the charset gate did not exist — the gate is what we are testing.
+    local stderr_log="$TEST_TEMP_DIR/f1a-stderr.log"
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="web;rm" \
+        PROBE_CMD="/bin/false" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log"
+    )
+
+    # Output must be empty: the container was rejected before processing
+    [ "$result" = "[]" ]
+
+    # A ::warning:: must have been emitted to stderr naming the invalid chars
+    grep -q '::warning::' "$stderr_log"
+}
+
+@test "F1a: container name with only valid chars (web-shell) passes the charset gate" {
+    local lineage_dir="$TEST_TEMP_DIR/.build-lineage-f1a-valid"
+    mkdir -p "$lineage_dir"
+
+    cat > "$lineage_dir/web-shell-1.0.json" <<'EOF'
+{
+  "lineage_schema_version": 2,
+  "container": "web-shell",
+  "tag": "1.0",
+  "base_image_ref": "alpine:3.21",
+  "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+EOF
+
+    # Probe returns same digest → unchanged (no drift), but the container must NOT
+    # be rejected by the charset gate.
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-same-f1a"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    local stderr_log="$TEST_TEMP_DIR/f1a-valid-stderr.log"
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="web-shell" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log"
+    )
+
+    # Valid name must not be rejected by the charset gate
+    ! grep -q 'invalid characters' "$stderr_log"
+    # Container must appear in output (unchanged status is OK)
+    container_in_output=$(printf '%s' "$result" | jq -r '.[0].container // empty')
+    [ "$container_in_output" = "web-shell" ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 3: LINEAGE_DIR propagation to dependency-graph helper
+#
+# When the detector is invoked with an alternate LINEAGE_DIR, the dep-graph
+# helper must read from THAT directory, not from the default .build-lineage.
+# Before Fix 3, _DEPGRAPH_LINEAGE_DIR was never set by the detector, so the
+# helper fell back to PROJECT_ROOT/.build-lineage regardless of the CLI arg.
+# ---------------------------------------------------------------------------
+@test "F3: alternate LINEAGE_DIR is propagated to dep-graph — deps reflect alt-dir lineage" {
+    # Alt lineage dir: contains a wordpress entry whose base is php (internal dep).
+    # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona so
+    # _depgraph_is_internal_ref can classify it without a git remote lookup.
+    local alt_lineage="$TEST_TEMP_DIR/.build-lineage-alt"
+    mkdir -p "$alt_lineage"
+
+    # wordpress lineage in ALT dir: depends on php via ghcr.io ref
+    jq -n '{
+      lineage_schema_version: 2,
+      container: "wordpress",
+      tag: "6.9-alpine",
+      base_image_ref: "ghcr.io/oorabona/php:8.3",
+      base_image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' > "$alt_lineage/wordpress-6.9-alpine.json"
+
+    # Default lineage dir (PROJECT_ROOT/.build-lineage): empty — dep-graph must
+    # NOT read from here when alt_lineage is passed to the detector.
+    local default_lineage="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$default_lineage"
+
+    # Probe: returns a different digest so wordpress shows drift (needed for
+    # the detector to reach the dep-graph call)
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-f3"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    # GITHUB_REPOSITORY_OWNER: allows _depgraph_project_owner to resolve the
+    # owner without a git remote in the synthetic PROJECT_ROOT.
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="wordpress
+php" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress php" \
+        GITHUB_REPOSITORY_OWNER="oorabona" \
+        PROBE_CMD="$probe_stub" \
+        PROJECT_ROOT="$TEST_TEMP_DIR" \
+        bash "${DETECTOR_SCRIPT}" "$alt_lineage" 2>/dev/null
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null  # valid JSON
+
+    # internal_deps for wordpress must contain "php" — read from alt_lineage.
+    # The detector emits .internal_deps as a JSON array; the workflow computes
+    # internal_deps_csv via join(",").  Assert against the array here.
+    internal_deps_json=$(printf '%s' "$result" | jq -c \
+        '.[] | select(.container=="wordpress") | .internal_deps')
+    # Must be a non-empty JSON array containing "php"
+    [[ "$internal_deps_json" != "null" && "$internal_deps_json" != "[]" ]]
+    php_present=$(printf '%s' "$internal_deps_json" | jq -r 'index("php") != null')
+    [ "$php_present" = "true" ]
+}
+
+@test "F3: default LINEAGE_DIR (no alt arg) still works — dep-graph reads default dir" {
+    # No positional arg → LINEAGE_DIR defaults to PROJECT_ROOT/.build-lineage.
+    # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona.
+    local default_lineage="$TEST_TEMP_DIR/.build-lineage"
+    mkdir -p "$default_lineage"
+
+    jq -n '{
+      lineage_schema_version: 2,
+      container: "wordpress",
+      tag: "6.9-alpine",
+      base_image_ref: "ghcr.io/oorabona/php:8.3",
+      base_image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }' > "$default_lineage/wordpress-6.9-alpine.json"
+
+    local probe_stub="$TEST_TEMP_DIR/bin/probe-f3-default"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/usr/bin/env bash\nprintf '"'"'{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'"'"'\n' \
+        > "$probe_stub"
+    chmod +x "$probe_stub"
+
+    result=$(
+        _VALID_CONTAINERS_OVERRIDE="wordpress
+php" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress php" \
+        GITHUB_REPOSITORY_OWNER="oorabona" \
+        PROBE_CMD="$probe_stub" \
+        PROJECT_ROOT="$TEST_TEMP_DIR" \
+        bash "${DETECTOR_SCRIPT}" 2>/dev/null
+    )
+
+    printf '%s' "$result" | jq '.' >/dev/null
+
+    # internal_deps must be a JSON array containing "php"
+    internal_deps_json=$(printf '%s' "$result" | jq -c \
+        '.[] | select(.container=="wordpress") | .internal_deps')
+    [[ "$internal_deps_json" != "null" && "$internal_deps_json" != "[]" ]]
+    php_present=$(printf '%s' "$internal_deps_json" | jq -r 'index("php") != null')
+    [ "$php_present" = "true" ]
 }
