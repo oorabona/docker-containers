@@ -87,3 +87,28 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.333.0-windows-ltsc2022-dev, base mcr.microsoft.com/windows/server:ltsc2022
   Old digest: sha256:4e349277bf85eee8eb03706e6baa47f91a37f99799c3fd2d44e74daf718d4e01
   New digest: sha256:b6754104e49ebec66426295546ef858206d6ccd9f5c7d1ccd992e24b2f75d9fb
+
+<!-- drift-content-hash: 8b73869ba9fa8941 run:26843891757 -->
+## base-digest-drift (2026-06-02)
+
+- Variant: 2.333.0-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
+- Variant: 2.333.0-windows-ltsc2022-dev, base mcr.microsoft.com/windows/server:ltsc2022
+  Old digest: sha256:4e349277bf85eee8eb03706e6baa47f91a37f99799c3fd2d44e74daf718d4e01
+  New digest: sha256:b6754104e49ebec66426295546ef858206d6ccd9f5c7d1ccd992e24b2f75d9fb
+- Variant: 2.333.0, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
+- Variant: 2.333.1-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
+- Variant: 2.333.1, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
+- Variant: 2.334.0-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
+- Variant: 2.334.0, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  New digest: sha256:db6914f1ac0c566f57857641e2214e3f3e453cb340cc2c890ed6c2b7b81b8a00
