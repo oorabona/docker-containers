@@ -1463,6 +1463,17 @@ jobs:
             fi
           fi
 
+      - name: Install yq (summary job)
+        # Required by check-version-drift.sh → helpers/variant-utils.sh.
+        # Without yq the declared-version enumeration returns empty → silent
+        # false-clean.  Same checksum-verified pin used by other jobs.
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
       - name: Check version drift (advisory)
         # Advisory: never fails the build. Opens/refreshes a version-drift issue
         # when declared versions are absent from GHCR beyond the grace window.
@@ -1473,6 +1484,12 @@ jobs:
         # (COMMIT_SUBJECT, etc.). open_version_drift_issue is called directly
         # from that file's function namespace via a targeted source after the
         # required vars are stubbed, or inlined below.
+        #
+        # Security: only run on push/workflow_dispatch.  On pull_request events
+        # the checked-out PR content could modify scripts/check-version-drift.sh
+        # or scripts/open-dep-failure-issue.sh, which are sourced/run here with
+        # a write-capable GH_TOKEN (PR-pwn).
+        if: github.event_name != 'pull_request'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1507,14 +1524,27 @@ jobs:
           # GHA template expressions into the shell body (injection-safe).
           while IFS= read -r cname; do
             [[ -z "$cname" ]] && continue
+
+            # FIX 3: validate container name before use in GHA workflow commands.
+            # Names must match ^[a-z0-9_-]+$; anything else is skipped with a warning.
+            if ! [[ "$cname" =~ ^[a-z0-9_-]+$ ]]; then
+              # Escape via printf %q to avoid injecting anything into ::warning::
+              printf '::warning::version-drift advisory: skipping container with invalid name: %s\n' \
+                "$(printf '%s' "$cname" | tr -dc '[:print:]' | cut -c1-64)"
+              continue
+            fi
+
             CONTAINER="$cname"
             export CONTAINER
 
             drift_json=""
             drift_rc=0
+            # FIX 5: do NOT suppress stderr (2>/dev/null) — the script emits
+            # ::warning::/::notice:: annotations to stderr that must reach the runner.
+            # Capture stdout (--json) into drift_json; let stderr flow through.
             drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
               bash scripts/check-version-drift.sh \
-              --mode post-build --container "$CONTAINER" --json 2>/dev/null) || drift_rc=$?
+              --mode post-build --container "$CONTAINER" --json) || drift_rc=$?
 
             if [[ "$drift_rc" -eq 2 ]]; then
               echo "::warning::version-drift advisory: probe error for ${CONTAINER} — skipping"

@@ -738,3 +738,209 @@ DRIFT_YAML="${REPO_ROOT}/.github/workflows/version-drift.yaml"
     matrix_interp_count=$(grep -cE '\$\{\{ *matrix\.' "$DRIFT_YAML" || true)
     [ "$matrix_interp_count" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# FIX 1 — structural: advisory step is gated to non-PR events.
+# ---------------------------------------------------------------------------
+@test "FIX1: advisory step has 'if: github.event_name != pull_request' guard" {
+    [ -f "$AUTO_BUILD_YAML" ]
+    # Extract the advisory step using a robust awk that starts at the step name
+    # and stops at the NEXT step (line starting with 8+ spaces "- name:") or
+    # next top-level job (line starting with 2 spaces + lowercase letter).
+    # We start collecting AFTER the name line to avoid the name line itself
+    # triggering the stop condition.
+    local advisory_block
+    advisory_block=$(awk '
+        /Check version drift \(advisory\)/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+    # The guard must appear in the step block.
+    local guard_count
+    guard_count=$(printf '%s' "$advisory_block" \
+        | grep -cE "if:.*github\.event_name[[:space:]]*!=.*pull_request" || true)
+    [ "$guard_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 3 — structural: advisory step validates container name pattern AND/OR
+#          routes through _escape_gha_command before emitting ::warning::.
+# ---------------------------------------------------------------------------
+@test "FIX3: advisory step validates container name with ^[a-z0-9_-]+\$ pattern" {
+    [ -f "$AUTO_BUILD_YAML" ]
+    local advisory_block
+    advisory_block=$(awk '
+        /Check version drift \(advisory\)/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+    # Must contain a regex guard for ^[a-z0-9_-]+$
+    local guard_count
+    guard_count=$(printf '%s' "$advisory_block" \
+        | grep -cE '\^\[a-z0-9_-\]\+\$|\^\[a-z0-9_-\]\+' || true)
+    [ "$guard_count" -ge 1 ]
+}
+
+@test "FIX3: check-version-drift.sh routes untrusted names through _escape_gha_command" {
+    # Every ::warning:: / ::notice:: annotation line that includes a user-derived
+    # value (name, declared, status from JSON data) must route through _escape_gha_command.
+    # In _append_row, annotations use $safe_name, $safe_declared, $safe_status — never
+    # the raw $name/$declared/$status.  Verify no annotation line uses the raw variables.
+    local raw_name_in_annotation raw_declared_in_annotation
+    # Check that ::warning:: / ::notice:: lines do NOT interpolate raw $name, $declared, $status
+    # (i.e. no 'printf ...::warning::...$name' outside safe_ variables)
+    raw_name_in_annotation=$(grep -cE \
+        '::(warning|notice)::[^"]*\$name[^_]|::(warning|notice)::[^"]*\$declared[^_]|::(warning|notice)::[^"]*\$status[^_]' \
+        "$DRIFT_SCRIPT" || true)
+    [ "$raw_name_in_annotation" -eq 0 ]
+
+    # The script must define _escape_gha_command
+    local fn_defined
+    fn_defined=$(grep -c '_escape_gha_command()' "$DRIFT_SCRIPT" || true)
+    [ "$fn_defined" -ge 1 ]
+
+    # _append_row must assign safe_ variables via _escape_gha_command
+    local safe_assignments
+    safe_assignments=$(grep -c 'safe_.*=.*_escape_gha_command' "$DRIFT_SCRIPT" || true)
+    [ "$safe_assignments" -ge 3 ]
+
+    # _escape_gha_command must be called for all ::error:: lines that include user data
+    # (grep for ::error:: lines that use printf %s with a subshell call to _escape_gha_command)
+    local escaped_errors
+    escaped_errors=$(grep -cE '::error::.*_escape_gha_command' "$DRIFT_SCRIPT" || true)
+    [ "$escaped_errors" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 4 — structural: summary job installs yq before the advisory step.
+# ---------------------------------------------------------------------------
+@test "FIX4: summary job installs yq before Check version drift step" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # The yq install step must appear BEFORE the advisory drift step in the file.
+    # Use fixed-string grep (-F) to avoid regex metachar issues with parentheses.
+    local yq_line drift_line
+    yq_line=$(grep -nF 'Install yq (summary job)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+    drift_line=$(grep -nF 'Check version drift (advisory)' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+    [ -n "$yq_line" ]
+    [ -n "$drift_line" ]
+    [ "$yq_line" -lt "$drift_line" ]
+
+    # The yq install step must be in the summary job section (after 'summary:' heading).
+    local summary_start
+    summary_start=$(grep -nP '^  summary:$' "$AUTO_BUILD_YAML" | head -1 | cut -d: -f1)
+    [ -n "$summary_start" ]
+    [ "$yq_line" -gt "$summary_start" ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX 2 — real probe classification: skopeo-based stubs on PATH.
+#
+# We create fake `skopeo` executables on PATH and verify that the real-probe
+# branch (no _VDRIFT_PROBE_OVERRIDE) correctly maps:
+#   - skopeo exits 0              → present
+#   - skopeo exits 1 + "manifest unknown" on stderr → absent
+#   - skopeo exits 1 + other error on stderr        → error
+# ---------------------------------------------------------------------------
+
+# Helper: prepend a fake skopeo on PATH that the drift script will pick up.
+_make_fake_skopeo() {
+    local exit_code="$1"   # exit code skopeo should emit
+    local stderr_msg="$2"  # message to print to stderr
+
+    local bin_dir="${TEST_TEMP_DIR}/fake-bin-$$"
+    mkdir -p "$bin_dir"
+
+    cat > "${bin_dir}/skopeo" <<SKOPEO_EOF
+#!/usr/bin/env bash
+printf '%s\n' "${stderr_msg}" >&2
+exit ${exit_code}
+SKOPEO_EOF
+    chmod +x "${bin_dir}/skopeo"
+    printf '%s' "$bin_dir"
+}
+
+@test "FIX2-probe: skopeo exits 0 → real probe returns present → in_sync" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 0 "")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+    local sync_count
+    sync_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="in_sync")] | length')
+    [ "$sync_count" -eq 1 ]
+}
+
+@test "FIX2-probe: skopeo exits 1 + 'manifest unknown' stderr → real probe returns absent → drift" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    # Old bump epoch → absent maps to drift
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: manifest unknown")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 1 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+    local drift_count
+    drift_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="drift")] | length')
+    [ "$drift_count" -eq 1 ]
+}
+
+@test "FIX2-probe: skopeo exits 1 + network-error stderr → real probe returns error → exit 2" {
+    local root
+    root=$(_make_temp_project "foo" "9.9.9")
+
+    local fake_bin
+    fake_bin=$(_make_fake_skopeo 1 "Error: connecting to registry: dial tcp: connection refused")
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_CONTAINERS_OVERRIDE="foo" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    [ "$status" -eq 2 ]
+    printf '%s' "$output" | jq '.' >/dev/null
+    local error_count
+    error_count=$(printf '%s' "$output" | jq '[.[] | select(.status=="error")] | length')
+    [ "$error_count" -eq 1 ]
+}
+
+@test "FIX2-structural: real probe distinguishes absent from error (no collapsed all-null path)" {
+    # Confirm the script no longer collapses all-null JSON to 'absent'.
+    # The old code had: 'All-null JSON → absent (ghcr_get_multi_arch_digests returns all-null on 404/absent)'
+    # That comment / code path must be gone.
+    local collapsed_path_count
+    collapsed_path_count=$(grep -cF \
+        'ghcr_get_multi_arch_digests returns all-null on 404' \
+        "$DRIFT_SCRIPT" || true)
+    [ "$collapsed_path_count" -eq 0 ]
+
+    # The script must reference skopeo for the real probe path
+    local skopeo_ref_count
+    skopeo_ref_count=$(grep -c 'skopeo' "$DRIFT_SCRIPT" || true)
+    [ "$skopeo_ref_count" -ge 1 ]
+}

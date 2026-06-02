@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
             grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
             exit 0 ;;
         *)
-            echo "::error::Unknown argument: $1" >&2
+            printf '::error::Unknown argument: %s\n' "$(_escape_gha_command "$1")" >&2
             exit 2 ;;
     esac
 done
@@ -145,7 +145,8 @@ _vdrift_ghcr_owner() {
         printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
-    echo "::error::Cannot parse owner from git remote URL: $remote_url" >&2
+    printf '::error::Cannot parse owner from git remote URL: %s\n' \
+        "$(_escape_gha_command "$remote_url")" >&2
     return 1
 }
 
@@ -219,40 +220,66 @@ _vdrift_probe_published() {
         return 0
     fi
 
-    # Real probe: use ghcr_get_multi_arch_digests from registry-utils.sh.
-    # We need registry-utils sourced; do it lazily on first real probe call.
+    # Real probe: use skopeo inspect --raw to get a 3-state outcome.
+    #
+    # skopeo is always available in CI (installed by the build jobs) and is
+    # already used elsewhere in this repo (extension-utils.sh, base-cache-utils.sh).
+    #
+    # Classification:
+    #   present — skopeo exits 0 (manifest found)
+    #   absent  — skopeo exits non-zero AND stderr matches a known "not found" pattern:
+    #               "manifest unknown", "was deleted or has expired", HTTP 404
+    #   error   — any other non-zero exit (auth failure, network error, 5xx, etc.)
+    #
+    # Falls back to a token+curl HEAD approach when skopeo is not on PATH.
+    if command -v skopeo >/dev/null 2>&1; then
+        local sk_stderr sk_rc
+        sk_stderr=$(skopeo inspect --raw "docker://${full_ref}" 2>&1 >/dev/null) \
+            && sk_rc=0 || sk_rc=$?
+        if [[ "$sk_rc" -eq 0 ]]; then
+            printf 'present'
+            return 0
+        fi
+        # Distinguish manifest-not-found from transport/auth errors.
+        if printf '%s' "$sk_stderr" | grep -qiE \
+            'manifest unknown|was deleted or has expired|404|not found|does not exist'; then
+            printf 'absent'
+        else
+            printf 'error'
+        fi
+        return 0
+    fi
+
+    # skopeo not available: fall back to authenticated manifest HEAD via curl.
+    # We need registry-utils sourced for ghcr_get_token; do it lazily.
     if [[ -z "${_VDRIFT_REGISTRY_UTILS_LOADED:-}" ]]; then
         # shellcheck source=../helpers/registry-utils.sh
         source "${_vdrift_self_dir}/../helpers/registry-utils.sh"
         _VDRIFT_REGISTRY_UTILS_LOADED=1
     fi
 
-    local digest_json
-    digest_json=$(ghcr_get_multi_arch_digests "${owner}/${image_name}" "$tag" 2>/dev/null || true)
+    local token
+    token=$(ghcr_get_token "${owner}/${image_name}" 2>/dev/null) || true
 
-    if [[ -z "$digest_json" ]]; then
+    if [[ -z "$token" ]]; then
+        # Cannot obtain a token → cannot determine state → error (fail-closed)
         printf 'error'
         return 0
     fi
 
-    local idx_digest
-    idx_digest=$(printf '%s' "$digest_json" | jq -r '.index_digest // empty' 2>/dev/null || true)
+    local http_status
+    http_status=$(curl -sf -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+        "https://ghcr.io/v2/${owner}/${image_name}/manifests/${tag}" \
+        2>/dev/null) || true
 
-    if [[ -n "$idx_digest" && "$idx_digest" != "null" ]]; then
-        printf 'present'
-    else
-        # All-null JSON → absent (ghcr_get_multi_arch_digests returns all-null on 404/absent)
-        # But if the JSON itself is malformed, treat as error (fail-closed)
-        local is_valid_null
-        is_valid_null=$(printf '%s' "$digest_json" | jq -e \
-            '.index_digest==null and .manifest_digest_amd64==null and .manifest_digest_arm64==null' \
-            2>/dev/null && echo "yes" || echo "no")
-        if [[ "$is_valid_null" == "yes" ]]; then
-            printf 'absent'
-        else
-            printf 'error'
-        fi
-    fi
+    case "$http_status" in
+        200|201)            printf 'present' ;;
+        404|400)            printf 'absent' ;;
+        ""|000|5*|401|403)  printf 'error' ;;
+        *)                  printf 'error' ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
