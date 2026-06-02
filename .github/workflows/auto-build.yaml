@@ -1530,13 +1530,8 @@ jobs:
           DETECTED_CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
         run: |
           chmod +x scripts/check-version-drift.sh scripts/open-dep-failure-issue.sh
-          # Source only the helpers that open-dep-failure-issue.sh depends on
-          # (logging + retry), then source the script itself so open_version_drift_issue
-          # is available.  The source-time :? guards all have values from the env: block.
+          # shellcheck source=helpers/logging.sh
           source helpers/logging.sh
-          source helpers/retry.sh
-          # shellcheck disable=SC1091
-          source scripts/open-dep-failure-issue.sh
 
           containers_json="$DETECTED_CONTAINERS"
           if [[ -z "$containers_json" || "$containers_json" == "[]" || "$containers_json" == "null" ]]; then
@@ -1549,12 +1544,11 @@ jobs:
           while IFS= read -r cname; do
             [[ -z "$cname" ]] && continue
 
-            # FIX 3: validate container name before use in GHA workflow commands.
+            # Validate container name before use in GHA workflow commands.
             # Names must match ^[a-z0-9_-]+$; anything else is skipped with a warning.
+            # The rejected value is NOT interpolated into the annotation (injection-safe).
             if ! [[ "$cname" =~ ^[a-z0-9_-]+$ ]]; then
-              # Escape via printf %q to avoid injecting anything into ::warning::
-              printf '::warning::version-drift advisory: skipping container with invalid name: %s\n' \
-                "$(printf '%s' "$cname" | tr -dc '[:print:]' | cut -c1-64)"
+              printf '::warning::version-drift advisory: skipping a container whose name failed ^[a-z0-9_-]+$ validation\n'
               continue
             fi
 
@@ -1563,7 +1557,7 @@ jobs:
 
             drift_json=""
             drift_rc=0
-            # FIX 5: do NOT suppress stderr (2>/dev/null) — the script emits
+            # Do NOT suppress stderr (2>/dev/null) — the script emits
             # ::warning::/::notice:: annotations to stderr that must reach the runner.
             # Capture stdout (--json) into drift_json; let stderr flow through.
             drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
@@ -1575,8 +1569,13 @@ jobs:
               continue
             fi
 
-            # drift_rc 0 (clean) or 1 (drift) — open/refresh issue on drift
-            open_version_drift_issue "$drift_json" "$CONTAINER" || true
+            # drift_rc 0 (clean) or 1 (drift) — open/refresh issue on drift.
+            # Source open-dep-failure-issue.sh inside a subshell so its top-level
+            # "set -euo pipefail" does not leak into this step's outer shell.
+            ( source helpers/retry.sh
+              # shellcheck disable=SC1091
+              source scripts/open-dep-failure-issue.sh
+              open_version_drift_issue "$drift_json" "$CONTAINER" ) || true
           done < <(printf '%s' "$containers_json" | jq -r '.[]' 2>/dev/null || true)
 
   cache-lineage:

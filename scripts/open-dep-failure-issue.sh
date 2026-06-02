@@ -413,8 +413,7 @@ open_version_drift_issue() {
         if [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
             validated_container="$container"
         else
-            printf '::warning::open_version_drift_issue: container name failed validation (^[a-z0-9_-]+$), omitting dep: label: %s\n' \
-                "$(printf '%s' "$container" | tr -dc '[:print:]' | cut -c1-64)" >&2
+            printf '::warning::open_version_drift_issue: container name failed validation; omitting dep: label\n' >&2
         fi
     fi
 

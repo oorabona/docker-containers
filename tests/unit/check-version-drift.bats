@@ -1221,3 +1221,139 @@ GH_EOF
         [ "$good_label_count" -ge 1 ]
     fi
 }
+
+# ---------------------------------------------------------------------------
+# GHA-INJ-1 — FIX 1 structural (injection-safe error/warning branches)
+#
+# Assert that the REJECTED-value branches do NOT interpolate the raw untrusted
+# value into a ::error:: / ::warning:: annotation.
+# ---------------------------------------------------------------------------
+
+@test "GHA-INJ-1a: version-drift.yaml invalid-GRACE_HOURS branch does not interpolate raw GRACE_HOURS value" {
+    [ -f "$DRIFT_YAML" ]
+
+    # Extract the GRACE_HOURS validation block — lines between the regex guard
+    # and the matching "exit 2" that follows it.
+    local grace_block
+    grace_block=$(awk '
+        /GRACE_HOURS.*\^.*\[0-9\]/ { capture=1 }
+        capture && /exit 2/ { print; capture=0; next }
+        capture { print }
+    ' "$DRIFT_YAML" || true)
+
+    # The branch must contain a ::error:: annotation
+    local error_line_count
+    error_line_count=$(printf '%s' "$grace_block" | grep -cE '::error::' || true)
+    [ "$error_line_count" -ge 1 ]
+
+    # The ::error:: annotation must NOT contain ${GRACE_HOURS} or $GRACE_HOURS
+    local raw_value_count
+    raw_value_count=$(printf '%s' "$grace_block" | grep -cE '::error::.*\$\{?GRACE_HOURS\}?' || true)
+    [ "$raw_value_count" -eq 0 ]
+}
+
+@test "GHA-INJ-1b: auto-build.yaml invalid-container-name branch does not interpolate raw cname value" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # Extract the invalid-name branch — lines between the name-validation guard
+    # and the "continue" that follows.
+    local invalid_block
+    invalid_block=$(awk '
+        /\^\[a-z0-9_-\]/ { capture=1 }
+        capture && /^\s*continue/ { print; capture=0; next }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    # The branch must contain a ::warning:: annotation
+    local warn_line_count
+    warn_line_count=$(printf '%s' "$invalid_block" | grep -cE '::warning::' || true)
+    [ "$warn_line_count" -ge 1 ]
+
+    # The ::warning:: annotation must NOT contain $cname or ${cname}
+    local raw_value_count
+    raw_value_count=$(printf '%s' "$invalid_block" | grep -cE '::warning::.*\$\{?cname\}?' || true)
+    [ "$raw_value_count" -eq 0 ]
+}
+
+@test "GHA-INJ-1c: open_version_drift_issue validation-failure branch does not interpolate raw container value" {
+    local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
+    [ -f "$script" ]
+
+    # Extract lines around the validation-failure warning inside open_version_drift_issue.
+    # The pattern: after the ^[a-z0-9_-]+$ regex test fails, a ::warning:: is emitted.
+    local validation_block
+    validation_block=$(awk '
+        /\^\[a-z0-9_-\]\+\$/ { capture=1 }
+        capture && /fi/ { print; capture=0; next }
+        capture { print }
+    ' "$script" || true)
+
+    # The block must contain a ::warning:: annotation
+    local warn_line_count
+    warn_line_count=$(printf '%s' "$validation_block" | grep -cE '::warning::' || true)
+    [ "$warn_line_count" -ge 1 ]
+
+    # The ::warning:: annotation must NOT interpolate the raw container value
+    # (i.e., must not contain $container or ${container} after ::warning::)
+    local raw_value_count
+    raw_value_count=$(printf '%s' "$validation_block" | grep -cE '::warning::.*\$\{?container\}?' || true)
+    [ "$raw_value_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# GHA-INJ-2 — FIX 2 structural (subshell isolation of set -euo pipefail)
+#
+# Assert that both workflow steps source open-dep-failure-issue.sh and call
+# open_version_drift_issue inside a subshell ( ... ), so the script's top-level
+# "set -euo pipefail" does not leak into the step's outer shell.
+# ---------------------------------------------------------------------------
+
+@test "GHA-INJ-2a: version-drift.yaml sweeps open_version_drift_issue inside a subshell" {
+    [ -f "$DRIFT_YAML" ]
+
+    # The subshell pattern must appear: a line starting with "( source" or "(" that
+    # is followed (within a few lines) by "source scripts/open-dep-failure-issue.sh"
+    # and "open_version_drift_issue".
+    # We verify this by checking that open_version_drift_issue appears on a line
+    # that is inside a ( ... ) block — specifically by looking for the subshell
+    # opening "(" and the function call in the same awk block.
+    local subshell_block
+    subshell_block=$(awk '
+        /^\s*\(/ && !seen { seen=1; capture=1 }
+        capture { print }
+        capture && /open_version_drift_issue/ { found=1 }
+        capture && /^\s*\)/ { capture=0 }
+    ' "$DRIFT_YAML" || true)
+
+    # Must find open_version_drift_issue inside a subshell block
+    local fn_in_subshell
+    fn_in_subshell=$(printf '%s' "$subshell_block" | grep -c 'open_version_drift_issue' || true)
+    [ "$fn_in_subshell" -ge 1 ]
+
+    # The subshell block must also source open-dep-failure-issue.sh
+    local source_in_subshell
+    source_in_subshell=$(printf '%s' "$subshell_block" | grep -c 'open-dep-failure-issue.sh' || true)
+    [ "$source_in_subshell" -ge 1 ]
+}
+
+@test "GHA-INJ-2b: auto-build.yaml advisory step calls open_version_drift_issue inside a subshell" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # Same structural check: find the subshell block containing open_version_drift_issue
+    # and verify open-dep-failure-issue.sh is sourced within it.
+    local subshell_block
+    subshell_block=$(awk '
+        /^\s*\(/ && !seen { seen=1; capture=1 }
+        capture { print }
+        capture && /open_version_drift_issue/ { found=1 }
+        capture && /^\s*\)/ { capture=0 }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    local fn_in_subshell
+    fn_in_subshell=$(printf '%s' "$subshell_block" | grep -c 'open_version_drift_issue' || true)
+    [ "$fn_in_subshell" -ge 1 ]
+
+    local source_in_subshell
+    source_in_subshell=$(printf '%s' "$subshell_block" | grep -c 'open-dep-failure-issue.sh' || true)
+    [ "$source_in_subshell" -ge 1 ]
+}

@@ -90,15 +90,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           chmod +x scripts/check-version-drift.sh scripts/open-dep-failure-issue.sh
+          # shellcheck source=helpers/logging.sh
           source helpers/logging.sh
-          source helpers/retry.sh
-          # shellcheck disable=SC1091
-          source scripts/open-dep-failure-issue.sh
 
           # Validate GRACE_HOURS is a non-negative integer before use.
           # Rejects any attacker-supplied non-numeric value from workflow_dispatch.
           if ! [[ "$GRACE_HOURS" =~ ^[0-9]+$ ]]; then
-            echo "::error::GRACE_HOURS must be a non-negative integer, got: ${GRACE_HOURS}" >&2
+            echo "::error::version-drift: grace_hours input must be a non-negative integer" >&2
             exit 2
           fi
 
@@ -125,9 +123,14 @@ jobs:
             exit 0
           fi
 
-          # exit 1 → at least one drift row: open/refresh the issue
+          # exit 1 → at least one drift row: open/refresh the issue.
+          # Source open-dep-failure-issue.sh inside a subshell so its top-level
+          # "set -euo pipefail" does not leak into this step's outer shell.
           log_step "Opening/refreshing version-drift issue..."
-          open_version_drift_issue "$drift_json" "" || true
+          ( source helpers/retry.sh
+            # shellcheck disable=SC1091
+            source scripts/open-dep-failure-issue.sh
+            open_version_drift_issue "$drift_json" "" ) || true
 
       - name: Upload drift JSON (for audit / manual inspection)
         if: always()
