@@ -1515,3 +1515,196 @@ GH_EOF
         [ "$comment_on_99" -eq 0 ]
     fi
 }
+
+# ---------------------------------------------------------------------------
+# FAILOPEN-FIX1 — open_version_drift_issue CREATE failure returns non-zero
+# and does not print "created #".
+# ---------------------------------------------------------------------------
+
+@test "FAILOPEN-FIX1: open_version_drift_issue CREATE failure returns non-zero, no 'created #' output" {
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-create-fail-$$"
+    mkdir -p "$fake_bin"
+
+    # gh stub: issue list returns [] (no existing issue), issue create fails.
+    cat > "${fake_bin}/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+    "issue list")
+        printf '[]'
+        ;;
+    "issue create")
+        printf 'Error: could not create issue\n' >&2
+        exit 1
+        ;;
+    "label create")
+        exit 0
+        ;;
+esac
+exit 0
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    local drift_json='[{"kind":"container","name":"foo","declared":"1.0.0","published":"","status":"drift"}]'
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' 'foo'
+        "
+
+    # Must return non-zero on gh issue create failure
+    [ "$status" -ne 0 ]
+
+    # Must NOT print "created #" (no false-success output)
+    [[ "$output" != *"created #"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# FAILOPEN-FIX1 — open_version_drift_issue COMMENT failure returns non-zero
+# and does not print "commented #".
+# ---------------------------------------------------------------------------
+
+@test "FAILOPEN-FIX1: open_version_drift_issue COMMENT failure returns non-zero, no 'commented #' output" {
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-comment-fail-$$"
+    mkdir -p "$fake_bin"
+
+    # gh stub: issue list returns existing issue #55, issue comment fails.
+    cat > "${fake_bin}/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+    "issue list")
+        printf '[{"number":55,"title":"Version drift detected"}]'
+        ;;
+    "issue comment")
+        printf 'Error: could not post comment\n' >&2
+        exit 1
+        ;;
+    "label create")
+        exit 0
+        ;;
+esac
+exit 0
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    local drift_json='[{"kind":"container","name":"foo","declared":"1.0.0","published":"","status":"drift"}]'
+
+    run --separate-stderr env \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' 'foo'
+        "
+
+    # Must return non-zero on gh issue comment failure
+    [ "$status" -ne 0 ]
+
+    # Must NOT print "commented #" (no false-success output)
+    [[ "$output" != *"commented #"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# FAILOPEN-FIX2 — container enumeration failure exits 2, not 1.
+# ---------------------------------------------------------------------------
+
+@test "FAILOPEN-FIX2: ./make list failure → script exits 2, not 1" {
+    local root="${TEST_TEMP_DIR}/fail-enum-project"
+    mkdir -p "$root"
+
+    # make list exits non-zero to simulate enumeration failure
+    cat > "${root}/make" <<'MAKE_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+    echo "::error::make list failed" >&2
+    exit 1
+fi
+MAKE_EOF
+    chmod +x "${root}/make"
+
+    # Do NOT set _VDRIFT_CONTAINERS_OVERRIDE so the real _vdrift_list_containers runs
+    # and hits the failing ./make list.
+    run --separate-stderr env \
+        PROJECT_ROOT="$root" \
+        _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \
+        _VDRIFT_BUMP_EPOCH_OVERRIDE="1" \
+        bash "$DRIFT_SCRIPT" --mode sweep --json
+
+    # Enumeration failure must be exit 2 (probe/harness error), not exit 1 (drift)
+    [ "$status" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# FAILOPEN-FIX3 — version-drift.yaml captures issue_rc; auto-build.yaml emits
+# ::warning:: on issue-open failure (structural grep tests).
+# ---------------------------------------------------------------------------
+
+@test "FAILOPEN-FIX3: version-drift.yaml captures issue_rc and exits non-zero on failure" {
+    [ -f "$DRIFT_YAML" ]
+
+    # Must capture subshell rc into a variable (not bare || true)
+    local rc_capture_count
+    rc_capture_count=$(grep -c 'issue_rc' "$DRIFT_YAML" || true)
+    [ "$rc_capture_count" -ge 1 ]
+
+    # Must exit 1 when issue_rc is non-zero
+    local exit_on_fail_count
+    exit_on_fail_count=$(grep -c 'issue_rc.*-ne 0\|exit 1' "$DRIFT_YAML" || true)
+    [ "$exit_on_fail_count" -ge 1 ]
+
+    # Must NOT have a bare "|| true" that discards the subshell rc on the
+    # open_version_drift_issue call line.
+    local bare_or_true
+    bare_or_true=$(grep 'open_version_drift_issue' "$DRIFT_YAML" | grep -c '|| true' || true)
+    [ "$bare_or_true" -eq 0 ]
+}
+
+@test "FAILOPEN-FIX3: auto-build.yaml advisory emits ::warning:: on issue-open failure, not silent || true" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # Extract the advisory step block
+    local advisory_block
+    advisory_block=$(awk '
+        /Check version drift \(advisory\)/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    # Must capture advisory_issue_rc (not bare || true)
+    local rc_capture_count
+    rc_capture_count=$(printf '%s' "$advisory_block" | grep -c 'advisory_issue_rc' || true)
+    [ "$rc_capture_count" -ge 1 ]
+
+    # Must emit ::warning:: on failure
+    local warning_count
+    warning_count=$(printf '%s' "$advisory_block" | grep -c '::warning::' || true)
+    [ "$warning_count" -ge 1 ]
+
+    # The open_version_drift_issue call must NOT have a bare || true
+    local bare_or_true
+    bare_or_true=$(printf '%s' "$advisory_block" | grep 'open_version_drift_issue' | grep -c '|| true' || true)
+    [ "$bare_or_true" -eq 0 ]
+}

@@ -1578,10 +1578,16 @@ jobs:
             # drift_rc 0 (clean) or 1 (drift) — open/refresh issue on drift.
             # Source open-dep-failure-issue.sh inside a subshell so its top-level
             # "set -euo pipefail" does not leak into this step's outer shell.
+            # Advisory: never fail the build, but surface a warning if the
+            # issue open/refresh itself failed so the lost alert is visible.
+            advisory_issue_rc=0
             ( source helpers/retry.sh
               # shellcheck disable=SC1091
               source scripts/open-dep-failure-issue.sh
-              open_version_drift_issue "$drift_json" "$CONTAINER" ) || true
+              open_version_drift_issue "$drift_json" "$CONTAINER" ) || advisory_issue_rc=$?
+            if [[ "$advisory_issue_rc" -ne 0 ]]; then
+              echo "::warning::version-drift advisory: drift detected but issue open/refresh failed (rc=${advisory_issue_rc})"
+            fi
           done < <(printf '%s' "$containers_json" | jq -r '.[]' 2>/dev/null || true)
 
   cache-lineage:

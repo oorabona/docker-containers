@@ -127,10 +127,15 @@ jobs:
           # Source open-dep-failure-issue.sh inside a subshell so its top-level
           # "set -euo pipefail" does not leak into this step's outer shell.
           log_step "Opening/refreshing version-drift issue..."
-          ( source helpers/retry.sh
+          issue_rc=0
+          ( set -euo pipefail; source helpers/retry.sh
             # shellcheck disable=SC1091
             source scripts/open-dep-failure-issue.sh
-            open_version_drift_issue "$drift_json" "" ) || true
+            open_version_drift_issue "$drift_json" "" ) || issue_rc=$?
+          if [[ "$issue_rc" -ne 0 ]]; then
+            echo "::error::version-drift sweep: drift detected but could not open/refresh the issue (rc=${issue_rc})"
+            exit 1
+          fi
 
       - name: Upload drift JSON (for audit / manual inspection)
         if: always()

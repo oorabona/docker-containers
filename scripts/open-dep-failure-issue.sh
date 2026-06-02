@@ -543,19 +543,30 @@ VDRIFT_BODY
 | **Drift count** | ${drift_count} |
 VDRIFT_COMMENT
 )"
-        retry_with_backoff 3 5 gh issue comment \
+        if ! retry_with_backoff 3 5 gh issue comment \
             --repo "$GITHUB_REPOSITORY" \
             "$existing_number" \
-            --body "$comment_body" >&2
+            --body "$comment_body" >&2; then
+            echo "::error::open_version_drift_issue: gh issue comment failed after retries" >&2
+            return 1
+        fi
         echo "commented #${existing_number}"
     else
-        local new_number
-        new_number=$(retry_with_backoff 3 5 gh issue create \
+        local create_out
+        if ! create_out=$(retry_with_backoff 3 5 gh issue create \
             --repo "$GITHUB_REPOSITORY" \
             --title "$issue_title" \
             --label "$dedup_labels" \
-            --body "$issue_body" \
-            | grep -o '[0-9]*$' || true)
+            --body "$issue_body"); then
+            echo "::error::open_version_drift_issue: gh issue create failed after retries" >&2
+            return 1
+        fi
+        local new_number
+        new_number=$(printf '%s' "$create_out" | grep -o '[0-9]*$' || true)
+        if [[ -z "$new_number" ]]; then
+            echo "::error::open_version_drift_issue: gh issue create succeeded but returned no issue number" >&2
+            return 1
+        fi
         echo "created #${new_number}"
     fi
 }

@@ -654,13 +654,20 @@ _emit_output() {
 # Main
 # ---------------------------------------------------------------------------
 
-GHCR_OWNER=$(_vdrift_ghcr_owner)
+if ! GHCR_OWNER=$(_vdrift_ghcr_owner); then
+    echo "::error::version-drift: GHCR owner resolution failed — cannot run guard" >&2
+    exit 2
+fi
 
 if [[ "$MODE" == "post-build" ]]; then
     _process_container "$GHCR_OWNER" "$CONTAINER_ARG"
 else
     # Sweep mode: all containers + extensions
-    containers=$(_vdrift_list_containers)
+    containers=""
+    if ! containers=$(_vdrift_list_containers); then
+        echo "::error::version-drift: container enumeration failed — cannot run guard" >&2
+        exit 2
+    fi
 
     while IFS= read -r container; do
         [[ -z "$container" ]] && continue
