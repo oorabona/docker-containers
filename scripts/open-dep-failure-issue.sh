@@ -417,12 +417,17 @@ open_version_drift_issue() {
         fi
     fi
 
-    # Build dedup label set
+    # Build dedup label set.
+    # Per-container path:  version-drift,automation,dep:<container>
+    # Sweep path (empty):  version-drift,automation,version-drift-sweep
+    # The two sets are disjoint: a per-container issue lacks version-drift-sweep;
+    # the sweep issue lacks any dep: label.  This prevents the sweep dedup query
+    # from matching (and commenting on) a per-container issue.
     local dedup_labels
     if [[ -n "$validated_container" ]]; then
         dedup_labels="version-drift,automation,dep:${validated_container}"
     else
-        dedup_labels="version-drift,automation"
+        dedup_labels="version-drift,automation,version-drift-sweep"
     fi
 
     # Build issue title
@@ -493,14 +498,24 @@ VDRIFT_BODY
             --repo "$GITHUB_REPOSITORY" \
             --color "e4e669" \
             --description "Dep-attributed build failures for ${validated_container}" 2>/dev/null || true
+    else
+        # Sweep path: ensure version-drift-sweep label exists (create best-effort)
+        gh label create "version-drift-sweep" \
+            --repo "$GITHUB_REPOSITORY" \
+            --color "d93f0b" \
+            --description "Global version-drift sweep issue" 2>/dev/null || true
     fi
 
-    # Search for open issue with dedup label set
+    # Search for open issue with dedup label set.
+    # Per-container search includes dep:<container> — cannot match the sweep issue.
+    # Sweep search includes version-drift-sweep   — cannot match per-container issues.
     local existing_number=""
     local search_output
     local gh_label_args=("--label" "version-drift" "--label" "automation")
     if [[ -n "$validated_container" ]]; then
         gh_label_args+=("--label" "dep:${validated_container}")
+    else
+        gh_label_args+=("--label" "version-drift-sweep")
     fi
 
     if search_output=$(gh issue list \

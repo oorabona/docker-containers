@@ -1480,7 +1480,10 @@ jobs:
         # The GHCR login above stores credentials that skopeo honours when
         # reading private packages.  Without skopeo the script falls back to
         # the curl path, which does not use the docker login.
+        # continue-on-error: the advisory drift check tolerates a missing skopeo
+        # (falls back to curl); an apt failure must not block an otherwise-green build.
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         timeout-minutes: 5
         shell: bash
         run: |
@@ -1491,7 +1494,10 @@ jobs:
         # Required by check-version-drift.sh → helpers/variant-utils.sh.
         # Without yq the declared-version enumeration returns empty → silent
         # false-clean.  Same checksum-verified pin used by other jobs.
+        # continue-on-error: if the yq download/checksum fails the advisory drift
+        # step yields empty results (absorbed by its own continue-on-error).
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         timeout-minutes: 5
         run: |
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64

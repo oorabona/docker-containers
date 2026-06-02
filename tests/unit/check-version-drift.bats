@@ -1357,3 +1357,161 @@ GH_EOF
     source_in_subshell=$(printf '%s' "$subshell_block" | grep -c 'open-dep-failure-issue.sh' || true)
     [ "$source_in_subshell" -ge 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# NEW-FIX1 — structural: advisory install steps are continue-on-error: true
+# ---------------------------------------------------------------------------
+
+@test "NEW-FIX1: Install skopeo (summary job) step has continue-on-error: true" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    # Extract the block for the "Install skopeo (summary job)" step.
+    # Collect lines from the step name until the next step or job heading.
+    local skopeo_block
+    skopeo_block=$(awk '
+        /Install skopeo \(summary job\)/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    # The block must contain continue-on-error: true
+    local coe_count
+    coe_count=$(printf '%s' "$skopeo_block" | grep -cF 'continue-on-error: true' || true)
+    [ "$coe_count" -ge 1 ]
+}
+
+@test "NEW-FIX1: Install yq (summary job) step has continue-on-error: true" {
+    [ -f "$AUTO_BUILD_YAML" ]
+
+    local yq_block
+    yq_block=$(awk '
+        /Install yq \(summary job\)/ { capture=1; next }
+        capture && /^      - name:/ { capture=0 }
+        capture && /^  [a-z][a-z]/ { capture=0 }
+        capture { print }
+    ' "$AUTO_BUILD_YAML" || true)
+
+    local coe_count
+    coe_count=$(printf '%s' "$yq_block" | grep -cF 'continue-on-error: true' || true)
+    [ "$coe_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# NEW-FIX2 — structural: sweep vs per-container label spaces are disjoint
+# ---------------------------------------------------------------------------
+
+@test "NEW-FIX2: sweep dedup uses version-drift-sweep label (structural)" {
+    local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
+    [ -f "$script" ]
+
+    # The sweep label must appear in the script
+    local sweep_label_count
+    sweep_label_count=$(grep -c 'version-drift-sweep' "$script" || true)
+    [ "$sweep_label_count" -ge 1 ]
+}
+
+@test "NEW-FIX2: per-container path uses dep: label and sweep path uses version-drift-sweep (mutually exclusive)" {
+    local script="${REPO_ROOT}/scripts/open-dep-failure-issue.sh"
+    [ -f "$script" ]
+
+    # Per-container path sets dep:<container> in dedup_labels
+    local per_container_label_count
+    per_container_label_count=$(grep -cF 'dep:${validated_container}' "$script" || true)
+    [ "$per_container_label_count" -ge 1 ]
+
+    # Sweep path sets version-drift-sweep in dedup_labels
+    local sweep_label_count
+    sweep_label_count=$(grep -cF 'version-drift-sweep' "$script" || true)
+    [ "$sweep_label_count" -ge 1 ]
+
+    # The script must NOT have a bare "version-drift,automation" dedup_labels
+    # assignment that lacks either dep: or version-drift-sweep
+    # (i.e., the old sweep label set "version-drift,automation" must be gone)
+    local bare_dedup_count
+    bare_dedup_count=$(grep -cE 'dedup_labels="version-drift,automation"$' "$script" || true)
+    [ "$bare_dedup_count" -eq 0 ]
+}
+
+@test "NEW-FIX2: sweep gh search uses version-drift-sweep label, not per-container dep: label" {
+    # Stub gh: return a fake per-container issue number ONLY when query includes dep:
+    # (simulates "a per-container issue exists"); return empty when query includes
+    # version-drift-sweep (simulates "no existing sweep issue").
+    # Assert sweep path creates a new issue rather than commenting on the per-container one.
+
+    local gh_log="${TEST_TEMP_DIR}/gh-sweep-collision-test.log"
+    local fake_bin="${TEST_TEMP_DIR}/fake-gh-sweep-$$"
+    mkdir -p "$fake_bin"
+
+    # Fake gh:
+    #   - issue list with version-drift-sweep → return [] (no existing sweep issue)
+    #   - issue list with dep: label → return issue #99 (per-container issue)
+    #   - issue create → return URL with new issue #100
+    #   - label create / issue comment → succeed silently
+    cat > "${fake_bin}/gh" <<GH_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${gh_log}"
+case "\${1:-} \${2:-}" in
+    "issue list")
+        for a in "\$@"; do
+            if [[ "\$a" == "version-drift-sweep" ]]; then
+                printf '[]'
+                exit 0
+            fi
+        done
+        for a in "\$@"; do
+            if [[ "\$a" == dep:* ]]; then
+                printf '[{"number":99,"title":"Per-container drift issue"}]'
+                exit 0
+            fi
+        done
+        printf '[]'
+        ;;
+    "issue create")
+        printf 'https://github.com/test/repo/issues/100\n'
+        ;;
+    "issue comment")
+        printf 'commented\n' >&2
+        ;;
+    "label create")
+        ;;
+esac
+exit 0
+GH_EOF
+    chmod +x "${fake_bin}/gh"
+
+    local drift_json='[{"kind":"container","name":"foo","declared":"1.0.0","published":"","status":"drift"}]'
+
+    # Call open_version_drift_issue with EMPTY container → sweep path
+    run --separate-stderr env \
+        GH_LOG="${gh_log}" \
+        PATH="${fake_bin}:${PATH}" \
+        GH_TOKEN="fake-token" \
+        GITHUB_REPOSITORY="test/repo" \
+        GITHUB_RUN_ID="12345" \
+        GITHUB_SERVER_URL="https://github.com" \
+        GITHUB_SHA="abcdef01" \
+        GITHUB_EVENT_NAME="push" \
+        GITHUB_REF_NAME="master" \
+        COMMIT_SUBJECT="test" \
+        DRY_RUN="false" \
+        bash -c "
+            source '${REPO_ROOT}/helpers/logging.sh'
+            source '${REPO_ROOT}/helpers/retry.sh'
+            source '${REPO_ROOT}/scripts/open-dep-failure-issue.sh'
+            open_version_drift_issue '${drift_json}' ''
+        "
+
+    [ "$status" -eq 0 ]
+
+    # The output must say "created #100" — NOT "commented #99"
+    # (sweep must not have deduped onto the per-container issue)
+    [[ "$output" == *"created #100"* ]]
+
+    # Confirm the sweep did NOT comment on issue 99
+    if [ -f "${gh_log}" ]; then
+        local comment_on_99
+        comment_on_99=$(grep -c 'issue comment.*99\|issue comment .* 99' "${gh_log}" || true)
+        [ "$comment_on_99" -eq 0 ]
+    fi
+}
