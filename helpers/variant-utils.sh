@@ -537,7 +537,7 @@ list_variant_tags() {
 # Compute per-container expand-retained signals from a git-diff-derived changed-files list.
 # This is the signal-computation layer for "matrix default to latest-only, expand on dep change".
 #
-# Usage: compute_expand_retained_map <event_name> <build_all_retained> <changed_files_file> <containers_json>
+# Usage: compute_expand_retained_map <event_name> <build_all_retained> <changed_files_file> <containers_json> [fallback_all]
 #
 # Args:
 #   event_name           - GitHub event name (e.g. "push", "pull_request", "workflow_dispatch"). May be empty.
@@ -545,10 +545,13 @@ list_variant_tags() {
 #   changed_files_file   - Path to a file with one changed path per line (output of `git diff --name-only`).
 #                          If file <changed_files_file>.diff_failed exists alongside, treat as diff failure.
 #   containers_json      - JSON array of detected container names, e.g. ["openresty","postgres"].
+#   fallback_all         - Optional. String "true" forces all containers to true regardless of other signals.
+#                          Used by the detect-containers fail-safe path (coverage checkpoint missing/invalid).
 #
 # Output (stdout):
 #   JSON object mapping container name -> boolean. true = expand retained versions, false = latest only.
 #   Priority chain (first match wins) for each container c:
+#     0. fallback_all == "true"                                 → c: true  (coverage-checkpoint fail-safe)
 #     1. <changed_files_file>.diff_failed sentinel exists       → c: true  (ERR-01a defensive expand)
 #     2. event_name empty or unrecognized                       → c: true  (ERR-06 backward-compat)
 #     3. event_name == "pull_request"                           → c: true  (PR smoke matrix)
@@ -564,6 +567,7 @@ compute_expand_retained_map() {
     local build_all_retained="$2"
     local changed_files_file="$3"
     local containers_json="$4"
+    local fallback_all="${5:-false}"
 
     # Validate containers_json is a valid JSON array
     if ! echo "$containers_json" | jq -e 'if type == "array" then true else error end' >/dev/null 2>&1; then
@@ -591,6 +595,12 @@ compute_expand_retained_map() {
     local container
     while IFS= read -r container; do
         [[ -z "$container" ]] && continue
+
+        # Priority 0: coverage-checkpoint fail-safe — override everything
+        if [[ "$fallback_all" == "true" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
 
         # Priority 1: diff_failed sentinel
         if [[ "$diff_failed" == "true" ]]; then

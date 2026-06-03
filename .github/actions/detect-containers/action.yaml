@@ -82,9 +82,124 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # Finding 2 fix: GH_TOKEN is scoped to this push-only step exclusively.
+    # The token is required only to validate the coverage checkpoint tag via the
+    # GH API (Finding 1 fix: job-level verification).  It must NOT be present in
+    # the Find-containers step that runs ./make list (branch-controlled code on
+    # PR/manual events).
+    # Scoped to master-only: the checkpoint tag (auto-build-coverage-master) is
+    # only written by the publish-coverage-checkpoint job which also gates on
+    # refs/heads/master.  A non-master push (e.g. the "main" branch listed in
+    # the on.push.branches trigger) must use the original event.before..after
+    # diff instead — applying master's checkpoint there would produce a wrong
+    # baseline and needless fail-safe expansions.
+    - name: Resolve coverage checkpoint baseline
+      id: resolve-coverage-baseline
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_SHA_CTX: ${{ github.sha }}
+        GITHUB_REPOSITORY_CTX: ${{ github.repository }}
+      run: |
+        set -e
+        baseline_sha=""
+        baseline_valid=false
+
+        # Fetch the coverage-checkpoint tag.  detect-containers callers use
+        # fetch-depth:0 so the tag is reachable without a full clone.
+        set +e
+        git fetch --no-tags origin \
+          "refs/tags/auto-build-coverage-master:refs/tags/auto-build-coverage-master" \
+          2>/dev/null
+        fetch_rc=$?
+        set -e
+
+        if [[ $fetch_rc -ne 0 ]]; then
+          echo "::warning::Coverage checkpoint tag auto-build-coverage-master not found (first run?) — failing safe: build-all with retained expansion"
+        else
+          # Resolve the tagged SHA.
+          set +e
+          baseline_sha=$(git rev-list -n1 auto-build-coverage-master 2>/dev/null)
+          resolve_rc=$?
+          set -e
+
+          if [[ $resolve_rc -ne 0 || -z "$baseline_sha" ]]; then
+            echo "::warning::Failed to resolve auto-build-coverage-master tag SHA — failing safe: build-all with retained expansion"
+            baseline_sha=""
+          else
+            # Ancestor check: tag must point to a commit on the current lineage.
+            set +e
+            git merge-base --is-ancestor "$baseline_sha" "$GITHUB_SHA_CTX" 2>/dev/null
+            ancestor_rc=$?
+            set -e
+
+            if [[ $ancestor_rc -ne 0 ]]; then
+              echo "::warning::Coverage checkpoint tag ($baseline_sha) is not an ancestor of HEAD — falling back to build-all with retained expansion"
+              baseline_sha=""
+            else
+              # Finding 1 fix: verify B was written by a successful
+              # publish-coverage-checkpoint job, not just any successful push run.
+              # A successful push run whose checkpoint job was skipped (or a run
+              # predating the mechanism) would wrongly validate via a headSha-only
+              # check, risking under-build when the tag is pointed to such a SHA.
+              #
+              # Strategy: find all push runs at B, then for each run check whether
+              # the "Publish coverage checkpoint tag" job completed with conclusion
+              # "success".  Any match → trusted.  No match / API error → fail-safe.
+              set +e
+              run_ids=$(gh run list \
+                --repo "$GITHUB_REPOSITORY_CTX" \
+                --workflow auto-build.yaml \
+                --branch master \
+                --event push \
+                --status success \
+                --limit 40 \
+                --json databaseId,headSha \
+                --jq ".[] | select(.headSha==\"$baseline_sha\") | .databaseId" \
+                2>/dev/null)
+              list_rc=$?
+              set -e
+
+              if [[ $list_rc -ne 0 || -z "$run_ids" ]]; then
+                echo "::warning::Coverage checkpoint tag ($baseline_sha) — GH API run-list failed or no matching push runs found; failing safe: build-all with retained expansion"
+              else
+                verified=no
+                while IFS= read -r rid; do
+                  [[ -z "$rid" ]] && continue
+                  set +e
+                  concl=$(gh run view "$rid" \
+                    --repo "$GITHUB_REPOSITORY_CTX" \
+                    --json jobs \
+                    --jq '.jobs[] | select(.name | test("publish coverage checkpoint tag";"i")) | .conclusion' \
+                    2>/dev/null)
+                  view_rc=$?
+                  set -e
+                  if [[ $view_rc -eq 0 && "$concl" == "success" ]]; then
+                    verified=yes
+                    break
+                  fi
+                done <<< "$run_ids"
+
+                if [[ "$verified" == "yes" ]]; then
+                  baseline_valid=true
+                  echo "Coverage checkpoint verified: run at $baseline_sha had a successful publish-coverage-checkpoint job"
+                else
+                  echo "::warning::Coverage checkpoint tag ($baseline_sha) — no run at that SHA had a successful publish-coverage-checkpoint job (tag may be mis-pointed or predate the mechanism); failing safe: build-all with retained expansion"
+                fi
+              fi
+            fi
+          fi
+        fi
+
+        echo "baseline_sha=${baseline_sha}" >> "$GITHUB_OUTPUT"
+        echo "baseline_valid=${baseline_valid}" >> "$GITHUB_OUTPUT"
+
     - name: Find containers to build
       id: find-containers
       shell: bash
+      # No GH_TOKEN here — this step runs ./make list (branch-controlled code) and
+      # must not have a write-capable token in its environment (Finding 2 fix).
       run: |
         set -e
         diff_rc=0
@@ -93,12 +208,12 @@ runs:
         # Get list of valid containers from make script (source of truth)
         echo "🔍 Getting list of valid containers from make script..."
         valid_containers=$(cd "$GITHUB_WORKSPACE" && ./make list)
-        
+
         if [[ -z "$valid_containers" ]]; then
           echo "⚠️  No valid containers found in make script"
           exit 1
         fi
-        
+
         echo "📋 Valid containers from make: $(echo "$valid_containers" | tr '\n' ' ')"
 
         # If specific container requested, validate it
@@ -113,26 +228,47 @@ runs:
           fi
         else
           echo "🔍 Detecting containers that need building based on changed files..."
-          
+
           # Determine what files changed in this push/PR
           diff_rc=0
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            # For push events, use event SHAs (handles initial commit with all-zeros before SHA gracefully)
-            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
-              # Initial commit - diff against empty tree
-              # The SHA '4b825dc642cb6eb9a060e54bf8d69288fbee4904' is Git's canonical empty tree object hash, used for initial commit diffs.
+          coverage_fallback=false
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/master" ]]; then
+            # Push to master: diff from the coverage checkpoint tag so superseded
+            # runs don't strand containers (fix for #595).
+            # Baseline resolution + GH API verification is done in the preceding
+            # resolve-coverage-baseline step (master-push-only, token-scoped).
+            # We consume its outputs here: baseline_sha and baseline_valid.
+            baseline_sha="${{ steps.resolve-coverage-baseline.outputs.baseline_sha }}"
+            baseline_valid="${{ steps.resolve-coverage-baseline.outputs.baseline_valid }}"
+
+            if [[ "$baseline_valid" == "true" ]]; then
+              echo "Coverage checkpoint baseline: $baseline_sha"
               set +e
-              changed_files=$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.event.after }}" 2>/dev/null)
+              changed_files=$(git diff --name-only --no-renames "$baseline_sha" "${{ github.sha }}" 2>/dev/null)
               diff_rc=$?
               set -e
-              [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (initial commit)"; changed_files=""; }
+              [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (push/checkpoint)"; changed_files=""; }
             else
-              set +e
-              changed_files=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" 2>/dev/null)
-              diff_rc=$?
-              set -e
-              [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (push event)"; changed_files=""; }
+              # Fail-safe: build ALL containers + force retained expansion.
+              # Reason is already ::warning::-logged by resolve-coverage-baseline.
+              coverage_fallback=true
+              diff_rc=0
+              changed_files=""
             fi
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            # Push to a non-master branch (e.g. "main"): use the original per-push
+            # diff window — no checkpoint involvement here, the tag belongs to master.
+            set +e
+            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+              # Initial / branch-creation push (all-zero before): diff against the
+              # empty tree so detection works instead of failing on a bogus base.
+              changed_files=$(git diff --name-only --no-renames 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "${{ github.sha }}" 2>/dev/null)
+            else
+              changed_files=$(git diff --name-only --no-renames "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null)
+            fi
+            diff_rc=$?
+            set -e
+            [[ $diff_rc -ne 0 ]] && { echo "⚠️ Git diff failed (push/non-master event.before..after)"; changed_files=""; }
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             # For PRs, compare with base and head SHAs from the event (robust, does not require fetch)
             set +e
@@ -157,10 +293,50 @@ runs:
             fi
           fi
 
+          # Coverage checkpoint fail-safe: build ALL containers + signal retained expansion
+          if [[ "$coverage_fallback" == "true" ]]; then
+            echo "🔄 Coverage checkpoint fail-safe — building all containers with retained version expansion"
+            while IFS= read -r container; do
+              [[ -n "$container" ]] && containers_to_build+=("$container")
+            done <<< "$valid_containers"
+          fi
+
           if [[ -n "$changed_files" ]]; then
             echo "📝 Changed files:"
             echo "$changed_files"
-            
+
+            # Root-level shared build files: a change to 'make' (or other root-level
+            # orchestrators) affects every container — fan out to all.
+            # This closes the detection hole where root-level files have no slash,
+            # causing the path-prefix loop below to skip them entirely.
+            build_all_from_root=false
+            while IFS= read -r file; do
+              [[ -z "$file" ]] && continue
+              case "$file" in
+                make)
+                  build_all_from_root=true
+                  break
+                  ;;
+              esac
+            done <<< "$changed_files"
+
+            if [[ "$build_all_from_root" == "true" ]]; then
+              echo "🔧 Root build orchestrator (make) changed — building all containers with retained version expansion"
+              while IFS= read -r container; do
+                [[ -n "$container" ]] && containers_to_build+=("$container")
+              done <<< "$valid_containers"
+              changed_files=""  # Skip per-container detection; all already queued
+              # A root build-logic change means ALL retained versions must rebuild,
+              # not just the latest. Reuse the same full-rebuild signal as the
+              # coverage-checkpoint fail-safe so compute_expand_retained_map
+              # returns all-true for every container.
+              coverage_fallback=true
+            fi
+            # TODO: Shared-helper fanout (helpers/*.sh change affecting all images)
+            # is a broader policy; tracked as follow-up to avoid over-engineering here.
+          fi
+
+          if [[ -n "$changed_files" ]]; then
             # Extract container names from changed file paths
             while IFS= read -r file; do
               # Skip root-level files (no slash in path)
@@ -233,6 +409,8 @@ runs:
           touch "${RUNNER_TEMP}/changed_files.txt.diff_failed"
         fi
         echo "changed_files_file=${RUNNER_TEMP}/changed_files.txt" >> "$GITHUB_OUTPUT"
+        # Propagate the coverage-checkpoint fail-safe flag to the compute-expand-map step.
+        echo "coverage_fallback=${coverage_fallback}" >> "$GITHUB_OUTPUT"
 
     - name: Compute expand_retained map
       id: compute-expand-map
@@ -242,6 +420,7 @@ runs:
         BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
         CHANGED_FILES_FILE: ${{ steps.find-containers.outputs.changed_files_file }}
         CONTAINERS_JSON: ${{ steps.find-containers.outputs.containers }}
+        COVERAGE_FALLBACK: ${{ steps.find-containers.outputs.coverage_fallback }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -265,7 +444,8 @@ runs:
           "$EVENT_NAME" \
           "$BUILD_ALL_RETAINED" \
           "$CHANGED_FILES_FILE" \
-          "$CONTAINERS_JSON")
+          "$CONTAINERS_JSON" \
+          "$COVERAGE_FALLBACK")
 
         echo "map=$map" >> "$GITHUB_OUTPUT"
         echo "::notice::Expand-retained map: $map"
