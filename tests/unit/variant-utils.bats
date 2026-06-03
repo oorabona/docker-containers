@@ -826,3 +826,227 @@ EOF
     stderr_out=$(list_build_matrix "threevers" "" "false" 2>&1 >/dev/null)
     [[ "$stderr_out" == *"::notice::Container threevers: latest-only (skipped retained versions:"* ]]
 }
+
+# --- compute_expand_retained_map fallback_all (coverage checkpoint fail-safe, #595) ---
+
+setup_fallback_test() {
+    # Shared setup for fallback tests: temp changed_files with no content
+    printf '' > "${TEST_DIR}/changed.txt"
+}
+
+@test "compute_expand_retained_map: fallback_all=true forces all containers to true" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    setup_fallback_test
+    containers='["openresty","terraform","postgres"]'
+
+    # fallback_all=true — every container must expand, regardless of event/diff
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+}
+
+@test "compute_expand_retained_map: fallback_all=true overrides per-container diff signal" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # changed_files contains ONLY openresty — without fallback, terraform/postgres stay false
+    printf 'openresty/Dockerfile\n' > "${TEST_DIR}/changed.txt"
+    containers='["openresty","terraform","postgres"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    # fallback_all wins even for containers not in changed_files
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+}
+
+@test "compute_expand_retained_map: fallback_all=false preserves normal per-container logic" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Only openresty changed; push event; fallback_all=false (normal path)
+    printf 'openresty/Dockerfile\n' > "${TEST_DIR}/changed.txt"
+    containers='["openresty","terraform"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false"
+    [ "$status" -eq 0 ]
+    # openresty: changed → true; terraform: not changed → false
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "false" ]
+}
+
+@test "compute_expand_retained_map: fallback_all omitted (backward compat) — normal logic applies" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    printf 'openresty/Dockerfile\n' > "${TEST_DIR}/changed.txt"
+    containers='["openresty","terraform"]'
+
+    # 4-arg call (no fallback_all) — must behave as fallback_all=false
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "false" ]
+}
+
+@test "compute_expand_retained_map: fallback_all=true with single container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    setup_fallback_test
+    containers='["ansible"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.ansible')" = "true" ]
+}
+
+# --- Finding 1: make fan-out shares the full-rebuild signal with coverage-checkpoint fail-safe ---
+# The make root-file fan-out sets coverage_fallback=true (same signal as the fail-safe),
+# which is passed as fallback_all=true to compute_expand_retained_map.
+# This test verifies that the shared signal forces all containers to expand retained versions,
+# even when changed_files is empty (which is what the make fan-out does — it clears
+# changed_files after queuing all containers).
+
+@test "compute_expand_retained_map: make-fanout full-rebuild signal (fallback_all=true, empty diff) forces all containers to expand retained" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Simulate the make fan-out state: changed_files is empty (cleared after queuing all),
+    # but coverage_fallback=true (new signal added to make fan-out).
+    printf '' > "${TEST_DIR}/changed.txt"
+    containers='["postgres","terraform","openresty","ansible"]'
+
+    # fallback_all=true mirrors what the make fan-out now sets.
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    # Every container must expand retained versions — NOT just latest.
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.ansible')" = "true" ]
+}
+
+@test "compute_expand_retained_map: WITHOUT full-rebuild signal, empty diff produces latest-only for push event" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Contrast test: same setup but fallback_all=false (old behaviour before fix).
+    # With an empty diff and a push event, all containers should be latest-only.
+    printf '' > "${TEST_DIR}/changed.txt"
+    containers='["terraform","openresty"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "false" ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "false" ]
+}
+
+# --- Finding 2: forged/unverified checkpoint tag → fail-safe build-all with retained expansion ---
+# When the checkpoint tag cannot be verified against a successful push run (e.g. tag was
+# manually advanced or the GH API query fails), the code sets coverage_fallback=true,
+# which is the same full-rebuild signal. This test verifies the shared signal path.
+
+@test "compute_expand_retained_map: unverified-tag fail-safe (fallback_all=true) forces retained expansion on all containers" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Simulate: tag present + ancestor check passed, but GH API verification failed
+    # (or returned 'no'). Code falls through to coverage_fallback=true → same signal.
+    printf '' > "${TEST_DIR}/changed.txt"
+    containers='["postgres","openresty","terraform"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
+}
+
+@test "compute_expand_retained_map: verified checkpoint tag with partial diff expands only changed containers" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Simulate: tag verified (fallback_all=false), only openresty changed.
+    # Only openresty should expand retained; terraform stays latest-only.
+    printf 'openresty/Dockerfile\n' > "${TEST_DIR}/changed.txt"
+    containers='["openresty","terraform","postgres"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "false" ]
+    [ "$(echo "$output" | jq -r '.postgres')" = "false" ]
+}
+
+# --- Finding 1 checkpoint-job binding traces ---
+# Trace (a): resolve-coverage-baseline finds a run at B whose
+#   publish-coverage-checkpoint job succeeded → baseline_valid=true →
+#   find-containers uses the partial diff → compute_expand_retained_map
+#   receives fallback_all=false and the partial diff → only changed containers expand.
+#
+# Trace (b): resolve-coverage-baseline finds a run at B (successful push run)
+#   but NO publish-coverage-checkpoint job success → baseline_valid=false →
+#   find-containers sets coverage_fallback=true → compute_expand_retained_map
+#   receives fallback_all=true → ALL containers expand (fail-safe).
+#
+# The compute_expand_retained_map function is the downstream consumer of
+# baseline_valid; it receives fallback_all from the action step.  The two
+# bats tests below exercise the contract of the downstream consumer for each
+# upstream trace, ensuring that changing fallback_all between the two traces
+# produces the correct per-container result.
+
+@test "compute_expand_retained_map: trace-a (checkpoint job verified, baseline_valid=true) — partial diff, only changed container expands" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Trace (a): baseline_valid=true passed as fallback_all=false.
+    # changed_files contains only postgres; other containers must stay latest-only.
+    printf 'postgres/variants.yaml\n' > "${TEST_DIR}/changed.txt"
+    containers='["postgres","ansible","terraform"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false"
+    [ "$status" -eq 0 ]
+    # The changed container expands all retained versions.
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+    # Unchanged containers stay at latest-only.
+    [ "$(echo "$output" | jq -r '.ansible')" = "false" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "false" ]
+}
+
+@test "compute_expand_retained_map: trace-b (push run succeeded but checkpoint job not present/skipped) — fail-safe: all containers expand" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Trace (b): a successful push run existed at B, but the
+    # publish-coverage-checkpoint job was skipped or not present (e.g. a run
+    # predating the mechanism, or a partial success where only checkpoint was
+    # skipped).  resolve-coverage-baseline leaves baseline_valid=false →
+    # find-containers sets coverage_fallback=true → fallback_all=true here.
+    # Even though only postgres changed, ALL containers must expand.
+    printf 'postgres/variants.yaml\n' > "${TEST_DIR}/changed.txt"
+    containers='["postgres","ansible","terraform"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "true"
+    [ "$status" -eq 0 ]
+    # Fail-safe: every container expands retained versions regardless of diff.
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+    [ "$(echo "$output" | jq -r '.ansible')" = "true" ]
+    [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
+}
