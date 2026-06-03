@@ -382,6 +382,34 @@ GHEOF
 }
 
 # ---------------------------------------------------------------------------
+# open_version_drift_issue — drift table rendering
+# Guards the "jq .[] over row strings" regression: the buggy program applied
+# | .[] to the whole comma-separated output stream (header array + row strings),
+# causing jq to error on strings and fall back to "unable to render drift table".
+# ---------------------------------------------------------------------------
+
+@test "drift table: renders drift rows and omits in_sync rows" {
+    # One drift row + one in_sync row. Only the drift row must appear in the table.
+    local drift_json='[
+        {"status":"drift","kind":"extension","name":"pgvector","declared":"0.8.0","published":"0.7.4"},
+        {"status":"in_sync","kind":"extension","name":"timescaledb","declared":"2.17.2","published":"2.17.2"}
+    ]'
+    export DRY_RUN="true"
+
+    run open_version_drift_issue "$drift_json" "postgres"
+    [ "$status" -eq 0 ]
+
+    # Must contain the rendered drift row
+    [[ "$output" == *"| pgvector |"* ]]
+    # Must contain the table header (proves the header | .[] scoping is also correct)
+    [[ "$output" == *"| Kind | Name | Declared | Published | Status |"* ]]
+    # Must NOT fall back to the error sentinel (guards the jq regression)
+    [[ "$output" != *"unable to render drift table"* ]]
+    # in_sync row must NOT appear (guards the select(.status=="drift") filter)
+    [[ "$output" != *"| timescaledb |"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Dedup: mock gh issue list returns empty → "created"
 # ---------------------------------------------------------------------------
 
