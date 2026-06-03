@@ -1050,3 +1050,78 @@ setup_fallback_test() {
     [ "$(echo "$output" | jq -r '.ansible')" = "true" ]
     [ "$(echo "$output" | jq -r '.terraform')" = "true" ]
 }
+
+# --- Finding A: carried-forward containers must force retained-version expansion ---
+# Mutation locked: if the new Rule 5 (carried-forward check) is removed, the first
+# test goes RED — a carried-forward container with no changed-file entry would fall
+# through to Priority 7 (default: false), rebuilding latest-only and producing a
+# false recovery signal.
+
+@test "compute_expand_retained_map: carried-forward container with NO changed-file prefix expands to true" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # No files changed for github-runner — it has no entry in changed_files.
+    # It is carried forward from a prior failed run.
+    # Without Rule 5, it would fall through to default=false → latest-only →
+    # extract_failed_recovered would see latest green → false recovery.
+    printf 'postgres/variants.yaml\n' > "${TEST_DIR}/changed.txt"
+    containers='["github-runner","postgres"]'
+    carried='["github-runner"]'
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false" "$carried"
+    [ "$status" -eq 0 ]
+    # Carried-forward container must expand all retained versions.
+    [ "$(echo "$output" | jq -r '."github-runner"')" = "true" ]
+    # postgres changed via diff — also true (unrelated to carry-forward).
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+}
+
+@test "compute_expand_retained_map: container NOT carried and NOT changed stays false (6-arg call)" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # ansible is neither in carried_forward nor in changed_files.
+    # Behavior must match the pre-Finding-A default (false).
+    printf 'postgres/variants.yaml\n' > "${TEST_DIR}/changed.txt"
+    containers='["ansible","postgres"]'
+    carried='["github-runner"]'   # github-runner not in containers — irrelevant
+
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false" "$carried"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq -r '.ansible')" = "false" ]
+    [ "$(echo "$output" | jq -r '.postgres')" = "true" ]
+}
+
+@test "compute_expand_retained_map: 5-arg call (no carried_forward) behaves as carried=[] — backward compat" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    # Three existing callers (make:524, recreate-manifests.yaml, validate-version-scripts.yaml)
+    # pass only 5 args.  This call must produce identical results to passing carried_forward=[].
+    printf 'openresty/Dockerfile\n' > "${TEST_DIR}/changed.txt"
+    containers='["openresty","terraform"]'
+
+    # 5-arg call — carried_forward defaults to []
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false"
+    [ "$status" -eq 0 ]
+    local result_5arg
+    result_5arg="$output"
+
+    # 6-arg call with explicit []
+    run compute_expand_retained_map "push" "false" "${TEST_DIR}/changed.txt" "$containers" "false" "[]"
+    [ "$status" -eq 0 ]
+    local result_6arg
+    result_6arg="$output"
+
+    # Both must produce the same map (openresty=true, terraform=false).
+    [ "$(echo "$result_5arg" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$result_5arg" | jq -r '.terraform')" = "false" ]
+    [ "$(echo "$result_6arg" | jq -r '.openresty')" = "true" ]
+    [ "$(echo "$result_6arg" | jq -r '.terraform')" = "false" ]
+    # Maps must be equal.
+    [ "$(echo "$result_5arg" | jq -c 'to_entries | sort_by(.key)')" = "$(echo "$result_6arg" | jq -c 'to_entries | sort_by(.key)')" ]
+}

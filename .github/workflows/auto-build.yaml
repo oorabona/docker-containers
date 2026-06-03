@@ -1289,52 +1289,146 @@ jobs:
           sbom-path: ${{ steps.sbom-windows.outputs.sbom_file }}
         continue-on-error: true
 
-  # Advance the coverage checkpoint git tag to HEAD when a push to master fully
-  # succeeded (or had nothing to build — docs-only push is still globally covered).
+  # Advance the coverage checkpoint tag on every master push run that completes
+  # (even when individual build jobs failed).  The tag carries a JSON state record
+  # of which containers failed so the next run can retry them while other containers
+  # follow the normal diff path.
   #
   # The tag `auto-build-coverage-master` is the ONLY safe baseline for cumulative
   # container detection (fix for #595 / supersede-stranding).  Invariants:
   #   - Only this job writes the tag, so tag-exists ↔ valid-coverage-checkpoint.
   #   - Targeted workflow_dispatch, workflow_call (upstream-monitor), and PR runs
   #     NEVER write it, so they can never poison the baseline.
-  #   - A failed/cancelled run (any build job failed) never advances the tag, so the
-  #     next run re-diffs from the old baseline and rebuilds the stranded containers.
+  #   - A cancelled run or a failed detect-containers job blocks advancement
+  #     (we have no reliable baseline to diff from or no container list to record).
   #   - A "nothing to build" docs-only push still advances the tag (no containers were
   #     newly changed, so the prior checkpoint remains valid coverage for them).
+  #   - Failed build jobs are recorded in the tag's JSON state and retried on the
+  #     next run via the carry-forward logic in detect-containers.
   publish-coverage-checkpoint:
     name: Publish coverage checkpoint tag
     needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest]
-    # Only on push to master; only when no monitored build job failed or was cancelled.
-    # !failure() && !cancelled() catches all terminal states: success and skipped both pass.
-    # The individual result checks below are belt-and-suspenders for the core jobs.
+    # Advance on every completed master push, even when build jobs failed.
+    # A cancelled run or a failed detect-containers job blocks advancement.
     if: |
       github.event_name == 'push' &&
       github.ref == 'refs/heads/master' &&
-      !failure() &&
       !cancelled() &&
-      needs.detect-containers.result != 'failure' &&
-      needs.detect-containers.result != 'cancelled' &&
-      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
-      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
-      (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped')
+      needs.detect-containers.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write  # Required to push the coverage checkpoint tag
+      actions: read    # Required to read job conclusions via gh run view
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
-      - name: Force-update coverage checkpoint tag
+      - name: Compute and publish coverage checkpoint tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Containers output is a JSON array — pass via env to avoid inline injection.
+          MATRIX_CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
+          # github.repository is owner/repo format (trusted context, no user content).
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          git tag -f auto-build-coverage-master "$GITHUB_SHA"
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}" \
-            "refs/tags/auto-build-coverage-master"
-          echo "::notice::Coverage checkpoint advanced to $GITHUB_SHA"
+          # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
+          source "${GITHUB_WORKSPACE}/helpers/coverage-checkpoint-utils.sh"
+
+          # Step 1: Fetch this run's job conclusions. On gh failure we cannot determine
+          # per-container outcomes, so we fail closed (force unmapped) rather than
+          # advancing the baseline while silently dropping this run's real failures.
+          set +e
+          jobs_json=$(gh run view "$GITHUB_RUN_ID" --json jobs 2>/dev/null)
+          gh_rc=$?
+          set -e
+          gh_failed=false
+          if [[ $gh_rc -ne 0 || -z "$jobs_json" ]]; then
+            echo "::warning::gh run view failed (rc=$gh_rc) — failing closed: carrying forward all attempted containers"
+            jobs_json='{"jobs":[]}'
+            gh_failed=true
+          fi
+
+          # Step 2: Resolve the matrix of containers that were attempted this run.
+          if [[ -z "$MATRIX_CONTAINERS" || "$MATRIX_CONTAINERS" == "null" ]]; then
+            matrix_json="[]"
+          else
+            matrix_json="$MATRIX_CONTAINERS"
+          fi
+
+          # Step 3: Classify jobs against the matrix.
+          er=$(extract_failed_recovered "$jobs_json" "$matrix_json")
+          ftr=$(echo "$er" | jq -c '.failed_this_run')
+          rec=$(echo "$er" | jq -c '.recovered_candidates')
+          unmapped=$(echo "$er" | jq -r '.unmapped_failure')
+          # Fail closed if job outcomes were unreadable.
+          if [[ "$gh_failed" == "true" ]]; then
+            unmapped=true
+          fi
+
+          # Finding B fix: configure bot identity required for annotated tags.
+          # GitHub-hosted runners have no committer identity by default; without this
+          # `git tag -a` fails with "Committer identity unknown".
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Finding C fix: compare-and-swap the checkpoint tag.
+          # master push runs are NOT cancelled by concurrency (cancel-in-progress:false),
+          # so two runs can reach here simultaneously.  A naive force-push lets the slower
+          # OLDER run overwrite a newer run's state and move the baseline backward.
+          # The loop re-reads the remote prior on each attempt (fresh merge), uses
+          # --force-with-lease for atomic compare-and-swap, and skips when the remote has
+          # already advanced beyond this run (forward-only guard).
+          TAG="auto-build-coverage-master"
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            # Re-fetch the current remote tag (force, so our local ref tracks remote exactly).
+            git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+            remote_oid=$(git rev-parse --verify -q "refs/tags/${TAG}" 2>/dev/null || true)   # tag OBJECT id (empty if absent)
+            remote_sha=$(git rev-list -n1 "${TAG}" 2>/dev/null || true)                       # peeled commit
+
+            # Forward-only guard: if the remote tag points to a commit that is NOT an ancestor
+            # of our HEAD, a newer run already owns the baseline — do not move it backward.
+            if [[ -n "$remote_sha" ]] && ! git merge-base --is-ancestor "$remote_sha" "$GITHUB_SHA" 2>/dev/null; then
+              echo "::notice::Coverage checkpoint already advanced beyond this run (remote=$remote_sha) — skipping; a newer run owns the baseline"
+              pushed=true   # treat as success: a newer run's state supersedes ours
+              break
+            fi
+
+            # Re-read the latest remote failed set and re-merge with THIS run's results.
+            # This ensures concurrent runs always merge their data rather than clobbering.
+            remote_msg=$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}" 2>/dev/null || true)
+            prior_failed=$(checkpoint_failed_containers "$remote_msg")
+            new_failed=$(merge_failed_set "$prior_failed" "$ftr" "$rec" "$matrix_json" "$unmapped")
+            state=$(jq -cn --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --argjson failed "$new_failed" \
+              '{sha:$sha, run_id:$run, failed_containers:$failed}')
+
+            # Create the annotated tag locally (overwrites our local ref).
+            git tag -f -a "${TAG}" -m "$state" "$GITHUB_SHA"
+
+            # Push with compare-and-swap against the remote oid we just observed.
+            if [[ -n "$remote_oid" ]]; then
+              lease="--force-with-lease=refs/tags/${TAG}:${remote_oid}"
+            else
+              # Tag absent remotely (bootstrap): require it to still be absent.
+              lease="--force-with-lease=refs/tags/${TAG}:"
+            fi
+            if git push "$lease" \
+                 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GH_REPOSITORY}" \
+                 "refs/tags/${TAG}" 2>/dev/null; then
+              echo "::notice::Coverage checkpoint advanced to $GITHUB_SHA — failed_containers=${new_failed} (attempt $attempt)"
+              pushed=true
+              break
+            fi
+            echo "::warning::Coverage checkpoint CAS lost (attempt $attempt) — a concurrent run updated the tag; retrying"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::warning::Coverage checkpoint not advanced after retries (heavy concurrency) — next run will re-diff from the existing baseline"
+          fi
 
   summary:
     needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries]
