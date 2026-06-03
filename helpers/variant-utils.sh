@@ -537,29 +537,36 @@ list_variant_tags() {
 # Compute per-container expand-retained signals from a git-diff-derived changed-files list.
 # This is the signal-computation layer for "matrix default to latest-only, expand on dep change".
 #
-# Usage: compute_expand_retained_map <event_name> <build_all_retained> <changed_files_file> <containers_json> [fallback_all]
+# Usage: compute_expand_retained_map <event_name> <build_all_retained> <changed_files_file> <containers_json> [fallback_all] [carried_forward_json]
 #
 # Args:
-#   event_name           - GitHub event name (e.g. "push", "pull_request", "workflow_dispatch"). May be empty.
-#   build_all_retained   - String "true" or "false" (workflow input). MUST be compared as string, not bool.
-#   changed_files_file   - Path to a file with one changed path per line (output of `git diff --name-only`).
-#                          If file <changed_files_file>.diff_failed exists alongside, treat as diff failure.
-#   containers_json      - JSON array of detected container names, e.g. ["openresty","postgres"].
-#   fallback_all         - Optional. String "true" forces all containers to true regardless of other signals.
-#                          Used by the detect-containers fail-safe path (coverage checkpoint missing/invalid).
+#   event_name            - GitHub event name (e.g. "push", "pull_request", "workflow_dispatch"). May be empty.
+#   build_all_retained    - String "true" or "false" (workflow input). MUST be compared as string, not bool.
+#   changed_files_file    - Path to a file with one changed path per line (output of `git diff --name-only`).
+#                           If file <changed_files_file>.diff_failed exists alongside, treat as diff failure.
+#   containers_json       - JSON array of detected container names, e.g. ["openresty","postgres"].
+#   fallback_all          - Optional. String "true" forces all containers to true regardless of other signals.
+#                           Used by the detect-containers fail-safe path (coverage checkpoint missing/invalid).
+#   carried_forward_json  - Optional. JSON array of container names carried forward from a prior failed run.
+#                           Defaults to []. Invalid JSON is treated as [] (no hard-fail).
+#                           A carried-forward container must rebuild ALL retained versions because we do not
+#                           know which retained version originally failed — a latest-only retry would green
+#                           the latest build and cause extract_failed_recovered to mark it "recovered",
+#                           silently dropping the failed retained version from the carry-forward set.
 #
 # Output (stdout):
 #   JSON object mapping container name -> boolean. true = expand retained versions, false = latest only.
 #   Priority chain (first match wins) for each container c:
-#     0. fallback_all == "true"                                 → c: true  (coverage-checkpoint fail-safe)
-#     1. <changed_files_file>.diff_failed sentinel exists       → c: true  (ERR-01a defensive expand)
-#     2. event_name empty or unrecognized                       → c: true  (ERR-06 backward-compat)
-#     3. event_name == "pull_request"                           → c: true  (PR smoke matrix)
-#     4. build_all_retained == "true" (explicit string compare) → c: true  (operator override)
-#     5. changed_files contains any path with prefix "$c/"
+#     0. fallback_all == "true"                                   → c: true  (coverage-checkpoint fail-safe)
+#     1. <changed_files_file>.diff_failed sentinel exists         → c: true  (ERR-01a defensive expand)
+#     2. event_name empty or unrecognized                         → c: true  (ERR-06 backward-compat)
+#     3. event_name == "pull_request"                             → c: true  (PR smoke matrix)
+#     4. build_all_retained == "true" (explicit string compare)   → c: true  (operator override)
+#     5. c is a member of carried_forward_json                    → c: true  (carry-forward retained expand)
+#     6. changed_files contains any path with prefix "$c/"
 #        (case-glob anchored prefix match, sibling-collision safe:
-#         "php-fpm/foo" does NOT match prefix "php/")            → c: true  (dep-driven trigger)
-#     6. otherwise                                              → c: false (default: latest only)
+#         "php-fpm/foo" does NOT match prefix "php/")             → c: true  (dep-driven trigger)
+#     7. otherwise                                                → c: false (default: latest only)
 #
 # Exit code: 0 on success, 1 on malformed containers_json.
 compute_expand_retained_map() {
@@ -568,6 +575,21 @@ compute_expand_retained_map() {
     local changed_files_file="$3"
     local containers_json="$4"
     local fallback_all="${5:-false}"
+    local carried_forward_json="${6:-[]}"
+
+    # Validate carried_forward_json: must be a JSON array; treat invalid as [] (no hard-fail).
+    if ! echo "$carried_forward_json" | jq -e 'if type == "array" then true else error end' >/dev/null 2>&1; then
+        echo "compute_expand_retained_map: carried_forward_json is not a valid JSON array — treating as []" >&2
+        carried_forward_json="[]"
+    fi
+
+    # Build a bash set from the carried-forward list for O(1) membership checks.
+    declare -A _carried_set
+    local _cf_container
+    while IFS= read -r _cf_container; do
+        [[ -z "$_cf_container" ]] && continue
+        _carried_set["$_cf_container"]=1
+    done < <(echo "$carried_forward_json" | jq -r '.[]')
 
     # Validate containers_json is a valid JSON array
     if ! echo "$containers_json" | jq -e 'if type == "array" then true else error end' >/dev/null 2>&1; then
@@ -626,7 +648,18 @@ compute_expand_retained_map() {
             continue
         fi
 
-        # Rule 5: dep-driven trigger — any file inside the container directory.
+        # Priority 5: carry-forward retained expand — the container was carried forward
+        # from a prior failed run.  We do NOT know which retained version failed, so a
+        # latest-only retry would rebuild only the latest, mark it green, and cause
+        # extract_failed_recovered to drop the container from failed_containers even
+        # though the failing retained version was never rebuilt.  Force all retained
+        # versions so the retry is comprehensive and the recovery signal is accurate.
+        if [[ -n "${_carried_set[$container]+_}" ]]; then
+            expand_map["$container"]="true"
+            continue
+        fi
+
+        # Rule 6: dep-driven trigger — any file inside the container directory.
         # A file `<c>/anything` (Dockerfile, build, variants.yaml, version.sh,
         # config.yaml, LAST_REBUILD.md, custom helper, generated assets, etc.)
         # implies the container's build inputs changed and ALL retained versions
@@ -650,7 +683,7 @@ compute_expand_retained_map() {
             continue
         fi
 
-        # Priority 6: default — latest only
+        # Priority 7: default — latest only
         expand_map["$container"]="false"
 
     done < <(echo "$containers_json" | jq -r '.[]')

@@ -78,6 +78,14 @@ outputs:
       versions, false = latest version only. Computed by compute_expand_retained_map
       helper. Consumed downstream by the Expand variants step.
     value: ${{ steps.compute-expand-map.outputs.map }}
+  carried_forward:
+    description: |
+      JSON array of container names that were newly appended to the build list
+      via the carry-forward mechanism (failed in the prior run and not already
+      queued by diff detection). Empty array [] when none. Exposed for
+      observability and consumed by compute-expand-map to force full retained-
+      version expansion (Finding A fix).
+    value: ${{ steps.find-containers.outputs.carried_forward }}
 
 runs:
   using: 'composite'
@@ -138,22 +146,23 @@ runs:
               echo "::warning::Coverage checkpoint tag ($baseline_sha) is not an ancestor of HEAD — falling back to build-all with retained expansion"
               baseline_sha=""
             else
-              # Finding 1 fix: verify B was written by a successful
-              # publish-coverage-checkpoint job, not just any successful push run.
-              # A successful push run whose checkpoint job was skipped (or a run
-              # predating the mechanism) would wrongly validate via a headSha-only
-              # check, risking under-build when the tag is pointed to such a SHA.
+              # Finding 1 fix: verify the tag was written by a successful
+              # publish-coverage-checkpoint job, not just any push run.
+              # A push run whose checkpoint job was skipped (or a run predating the
+              # mechanism) would wrongly validate via a headSha-only check, risking
+              # under-build when the tag is pointed to such a SHA.
               #
-              # Strategy: find all push runs at B, then for each run check whether
-              # the "Publish coverage checkpoint tag" job completed with conclusion
-              # "success".  Any match → trusted.  No match / API error → fail-safe.
+              # The checkpoint now advances even when build jobs fail (the run
+              # conclusion may be "failure"), so --status success is intentionally
+              # omitted here.  The per-run job-conclusion check below (gh run view)
+              # is the authority — it verifies the publish-coverage-checkpoint job
+              # itself completed with conclusion "success".
               set +e
               run_ids=$(gh run list \
                 --repo "$GITHUB_REPOSITORY_CTX" \
                 --workflow auto-build.yaml \
                 --branch master \
                 --event push \
-                --status success \
                 --limit 40 \
                 --json databaseId,headSha \
                 --jq ".[] | select(.headSha==\"$baseline_sha\") | .databaseId" \
@@ -195,13 +204,33 @@ runs:
         echo "baseline_sha=${baseline_sha}" >> "$GITHUB_OUTPUT"
         echo "baseline_valid=${baseline_valid}" >> "$GITHUB_OUTPUT"
 
+        # Read the failed-container carry-forward list from the annotated tag message.
+        # The message is a JSON state record written by publish-coverage-checkpoint.
+        # Falls back to [] for any parse/validation failure (e.g. first run, old tag format).
+        baseline_failed="[]"
+        if [[ "$baseline_valid" == "true" ]]; then
+          # shellcheck disable=SC1091  # path resolved at runtime in the action dir
+          source "${GITHUB_ACTION_PATH}/../../../helpers/coverage-checkpoint-utils.sh"
+          tag_msg=$(git for-each-ref \
+            --format='%(contents)' refs/tags/auto-build-coverage-master 2>/dev/null || true)
+          baseline_failed=$(checkpoint_failed_containers "$tag_msg")
+        fi
+        echo "baseline_failed_containers=${baseline_failed}" >> "$GITHUB_OUTPUT"
+
     - name: Find containers to build
       id: find-containers
       shell: bash
       # No GH_TOKEN here — this step runs ./make list (branch-controlled code) and
       # must not have a write-capable token in its environment (Finding 2 fix).
+      env:
+        # Failed containers carried forward from the prior checkpoint tag.
+        # Passed via env (not inline ${{ }}) to avoid injection through JSON content.
+        BASELINE_FAILED: ${{ steps.resolve-coverage-baseline.outputs.baseline_failed_containers }}
+        BASELINE_VALID: ${{ steps.resolve-coverage-baseline.outputs.baseline_valid }}
       run: |
         set -e
+        # shellcheck disable=SC1091  # path resolved at runtime in the action dir
+        source "${GITHUB_ACTION_PATH}/../../../helpers/coverage-checkpoint-utils.sh"
         diff_rc=0
         containers_to_build=()
 
@@ -386,11 +415,41 @@ runs:
           fi
         fi
 
+        # Carry forward containers that failed in the prior run.
+        # Only applies on master-push with a valid baseline (coverage_fallback already
+        # builds all, so carry-forward is redundant and skipped in that path).
+        # compute_carry_forward ensures a prior-failed container is added to the
+        # carried set even when it was already queued by another path (diff, or the
+        # shared-infra canary) — the old inline loop skipped carried recording in
+        # that case, causing a latest-only retry to falsely recover a failed retained
+        # version (Finding A, second instance: extract untested inline logic).
+        #
+        # carried = baseline_failed ∩ valid  (all valid prior-failed containers)
+        # queued' = queued ∪ carried         (full build list, deduped)
+        carried_forward_json='[]'
+        if [[ "$BASELINE_VALID" == "true" && "$coverage_fallback" != "true" \
+              && -n "$BASELINE_FAILED" && "$BASELINE_FAILED" != "[]" ]]; then
+          if [ ${#containers_to_build[@]} -eq 0 ]; then
+            queued_json='[]'
+          else
+            queued_json=$(printf '%s\n' "${containers_to_build[@]}" | jq -R . | jq -s -c .)
+          fi
+          valid_json=$(printf '%s\n' "$valid_containers" | jq -R 'select(length>0)' | jq -s -c .)
+          cf=$(compute_carry_forward "$queued_json" "$BASELINE_FAILED" "$valid_json")
+          # Rebuild the build list from the merged queue (includes carried containers).
+          mapfile -t containers_to_build < <(echo "$cf" | jq -r '.queued[]')
+          carried_forward_json=$(echo "$cf" | jq -c '.carried')
+          if [[ "$carried_forward_json" != "[]" ]]; then
+            echo "🔁 Carrying forward (retained-expand forced): $(echo "$carried_forward_json" | jq -r 'join(" ")')"
+          fi
+        fi
+
         # Create outputs (CSV first, then JSON for matrix compatibility)
         if [ ${#containers_to_build[@]} -eq 0 ]; then
           echo "containers_list=" >> $GITHUB_OUTPUT
           echo "containers=[]" >> $GITHUB_OUTPUT
           echo "count=0" >> $GITHUB_OUTPUT
+          echo "carried_forward=[]" >> $GITHUB_OUTPUT
           echo "📋 No containers need building"
         else
           containers_csv=$(IFS=','; echo "${containers_to_build[*]}")
@@ -398,6 +457,7 @@ runs:
           echo "containers_list=$containers_csv" >> $GITHUB_OUTPUT
           echo "containers=$container_json" >> $GITHUB_OUTPUT
           echo "count=${#containers_to_build[@]}" >> $GITHUB_OUTPUT
+          echo "carried_forward=${carried_forward_json}" >> $GITHUB_OUTPUT
           echo "📋 Found containers to build: ${containers_to_build[*]}"
         fi
 
@@ -421,6 +481,7 @@ runs:
         CHANGED_FILES_FILE: ${{ steps.find-containers.outputs.changed_files_file }}
         CONTAINERS_JSON: ${{ steps.find-containers.outputs.containers }}
         COVERAGE_FALLBACK: ${{ steps.find-containers.outputs.coverage_fallback }}
+        CARRIED_FORWARD: ${{ steps.find-containers.outputs.carried_forward }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -440,12 +501,18 @@ runs:
           exit 0
         fi
 
+        # Guard against empty/missing CARRIED_FORWARD (e.g. non-master-push events
+        # where the output is not set by find-containers).
+        carried_forward_arg="${CARRIED_FORWARD:-[]}"
+        [[ -z "$carried_forward_arg" ]] && carried_forward_arg="[]"
+
         map=$(compute_expand_retained_map \
           "$EVENT_NAME" \
           "$BUILD_ALL_RETAINED" \
           "$CHANGED_FILES_FILE" \
           "$CONTAINERS_JSON" \
-          "$COVERAGE_FALLBACK")
+          "$COVERAGE_FALLBACK" \
+          "$carried_forward_arg")
 
         echo "map=$map" >> "$GITHUB_OUTPUT"
         echo "::notice::Expand-retained map: $map"
