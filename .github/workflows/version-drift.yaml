@@ -115,9 +115,18 @@ jobs:
           sweep_rc=0
           # Capture STDOUT (the --json array) into drift_json; let STDERR flow
           # to the runner so ::warning::/ ::notice:: annotations are visible.
+          #
+          # NOTE: --check-content is intentionally DISABLED. The content-staleness
+          # check (#597) compares the published org.opencontainers.image.build-digest
+          # label against a recomputed compute_build_digest, but that digest includes
+          # LAST_REBUILD.md — which the build mutates after stamping the label — so a
+          # post-hoc recomputation never matches and EVERY static container reports a
+          # false content_stale. The approach needs a build-time content-only signal
+          # before it can be re-enabled. The --check-content capability remains in the
+          # script (opt-in, off by default). See the follow-up issue.
           drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
             bash scripts/check-version-drift.sh \
-            --mode sweep --grace-hours "$GRACE_HOURS" --check-content --json) || sweep_rc=$?
+            --mode sweep --grace-hours "$GRACE_HOURS" --json) || sweep_rc=$?
 
           echo "sweep_rc=${sweep_rc}" >> "$GITHUB_OUTPUT"
           printf '%s' "${drift_json:-[]}" > /tmp/drift-sweep.json
