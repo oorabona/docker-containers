@@ -117,7 +117,7 @@ jobs:
           # to the runner so ::warning::/ ::notice:: annotations are visible.
           drift_json=$(GITHUB_REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}" \
             bash scripts/check-version-drift.sh \
-            --mode sweep --grace-hours "$GRACE_HOURS" --json) || sweep_rc=$?
+            --mode sweep --grace-hours "$GRACE_HOURS" --check-content --json) || sweep_rc=$?
 
           echo "sweep_rc=${sweep_rc}" >> "$GITHUB_OUTPUT"
           printf '%s' "${drift_json:-[]}" > /tmp/drift-sweep.json

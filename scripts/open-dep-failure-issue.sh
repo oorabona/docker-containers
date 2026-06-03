@@ -408,9 +408,10 @@ open_version_drift_issue() {
         return 1
     fi
 
-    # Count drift rows
+    # Count drift rows — include content_stale rows: they indicate a rebuild is
+    # needed and must surface as actionable issues, not be silently dropped.
     local drift_count
-    drift_count=$(printf '%s' "$drift_json" | jq '[.[] | select(.status=="drift")] | length' 2>/dev/null || echo "0")
+    drift_count=$(printf '%s' "$drift_json" | jq '[.[] | select(.status=="drift" or .status=="content_stale")] | length' 2>/dev/null || echo "0")
     if [[ "$drift_count" -eq 0 ]]; then
         return 0
     fi
@@ -444,17 +445,19 @@ open_version_drift_issue() {
     # Build issue title
     local issue_title
     if [[ -n "$validated_container" ]]; then
-        issue_title="Version drift detected — ${validated_container}: ${drift_count} declared version(s) not published"
+        issue_title="Version drift detected — ${validated_container}: ${drift_count} version(s) need attention"
     else
-        issue_title="Version drift detected — ${drift_count} declared version(s) not published"
+        issue_title="Version drift detected — ${drift_count} version(s) need attention"
     fi
 
-    # Build markdown table from drift rows
+    # Build markdown table from drift rows.
+    # content_stale rows are rendered alongside drift rows: they represent
+    # images that need a rebuild and are equally actionable.
     local drift_table
     drift_table="$(printf '%s' "$drift_json" | jq -r '
         (["| Kind | Name | Declared | Published | Status |",
           "|------|------|----------|-----------|--------|"] | .[]),
-        (.[] | select(.status=="drift") |
+        (.[] | select(.status=="drift" or .status=="content_stale") |
          "| \(.kind) | \(.name) | \(.declared) | \(.published) | \(.status) |")
     ' 2>/dev/null || echo "_(unable to render drift table)_")"
 
