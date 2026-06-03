@@ -880,6 +880,29 @@ _capture_index_digest() {
     fi
 }
 
+# _reuse_ref_is_multiarch <image_ref>
+# Inspects an existing manifest and checks whether it covers both linux/amd64
+# and linux/arm64.
+#
+# Returns:
+#   0 — ref is a multi-arch index covering amd64 + arm64 (safe to reuse)
+#   1 — ref exists but is NOT multi-arch (single-arch / partial — must re-create)
+#   2 — imagetools inspect failed (transient/infra) — caller should fail closed
+#
+# Does NOT decide control flow; the caller maps rc to reuse / re-create / fail.
+_reuse_ref_is_multiarch() {
+    local _ref="$1"
+    local _out _rc=0
+    _out=$($DOCKER buildx imagetools inspect "$_ref" 2>&1) || _rc=$?
+    if [[ "$_rc" -ne 0 ]]; then
+        return 2
+    fi
+    if echo "$_out" | grep -q "linux/amd64" && echo "$_out" | grep -q "linux/arm64"; then
+        return 0
+    fi
+    return 1
+}
+
 # Build, tag, and optionally push a list of extensions. Exits 1 if any fail.
 # Args: config_file major_ver container_dir push ext1 [ext2 ...]
 build_tag_push_extensions() {
@@ -1909,13 +1932,29 @@ finalize_multiarch_manifests() {
             # When FORCE=true: always create fresh manifest (skip reuse check).
             # Otherwise: use ext_ref_resolve to probe for existing manifest (canonical-first, PR-scoped fallback).
             if [[ "${FORCE:-false}" != "true" ]]; then
-                local _nr_multiarch_rc=0
-                ext_ref_resolve "$ext" "$ceiling" "$major_ver" "" > /dev/null || _nr_multiarch_rc=$?
+                local _nr_multiarch_rc=0 _nr_resolved_ref
+                _nr_resolved_ref=$(ext_ref_resolve "$ext" "$ceiling" "$major_ver" "") || _nr_multiarch_rc=$?
 
                 case "$_nr_multiarch_rc" in
                     0)
-                        log_info "$ext $ceiling pg${major_ver}: manifest present — reused (unchanged, non-resolver)"
-                        continue
+                        # Manifest present — verify it covers both target platforms before reusing.
+                        local _nr_ma_rc=0
+                        _reuse_ref_is_multiarch "$_nr_resolved_ref" || _nr_ma_rc=$?
+                        case "$_nr_ma_rc" in
+                            0)
+                                log_info "$ext $ceiling pg${major_ver}: manifest present — reused (unchanged, non-resolver)"
+                                continue
+                                ;;
+                            1)
+                                log_warning "$ext $ceiling pg${major_ver}: reused manifest is not multi-arch — re-creating from per-arch legs"
+                                # Fall through to the CREATE path below.
+                                ;;
+                            *)
+                                log_error "$ext $ceiling pg${major_ver}: imagetools inspect failed on reused non-resolver manifest — fail closed"
+                                _failed=true
+                                continue
+                                ;;
+                        esac
                         ;;
                     2)
                         log_error "$ext $ceiling pg${major_ver}: transient registry probe error on non-resolver ref — fail closed"
@@ -1924,7 +1963,7 @@ finalize_multiarch_manifests() {
                         ;;
                 esac
             fi
-            # rc 1 → absent, or FORCE=true → fall through to create.
+            # rc 1 → absent, or FORCE=true, or single-arch reuse → fall through to create.
 
             # Resolve per-arch source refs via ext_ref_resolve.
             local _nr_src_amd64 _nr_src_arm64
@@ -2034,15 +2073,14 @@ finalize_multiarch_manifests() {
                     # If it is single-arch (legacy / pre-multi-arch), fall through to the
                     # CREATE path to rebuild it from this run's per-arch legs instead of
                     # blindly accepting a stale single-arch manifest.
-                    local _reuse_inspect_out _reuse_inspect_rc=0
-                    _reuse_inspect_out=$($DOCKER buildx imagetools inspect "$_ma_ref" 2>&1) || _reuse_inspect_rc=$?
-                    if [[ "$_reuse_inspect_rc" -ne 0 ]]; then
-                        log_error "$ext $ver pg${major_ver}: imagetools inspect failed on reused manifest ref (rc=$_reuse_inspect_rc) — transient infra error — fail closed"
+                    local _reuse_ma_rc=0
+                    _reuse_ref_is_multiarch "$_ma_ref" || _reuse_ma_rc=$?
+                    if [[ "$_reuse_ma_rc" -eq 2 ]]; then
+                        log_error "$ext $ver pg${major_ver}: imagetools inspect failed on reused manifest ref — transient infra error — fail closed"
                         _ext_failed=true
                         break
                     fi
-                    if echo "$_reuse_inspect_out" | grep -q "linux/amd64" && \
-                       echo "$_reuse_inspect_out" | grep -q "linux/arm64"; then
+                    if [[ "$_reuse_ma_rc" -eq 0 ]]; then
                         _confirmed_available+=("$ver")
                         _ver_index_digests["$ver"]="$_reuse_digest"
                         continue
