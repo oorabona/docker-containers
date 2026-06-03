@@ -413,6 +413,123 @@ GHEOF
 # Dedup: mock gh issue list returns empty → "created"
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# recovery mode: --mode recovery
+# ---------------------------------------------------------------------------
+
+@test "recovery: open 'Auto Build Failed' issue found → gh issue close called" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    # Track calls via a log file so we can assert what was called
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo '[{"number":42,"title":"Auto Build Failed - 2026-06-01"}]'
+        ;;
+    *"issue comment"*)
+        echo "comment posted" >&2
+        ;;
+    *"issue close"*)
+        echo "issue closed" >&2
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+
+    # gh issue close must have been called with the issue number
+    grep -q "issue close" "$call_log"
+    grep -q "42" "$call_log"
+    # gh issue comment must have been called first (recovery comment)
+    grep -q "issue comment" "$call_log"
+}
+
+@test "recovery: no open issue → exit 0, gh issue close NOT called" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo "[]"
+        ;;
+    *"issue close"*)
+        echo "ERROR: close should not be called when no issue open" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+@test "recovery: non-matching title ('Build Warning') → not closed" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        # Title does NOT contain "Auto Build Failed"
+        echo '[{"number":7,"title":"Build Warning - some other issue"}]'
+        ;;
+    *"issue close"*)
+        echo "ERROR: should not close a non-matching issue" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called (title didn't match)
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Dedup: mock gh issue list returns empty → "created"
+# ---------------------------------------------------------------------------
+
 @test "dedup: no existing issue → result contains 'created'" {
     # Override gh mock: issue list returns empty; issue create returns URL
     mkdir -p "$TEST_TEMP_DIR/bin"
@@ -449,4 +566,325 @@ GHEOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"created"* ]]
     [[ "$output" == *"#42"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Finding 2: find_open_generic_build_failure_issue must require BOTH labels
+# ---------------------------------------------------------------------------
+
+@test "recovery: issue with build-failure but WITHOUT automation label is NOT closed" {
+    # The mock returns an issue that only has the build-failure label
+    # (no automation label).  The query now requires --label automation so
+    # gh issue list returns [] (the mock below models the label-AND behaviour).
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        # Simulates gh returning no results when automation label is required
+        # but absent on the candidate issue.
+        echo "[]"
+        ;;
+    *"issue close"*)
+        echo "ERROR: must not close an issue without automation label" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+
+    # Verify that gh issue list was called with the automation label
+    grep -q "\-\-label.*automation\|automation.*\-\-label" "$call_log"
+
+    # gh issue close must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Finding 3: recovery mode is best-effort — gh errors must not propagate
+# ---------------------------------------------------------------------------
+
+@test "recovery: gh issue comment failure → exit 0 (best-effort, non-critical)" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+case "\$*" in
+    *"issue list"*)
+        echo '[{"number":55,"title":"Auto Build Failed - 2026-06-01"}]'
+        ;;
+    *"issue comment"*)
+        # Simulate a transient API failure
+        echo "gh: error: HTTP 503 Service Unavailable" >&2
+        exit 1
+        ;;
+    *"issue close"*)
+        echo "ERROR: close should not be called after comment failure" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    # Must exit 0 regardless of gh failure — recovery is non-critical
+    [ "$status" -eq 0 ]
+}
+
+@test "recovery: gh issue list failure → exit 0, not aborted by set -e (Finding 3)" {
+    # find_open_generic_build_failure_issue returns 1 when gh issue list fails.
+    # Under set -e the bare subshell assignment would abort before the best-effort
+    # warning path.  The fix (|| true) must keep recovery at exit 0.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo "gh: error: HTTP 503 Service Unavailable" >&2
+        exit 1
+        ;;
+    *"issue close"*)
+        echo "ERROR: close must not be called when list failed" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    # Must exit 0 — set -e must not abort on find_open_generic_build_failure_issue
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+@test "recovery: gh issue close failure → exit 0 (best-effort, non-critical)" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+case "\$*" in
+    *"issue list"*)
+        echo '[{"number":55,"title":"Auto Build Failed - 2026-06-01"}]'
+        ;;
+    *"issue comment"*)
+        echo "comment posted" >&2
+        ;;
+    *"issue close"*)
+        # Simulate a transient API failure on close
+        echo "gh: error: HTTP 503 Service Unavailable" >&2
+        exit 1
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    # Must exit 0 regardless of gh failure — recovery is non-critical
+    [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Finding 1: DRY_RUN master build must NOT trigger recovery close
+#
+# These tests exercise the summary job's build_succeeded / build_failed signal
+# computation in isolation.  The logic is mirrored verbatim from the YAML
+# summary step's Step A block and run in a subshell.
+#
+# Fidelity requirement: both signals are written to $GITHUB_OUTPUT (an
+# append-only file), not echoed to stdout.  The helper sets up a real temp
+# file for GITHUB_OUTPUT and cats it to stdout after the subshell, so bats
+# captures the actual emitted lines in $output.  This matches production:
+# GitHub Actions reads the file, not stdout.
+# ---------------------------------------------------------------------------
+
+# Helper: runs the summary job's signal-computation logic with given inputs.
+# Writes build_failed=... and build_succeeded=... to a temp GITHUB_OUTPUT file,
+# then cats that file to stdout so bats $output contains the real emitted lines.
+# Args: dry_run_flag container_count detect_result bap_result bex_result mem_result cm_result
+_run_build_succeeded_logic() {
+    local dry_run_flag="$1"
+    local container_count="$2"
+    local detect_result="${3:-success}"
+    local bap_result="${4:-success}"
+    local bex_result="${5:-skipped}"
+    local mem_result="${6:-skipped}"
+    local cm_result="${7:-success}"
+
+    local output_file
+    output_file="$(mktemp)"
+
+    bash <<LOGIC
+set -euo pipefail
+GITHUB_OUTPUT="${output_file}"
+dry_run_flag="${dry_run_flag}"
+container_count="${container_count}"
+detect_result="${detect_result}"
+bap_result="${bap_result}"
+bex_result="${bex_result}"
+mem_result="${mem_result}"
+cm_result="${cm_result}"
+
+# build_failed: any monitored pipeline job failed or cancelled.
+build_failed=false
+for _r in "\$detect_result" "\$bap_result" "\$bex_result" "\$mem_result" "\$cm_result"; do
+  if [ "\$_r" = "failure" ] || [ "\$_r" = "cancelled" ]; then
+    build_failed=true
+  fi
+done
+
+# container_count must be a non-negative integer.
+count_valid=true
+[[ "\$container_count" =~ ^[0-9]+\$ ]] || count_valid=false
+
+# build_succeeded: a REAL successful build was published.
+build_succeeded=false
+if [ "\$build_failed" = "false" ] && [ "\$count_valid" = "true" ] \
+   && [ "\$container_count" -gt 0 ] && [ "\$bap_result" = "success" ] \
+   && [ "\$dry_run_flag" != "true" ]; then
+  build_succeeded=true
+fi
+
+# Emit BOTH signals unconditionally to GITHUB_OUTPUT.
+{
+  echo "build_failed=\${build_failed}"
+  echo "build_succeeded=\${build_succeeded}"
+} >> "\$GITHUB_OUTPUT"
+LOGIC
+
+    # Cat the real GITHUB_OUTPUT content to stdout so bats captures it.
+    cat "${output_file}"
+    rm -f "${output_file}"
+}
+
+@test "summary logic: DRY_RUN=true with bap_result=success → build_succeeded=false (no recovery)" {
+    # A dry-run workflow_dispatch on master: build-and-push reports success but
+    # nothing was actually published.  build_succeeded must stay false so the
+    # recovery step is never triggered.
+    run _run_build_succeeded_logic "true" "3" "success" "success" "skipped" "skipped" "success"
+    [ "$status" -eq 0 ]
+    # Verify the real GITHUB_OUTPUT content (not a local echo).
+    [[ "$output" == *"build_succeeded=false"* ]]
+    [[ "$output" == *"build_failed=false"* ]]
+}
+
+@test "summary logic: DRY_RUN=false with bap_result=success → build_succeeded=true (real recovery)" {
+    # A genuine successful master build (not dry-run) must produce build_succeeded=true.
+    run _run_build_succeeded_logic "false" "3" "success" "success" "skipped" "skipped" "success"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_succeeded=true"* ]]
+    [[ "$output" == *"build_failed=false"* ]]
+}
+
+@test "summary logic: detect-containers failure → build_failed=true AND build_succeeded=false both in GITHUB_OUTPUT" {
+    # When detect-containers fails, downstream build jobs are skipped and
+    # container_count is empty.  build_failed must be true (issue-open path
+    # reachable) AND must be PRESENT in GITHUB_OUTPUT — the previous tangled
+    # if/elif only emitted build_succeeded=false in this branch, silently
+    # dropping the build_failed signal.
+    run _run_build_succeeded_logic "false" "" "failure" "skipped" "skipped" "skipped" "skipped"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_failed=true"* ]]
+    [[ "$output" == *"build_succeeded=false"* ]]
+}
+
+@test "summary logic: detect-containers cancelled → build_failed=true AND build_succeeded=false both in GITHUB_OUTPUT" {
+    run _run_build_succeeded_logic "false" "" "cancelled" "skipped" "skipped" "skipped" "skipped"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_failed=true"* ]]
+    [[ "$output" == *"build_succeeded=false"* ]]
+}
+
+@test "summary logic: count=0 → build_failed=false, build_succeeded=false (no issue, no recovery)" {
+    # count=0 means no containers needed building — not a failure, not a success.
+    run _run_build_succeeded_logic "false" "0" "success" "skipped" "skipped" "skipped" "skipped"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_failed=false"* ]]
+    [[ "$output" == *"build_succeeded=false"* ]]
+}
+
+@test "summary logic: empty container_count (detect skipped output) → build_succeeded=false in GITHUB_OUTPUT" {
+    # An empty container_count (detect-containers output not set) must not reach
+    # the [ -gt 0 ] arithmetic and must not produce build_succeeded=true.
+    run _run_build_succeeded_logic "false" "" "success" "success" "skipped" "skipped" "success"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_succeeded=false"* ]]
+}
+
+@test "summary logic: non-numeric container_count (e.g. 'abc') → build_succeeded=false in GITHUB_OUTPUT" {
+    run _run_build_succeeded_logic "false" "abc" "success" "success" "skipped" "skipped" "success"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"build_succeeded=false"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Recovery: event transparency
+#
+# The YAML recovery step if: uses event_name != 'pull_request' so that
+# workflow_call (upstream-monitor) and workflow_dispatch master builds reach
+# the script, not only direct push events.  The script itself does not
+# inspect GITHUB_EVENT_NAME in recovery mode — that filtering belongs to the
+# YAML gate.  The tests below document script-level event transparency.
+# ---------------------------------------------------------------------------
+
+@test "recovery: DRY_RUN mode with workflow_call event → exits 0 (script is event-transparent)" {
+    # workflow_call master builds (upstream-monitor) now reach the recovery
+    # step via the event_name != 'pull_request' gate.  The script must handle
+    # any event value without error.
+    export GITHUB_EVENT_NAME="workflow_call"
+    export GITHUB_REF_NAME="master"
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+}
+
+@test "recovery: pull_request event → script exits 0 (YAML gate prevents invocation)" {
+    # On pull_request the YAML if: excludes the recovery step entirely.
+    # If somehow invoked in that context, the script must still exit 0 —
+    # recovery is best-effort and wrong-caller is not a script-level error.
+    export GITHUB_EVENT_NAME="pull_request"
+    export GITHUB_REF_NAME="refs/pull/99/merge"
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
 }

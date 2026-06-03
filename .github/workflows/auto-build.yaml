@@ -1315,7 +1315,64 @@ jobs:
           containers='${{ needs.detect-containers.outputs.containers }}'
           container_count='${{ needs.detect-containers.outputs.count }}'
 
-          if [ "$container_count" -gt 0 ]; then
+          # ---------------------------------------------------------------
+          # Step A — compute both machine signals up front, branch-free.
+          #
+          # build-and-push is SKIPPED (not failed) when build-extensions or
+          # merge-extension-manifests fail, so we must check all three jobs.
+          # create-manifest is included: it publishes the multi-arch manifest
+          # and has no job-level continue-on-error; its failure means the
+          # image was not fully published.
+          # detect-containers is included: if it fails/cancels the downstream
+          # build jobs are skipped and build_failed would never be set otherwise —
+          # a detect failure must still surface as a build-failure issue.
+          # sync-registries is EXCLUDED: it only runs in rebuild=sync mode
+          # (a dedicated GHCR→DockerHub sync, not a non-blocking by design).
+          # A 'skipped' result is NOT a failure (non-postgres builds legitimately
+          # skip the extension jobs).
+          # ---------------------------------------------------------------
+          detect_result="${{ needs.detect-containers.result }}"
+          bap_result="${{ needs.build-and-push.result }}"
+          bex_result="${{ needs.build-extensions.result }}"
+          mem_result="${{ needs.merge-extension-manifests.result }}"
+          cm_result="${{ needs.create-manifest.result }}"
+          dry_run_flag="${{ env.DRY_RUN }}"
+
+          # build_failed: any monitored pipeline job failed or cancelled.
+          build_failed=false
+          for _r in "$detect_result" "$bap_result" "$bex_result" "$mem_result" "$cm_result"; do
+            if [ "$_r" = "failure" ] || [ "$_r" = "cancelled" ]; then
+              build_failed=true
+            fi
+          done
+
+          # container_count must be a non-negative integer; anything else is
+          # indeterminate (detect failed and set no output).
+          count_valid=true
+          [[ "$container_count" =~ ^[0-9]+$ ]] || count_valid=false
+
+          # build_succeeded: a REAL successful build was published.
+          # Requires: not build_failed, a valid count > 0, build-and-push
+          # success, and NOT a dry run.
+          # count=0 is explicitly NOT a success signal — closing an issue
+          # requires evidence that something was actually built and published.
+          # DRY_RUN runs are NOT a recovery signal: docker/skopeo become echo
+          # no-ops, so build-and-push reports success without publishing anything.
+          build_succeeded=false
+          if [ "$build_failed" = "false" ] && [ "$count_valid" = "true" ] \
+             && [ "$container_count" -gt 0 ] && [ "$bap_result" = "success" ] \
+             && [ "$dry_run_flag" != "true" ]; then
+            build_succeeded=true
+          fi
+
+          # Emit BOTH signals unconditionally — never inside a conditional branch.
+          {
+            echo "build_failed=${build_failed}"
+            echo "build_succeeded=${build_succeeded}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Containers Processed row — safe to emit now that count_valid is known.
+          if [ "$count_valid" = "true" ] && [ "$container_count" -gt 0 ]; then
             echo "| **Containers Processed** | $container_count |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Containers Processed** | 0 |" >> $GITHUB_STEP_SUMMARY
@@ -1323,7 +1380,22 @@ jobs:
 
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$container_count" -eq 0 ]; then
+          # ---------------------------------------------------------------
+          # Step B — human-readable summary text.
+          # Uses already-computed variables; must NOT re-emit or alter
+          # build_failed / build_succeeded.
+          # ---------------------------------------------------------------
+          if [ "$count_valid" = "false" ]; then
+            # detect-containers failed and emitted no usable count.
+            echo "::warning::container_count is non-numeric ('${container_count}') — detect-containers likely failed or was cancelled" >&2
+            echo "### ⚠️ Indeterminate state — detect-containers did not emit a valid count" >> $GITHUB_STEP_SUMMARY
+            echo "Check the detect-containers job logs for details." >> $GITHUB_STEP_SUMMARY
+          elif [ "$build_failed" = "true" ]; then
+            echo "### ❌ Some builds failed or were cancelled" >> $GITHUB_STEP_SUMMARY
+            echo "Check the individual job logs above for details." >> $GITHUB_STEP_SUMMARY
+          elif [ "$dry_run_flag" = "true" ]; then
+            echo "### ℹ️ Dry-run — no images were actually built or pushed" >> $GITHUB_STEP_SUMMARY
+          elif [ "$container_count" -eq 0 ]; then
             echo "### ℹ️ No containers needed building" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**🎯 Smart Detection Results:**" >> $GITHUB_STEP_SUMMARY
@@ -1335,7 +1407,7 @@ jobs:
               echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
               echo "- 🔍 No new upstream versions detected" >> $GITHUB_STEP_SUMMARY
             fi
-          elif [ "${{ needs.build-and-push.result }}" = "success" ]; then
+          elif [ "$bap_result" = "success" ]; then
             echo "### ✅ All builds completed successfully!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**🎯 Smart Detection Features:**" >> $GITHUB_STEP_SUMMARY
@@ -1345,13 +1417,11 @@ jobs:
             echo "- ✅ **Native multi-platform** builds (amd64 + arm64 on native runners)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ **Multi-registry** publishing (GHCR + Docker Hub)" >> $GITHUB_STEP_SUMMARY
             echo "- ⏸️ **Security scanning** (temporarily disabled)" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.build-and-push.result }}" = "skipped" ]; then
+          elif [ "$bap_result" = "skipped" ]; then
             echo "### ⏭️ Builds were skipped" >> $GITHUB_STEP_SUMMARY
             echo "All target images already exist and are up to date." >> $GITHUB_STEP_SUMMARY
           else
-            echo "### ❌ Some builds failed or were cancelled" >> $GITHUB_STEP_SUMMARY
-            echo "Check the individual job logs above for details." >> $GITHUB_STEP_SUMMARY
-            echo "build_failed=true" >> $GITHUB_OUTPUT
+            echo "### ℹ️ Workflow completed in an unclassified state" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -1437,31 +1507,70 @@ jobs:
             rc=$?
             if [ "$rc" -eq 1 ]; then
               echo "No dep-bump context detected, falling back to generic issue"
-              existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
-                --label "build-failure" --state open --limit 5 --json title,number \
-                | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
-              run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-              if [[ -n "$existing" ]]; then
-                echo "Adding comment to existing issue #$existing"
-                comment_body="$(printf '## Another build failure detected\n\n**Run:** [%s](%s)\n**Trigger:** `%s`\n**Ref:** `%s`\n**Time:** %s' \
-                  "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
-                  "$(date -u +'%Y-%m-%d %H:%M UTC')")"
-                gh issue comment --repo "$GITHUB_REPOSITORY" "$existing" --body "$comment_body"
+              # Generic "Auto Build Failed" issue is a master-health tracker.
+              # Open/comment it on any master build that is not a PR smoke run.
+              # This covers push, workflow_call (upstream-monitor), and
+              # workflow_dispatch — all real master builds.
+              # PR smoke failures surface via their own check status and must not
+              # create a persistent master-health issue (cross-event symmetry:
+              # generic-open ↔ generic-close both exclude pull_request).
+              if [ "$GITHUB_EVENT_NAME" != "pull_request" ] && [ "$GITHUB_REF_NAME" = "master" ]; then
+                existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label "build-failure" --state open --limit 5 --json title,number \
+                  | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
+                run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                if [[ -n "$existing" ]]; then
+                  echo "Adding comment to existing issue #$existing"
+                  comment_body="$(printf '## Another build failure detected\n\n**Run:** [%s](%s)\n**Trigger:** `%s`\n**Ref:** `%s`\n**Time:** %s' \
+                    "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                    "$(date -u +'%Y-%m-%d %H:%M UTC')")"
+                  gh issue comment --repo "$GITHUB_REPOSITORY" "$existing" --body "$comment_body"
+                else
+                  echo "Creating new build failure issue"
+                  issue_body="$(printf '## Build Failure Alert\n\nOne or more container builds failed in the auto-build workflow.\n\n| Property | Value |\n|----------|-------|\n| **Run** | [%s](%s) |\n| **Trigger** | `%s` |\n| **Ref** | `%s` |\n| **Commit** | `%s` |\n\n## Next Steps\n\n1. Check the [workflow run](%s) for details\n2. Identify which container(s) failed\n3. Test locally: `./make build <container>`\n4. Fix and push to trigger rebuild\n\n---\n_Auto-generated by CI workflow_' \
+                    "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                    "$GITHUB_SHA" "$run_url")"
+                  gh issue create --repo "$GITHUB_REPOSITORY" \
+                    --title "Auto Build Failed - $(date -u +%Y-%m-%d)" \
+                    --label "build-failure,automation" \
+                    --body "$issue_body"
+                fi
               else
-                echo "Creating new build failure issue"
-                issue_body="$(printf '## Build Failure Alert\n\nOne or more container builds failed in the auto-build workflow.\n\n| Property | Value |\n|----------|-------|\n| **Run** | [%s](%s) |\n| **Trigger** | `%s` |\n| **Ref** | `%s` |\n| **Commit** | `%s` |\n\n## Next Steps\n\n1. Check the [workflow run](%s) for details\n2. Identify which container(s) failed\n3. Test locally: `./make build <container>`\n4. Fix and push to trigger rebuild\n\n---\n_Auto-generated by CI workflow_' \
-                  "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
-                  "$GITHUB_SHA" "$run_url")"
-                gh issue create --repo "$GITHUB_REPOSITORY" \
-                  --title "Auto Build Failed - $(date -u +%Y-%m-%d)" \
-                  --label "build-failure,automation" \
-                  --body "$issue_body"
+                echo "Skipping generic issue: pull_request event or non-master ref (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF_NAME)"
               fi
             else
               echo "open-dep-failure-issue.sh failed with exit $rc"
               exit "$rc"
             fi
           fi
+
+      - name: Close build-failure issue on recovery
+        # Close the open "Auto Build Failed" generic issue when a real build
+        # completes successfully on master (any non-PR trigger: push, workflow_call,
+        # workflow_dispatch).  Requires a POSITIVE success signal (build_succeeded)
+        # so a count=0 no-op run cannot mark a past failure as recovered.
+        # Only runs on master to avoid closing on PR smoke runs or other branches.
+        # continue-on-error: closing a stale issue is non-critical; a transient
+        # gh API error must never fail an otherwise-green master run.
+        continue-on-error: true
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref_name == 'master' &&
+          steps.summary.outputs.build_succeeded == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          # COMMIT_SUBJECT is required by the script's source-time :? guard even
+          # in recovery mode (it runs before main() parses --mode).
+          COMMIT_SUBJECT: "recovery-check"
+        run: |
+          chmod +x scripts/open-dep-failure-issue.sh
+          ./scripts/open-dep-failure-issue.sh --mode recovery
 
       - name: Log in to GHCR (summary job)
         # Required so skopeo can read private GHCR packages during the advisory

@@ -582,6 +582,144 @@ VDRIFT_COMMENT
 }
 
 # ---------------------------------------------------------------------------
+# find_open_generic_build_failure_issue
+#
+# Finds the open generic "Auto Build Failed" issue (labels: build-failure,
+# automation, title contains "Auto Build Failed").
+# Only matches bot-managed issues (requires BOTH build-failure AND automation
+# labels) to avoid closing manually-tracked issues.
+# Prints the issue number on stdout, or empty string if none found.
+# Returns 0 on success (including "not found"), 1 on gh CLI error.
+# ---------------------------------------------------------------------------
+find_open_generic_build_failure_issue() {
+    local search_stdout search_rc
+    # Capture stdout and stderr separately so gh warnings cannot corrupt the
+    # JSON that jq will parse.  Finding 4: do NOT merge stderr into stdout.
+    local stderr_tmp
+    stderr_tmp="$(mktemp)"
+    search_stdout=$(run_gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "build-failure" \
+            --label "automation" \
+            --state open \
+            --limit 5 \
+            --json title,number 2>"$stderr_tmp"); search_rc=$?
+    if [[ $search_rc -ne 0 ]]; then
+        # Log the captured stderr for diagnostics
+        if [[ -s "$stderr_tmp" ]]; then
+            printf '::warning::find_open_generic_build_failure_issue: gh issue list failed: %s\n' \
+                "$(cat "$stderr_tmp")" >&2
+        else
+            printf '::warning::find_open_generic_build_failure_issue: gh issue list failed (rc=%d)\n' \
+                "$search_rc" >&2
+        fi
+        rm -f "$stderr_tmp"
+        return 1
+    fi
+    rm -f "$stderr_tmp"
+
+    printf '%s' "$search_stdout" \
+        | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' \
+        | head -1 \
+        || true
+}
+
+# ---------------------------------------------------------------------------
+# close_build_failure_on_recovery
+#
+# Called when a master push succeeds with no failed build jobs.
+# Finds the open generic "Auto Build Failed" issue (if any) and closes it
+# with a recovery comment referencing the recovering run.
+# Exit codes:
+#   0 — closed successfully, or no open issue found (no-op)
+#   3 — gh CLI error
+# ---------------------------------------------------------------------------
+close_build_failure_on_recovery() {
+    # Validate interpolated values — run id and ref name may come from GHA env.
+    # GITHUB_RUN_ID must be numeric.
+    local safe_run_id
+    if [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]; then
+        safe_run_id="$GITHUB_RUN_ID"
+    else
+        printf '::warning::close_build_failure_on_recovery: GITHUB_RUN_ID failed numeric validation; using empty\n' >&2
+        safe_run_id=""
+    fi
+
+    # GITHUB_REF_NAME must match safe branch name chars.
+    local safe_ref_name
+    if [[ "$GITHUB_REF_NAME" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+        safe_ref_name="$GITHUB_REF_NAME"
+    else
+        printf '::warning::close_build_failure_on_recovery: GITHUB_REF_NAME failed validation; using empty\n' >&2
+        safe_ref_name=""
+    fi
+
+    # GITHUB_SHA: 40 hex chars
+    local safe_sha="${GITHUB_SHA:0:8}"
+    if ! [[ "$safe_sha" =~ ^[0-9a-fA-F]+$ ]]; then
+        safe_sha=""
+    fi
+
+    local run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${safe_run_id}"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY_RUN] Recovery close: would search for open 'Auto Build Failed' issue"
+        log_info "[DRY_RUN] Would close with recovery comment referencing run ${safe_run_id} (${safe_ref_name})"
+        return 0
+    fi
+
+    local issue_number
+    # Best-effort: find_open_generic_build_failure_issue returns 1 on gh CLI
+    # error.  Under set -e the bare subshell would abort before the warning
+    # path below — use || true so a transient API error is handled gracefully.
+    issue_number=$(find_open_generic_build_failure_issue || true)
+
+    if [[ -z "$issue_number" ]]; then
+        log_info "Recovery: no open 'Auto Build Failed' issue found — nothing to close."
+        return 0
+    fi
+
+    log_info "Recovery: closing issue #${issue_number} (run ${safe_run_id} succeeded on ${safe_ref_name})"
+
+    local comment_body
+    comment_body="$(cat <<RECOVERY_COMMENT
+## Build recovered
+
+The auto-build workflow completed successfully — no failed build jobs.
+
+| Property | Value |
+|----------|-------|
+| **Recovering run** | [${safe_run_id}](${run_url}) |
+| **Ref** | \`${safe_ref_name}\` |
+| **Commit** | \`${safe_sha}\` |
+| **Time** | $(date -u +'%Y-%m-%d %H:%M UTC') |
+
+_Auto-closed by \`scripts/open-dep-failure-issue.sh --mode recovery\`_
+RECOVERY_COMMENT
+)"
+
+    # Recovery close is best-effort: a transient gh API/auth error must never
+    # fail an otherwise-green master run.  Log a warning and return 0.
+    if ! run_gh issue comment \
+            --repo "$GITHUB_REPOSITORY" \
+            "$issue_number" \
+            --body "$comment_body" >&2; then
+        printf '::warning::close_build_failure_on_recovery: gh issue comment failed (non-critical, continuing)\n' >&2
+        return 0
+    fi
+
+    if ! run_gh issue close \
+            --repo "$GITHUB_REPOSITORY" \
+            "$issue_number" >&2; then
+        printf '::warning::close_build_failure_on_recovery: gh issue close failed (non-critical, continuing)\n' >&2
+        return 0
+    fi
+
+    log_success "Recovery: closed issue #${issue_number}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # find_or_create_issue <container> <issue_title> <issue_body>
 #
 # Searches for an existing open issue with labels build-failure,automation,
@@ -674,6 +812,30 @@ COMMENT
 # main
 # ---------------------------------------------------------------------------
 main() {
+    # Parse optional --mode flag
+    local mode="failure"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --mode)
+                mode="$2"
+                shift 2
+                ;;
+            --mode=*)
+                mode="${1#--mode=}"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if [[ "$mode" == "recovery" ]]; then
+        log_step "Recovery mode: closing open build-failure issue if any..."
+        close_build_failure_on_recovery
+        exit $?
+    fi
+
     log_step "Detecting dep bump from commit/PR signals..."
 
     if ! detect_dep_bump; then
