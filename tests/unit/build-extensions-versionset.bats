@@ -12644,6 +12644,16 @@ EOF
                 # and the create would fail in production.
                 return 1
             fi
+            if [[ \"\$_dc\" == 'buildx' && \"\$_d2\" == 'imagetools' && \"\$_d3\" == 'inspect' ]]; then
+                local _ref=\"\${4:-}\"
+                # Canonical multi-arch ref reports both platforms (faithful: it IS multi-arch).
+                if [[ \"\$_ref\" == *':pg18-0.8.0' && \"\$_ref\" != *'-amd64'* && \"\$_ref\" != *'-arm64'* && \"\$_ref\" != *'-pr42'* ]]; then
+                    printf 'linux/amd64\nlinux/arm64\n'
+                    return 0
+                fi
+                printf 'error: manifest not found\n' >&2
+                return 1
+            fi
             if [[ \"\$_dc\" == 'manifest' && \"\$_d2\" == 'inspect' ]]; then
                 local _ref=\"\$_d3\"
                 # Canonical multi-arch ref present (no arch suffix, no PR suffix).
@@ -12877,6 +12887,172 @@ EOF
     }
 
     unset PR_TAG_SUFFIX
+}
+
+# ---------------------------------------------------------------------------
+# MG: non-resolver ext whose plain ref EXISTS but imagetools inspect reports
+# single-arch (only linux/amd64) — the path must NOT silently reuse; it must
+# log the "not multi-arch" warning and reach the CREATE path.
+#
+# RED against old code: the old `0) ... continue` blindly reused any present
+# manifest without inspecting it, so a single-arch legacy tag was never
+# re-created and the 27 ext tags remained stuck.
+#
+# GREEN after fix: `_reuse_ref_is_multiarch` returns 1 → fall-through to
+# imagetools create.
+# ---------------------------------------------------------------------------
+@test "MG-nonresolver-singlearch-recreate: non-resolver ext with single-arch existing manifest → re-creates from per-arch legs" {
+    local tmpd="$TEST_TEMP_DIR"
+    local sd="$SCRIPTS_DIR"
+    local imagetools_log="$tmpd/mg_imagetools.log"
+
+    # Config: pgvector is NON-resolver.
+    cat > "$CONTAINER_DIR/extensions/config.yaml" <<'EOF'
+extensions:
+  pgvector:
+    version: "0.8.0"
+    repo: "https://github.com/pgvector/pgvector"
+    priority: 1
+EOF
+    touch "$EXT_BUILD_DIR/pgvector.Dockerfile"
+
+    run bash -c "
+        export FORCE=false LOCAL_ONLY=false DRY_RUN=false CONTAINER=postgres
+        export imagetools_log='${imagetools_log}'
+        cd '${sd}'
+        source ./build-extensions.sh
+        export ROOT_DIR='${tmpd}'
+
+        ext_config() {
+            local ext=\"\$1\" key=\"\$2\"
+            case \"\$ext:\$key\" in
+                pgvector:version) echo '0.8.0' ;;
+                pgvector:repo)    echo 'https://github.com/pgvector/pgvector' ;;
+                *)                echo '' ;;
+            esac
+        }
+        export -f ext_config
+
+        ext_image_name() { echo \"ghcr.io/test/ext-\${1}:pg\${3}-\${2}\"; }
+        export -f ext_image_name
+        ext_local_image_name() { echo \"localhost/ext-builder-\${1}:pg\${2}\"; }
+        export -f ext_local_image_name
+
+        # ext_ref_resolve: the plain (un-suffixed) ref EXISTS; arch-suffixed refs also exist.
+        ext_ref_resolve() {
+            local _ext=\"\$1\" _ver=\"\$2\" _maj=\"\$3\" _arch=\"\${4:-}\"
+            if [[ -z \"\$_arch\" ]]; then
+                # Plain ref present — this triggers the reuse check path.
+                printf 'ghcr.io/test/ext-%s:pg%s-%s' \"\$_ext\" \"\$_maj\" \"\$_ver\"
+                return 0
+            fi
+            # Per-arch refs present (so CREATE succeeds).
+            printf 'ghcr.io/test/ext-%s:pg%s-%s-%s' \"\$_ext\" \"\$_maj\" \"\$_ver\" \"\$_arch\"
+            return 0
+        }
+        export -f ext_ref_resolve
+
+        # docker: imagetools inspect returns only linux/amd64 (single-arch manifest).
+        #         imagetools create succeeds.
+        docker() {
+            local _cmd=\"\${1:-}\" _sub=\"\${2:-}\" _subsub=\"\${3:-}\"
+            if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'inspect' ]]; then
+                # Single-arch: only amd64 reported.
+                printf 'linux/amd64\n'
+                return 0
+            fi
+            if [[ \"\$_cmd\" == 'buildx' && \"\$_sub\" == 'imagetools' && \"\$_subsub\" == 'create' ]]; then
+                echo \"IMAGETOOLS_CREATE \${*}\" >> \"\$imagetools_log\"
+                return 0
+            fi
+            return 0
+        }
+        export -f docker
+
+        skopeo() { echo manifest unknown >&2; return 1; }
+        export -f skopeo
+        _capture_index_digest() { echo 'sha256:0000000000000000000000000000000000000000000000000000000000000000'; return 0; }
+        export -f _capture_index_digest
+
+        list_extensions_by_priority() { echo 'pgvector'; }
+        export -f list_extensions_by_priority
+
+        finalize_multiarch_manifests \"$CONTAINER_DIR/extensions/config.yaml\" 18 \"$CONTAINER_DIR\"
+    "
+
+    # Must succeed (re-create from per-arch legs is valid).
+    [ "$status" -eq 0 ]
+
+    # imagetools create MUST have been called: single-arch manifest must not be reused.
+    # RED against old code (blind continue) — this file would not exist.
+    [ -f "$imagetools_log" ] || {
+        echo 'FAIL: imagetools_log not created — imagetools create was never called (single-arch manifest was blindly reused)'
+        false
+    }
+    local create_count
+    create_count=$(wc -l < "$imagetools_log")
+    [ "$create_count" -ge 1 ] || {
+        echo "FAIL: imagetools create was not called (expected >= 1 call, got $create_count)"
+        false
+    }
+
+    # The create call must use both arch-suffixed source tags.
+    local call
+    call=$(cat "$imagetools_log")
+    [[ "$call" == *':pg18-0.8.0-amd64'* ]] || {
+        echo "FAIL: imagetools create call does not reference -amd64 source. Got: $call"
+        false
+    }
+    [[ "$call" == *':pg18-0.8.0-arm64'* ]] || {
+        echo "FAIL: imagetools create call does not reference -arm64 source. Got: $call"
+        false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# MG helper unit tests: _reuse_ref_is_multiarch return codes.
+# ---------------------------------------------------------------------------
+
+@test "MG-helper-multiarch: _reuse_ref_is_multiarch returns 0 when both arches reported" {
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
+            printf 'linux/amd64\nlinux/arm64\n'
+            return 0
+        fi
+        return 1
+    }
+    export -f docker
+
+    run _reuse_ref_is_multiarch 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
+    [ "$status" -eq 0 ]
+}
+
+@test "MG-helper-singlearch: _reuse_ref_is_multiarch returns 1 when only amd64 reported" {
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
+            printf 'linux/amd64\n'
+            return 0
+        fi
+        return 1
+    }
+    export -f docker
+
+    run _reuse_ref_is_multiarch 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
+    [ "$status" -eq 1 ]
+}
+
+@test "MG-helper-inspect-error: _reuse_ref_is_multiarch returns 2 when inspect fails" {
+    docker() {
+        if [[ "$1" == 'buildx' && "$2" == 'imagetools' && "$3" == 'inspect' ]]; then
+            printf 'error: transient failure\n' >&2
+            return 1
+        fi
+        return 0
+    }
+    export -f docker
+
+    run _reuse_ref_is_multiarch 'ghcr.io/test/ext-pgvector:pg18-0.8.0'
+    [ "$status" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
