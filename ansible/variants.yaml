@@ -2,6 +2,6 @@
 build:
   version_retention: 3
 versions:
+  - tag: 14.0.0-ubuntu
   - tag: 13.7.0-ubuntu
   - tag: 13.6.0-ubuntu
-  - tag: 13.5.0-ubuntu
