@@ -452,11 +452,10 @@ open_version_drift_issue() {
     # Build markdown table from drift rows
     local drift_table
     drift_table="$(printf '%s' "$drift_json" | jq -r '
-        ["| Kind | Name | Declared | Published | Status |",
-         "|------|------|----------|-----------|--------|"],
+        (["| Kind | Name | Declared | Published | Status |",
+          "|------|------|----------|-----------|--------|"] | .[]),
         (.[] | select(.status=="drift") |
          "| \(.kind) | \(.name) | \(.declared) | \(.published) | \(.status) |")
-        | .[]
     ' 2>/dev/null || echo "_(unable to render drift table)_")"
 
     local short_sha="${GITHUB_SHA:0:8}"
