@@ -442,9 +442,15 @@ runs:
         [[ -n "$build_flavor" ]] && make_args+=("--build-flavor" "$build_flavor")
         [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
 
+        # shellcheck source=helpers/retry.sh
+        source ./helpers/retry.sh
+
         log_info "Calling: ./make ${make_args[*]}"
-        if ! ./make "${make_args[@]}"; then
-          echo "::error::Build failed for $container:$current_tag"
+        # retry_with_backoff 3 10: retry transient build failures (network blips
+        # on FROM pulls, apk add timeouts) BEFORE any registry push occurs.
+        # A build that fails all 3 attempts aborts before touching the registry.
+        if ! retry_with_backoff 3 10 ./make "${make_args[@]}"; then
+          echo "::error::Build failed for $container:$current_tag after 3 attempts"
           exit 1
         fi
 
@@ -584,6 +590,8 @@ runs:
       shell: bash
       run: |
         set -e
+        # shellcheck disable=SC1091
+        source ./helpers/retry.sh
         image_name="${{ steps.check-build.outputs.image_name }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
         platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
@@ -599,7 +607,8 @@ runs:
         # Tag with platform suffix
         docker tag "$ghcr_image" "$ghcr_image_platform"
 
-        if docker push "$ghcr_image_platform"; then
+        # retry_with_backoff 3 10: docker push of the same digest is idempotent.
+        if retry_with_backoff 3 10 docker push "$ghcr_image_platform"; then
           echo "success=true" >> $GITHUB_OUTPUT
           echo "::notice::GHCR push successful for $ghcr_image_platform"
         else
@@ -617,6 +626,8 @@ runs:
       id: push-dockerhub
       shell: bash
       run: |
+        # shellcheck disable=SC1091
+        source ./helpers/retry.sh
         image_name="${{ steps.check-build.outputs.image_name }}"
         current_tag="${{ steps.check-build.outputs.current_tag }}"
         platform_suffix="${{ steps.check-build.outputs.platform_suffix }}"
@@ -629,7 +640,9 @@ runs:
         # Tag the GHCR image for Docker Hub with platform suffix
         docker tag "$ghcr_image" "$dockerhub_image"
 
-        if docker push "$dockerhub_image"; then
+        # retry_with_backoff 5 30: docker push of the same digest is idempotent;
+        # longer backoff for Docker Hub rate limits (continue-on-error shields the job).
+        if retry_with_backoff 5 30 docker push "$dockerhub_image"; then
           echo "success=true" >> $GITHUB_OUTPUT
           echo "::notice::Docker Hub push successful for $dockerhub_image"
         else

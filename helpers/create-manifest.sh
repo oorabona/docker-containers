@@ -16,6 +16,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/logging.sh"
+# shellcheck source=retry.sh
+source "$SCRIPT_DIR/retry.sh"
 
 # Compute tag arguments for manifest creation
 # Reads from env: TAG, VERSION, FULL_VERSION, VARIANT, IS_DEFAULT, IS_LATEST_VERSION
@@ -127,9 +129,10 @@ create_registry_manifest() {
     tag_args=$(_compute_tag_args "$target_image")
     version_specific_tag_args=$(_compute_version_specific_tag_args "$target_image" 2>/dev/null) || true
 
-    # Try multi-arch manifest first (amd64 + arm64)
+    # Try multi-arch manifest first (amd64 + arm64).
+    # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
     local err_output
-    if err_output=$($DOCKER buildx imagetools create $tag_args \
+    if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $tag_args \
         "$source_image:$TAG-amd64" \
         "$source_image:$TAG-arm64" 2>&1); then
         echo "::notice::Multi-arch manifest created successfully for $target_image:$TAG"
@@ -139,7 +142,8 @@ create_registry_manifest() {
 
     # Fallback amd64-only — skip if no safe version-specific anchor (P2 fix)
     if [[ -n "$version_specific_tag_args" ]]; then
-        if err_output=$($DOCKER buildx imagetools create $version_specific_tag_args \
+        # retry_with_backoff 3 5: idempotent — recreates the same single-arch manifest.
+        if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $version_specific_tag_args \
             "$source_image:$TAG-amd64" 2>&1); then
             echo "::warning::Manifest created with amd64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
             return 0
@@ -151,7 +155,8 @@ create_registry_manifest() {
 
     # Fallback arm64-only — skip if no safe version-specific anchor (P2 fix)
     if [[ -n "$version_specific_tag_args" ]]; then
-        if err_output=$($DOCKER buildx imagetools create $version_specific_tag_args \
+        # retry_with_backoff 3 5: idempotent — recreates the same single-arch manifest.
+        if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $version_specific_tag_args \
             "$source_image:$TAG-arm64" 2>&1); then
             echo "::warning::Manifest created with arm64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
             return 0
