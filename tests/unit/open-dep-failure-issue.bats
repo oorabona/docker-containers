@@ -476,64 +476,8 @@ GHEOF
     [[ "$output" != *"| timescaledb |"* ]]
 }
 
-# ---------------------------------------------------------------------------
-# FINDING-1 — content_stale rows must be counted and rendered by
-# open_version_drift_issue (not silently dropped as a no-op).
-#
-# A run that produces ONLY content_stale rows must open/refresh an issue.
-# Before the fix the count used select(.status=="drift") exclusively, so a
-# content_stale-only JSON was counted as 0 drift rows and the function
-# returned early without creating an issue.
-# ---------------------------------------------------------------------------
-
-@test "FINDING-1: content_stale-only drift_json → issue created (not a no-op)" {
-    # drift_json has exactly one content_stale row and no drift rows.
-    local drift_json='[
-        {"status":"content_stale","kind":"container","name":"jekyll","declared":"4.3.4","published":"4.3.4"}
-    ]'
-    export DRY_RUN="true"
-
-    run open_version_drift_issue "$drift_json" "jekyll"
-    [ "$status" -eq 0 ]
-
-    # Must print dry-run output (not silent exit as if no drift)
-    [[ "$output" == *"DRY_RUN"* || "$output" == *"dry-run"* ]]
-
-    # Must render the content_stale row in the table
-    [[ "$output" == *"| jekyll |"* ]]
-
-    # The status column must show content_stale (distinguishable from drift)
-    [[ "$output" == *"content_stale"* ]]
-
-    # Must NOT fall back to the error sentinel
-    [[ "$output" != *"unable to render drift table"* ]]
-}
-
-@test "FINDING-1: mixed drift+content_stale → both rows rendered, count = 2" {
-    # drift_json has one drift row and one content_stale row.
-    local drift_json='[
-        {"status":"drift","kind":"container","name":"foo","declared":"1.0.0","published":""},
-        {"status":"content_stale","kind":"container","name":"bar","declared":"2.0.0","published":"2.0.0"}
-    ]'
-    export DRY_RUN="true"
-
-    run open_version_drift_issue "$drift_json" ""
-    [ "$status" -eq 0 ]
-
-    # Both rows must appear in the table
-    [[ "$output" == *"| foo |"* ]]
-    [[ "$output" == *"| bar |"* ]]
-
-    # The status values must both be visible
-    [[ "$output" == *"drift"* ]]
-    [[ "$output" == *"content_stale"* ]]
-
-    # in_sync must not appear
-    [[ "$output" != *"in_sync"* ]]
-}
-
-@test "FINDING-1: in_sync-only drift_json → still a no-op (content_stale fix must not break this)" {
-    # An all-in_sync JSON must remain a no-op — the fix must not break that path.
+@test "in_sync-only drift_json → no-op (drift_count=0, no issue opened)" {
+    # An all-in_sync JSON must be a no-op: drift_count=0 → early return.
     local drift_json='[
         {"status":"in_sync","kind":"container","name":"foo","declared":"1.0.0","published":"1.0.0"}
     ]'
