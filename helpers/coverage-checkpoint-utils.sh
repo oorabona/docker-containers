@@ -67,12 +67,13 @@ extract_failed_recovered() {
     [[ -z "$jobs_json" ]] && jobs_json='{"jobs":[]}'
     [[ -z "$matrix_json" ]] && matrix_json='[]'
 
-    jq -cn \
-        --argjson jobs "$jobs_json" \
+    printf '%s' "$jobs_json" | jq -c \
         --argjson matrix "$matrix_json" \
         '
-        # Normalise: accept both {"jobs":[...]} and a bare array.
-        ($jobs | if type == "object" then .jobs // [] else . end) as $job_list |
+        # Normalise: accept both {"jobs":[...]} and a bare array. Jobs JSON arrives
+        # on stdin (NOT --argjson) because a build-all run produces a jobs payload
+        # larger than the kernel per-arg limit (MAX_ARG_STRLEN, 128 KB) → E2BIG.
+        (. | if type == "object" then .jobs // [] else . end) as $job_list |
 
         # Identify bad jobs: terminal conclusion that is not success or skipped.
         # null/"" conclusions mean in-progress — excluded so meta-jobs running

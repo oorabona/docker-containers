@@ -342,3 +342,98 @@ make_jobs_json() {
     [ "$queued" = '["a","b","c"]' ]
     [ "$carried" = '["a","c"]' ]
 }
+
+# ---------------------------------------------------------------------------
+# ARG_MAX regression tests — large jobs payload (>128 KB) must NOT E2BIG
+# ---------------------------------------------------------------------------
+#
+# Production bug (exit 126): on a build-all run (~237 jobs), gh run view returns
+# full job objects with steps/URLs/timestamps.  Passing that JSON via
+# `jq --argjson jobs "$jobs_json"` exceeds the kernel per-arg limit
+# (MAX_ARG_STRLEN, 128 KB) → E2BIG → bash reports exit 126.
+# The fix routes jobs_json via stdin (printf '%s' ... | jq -c) instead.
+# These tests verify the fix by constructing a payload that genuinely exceeds
+# 128 KB and asserting that extract_failed_recovered succeeds AND returns the
+# correct classification — making the test vacuous if the payload is too small.
+
+@test "extract_failed_recovered: large jobs payload (>128KB) succeeds without E2BIG — ARG_MAX regression lock" {
+    # Mutation locked: if jobs were passed via `jq --argjson jobs` instead of stdin,
+    # this >128KB single argument would trigger E2BIG → exit 126 (the production bug);
+    # the test would report status=126 instead of 0 and the classification assertions
+    # would never be reached.
+
+    # Build one job object ~400 bytes via name padding so 600 copies exceed 128 KB.
+    # Two specific jobs carry meaningful conclusions for the assertion:
+    #   - "Build github-runner (ubuntu-2404)" → failure  (maps to github-runner)
+    #   - "Build jekyll:4.3.4 (amd64)"       → success  (maps to jekyll)
+    # The remaining 598 are synthetic padding jobs with success conclusions and
+    # names that do not match any matrix container.
+    local pad_job
+    pad_job=$(jq -cn '
+        {
+            name: ("padding-job-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            conclusion: "success"
+        }
+    ')
+    local big
+    big=$(jq -cn \
+        --argjson real_fail '{"name":"Build github-runner (ubuntu-2404)","conclusion":"failure"}' \
+        --argjson real_ok   '{"name":"Build jekyll:4.3.4 (amd64)","conclusion":"success"}' \
+        --argjson pad "$pad_job" \
+        '{jobs: ([$real_fail, $real_ok] + [range(598) | $pad])}')
+
+    # Guard: verify the fixture actually exceeds 128 KB; if it does not, the test is
+    # vacuous (it would pass even with the buggy --argjson path because the payload
+    # would fit in the kernel per-arg limit and E2BIG would never fire).
+    local big_len="${#big}"
+    [ "$big_len" -gt 131072 ] || {
+        echo "FIXTURE TOO SMALL: ${big_len} bytes — padding insufficient, fix the test" >&2
+        return 1
+    }
+
+    local matrix='["github-runner","jekyll"]'
+    run extract_failed_recovered "$big" "$matrix"
+    [ "$status" -eq 0 ]
+
+    local failed recovered
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates')
+    json_eq "$failed"    '["github-runner"]'
+    json_eq "$recovered" '["jekyll"]'
+}
+
+@test "extract_failed_recovered: bare-array form of large payload (>128KB) succeeds — stdin normalisation" {
+    # Same as the previous test but the payload is a bare JSON array [...] rather than
+    # {"jobs":[...]}.  Verifies that the stdin-path normalisation
+    # (`. | if type == "object" then .jobs // [] else . end`) handles both forms
+    # even at scale.
+    local pad_job
+    pad_job=$(jq -cn '
+        {
+            name: ("padding-job-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            conclusion: "success"
+        }
+    ')
+    local big_bare
+    big_bare=$(jq -cn \
+        --argjson real_fail '{"name":"Build github-runner (ubuntu-2404)","conclusion":"failure"}' \
+        --argjson real_ok   '{"name":"Build jekyll:4.3.4 (amd64)","conclusion":"success"}' \
+        --argjson pad "$pad_job" \
+        '[$real_fail, $real_ok] + [range(598) | $pad]')
+
+    local big_len="${#big_bare}"
+    [ "$big_len" -gt 131072 ] || {
+        echo "FIXTURE TOO SMALL: ${big_len} bytes — padding insufficient, fix the test" >&2
+        return 1
+    }
+
+    local matrix='["github-runner","jekyll"]'
+    run extract_failed_recovered "$big_bare" "$matrix"
+    [ "$status" -eq 0 ]
+
+    local failed recovered
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates')
+    json_eq "$failed"    '["github-runner"]'
+    json_eq "$recovered" '["jekyll"]'
+}
