@@ -17,22 +17,17 @@
 #   --grace-hours <N>            Grace period in hours (default: 6). Versions bumped
 #                                within the grace window are in_flight, not drift.
 #   --json                       Output JSON array instead of human table.
-#   --check-content              Enable content-staleness detection: compare the
-#                                org.opencontainers.image.build-digest label on the
-#                                published image against the locally-computed digest.
-#                                Requires an extra skopeo round-trip per tag.
-#                                Can also be enabled via CHECK_CONTENT_DRIFT=true env.
 #
 # Output rows (JSON object fields):
 #   kind        "container" | "extension"
 #   name        container or extension name (extensions: "ext-<name>:pg<major>")
 #   declared    declared version tag
 #   published   published version tag (empty if not found)
-#   status      "in_sync" | "content_stale" | "drift" | "in_flight" | "window_ok" | "window_empty" | "error"
+#   status      "in_sync" | "drift" | "in_flight" | "window_ok" | "window_empty" | "error"
 #
 # Exit codes:
 #   0 — no drift rows (all in_sync, in_flight, window_ok)
-#   1 — at least one drift or content_stale row
+#   1 — at least one drift row
 #   2 — probe error OR window_empty (resolver failed/returned [] — fail-closed)
 #
 # Test seams:
@@ -40,8 +35,6 @@
 #   _VDRIFT_CONTAINERS_OVERRIDE         — whitespace-sep container list, bypasses ./make list
 #   _VDRIFT_GHCR_OWNER_OVERRIDE         — override GHCR owner derivation
 #   _VDRIFT_PROBE_OVERRIDE              — function/path: probe(<image> <tag>) → "present"|"absent"|"error"
-#   _VDRIFT_LABEL_PROBE_OVERRIDE        — function/path: label_probe(<full_image_ref>) → "<label_value>"|""|"__error__"
-#   _VDRIFT_COMPUTE_DIGEST_OVERRIDE     — function/path: compute_digest(<container> <flavor>) → "<digest>"|""
 #
 # GHA command injection prevention:
 #   All user-derived strings emitted via ::notice::/::warning:: are escaped via
@@ -91,11 +84,6 @@ MODE=""
 CONTAINER_ARG=""
 GRACE_HOURS=6
 JSON_OUTPUT=false
-# Content-staleness check: opt-in via --check-content flag or env var.
-# Default OFF to preserve existing behavior and avoid the extra skopeo round-trip.
-CHECK_CONTENT_DRIFT="${CHECK_CONTENT_DRIFT:-false}"
-# Emit the per-variant coverage notice at most once per run (avoid log spam).
-_CONTENT_VARIANT_NOTICE_EMITTED=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -107,8 +95,6 @@ while [[ $# -gt 0 ]]; do
             GRACE_HOURS="$2"; shift 2 ;;
         --json)
             JSON_OUTPUT=true; shift ;;
-        --check-content)
-            CHECK_CONTENT_DRIFT=true; shift ;;
         -h|--help)
             grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
             exit 0 ;;
@@ -403,200 +389,6 @@ _vdrift_probe_published() {
 }
 
 # ---------------------------------------------------------------------------
-# _vdrift_fetch_build_digest_label <owner> <image_name> <tag>
-#
-# Fetch the org.opencontainers.image.build-digest label from the published
-# amd64 child manifest of a multi-arch image in GHCR.
-#
-# Because the label lives in the per-arch config (not the index manifest),
-# this is a two-step skopeo probe:
-#   1. skopeo inspect --raw docker://ghcr.io/<owner>/<image>:<tag>
-#      → extract the amd64 child digest from .manifests[].
-#   2. skopeo inspect docker://ghcr.io/<owner>/<image>@<amd64_digest>
-#      → read .Labels["org.opencontainers.image.build-digest"].
-#
-# Outputs:
-#   ""          — label absent/empty on the image (pre-mechanism image; caller
-#                 treats this as "skip content check", NOT stale)
-#   "<digest>"  — the 12-char build-digest label value
-#   "__error__" — skopeo/transport error (caller must treat as error, fail-closed)
-#
-# Never exits non-zero.
-#
-# Test seam: _VDRIFT_LABEL_PROBE_OVERRIDE is a function/path that accepts
-#   $1=<full image ref with tag>
-# and outputs one of the three values above.
-# ---------------------------------------------------------------------------
-_vdrift_fetch_build_digest_label() {
-    local owner="$1"
-    local image_name="$2"
-    local tag="$3"
-    local full_ref="ghcr.io/${owner}/${image_name}:${tag}"
-
-    if [[ -n "${_VDRIFT_LABEL_PROBE_OVERRIDE:-}" ]]; then
-        local result
-        result=$("${_VDRIFT_LABEL_PROBE_OVERRIDE}" "$full_ref" 2>/dev/null) || true
-        # Validate result is one of the expected sentinel values or a digest
-        case "$result" in
-            __error__)
-                printf '__error__' ;;
-            *)
-                # Empty string or a digest value — pass through
-                printf '%s' "$result" ;;
-        esac
-        return 0
-    fi
-
-    if ! command -v skopeo >/dev/null 2>&1; then
-        # skopeo not available — skip content check (treat as empty label)
-        printf ''
-        return 0
-    fi
-
-    # Step 1: Fetch the raw index manifest to get the amd64 child digest.
-    local raw_stderr_tmp
-    raw_stderr_tmp=$(mktemp)
-    local raw_stdout raw_rc
-
-    raw_stdout=$(skopeo inspect --raw "docker://${full_ref}" \
-        2>"$raw_stderr_tmp") && raw_rc=0 || raw_rc=$?
-    rm -f "$raw_stderr_tmp"
-
-    if [[ "$raw_rc" -ne 0 ]]; then
-        # Transport/auth error on the raw inspect → fail-closed
-        printf '__error__'
-        return 0
-    fi
-
-    # Extract the amd64 child digest from the index manifest.
-    local amd64_digest
-    amd64_digest=$(printf '%s' "$raw_stdout" \
-        | jq -r '.manifests[]? | select(.platform.architecture=="amd64") | .digest' \
-        2>/dev/null | head -1 || true)
-
-    if [[ -z "$amd64_digest" ]]; then
-        # No amd64 child in the manifest (e.g. single-arch or Windows image)
-        # → cannot read the label, treat as empty (skip content check)
-        printf ''
-        return 0
-    fi
-
-    # Step 2: Inspect the amd64 child manifest (by digest) to get labels.
-    local cfg_tmp
-    cfg_tmp=$(mktemp)
-    local cfg_stdout cfg_rc
-
-    cfg_stdout=$(skopeo inspect \
-        "docker://ghcr.io/${owner}/${image_name}@${amd64_digest}" \
-        2>"$cfg_tmp") && cfg_rc=0 || cfg_rc=$?
-    rm -f "$cfg_tmp"
-
-    if [[ "$cfg_rc" -ne 0 ]]; then
-        # Transport/auth error on the config inspect → fail-closed
-        printf '__error__'
-        return 0
-    fi
-
-    # Extract the build-digest label.  Empty string if the label is absent.
-    local label_value
-    label_value=$(printf '%s' "$cfg_stdout" \
-        | jq -r --arg lbl "$BUILD_DIGEST_LABEL" '.Labels[$lbl] // empty' \
-        2>/dev/null || true)
-
-    printf '%s' "${label_value:-}"
-}
-
-# ---------------------------------------------------------------------------
-# _vdrift_compute_current_digest <container> <flavor>
-#
-# Compute the current expected build digest for a container/flavor pair by
-# calling compute_build_digest (from helpers/build-cache-utils.sh) with the
-# correct working directory (the container's source directory).
-#
-# Returns the 12-char hex digest on stdout, or empty string on error/skip.
-#
-# Test seam: _VDRIFT_COMPUTE_DIGEST_OVERRIDE is a function/path that accepts
-#   $1=<container> $2=<flavor>
-# and outputs the digest (or empty for error/skip).
-# ---------------------------------------------------------------------------
-_vdrift_compute_current_digest() {
-    local container="$1"
-    local flavor="${2:-}"
-
-    if [[ -n "${_VDRIFT_COMPUTE_DIGEST_OVERRIDE:-}" ]]; then
-        local result
-        result=$("${_VDRIFT_COMPUTE_DIGEST_OVERRIDE}" "$container" "$flavor" 2>/dev/null) || true
-        printf '%s' "$result"
-        return 0
-    fi
-
-    local container_dir="${PROJECT_ROOT}/${container}"
-
-    if [[ ! -d "$container_dir" ]]; then
-        # Container directory missing — skip content check
-        printf ''
-        return 0
-    fi
-
-    # Detect template/generated-Dockerfile containers.
-    #
-    # The build computes the digest over the GENERATED Dockerfile (after template
-    # expansion), not over the committed Dockerfile or template.  Since we cannot
-    # faithfully reproduce the generated Dockerfile here (that would require running
-    # the full generate-dockerfile.sh / generate_dockerfile pipeline), we SKIP
-    # the content check for these containers to avoid false content_stale positives
-    # on a freshly-built image.
-    #
-    # Template-container detection heuristics (in priority order):
-    #   1. generate-dockerfile.sh exists in the container dir — the build invokes it
-    #      to produce a per-flavour/per-distro Dockerfile at build time.
-    #      Covers: web-shell, github-runner.
-    #      Note: github-runner's base-image staleness is already covered by the
-    #      separate base-digest-drift mechanism; skipping content-check here is safe.
-    #   2. The committed Dockerfile contains @@MARKER@@ placeholders — the build
-    #      calls generate_dockerfile() to expand them before computing the digest.
-    #      Covers: postgres (@@EXTENSION_STAGES@@, @@EXTENSION_COPIES@@, @@RUNTIME_DEPS@@).
-    #
-    # Static containers (jekyll, terraform, ansible, openresty, sslh, vector, …)
-    # have a plain committed Dockerfile with no template machinery — for those the
-    # locally-computed digest faithfully matches the build-time digest, so the
-    # content check is safe and meaningful (catches the #595 class of staleness).
-    if [[ -x "${container_dir}/generate-dockerfile.sh" ]]; then
-        printf '::notice::version-drift: content-check skipped for %s: generate-dockerfile.sh present (generated Dockerfile, parity not guaranteed)\n' \
-            "$(_escape_gha_command "$container")" >&2
-        printf ''
-        return 0
-    fi
-
-    # Determine the Dockerfile path (same logic as the build: default "Dockerfile")
-    local dockerfile="Dockerfile"
-    if [[ ! -f "${container_dir}/${dockerfile}" ]]; then
-        # Missing Dockerfile — skip content check
-        printf ''
-        return 0
-    fi
-
-    # Check for @@MARKER@@ template patterns in the committed Dockerfile.
-    # grep -q exits 0 if found, 1 if not found; || true prevents set -e abort.
-    if grep -qF '@@' "${container_dir}/${dockerfile}" 2>/dev/null; then
-        printf '::notice::version-drift: content-check skipped for %s: Dockerfile contains @@MARKER@@ template placeholders (generated Dockerfile, parity not guaranteed)\n' \
-            "$(_escape_gha_command "$container")" >&2
-        printf ''
-        return 0
-    fi
-
-    # compute_build_digest must be called with cwd = container directory
-    local digest
-    digest=$(
-        pushd "$container_dir" >/dev/null
-        compute_build_digest "$dockerfile" "$flavor"
-        popd >/dev/null
-    ) || true
-
-    printf '%s' "${digest:-}"
-}
-
-# ---------------------------------------------------------------------------
 # Result accumulator
 # ---------------------------------------------------------------------------
 # Rows are accumulated as a newline-delimited JSON objects in _ROWS_BUF,
@@ -629,7 +421,6 @@ _append_row() {
 
     case "$status" in
         drift)          _HAS_DRIFT=true ;;
-        content_stale)  _HAS_DRIFT=true ;;
         error)          _HAS_ERROR=true ;;
         window_empty)   _HAS_ERROR=true ;;
     esac
@@ -644,9 +435,6 @@ _append_row() {
         drift)
             printf '::warning::version-drift: %s declared=%s status=%s\n' \
                 "$safe_name" "$safe_declared" "$safe_status" >&2 ;;
-        content_stale)
-            printf '::warning::version-drift: %s declared=%s status=content_stale (rebuild needed: build-digest mismatch)\n' \
-                "$safe_name" "$safe_declared" >&2 ;;
         in_flight)
             printf '::notice::version-drift: %s declared=%s status=in_flight (within grace window)\n' \
                 "$safe_name" "$safe_declared" >&2 ;;
@@ -668,60 +456,14 @@ _check_container_tag() {
     local image_name="$3"    # e.g. "postgres"
     local version_tag="$4"   # e.g. "18-alpine" or "13.7.0-ubuntu"
     local declaring_file="$5" # relative to PROJECT_ROOT, for bump timestamp
-    local flavor="${6:-}"     # flavor/variant name for content digest computation
 
     local probe_result
     probe_result=$(_vdrift_probe_published "$owner" "$image_name" "$version_tag")
 
     case "$probe_result" in
         present)
-            # Tag is present and multi-arch.  Optionally check content freshness.
-            if [[ "$CHECK_CONTENT_DRIFT" == "true" ]]; then
-                # Coverage note: content-staleness is currently checked for the
-                # DEFAULT VARIANT only per version (the variant passed as $flavor).
-                # Non-default variants are not individually probed here.
-                # TODO: per-variant content drift is a follow-up improvement; skipping
-                # non-default variants now avoids scope explosion and keeps the
-                # no-false-positive rule intact (each variant needs its own generated
-                # digest path which is non-trivial to reproduce for template containers).
-                if [[ "$_CONTENT_VARIANT_NOTICE_EMITTED" == "false" ]]; then
-                    printf '::notice::version-drift: content-staleness check covers the default variant only per version; non-default variant content drift is not detected (follow-up TODO)\n' >&2
-                    _CONTENT_VARIANT_NOTICE_EMITTED=true
-                fi
-                local published_label
-                published_label=$(_vdrift_fetch_build_digest_label \
-                    "$owner" "$image_name" "$version_tag")
-
-                case "$published_label" in
-                    __error__)
-                        # Label fetch failed (transport/auth error) → fail-closed
-                        _append_row "container" "$container" "$version_tag" "$version_tag" "error"
-                        ;;
-                    "")
-                        # Label absent → pre-mechanism image; cannot compare → in_sync
-                        _append_row "container" "$container" "$version_tag" "$version_tag" "in_sync"
-                        ;;
-                    *)
-                        # Label present → compare against current expected digest
-                        local current_digest
-                        current_digest=$(_vdrift_compute_current_digest \
-                            "$container" "$flavor")
-
-                        if [[ -z "$current_digest" ]]; then
-                            # Cannot compute current digest (template container,
-                            # missing Dockerfile, etc.) → skip content check, in_sync
-                            _append_row "container" "$container" "$version_tag" "$version_tag" "in_sync"
-                        elif [[ "$published_label" != "$current_digest" ]]; then
-                            # Digest mismatch → content stale, rebuild needed
-                            _append_row "container" "$container" "$version_tag" "$version_tag" "content_stale"
-                        else
-                            _append_row "container" "$container" "$version_tag" "$version_tag" "in_sync"
-                        fi
-                        ;;
-                esac
-            else
-                _append_row "container" "$container" "$version_tag" "$version_tag" "in_sync"
-            fi
+            # Tag is present and multi-arch → in_sync
+            _append_row "container" "$container" "$version_tag" "$version_tag" "in_sync"
             ;;
         absent)
             # Check grace window
@@ -806,7 +548,7 @@ _process_container() {
                 fi
                 [[ -z "$published_tag" ]] && published_tag="${vtag}${bsfx}"
                 _check_container_tag "$owner" "$container" "$container" \
-                    "$published_tag" "${container}/variants.yaml" "${default_var:-}"
+                    "$published_tag" "${container}/variants.yaml"
             done <<< "$versions"
             return 0
         fi
@@ -818,7 +560,7 @@ _process_container() {
     while IFS= read -r vtag; do
         [[ -z "$vtag" ]] && continue
         _check_container_tag "$owner" "$container" "$container" \
-            "$vtag" "${container}/variants.yaml" ""
+            "$vtag" "${container}/variants.yaml"
     done <<< "$versions"
 }
 
