@@ -1,6 +1,6 @@
 # ADR-013: Dependency-ordered container builds
 
-**Status:** Proposed (v2 — revised after adversarial + codex/copilot review)
+**Status:** Proposed (v2)
 **Date:** 2026-06-05
 **Issues:** #628 (origin: `github-runner:debian-trixie` and `web-shell:debian` failed on arm64 because a consumer built in parallel with its base and raced the base's transient single-arch tag)
 **Supersedes:** None
@@ -90,4 +90,4 @@ A dependency-triggered consumer must not be skipped when its base changed. Eithe
 - **More wall-clock**: layers serialize; a slow base (e.g. debian's arm64 leg, the #628 culprit) head-of-line-blocks all consumers; the windows variant of github-runner (~60-120 min) now waits behind debian's manifest despite not depending on it (the cost of container-granular layering).
 - **`LAYER_MAX` ceiling**: deeper graph needs a new layer stanza; the guard makes overflow loud, not silent.
 - **wordpress `FROM` refactor** is a real (one-time) change; web-shell generator tweak likewise.
-- **Blast radius**: every container's build path + all downstream reporting jobs change; must roll out behind the orthogonal gate with live multi-arch validation and a Windows-tag post-run check (the early-alias comment claiming the manifest job skips Windows is stale — create-manifest does handle Windows; removal is safe but must be verified).
+- **Blast radius**: every container's build path + all downstream reporting jobs change; must roll out with live multi-arch validation and a Windows-tag post-run check (the early-alias comment claiming the manifest job skips Windows is stale — create-manifest does handle Windows; removal is safe but must be verified).
