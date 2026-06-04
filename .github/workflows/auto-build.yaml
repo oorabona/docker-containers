@@ -1445,6 +1445,20 @@ jobs:
     permissions:
       contents: write  # Required to push the coverage checkpoint tag
       actions: read    # Required to read job conclusions via gh run view
+      issues: write    # Required to open/close per-container build-failure issues
+    outputs:
+      # 3-state routing signal for the summary job's generic-issue gate:
+      #   per-container — real-push, ftr is precise; summary must NOT open generic issue
+      #   generic       — real-push but unmapped=true; precise ftr subset opened, unattributed remainder needs generic
+      #   deferred      — guard-break; newer run owns issues; summary must NOT open generic
+      #   uncovered     — CAS-exhaust; tag not advanced; summary MUST open generic issue
+      #   ''            — job skipped or failed before emit; summary MUST open generic issue
+      issue_mode: ${{ steps.publish.outputs.issue_mode }}
+      # Precise failure set for THIS run (artifact-attributed).  Used by summary Path 1
+      # as FAILED_ALLOWLIST to prevent spurious dep:<c> issues when the commit names a
+      # container that did not actually fail.  Empty string when checkpoint was skipped/
+      # crashed or when guard-break fired (summary must treat '' as "no allowlist").
+      failed_this_run: ${{ steps.publish.outputs.failed_this_run }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1452,6 +1466,7 @@ jobs:
           fetch-depth: 0
 
       - name: Compute and publish coverage checkpoint tag
+        id: publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1459,6 +1474,10 @@ jobs:
           MATRIX_CONTAINERS: ${{ needs.detect-containers.outputs.containers }}
           # github.repository is owner/repo format (trusted context, no user content).
           GH_REPOSITORY: ${{ github.repository }}
+          # Required by open-dep-failure-issue.sh source-time :? guards (per-container issue loops).
+          # GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_SHA,
+          # GITHUB_EVENT_NAME, GITHUB_REF_NAME are auto-set by the GHA runner.
+          COMMIT_SUBJECT: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
@@ -1528,6 +1547,16 @@ jobs:
           # already advanced beyond this run (forward-only guard).
           TAG="auto-build-coverage-master"
           pushed=false
+          # published tracks ONLY the real-push branch (not guard-break).
+          # Guard-break: a newer run already owns the baseline and manages issues.
+          # CAS-exhaust: tag not advanced → summary opens generic issue.
+          published=false
+          prior_failed='[]'
+          new_failed='[]'
+          # ftr_safe: safe default for the failed_this_run output on guard-break/CAS-exhaust.
+          # ftr is set by classify (Step 3) above; this ensures failed_this_run is always
+          # a valid JSON array even if the loop exits early via guard-break.
+          ftr_safe="${ftr:-[]}"
           for attempt in 1 2 3 4 5; do
             # Re-fetch the current remote tag (force, so our local ref tracks remote exactly).
             git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
@@ -1539,6 +1568,11 @@ jobs:
             if [[ -n "$remote_sha" ]] && ! git merge-base --is-ancestor "$remote_sha" "$GITHUB_SHA" 2>/dev/null; then
               echo "::notice::Coverage checkpoint already advanced beyond this run (remote=$remote_sha) — skipping; a newer run owns the baseline"
               pushed=true   # treat as success: a newer run's state supersedes ours
+              # published stays false: the newer run manages per-container issues, not us.
+              # F1 — guard-break invariant: `deferred` is reachable only because remote_sha is
+              # strictly ahead of this run's SHA — a newer run already published the tag and
+              # its own CAS close loop (re-reading fresh prior_failed) will close any recovered
+              # containers.  No orphaned open issue can result from this path.
               break
             fi
 
@@ -1565,16 +1599,84 @@ jobs:
                  "refs/tags/${TAG}" 2>/dev/null; then
               echo "::notice::Coverage checkpoint advanced to $GITHUB_SHA — failed_containers=${new_failed} (attempt $attempt)"
               pushed=true
+              published=true   # real-push: this run owns the baseline and manages issues
               break
             fi
             echo "::warning::Coverage checkpoint CAS lost (attempt $attempt) — a concurrent run updated the tag; retrying"
           done
           if [[ "$pushed" != "true" ]]; then
             echo "::warning::Coverage checkpoint not advanced after retries (heavy concurrency) — next run will re-diff from the existing baseline"
+            # F2 — CAS-exhaust deferred-close: published=false → the per-container close loop
+            # is intentionally skipped below.  A recovered container's issue lingers until the
+            # next real-push run closes it (fail-safe: the generic backstop still alerts via
+            # issue_mode=uncovered → summary opens "Auto Build Failed", so no alert is missed).
           fi
 
+          # Compute base issue_mode (NOT emitted yet — may be downgraded after open loop).
+          #   per-container — real-push, precise attribution; summary suppresses generic open
+          #   generic       — real-push + unmapped; ftr subset opened, unattributed failure remains
+          #                   OR downgraded from per-container when open loop fails
+          #   deferred      — guard-break; newer run owns issues; summary suppresses generic open
+          #   uncovered     — CAS-exhaust; summary must open generic issue
+          if [[ "$published" == "true" ]]; then
+            if [[ "$unmapped" == "true" ]]; then
+              base="generic"
+            else
+              base="per-container"
+            fi
+          elif [[ "$pushed" == "true" ]]; then
+            base="deferred"
+          else
+            base="uncovered"
+          fi
+
+          # Per-container issue management — only when this run published the tag (real-push).
+          # Open loop iterates ftr (precise artifact-attributed failures for THIS run only).
+          # new_failed (carry-forward set) is intentionally NOT used here: carried-from-prior
+          # containers already have an open issue from when they first failed.
+          # On unmapped=true, ftr is the attributed subset; the unattributed remainder surfaces
+          # via base=generic → summary opens the generic "Auto Build Failed" issue.
+          # issue_open_failed: tracks whether any per-container open failed so we can
+          # downgrade base=per-container → generic (summary then opens the generic backstop).
+          issue_open_failed=false
+          if [[ "$published" == "true" ]]; then
+            recovered=$(jq -cn --argjson p "$prior_failed" --argjson n "$new_failed" \
+              '[ $p[] | select( . as $x | ($n | index($x)) | not ) ]')
+
+            # Open/comment a per-container issue for each container that failed THIS run (ftr).
+            chmod +x scripts/open-dep-failure-issue.sh
+            while IFS= read -r c; do
+              [[ -z "$c" ]] && continue
+              ./scripts/open-dep-failure-issue.sh --mode failure --container "$c" || issue_open_failed=true
+            done < <(echo "$ftr" | jq -r '.[]' 2>/dev/null || true)
+
+            # Close the per-container issue for each recovered container (prior − new_failed).
+            # Close is best-effort: a failure here does not affect issue_mode routing.
+            while IFS= read -r c; do
+              [[ -z "$c" ]] && continue
+              ./scripts/open-dep-failure-issue.sh --mode recovery --container "$c" || true
+            done < <(echo "$recovered" | jq -r '.[]' 2>/dev/null || true)
+          fi
+
+          # Downgrade per-container → generic when any open failed.
+          # The summary's checkpoint_covers becomes false → it opens the generic "Auto Build
+          # Failed" backstop so no failed build is left without an alert.
+          if [[ "$base" == "per-container" && "$issue_open_failed" == "true" ]]; then
+            echo "::warning::one or more per-container issue opens failed — downgrading issue_mode to generic"
+            base="generic"
+          fi
+
+          # Emit issue_mode exactly once, after all loops and potential downgrade.
+          echo "issue_mode=${base}" >> "$GITHUB_OUTPUT"
+
+          # Emit failed_this_run: the precise artifact-attributed failure set for THIS run.
+          # ftr_safe is initialized from ftr (Step 3) before the CAS loop; it is '[]' on
+          # guard-break (published=false, pushed=true) and on CAS-exhaust (pushed=false).
+          # The summary job reads this as FAILED_ALLOWLIST; '' means "no allowlist".
+          echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
+
   summary:
-    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1768,6 +1870,25 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Open dep-attributed or generic build-failure issue
+        # Two independent paths run in sequence:
+        #
+        # 1. Dep-attributed open (best-effort, rich context):
+        #    ./open-dep-failure-issue.sh (no --container) reads commit/PR signals.
+        #    rc=0 → dep-bump issue opened/commented.
+        #    rc=1 → no dep-bump context (info only — does NOT gate the generic).
+        #    rc=3 → gh API/create failure (warning only — does NOT gate the generic).
+        #    rc=2 → missing required env var (fatal).
+        #    The dep-attributed open is decoupled from the generic gate; it enriches
+        #    the issue log but does not control whether a generic backstop is opened.
+        #
+        # 2. Generic "Auto Build Failed" gate (authoritative, driven by issue_mode):
+        #    issue_mode is the checkpoint job output — it encodes what the checkpoint
+        #    already handled. Gate logic:
+        #      per-container → checkpoint opened precise issues; NO generic needed
+        #      deferred      → guard-break; newer run owns issues; NO generic needed
+        #      generic       → checkpoint opened attributed subset OR downgraded; OPEN generic
+        #      uncovered     → CAS-exhaust; tag not advanced; OPEN generic
+        #      ''            → checkpoint skipped/failed/crashed; OPEN generic
         if: steps.summary.outputs.build_failed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1783,59 +1904,84 @@ jobs:
           PR_BODY: ${{ steps.ctx.outputs.pr_body }}
           PR_LABELS: ${{ steps.ctx.outputs.pr_labels }}
           FAILED_JOBS_JSON: ${{ steps.ctx.outputs.failed_jobs_json }}
+          # Allowlist for Path 1: only open a dep-attributed issue when the commit-attributed
+          # container actually failed this run.  '' (checkpoint skipped/guard-break/CAS-exhaust)
+          # means no cross-check — original behaviour for non-checkpoint runs preserved.
+          FAILED_ALLOWLIST: ${{ needs.publish-coverage-checkpoint.outputs.failed_this_run }}
         run: |
           chmod +x scripts/open-dep-failure-issue.sh
-          if ./scripts/open-dep-failure-issue.sh; then
-            echo "Dep-attributed issue opened/updated"
+
+          # --- Path 1: dep-attributed open (best-effort, decoupled from generic gate) ---
+          # Path-1 gating matrix (issue_mode from checkpoint job output):
+          #   per-container  — real-push, current run owns issues; Path 1 runs (cross-checked via FAILED_ALLOWLIST)
+          #   generic        — real-push + unmapped or downgraded; Path 1 runs (same)
+          #   uncovered      — CAS-exhaust, current run; Path 1 runs (generic also fires; FAILED_ALLOWLIST='[]')
+          #   ''             — non-checkpoint run (workflow_dispatch/call/skipped): Path 1 runs (#514 original behaviour)
+          #   deferred       — guard-break: this run SUPERSEDED by a newer run that owns issue management;
+          #                    Path 1 SKIPPED to prevent a stale older run from resurrecting an issue
+          #                    the newer run already closed (FAILED_ALLOWLIST is this run's ftr, non-empty).
+          issue_mode="${{ needs.publish-coverage-checkpoint.outputs.issue_mode }}"
+          if [[ "$issue_mode" == "deferred" ]]; then
+            echo "issue_mode=deferred: this run was superseded by a newer run — skipping dep-attributed open (Path 1)"
           else
-            rc=$?
-            if [ "$rc" -eq 1 ]; then
-              echo "No dep-bump context detected, falling back to generic issue"
-              # Generic "Auto Build Failed" issue is a master-health tracker.
-              # Open/comment it on any master build that is not a PR smoke run.
-              # This covers push, workflow_call (upstream-monitor), and
-              # workflow_dispatch — all real master builds.
-              # PR smoke failures surface via their own check status and must not
-              # create a persistent master-health issue (cross-event symmetry:
-              # generic-open ↔ generic-close both exclude pull_request).
-              if [ "$GITHUB_EVENT_NAME" != "pull_request" ] && [ "$GITHUB_REF_NAME" = "master" ]; then
-                existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
-                  --label "build-failure" --state open --limit 5 --json title,number \
-                  | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
-                run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-                if [[ -n "$existing" ]]; then
-                  echo "Adding comment to existing issue #$existing"
-                  comment_body="$(printf '## Another build failure detected\n\n**Run:** [%s](%s)\n**Trigger:** `%s`\n**Ref:** `%s`\n**Time:** %s' \
-                    "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
-                    "$(date -u +'%Y-%m-%d %H:%M UTC')")"
-                  gh issue comment --repo "$GITHUB_REPOSITORY" "$existing" --body "$comment_body"
-                else
-                  echo "Creating new build failure issue"
-                  issue_body="$(printf '## Build Failure Alert\n\nOne or more container builds failed in the auto-build workflow.\n\n| Property | Value |\n|----------|-------|\n| **Run** | [%s](%s) |\n| **Trigger** | `%s` |\n| **Ref** | `%s` |\n| **Commit** | `%s` |\n\n## Next Steps\n\n1. Check the [workflow run](%s) for details\n2. Identify which container(s) failed\n3. Test locally: `./make build <container>`\n4. Fix and push to trigger rebuild\n\n---\n_Auto-generated by CI workflow_' \
-                    "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
-                    "$GITHUB_SHA" "$run_url")"
-                  gh issue create --repo "$GITHUB_REPOSITORY" \
-                    --title "Auto Build Failed - $(date -u +%Y-%m-%d)" \
-                    --label "build-failure,automation" \
-                    --body "$issue_body"
-                fi
-              else
-                echo "Skipping generic issue: pull_request event or non-master ref (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF_NAME)"
-              fi
+            dep_rc=0
+            ./scripts/open-dep-failure-issue.sh || dep_rc=$?
+            if [ "$dep_rc" -eq 0 ]; then
+              echo "Dep-attributed issue opened/updated"
+            elif [ "$dep_rc" -eq 1 ]; then
+              echo "No dep-bump context detected — dep-attributed open skipped (info only)"
+            elif [ "$dep_rc" -eq 3 ]; then
+              echo "::warning::open-dep-failure-issue.sh: gh issue operation failed (rc=3) — dep-attributed issue may be missing"
+            elif [ "$dep_rc" -eq 2 ]; then
+              echo "open-dep-failure-issue.sh: missing required env var (rc=2)"
+              exit 2
             else
-              echo "open-dep-failure-issue.sh failed with exit $rc"
-              exit "$rc"
+              echo "::warning::open-dep-failure-issue.sh: unexpected exit code $dep_rc"
             fi
           fi
 
-      - name: Close build-failure issue on recovery
-        # Close the open "Auto Build Failed" generic issue when a real build
-        # completes successfully on master (any non-PR trigger: push, workflow_call,
-        # workflow_dispatch).  Requires a POSITIVE success signal (build_succeeded)
-        # so a count=0 no-op run cannot mark a past failure as recovered.
-        # Only runs on master to avoid closing on PR smoke runs or other branches.
-        # continue-on-error: closing a stale issue is non-critical; a transient
-        # gh API error must never fail an otherwise-green master run.
+          # --- Path 2: generic "Auto Build Failed" gate (driven by issue_mode) ---
+          # issue_mode already set above (Path 1 gate); re-used here.
+          # This gate is the sole control for whether a generic backstop is opened.
+          if [[ "$issue_mode" == "per-container" || "$issue_mode" == "deferred" ]]; then
+            echo "issue_mode=${issue_mode}: checkpoint handled per-container issues — skipping generic issue"
+          elif [ "$GITHUB_EVENT_NAME" != "pull_request" ] && [ "$GITHUB_REF_NAME" = "master" ]; then
+            # issue_mode is generic, uncovered, or '' → open the generic backstop.
+            echo "issue_mode=${issue_mode:-''}: opening generic 'Auto Build Failed' backstop"
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+              --label "build-failure" --state open --limit 5 --json title,number \
+              | jq -r '.[] | select(.title | contains("Auto Build Failed")) | .number' | head -1)
+            run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            if [[ -n "$existing" ]]; then
+              echo "Adding comment to existing generic issue #$existing"
+              # shellcheck disable=SC2016  # \n in single-quoted printf format — interpreted by printf, not shell
+              comment_body="$(printf '## Another build failure detected\n\n**Run:** [%s](%s)\n**Trigger:** `%s`\n**Ref:** `%s`\n**Time:** %s' \
+                "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                "$(date -u +'%Y-%m-%d %H:%M UTC')")"
+              gh issue comment --repo "$GITHUB_REPOSITORY" "$existing" --body "$comment_body"
+            else
+              echo "Creating generic build failure issue"
+              # shellcheck disable=SC2016  # \n in single-quoted printf format — interpreted by printf, not shell
+              issue_body="$(printf '## Build Failure Alert\n\nOne or more container builds failed in the auto-build workflow.\n\n| Property | Value |\n|----------|-------|\n| **Run** | [%s](%s) |\n| **Trigger** | `%s` |\n| **Ref** | `%s` |\n| **Commit** | `%s` |\n\n## Next Steps\n\n1. Check the [workflow run](%s) for details\n2. Identify which container(s) failed\n3. Test locally: `./make build <container>`\n4. Fix and push to trigger rebuild\n\n---\n_Auto-generated by CI workflow_' \
+                "$GITHUB_RUN_ID" "$run_url" "$GITHUB_EVENT_NAME" "$GITHUB_REF_NAME" \
+                "$GITHUB_SHA" "$run_url")"
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "Auto Build Failed - $(date -u +%Y-%m-%d)" \
+                --label "build-failure,automation" \
+                --body "$issue_body"
+            fi
+          else
+            echo "Skipping generic issue: pull_request event or non-master ref (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF_NAME)"
+          fi
+
+      - name: Close generic build-failure issue on recovery
+        # Closes the generic "Auto Build Failed" issue (labels build-failure,automation,
+        # title "Auto Build Failed") when a real build succeeds on master.
+        # This ONLY ever matches the generic title issue — it cannot close per-container
+        # dep:<c> issues (different labels/title).  Therefore it is safe to run on ANY
+        # all-green master run: if a checkpoint-covered run had an open generic issue
+        # (opened by a prior dispatch/detect-fail run), this step cleans it up correctly.
+        # continue-on-error: closing a stale issue is non-critical.
         continue-on-error: true
         if: >-
           github.event_name != 'pull_request' &&
@@ -1849,8 +1995,6 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
-          # COMMIT_SUBJECT is required by the script's source-time :? guard even
-          # in recovery mode (it runs before main() parses --mode).
           COMMIT_SUBJECT: "recovery-check"
         run: |
           chmod +x scripts/open-dep-failure-issue.sh

@@ -10,9 +10,11 @@
 #
 # Exit codes:
 #   0  — issue created or commented successfully (or DRY_RUN printed)
-#   1  — no dep-bump detected (caller should fall back to generic issue logic)
+#   1  — no dep-bump detected (caller must fall back to generic issue logic; NOT a gh error)
 #   2  — missing required env var
-#   3  — gh CLI error after retries
+#   3  — gh CLI / issue-operation failure (create failed, comment failed, number unparseable)
+#        Callers: rc=1 → "no dep-bump" (info); rc=3 → "gh op failed" (warning); neither
+#        gates the generic issue — that is decided solely by issue_mode from the checkpoint job.
 
 set -euo pipefail
 
@@ -595,26 +597,26 @@ VDRIFT_COMMENT
 # Returns 0 on success (including "not found"), 1 on gh CLI error.
 # ---------------------------------------------------------------------------
 find_open_generic_build_failure_issue() {
-    local search_stdout search_rc
+    local search_stdout
     # Capture stdout and stderr separately so gh warnings cannot corrupt the
     # JSON that jq will parse.  Finding 4: do NOT merge stderr into stdout.
+    # Use if-! pattern: under set -euo pipefail, bare `x=$(cmd); rc=$?` aborts
+    # on gh failure before the rc check is ever reached (dead code).
     local stderr_tmp
     stderr_tmp="$(mktemp)"
-    search_stdout=$(run_gh issue list \
+    if ! search_stdout=$(run_gh issue list \
             --repo "$GITHUB_REPOSITORY" \
             --label "build-failure" \
             --label "automation" \
             --state open \
             --limit 5 \
-            --json title,number 2>"$stderr_tmp"); search_rc=$?
-    if [[ $search_rc -ne 0 ]]; then
+            --json title,number 2>"$stderr_tmp"); then
         # Log the captured stderr for diagnostics
         if [[ -s "$stderr_tmp" ]]; then
             printf '::warning::find_open_generic_build_failure_issue: gh issue list failed: %s\n' \
                 "$(cat "$stderr_tmp")" >&2
         else
-            printf '::warning::find_open_generic_build_failure_issue: gh issue list failed (rc=%d)\n' \
-                "$search_rc" >&2
+            printf '::warning::find_open_generic_build_failure_issue: gh issue list failed\n' >&2
         fi
         rm -f "$stderr_tmp"
         return 1
@@ -788,10 +790,14 @@ find_or_create_issue() {
 | **Time** | $(date -u +'%Y-%m-%d %H:%M UTC') |
 COMMENT
 )"
-        retry_with_backoff 3 5 gh issue comment \
-            --repo "$GITHUB_REPOSITORY" \
-            "$existing_number" \
-            --body "$comment_body" >&2
+        if ! retry_with_backoff 3 5 gh issue comment \
+                --repo "$GITHUB_REPOSITORY" \
+                "$existing_number" \
+                --body "$comment_body" >&2; then
+            printf '::warning::find_or_create_issue: gh issue comment failed for [%s] on issue #%s\n' \
+                "$container" "$existing_number" >&2
+            return 3
+        fi
         echo "commented #${existing_number}"
     else
         # Ensure the dep:<container> label exists (create if missing — best effort)
@@ -800,31 +806,183 @@ COMMENT
             --color "e4e669" \
             --description "Dep-attributed build failures for ${container}" 2>/dev/null || true
 
+        # Capture create output; validate non-empty numeric issue number.
+        # Do NOT use `| grep ... || true` — that masks gh exit code and can
+        # produce an empty number while still printing "created #".
+        local create_out
+        if ! create_out=$(retry_with_backoff 3 5 gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "$issue_title" \
+                --label "$dedup_labels" \
+                --body "$issue_body"); then
+            printf '::warning::find_or_create_issue: gh issue create failed for [%s]\n' \
+                "$container" >&2
+            return 3
+        fi
         local new_number
-        new_number=$(retry_with_backoff 3 5 gh issue create \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$issue_title" \
-            --label "$dedup_labels" \
-            --body "$issue_body" \
-            | grep -o '[0-9]*$' || true)
+        new_number=$(printf '%s' "$create_out" | grep -o '[0-9]*$' || true)
+        if [[ -z "$new_number" ]] || ! [[ "$new_number" =~ ^[0-9]+$ ]]; then
+            printf '::warning::find_or_create_issue: gh issue create succeeded but returned no issue number for [%s] (output: %s)\n' \
+                "$container" "$create_out" >&2
+            return 3
+        fi
         echo "created #${new_number}"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# close_container_build_failure_on_recovery <container>
+#
+# Container-scoped recovery: finds an open issue with labels
+# build-failure,automation,dep:<container> and closes it with a recovery
+# comment.  No open issue → no-op exit 0.
+# Exit codes:
+#   0 — closed successfully, or no open issue found (no-op)
+#   3 — gh CLI error
+# ---------------------------------------------------------------------------
+close_container_build_failure_on_recovery() {
+    local container="$1"
+
+    # Validate container name — must match safe label chars.
+    if ! [[ "$container" =~ ^[a-z0-9_-]+$ ]]; then
+        printf '::warning::close_container_build_failure_on_recovery: container name failed validation; skipping\n' >&2
+        return 0
+    fi
+
+    local safe_run_id
+    if [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]; then
+        safe_run_id="$GITHUB_RUN_ID"
+    else
+        safe_run_id=""
+    fi
+
+    local safe_ref_name
+    if [[ "$GITHUB_REF_NAME" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+        safe_ref_name="$GITHUB_REF_NAME"
+    else
+        safe_ref_name=""
+    fi
+
+    local safe_sha="${GITHUB_SHA:0:8}"
+    if ! [[ "$safe_sha" =~ ^[0-9a-fA-F]+$ ]]; then
+        safe_sha=""
+    fi
+
+    local run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${safe_run_id}"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY_RUN] Container recovery close: would search for open issue with labels build-failure,automation,dep:${container}"
+        log_info "[DRY_RUN] Would close with recovery comment referencing run ${safe_run_id}"
+        return 0
+    fi
+
+    # Search for open issue scoped to this container.
+    # Use if-! pattern: under set -euo pipefail, bare `x=$(cmd); rc=$?` aborts
+    # on gh failure before the rc check is ever reached (dead code).
+    local search_stdout
+    local stderr_tmp
+    stderr_tmp="$(mktemp)"
+    if ! search_stdout=$(run_gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "build-failure" \
+            --label "automation" \
+            --label "dep:${container}" \
+            --state open \
+            --limit 5 \
+            --json number,title 2>"$stderr_tmp"); then
+        if [[ -s "$stderr_tmp" ]]; then
+            printf '::warning::close_container_build_failure_on_recovery: gh issue list failed: %s\n' \
+                "$(cat "$stderr_tmp")" >&2
+        else
+            printf '::warning::close_container_build_failure_on_recovery: gh issue list failed\n' >&2
+        fi
+        rm -f "$stderr_tmp"
+        return 0
+    fi
+    rm -f "$stderr_tmp"
+
+    local issue_number
+    issue_number=$(printf '%s' "$search_stdout" \
+        | jq -r 'if type=="array" then .[0].number // empty else empty end' \
+        | head -1 || true)
+
+    if [[ -z "$issue_number" ]]; then
+        log_info "Container recovery (${container}): no open issue found — nothing to close."
+        return 0
+    fi
+
+    log_info "Container recovery (${container}): closing issue #${issue_number} (run ${safe_run_id})"
+
+    local comment_body
+    comment_body="$(cat <<RECOVERY_COMMENT
+## Build recovered
+
+The container \`${container}\` built successfully — this failure has been resolved.
+
+| Property | Value |
+|----------|-------|
+| **Recovering run** | [${safe_run_id}](${run_url}) |
+| **Ref** | \`${safe_ref_name}\` |
+| **Commit** | \`${safe_sha}\` |
+| **Time** | $(date -u +'%Y-%m-%d %H:%M UTC') |
+
+_Auto-closed by \`scripts/open-dep-failure-issue.sh --mode recovery --container ${container}\`_
+RECOVERY_COMMENT
+)"
+
+    if ! run_gh issue comment \
+            --repo "$GITHUB_REPOSITORY" \
+            "$issue_number" \
+            --body "$comment_body" >&2; then
+        printf '::warning::close_container_build_failure_on_recovery: gh issue comment failed (non-critical, continuing)\n' >&2
+        return 0
+    fi
+
+    if ! run_gh issue close \
+            --repo "$GITHUB_REPOSITORY" \
+            "$issue_number" >&2; then
+        printf '::warning::close_container_build_failure_on_recovery: gh issue close failed (non-critical, continuing)\n' >&2
+        return 0
+    fi
+
+    log_success "Container recovery (${container}): closed issue #${issue_number}"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 main() {
-    # Parse optional --mode flag
+    # Parse optional --mode and --container flags
     local mode="failure"
+    local OVERRIDE_CONTAINER=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --mode)
-                mode="$2"
+                # Guard: --mode requires a following value; ${2:-} avoids unbound-var abort under set -u.
+                mode="${2:-}"
+                if [[ -z "$mode" ]]; then
+                    printf '::warning::open-dep-failure-issue: --mode requires a value\n' >&2
+                    return 2
+                fi
                 shift 2
                 ;;
             --mode=*)
                 mode="${1#--mode=}"
+                shift
+                ;;
+            --container)
+                # Guard: --container with no following value would hit $2: unbound variable under set -u
+                # (exit 1, misread as no-dep-bump).  Use ${2:-} and validate explicitly.
+                OVERRIDE_CONTAINER="${2:-}"
+                if [[ -z "$OVERRIDE_CONTAINER" ]]; then
+                    printf '::warning::open-dep-failure-issue: --container requires a value\n' >&2
+                    return 2
+                fi
+                shift 2
+                ;;
+            --container=*)
+                OVERRIDE_CONTAINER="${1#--container=}"
                 shift
                 ;;
             *)
@@ -834,9 +992,56 @@ main() {
     done
 
     if [[ "$mode" == "recovery" ]]; then
+        if [[ -n "$OVERRIDE_CONTAINER" ]]; then
+            log_step "Recovery mode (container-scoped): closing issue for ${OVERRIDE_CONTAINER} if any..."
+            close_container_build_failure_on_recovery "$OVERRIDE_CONTAINER"
+            exit $?
+        fi
         log_step "Recovery mode: closing open build-failure issue if any..."
         close_build_failure_on_recovery
         exit $?
+    fi
+
+    # When --container is set, bypass auto-detection and use the override directly.
+    if [[ -n "$OVERRIDE_CONTAINER" ]]; then
+        # Validate container name — must match safe label chars (mirrors recovery-close guard).
+        if ! [[ "$OVERRIDE_CONTAINER" =~ ^[a-z0-9_-]+$ ]]; then
+            printf '::warning::open-dep-failure-issue: --container value failed ^[a-z0-9_-]+$ validation; returning 3\n' >&2
+            # Return 3 (gh/op failure class), NOT 0.  The checkpoint loop's
+            # `|| issue_open_failed=true` catches any non-zero → issue_mode downgrades
+            # per-container→generic → the generic backstop alerts.  Returning 0 here
+            # would hide the failure and silently drop the alert for this container.
+            # (Recovery/close invalid-name keeps best-effort return 0 — close has no
+            # alert obligation; this fail-closed behaviour is for the OPEN path only.)
+            return 3
+        fi
+        log_step "Container override mode: opening issue for ${OVERRIDE_CONTAINER}..."
+        local container="$OVERRIDE_CONTAINER"
+        local kind="version-bump"  # safe default when called from checkpoint (no dep-bump context)
+
+        # Build issue title
+        local short_sha="${GITHUB_SHA:0:8}"
+        local issue_title="🚨 [${container}] Build failed (commit ${short_sha})"
+
+        # Build a minimal deps table (no PR context in checkpoint mode)
+        local deps_json
+        deps_json="$(extract_dep_details "$container" "$kind")"
+        local deps_table
+        deps_table="$(build_deps_table "$deps_json")"
+
+        local issue_body
+        issue_body="$(build_issue_body "$container" "$deps_table" "")"
+
+        local result find_rc
+        find_rc=0
+        result="$(find_or_create_issue "$container" "$issue_title" "$issue_body")" || find_rc=$?
+        if [[ "$find_rc" -ne 0 ]]; then
+            log_info "find_or_create_issue failed for [${container}] (rc=${find_rc}) — propagating to caller"
+            return "$find_rc"
+        fi
+        log_success "Issue action: ${result}"
+        echo "$result"
+        return 0
     fi
 
     log_step "Detecting dep bump from commit/PR signals..."
@@ -849,6 +1054,29 @@ main() {
     local container="$DETECTED_CONTAINER"
     local kind="$DETECTED_KIND"
     log_info "Detected: container=${container} kind=${kind}"
+
+    # F3 — allowlist cross-check: if the checkpoint published a precise failure set
+    # (FAILED_ALLOWLIST env, a JSON array of container names that failed THIS run),
+    # skip opening a dep-attributed issue when the detected container is NOT in that set.
+    # This prevents spurious dep:<c> issues when a dep-bump commit names a container
+    # that actually built fine (another job caused build_failed=true).
+    #
+    # Behaviour matrix:
+    #   FAILED_ALLOWLIST unset/empty → no cross-check (non-checkpoint runs: workflow_dispatch/call,
+    #                                   skipped checkpoint) — original #514 behaviour preserved.
+    #   FAILED_ALLOWLIST set, valid JSON array, container present → proceed normally.
+    #   FAILED_ALLOWLIST set, valid JSON array, container absent  → return 1 (no-op, same as no-dep-bump).
+    #   FAILED_ALLOWLIST set, invalid JSON                        → treat as empty (no cross-check; safe).
+    if [[ -n "${FAILED_ALLOWLIST:-}" ]]; then
+        local in_allowlist
+        in_allowlist=$(printf '%s' "$FAILED_ALLOWLIST" \
+            | jq -e --arg c "$container" 'if type=="array" then (index($c) != null) else false end' \
+            2>/dev/null || true)
+        if [[ "$in_allowlist" == "false" ]]; then
+            log_info "::notice::detected container [${container}] is not in the checkpoint failure set (${FAILED_ALLOWLIST}) — skipping dep-attributed open (no spurious issue)"
+            exit 1
+        fi
+    fi
 
     # Build issue title
     local short_sha="${GITHUB_SHA:0:8}"
@@ -886,8 +1114,13 @@ main() {
     issue_body="$(build_issue_body "$container" "$deps_table" "$log_excerpt")"
 
     # Find or create issue
-    local result
-    result="$(find_or_create_issue "$container" "$issue_title" "$issue_body")"
+    local result find_rc
+    find_rc=0
+    result="$(find_or_create_issue "$container" "$issue_title" "$issue_body")" || find_rc=$?
+    if [[ "$find_rc" -ne 0 ]]; then
+        log_info "find_or_create_issue failed for [${container}] (rc=${find_rc}) — propagating to caller"
+        return "$find_rc"
+    fi
     log_success "Issue action: ${result}"
     echo "$result"
 }
