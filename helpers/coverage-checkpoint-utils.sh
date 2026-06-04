@@ -10,7 +10,8 @@
 #
 # Functions (all pure — read args/stdin, write stdout only):
 #   checkpoint_failed_containers  <state_str>
-#   extract_failed_recovered      <jobs_json> <matrix_json>
+#   aggregate_build_results       <results_json> <matrix_json> [jobs_json]  ← PRIMARY attribution (slice 2)
+#   extract_failed_recovered      <jobs_json> <matrix_json>      ← FALLBACK (name-matching)
 #   merge_failed_set              <prior_json> <failed_this_json> <recovered_cand_json> <matrix_json> <unmapped_failure>
 #   compute_carry_forward         <queued_json> <baseline_failed_json> <valid_json>
 
@@ -163,6 +164,165 @@ compute_carry_forward() {
         (($q + $carried) | sort | unique) as $queued_out |
 
         { queued: $queued_out, carried: $carried }
+        '
+}
+
+# aggregate_build_results <results_json> <matrix_json> [jobs_json]
+#
+# Classify per-matrix containers as failed, recovered, or neither using
+# machine-readable build-result artifact records.  jobs_json is used to
+# detect completeness gaps via a COUNT-based invariant.
+#
+# This is the PRIMARY attribution path (slice 2).  It eliminates three bugs:
+#   1. Token-collision false positives (e.g. "debian" job matching "web-shell:debian").
+#   2. Infra job failures (e.g. "Sync base images") triggering carry-all via
+#      unmapped_failure because the job name matched no container token.
+#   3. Multi-arch / extension-pipeline stranding: a crashed leg or postgres extension
+#      job produces no record; a success record from another leg/job alone would
+#      falsely recover a prior failure → crashed leg/pipeline never retried.
+#
+# Arguments:
+#   results_json  – JSON array of objects, each with at least {container, result}
+#                   where result ∈ "success" | "failure".  Other fields are ignored.
+#                   Invalid / non-array input is treated as [] (fail-safe).
+#   matrix_json   – JSON array of container name strings (same format as
+#                   extract_failed_recovered's second argument).
+#   jobs_json     – (optional) slimmed gh run view output: {jobs:[{name,conclusion}]}
+#                   or a bare array.  Used only for the COUNT completeness invariant:
+#                   bad_build_job_count vs failure_record_count.  Infra jobs (matching
+#                   no matrix container) are NOT counted — no all-13 regression.
+#                   If omitted/empty → counts are both 0 → unmapped stays false
+#                   (backward-compat for 2-arg callers).
+#
+# Core algorithm (COUNT-based completeness invariant):
+#   fail_rec              = matrix containers with ≥1 record where .result=="failure"
+#   succ_rec              = matrix containers with ≥1 record where .result=="success"
+#   failure_record_count  = number of records with .result=="failure" AND .container ∈ matrix
+#   bad_jobs              = jobs_json jobs with terminal conclusion (not null/""/success/skipped)
+#   bad_build_job_count   = number of bad_jobs that map to ≥1 matrix container via
+#                           maps_to_container (token-match OR postgres ext/merge alias)
+#                           (counted once per job; infra jobs matching nothing → not counted)
+#   unmapped_failure      = (bad_build_job_count > failure_record_count)  — gap detected
+#                           OR (out-of-matrix failure record exists)       — always fail-closed
+#   failed_this_run       = fail_rec  (artifact-precise)
+#   recovered_candidates  = succ_rec \ fail_rec
+#
+# When unmapped_failure=true, merge_failed_set carries (prior ∪ matrix) so no
+# container is silently dropped despite incomplete artifact data.
+#
+# Output compact JSON (same shape as extract_failed_recovered):
+#   {
+#     "failed_this_run":      [...],   # containers with ≥1 failure record
+#     "recovered_candidates": [...],   # success-only containers
+#     "unmapped_failure":     bool     # true → gap or out-of-matrix record detected
+#   }
+# All arrays are sorted and unique.  A container with no records appears in neither list.
+#
+# Note: results_json and jobs_json are passed via --arg + fromjson? (not --argjson)
+# so that malformed JSON is silently treated as [] rather than causing a jq parse error.
+# Records are slim (one per build job, ~158 max, <128 KB total) — no ARG_MAX risk.
+aggregate_build_results() {
+    local results_json="${1:-}"
+    local matrix_json="${2:-[]}"
+    local jobs_json="${3:-}"
+    [[ -z "$results_json" ]] && results_json='[]'
+    [[ -z "$jobs_json" ]]    && jobs_json='{"jobs":[]}'
+
+    jq -cn \
+        --arg results_str "$results_json" \
+        --argjson matrix "$matrix_json" \
+        --arg jobs_str "$jobs_json" \
+        '
+        # Parse results_str; treat any non-array (or parse failure) as [] (fail-safe).
+        # fromjson? silently becomes empty on invalid JSON; // [] recovers to empty array.
+        (($results_str | fromjson?) // []) as $raw_results |
+        (if ($raw_results | type) == "array" then $raw_results else [] end) as $rs |
+        (if ($matrix  | type) == "array" then $matrix  else [] end) as $m  |
+
+        # Parse jobs_str; normalise to a flat array of job objects.
+        # Accept both {"jobs":[...]} and a bare array.  Invalid JSON → [] (fail-open:
+        # if we cannot read jobs we do not inflate the failed set).
+        (($jobs_str | fromjson?) // []) as $raw_jobs |
+        ($raw_jobs | if type == "object" then .jobs // [] else . end) as $job_list |
+
+        # Terminal-failed jobs: conclusion is set, non-success, non-skipped.
+        ($job_list | map(select(
+            .conclusion != null and .conclusion != "" and
+            .conclusion != "success" and .conclusion != "skipped"
+        ))) as $bad_jobs |
+
+        # Token-boundary regex helper (same definition as extract_failed_recovered).
+        # Container names are [a-z0-9-]+ so safe to interpolate directly.
+        def token_re(name):
+            "(^|[^A-Za-z0-9_-])" + name + "([^A-Za-z0-9_-]|$)";
+
+        # maps_to_container: true iff a job display name maps to a matrix container.
+        # Used ONLY for the COUNT completeness gate (bad_build_job_count) — NOT for
+        # failure attribution (failed_this_run stays artifact-record-based).
+        #
+        # The postgres extension pipeline jobs ("Build PostgreSQL Extensions (arm64)",
+        # "Merge Extension Manifests (multi-arch)") emit records attributed to the
+        # "postgres" container, but their display names contain no lowercase "postgres"
+        # token. Without the alias, a crashed ext/merge job (no record produced) would
+        # go unnoticed by the count gate → bad_build_job_count stays 0 → no gap →
+        # postgres is falsely recovered. The alias fixes this: when the matrix contains
+        # "postgres", extension/merge job names also count toward the gate.
+        def maps_to_container($jobname; $c):
+            ($jobname | test(token_re($c)))
+            or ($c == "postgres" and ($jobname | test("PostgreSQL Extensions|Extension Manifests")));
+
+        # fail_rec: matrix containers that have >=1 failure RECORD (artifact-precise).
+        [ $m[] | . as $c |
+          if ([ $rs[] | select(.container == $c and .result == "failure") ] | length) > 0
+          then $c else empty end
+        ] | sort | unique as $fail_rec |
+
+        # succ_rec: matrix containers that have >=1 success record.
+        [ $m[] | . as $c |
+          if ([ $rs[] | select(.container == $c and .result == "success") ] | length) > 0
+          then $c else empty end
+        ] | sort | unique as $succ_rec |
+
+        # failure_record_count: number of failure records whose container is in matrix.
+        # (Excludes out-of-matrix failures — those are caught by the unmapped check below.)
+        ([ $rs[] | . as $rec | select($rec.result == "failure" and ($m | index($rec.container)) != null) ] | length)
+        as $failure_record_count |
+
+        # bad_build_job_count: number of terminal-failed jobs that map to >=1 matrix
+        # container via maps_to_container.  Each job counted at most once; infra jobs
+        # (matching nothing) contribute 0 — this preserves the Sync-base-images all-13
+        # fix.  The postgres extension/merge alias ensures a crashed ext/merge job is
+        # counted even though its display name contains no "postgres" token.
+        ($bad_jobs | map(
+            . as $job |
+            if ([ $m[] | . as $c | select(maps_to_container($job.name; $c)) ] | length) > 0
+            then 1 else 0 end
+        ) | add // 0) as $bad_build_job_count |
+
+        # out_of_matrix: any failure record whose .container is not in matrix.
+        ([ $rs[] | select(.result == "failure") ] |
+         map(.container) |
+         map(. as $cn | ($m | index($cn)) == null) |
+         any) as $out_of_matrix |
+
+        # unmapped_failure: gap detected (more failed build jobs than failure records)
+        # OR an out-of-matrix failure record exists.
+        (($bad_build_job_count > $failure_record_count) or $out_of_matrix) as $unmapped |
+
+        # failed_this_run: artifact-precise (fail_rec only).
+        $fail_rec as $failed |
+
+        # recovered_candidates: success-only containers (no failure record).
+        [ $succ_rec[] | . as $c |
+          if ($fail_rec | index($c)) == null
+          then $c else empty end
+        ] | sort | unique as $recovered |
+
+        {
+            failed_this_run:      $failed,
+            recovered_candidates: $recovered,
+            unmapped_failure:     $unmapped
+        }
         '
 }
 
