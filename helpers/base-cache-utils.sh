@@ -487,17 +487,25 @@ _escape_gha_command() {
 # sync_base_images_to_ghcr <images_json> [source_registry]
 #
 # Copy each base image from <source_registry> (default: docker.io) to GHCR
-# via `docker buildx imagetools create`. Blind copy — no presence check,
-# no digest compare. Per-image failures are logged but non-fatal so a single
-# 429 (or transient registry error) does not halt the whole sync run; the
-# outer job's `continue-on-error: true` further insulates dependent jobs.
+# via `docker buildx imagetools create`. Blind copy by default (skip_present=false)
+# so the daily upstream-monitor sync always refreshes; per-push builds pass
+# skip_present=true to skip GHCR targets that already exist (no docker.io request).
+# Per-image failures are logged but non-fatal so a single 429 (or transient
+# registry error) does not halt the whole sync run; the outer job's
+# `continue-on-error: true` further insulates dependent jobs.
 #
 # Args:
 #   $1 = images_json (output of collect_all_cache_images)
 #   $2 = source_registry (optional; default "docker.io")
+#   $3 = skip_present (optional; default "false")
+#         false = blind copy, no presence check (used by daily upstream-monitor
+#                 sync to guarantee a refresh of every base image)
+#         true  = probe GHCR target first; skip copy when already present,
+#                 avoiding all docker.io requests for up-to-date bases (used by
+#                 per-push sync-base-images job to stop Docker Hub 429s)
 #
 # Output: progress lines printed to stdout, one section per image
-# Exit:   0 when all images synced; 1 when any failed (caller's
+# Exit:   0 when all images synced or skipped; 1 when any failed (caller's
 #         `continue-on-error: true` keeps dependents unblocked while the
 #         non-zero exit surfaces the failure in the Actions UI)
 #
@@ -507,6 +515,7 @@ _escape_gha_command() {
 sync_base_images_to_ghcr() {
     local images_json="$1"
     local source_registry="${2:-docker.io}"
+    local skip_present="${3:-false}"
 
     # Same injection-prevention guard we apply to per-image refs, but at the
     # function boundary so an attacker-influenced source_registry override
@@ -526,7 +535,7 @@ sync_base_images_to_ghcr() {
 
     echo "📦 Syncing $count unique base images to GHCR (source: $source_registry)"
 
-    local synced=0 failed=0
+    local synced=0 skipped=0 failed=0
     while IFS= read -r img; do
         local source_img tag sync_image source_ref output
         source_img=$(echo "$img" | jq -r '.source')
@@ -567,6 +576,17 @@ sync_base_images_to_ghcr() {
         echo ""
         echo "🔄 ${source_ref} → ${sync_image}"
 
+        # Presence gate: when skip_present=true, probe the GHCR target first.
+        # `docker manifest inspect` against ghcr.io is read-only and free vs the
+        # docker.io pull rate limit — same pattern used in build-container/action.yaml.
+        # We use the literal `docker` (not $DOCKER) to match that convention: this is
+        # a read-only probe, not a write/build command that dry-run mode should mock.
+        if [[ "$skip_present" == "true" ]] && docker manifest inspect "$sync_image" >/dev/null 2>&1; then
+            echo "  ⏭️ Already in GHCR, skipping (no docker.io request): ${sync_image}"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
         if output=$(_sync_one_with_backoff "$source_ref" "$sync_image"); then
             echo "  ✅ Synced"
             synced=$((synced + 1))
@@ -593,7 +613,7 @@ sync_base_images_to_ghcr() {
     done < <(echo "$images_json" | jq -c '.[]')
 
     echo ""
-    echo "📊 Sync summary: $synced succeeded, $failed failed"
+    echo "📊 Sync summary: $synced synced, $skipped skipped (already in GHCR), $failed failed"
 
     # Non-zero exit when any image failed so the GitHub Actions UI surfaces the
     # sync run as red. Dependent jobs are kept unblocked by the caller's
