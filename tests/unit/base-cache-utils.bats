@@ -789,7 +789,8 @@ EOF
     # job-level `continue-on-error: true` keeps dependent jobs unblocked.
     [ "$status" -eq 1 ]
     [[ "$output" == *"⚠️ Failed"* ]]
-    [[ "$output" == *"0 succeeded, 2 failed"* ]]
+    [[ "$output" == *"0 synced"* ]]
+    [[ "$output" == *"2 failed"* ]]
     # Workflow warning surfaced for each image AND for the summary
     [[ "$output" == *"::warning::sync_base_images_to_ghcr: failed to sync"* ]]
     [[ "$output" == *"::warning::sync_base_images_to_ghcr: 2 image(s) failed to sync"* ]]
@@ -859,7 +860,8 @@ EOF
     [[ "$output" != *$'\n::stop-commands::'* ]]
     # The validation guard fires and the entry is counted as failed
     [[ "$output" == *"refusing image entry with control characters"* ]]
-    [[ "$output" == *"0 succeeded, 1 failed"* ]]
+    [[ "$output" == *"0 synced"* ]]
+    [[ "$output" == *"1 failed"* ]]
 }
 
 @test "_sync_one_with_backoff: succeeds on first attempt without retry" {
@@ -1075,4 +1077,120 @@ EOF
     [[ "$output" == *'"sync_image":"ghcr.io/myowner/library/php:8.2-fpm-alpine"'* ]]
     # probe_image is leaf-only
     [[ "$output" == *'"probe_image":"ghcr.io/myowner/php:8.2-fpm-alpine"'* ]]
+}
+
+# --- presence gate (skip_present=true) ---
+
+# BCU-PRESGATE-01: skip_present=true + GHCR already present → copy NOT invoked, rc 0
+# Locks the fast path: when `docker manifest inspect` succeeds (image in GHCR),
+# `buildx imagetools create` must never be called (no docker.io request).
+@test "BCU-PRESGATE-01: skip_present=true + GHCR present → copy skipped, rc 0" {
+    # Use a marker file to detect whether buildx imagetools create was ever called.
+    # A shell variable cannot survive the command-substitution subshell used by
+    # _sync_one_with_backoff, so we use a real tempfile (same pattern as the
+    # _sync_one_with_backoff backoff tests above).
+    local copy_marker
+    copy_marker=$(mktemp)
+    rm -f "$copy_marker"   # absent = not called; present = called
+    export COPY_MARKER="$copy_marker"
+
+    docker() {
+        if [[ "$1" == "manifest" && "$2" == "inspect" ]]; then
+            # Image is present in GHCR → presence probe succeeds
+            return 0
+        fi
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            # Record that copy was attempted (must NOT happen when image is present)
+            touch "$COPY_MARKER"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input" "docker.io" "true"
+    [ "$status" -eq 0 ]
+    # Output must mention the skip
+    [[ "$output" == *"Already in GHCR"* ]] || [[ "$output" == *"skipping"* ]]
+    # buildx imagetools create must NOT have been invoked
+    [ ! -f "$COPY_MARKER" ]
+    # Summary: 0 synced, 1 skipped, 0 failed
+    [[ "$output" == *"0 synced"* ]]
+    [[ "$output" == *"1 skipped"* ]]
+
+    rm -f "$copy_marker"
+}
+
+# BCU-PRESGATE-02: skip_present=true + GHCR absent → copy IS invoked, rc 0
+# When `docker manifest inspect` fails (image not yet in GHCR), the normal copy
+# path must run — ensures the gate doesn't block the initial population.
+@test "BCU-PRESGATE-02: skip_present=true + GHCR absent → copy invoked, rc 0" {
+    local copy_marker
+    copy_marker=$(mktemp)
+    rm -f "$copy_marker"
+    export COPY_MARKER="$copy_marker"
+
+    docker() {
+        if [[ "$1" == "manifest" && "$2" == "inspect" ]]; then
+            # Image not yet in GHCR → presence probe fails
+            return 1
+        fi
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            touch "$COPY_MARKER"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
+    run sync_base_images_to_ghcr "$input" "docker.io" "true"
+    [ "$status" -eq 0 ]
+    # Copy must have been invoked
+    [ -f "$COPY_MARKER" ]
+    # Summary: 1 synced, 0 skipped
+    [[ "$output" == *"1 synced"* ]]
+    [[ "$output" == *"0 skipped"* ]]
+
+    rm -f "$copy_marker"
+}
+
+# BCU-PRESGATE-03: skip_present=false (default, daily sync) → copy invoked even when GHCR present
+# Regression lock: blind-copy behavior must not be broken by the presence gate.
+# The daily upstream-monitor sync calls sync_base_images_to_ghcr without skip_present
+# (defaults to "false"), so it must always copy regardless of GHCR state.
+@test "BCU-PRESGATE-03: skip_present=false (default) → copy invoked even when GHCR present (blind refresh)" {
+    local copy_marker
+    copy_marker=$(mktemp)
+    rm -f "$copy_marker"
+    export COPY_MARKER="$copy_marker"
+
+    docker() {
+        if [[ "$1" == "manifest" && "$2" == "inspect" ]]; then
+            # Image IS present in GHCR — with skip_present=false this must be ignored
+            return 0
+        fi
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            touch "$COPY_MARKER"
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+    export SLEEP_CMD=:
+
+    local input='[{"source":"library/alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"}]'
+    # Call without 3rd arg — mirrors the daily upstream-monitor invocation
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 0 ]
+    # Copy must have been invoked (blind refresh ignores presence)
+    [ -f "$COPY_MARKER" ]
+    # Summary: 1 synced, 0 skipped
+    [[ "$output" == *"1 synced"* ]]
+    [[ "$output" == *"0 skipped"* ]]
+
+    rm -f "$copy_marker"
 }

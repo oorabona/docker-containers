@@ -757,7 +757,11 @@ jobs:
           source ./helpers/base-cache-utils.sh
 
           images=$(collect_all_cache_images "$CONTAINERS" "$VERSIONS" "$OWNER")
-          sync_base_images_to_ghcr "$images"
+          # Per-push: pass skip_present=true so bases already in GHCR incur no
+          # docker.io request (stops Hub 429s). The daily upstream-monitor sync
+          # keeps blind-copy behavior (skip_present default=false) so it always
+          # refreshes every base image regardless of presence.
+          sync_base_images_to_ghcr "$images" "docker.io" "true"
 
   sync-registries:
     name: Sync ${{ matrix.build.container }}:${{ matrix.build.tag }} GHCR→DockerHub
