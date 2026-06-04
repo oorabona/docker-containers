@@ -356,6 +356,7 @@ jobs:
           scripts/list-extension-versions.sh
 
       - name: Build and push extension images
+        id: build-extensions-step
         if: steps.ext-versions.outputs.containers != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -473,6 +474,37 @@ jobs:
           # silently skips files inside hidden directories unless this is set.
           include-hidden-files: true
 
+      - name: Emit build-result artifact (postgres extensions, ${{ matrix.arch }})
+        if: always()
+        env:
+          # job.status: success only when all prior steps (checkout, login, build)
+          # completed without error. An upstream step failure (e.g. login 403) sets
+          # job.status=failure even though the build step itself was skipped.
+          # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          result="failure"
+          [[ "$JOB_STATUS" == "success" ]] && result="success"
+          mkdir -p .build-lineage
+          jq -cn \
+            --arg c "postgres" \
+            --arg v "extensions" \
+            --arg t "" \
+            --arg a "${{ matrix.arch }}" \
+            --arg r "$result" \
+            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+            > ".build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json" || true
+
+      - name: Upload build-result artifact (postgres extensions, ${{ matrix.arch }})
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-postgres-ext-${{ matrix.arch }}
+          path: .build-lineage/build-result-postgres-ext-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
   # Stage B: merge per-arch extension manifests into multi-arch manifests and
   # write the versionset artifact with the multi-arch bundle INDEX digest.
   # Runs on ubuntu-latest (manifest operations are registry API calls — no native
@@ -557,6 +589,7 @@ jobs:
           scripts/list-extension-versions.sh
 
       - name: Merge per-arch manifests and write versionset artifacts
+        id: merge-manifests-step
         if: steps.ext-versions.outputs.containers != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -637,6 +670,36 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
           include-hidden-files: true
+
+      - name: Emit build-result artifact (postgres extmerge)
+        if: always()
+        env:
+          # job.status: success only when checkout, login, version-discovery, and
+          # the merge step all completed without error. Upstream failure → fail-closed.
+          # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          result="failure"
+          [[ "$JOB_STATUS" == "success" ]] && result="success"
+          mkdir -p .build-lineage
+          jq -cn \
+            --arg c "postgres" \
+            --arg v "extmerge" \
+            --arg t "" \
+            --arg a "multiarch" \
+            --arg r "$result" \
+            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+            > ".build-lineage/build-result-postgres-extmerge.json" || true
+
+      - name: Upload build-result artifact (postgres extmerge)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-postgres-extmerge
+          path: .build-lineage/build-result-postgres-extmerge.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
 
   # Sync base images: blind-copy detected containers' base images from Docker Hub
   # to GHCR on every push. Consolidated with the daily upstream-monitor sync via
@@ -942,6 +1005,38 @@ jobs:
           echo "**Tag:** \`$tag\`" >> $GITHUB_STEP_SUMMARY
           echo "**Attempt:** $attempt" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+
+      - name: Emit build-result artifact
+        if: always()
+        shell: bash
+        env:
+          # job.status reflects the whole job outcome: success only when the job's
+          # work completed without error (build||retry succeeded, "Handle build failure"
+          # did not exit 1). failure/cancelled → fail-closed "failure" record.
+          # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          result="failure"
+          [[ "$JOB_STATUS" == "success" ]] && result="success"
+          mkdir -p .build-lineage
+          jq -cn \
+            --arg c "${{ matrix.build.container }}" \
+            --arg v "${{ matrix.build.variant }}" \
+            --arg t "${{ matrix.build.tag }}" \
+            --arg a "${{ matrix.arch }}" \
+            --arg r "$result" \
+            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+            > ".build-lineage/build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}.json" || true
+
+      - name: Upload build-result artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
+          path: .build-lineage/build-result-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
 
       - name: Run Pester tests (Windows)
         if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base' && inputs.run_tests == true
@@ -1289,6 +1384,36 @@ jobs:
           sbom-path: ${{ steps.sbom-windows.outputs.sbom_file }}
         continue-on-error: true
 
+      - name: Emit build-result artifact (manifest)
+        if: always()
+        env:
+          # job.status: success only when checkout, login, and the GHCR manifest step
+          # all completed without error. Upstream failure → fail-closed "failure" record.
+          # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          result="failure"
+          [[ "$JOB_STATUS" == "success" ]] && result="success"
+          mkdir -p .build-lineage
+          jq -cn \
+            --arg c "${{ matrix.build.container }}" \
+            --arg v "${{ matrix.build.variant }}" \
+            --arg t "${{ matrix.build.tag }}" \
+            --arg a "manifest" \
+            --arg r "$result" \
+            '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+            > ".build-lineage/build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}.json" || true
+
+      - name: Upload build-result artifact (manifest)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: .build-lineage/build-result-manifest-${{ matrix.build.container }}-${{ matrix.build.tag }}.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
   # Advance the coverage checkpoint tag on every master push run that completes
   # (even when individual build jobs failed).  The tag carries a JSON state record
   # of which containers failed so the next run can retry them while other containers
@@ -1339,9 +1464,10 @@ jobs:
           # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
           source "${GITHUB_WORKSPACE}/helpers/coverage-checkpoint-utils.sh"
 
-          # Step 1: Fetch this run's job conclusions. On gh failure we cannot determine
-          # per-container outcomes, so we fail closed (force unmapped) rather than
-          # advancing the baseline while silently dropping this run's real failures.
+          # Step 1: Fetch this run's job conclusions (kept for fallback path).
+          # On gh failure we cannot determine per-container outcomes via the fallback,
+          # so we fail closed (force unmapped) rather than advancing the baseline while
+          # silently dropping this run's real failures.
           set +e
           jobs_json=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '{jobs: [.jobs[] | {name, conclusion}]}' 2>/dev/null)
           gh_rc=$?
@@ -1361,7 +1487,24 @@ jobs:
           fi
 
           # Step 3: Classify jobs against the matrix.
-          er=$(extract_failed_recovered "$jobs_json" "$matrix_json")
+          # PRIMARY: machine-readable build-result artifacts (exact container field, no
+          # token-collision, infra jobs emit nothing so they can't pollute unmapped_failure).
+          # FALLBACK: job-name matching (extract_failed_recovered) when no artifacts found.
+          # Guard: use find+mapfile (not a glob) to count files — an empty download dir
+          # leaves the glob un-expanded (nullglob off), which would feed the literal path
+          # string to jq and produce a malformed payload instead of falling back.
+          gh run download "$GITHUB_RUN_ID" --pattern 'build-result-*' -D "$RUNNER_TEMP/bres" 2>/dev/null || true
+          mapfile -t _bres_files < <(find "$RUNNER_TEMP/bres" -type f -name '*.json' 2>/dev/null)
+          if [[ ${#_bres_files[@]} -gt 0 ]]; then
+            results_json=$(jq -s -c '.' "${_bres_files[@]}")
+            echo "::notice::checkpoint attribution via build-result artifacts ($(echo "$results_json" | jq 'length') records)"
+            # Pass jobs_json as 3rd arg so the recovery gate can catch missing failure
+            # records from crashed multi-arch legs (codex finding: multi-arch false recovery).
+            er=$(aggregate_build_results "$results_json" "$matrix_json" "$jobs_json")
+          else
+            echo "::warning::no build-result artifacts found — falling back to job-name matching"
+            er=$(extract_failed_recovered "$jobs_json" "$matrix_json")
+          fi
           ftr=$(echo "$er" | jq -c '.failed_this_run')
           rec=$(echo "$er" | jq -c '.recovered_candidates')
           unmapped=$(echo "$er" | jq -r '.unmapped_failure')
