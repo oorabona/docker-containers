@@ -880,7 +880,10 @@ jobs:
         shell: bash
         env:
           YQ_VERSION: "v4.52.5"
-          YQ_WIN_SHA256: "56854978bed1785229c1c09c3a8843498300dd04a3861ea615ed194fccbe1984"
+          # SHA256 of yq_windows_amd64.exe from the official release `checksums-bsd`
+          # (verify on bump: curl -fsSL .../${YQ_VERSION}/checksums-bsd | grep 'SHA256 (yq_windows_amd64.exe)').
+          # NB: yq's multi-hash `checksums` file lists many algorithms — pin the SHA256 row, not EDON-R256.
+          YQ_WIN_SHA256: "47594981f3848a4b4447494adeca9555f908f7cf0a89c4da3fd0243a4631da1c"
         run: |
           curl -fsSL -o "/usr/bin/yq.exe" \
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_windows_amd64.exe"
