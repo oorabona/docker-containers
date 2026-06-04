@@ -1343,7 +1343,7 @@ jobs:
           # per-container outcomes, so we fail closed (force unmapped) rather than
           # advancing the baseline while silently dropping this run's real failures.
           set +e
-          jobs_json=$(gh run view "$GITHUB_RUN_ID" --json jobs 2>/dev/null)
+          jobs_json=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '{jobs: [.jobs[] | {name, conclusion}]}' 2>/dev/null)
           gh_rc=$?
           set -e
           gh_failed=false
