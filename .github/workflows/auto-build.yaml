@@ -933,29 +933,8 @@ jobs:
           use_base_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         continue-on-error: true
 
-      - name: Retry build on failure
-        if: steps.build.outcome == 'failure'
-        id: retry
-        uses: ./.github/actions/build-container
-        with:
-          container: ${{ matrix.build.container }}
-          version: ${{ matrix.build.version }}
-          tag: ${{ matrix.build.tag }}
-          flavor: ${{ matrix.build.flavor }}
-          build_flavor: ${{ matrix.build.build_flavor }}
-          variant: ${{ matrix.build.variant }}
-          dockerfile: ${{ matrix.build.dockerfile }}
-          platform: ${{ matrix.platform }}
-          rebuild_mode: all  # Always ignore digest on retry
-          docker_no_cache: 'false'
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          use_base_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        continue-on-error: true
-
       - name: Handle build failure
-        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        if: steps.build.outcome == 'failure'
         shell: bash
         run: |
           container="${{ matrix.build.container }}"
@@ -963,13 +942,12 @@ jobs:
           tag="${{ matrix.build.tag }}"
           display_name="$container${variant:+:$variant}"
 
-          echo "❌ Build failed for $display_name after retry"
+          echo "❌ Build failed for $display_name"
           echo "## 🚨 Build Failed: $display_name" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Container:** \`$container\`" >> $GITHUB_STEP_SUMMARY
           [[ -n "$variant" ]] && echo "**Variant:** \`$variant\`" >> $GITHUB_STEP_SUMMARY
           echo "**Tag:** \`$tag\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Attempt:** Initial build + 1 retry" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Possible causes:**" >> $GITHUB_STEP_SUMMARY
@@ -985,7 +963,7 @@ jobs:
           exit 1
 
       - name: Report successful build
-        if: steps.build.outcome == 'success' || steps.retry.outcome == 'success'
+        if: steps.build.outcome == 'success'
         shell: bash
         run: |
           container="${{ matrix.build.container }}"
@@ -993,17 +971,12 @@ jobs:
           tag="${{ matrix.build.tag }}"
           display_name="$container${variant:+:$variant}"
 
-          attempt="first attempt"
-          if [ "${{ steps.build.outcome }}" = "failure" ]; then
-            attempt="retry attempt"
-          fi
-          echo "✅ Build succeeded for $display_name on $attempt"
+          echo "✅ Build succeeded for $display_name"
           echo "## ✅ Build Successful: $display_name" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Container:** \`$container\`" >> $GITHUB_STEP_SUMMARY
           [[ -n "$variant" ]] && echo "**Variant:** \`$variant\`" >> $GITHUB_STEP_SUMMARY
           echo "**Tag:** \`$tag\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Attempt:** $attempt" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
 
       - name: Emit build-result artifact
@@ -1011,7 +984,7 @@ jobs:
         shell: bash
         env:
           # job.status reflects the whole job outcome: success only when the job's
-          # work completed without error (build||retry succeeded, "Handle build failure"
+          # work completed without error (build succeeded, "Handle build failure"
           # did not exit 1). failure/cancelled → fail-closed "failure" record.
           # Whole-run artifact absence is handled by the checkpoint's find/mapfile guard.
           JOB_STATUS: ${{ job.status }}
@@ -1039,7 +1012,7 @@ jobs:
           retention-days: 1
 
       - name: Run Pester tests (Windows)
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base' && inputs.run_tests == true
+        if: steps.build.outcome == 'success' && matrix.build.os == 'windows' && matrix.build.build_flavor == 'base' && inputs.run_tests == true
         continue-on-error: true
         shell: pwsh
         run: |
@@ -1056,7 +1029,7 @@ jobs:
           }
 
       - name: Run bats tests (Linux)
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64' && inputs.run_tests == true
+        if: steps.build.outcome == 'success' && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64' && inputs.run_tests == true
         timeout-minutes: 5
         continue-on-error: true
         shell: bash
@@ -1126,7 +1099,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload build lineage
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.arch == 'amd64'
+        if: steps.build.outcome == 'success' && matrix.arch == 'amd64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
@@ -1136,7 +1109,7 @@ jobs:
           retention-days: 1
 
       - name: Upload Trivy scan history
-        if: (steps.build.outcome == 'success' || steps.retry.outcome == 'success') && matrix.build.os != 'windows'
+        if: steps.build.outcome == 'success' && matrix.build.os != 'windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
@@ -1148,7 +1121,7 @@ jobs:
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
         id: install-syft
-        if: matrix.build.os != 'windows' && (steps.build.outputs.image_loaded == 'true' || steps.retry.outputs.image_loaded == 'true') && matrix.arch == 'amd64' && github.event_name != 'pull_request'
+        if: matrix.build.os != 'windows' && steps.build.outputs.image_loaded == 'true' && matrix.arch == 'amd64' && github.event_name != 'pull_request'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM

@@ -438,6 +438,7 @@ make() {
 
   pushd ${target}
 
+  local _op_rc=0
   for version in $versions; do
     # Use explicit tag if provided, otherwise derive from version
     local effective_tag="${wantedTag:-$version}"
@@ -447,9 +448,10 @@ make() {
     else
       log_success "$op ${target} $WANTED (version: ${VERSION} tag: $TAG) | nproc: ${NPROC}"
     fi
-    do_it $op "$registry"
+    do_it $op "$registry" || _op_rc=$?
   done
   popd
+  return $_op_rc
 }
 
 check_updates() {

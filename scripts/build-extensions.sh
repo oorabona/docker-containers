@@ -22,6 +22,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/helpers/extension-utils.sh"
 # shellcheck source=../helpers/version-set-resolver.sh
 source "$ROOT_DIR/helpers/version-set-resolver.sh"
+# shellcheck source=../helpers/retry.sh
+source "$ROOT_DIR/helpers/retry.sh"
 
 # Registry override: default to docker.io (raw builds); CI passes ghcr.io/oorabona.
 # Must NOT appear in config.yaml build_args (schema guard R7 rejects it).
@@ -1985,7 +1987,8 @@ finalize_multiarch_manifests() {
 
             log_info "$ext $ceiling pg${major_ver}: imagetools create $_nr_target from $_nr_src_amd64 + $_nr_src_arm64 (non-resolver, stable suffixed tags)"
             local _nr_create_rc=0
-            $DOCKER buildx imagetools create \
+            # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
+            retry_with_backoff 3 5 $DOCKER buildx imagetools create \
                 -t "$_nr_target" \
                 "$_nr_src_amd64" "$_nr_src_arm64" 2>&1 \
                 || _nr_create_rc=$?
@@ -2140,7 +2143,8 @@ finalize_multiarch_manifests() {
 
             log_info "$ext $ver pg${major_ver}: imagetools create $ver_multiarch from $_ver_tag_amd64 + $_ver_tag_arm64"
             local _create_rc=0
-            $DOCKER buildx imagetools create \
+            # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
+            retry_with_backoff 3 5 $DOCKER buildx imagetools create \
                 -t "$ver_multiarch" \
                 "$_ver_tag_amd64" "$_ver_tag_arm64" 2>&1 \
                 || _create_rc=$?
