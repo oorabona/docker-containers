@@ -958,3 +958,527 @@ LOGIC
     run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Proof A — container-scoped open: --mode failure --container <c>
+#
+# With --container set, the script opens/comments the dep:<c> issue WITHOUT
+# relying on commit/PR/branch auto-detection.  Even when no dep-bump signal
+# is present in the environment, it must still open the issue (exit 0).
+# ---------------------------------------------------------------------------
+
+@test "Proof A: --container postgres in DRY_RUN opens dep:postgres issue (no auto-detection required)" {
+    # Clear all dep-bump signals — auto-detection would return 1 without the override.
+    export COMMIT_SUBJECT="chore: unrelated commit"
+    export GITHUB_REF_NAME="master"
+    unset PR_TITLE PR_NUMBER PR_BODY PR_LABELS
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container postgres
+    # Must succeed (not exit 1 like the no-override path would)
+    [ "$status" -eq 0 ]
+
+    # DRY_RUN output must reference the dep:postgres dedup label set
+    [[ "$output" == *"dep:postgres"* ]]
+}
+
+@test "Proof A: --container postgres DRY_RUN shows issue title containing [postgres]" {
+    export COMMIT_SUBJECT="chore: unrelated"
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container postgres
+    [ "$status" -eq 0 ]
+
+    # Issue title must reference the container name
+    [[ "$output" == *"[postgres]"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Proof B — container-scoped close: --mode recovery --container <c>
+#
+# Mutation locked: close_container_build_failure_on_recovery searches by
+# labels build-failure,automation,dep:<container> — NOT by title substring
+# "Auto Build Failed".  If you change the label query to a title-based search
+# (the global close bug), Proof B breaks because the mock returns an issue
+# with "Auto Build Failed" title but WITHOUT the dep:postgres label filter.
+#
+# Critically: a different container's issue (dep:nginx) must NOT be closed.
+# ---------------------------------------------------------------------------
+
+@test "Proof B: --mode recovery --container postgres closes dep:postgres issue, not dep:nginx" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+
+    # Mock: --label dep:postgres → return postgres issue.
+    #       --label dep:nginx   → return nginx issue (must NOT be closed).
+    #       Close must only target #77 (postgres).
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"--label dep:postgres"*)
+        echo '[{"number":77,"title":"Build failed postgres"}]'
+        ;;
+    *"--label dep:nginx"*)
+        echo '[{"number":88,"title":"Build failed nginx"}]'
+        ;;
+    *"issue comment"*"77"*)
+        echo "comment posted" >&2
+        ;;
+    *"issue close"*"77"*)
+        echo "closed postgres issue" >&2
+        ;;
+    *"issue close"*"88"*)
+        echo "ERROR: must not close nginx issue during postgres recovery" >&2
+        exit 99
+        ;;
+    *"issue list"*)
+        echo "[]"
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container postgres
+    [ "$status" -eq 0 ]
+
+    # gh issue close must have been called with #77 (postgres)
+    grep -q "issue close" "$call_log"
+    grep -q "77" "$call_log"
+
+    # The close call must have used dep:postgres label (not title-based search)
+    grep -q "\-\-label dep:postgres" "$call_log"
+
+    # gh issue close for #88 (nginx) must NOT appear
+    if grep -q "issue close" "$call_log"; then
+        ! grep "issue close" "$call_log" | grep -q "88"
+    fi
+}
+
+@test "Proof B: --mode recovery --container postgres DRY_RUN shows dep:postgres in output (not title search)" {
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container postgres
+    [ "$status" -eq 0 ]
+
+    # DRY_RUN output must reference the container-scoped label
+    [[ "$output" == *"dep:postgres"* ]]
+    # Must NOT reference the generic title-based search
+    [[ "$output" != *"Auto Build Failed"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Proof C — recovery no-op: no open issue for the container → exit 0
+# ---------------------------------------------------------------------------
+
+@test "Proof C: --mode recovery --container nonexistent, no open issue → exit 0, no close" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo "[]"
+        ;;
+    *"issue close"*)
+        echo "ERROR: close must not be called when no issue exists" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container nonexistent
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Proof D — backward compatibility: without --container, all existing
+# auto-detection and generic fallback paths work unchanged.
+# ---------------------------------------------------------------------------
+
+@test "Proof D: without --container, deps(php) commit → auto-detects php, exit 0 (DRY_RUN)" {
+    export COMMIT_SUBJECT="deps(php): update 4 dependencies"
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[php]"* ]]
+}
+
+@test "Proof D: without --container, no dep-bump → exit 1 (generic fallback)" {
+    export COMMIT_SUBJECT="fix(ci): something unrelated"
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [ "$status" -eq 1 ]
+}
+
+@test "Proof D: without --container, --mode recovery uses global title-based close (unscoped, unchanged)" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo '[{"number":42,"title":"Auto Build Failed - 2026-06-01"}]'
+        ;;
+    *"issue comment"*)
+        echo "comment posted" >&2
+        ;;
+    *"issue close"*)
+        echo "closed" >&2
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery
+    [ "$status" -eq 0 ]
+
+    # Must have closed issue #42 via global title-based search (unscoped recovery unchanged)
+    grep -q "issue close" "$call_log"
+    grep -q "42" "$call_log"
+}
+
+# ---------------------------------------------------------------------------
+# Finding 5 — malformed/injection-shaped container names are rejected
+#
+# Both the override-open and recovery-close paths validate container names
+# against ^[a-z0-9_-]+$. A name containing shell metacharacters or spaces
+# must be rejected with a warning and exit 0 (no gh issue create/close
+# attempted). Prevents label injection via a crafted OVERRIDE_CONTAINER.
+# ---------------------------------------------------------------------------
+
+@test "FIX5+F2: --mode failure --container 'foo;bar' (invalid) → exit 3, no gh calls (fail-closed)" {
+    # Invalid container name in failure mode must return 3 (gh/op failure class) so that
+    # the checkpoint loop's `|| issue_open_failed=true` fires → issue_mode downgrades
+    # per-container→generic → generic backstop alerts (fail-closed, not silent drop).
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue create"* | *"issue comment"* | *"issue close"*)
+        echo "ERROR: gh must not be called for an invalid container name" >&2
+        exit 99
+        ;;
+    *"issue list"*)
+        echo "[]"
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container "foo;bar"
+    # exit 3 (gh/op failure class) — triggers issue_open_failed=true in checkpoint loop
+    [ "$status" -eq 3 ]
+
+    # gh issue create/comment must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep -E "issue (create|comment|close)" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+@test "FIX5: --mode recovery --container 'a b' is rejected, exit 0, no gh close (DRY_RUN)" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue close"*)
+        echo "ERROR: gh close must not be called for an invalid container name" >&2
+        exit 99
+        ;;
+    *"issue list"*)
+        echo '[{"number":99,"title":"some build failure"}]'
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export call_log
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container "a b"
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called
+    if [ -f "$call_log" ]; then
+        run grep "issue close" "$call_log"
+        [ "$status" -ne 0 ]
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# FIX 2 — gh issue list failure in close_container_build_failure_on_recovery
+# must exit 0 (best-effort) with a warning, not abort under set -euo pipefail.
+# ---------------------------------------------------------------------------
+
+@test "FIX2: --mode recovery --container postgres, gh issue list fails → exit 0, no gh close (set -e safe)" {
+    # close_container_build_failure_on_recovery uses `if ! x=$(cmd); then` pattern.
+    # Under set -euo pipefail, the old `x=$(cmd); rc=$?; if rc -ne 0` was dead code:
+    # set -e aborted before the rc check.  The fix must keep exit 0 (best-effort).
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        # Simulate gh CLI failure (network error, auth error, etc.)
+        echo "gh: failed to list issues: context deadline exceeded" >&2
+        exit 1
+        ;;
+    *"issue close"*)
+        echo "ERROR: gh close must not be called when list failed" >&2
+        exit 99
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export GITHUB_REPOSITORY="owner/repo"
+    export GITHUB_RUN_ID="12345"
+    export GITHUB_SHA="abcdef1234567890abcdef1234567890abcdef12"
+    export GITHUB_SERVER_URL="https://github.com"
+
+    # Recovery with a failing gh issue list must exit 0 (best-effort, not abort under set -e)
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container postgres
+    [ "$status" -eq 0 ]
+
+    # gh issue close must NOT have been called
+    run grep "issue close" "$call_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# FIX A+2 — find_or_create_issue must fail with exit 3 (gh op failure) on
+# create/comment failure, distinct from exit 1 (no-dep-bump-detected).
+# ---------------------------------------------------------------------------
+
+@test "FIX A+2: find_or_create_issue gh issue create failure → script exits 3 (gh op), not 1 (no-dep-bump)" {
+    # Exit code 3 = gh/issue-operation failure (distinct from 1 = no dep-bump).
+    # The auto-build.yaml summary step interprets rc=3 as a warning, NOT as
+    # "no-dep-bump" → no false suppression of the generic issue backstop.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        # No existing open issue for this container
+        echo '[]'
+        ;;
+    *"label create"*)
+        # Best-effort label creation — succeed
+        exit 0
+        ;;
+    *"issue create"*)
+        # Simulate gh CLI failure (e.g. auth error, rate limit)
+        echo "gh: error: HTTP 401 Unauthorized" >&2
+        exit 1
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    # Mock sleep to avoid retry_with_backoff delays (3 attempts × 5+10s = 15s wall time)
+    printf '#!/bin/bash\nexit 0\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export DRY_RUN="false"    # Override setup default (setup sets DRY_RUN=true)
+    export GITHUB_REPOSITORY="owner/repo"
+    export GITHUB_RUN_ID="12345"
+    export GITHUB_SHA="abcdef1234567890abcdef1234567890abcdef12"
+    export GITHUB_SERVER_URL="https://github.com"
+
+    # Script must exit 3 (gh op failure), NOT 1 (no-dep-bump)
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container postgres
+    [ "$status" -eq 3 ]
+
+    # Must NOT print a bogus "created #<empty>" or "created #0"
+    [[ "$output" != *"created #"$'\n'* ]] || [[ "$output" != *"created #0"* ]]
+}
+
+@test "FIX A+2: find_or_create_issue gh issue create returns empty number → exits 3 (not 1)" {
+    # When gh issue create succeeds (exit 0) but outputs no parseable issue number,
+    # the script must exit 3 (gh/parse failure) rather than 1 (no-dep-bump) or 0.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo '[]'
+        ;;
+    *"label create"*)
+        exit 0
+        ;;
+    *"issue create"*)
+        # Succeed but output no numeric issue number (unexpected API response)
+        echo "https://github.com/owner/repo/issues/"
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    # No sleep mock needed: gh issue create succeeds (exit 0), no retries
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    export DRY_RUN="false"    # Override setup default (setup sets DRY_RUN=true)
+    export GITHUB_REPOSITORY="owner/repo"
+    export GITHUB_RUN_ID="12345"
+    export GITHUB_SHA="abcdef1234567890abcdef1234567890abcdef12"
+    export GITHUB_SERVER_URL="https://github.com"
+
+    # Script must exit 3 (gh parse failure), NOT 1 (no-dep-bump)
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container postgres
+    [ "$status" -eq 3 ]
+}
+
+@test "FIX 2: no-dep-bump auto-detect path exits 1 (not 3) — exit codes are distinct" {
+    # Confirm the contract: rc=1 means "no dep-bump detected" (not a gh failure).
+    # This is the --mode failure path WITHOUT --container, where detect_dep_bump fails.
+    # setup() provides COMMIT_SUBJECT="chore: update readme" — no dep-bump pattern.
+    export DRY_RUN="false"    # Override setup default
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    # exit 1 = no dep-bump detected (caller should fall back to generic issue logic)
+    [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# F3 — FAILED_ALLOWLIST cross-check in auto-detect path
+# ---------------------------------------------------------------------------
+
+@test "F3: FAILED_ALLOWLIST set, detected container absent → exits 1 (skip, no spurious issue)" {
+    # deps(php) commit detected, but FAILED_ALLOWLIST=['other'] — php is not in the failure set.
+    # Script must exit 1 (no-op, same as no-dep-bump) without opening a gh issue.
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='["other"]'
+    export DRY_RUN="true"   # DRY_RUN; would exit 0 if it reached find_or_create_issue
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    # Must exit 1 (skip) — not 0 (would mean spurious issue opened)
+    [ "$status" -eq 1 ]
+}
+
+@test "F3: FAILED_ALLOWLIST set, detected container present → proceeds (exits 0 in DRY_RUN)" {
+    # deps(php) commit detected, FAILED_ALLOWLIST=['php'] — php IS in the failure set.
+    # Script must proceed to open the issue (DRY_RUN → exit 0 with dry-run output).
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST='["php"]'
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    # Must exit 0 (DRY_RUN path reached → issue would be opened)
+    [ "$status" -eq 0 ]
+}
+
+@test "F3: FAILED_ALLOWLIST unset → no cross-check, original behaviour (exits 0 in DRY_RUN)" {
+    # No FAILED_ALLOWLIST → non-checkpoint run; original #514 behaviour preserved.
+    # deps(php) commit detected, no allowlist → proceeds unconditionally.
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    unset FAILED_ALLOWLIST
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+}
+
+@test "F3: FAILED_ALLOWLIST='' (empty string) → no cross-check, original behaviour" {
+    # Empty string (checkpoint skipped/guard-break) → same as unset → no allowlist check.
+    export COMMIT_SUBJECT="deps(php): bump to 8.3"
+    export FAILED_ALLOWLIST=""
+    export DRY_RUN="true"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure
+    [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# F4 — --container with no value exits 2 (usage error, distinct from 1)
+# ---------------------------------------------------------------------------
+
+@test "F4: --container with no value → exit 2 + warning (not exit 1 no-dep-bump)" {
+    # Under set -u, bare --container with no $2 would crash with "unbound variable".
+    # With ${2:-} guard it must exit 2 (usage error) with a warning, not exit 1.
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--container requires a value"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# F2 — invalid --container name in failure mode → exit 3 (downgrade, not 0)
+# ---------------------------------------------------------------------------
+
+@test "F2: --mode failure --container 'Bad.Name' (invalid chars) → exit 3, not 0" {
+    # An invalid container name must return 3 (gh/op failure class) so that
+    # the checkpoint loop's `|| issue_open_failed=true` fires → issue_mode
+    # downgrades per-container→generic → generic backstop alerts.
+    # Previously returned 0, which silently suppressed the alert.
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode failure --container "Bad.Name"
+    [ "$status" -eq 3 ]
+}
+
+@test "F2: --mode recovery --container 'Bad.Name' (invalid chars) → exit 0 (best-effort close, unchanged)" {
+    # Recovery path keeps best-effort return 0 for invalid names — close has no alert
+    # obligation, so fail-open is correct there.  This test confirms the asymmetry.
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh" --mode recovery --container "Bad.Name"
+    [ "$status" -eq 0 ]
+}
