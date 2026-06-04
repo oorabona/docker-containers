@@ -1,6 +1,6 @@
 # ADR-013: Dependency-ordered container builds
 
-**Status:** Proposed (v2 — revised after adversarial + codex/copilot review)
+**Status:** Proposed
 **Date:** 2026-06-05
 **Issues:** #628 (origin: `github-runner:debian-trixie` and `web-shell:debian` failed on arm64 because a consumer built in parallel with its base and raced the base's transient single-arch tag)
 **Supersedes:** None
@@ -30,11 +30,11 @@ Three interacting defects, not two:
 
 **Gap B — ordering + transient single-arch tag.** The `Create early tag alias` step (`build-container/action.yaml:737-788`) writes the bare canonical tag single-arch after each per-arch leg; the multi-arch manifest is assembled only later by `create-manifest`. A consumer building in the same flat parallel matrix does `FROM debian:trixie` during the single-arch window → `no match for platform` on arm64.
 
-**Gap C — non-strict manifest + mutable-tag identity (surfaced in review).** Even with ordering, two holes remain:
+**Gap C — non-strict manifest + mutable-tag identity.** Even with ordering, two holes remain:
 - `helpers/create-manifest.sh` has single-arch **fallback** paths. For a rolling-tagged internal base like `debian:trixie` (non-numeric), `_compute_version_specific_tag_args` resolves the version-specific anchor to the rolling tag itself, so on partial-arch failure the fallback **publishes a single-arch `debian:trixie` and returns success** — a consumer in the next layer then builds against a structurally single-arch base and fails anyway.
 - Consumers reference a **mutable rolling tag** (`FROM debian:trixie`), so ordering guarantees *a* manifest exists but not that the consumer pulled the *exact* index this run produced (cross-run retarget, rerun, local clobber #624).
 
-And one amplifier (surfaced in review):
+And one amplifier:
 
 **Gap D — smart-skip defeats expansion.** `SKIP_EXISTING_BUILDS` + a source/config-based build digest (`helpers/build-cache-utils.sh`) that does **not** include the resolved base manifest digest means a `debian/` change can queue `web-shell`, but `web-shell` then **skips** because its own Dockerfile/config didn't change. Expansion alone does not guarantee the consumer rebuilds.
 
@@ -44,7 +44,9 @@ Critically: **fixing Gap A without B+C fires the race on every base change.** Ex
 
 **A — Layering + runtime digest handoff + strict manifest (chosen).** Order via bounded static GHA layer jobs driven by the graph; hand the base's freshly-assembled manifest **digest** to consumers in-pipeline; make canonical-tag publication strict. Detail in Decision.
 
-**B — `docker buildx bake` with `target:` contexts.** BuildKit orders + dedups + avoids the registry round-trip race within one invocation. Rejected for v1: replaces the per-container `./make build` path, extension staging, lineage/SBOM/flatten/push, and smart-skip all at once; platform-set-compatibility constraint (buildx #2486). A plausible later consolidation once the current pipeline is correct.
+**B — `docker buildx bake` with `target:` contexts (the cleaner end-state; deferred, not dismissed).** BuildKit builds the DAG in one invocation and passes each built image to its dependents *in memory*, with no registry round-trip — so the manifest-list race vanishes by construction. This is compatible with native multi-arch (ADR-001): run `bake` once per arch on the matching native runner (`--set *.platform=linux/<arch>`), where base→child is ordered in memory for that arch, then assemble per-container manifests. It does **not** make the post-build steps redundant — Trivy, SBOM/attestation, flatten, multi-registry push, and lineage are orthogonal and still run on bake's outputs; bake replaces only the build+order step.
+
+Deferred from v1 purely for blast radius and incrementalism, **not** correctness or feasibility: it replaces the `(container × arch)` matrix with per-arch bake jobs (changing the parallelism granularity and the per-container build-result attribution the coverage checkpoint relies on), requires re-homing the entire post-build pipeline around bake outputs, and requires generating the bake HCL from `variants.yaml` while covering the template-generator pattern (web-shell/github-runner generate their Dockerfiles), retained versions, and the postgres extension sub-pipeline. The layered approach (Option A) reuses every existing per-container step and only reorders them, so it is the lower-risk v1. Option B is the strongest long-term consolidation and should be its own ADR.
 
 **C — static digest pins committed in Dockerfiles/config** (`FROM debian@sha256:…` checked in). Rejected: requires a commit+push to every consumer on every base bump (Renovate-style churn). The **runtime** digest handoff in Option A gives the same hermetic-identity guarantee with zero per-update commits.
 
@@ -90,4 +92,4 @@ A dependency-triggered consumer must not be skipped when its base changed. Eithe
 - **More wall-clock**: layers serialize; a slow base (e.g. debian's arm64 leg, the #628 culprit) head-of-line-blocks all consumers; the windows variant of github-runner (~60-120 min) now waits behind debian's manifest despite not depending on it (the cost of container-granular layering).
 - **`LAYER_MAX` ceiling**: deeper graph needs a new layer stanza; the guard makes overflow loud, not silent.
 - **wordpress `FROM` refactor** is a real (one-time) change; web-shell generator tweak likewise.
-- **Blast radius**: every container's build path + all downstream reporting jobs change; must roll out behind the orthogonal gate with live multi-arch validation and a Windows-tag post-run check (the early-alias comment claiming the manifest job skips Windows is stale — create-manifest does handle Windows; removal is safe but must be verified).
+- **Blast radius**: every container's build path + all downstream reporting jobs change; roll out incrementally with live multi-arch validation and a Windows-tag post-run check (the early-alias comment claiming the manifest job skips Windows is stale — create-manifest does handle Windows; removal is safe but must be verified).
