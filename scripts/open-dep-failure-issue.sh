@@ -800,11 +800,23 @@ COMMENT
         fi
         echo "commented #${existing_number}"
     else
-        # Ensure the dep:<container> label exists (create if missing — best effort)
-        gh label create "dep:${container}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --color "e4e669" \
-            --description "Dep-attributed build failures for ${container}" 2>/dev/null || true
+        # Ensure all labels used in dedup_labels exist (create if missing — best effort, idempotent).
+        # Static labels first, then the per-container label.
+        _ensure_label() {
+            local _name="$1" _color="$2" _desc="$3"
+            gh label create "$_name" \
+                --repo "$GITHUB_REPOSITORY" \
+                --color "$_color" \
+                --description "$_desc" 2>/dev/null || true
+        }
+        _ensure_label "dep-attributed" "5319e7" \
+            "Build failure attributed to a specific container/dependency"
+        _ensure_label "build-failure"  "d73a4a" \
+            "Automated build failure"
+        _ensure_label "automation"     "0e8a16" \
+            "Automated process"
+        _ensure_label "dep:${container}" "e4e669" \
+            "Dep-attributed build failures for ${container}"
 
         # Capture create output; validate non-empty numeric issue number.
         # Do NOT use `| grep ... || true` — that masks gh exit code and can

@@ -382,6 +382,73 @@ GHEOF
 }
 
 # ---------------------------------------------------------------------------
+# Static label ensure: create path must call gh label create for dep-attributed
+# BEFORE gh issue create, so a repo missing the static label never causes a
+# "could not add label: 'dep-attributed' not found" failure on issue create.
+# ---------------------------------------------------------------------------
+
+@test "create path: gh label create dep-attributed called before gh issue create" {
+    # Mock records every gh invocation to a call log so we can assert ordering.
+    # gh issue create only succeeds AFTER seeing a prior label create dep-attributed.
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    local call_log="$TEST_TEMP_DIR/gh_calls.log"
+    cat > "$TEST_TEMP_DIR/bin/gh" << GHEOF
+#!/bin/bash
+echo "\$*" >> "$call_log"
+case "\$*" in
+    *"issue list"*)
+        echo "[]"
+        ;;
+    *"label create"*)
+        # All label creates succeed (best-effort idempotent)
+        exit 0
+        ;;
+    *"issue create"*)
+        # Verify that dep-attributed label was created before reaching issue create.
+        if ! grep -q "label create dep-attributed" "$call_log" 2>/dev/null; then
+            echo "ERROR: gh label create dep-attributed was never called before gh issue create" >&2
+            exit 1
+        fi
+        echo "https://github.com/oorabona/docker-containers/issues/77"
+        ;;
+    *)
+        echo "unexpected gh args: \$*" >&2
+        exit 1
+        ;;
+esac
+GHEOF
+    chmod +x "$TEST_TEMP_DIR/bin/gh"
+    # Mock sleep to skip retry_with_backoff waits
+    printf '#!/bin/bash\nexit 0\n' > "$TEST_TEMP_DIR/bin/sleep"
+    chmod +x "$TEST_TEMP_DIR/bin/sleep"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    export COMMIT_SUBJECT="deps(php): update 4 dependencies"
+    export PR_NUMBER="300"
+    export PR_TITLE="📦 deps(php): update 4 dependencies"
+    export PR_BODY="| Dependency | Old | New |
+|---|---|---|
+| LIBSSL | 1.1.1w | 3.5.6 |"
+    export DRY_RUN="false"
+
+    run bash "$SCRIPTS_DIR/open-dep-failure-issue.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"created"* ]]
+    [[ "$output" == *"#77"* ]]
+
+    # Assert gh label create was called for dep-attributed
+    grep -q "label create dep-attributed" "$call_log"
+
+    # Assert gh label create was called before gh issue create (ordering)
+    local label_line issue_line
+    label_line=$(grep -n "label create dep-attributed" "$call_log" | head -1 | cut -d: -f1)
+    issue_line=$(grep -n "issue create" "$call_log" | head -1 | cut -d: -f1)
+    [ -n "$label_line" ]
+    [ -n "$issue_line" ]
+    [ "$label_line" -lt "$issue_line" ]
+}
+
+# ---------------------------------------------------------------------------
 # open_version_drift_issue — drift table rendering
 # Guards the "jq .[] over row strings" regression: the buggy program applied
 # | .[] to the whole comma-separated output stream (header array + row strings),
