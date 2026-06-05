@@ -20,8 +20,17 @@ runs:
   steps:
     - name: Verify BuildKit image is present in GHCR
       shell: bash
+      env:
+        IMAGE: "${{ inputs.image }}"
       run: |
-        docker manifest inspect "${{ inputs.image }}" >/dev/null 2>&1 || {
-          echo "::error::buildkit builder image '${{ inputs.image }}' is not present in GHCR. It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
+        # Validate format: must be a digest-pinned image ref
+        # Accepts: <registry>/<path>@sha256:<64-hex>
+        # where registry may include an optional :port component
+        if [[ ! "$IMAGE" =~ ^[a-z0-9._/-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error::preflight-buildkit: refusing malformed/non-digest image ref (value redacted for safety)"
+          exit 1
+        fi
+        docker manifest inspect "$IMAGE" >/dev/null 2>&1 || {
+          echo "::error::buildkit builder image '$IMAGE' is not present in GHCR. It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
           exit 1
         }
