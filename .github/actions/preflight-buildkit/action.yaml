@@ -1,0 +1,27 @@
+name: Preflight BuildKit Image
+description: |
+  Verify that the pinned BuildKit builder image is present in GHCR before
+  docker/setup-buildx-action attempts to pull it. Converts a cryptic
+  setup-buildx-action failure (image absent) into an actionable error message.
+
+  PREREQUISITE: the calling job must have already logged in to GHCR (via
+  ./.github/actions/docker-login or docker/login-action) before this step runs,
+  because the BuildKit image is stored in a private GHCR repository.
+
+inputs:
+  image:
+    description: |
+      Full pinned ref of the BuildKit image to verify, e.g.
+      ghcr.io/owner/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify BuildKit image is present in GHCR
+      shell: bash
+      run: |
+        docker manifest inspect "${{ inputs.image }}" >/dev/null 2>&1 || {
+          echo "::error::buildkit builder image '${{ inputs.image }}' is not present in GHCR. It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
+          exit 1
+        }
