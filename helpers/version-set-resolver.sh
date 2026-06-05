@@ -103,30 +103,33 @@ resolve_version_set() {
     # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
     # egress during the build path when the file is present and covers this major.
     #
-    # Guard: the ceiling from the caller's config must match the highest element in
-    # the committed slice.  If they differ, the committed file is stale relative to
-    # the caller's pinned version (e.g. a caller-supplied test config with a lower
-    # ceiling) → fall through to the live resolver so the correct ceiling is applied.
+    # Acceptance conditions (both must hold):
+    #   1. Ceiling match: the committed slice's last element equals the config ceiling.
+    #      If they differ, the committed file is stale relative to the caller's pinned
+    #      version → fall through so the correct ceiling is applied.
+    #   2. Length sufficiency: committed_len >= retain_count.
+    #      If retain_count was raised above the committed count (e.g. config bumped
+    #      from 12 to 15 while the committed file still has 12 entries), serving the
+    #      committed slice would silently under-retain — fall through to the live
+    #      resolver so it can produce the larger set.
     #
-    # When accepting the committed slice, trim it to the effective retain_count
-    # (last N elements, newest first) so the fast path mirrors what the live
-    # resolver would return.  If the slice has fewer elements than retain_count,
-    # it is returned as-is (it IS the full set for this major).
+    # When both conditions hold, trim to the effective retain_count (last N elements,
+    # newest first) so the fast path mirrors what the live resolver would return.
     #
     # Falls through on any miss (file absent, ext absent, major key absent, empty
-    # array, or ceiling mismatch) — existing fail-closed semantics preserved.
+    # array, ceiling mismatch, or insufficient length) — fail-closed semantics.
     if [[ -n "$single_version" && "$single_version" != "null" ]]; then
-        local _committed_slice _committed_ceiling
+        local _committed_slice _committed_ceiling _committed_len
         if _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null); then
             _committed_ceiling=$(printf '%s' "$_committed_slice" | jq -r '.[-1]' 2>/dev/null) || true
-            if [[ "$_committed_ceiling" == "$single_version" ]]; then
+            _committed_len=$(printf '%s' "$_committed_slice" | jq 'length' 2>/dev/null) || true
+            if [[ "$_committed_ceiling" == "$single_version" && "${_committed_len:-0}" -ge "${_effective_retain}" ]]; then
                 # Trim to retain_count: keep the last _effective_retain elements.
-                # If the slice length <= retain_count, .[-N:] in jq returns the full array.
                 printf '%s' "$_committed_slice" | \
                     jq -c --argjson n "${_effective_retain}" '.[-$n:]'
                 return 0
             fi
-            # Ceiling mismatch → committed file is stale for this caller → fall through
+            # Ceiling mismatch or insufficient length → fall through to live resolver
         fi
     fi
 

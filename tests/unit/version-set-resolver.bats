@@ -393,17 +393,19 @@ JSONEOF
 }
 
 @test "CV-hit-no-live: resolve_version_set uses committed slice, live resolver NOT called" {
-    # Wire: committed file has a pg18 entry with ceiling=2.27.2 (matches config ceiling).
+    # Wire: committed file has a pg18 entry with ceiling=2.27.2 (matches config ceiling)
+    # AND committed_len (12) >= retain_count (12) — both acceptance conditions satisfied.
     # The live resolver (timescaledb-ha.sh) is pointed at a nonexistent fixture so any
     # live-path invocation would fail.  The fast path must return the committed slice
     # without invoking the live resolver (observable: exit 0 despite bad fixture).
     local tmp_committed
     tmp_committed="$(mktemp)"
     cat > "$tmp_committed" <<'JSONEOF'
-{"timescaledb":{"pg18":["2.25.0","2.27.2"]}}
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
 JSONEOF
 
-    # Temp config: real resolver path, ceiling=2.27.2 (matches committed ceiling).
+    # Temp config: real resolver path, ceiling=2.27.2 (matches committed ceiling),
+    # retain_count=12 (committed_len=12 >= retain_count=12 → fast path accepted).
     # Any live invocation of timescaledb-ha.sh would fail because fixture is absent.
     local tmp_config
     tmp_config="$(mktemp --suffix=.yaml)"
@@ -427,9 +429,9 @@ YAMLEOF
 
     rm -f "$tmp_committed" "$tmp_config"
 
-    # Must succeed: committed slice returned, live resolver never reached
+    # Must succeed: committed slice returned (trimmed to 12), live resolver never reached
     [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.25.0","2.27.2"]' ]]
+    [[ "$output" == '["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]' ]]
 }
 
 @test "CV-miss-fallback: resolve_version_set falls through to live resolver on committed miss" {
@@ -525,9 +527,11 @@ YAMLEOF
     [[ "$first" == "2.26.1" ]]
 }
 
-@test "CV-trim-shorter-than-retain: committed fast path returns full slice when smaller than retain_count" {
-    # Committed file has 2 versions for pg18, caller config has retain_count=5.
-    # When the slice is shorter than retain_count, all elements must be returned.
+@test "CV-under-retain-fallthrough: committed fast path bypassed when committed_len < retain_count" {
+    # Finding 1 fix: when committed_len (2) < retain_count (5), the fast path must NOT
+    # serve the committed slice (would silently under-retain). It must fall through to
+    # the live resolver. Observable: exit non-zero because the live resolver's fixture
+    # is absent (nonexistent) — proving the live resolver was invoked, not the fast path.
     local tmp_committed
     tmp_committed="$(mktemp)"
     cat > "$tmp_committed" <<'JSONEOF'
@@ -535,6 +539,7 @@ YAMLEOF
 JSONEOF
 
     # Config with retain_count=5 and ceiling=2.27.2 (matches committed ceiling).
+    # committed_len=2 < retain_count=5 → fast path rejected → live resolver invoked.
     local tmp_config
     tmp_config="$(mktemp --suffix=.yaml)"
     cat > "$tmp_config" <<'YAMLEOF'
@@ -552,12 +557,14 @@ YAMLEOF
         bash -c "
             source \"$HELPER\"
             _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
-            resolve_version_set timescaledb 18 \"$tmp_config\"
+            resolve_version_set timescaledb 18 \"$tmp_config\" 2>/dev/null
         "
 
     rm -f "$tmp_committed" "$tmp_config"
 
-    # Must succeed and return the full 2-element slice (2 < 5, no trim)
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.25.0","2.27.2"]' ]]
+    # Must fail: committed slice has only 2 entries but retain_count=5, so the fast
+    # path falls through to the live resolver, which fails because the fixture is absent.
+    [[ "$status" -ne 0 ]]
+    # No stdout (live resolver failed, fail-closed)
+    [[ -z "$output" ]]
 }

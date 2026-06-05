@@ -1049,19 +1049,31 @@ jobs:
             done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 
+      - name: Install skopeo (timescaledb version-set refresh)
+        # skopeo is required by scripts/resolvers/timescaledb-ha.sh (skopeo list-tags).
+        # ubuntu-latest runners do NOT include skopeo by default; install it here
+        # following the same pattern as the Install skopeo steps in auto-build.yaml.
+        if: >-
+          steps.prepare.outputs.update_count != '0' &&
+          matrix.container == 'postgres' &&
+          contains(steps.prepare.outputs.updates, '"timescaledb"')
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
       - name: Refresh timescaledb committed version-set
         # Runs when the postgres container has a timescaledb update so the PR
         # includes BOTH the bumped ceiling in config.yaml AND the refreshed
         # committed version-set file (postgres/extensions/timescaledb-version-set.json).
         # The ceiling applied to the resolver is the version just written by
         # "Apply dependency updates" (read fresh from config.yaml via yq).
-        # skopeo is available on ubuntu-latest runners.
+        # RETAIN_COUNT is read from postgres/extensions/config.yaml so the committed
+        # file's size tracks config and the fast-path sufficiency check in
+        # version-set-resolver.sh never silently under-retains.
         if: >-
           steps.prepare.outputs.update_count != '0' &&
           matrix.container == 'postgres' &&
           contains(steps.prepare.outputs.updates, '"timescaledb"')
-        env:
-          RETAIN_COUNT: "12"
         run: |
           set -euo pipefail
 
@@ -1072,6 +1084,12 @@ jobs:
           # Read the NEW ceiling written by "Apply dependency updates"
           CEILING_VERSION=$(yq -r '.extensions.timescaledb.version' postgres/extensions/config.yaml)
           echo "Ceiling version: $CEILING_VERSION"
+
+          # Read retain_count from config so the committed file's size tracks config.
+          # Default 12 if the key is absent.
+          RETAIN_COUNT=$(yq -r '.extensions.timescaledb.version_set.retain_count // 12' \
+              postgres/extensions/config.yaml)
+          echo "Retain count: $RETAIN_COUNT"
 
           # Resolve version-set per PG major
           declare -A vsets
