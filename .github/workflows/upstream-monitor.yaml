@@ -670,8 +670,18 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Seed buildkit image to GHCR
+        continue-on-error: true
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          source ./helpers/base-cache-utils.sh
+          echo "::notice::Seeding buildkit image to GHCR: ghcr.io/${OWNER}/buildkit:buildx-stable-1"
+          _sync_one_with_backoff \
+            "docker.io/moby/buildkit:buildx-stable-1" \
+            "ghcr.io/${OWNER}/buildkit:buildx-stable-1"
 
       - name: Sync base images to GHCR (all containers)
         id: sync
@@ -2102,4 +2112,234 @@ jobs:
             if ! gh pr merge "$PR_NUMBER" --squash --auto 2>&1; then
               echo "::warning::Failed to enable auto-merge for #${PR_NUMBER}"
             fi
+          fi
+
+  # Detect and auto-PR buildkit builder image digest drift.
+  #
+  # The buildx builder image is pinned by digest across 4 workflow/action files.
+  # When upstream moby/buildkit:buildx-stable-1 is updated, the GHCR-mirrored
+  # copy gets a new index digest.  This job reads that fresh digest (after
+  # sync-base-images seeds it), compares it to the pinned literal in the repo,
+  # and opens a reviewed PR to bump the pin everywhere.
+  #
+  # Mirror of the open-drift-prs-leaves pattern: same GPG-signed PR, same
+  # peter-evans create-pull-request SHA, same two-step label application.
+  # NO auto-merge: buildkit bumps affect every build job and warrant human review.
+  bump-buildkit-digest:
+    name: Bump buildkit builder digest if changed
+    # Wait for sync-base-images so the GHCR-mirrored buildkit image is freshly
+    # seeded before we read its index digest.  Ordering guarantee only — outcome
+    # does not gate this job (same rationale as detect-digest-drift).
+    needs: [sync-base-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # continue-on-error keeps the upstream-monitor run green on transient GHCR
+    # probe or API failures.  The next scheduled cron recovers any missed bump.
+    continue-on-error: true
+    concurrency:
+      group: bump-buildkit-digest
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read    # Inspect GHCR-mirrored buildkit image
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # App token required: GITHUB_TOKEN-authored PRs do not trigger downstream
+      # workflows (auto-build smoke check) by GitHub design.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect buildkit digest drift
+        id: detect
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          # --- FINDING 1: verify GHCR mirror == docker.io upstream (fail-closed) ---
+          # The sync-base-images seed step runs with continue-on-error, so the GHCR
+          # tag may be stale (seed failure, 429 throttle, etc.).  We must not promote
+          # an UNVERIFIED digest.  Both registries are inspected; the bump only
+          # proceeds when the two digests are equal, proving the GHCR mirror is a
+          # current, faithful copy of official upstream.  Inequality → skip + warning.
+          # docker.io access is intentional here: this is the upstream-monitor job,
+          # the one job authorised to contact docker.io for upstream comparison.
+          ghcr_digest=$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' \
+            "ghcr.io/${OWNER}/buildkit:buildx-stable-1" \
+            2>/dev/null | jq -r '.digest // empty') || ghcr_digest=""
+
+          hub_digest=$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' \
+            "docker.io/moby/buildkit:buildx-stable-1" \
+            2>/dev/null | jq -r '.digest // empty') || hub_digest=""
+
+          echo "::notice::GHCR mirror digest : ${ghcr_digest:-<empty>}"
+          echo "::notice::docker.io upstream  : ${hub_digest:-<empty>}"
+
+          # Fail-closed: either digest empty → GHCR probe or docker.io unreachable.
+          if [[ -z "$ghcr_digest" || -z "$hub_digest" ]]; then
+            echo "::warning::Could not read one or both digests (ghcr='${ghcr_digest:-<empty>}' hub='${hub_digest:-<empty>}') — skipping bump"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fail-closed: digests differ → seed did not refresh GHCR or upstream
+          # updated between the seed and this inspect.  Do not bump to a digest that
+          # hasn't been verified against the authoritative upstream source.
+          if [[ "$ghcr_digest" != "$hub_digest" ]]; then
+            echo "::warning::GHCR mirror digest (${ghcr_digest}) != docker.io upstream (${hub_digest}) — GHCR copy may be stale; skipping bump"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Both digests agree: the verified new digest is this value.
+          new_digest="$ghcr_digest"
+
+          # --- Collect all distinct pins currently in the allowlisted files ---
+          # (These are the only files that embed the buildkit digest.)
+          allowlisted_files=(
+            .github/actions/build-container/action.yaml
+            .github/workflows/auto-build.yaml
+            .github/workflows/recreate-manifests.yaml
+            .github/workflows/upstream-monitor.yaml
+          )
+
+          # FINDING 2: gather ALL distinct pinned digests across allowlisted files so
+          # we can detect diverged pins and report an accurate old_digest in the PR.
+          existing_pins=$(grep -rhoE 'buildkit@sha256:[0-9a-f]{64}' \
+            "${allowlisted_files[@]}" 2>/dev/null | sort -u || true)
+
+          if [[ -z "$existing_pins" ]]; then
+            echo "::error::Could not find any buildkit@sha256:<hex> pin in allowlisted files — repo state unexpected"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Derive the distinct old digest(s) for the PR body.
+          old_digest=$(echo "$existing_pins" | sed 's/buildkit@//' | sort -u | tr '\n' ' ' | sed 's/ $//')
+
+          echo "::notice::Pinned digest(s): ${old_digest}"
+          echo "::notice::Verified new    : ${new_digest}"
+
+          # Check whether any pinned occurrence differs from the new digest.
+          # If every occurrence already equals new_digest → nothing to do.
+          needs_bump=false
+          while IFS= read -r pin; do
+            pinned_digest="${pin#buildkit@}"
+            if [[ "$pinned_digest" != "$new_digest" ]]; then
+              needs_bump=true
+              break
+            fi
+          done <<< "$existing_pins"
+
+          if [[ "$needs_bump" == "false" ]]; then
+            echo "::notice::buildkit digest unchanged — no PR needed"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::notice::Digest drift detected — replacing ALL pins and opening PR"
+
+          # FINDING 2: replace EVERY buildkit@sha256:<64-hex> occurrence (not just
+          # the first) across all allowlisted files in one global regex pass.
+          # This handles the case where pins have diverged across files.
+          files_with_pin=$(grep -rlE 'buildkit@sha256:[0-9a-f]{64}' \
+            "${allowlisted_files[@]}" 2>/dev/null || true)
+
+          if [[ -n "$files_with_pin" ]]; then
+            while IFS= read -r f; do
+              sed -i -E "s#buildkit@sha256:[0-9a-f]{64}#buildkit@${new_digest}#g" "$f"
+              echo "::notice::Updated all pins in ${f}"
+            done <<< "$files_with_pin"
+          fi
+
+          {
+            echo "changed=true"
+            echo "new_digest=${new_digest}"
+            echo "old_digest=${old_digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Import GPG key
+        # Repo requires signed commits (SECURITY.md §branch-protection).
+        # Mirror the pattern used by the drift PR steps.
+        if: steps.detect.outputs.changed == 'true'
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
+
+      - name: Open or update PR (branch-upsert)
+        if: steps.detect.outputs.changed == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No date suffix in branch name → peter-evans upserts on re-run (idempotent dedup)
+          branch: update/buildkit-digest
+          delete-branch: true
+          commit-message: "build(buildkit): bump pinned builder digest"
+          committer: Olivier ORABONA <oorabona@users.noreply.github.com>
+          title: "📦 build(buildkit): bump pinned builder image digest"
+          body: |
+            ## Buildkit builder image digest drift
+
+            The upstream `moby/buildkit:buildx-stable-1` image (mirrored to GHCR as
+            `ghcr.io/${{ github.repository_owner }}/buildkit:buildx-stable-1`) has a
+            new index digest.
+
+            | | Digest |
+            |---|---|
+            | **Old** | `${{ steps.detect.outputs.old_digest }}` |
+            | **New** | `${{ steps.detect.outputs.new_digest }}` |
+
+            ## Files updated
+
+            - `.github/actions/build-container/action.yaml`
+            - `.github/workflows/auto-build.yaml`
+            - `.github/workflows/recreate-manifests.yaml`
+            - `.github/workflows/upstream-monitor.yaml`
+
+            ## Action
+
+            Merging this PR pins the new digest in all `docker/setup-buildx-action`
+            `driver-opts:` stanzas.  The next `auto-build` run will use the updated
+            builder image.
+
+            > **Human review required.** Buildkit version changes affect every build
+            > job.  Verify the upstream release notes before merging.
+
+      # Labels applied separately — peter-evans/create-pull-request has a race
+      # condition where addLabels fails with "Could not resolve to a node" on
+      # fresh PRs.  Tolerant: missing triage labels are not load-bearing.
+      - name: Apply labels (tolerant — triage metadata)
+        if: steps.create-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          if ! gh pr edit "$PR_NUMBER" --add-label "automation,dependencies" 2>&1; then
+            echo "::warning::Failed to apply triage labels to PR #${PR_NUMBER} — PR created successfully, continuing"
           fi

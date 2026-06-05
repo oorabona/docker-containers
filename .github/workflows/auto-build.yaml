@@ -73,7 +73,7 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
-      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -100,7 +100,7 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
-      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
+      - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -344,9 +344,17 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
         timeout-minutes: 10
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Get versions requiring extensions
         id: ext-versions
@@ -567,10 +575,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y skopeo
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-        timeout-minutes: 10
-
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
         timeout-minutes: 5
@@ -579,6 +583,18 @@ jobs:
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Download amd64 arch-leg lineage (AX-3 duration files)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
@@ -757,9 +773,6 @@ jobs:
         with:
           cmd: yq --version
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
       # Authenticate BOTH registries: GHCR (push the sync results) AND Docker Hub
       # (the imagetools-create source). Auth raises the per-IP rate-limit ceiling
       # for the sync — per #498, the design is "blind copy ~N=25 images per
@@ -772,6 +785,17 @@ jobs:
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Sync base images to GHCR
         env:
@@ -1243,9 +1267,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
       - name: Log in to container registries
         uses: ./.github/actions/docker-login
         with:
@@ -1253,6 +1274,17 @@ jobs:
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       # GHCR Manifest - PRIMARY (required)
       - name: Create GHCR multi-arch manifest (primary)
