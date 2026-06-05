@@ -285,6 +285,61 @@ variant_image_tag() {
     fi
 }
 
+# Compute the full set of image refs to tag for one build cell.
+#
+# This is the single source of truth for tag-set logic; build-container.sh
+# and any future bake-HCL generator must call this function instead of
+# duplicating the rules.
+#
+# Rules:
+#   - Always emit the versioned ref on both docker.io and ghcr.io.
+#   - When tag != "latest":
+#       • is_default == "true"
+#           → also emit :latest on both registries.
+#       • is_default != "true" AND flavor non-empty
+#           → also emit :latest-<flavor> on both registries.
+#       • is_default != "true" AND flavor empty
+#           → also emit :latest on both registries.
+#
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+#   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
+#   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
+#                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
+#                     Distinct from `build_flavor` (the --build-arg FLAVOR value); for containers like
+#                     github-runner the variant name ("ubuntu-2404-base") differs from this flavor field.
+#   is_default      : "true" if this variant is the default; any other value means non-default.
+#                     Caller computes this via variant_property <dir> <variant_name> "default".
+#   dockerhub_image : docker.io/<owner>/<container>  (no tag)
+#   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
+#
+# Output: one fully-qualified image ref per line (no leading "-t").
+#         Caller reads into an array and prepends "-t" as needed.
+compute_cell_tags() {
+    local tag="$1"
+    local flavor="$2"
+    local is_default="$3"
+    local dockerhub_image="$4"
+    local ghcr_image="$5"
+
+    # Versioned tag — always present on both registries
+    printf '%s:%s\n' "$dockerhub_image" "$tag"
+    printf '%s:%s\n' "$ghcr_image"      "$tag"
+
+    # Rolling latest tags — only when this is not already a "latest" tag
+    if [[ "$tag" != "latest" ]]; then
+        if [[ "$is_default" == "true" ]]; then
+            printf '%s:latest\n' "$dockerhub_image"
+            printf '%s:latest\n' "$ghcr_image"
+        elif [[ -n "$flavor" ]]; then
+            printf '%s:latest-%s\n' "$dockerhub_image" "$flavor"
+            printf '%s:latest-%s\n' "$ghcr_image"      "$flavor"
+        else
+            printf '%s:latest\n' "$dockerhub_image"
+            printf '%s:latest\n' "$ghcr_image"
+        fi
+    fi
+}
+
 # Check if a container always builds all retained versions (not just the latest)
 # Usage: always_all_versions <container_dir>
 # Returns: "true" or "false" on stdout
@@ -747,4 +802,4 @@ latest_per_major_versions() {
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions compute_expand_retained_map latest_per_major_versions
+export -f always_all_versions compute_cell_tags compute_expand_retained_map latest_per_major_versions

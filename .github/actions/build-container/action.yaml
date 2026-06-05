@@ -221,7 +221,11 @@ runs:
         if [[ -n "$flavor" ]]; then
           source ./helpers/variant-utils.sh 2>/dev/null || true
           if declare -f variant_property >/dev/null 2>&1; then
-            local_is_default=$(variant_property "$container" "$flavor" "default" 2>/dev/null || echo "false")
+            local_is_default=$(variant_property "$container" "${variant:-$flavor}" "default" 2>/dev/null || echo "false")
+            # variant_property exits 0 with empty output when the variant doesn't exist
+            # in variants.yaml; the || fallback above does NOT catch that case.
+            # Coerce the empty result to "false" so the is_default output is always set.
+            [[ -z "$local_is_default" ]] && local_is_default="false"
           fi
         else
           # No flavor = single-variant container, always default
@@ -436,11 +440,15 @@ runs:
 
         # Build via ./make — sources container build files, handles CUSTOM_BUILD_ARGS
         build_flavor="${{ inputs.build_flavor }}"
+        is_default="${{ steps.check-build.outputs.is_default }}"
         make_args=("build" "$container" "$build_version")
         [[ -n "$current_tag" ]] && make_args+=("$current_tag")
         [[ -n "$flavor" ]] && make_args+=("--flavor" "$flavor")
         [[ -n "$build_flavor" ]] && make_args+=("--build-flavor" "$build_flavor")
         [[ -n "$dockerfile" && "$dockerfile" != "Dockerfile" ]] && make_args+=("--dockerfile" "$dockerfile")
+        # Thread the variant-name-based is_default so compute_cell_tags routes the
+        # default variant's rolling tag to bare :latest (not :latest-<flavor>).
+        [[ -n "$is_default" ]] && make_args+=("--is-default" "$is_default")
 
         # shellcheck source=helpers/retry.sh
         source ./helpers/retry.sh
