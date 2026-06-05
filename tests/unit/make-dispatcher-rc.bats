@@ -321,7 +321,7 @@ _export_stubs() {
     # ends with "${IS_DEFAULT:-false}" as the 7th positional argument.
     local do_buildx_fn
     do_buildx_fn=$(awk '/^do_buildx\(\)/{found=1} found{print} found && /^}$/{exit}' "$PROJECT_ROOT/make")
-    echo "$do_buildx_fn" | grep -q '"${IS_DEFAULT:-false}"'
+    echo "$do_buildx_fn" | grep -q '"${IS_DEFAULT:-}"'
 }
 
 @test "build-container action: threads --is-default into make_args" {

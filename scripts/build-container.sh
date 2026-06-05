@@ -414,7 +414,18 @@ build_container() {
     local flavor="${4:-}"
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
-    local is_default="${7:-false}"
+    local is_default="${7:-}"
+    # Restore the pre-refactor self-sufficient contract: when a caller omits
+    # is_default (direct/local `make --flavor`, legacy 6-arg callers), derive it
+    # from the variant config keyed by flavor — exactly as the original did.
+    # Explicit callers (build_container_variants, and the CI action via
+    # `make --is-default`) pass the correct variant-name-based value, which
+    # overrides this. compute_cell_tags consults is_default ONLY when flavor is
+    # non-empty, so no-flavor callers are unaffected regardless of this fallback.
+    if [[ -z "$is_default" && -n "$flavor" ]]; then
+        is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
+    fi
+    [[ -z "$is_default" ]] && is_default="false"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"

@@ -347,7 +347,7 @@ do_buildx() {
     if [[ -n "${FLAVOR:-}" ]]; then
       # Single-flavor build (CI mode or explicit --flavor)
       log_info "Building $container with flavor: $FLAVOR${BUILD_FLAVOR:+ (build_flavor: $BUILD_FLAVOR)}"
-      build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-false}"
+      build_container "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-}"
     elif container_has_variants "$container"; then
       # Full variant expansion (local build)
       # VERSION may be a full version (e.g., "18.1-alpine") but variants.yaml
