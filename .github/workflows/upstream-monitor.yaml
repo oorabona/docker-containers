@@ -1103,11 +1103,14 @@ jobs:
               echo "  pg${pg}: ${count} versions (ceiling: $CEILING_VERSION)"
           done
 
-          # Assemble JSON and write committed file atomically
+          # Assemble JSON and write committed file atomically.
+          # Keys are sorted by `sort -V` (version sort) so pg-major order is
+          # deterministic (pg15 < pg16 < pg17 < pg18 …) — prevents spurious
+          # diffs and unnecessary PR churn from bash associative-array iteration order.
           jq_args=()
           jq_obj="{"
           first=true
-          for key in "${!vsets[@]}"; do
+          while IFS= read -r key; do
               jq_args+=("--argjson" "${key}" "${vsets[$key]}")
               if [[ "$first" == "true" ]]; then
                   jq_obj+="\"${key}\":\$${key}"
@@ -1115,7 +1118,7 @@ jobs:
               else
                   jq_obj+=",\"${key}\":\$${key}"
               fi
-          done
+          done < <(printf '%s\n' "${!vsets[@]}" | sort -V)
           jq_obj+="}"
 
           jq -n "${jq_args[@]}" "{timescaledb: ${jq_obj}}" \

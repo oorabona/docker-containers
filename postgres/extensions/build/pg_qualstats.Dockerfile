@@ -4,7 +4,7 @@
 # pg_qualstats collects statistics about predicates used in WHERE clauses
 # Useful for identifying missing indexes
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG MAJOR_VERSION
 FROM ${REMOTE_CR}/library/postgres:${MAJOR_VERSION}-alpine AS builder
 

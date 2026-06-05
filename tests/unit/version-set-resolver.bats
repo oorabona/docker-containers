@@ -568,3 +568,80 @@ YAMLEOF
     # No stdout (live resolver failed, fail-closed)
     [[ -z "$output" ]]
 }
+
+# ── CVS: _committed_versionset_satisfies — shared acceptance predicate ────────
+
+@test "CVS-hit: _committed_versionset_satisfies returns 0 when ceiling+len match" {
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    # 12-entry pg18 slice with ceiling 2.27.2 matches config ceiling and retain_count=12.
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 12
+    "
+    rm -f "$tmp_committed"
+    [[ "$status" -eq 0 ]]
+}
+
+@test "CVS-miss-ceiling: _committed_versionset_satisfies returns 1 on ceiling mismatch" {
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.26.0","2.27.1"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 1
+    "
+    rm -f "$tmp_committed"
+    [[ "$status" -ne 0 ]]
+}
+
+@test "CVS-miss-len: _committed_versionset_satisfies returns 1 when committed_len < retain_count" {
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    # 2-entry slice, ceiling matches, but retain_count=5 requires at least 5 entries.
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.25.0","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 5
+    "
+    rm -f "$tmp_committed"
+    [[ "$status" -ne 0 ]]
+}
+
+@test "CVS-miss-absent: _committed_versionset_satisfies returns 1 when file absent" {
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"/nonexistent/timescaledb-version-set.json\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 12
+    "
+    [[ "$status" -ne 0 ]]
+}
+
+@test "CVS-miss-major: _committed_versionset_satisfies returns 1 when major key missing" {
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 15 2.27.2 1
+    "
+    rm -f "$tmp_committed"
+    [[ "$status" -ne 0 ]]
+}

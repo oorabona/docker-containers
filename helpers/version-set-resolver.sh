@@ -30,7 +30,9 @@ _EXT_CONFIG="${_HELPER_DIR}/../postgres/extensions/config.yaml"
 #   { "<ext_name>": { "pg<major>": ["X.Y.Z", ...], ... }, ... }
 # Example:
 #   { "timescaledb": { "pg18": ["2.24.0","2.27.2"], "pg17": [...], ... } }
-_COMMITTED_VERSIONSET_FILE="${_HELPER_DIR}/../postgres/extensions/timescaledb-version-set.json"
+# Only set the default when unset — allows tests (and callers) to override by
+# setting _COMMITTED_VERSIONSET_FILE before sourcing this file.
+: "${_COMMITTED_VERSIONSET_FILE:=${_HELPER_DIR}/../postgres/extensions/timescaledb-version-set.json}"
 
 # _read_committed_versionset <ext_name> <pg_major>
 #   Returns the JSON array for this ext+major from the committed file (stdout).
@@ -58,6 +60,36 @@ _read_committed_versionset() {
     [[ "${count:-0}" -gt 0 ]] || return 1
 
     printf '%s\n' "$arr"
+    return 0
+}
+
+# _committed_versionset_satisfies <ext_name> <pg_major> <ceiling> <retain_count>
+#   Returns 0 when the committed file can be served as-is for this (ext, major):
+#     1. File+major+ext key present and non-empty (via _read_committed_versionset)
+#     2. Committed slice's last element equals <ceiling> (ceiling match)
+#     3. Committed slice length >= <retain_count> (length sufficiency)
+#   Returns 1 on any miss or condition failure.
+#   Does NOT print anything; callers use the exit code only.
+#   This is the SINGLE source of truth shared by resolve_version_set (fast path)
+#   and the extension-utils.sh preflight guard.
+_committed_versionset_satisfies() {
+    local ext_name="${1:?ext_name is required}"
+    local pg_major="${2:?pg_major is required}"
+    local ceiling="${3:?ceiling is required}"
+    local retain_count="${4:?retain_count is required}"
+
+    local _slice
+    _slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null) || return 1
+    [[ -n "$_slice" ]] || return 1
+
+    local _committed_ceiling
+    _committed_ceiling=$(printf '%s' "$_slice" | jq -r '.[-1]' 2>/dev/null) || return 1
+    [[ "$_committed_ceiling" == "$ceiling" ]] || return 1
+
+    local _committed_len
+    _committed_len=$(printf '%s' "$_slice" | jq 'length' 2>/dev/null) || return 1
+    [[ "${_committed_len:-0}" -ge "${retain_count}" ]] || return 1
+
     return 0
 }
 
@@ -103,7 +135,7 @@ resolve_version_set() {
     # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
     # egress during the build path when the file is present and covers this major.
     #
-    # Acceptance conditions (both must hold):
+    # Acceptance conditions (both must hold — enforced by _committed_versionset_satisfies):
     #   1. Ceiling match: the committed slice's last element equals the config ceiling.
     #      If they differ, the committed file is stale relative to the caller's pinned
     #      version → fall through so the correct ceiling is applied.
@@ -119,18 +151,15 @@ resolve_version_set() {
     # Falls through on any miss (file absent, ext absent, major key absent, empty
     # array, ceiling mismatch, or insufficient length) — fail-closed semantics.
     if [[ -n "$single_version" && "$single_version" != "null" ]]; then
-        local _committed_slice _committed_ceiling _committed_len
-        if _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null); then
-            _committed_ceiling=$(printf '%s' "$_committed_slice" | jq -r '.[-1]' 2>/dev/null) || true
-            _committed_len=$(printf '%s' "$_committed_slice" | jq 'length' 2>/dev/null) || true
-            if [[ "$_committed_ceiling" == "$single_version" && "${_committed_len:-0}" -ge "${_effective_retain}" ]]; then
-                # Trim to retain_count: keep the last _effective_retain elements.
-                printf '%s' "$_committed_slice" | \
-                    jq -c --argjson n "${_effective_retain}" '.[-$n:]'
-                return 0
-            fi
-            # Ceiling mismatch or insufficient length → fall through to live resolver
+        if _committed_versionset_satisfies "$ext_name" "$pg_major" "$single_version" "${_effective_retain}"; then
+            local _committed_slice
+            _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null)
+            # Trim to retain_count: keep the last _effective_retain elements.
+            printf '%s' "$_committed_slice" | \
+                jq -c --argjson n "${_effective_retain}" '.[-$n:]'
+            return 0
         fi
+        # Ceiling mismatch, insufficient length, or miss → fall through to live resolver
     fi
 
     # Resolve path relative to project root

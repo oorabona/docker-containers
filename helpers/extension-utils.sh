@@ -757,16 +757,27 @@ generate_dockerfile() {
                     log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed, missing .available array, or has empty available[] — treating as absent, triggering self-heal"
                 fi
                 # skopeo is required by the LIVE resolver path (skopeo list-tags docker.io).
-                # When the committed version-set file covers this ext+major, resolve_version_set
-                # returns the committed slice without invoking skopeo — skip the guard in that case.
-                # When the committed file is absent/misses this major, skopeo is still required;
-                # fail fast with a clear, actionable message before the resolver is invoked so the
-                # operator sees what to install rather than an opaque "skopeo: command not found".
+                # When the committed version-set file satisfies the SAME acceptance conditions
+                # that resolve_version_set uses (ceiling match AND committed_len >= retain_count),
+                # resolve_version_set returns the committed slice without invoking skopeo —
+                # skip the guard in that case.
+                # When the committed file is absent, misses this major, has a stale ceiling, or
+                # is under-retained, the live resolver path IS taken and skopeo IS required;
+                # fail fast with a clear, actionable message before the resolver is invoked so
+                # the operator sees what to install rather than an opaque "skopeo: command not found".
                 # This check fires ONLY on the self-heal/resolve branch; the valid-artifact path
                 # above does not use skopeo and is not affected.
-                if ! _read_committed_versionset "$ext_name" "$pg_major" &>/dev/null; then
+                # _committed_versionset_satisfies is the SAME predicate used by resolve_version_set
+                # so preflight and resolver share one source of truth — no duplication of conditions.
+                local _preflight_retain_count
+                _preflight_retain_count=$(yq -r \
+                    ".extensions.${ext_name}.version_set.retain_count // \"\"" \
+                    "$config_file" 2>/dev/null || true)
+                local _preflight_effective_retain="${_preflight_retain_count:-12}"
+                if ! _committed_versionset_satisfies \
+                        "$ext_name" "$pg_major" "$ext_version" "${_preflight_effective_retain}"; then
                     if ! command -v skopeo &>/dev/null; then
-                        log_error "generate_dockerfile: skopeo is required to resolve the ${ext_name} version set when neither a version-set artifact nor the committed version-set file covers pg${pg_major}; install skopeo (see postgres/README.md) or supply the artifact manually"
+                        log_error "generate_dockerfile: skopeo is required to resolve the ${ext_name} version set when neither a version-set artifact nor a satisfactory committed version-set covers pg${pg_major}; install skopeo (see postgres/README.md) or supply the artifact manually"
                         return 1
                     fi
                 fi

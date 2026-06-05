@@ -260,9 +260,10 @@ jobs:
     # exactly: a skipped seed (fork PRs) or a failed seed (continue-on-error: true
     # means the job reports 'success' to dependents even on failure — but we guard
     # 'skipped' too for future-proofing) never blocks extensions. When the probe
-    # finds the GHCR cache absent it falls back to direct docker.io (authenticated
-    # via the existing docker-login step) — graceful degradation is preserved;
-    # only the race is eliminated.
+    # finds the GHCR cache present, REMOTE_CR is set to ghcr.io/<owner> (owner-scoped
+    # path); when absent, REMOTE_CR is left unset so build-extensions defaults to
+    # ghcr.io/oorabona (public GHCR postgres mirror) — fail-closed if that tag is
+    # also absent, consistent with the main container build path. No docker.io fallback.
     #
     # Fork PRs are excluded: they have read-only GITHUB_TOKEN and cannot push
     # to GHCR regardless. TimescaleDB bumps arrive via same-repo auto-update PRs
@@ -424,10 +425,11 @@ jobs:
               # the GHCR cache is likely seeded by the time this probe runs; however the
               # probe is still required as the graceful-degradation fallback for fork PRs
               # (where sync-base-images is skipped) and any seed failure. Probe each
-              # version individually and set REMOTE_CR only when the GHCR cache is
-              # confirmed reachable; otherwise leave it unset so build-extensions falls
-              # back to direct docker.io (authenticated) — no hard-fail, single auth'd
-              # cold pull per missing tag, well under the rate limit.
+              # version individually and set REMOTE_CR to the owner-scoped GHCR path on
+              # hit; otherwise leave REMOTE_CR unset so build-extensions defaults to
+              # ghcr.io/oorabona (the public GHCR postgres mirror). If that exact tag is
+              # absent, the build fails closed — no docker.io fallback, consistent with
+              # the main container build path.
               # Tag format: <major_version>-alpine  (matches the postgres base_suffix and
               # the tag the extension Dockerfiles reference via FROM ${REMOTE_CR}/library/postgres).
               REMOTE_CR=""
@@ -438,7 +440,7 @@ jobs:
                   REMOTE_CR="ghcr.io/${REPO_OWNER}"
                   echo "✅ postgres library mirror reachable for ${mirror_tag} — extensions use GHCR"
                 else
-                  echo "::warning::postgres GHCR cache missing for ${mirror_tag} — extensions fall back to direct docker.io (authenticated)"
+                  echo "::warning::postgres GHCR cache missing for ${mirror_tag} — extension builds default to public ghcr.io/oorabona mirror (fail-closed if tag absent)"
                 fi
               fi
               export REMOTE_CR

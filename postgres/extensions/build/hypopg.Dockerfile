@@ -4,7 +4,7 @@
 # HypoPG allows creating hypothetical indexes to test query plans
 # without actually creating the indexes
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG MAJOR_VERSION
 FROM ${REMOTE_CR}/library/postgres:${MAJOR_VERSION}-alpine AS builder
 
