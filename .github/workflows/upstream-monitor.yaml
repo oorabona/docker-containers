@@ -670,6 +670,19 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
+      - name: Seed buildkit image to GHCR
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          src="docker://docker.io/moby/buildkit:buildx-stable-1"
+          dest="docker://ghcr.io/${OWNER}/buildkit:buildx-stable-1"
+          log_info "Seeding buildkit image to GHCR: ${dest}"
+          retry_with_backoff 5 10 $SKOPEO copy --all "$src" "$dest"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
