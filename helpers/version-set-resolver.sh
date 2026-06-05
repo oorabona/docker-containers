@@ -63,6 +63,21 @@ _read_committed_versionset() {
     return 0
 }
 
+# _normalize_retain_count <raw>
+#   Echoes a valid positive integer for retain_count.
+#   Accepts only values matching ^[1-9][0-9]*$ (positive integer, no leading zeros).
+#   Any other value (empty, "0", negative, non-numeric) → defaults to 12.
+#   This is the SINGLE normalization rule shared by the fast path and the live
+#   resolver path.  Both callers MUST use this helper rather than inline fallback.
+_normalize_retain_count() {
+    local _raw="${1:-}"
+    if [[ "$_raw" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s' "$_raw"
+    else
+        printf '12'
+    fi
+}
+
 # _committed_versionset_satisfies <ext_name> <pg_major> <ceiling> <retain_count>
 #   Returns 0 when the committed file can be served as-is for this (ext, major):
 #     1. File+major+ext key present and non-empty (via _read_committed_versionset)
@@ -129,7 +144,8 @@ resolve_version_set() {
     # consistently with what the live resolver would produce.
     local retain_count
     retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
-    local _effective_retain="${retain_count:-12}"
+    local _effective_retain
+    _effective_retain=$(_normalize_retain_count "$retain_count")
 
     # Fast path: consult the committed version-set file BEFORE invoking the live
     # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
@@ -181,7 +197,8 @@ resolve_version_set() {
     # CEILING_VERSION bounds the resolver to the pinned config version so that
     # upstream tags published above it are excluded (see #558).
     # RETAIN_COUNT caps the window to the N most-recent versions per major.
+    # _effective_retain is already normalized (same rule as the fast path).
     EXT_NAME="$ext_name" PG_MAJOR="$pg_major" CEILING_VERSION="$single_version" \
-        RETAIN_COUNT="$retain_count" \
+        RETAIN_COUNT="${_effective_retain}" \
         "${abs_resolver}"
 }

@@ -645,3 +645,167 @@ JSONEOF
     rm -f "$tmp_committed"
     [[ "$status" -ne 0 ]]
 }
+
+# ── NRC: _normalize_retain_count — shared normalization helper ────────────────
+
+@test "NRC-positive: _normalize_retain_count returns valid positive int unchanged" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count 5"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "5" ]]
+}
+
+@test "NRC-twelve: _normalize_retain_count returns 12 for default" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count 12"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+@test "NRC-zero: _normalize_retain_count treats 0 as invalid → defaults to 12" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count 0"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+@test "NRC-negative: _normalize_retain_count treats negative as invalid → defaults to 12" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count -- -1"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+@test "NRC-empty: _normalize_retain_count treats empty string as invalid → defaults to 12" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count ''"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+@test "NRC-nonnumeric: _normalize_retain_count treats non-numeric as invalid → defaults to 12" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count 'abc'"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+@test "NRC-leadingzero: _normalize_retain_count treats leading-zero number as invalid → defaults to 12" {
+    run bash -c "source \"$HELPER\"; _normalize_retain_count '05'"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "12" ]]
+}
+
+# ── NRC-FP: fast-path retain_count normalization via resolve_version_set ──────
+# These tests confirm that the committed fast path normalizes retain_count the
+# same way as the live resolver — invalid values (0, empty, non-numeric) all
+# behave as 12 and do NOT abort under set -u.
+
+@test "NRC-FP-zero: committed fast path with retain_count=0 behaves as 12, does not abort" {
+    # Committed file has 12 entries for pg18 (ceiling=2.27.2).
+    # Config sets retain_count=0 (invalid) → must normalize to 12 → fast path accepted.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 0
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            set -u
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed (not abort under set -u); retain_count=0 normalized to 12.
+    [[ "$status" -eq 0 ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    # Normalized retain_count=12; committed slice has 12 entries → returns all 12.
+    [[ "$count" -eq 12 ]]
+}
+
+@test "NRC-FP-empty: committed fast path with empty retain_count behaves as 12, does not abort" {
+    # Config has no retain_count key → yq returns "" → must normalize to 12.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            set -u
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed (not abort under set -u); absent retain_count normalized to 12.
+    [[ "$status" -eq 0 ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
+
+@test "NRC-FP-nonnumeric: committed fast path with non-numeric retain_count behaves as 12, does not abort" {
+    # Config sets retain_count="bogus" → must normalize to 12 (not abort/miscompare).
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: "bogus"
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            set -u
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed; retain_count="bogus" normalized to 12.
+    [[ "$status" -eq 0 ]]
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 12 ]]
+}
