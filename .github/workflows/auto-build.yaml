@@ -73,7 +73,6 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
-      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -100,7 +99,6 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
-      - '.github/actions/dockerhub-mirror/**'   # Composite action used by build pipeline
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
