@@ -291,29 +291,30 @@ variant_image_tag() {
 # and any future bake-HCL generator must call this function instead of
 # duplicating the rules.
 #
-# Rules (same as the former inline block in build_container()):
+# Rules:
 #   - Always emit the versioned ref on both docker.io and ghcr.io.
 #   - When tag != "latest":
-#       • flavor non-empty AND variant_property default == "true"
+#       • is_default == "true"
 #           → also emit :latest on both registries.
-#       • flavor non-empty AND default != "true"
+#       • is_default != "true" AND flavor non-empty
 #           → also emit :latest-<flavor> on both registries.
-#       • flavor empty
+#       • is_default != "true" AND flavor empty
 #           → also emit :latest on both registries.
 #
-# Usage: compute_cell_tags <container_dir> <tag> <flavor> <dockerhub_image> <ghcr_image>
-#   container_dir   : path to the container directory (for variant_property lookup)
+# Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
 #   flavor          : variant flavor name (e.g. "base", "vector", "") — empty for no-flavor containers
+#   is_default      : "true" if this variant is the default; any other value means non-default.
+#                     Caller computes this via variant_property <dir> <variant_name> "default".
 #   dockerhub_image : docker.io/<owner>/<container>  (no tag)
 #   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
 #
 # Output: one fully-qualified image ref per line (no leading "-t").
 #         Caller reads into an array and prepends "-t" as needed.
 compute_cell_tags() {
-    local container_dir="$1"
-    local tag="$2"
-    local flavor="$3"
+    local tag="$1"
+    local flavor="$2"
+    local is_default="$3"
     local dockerhub_image="$4"
     local ghcr_image="$5"
 
@@ -323,16 +324,12 @@ compute_cell_tags() {
 
     # Rolling latest tags — only when this is not already a "latest" tag
     if [[ "$tag" != "latest" ]]; then
-        if [[ -n "$flavor" ]]; then
-            local is_default
-            is_default=$(variant_property "$container_dir" "$flavor" "default" 2>/dev/null || echo "false")
-            if [[ "$is_default" == "true" ]]; then
-                printf '%s:latest\n' "$dockerhub_image"
-                printf '%s:latest\n' "$ghcr_image"
-            else
-                printf '%s:latest-%s\n' "$dockerhub_image" "$flavor"
-                printf '%s:latest-%s\n' "$ghcr_image"      "$flavor"
-            fi
+        if [[ "$is_default" == "true" ]]; then
+            printf '%s:latest\n' "$dockerhub_image"
+            printf '%s:latest\n' "$ghcr_image"
+        elif [[ -n "$flavor" ]]; then
+            printf '%s:latest-%s\n' "$dockerhub_image" "$flavor"
+            printf '%s:latest-%s\n' "$ghcr_image"      "$flavor"
         else
             printf '%s:latest\n' "$dockerhub_image"
             printf '%s:latest\n' "$ghcr_image"
@@ -802,4 +799,4 @@ latest_per_major_versions() {
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions compute_expand_retained_map latest_per_major_versions
+export -f always_all_versions compute_cell_tags compute_expand_retained_map latest_per_major_versions

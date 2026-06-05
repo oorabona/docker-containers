@@ -1128,40 +1128,19 @@ setup_fallback_test() {
 
 # --- compute_cell_tags ---
 #
+# New signature: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
+# is_default is now a caller-supplied boolean ("true"/"false"), computed from the
+# VARIANT NAME via variant_property — not looked up internally.
+#
 # Four cases per the spec:
-#   (a) no-flavor container   → versioned + :latest (both registries)
-#   (b) flavor + default=true → versioned + :latest (both registries)
-#   (c) flavor + default=false → versioned + :latest-<flavor> (both registries)
-#   (d) tag == "latest"       → only versioned refs, no rolling latest
-
-# Helper: create a variants.yaml with a named flavor, optionally marking it default
-_create_flavor_variants() {
-    local dir="$1"
-    local flavor_name="$2"
-    local is_default="${3:-false}"
-    mkdir -p "$dir"
-    cat > "$dir/variants.yaml" <<EOF
-build:
-  base_suffix: ""
-
-versions:
-  - tag: "1.0.0"
-    variants:
-      - name: ${flavor_name}
-        suffix: "-${flavor_name}"
-        flavor: ${flavor_name}
-        default: ${is_default}
-EOF
-}
+#   (a) no-flavor container (flavor="", is_default="false") → versioned + :latest (both registries)
+#   (b) flavor non-empty + is_default="true"  → versioned + :latest (both registries)
+#   (c) flavor non-empty + is_default="false" → versioned + :latest-<flavor> (both registries)
+#   (d) tag == "latest"                       → only versioned refs, no rolling latest
 
 @test "compute_cell_tags: (a) no-flavor → versioned + :latest on both registries" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
-    hash -r
-
-    mkdir -p "plain"
-    # No variants.yaml — no-flavor container, tag is a plain version string
-    run compute_cell_tags "plain" "2.3.1" "" "docker.io/owner/plain" "ghcr.io/owner/plain"
+    # No variants.yaml needed — function is now pure (no yq lookup)
+    run compute_cell_tags "2.3.1" "" "false" "docker.io/owner/plain" "ghcr.io/owner/plain"
     [ "$status" -eq 0 ]
     # Must contain exactly 4 lines: versioned×2 + latest×2
     [ "$(echo "$output" | wc -l)" -eq 4 ]
@@ -1173,13 +1152,8 @@ EOF
     [[ "$output" != *"latest-"* ]]
 }
 
-@test "compute_cell_tags: (b) flavor + default=true → versioned + :latest on both registries" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
-    hash -r
-
-    _create_flavor_variants "withflavor" "base" "true"
-    run compute_cell_tags "withflavor" "1.0.0-base" "base" "docker.io/owner/myapp" "ghcr.io/owner/myapp"
+@test "compute_cell_tags: (b) flavor + is_default=true → versioned + :latest on both registries" {
+    run compute_cell_tags "1.0.0-base" "base" "true" "docker.io/owner/myapp" "ghcr.io/owner/myapp"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | wc -l)" -eq 4 ]
     [[ "$output" == *"docker.io/owner/myapp:1.0.0-base"* ]]
@@ -1190,13 +1164,8 @@ EOF
     [[ "$output" != *"latest-base"* ]]
 }
 
-@test "compute_cell_tags: (c) flavor + default=false → versioned + :latest-<flavor> on both registries" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
-    hash -r
-
-    _create_flavor_variants "withflavor2" "vector" "false"
-    run compute_cell_tags "withflavor2" "18-alpine-vector" "vector" "docker.io/owner/postgres" "ghcr.io/owner/postgres"
+@test "compute_cell_tags: (c) flavor + is_default=false → versioned + :latest-<flavor> on both registries" {
+    run compute_cell_tags "18-alpine-vector" "vector" "false" "docker.io/owner/postgres" "ghcr.io/owner/postgres"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | wc -l)" -eq 4 ]
     [[ "$output" == *"docker.io/owner/postgres:18-alpine-vector"* ]]
@@ -1204,22 +1173,48 @@ EOF
     [[ "$output" == *"docker.io/owner/postgres:latest-vector"* ]]
     [[ "$output" == *"ghcr.io/owner/postgres:latest-vector"* ]]
     # Must NOT emit bare :latest (that's the default-flavor path)
-    # Check that no line is exactly "docker.io/owner/postgres:latest"
     local bare_latest_count
     bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/postgres:latest" || true)
     [ "$bare_latest_count" -eq 0 ]
 }
 
 @test "compute_cell_tags: (d) tag==latest → only versioned refs, no rolling latest added" {
-    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
-    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
-    hash -r
-
-    mkdir -p "plain2"
-    run compute_cell_tags "plain2" "latest" "" "docker.io/owner/plain2" "ghcr.io/owner/plain2"
+    run compute_cell_tags "latest" "" "false" "docker.io/owner/plain2" "ghcr.io/owner/plain2"
     [ "$status" -eq 0 ]
     # Must contain exactly 2 lines: only the versioned (:latest) refs — no additional rolling tags
     [ "$(echo "$output" | wc -l)" -eq 2 ]
     [[ "$output" == *"docker.io/owner/plain2:latest"* ]]
     [[ "$output" == *"ghcr.io/owner/plain2:latest"* ]]
+}
+
+@test "compute_cell_tags: github-runner default variant (name!=flavor) → bare :latest via is_default=true" {
+    # Regression: github-runner variant ubuntu-2404-base has flavor=ubuntu-2404.
+    # Old code called variant_property(dir, "ubuntu-2404", "default") — wrong (flavor, not name).
+    # New code: caller passes is_default computed from variant NAME ubuntu-2404-base → "true".
+    run compute_cell_tags "2.334.0" "ubuntu-2404" "true" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/github-runner:2.334.0"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0"* ]]
+    # Default variant must get bare :latest, NOT :latest-ubuntu-2404
+    [[ "$output" == *"docker.io/owner/github-runner:latest"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest"* ]]
+    local flavor_latest_count
+    flavor_latest_count=$(echo "$output" | grep -c "latest-ubuntu-2404" || true)
+    [ "$flavor_latest_count" -eq 0 ]
+}
+
+@test "compute_cell_tags: github-runner non-default variant → :latest-<flavor>" {
+    # ubuntu-2404-dev has flavor=ubuntu-2404 but is NOT default → latest-ubuntu-2404
+    run compute_cell_tags "2.334.0-dev" "ubuntu-2404" "false" "docker.io/owner/github-runner" "ghcr.io/owner/github-runner"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/github-runner:2.334.0-dev"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:2.334.0-dev"* ]]
+    [[ "$output" == *"docker.io/owner/github-runner:latest-ubuntu-2404"* ]]
+    [[ "$output" == *"ghcr.io/owner/github-runner:latest-ubuntu-2404"* ]]
+    # Must NOT emit bare :latest
+    local bare_latest_count
+    bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/github-runner:latest" || true)
+    [ "$bare_latest_count" -eq 0 ]
 }

@@ -400,10 +400,12 @@ _emit_build_lineage() {
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor]
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor] [is_default]
 # flavor:       distro name from variants.yaml (e.g. ubuntu-2404) — used for tag logic
 # build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
 #               falls back to flavor when not provided (backward-compatible)
+# is_default:   "true" if this variant is the default (gets bare :latest); defaults to "false"
+#               Caller computes via variant_property <dir> <variant_name> "default"
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
@@ -412,6 +414,7 @@ build_container() {
     local flavor="${4:-}"
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
+    local is_default="${7:-false}"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -441,7 +444,7 @@ build_container() {
     # compute_cell_tags (helpers/variant-utils.sh) is the single source of truth;
     # see that function for the full rule-set.
     local _cell_refs _ref
-    mapfile -t _cell_refs < <(compute_cell_tags "$PROJECT_ROOT/$container" "$tag" "$flavor" "$dockerhub_image" "$ghcr_image")
+    mapfile -t _cell_refs < <(compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image")
     local tag_args=""
     for _ref in "${_cell_refs[@]}"; do
         tag_args="$tag_args -t $_ref"
@@ -692,18 +695,25 @@ build_container_variants() {
         build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$major_version")
         local description
         description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
+        # Compute is_default from the VARIANT NAME (not the flavor) so that containers
+        # where variant name != flavor (e.g. github-runner: name=ubuntu-2404-base,
+        # flavor=ubuntu-2404) resolve correctly.
+        local is_default
+        is_default=$(variant_property "$container_dir" "$variant_name" "default" "$major_version" 2>/dev/null || echo "false")
+        [[ -z "$is_default" ]] && is_default="false"
 
         # Resolve dockerfile: variant-level > version-level > default
         local dockerfile
         dockerfile=$(variant_property "$container_dir" "$variant_name" "dockerfile" "$major_version")
         [[ -z "$dockerfile" ]] && dockerfile="${version_df:-Dockerfile}"
 
-        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, dockerfile: $dockerfile)"
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, is_default: $is_default, dockerfile: $dockerfile)"
 
         # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
         # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic
+        # is_default is passed so compute_cell_tags uses the correct variant-name-based value
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor" "$is_default"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
