@@ -285,6 +285,61 @@ variant_image_tag() {
     fi
 }
 
+# Compute the full set of image refs to tag for one build cell.
+#
+# This is the single source of truth for tag-set logic; build-container.sh
+# and any future bake-HCL generator must call this function instead of
+# duplicating the rules.
+#
+# Rules (same as the former inline block in build_container()):
+#   - Always emit the versioned ref on both docker.io and ghcr.io.
+#   - When tag != "latest":
+#       • flavor non-empty AND variant_property default == "true"
+#           → also emit :latest on both registries.
+#       • flavor non-empty AND default != "true"
+#           → also emit :latest-<flavor> on both registries.
+#       • flavor empty
+#           → also emit :latest on both registries.
+#
+# Usage: compute_cell_tags <container_dir> <tag> <flavor> <dockerhub_image> <ghcr_image>
+#   container_dir   : path to the container directory (for variant_property lookup)
+#   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
+#   flavor          : variant flavor name (e.g. "base", "vector", "") — empty for no-flavor containers
+#   dockerhub_image : docker.io/<owner>/<container>  (no tag)
+#   ghcr_image      : ghcr.io/<owner>/<container>   (no tag)
+#
+# Output: one fully-qualified image ref per line (no leading "-t").
+#         Caller reads into an array and prepends "-t" as needed.
+compute_cell_tags() {
+    local container_dir="$1"
+    local tag="$2"
+    local flavor="$3"
+    local dockerhub_image="$4"
+    local ghcr_image="$5"
+
+    # Versioned tag — always present on both registries
+    printf '%s:%s\n' "$dockerhub_image" "$tag"
+    printf '%s:%s\n' "$ghcr_image"      "$tag"
+
+    # Rolling latest tags — only when this is not already a "latest" tag
+    if [[ "$tag" != "latest" ]]; then
+        if [[ -n "$flavor" ]]; then
+            local is_default
+            is_default=$(variant_property "$container_dir" "$flavor" "default" 2>/dev/null || echo "false")
+            if [[ "$is_default" == "true" ]]; then
+                printf '%s:latest\n' "$dockerhub_image"
+                printf '%s:latest\n' "$ghcr_image"
+            else
+                printf '%s:latest-%s\n' "$dockerhub_image" "$flavor"
+                printf '%s:latest-%s\n' "$ghcr_image"      "$flavor"
+            fi
+        else
+            printf '%s:latest\n' "$dockerhub_image"
+            printf '%s:latest\n' "$ghcr_image"
+        fi
+    fi
+}
+
 # Check if a container always builds all retained versions (not just the latest)
 # Usage: always_all_versions <container_dir>
 # Returns: "true" or "false" on stdout

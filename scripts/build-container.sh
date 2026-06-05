@@ -437,23 +437,16 @@ build_container() {
         return 1
     }
 
-    # Prepare tags — versioned tag always included, plus rolling latest tags
-    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$tag" != "latest" ]]; then
-        # For variant builds: add latest-{flavor} (e.g., latest-aws, latest-vector)
-        # For default/non-variant builds: add :latest
-        if [[ -n "$flavor" ]]; then
-            local is_default
-            is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
-            if [[ "$is_default" == "true" ]]; then
-                tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-            else
-                tag_args="$tag_args -t $dockerhub_image:latest-$flavor -t $ghcr_image:latest-$flavor"
-            fi
-        else
-            tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-        fi
-    fi
+    # Prepare tags — versioned tag always included, plus rolling latest tags.
+    # compute_cell_tags (helpers/variant-utils.sh) is the single source of truth;
+    # see that function for the full rule-set.
+    local _cell_refs _ref
+    mapfile -t _cell_refs < <(compute_cell_tags "$PROJECT_ROOT/$container" "$tag" "$flavor" "$dockerhub_image" "$ghcr_image")
+    local tag_args=""
+    for _ref in "${_cell_refs[@]}"; do
+        tag_args="$tag_args -t $_ref"
+    done
+    tag_args="${tag_args# }"  # strip leading space
 
     local label_args=""
 

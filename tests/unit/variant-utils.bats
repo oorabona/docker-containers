@@ -1125,3 +1125,101 @@ setup_fallback_test() {
     # Maps must be equal.
     [ "$(echo "$result_5arg" | jq -c 'to_entries | sort_by(.key)')" = "$(echo "$result_6arg" | jq -c 'to_entries | sort_by(.key)')" ]
 }
+
+# --- compute_cell_tags ---
+#
+# Four cases per the spec:
+#   (a) no-flavor container   → versioned + :latest (both registries)
+#   (b) flavor + default=true → versioned + :latest (both registries)
+#   (c) flavor + default=false → versioned + :latest-<flavor> (both registries)
+#   (d) tag == "latest"       → only versioned refs, no rolling latest
+
+# Helper: create a variants.yaml with a named flavor, optionally marking it default
+_create_flavor_variants() {
+    local dir="$1"
+    local flavor_name="$2"
+    local is_default="${3:-false}"
+    mkdir -p "$dir"
+    cat > "$dir/variants.yaml" <<EOF
+build:
+  base_suffix: ""
+
+versions:
+  - tag: "1.0.0"
+    variants:
+      - name: ${flavor_name}
+        suffix: "-${flavor_name}"
+        flavor: ${flavor_name}
+        default: ${is_default}
+EOF
+}
+
+@test "compute_cell_tags: (a) no-flavor → versioned + :latest on both registries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "plain"
+    # No variants.yaml — no-flavor container, tag is a plain version string
+    run compute_cell_tags "plain" "2.3.1" "" "docker.io/owner/plain" "ghcr.io/owner/plain"
+    [ "$status" -eq 0 ]
+    # Must contain exactly 4 lines: versioned×2 + latest×2
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/plain:2.3.1"* ]]
+    [[ "$output" == *"ghcr.io/owner/plain:2.3.1"* ]]
+    [[ "$output" == *"docker.io/owner/plain:latest"* ]]
+    [[ "$output" == *"ghcr.io/owner/plain:latest"* ]]
+    # Must NOT contain any "latest-" rolling-flavor tag
+    [[ "$output" != *"latest-"* ]]
+}
+
+@test "compute_cell_tags: (b) flavor + default=true → versioned + :latest on both registries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    _create_flavor_variants "withflavor" "base" "true"
+    run compute_cell_tags "withflavor" "1.0.0-base" "base" "docker.io/owner/myapp" "ghcr.io/owner/myapp"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/myapp:1.0.0-base"* ]]
+    [[ "$output" == *"ghcr.io/owner/myapp:1.0.0-base"* ]]
+    [[ "$output" == *"docker.io/owner/myapp:latest"* ]]
+    [[ "$output" == *"ghcr.io/owner/myapp:latest"* ]]
+    # Must NOT emit :latest-base (that's the non-default flavor path)
+    [[ "$output" != *"latest-base"* ]]
+}
+
+@test "compute_cell_tags: (c) flavor + default=false → versioned + :latest-<flavor> on both registries" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    _create_flavor_variants "withflavor2" "vector" "false"
+    run compute_cell_tags "withflavor2" "18-alpine-vector" "vector" "docker.io/owner/postgres" "ghcr.io/owner/postgres"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | wc -l)" -eq 4 ]
+    [[ "$output" == *"docker.io/owner/postgres:18-alpine-vector"* ]]
+    [[ "$output" == *"ghcr.io/owner/postgres:18-alpine-vector"* ]]
+    [[ "$output" == *"docker.io/owner/postgres:latest-vector"* ]]
+    [[ "$output" == *"ghcr.io/owner/postgres:latest-vector"* ]]
+    # Must NOT emit bare :latest (that's the default-flavor path)
+    # Check that no line is exactly "docker.io/owner/postgres:latest"
+    local bare_latest_count
+    bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/postgres:latest" || true)
+    [ "$bare_latest_count" -eq 0 ]
+}
+
+@test "compute_cell_tags: (d) tag==latest → only versioned refs, no rolling latest added" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    export PATH="${ORIG_DIR}/bin:${PATH#"$TEST_DIR"/bin:}"
+    hash -r
+
+    mkdir -p "plain2"
+    run compute_cell_tags "plain2" "latest" "" "docker.io/owner/plain2" "ghcr.io/owner/plain2"
+    [ "$status" -eq 0 ]
+    # Must contain exactly 2 lines: only the versioned (:latest) refs — no additional rolling tags
+    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    [[ "$output" == *"docker.io/owner/plain2:latest"* ]]
+    [[ "$output" == *"ghcr.io/owner/plain2:latest"* ]]
+}
