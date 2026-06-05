@@ -6,7 +6,7 @@
 # NOTE: This is a template — markers are expanded by generate-dockerfile.sh.
 # Package lists are in config.yaml — do not add packages here.
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 ARG UPSTREAM_VERSION
 ARG TTYD_VERSION

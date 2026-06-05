@@ -12,7 +12,7 @@
 #
 # Output: /output/ contains files to extract via docker cp
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG MAJOR_VERSION
 FROM ${REMOTE_CR}/library/postgres:${MAJOR_VERSION}-alpine AS builder
 

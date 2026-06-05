@@ -346,6 +346,63 @@ EOF
 }
 
 # =============================================================================
+# ARG REMOTE_CR default resolution tests (fix/628-dockerio-egress-failclose)
+# =============================================================================
+
+@test "_resolve_base_image Step 4 resolves REMOTE_CR default to ghcr.io/oorabona" {
+    # Create a mock Dockerfile with ARG REMOTE_CR=ghcr.io/oorabona (the new default)
+    mkdir -p "$TEST_TEMP_DIR/mycontainer"
+    cat > "$TEST_TEMP_DIR/mycontainer/Dockerfile" << 'EOF'
+ARG REMOTE_CR=ghcr.io/oorabona
+ARG VERSION
+FROM ${REMOTE_CR}/library/debian:${VERSION}
+EOF
+
+    source_build_script
+
+    # Call _resolve_base_image directly (no config.yaml → falls through to FROM line)
+    cd "$TEST_TEMP_DIR/mycontainer"
+    local label_args=""
+    _resolve_base_image "$TEST_TEMP_DIR/mycontainer/Dockerfile" "bookworm" "label_args"
+
+    # Step 4 must have substituted REMOTE_CR with ghcr.io/oorabona
+    [[ "$_BASE_IMAGE_REF" == *"ghcr.io/oorabona"* ]] || {
+        echo "Expected _BASE_IMAGE_REF to contain ghcr.io/oorabona, got: $_BASE_IMAGE_REF"
+        return 1
+    }
+    # Must NOT fall back to docker.io
+    [[ "$_BASE_IMAGE_REF" != *"docker.io"* ]] || {
+        echo "Expected _BASE_IMAGE_REF to NOT contain docker.io, got: $_BASE_IMAGE_REF"
+        return 1
+    }
+}
+
+@test "_resolve_base_image Step 4 does NOT resolve REMOTE_CR to docker.io when default is ghcr.io/oorabona" {
+    # Regression guard: old default was docker.io — ensure it's gone
+    mkdir -p "$TEST_TEMP_DIR/mycontainer2"
+    cat > "$TEST_TEMP_DIR/mycontainer2/Dockerfile" << 'EOF'
+ARG REMOTE_CR=ghcr.io/oorabona
+ARG VERSION
+FROM ${REMOTE_CR}/library/alpine:${VERSION}
+EOF
+
+    source_build_script
+
+    cd "$TEST_TEMP_DIR/mycontainer2"
+    local label_args=""
+    _resolve_base_image "$TEST_TEMP_DIR/mycontainer2/Dockerfile" "3.20" "label_args"
+
+    [[ "$_BASE_IMAGE_REF" != *"docker.io"* ]] || {
+        echo "Regression: _BASE_IMAGE_REF still contains docker.io: $_BASE_IMAGE_REF"
+        return 1
+    }
+    [[ "$_BASE_IMAGE_REF" == "ghcr.io/oorabona/library/alpine:3.20" ]] || {
+        echo "Expected ghcr.io/oorabona/library/alpine:3.20, got: $_BASE_IMAGE_REF"
+        return 1
+    }
+}
+
+# =============================================================================
 # build_container self-heal regression tests (omitted is_default derives from
 # variant_property so direct/local callers still get the correct :latest tag)
 # =============================================================================

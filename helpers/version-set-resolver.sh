@@ -25,6 +25,93 @@ fi
 # Path to extensions config, relative to project root
 _EXT_CONFIG="${_HELPER_DIR}/../postgres/extensions/config.yaml"
 
+# Committed version-set file for extensions whose resolver contacts docker.io.
+# Schema (kept consistent by upstream-monitor and this function):
+#   { "<ext_name>": { "pg<major>": ["X.Y.Z", ...], ... }, ... }
+# Example:
+#   { "timescaledb": { "pg18": ["2.24.0","2.27.2"], "pg17": [...], ... } }
+# Only set the default when unset — allows tests (and callers) to override by
+# setting _COMMITTED_VERSIONSET_FILE before sourcing this file.
+: "${_COMMITTED_VERSIONSET_FILE:=${_HELPER_DIR}/../postgres/extensions/timescaledb-version-set.json}"
+
+# _read_committed_versionset <ext_name> <pg_major>
+#   Returns the JSON array for this ext+major from the committed file (stdout).
+#   Exit 0 on hit; exit 1 on miss (file absent, ext absent, major key absent,
+#   or empty/non-array result).  No docker.io or skopeo required.
+_read_committed_versionset() {
+    local ext_name="${1:?ext_name is required}"
+    local pg_major="${2:?pg_major is required}"
+    local key="pg${pg_major}"
+
+    # File absent → miss
+    [[ -f "$_COMMITTED_VERSIONSET_FILE" ]] || return 1
+
+    # jq extracts .ext.pg<major>; outputs "null" when key is absent.
+    local arr
+    arr=$(jq -c --arg ext "$ext_name" --arg key "$key" \
+        '.[$ext][$key] // empty' "$_COMMITTED_VERSIONSET_FILE" 2>/dev/null) || return 1
+
+    # empty output → miss
+    [[ -n "$arr" ]] || return 1
+
+    # Verify it is actually a non-empty JSON array
+    local count
+    count=$(printf '%s' "$arr" | jq 'if type == "array" and length > 0 then length else 0 end' 2>/dev/null) || return 1
+    [[ "${count:-0}" -gt 0 ]] || return 1
+
+    printf '%s\n' "$arr"
+    return 0
+}
+
+# _normalize_retain_count <raw>
+#   Echoes a valid positive integer for retain_count.
+#   Accepts only values matching ^[1-9][0-9]*$ (positive integer, no leading zeros).
+#   Any other value (empty, "0", negative, non-numeric) → defaults to 12.
+#   This is the SINGLE normalization rule shared by the fast path and the live
+#   resolver path.  Both callers MUST use this helper rather than inline fallback.
+_normalize_retain_count() {
+    local _raw="${1:-}"
+    if [[ "$_raw" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s' "$_raw"
+    else
+        printf '12'
+    fi
+}
+
+# _committed_versionset_satisfies <ext_name> <pg_major> <ceiling> <retain_count>
+#   Returns 0 when the committed file can be served as-is for this (ext, major):
+#     1. File+major+ext key present and non-empty (via _read_committed_versionset)
+#     2. Committed slice's last element equals <ceiling> (ceiling match)
+#     3. Committed slice length >= <retain_count> (length sufficiency)
+#   Returns 1 on any miss or condition failure.
+#   Does NOT print anything; callers use the exit code only.
+#   This is the SINGLE source of truth shared by resolve_version_set (fast path)
+#   and the extension-utils.sh preflight guard.
+_committed_versionset_satisfies() {
+    local ext_name="${1:?ext_name is required}"
+    local pg_major="${2:?pg_major is required}"
+    local ceiling="${3:?ceiling is required}"
+    # Normalize retain_count here so every caller is safe regardless of what it
+    # passes (raw config value, "0", empty, "bogus", or already-normalized int).
+    # Re-normalizing an already-valid value is idempotent and harmless.
+    local retain_count
+    retain_count=$(_normalize_retain_count "${4:-}")
+
+    local _slice
+    _slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null) || return 1
+    [[ -n "$_slice" ]] || return 1
+
+    local _committed_ceiling
+    _committed_ceiling=$(printf '%s' "$_slice" | jq -r '.[-1]' 2>/dev/null) || return 1
+    [[ "$_committed_ceiling" == "$ceiling" ]] || return 1
+
+    local _committed_len
+    _committed_len=$(printf '%s' "$_slice" | jq 'length' 2>/dev/null) || return 1
+    [[ "${_committed_len:-0}" -ge "${retain_count}" ]] || return 1
+
+    return 0
+}
+
 resolve_version_set() {
     local ext_name="${1:?ext_name is required}"
     local pg_major="${2:?pg_major is required}"
@@ -55,6 +142,46 @@ resolve_version_set() {
         return 0
     fi
 
+    # Read optional retain_count here (shared by both the fast path and the live
+    # resolver path).  Empty string → resolver uses its own internal default (12).
+    # We use 12 as the fast-path fallback so the committed slice is trimmed
+    # consistently with what the live resolver would produce.
+    local retain_count
+    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
+    local _effective_retain
+    _effective_retain=$(_normalize_retain_count "$retain_count")
+
+    # Fast path: consult the committed version-set file BEFORE invoking the live
+    # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
+    # egress during the build path when the file is present and covers this major.
+    #
+    # Acceptance conditions (both must hold — enforced by _committed_versionset_satisfies):
+    #   1. Ceiling match: the committed slice's last element equals the config ceiling.
+    #      If they differ, the committed file is stale relative to the caller's pinned
+    #      version → fall through so the correct ceiling is applied.
+    #   2. Length sufficiency: committed_len >= retain_count.
+    #      If retain_count was raised above the committed count (e.g. config bumped
+    #      from 12 to 15 while the committed file still has 12 entries), serving the
+    #      committed slice would silently under-retain — fall through to the live
+    #      resolver so it can produce the larger set.
+    #
+    # When both conditions hold, trim to the effective retain_count (last N elements,
+    # newest first) so the fast path mirrors what the live resolver would return.
+    #
+    # Falls through on any miss (file absent, ext absent, major key absent, empty
+    # array, ceiling mismatch, or insufficient length) — fail-closed semantics.
+    if [[ -n "$single_version" && "$single_version" != "null" ]]; then
+        if _committed_versionset_satisfies "$ext_name" "$pg_major" "$single_version" "${_effective_retain}"; then
+            local _committed_slice
+            _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null)
+            # Trim to retain_count: keep the last _effective_retain elements.
+            printf '%s' "$_committed_slice" | \
+                jq -c --argjson n "${_effective_retain}" '.[-$n:]'
+            return 0
+        fi
+        # Ceiling mismatch, insufficient length, or miss → fall through to live resolver
+    fi
+
     # Resolve path relative to project root
     local project_root
     project_root="$(cd "${_HELPER_DIR}/.." && pwd)"
@@ -70,15 +197,12 @@ resolve_version_set() {
         return 1
     fi
 
-    # Read optional retain_count; default empty string means resolver uses its own default.
-    local retain_count
-    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
-
     # Invoke resolver with env contract; propagate rc.
     # CEILING_VERSION bounds the resolver to the pinned config version so that
     # upstream tags published above it are excluded (see #558).
     # RETAIN_COUNT caps the window to the N most-recent versions per major.
+    # _effective_retain is already normalized (same rule as the fast path).
     EXT_NAME="$ext_name" PG_MAJOR="$pg_major" CEILING_VERSION="$single_version" \
-        RETAIN_COUNT="$retain_count" \
+        RETAIN_COUNT="${_effective_retain}" \
         "${abs_resolver}"
 }

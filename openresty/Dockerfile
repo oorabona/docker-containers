@@ -4,7 +4,7 @@
 # For Luarocks
 ARG LUAROCKS_VERSION
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 ARG RESTY_IMAGE_TAG
 

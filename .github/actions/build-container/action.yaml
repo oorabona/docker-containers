@@ -402,6 +402,11 @@ runs:
               entry_count=$(yq -r '.base_image_cache | length' "./$container/config.yaml")
               owner="${{ github.repository_owner }}"
               cache_ok=false
+              # Detect chained-on-own entries: source starting with '/' means the
+              # base image is a project-built container (e.g. wordpress→php), NOT an
+              # upstream mirror.  sync-base-images does NOT produce these images.
+              has_chained_entry=false
+              chained_parents=""
               declare -a probe_flags=()
               for ((i = 0; i < entry_count; i++)); do
                 ghcr_repo=$(yq -r ".base_image_cache[$i].ghcr_repo" "./$container/config.yaml")
@@ -410,6 +415,12 @@ runs:
                   # resolve_cache_check_tag returns build_version for tags_from_versions (#492-safe)
                   # or the resolved tags[0] template — the same tag the build will actually use.
                   source_path=$(yq -r ".base_image_cache[$i].source" "./$container/config.yaml")
+                  # Chained-on-own marker: source begins with '/' (e.g. /php → project's own php image).
+                  if [[ "$source_path" == /* ]]; then
+                    has_chained_entry=true
+                    parent_name="${source_path#/}"
+                    chained_parents="${chained_parents:+$chained_parents, }${parent_name}"
+                  fi
                   explicit_tag=$(resolve_cache_check_tag "./$container/config.yaml" "$i" "$build_version")
                   check_image="ghcr.io/${owner}/${source_path#/}:${explicit_tag}"
                 else
@@ -442,10 +453,20 @@ runs:
                   export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$filtered_args"
                   echo "✅ Using GHCR base images: $filtered_args"
                 else
-                  echo "::warning::All reachable entries produced no usable args — falling back to Docker Hub defaults"
+                  if [[ "$has_chained_entry" == "true" ]]; then
+                    echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). This container depends on project-built image(s): ${chained_parents}. Build and publish those parent containers first; sync-base-images does not produce them. For upstream-mirrored bases: trigger the upstream-monitor workflow (workflow_dispatch) to seed the GHCR cache."
+                  else
+                    echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). The GHCR base cache is seeded by the daily upstream-monitor sync; trigger that workflow (workflow_dispatch) to seed it now."
+                  fi
+                  exit 1
                 fi
               else
-                echo "::warning::No GHCR cache image accessible — falling back to Docker Hub defaults"
+                if [[ "$has_chained_entry" == "true" ]]; then
+                  echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). This container depends on project-built image(s): ${chained_parents}. Build and publish those parent containers first; sync-base-images does not produce them. For upstream-mirrored bases: trigger the upstream-monitor workflow (workflow_dispatch) to seed the GHCR cache."
+                else
+                  echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). The GHCR base cache is seeded by the daily upstream-monitor sync; trigger that workflow (workflow_dispatch) to seed it now."
+                fi
+                exit 1
               fi
           fi
         fi

@@ -25,9 +25,13 @@ source "$ROOT_DIR/helpers/version-set-resolver.sh"
 # shellcheck source=../helpers/retry.sh
 source "$ROOT_DIR/helpers/retry.sh"
 
-# Registry override: default to docker.io (raw builds); CI passes ghcr.io/oorabona.
+# Registry override: default to ghcr.io/oorabona (public GHCR postgres mirror).
+# CI probes GHCR per major_version and passes REMOTE_CR=ghcr.io/<owner> on hit
+# (same owner-scoped path), or leaves REMOTE_CR unset on miss (defaults here).
+# Fork/local runs resolve to the public ghcr.io/oorabona/library/postgres mirror
+# directly; if that exact tag is absent the build fails closed (no docker.io fallback).
 # Must NOT appear in config.yaml build_args (schema guard R7 rejects it).
-REMOTE_CR="${REMOTE_CR:-docker.io}"
+REMOTE_CR="${REMOTE_CR:-ghcr.io/oorabona}"
 
 # _arch_suffix_tag <base_ref> <suffix>
 # Appends -${suffix} to <base_ref> when <suffix> is non-empty; returns <base_ref> unchanged
@@ -121,8 +125,9 @@ build_ext_image() {
 
         # BC-2: cache ref must ALWAYS use a writable GHCR path, independent of
         # REMOTE_CR (which is the base-image source mirror, not the cache store).
-        # When REMOTE_CR=docker.io (GHCR mirror absent fallback), the old derivation
-        # produced docker.io/ext-...-buildcache — no owner namespace, not writable.
+        # REMOTE_CR defaults to ghcr.io/oorabona (public GHCR postgres mirror);
+        # deriving the cache ref from REMOTE_CR would produce the wrong namespace
+        # when REMOTE_CR is unset or set to a different registry by the caller.
         # Fix: derive owner from REPO_OWNER (env, set by CI) or get_repo_owner()
         # and construct the cache ref as ghcr.io/<owner>/ext-<name>-buildcache:...
         #
