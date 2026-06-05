@@ -73,6 +73,7 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -99,6 +100,7 @@ on:
       - '*/**'
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
+      - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -343,6 +345,11 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
         timeout-minutes: 10
@@ -579,6 +586,11 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
         timeout-minutes: 10
@@ -775,6 +787,11 @@ jobs:
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -1259,6 +1276,11 @@ jobs:
           ghcr_password: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0

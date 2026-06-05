@@ -249,3 +249,85 @@ _export_stubs() {
     [ -n "$return_line" ]
     [ "$return_line" -gt "$popd_line" ]
 }
+
+# ---------------------------------------------------------------------------
+# 8. --is-default flag: parsed into IS_DEFAULT and threaded to build_container
+# ---------------------------------------------------------------------------
+
+@test "make: --is-default true sets IS_DEFAULT and is passed as 7th arg to build_container" {
+    # Inline the flag-parsing loop from make() and the flavored build_container
+    # call from do_buildx(), mirroring the file's inline-stub approach.
+    # Uses a temp file (not an exported function var) to survive the bats subshell.
+    local recorded_args_file="$TEST_TEMP_DIR/recorded_args"
+
+    # Mirror the flag-parsing loop from make() + the single-flavor do_buildx path.
+    # build_container is stubbed inline to record its positional args to $recorded_args_file.
+    flavored_build() {
+        local FLAVOR="" DOCKERFILE="" BUILD_FLAVOR="" IS_DEFAULT=""
+        local positional_args=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --flavor)
+                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
+                    FLAVOR="$2"; shift 2 ;;
+                --dockerfile)
+                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
+                    DOCKERFILE="$2"; shift 2 ;;
+                --build-flavor)
+                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
+                    BUILD_FLAVOR="$2"; shift 2 ;;
+                --is-default)
+                    [[ -z "${2:-}" || "${2:-}" == --* ]] && { return 1; }
+                    IS_DEFAULT="$2"; shift 2 ;;
+                *) positional_args+=("$1"); shift ;;
+            esac
+        done
+        [[ ${#positional_args[@]} -gt 0 ]] && set -- "${positional_args[@]}" || set --
+        local container=${1:-testcontainer}
+        local VERSION=${2:-1.0.0}
+        local TAG=${3:-1.0.0}
+        # Single-flavor build path (mirrors do_buildx when FLAVOR is set)
+        if [[ -n "${FLAVOR:-}" ]]; then
+            # Stub: record args to file instead of actually building
+            printf '%s\n' "$container" "$VERSION" "$TAG" "$FLAVOR" "${DOCKERFILE:-Dockerfile}" "${BUILD_FLAVOR:-}" "${IS_DEFAULT:-false}" > "$_ARGS_FILE"
+        fi
+    }
+    export -f flavored_build
+    export _ARGS_FILE="$recorded_args_file"
+
+    run bash -c '
+        flavored_build testcontainer 1.0.0 1.0.0 --flavor ubuntu-2404-base --is-default true
+    '
+    [ "$status" -eq 0 ]
+
+    # 7th positional arg recorded by build_container stub must be "true"
+    local seventh
+    seventh=$(sed -n '7p' "$recorded_args_file")
+    [ "$seventh" = "true" ]
+}
+
+# ---------------------------------------------------------------------------
+# 9-11. Structural grep gates: confirm --is-default wiring is present in ./make
+#       and in the composite action (mirrors the style of tests 5-7).
+# ---------------------------------------------------------------------------
+
+@test "make script: --is-default flag exports IS_DEFAULT" {
+    grep -q -- '--is-default)' "$PROJECT_ROOT/make"
+    grep -q 'export IS_DEFAULT="\$2"' "$PROJECT_ROOT/make"
+}
+
+@test "make script: single-flavor build_container call passes IS_DEFAULT as 7th arg" {
+    # Extract do_buildx() body and confirm the flavored build_container invocation
+    # ends with "${IS_DEFAULT:-false}" as the 7th positional argument.
+    local do_buildx_fn
+    do_buildx_fn=$(awk '/^do_buildx\(\)/{found=1} found{print} found && /^}$/{exit}' "$PROJECT_ROOT/make")
+    echo "$do_buildx_fn" | grep -q '"${IS_DEFAULT:-}"'
+}
+
+@test "build-container action: threads --is-default into make_args" {
+    local action="$PROJECT_ROOT/.github/actions/build-container/action.yaml"
+    # Variant-name-based default lookup uses ${variant:-$flavor} not bare $flavor
+    grep -qF 'variant_property "$container" "${variant:-$flavor}" "default"' "$action"
+    # make_args append wires the flag through
+    grep -q 'make_args+=("--is-default"' "$action"
+}

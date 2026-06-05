@@ -401,3 +401,76 @@ EOF
         return 1
     }
 }
+
+# =============================================================================
+# build_container self-heal regression tests (omitted is_default derives from
+# variant_property so direct/local callers still get the correct :latest tag)
+# =============================================================================
+
+@test "build_container: omitted is_default self-derives default variant -> bare :latest" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    source_build_script
+
+    # Override variant_property AFTER sourcing so it wins over the sourced version.
+    # Exported so the `run` subshell inherits it.
+    variant_property() { echo "true"; }
+    export -f variant_property
+
+    cd "$TEST_TEMP_DIR"
+    # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor base`
+    run build_container "testcontainer" "1.0.0" "1.0.0" "base"
+
+    [ "$status" -eq 0 ]
+
+    # Default variant must get bare rolling :latest on both registries, NOT :latest-base
+    grep -qE 'docker\.io/myowner/testcontainer:latest( |$)' "$TEST_TEMP_DIR/docker_calls.log"
+    grep -qE 'ghcr\.io/myowner/testcontainer:latest( |$)' "$TEST_TEMP_DIR/docker_calls.log"
+    ! grep -q ':latest-base' "$TEST_TEMP_DIR/docker_calls.log"
+
+    unset GITHUB_REPOSITORY_OWNER
+}
+
+@test "build_container: omitted is_default self-derives non-default variant -> :latest-<flavor>" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    source_build_script
+
+    # Override variant_property AFTER sourcing so it wins over the sourced version.
+    variant_property() { echo "false"; }
+    export -f variant_property
+
+    cd "$TEST_TEMP_DIR"
+    # Call with 4 positional args only (no 7th is_default) — mirrors `./make build --flavor vector`
+    run build_container "testcontainer" "1.0.0" "1.0.0" "vector"
+
+    [ "$status" -eq 0 ]
+
+    grep -q ':latest-vector' "$TEST_TEMP_DIR/docker_calls.log"
+
+    unset GITHUB_REPOSITORY_OWNER
+}

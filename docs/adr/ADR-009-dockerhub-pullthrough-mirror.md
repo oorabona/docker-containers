@@ -119,17 +119,18 @@ most complex.
 
 ## Implementation (issue #488)
 
-Shipped as the shared composite action [`.github/actions/dockerhub-mirror`](../../.github/actions/dockerhub-mirror/action.yaml)
-plus the buildkitd config [`.github/buildkitd-mirror.toml`](../../.github/buildkitd-mirror.toml).
-The action restores a `registry:2` pull-through store from `actions/cache`, starts
+Shipped as the shared composite action `.github/actions/dockerhub-mirror`
+plus the buildkitd config `.github/buildkitd-mirror.toml` (both since removed — see
+"Why this was removed" below).
+The action restored a `registry:2` pull-through store from `actions/cache`, started
 the proxy on `127.0.0.1:5000` (`REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io`
-plus Docker Hub backend credentials), fail-closes on an unhealthy proxy, and lets
+plus Docker Hub backend credentials), fail-closed on an unhealthy proxy, and let
 `actions/cache` persist the store on a per-job key.
 
-Wiring (per job that pulls `docker.io` through `docker buildx build`):
+Wiring (per job that pulled `docker.io` through `docker buildx build`):
 `docker.io login → dockerhub-mirror → setup-buildx-action` with
 `driver-opts: network=host` and **`buildkitd-config: .github/buildkitd-mirror.toml`**
-(the `network=host` driver-opt is how the `docker-container` buildkitd reaches the
+(the `network=host` driver-opt is how the `docker-container` buildkitd reached the
 host-published proxy; `buildkitd-config` — not `config` — is the setup-buildx-action
 input that loads the mirror, the latter being silently ignored).
 
@@ -144,10 +145,10 @@ cannot fail the workflow — `build-and-push` carries the mirror as the safety n
 also seeds a digest-pinned `registry:2` into GHCR so the proxy image itself is pulled
 intra-GitHub.
 
-Once the mirror is observed eliminating the rate-limit on full-matrix runs, the GHCR
+Once the mirror was observed eliminating the rate-limit on full-matrix runs, the GHCR
 base-image-copy repos, the skopeo-copy job, and the `get_cache_build_args` build-arg
-override become redundant for rate-limit avoidance and are slated for removal in a
-follow-up (they are kept until then). Design + hardening: `docs/plans/488-dockerhub-mirror.md`.
+override became redundant for rate-limit avoidance and were removed in subsequent PRs.
+Design + hardening: `docs/plans/488-dockerhub-mirror.md`.
 
 ## Why this was removed (#498, 2026-05-23)
 
@@ -191,6 +192,5 @@ no sidecar cache layer. The math justifies this simplicity:
   Dependent jobs are never blocked.
 
 The `dockerhub-mirror` composite action and `.github/buildkitd-mirror.toml`
-are kept on disk in case a future use case re-surfaces, but no workflow
-currently invokes them. A future cleanup PR may remove them entirely once
-the new design has run in production for a stable observation window.
+were removed (2026-06-05, PR #647) once the new design had run in production.
+No workflow invokes them.

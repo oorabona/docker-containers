@@ -403,7 +403,7 @@ runs:
         while IFS= read -r file; do
           [[ -z "$file" ]] && continue
           case "$file" in
-            helpers/*|scripts/build-container.sh|scripts/build-extensions.sh|scripts/resolvers/*|.github/actions/build-container/*)
+            helpers/*|scripts/build-container.sh|scripts/build-extensions.sh|scripts/resolvers/*|.github/actions/build-container/*|.github/actions/preflight-buildkit/*)
               shared_infra_changed=true; break ;;
           esac
         done <<< "$changed_files"

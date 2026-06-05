@@ -2268,12 +2268,12 @@ jobs:
           ghcr_digest=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' \
             "ghcr.io/${OWNER}/buildkit:buildx-stable-1" \
-            | jq -r '.digest // empty')
+            2>/dev/null | jq -r '.digest // empty') || ghcr_digest=""
 
           hub_digest=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' \
             "docker.io/moby/buildkit:buildx-stable-1" \
-            | jq -r '.digest // empty')
+            2>/dev/null | jq -r '.digest // empty') || hub_digest=""
 
           echo "::notice::GHCR mirror digest : ${ghcr_digest:-<empty>}"
           echo "::notice::docker.io upstream  : ${hub_digest:-<empty>}"

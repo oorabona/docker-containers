@@ -400,10 +400,12 @@ _emit_build_lineage() {
 }
 
 # Build container function
-# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor]
+# Usage: build_container <container> <version> <tag> [flavor] [dockerfile] [build_flavor] [is_default]
 # flavor:       distro name from variants.yaml (e.g. ubuntu-2404) — used for tag logic
 # build_flavor: the value passed as --build-arg FLAVOR (e.g. base, dev)
 #               falls back to flavor when not provided (backward-compatible)
+# is_default:   "true" if this variant is the default (gets bare :latest); defaults to "false"
+#               Caller computes via variant_property <dir> <variant_name> "default"
 # If dockerfile is provided, uses -f <dockerfile> instead of default Dockerfile
 build_container() {
     local container="$1"
@@ -412,6 +414,30 @@ build_container() {
     local flavor="${4:-}"
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
+    local is_default="${7:-}"
+    # Self-heal (best-effort legacy-parity fallback for direct/6-arg callers):
+    # When is_default is omitted — e.g. `./make build github-runner <v> --flavor ubuntu-2404`
+    # without --is-default — derive it from variant config keyed by FLAVOR, matching
+    # the pre-refactor behaviour.
+    #
+    # Edge case — name != flavor: for containers where the variant NAME differs from its
+    # flavor (e.g. github-runner: variant name "ubuntu-2404-base", flavor "ubuntu-2404"),
+    # this lookup finds NO variant named "ubuntu-2404", returns empty, and is_default falls
+    # back to "false" → the rolling tag becomes :latest-ubuntu-2404 instead of :latest.
+    # This is intentional: a flavor→variant-name reverse lookup is ambiguous when multiple
+    # variants share a flavor, so we preserve the pre-refactor behaviour rather than guess.
+    #
+    # Authoritative callers are unaffected: build_container_variants passes the variant
+    # name explicitly, and the CI composite action resolves is_default via
+    # `variant_property … <variant_name>` before calling `make --is-default`. Published
+    # (CI) tags are always correct; only a direct local single-flavor build of a
+    # name-differs-from-flavor container is affected by this limitation.
+    # No-flavor callers are also unaffected (compute_cell_tags ignores is_default when
+    # flavor is empty).
+    if [[ -z "$is_default" && -n "$flavor" ]]; then
+        is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
+    fi
+    [[ -z "$is_default" ]] && is_default="false"
 
     local github_username="${GITHUB_REPOSITORY_OWNER:-oorabona}"
     local dockerhub_image="docker.io/$github_username/$container"
@@ -437,23 +463,16 @@ build_container() {
         return 1
     }
 
-    # Prepare tags — versioned tag always included, plus rolling latest tags
-    local tag_args="-t $dockerhub_image:$tag -t $ghcr_image:$tag"
-    if [[ "$tag" != "latest" ]]; then
-        # For variant builds: add latest-{flavor} (e.g., latest-aws, latest-vector)
-        # For default/non-variant builds: add :latest
-        if [[ -n "$flavor" ]]; then
-            local is_default
-            is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
-            if [[ "$is_default" == "true" ]]; then
-                tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-            else
-                tag_args="$tag_args -t $dockerhub_image:latest-$flavor -t $ghcr_image:latest-$flavor"
-            fi
-        else
-            tag_args="$tag_args -t $dockerhub_image:latest -t $ghcr_image:latest"
-        fi
-    fi
+    # Prepare tags — versioned tag always included, plus rolling latest tags.
+    # compute_cell_tags (helpers/variant-utils.sh) is the single source of truth;
+    # see that function for the full rule-set.
+    local _cell_refs _ref
+    mapfile -t _cell_refs < <(compute_cell_tags "$tag" "$flavor" "$is_default" "$dockerhub_image" "$ghcr_image")
+    local tag_args=""
+    for _ref in "${_cell_refs[@]}"; do
+        tag_args="$tag_args -t $_ref"
+    done
+    tag_args="${tag_args# }"  # strip leading space
 
     local label_args=""
 
@@ -699,18 +718,25 @@ build_container_variants() {
         build_flavor=$(variant_property "$container_dir" "$variant_name" "build_flavor" "$major_version")
         local description
         description=$(variant_property "$container_dir" "$variant_name" "description" "$major_version")
+        # Compute is_default from the VARIANT NAME (not the flavor) so that containers
+        # where variant name != flavor (e.g. github-runner: name=ubuntu-2404-base,
+        # flavor=ubuntu-2404) resolve correctly.
+        local is_default
+        is_default=$(variant_property "$container_dir" "$variant_name" "default" "$major_version" 2>/dev/null || echo "false")
+        [[ -z "$is_default" ]] && is_default="false"
 
         # Resolve dockerfile: variant-level > version-level > default
         local dockerfile
         dockerfile=$(variant_property "$container_dir" "$variant_name" "dockerfile" "$major_version")
         [[ -z "$dockerfile" ]] && dockerfile="${version_df:-Dockerfile}"
 
-        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, dockerfile: $dockerfile)"
+        log_info "Building variant: $variant_name (tag: $variant_tag, flavor: $flavor, build_flavor: ${build_flavor:-$flavor}, is_default: $is_default, dockerfile: $dockerfile)"
 
         # Build the variant - pass base_image_version (e.g., "17-alpine") and dockerfile
         # build_flavor (e.g. base/dev) is passed as --build-arg FLAVOR; flavor (distro) is kept for tag logic
+        # is_default is passed so compute_cell_tags uses the correct variant-name-based value
         local status="built"
-        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor"; then
+        if ! build_container "$container" "$base_image_version" "$variant_tag" "$flavor" "$dockerfile" "$build_flavor" "$is_default"; then
             log_error "Failed to build variant: $variant_name"
             status="failed"
             failed=true
