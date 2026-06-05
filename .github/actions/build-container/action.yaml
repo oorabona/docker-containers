@@ -432,10 +432,12 @@ runs:
                   export CUSTOM_BUILD_ARGS="${CUSTOM_BUILD_ARGS:+$CUSTOM_BUILD_ARGS }$filtered_args"
                   echo "✅ Using GHCR base images: $filtered_args"
                 else
-                  echo "::warning::All reachable entries produced no usable args — falling back to Docker Hub defaults"
+                  echo "::error::GHCR base cache is configured for $container but all reachable entries produced no usable args — Docker Hub fallback is disabled (egress containment). Ensure the GHCR base cache is populated (run sync-base-images) before retrying."
+                  exit 1
                 fi
               else
-                echo "::warning::No GHCR cache image accessible — falling back to Docker Hub defaults"
+                echo "::error::GHCR base cache is configured for $container but no cache image is accessible — Docker Hub fallback is disabled (egress containment). Ensure the GHCR base cache is populated (run sync-base-images) before retrying."
+                exit 1
               fi
           fi
         fi
