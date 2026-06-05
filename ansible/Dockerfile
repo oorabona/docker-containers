@@ -1,5 +1,5 @@
 # Build stage
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG OS_VERSION
 FROM ${REMOTE_CR}/library/ubuntu:${OS_VERSION} as builder
 

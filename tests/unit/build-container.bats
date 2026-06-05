@@ -346,65 +346,58 @@ EOF
 }
 
 # =============================================================================
-# P4b: REMOTE_CR default injection tests
+# ARG REMOTE_CR default resolution tests (fix/628-dockerio-egress-failclose)
 # =============================================================================
 
-@test "build_container passes --build-arg REMOTE_CR=docker.io when none supplied (local/default path)" {
-    export MULTIPLATFORM_SUPPORTED="false"
-    export GITHUB_REPOSITORY_OWNER="myowner"
-    unset CUSTOM_BUILD_ARGS
-
-    mkdir -p "$TEST_TEMP_DIR/bin"
-    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
-#!/bin/bash
-echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
-exit 0
+@test "_resolve_base_image Step 4 resolves REMOTE_CR default to ghcr.io/oorabona" {
+    # Create a mock Dockerfile with ARG REMOTE_CR=ghcr.io/oorabona (the new default)
+    mkdir -p "$TEST_TEMP_DIR/mycontainer"
+    cat > "$TEST_TEMP_DIR/mycontainer/Dockerfile" << 'EOF'
+ARG REMOTE_CR=ghcr.io/oorabona
+ARG VERSION
+FROM ${REMOTE_CR}/library/debian:${VERSION}
 EOF
-    chmod +x "$TEST_TEMP_DIR/bin/docker"
-    export PATH="$TEST_TEMP_DIR/bin:$PATH"
-
-    create_mock_container "testcontainer" "1.0.0"
 
     source_build_script
 
-    cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    # Call _resolve_base_image directly (no config.yaml → falls through to FROM line)
+    cd "$TEST_TEMP_DIR/mycontainer"
+    local label_args=""
+    _resolve_base_image "$TEST_TEMP_DIR/mycontainer/Dockerfile" "bookworm" "label_args"
 
-    [ "$status" -eq 0 ]
-    # REMOTE_CR must be explicitly supplied to docker build as docker.io (no Dockerfile default)
-    grep -q "REMOTE_CR=docker.io" "$TEST_TEMP_DIR/docker_calls.log"
-
-    unset GITHUB_REPOSITORY_OWNER
+    # Step 4 must have substituted REMOTE_CR with ghcr.io/oorabona
+    [[ "$_BASE_IMAGE_REF" == *"ghcr.io/oorabona"* ]] || {
+        echo "Expected _BASE_IMAGE_REF to contain ghcr.io/oorabona, got: $_BASE_IMAGE_REF"
+        return 1
+    }
+    # Must NOT fall back to docker.io
+    [[ "$_BASE_IMAGE_REF" != *"docker.io"* ]] || {
+        echo "Expected _BASE_IMAGE_REF to NOT contain docker.io, got: $_BASE_IMAGE_REF"
+        return 1
+    }
 }
 
-@test "build_container does not override REMOTE_CR when CUSTOM_BUILD_ARGS already supplies it" {
-    export MULTIPLATFORM_SUPPORTED="false"
-    export GITHUB_REPOSITORY_OWNER="myowner"
-    export CUSTOM_BUILD_ARGS="--build-arg REMOTE_CR=ghcr.io/myowner"
-
-    mkdir -p "$TEST_TEMP_DIR/bin"
-    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
-#!/bin/bash
-echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
-exit 0
+@test "_resolve_base_image Step 4 does NOT resolve REMOTE_CR to docker.io when default is ghcr.io/oorabona" {
+    # Regression guard: old default was docker.io — ensure it's gone
+    mkdir -p "$TEST_TEMP_DIR/mycontainer2"
+    cat > "$TEST_TEMP_DIR/mycontainer2/Dockerfile" << 'EOF'
+ARG REMOTE_CR=ghcr.io/oorabona
+ARG VERSION
+FROM ${REMOTE_CR}/library/alpine:${VERSION}
 EOF
-    chmod +x "$TEST_TEMP_DIR/bin/docker"
-    export PATH="$TEST_TEMP_DIR/bin:$PATH"
-
-    create_mock_container "testcontainer" "1.0.0"
 
     source_build_script
 
-    cd "$TEST_TEMP_DIR"
-    run build_container "testcontainer" "1.0.0" "1.0.0"
+    cd "$TEST_TEMP_DIR/mycontainer2"
+    local label_args=""
+    _resolve_base_image "$TEST_TEMP_DIR/mycontainer2/Dockerfile" "3.20" "label_args"
 
-    [ "$status" -eq 0 ]
-    # The GHCR value must reach docker build
-    grep -q "REMOTE_CR=ghcr.io/myowner" "$TEST_TEMP_DIR/docker_calls.log"
-    # The docker.io fallback must NOT be injected
-    run grep -c "REMOTE_CR=docker.io" "$TEST_TEMP_DIR/docker_calls.log"
-    [ "$output" -eq 0 ]
-
-    unset CUSTOM_BUILD_ARGS
-    unset GITHUB_REPOSITORY_OWNER
+    [[ "$_BASE_IMAGE_REF" != *"docker.io"* ]] || {
+        echo "Regression: _BASE_IMAGE_REF still contains docker.io: $_BASE_IMAGE_REF"
+        return 1
+    }
+    [[ "$_BASE_IMAGE_REF" == "ghcr.io/oorabona/library/alpine:3.20" ]] || {
+        echo "Expected ghcr.io/oorabona/library/alpine:3.20, got: $_BASE_IMAGE_REF"
+        return 1
+    }
 }

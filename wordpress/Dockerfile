@@ -1,6 +1,6 @@
 # WordPress container based on our PHP image
 # All PHP extensions (gd, mysqli, opcache, zip) are already included
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG PHP_TAG
 FROM ${REMOTE_CR}/php:${PHP_TAG}
 

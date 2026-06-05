@@ -1,5 +1,5 @@
 # Smallest base image
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG OS_VERSION
 FROM ${REMOTE_CR}/library/alpine:${OS_VERSION}
 

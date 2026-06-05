@@ -15,14 +15,14 @@
 # Extension images are pulled from registry and files are copied using COPY --from=
 # Build extension images first: ./scripts/build-extensions.sh postgres
 
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 ARG MAJOR_VERSION
 
 # ============================================================================
 # Base Image Registry
-# Default: docker.io (raw docker build / ./make). CI overrides REMOTE_CR to
-# ghcr.io/oorabona to pull from the GHCR pull-through cache.
+# Default: ghcr.io/oorabona (local/fork builds use the public GHCR mirror).
+# CI overrides REMOTE_CR to ghcr.io/<owner> via CUSTOM_BUILD_ARGS.
 # ============================================================================
 
 # ============================================================================

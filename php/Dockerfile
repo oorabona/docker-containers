@@ -1,4 +1,4 @@
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 ARG COMPOSER_VERSION
 FROM ${REMOTE_CR}/library/composer:${COMPOSER_VERSION} AS composer

@@ -8,13 +8,13 @@
 #
 # For versions with extension support, use the main Dockerfile instead.
 
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 
 # ============================================================================
 # Base Image Registry
-# Default: docker.io (raw docker build / ./make). CI overrides REMOTE_CR to
-# ghcr.io/oorabona to pull from the GHCR pull-through cache.
+# Default: ghcr.io/oorabona (local/fork builds use the public GHCR mirror).
+# CI overrides REMOTE_CR to ghcr.io/<owner> via CUSTOM_BUILD_ARGS.
 # ============================================================================
 
 # ============================================================================

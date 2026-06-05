@@ -1,4 +1,4 @@
-ARG REMOTE_CR
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
 FROM ${REMOTE_CR}/library/debian:${VERSION}
 ARG LOCALES=en_US
