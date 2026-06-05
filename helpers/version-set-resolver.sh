@@ -91,7 +91,11 @@ _committed_versionset_satisfies() {
     local ext_name="${1:?ext_name is required}"
     local pg_major="${2:?pg_major is required}"
     local ceiling="${3:?ceiling is required}"
-    local retain_count="${4:?retain_count is required}"
+    # Normalize retain_count here so every caller is safe regardless of what it
+    # passes (raw config value, "0", empty, "bogus", or already-normalized int).
+    # Re-normalizing an already-valid value is idempotent and harmless.
+    local retain_count
+    retain_count=$(_normalize_retain_count "${4:-}")
 
     local _slice
     _slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null) || return 1

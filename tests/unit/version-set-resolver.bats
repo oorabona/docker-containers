@@ -646,6 +646,75 @@ JSONEOF
     [[ "$status" -ne 0 ]]
 }
 
+# ── CVS-raw: _committed_versionset_satisfies normalizes raw retain_count args ─
+# These tests call the predicate DIRECTLY with invalid retain_count values to
+# verify normalization happens inside the function (not only via the fast path).
+
+@test "CVS-raw-zero: _committed_versionset_satisfies with retain_count=0 normalizes to 12, does not abort" {
+    # A 12-entry committed slice with ceiling=2.27.2.
+    # Passing retain_count=0 (invalid) directly → must normalize to 12 → 12 >= 12 → exit 0.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        set -u
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 0
+        echo \"rc=\$?\"
+    "
+    rm -f "$tmp_committed"
+
+    # Must not abort under set -u; retain_count=0 normalized to 12; 12>=12 → exit 0.
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "rc=0" ]]
+}
+
+@test "CVS-raw-empty: _committed_versionset_satisfies with empty retain_count normalizes to 12, does not abort" {
+    # Passing retain_count="" directly → must normalize to 12 → 12 >= 12 → exit 0.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        set -u
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 ''
+        echo \"rc=\$?\"
+    "
+    rm -f "$tmp_committed"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "rc=0" ]]
+}
+
+@test "CVS-raw-bogus: _committed_versionset_satisfies with retain_count=bogus normalizes to 12, does not abort" {
+    # Passing retain_count="bogus" directly → must normalize to 12 → 12 >= 12 → exit 0.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        set -u
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _committed_versionset_satisfies timescaledb 18 2.27.2 bogus
+        echo \"rc=\$?\"
+    "
+    rm -f "$tmp_committed"
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "rc=0" ]]
+}
+
 # ── NRC: _normalize_retain_count — shared normalization helper ────────────────
 
 @test "NRC-positive: _normalize_retain_count returns valid positive int unchanged" {
