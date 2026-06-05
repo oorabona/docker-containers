@@ -139,8 +139,11 @@ runs:
         # reject `--tag` / `-t` for imagetools create. Pinned on both OS for reproducibility.
         version: 'v0.33.0'
         # Pin BuildKit image to GHCR-seeded copy (docker.io egress containment, #628).
-        # On Windows, driver=docker so this key is silently ignored — safe.
-        driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit:buildx-stable-1
+        # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+        # On Windows, driver=docker — the image= key applies only to the docker-container
+        # driver and is meaningless (and potentially harmful) on the docker driver, so
+        # driver-opts is left empty on Windows to avoid silent misconfiguration.
+        driver-opts: ${{ runner.os != 'Windows' && format('image=ghcr.io/{0}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f', github.repository_owner) || '' }}
       # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal.
       # Retry logic handles intermittent Docker Hub issues.
 
