@@ -1,5 +1,5 @@
 # Build stage
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG OS_VERSION
 FROM ${REMOTE_CR}/library/ubuntu:${OS_VERSION} as builder
 

@@ -1,7 +1,7 @@
 # Multi-stage build for minimal FROM scratch image
 # Stage 1: Build sslh with static linking
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG OS_IMAGE_TAG
 
 FROM ${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG} AS builder

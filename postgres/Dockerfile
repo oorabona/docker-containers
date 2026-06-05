@@ -15,7 +15,7 @@
 # Extension images are pulled from registry and files are copied using COPY --from=
 # Build extension images first: ./scripts/build-extensions.sh postgres
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG VERSION
 ARG MAJOR_VERSION
 

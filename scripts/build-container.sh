@@ -134,6 +134,18 @@ _prepare_build_args() {
         local _ba_value="${_ba_token#*=}"
         [[ -n "$_ba_name" && "$_ba_name" != "$_ba_token" ]] && _BUILD_ARGS_RESOLVED["$_ba_name"]="$_ba_value"
     done < <(echo "${_BUILD_ARGS:-}" | grep -oE -- '--build-arg [^ ]+' | sed 's/--build-arg //' || true)
+    # P4b: Dockerfiles no longer carry ARG REMOTE_CR=docker.io defaults (egress
+    # containment — Step 4 in _resolve_base_image would silently fall back to
+    # Docker Hub when the default is present).  Compensate here so every docker
+    # build invocation always receives an explicit REMOTE_CR value:
+    #   • own-repo CI path: CUSTOM_BUILD_ARGS already supplies REMOTE_CR=ghcr.io/<owner>
+    #     → it is in _BUILD_ARGS_RESOLVED; the guard below is a no-op.
+    #   • local / fork-PR path: no REMOTE_CR in _BUILD_ARGS → inject docker.io so
+    #     _resolve_base_image (Step 2.5) and docker build both see an explicit value.
+    if [[ -z "${_BUILD_ARGS_RESOLVED[REMOTE_CR]+_}" ]]; then
+        _BUILD_ARGS="${_BUILD_ARGS:+$_BUILD_ARGS }--build-arg REMOTE_CR=docker.io"
+        _BUILD_ARGS_RESOLVED[REMOTE_CR]="docker.io"
+    fi
 }
 
 # Resolve base image reference from config.yaml or Dockerfile, substitute variables

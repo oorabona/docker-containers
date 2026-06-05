@@ -344,3 +344,67 @@ EOF
 
     unset GITHUB_REPOSITORY_OWNER
 }
+
+# =============================================================================
+# P4b: REMOTE_CR default injection tests
+# =============================================================================
+
+@test "build_container passes --build-arg REMOTE_CR=docker.io when none supplied (local/default path)" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+    unset CUSTOM_BUILD_ARGS
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    source_build_script
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0"
+
+    [ "$status" -eq 0 ]
+    # REMOTE_CR must be explicitly supplied to docker build as docker.io (no Dockerfile default)
+    grep -q "REMOTE_CR=docker.io" "$TEST_TEMP_DIR/docker_calls.log"
+
+    unset GITHUB_REPOSITORY_OWNER
+}
+
+@test "build_container does not override REMOTE_CR when CUSTOM_BUILD_ARGS already supplies it" {
+    export MULTIPLATFORM_SUPPORTED="false"
+    export GITHUB_REPOSITORY_OWNER="myowner"
+    export CUSTOM_BUILD_ARGS="--build-arg REMOTE_CR=ghcr.io/myowner"
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/docker" << 'EOF'
+#!/bin/bash
+echo "ARGS: $*" >> "$TEST_TEMP_DIR/docker_calls.log"
+exit 0
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/docker"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    create_mock_container "testcontainer" "1.0.0"
+
+    source_build_script
+
+    cd "$TEST_TEMP_DIR"
+    run build_container "testcontainer" "1.0.0" "1.0.0"
+
+    [ "$status" -eq 0 ]
+    # The GHCR value must reach docker build
+    grep -q "REMOTE_CR=ghcr.io/myowner" "$TEST_TEMP_DIR/docker_calls.log"
+    # The docker.io fallback must NOT be injected
+    run grep -c "REMOTE_CR=docker.io" "$TEST_TEMP_DIR/docker_calls.log"
+    [ "$output" -eq 0 ]
+
+    unset CUSTOM_BUILD_ARGS
+    unset GITHUB_REPOSITORY_OWNER
+}

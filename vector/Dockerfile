@@ -2,7 +2,7 @@
 # Downloads pre-built musl binary from GitHub releases
 # https://vector.dev
 
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG VERSION
 ARG UPSTREAM_VERSION
 ARG OS_IMAGE_TAG

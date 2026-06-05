@@ -16,7 +16,7 @@ ARG AZURE_CLI_VERSION
 ARG GCP_CLI_VERSION
 
 # Registry root for GHCR caching (CI sets this to avoid Docker Hub rate limits)
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 
 # Stage 1: Get Terraform binary
 # Use UPSTREAM_VERSION if provided (raw version without suffix), fallback to VERSION

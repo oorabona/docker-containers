@@ -1,6 +1,6 @@
 # Jekyll Static Site Generator
 # Lightweight container for building and serving Jekyll sites
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR
 ARG RUBY_VERSION
 ARG ALPINE_VERSION
 
