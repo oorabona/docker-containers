@@ -91,6 +91,14 @@ resolve_version_set() {
         return 0
     fi
 
+    # Read optional retain_count here (shared by both the fast path and the live
+    # resolver path).  Empty string → resolver uses its own internal default (12).
+    # We use 12 as the fast-path fallback so the committed slice is trimmed
+    # consistently with what the live resolver would produce.
+    local retain_count
+    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
+    local _effective_retain="${retain_count:-12}"
+
     # Fast path: consult the committed version-set file BEFORE invoking the live
     # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
     # egress during the build path when the file is present and covers this major.
@@ -100,6 +108,11 @@ resolve_version_set() {
     # the caller's pinned version (e.g. a caller-supplied test config with a lower
     # ceiling) → fall through to the live resolver so the correct ceiling is applied.
     #
+    # When accepting the committed slice, trim it to the effective retain_count
+    # (last N elements, newest first) so the fast path mirrors what the live
+    # resolver would return.  If the slice has fewer elements than retain_count,
+    # it is returned as-is (it IS the full set for this major).
+    #
     # Falls through on any miss (file absent, ext absent, major key absent, empty
     # array, or ceiling mismatch) — existing fail-closed semantics preserved.
     if [[ -n "$single_version" && "$single_version" != "null" ]]; then
@@ -107,7 +120,10 @@ resolve_version_set() {
         if _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null); then
             _committed_ceiling=$(printf '%s' "$_committed_slice" | jq -r '.[-1]' 2>/dev/null) || true
             if [[ "$_committed_ceiling" == "$single_version" ]]; then
-                printf '%s\n' "$_committed_slice"
+                # Trim to retain_count: keep the last _effective_retain elements.
+                # If the slice length <= retain_count, .[-N:] in jq returns the full array.
+                printf '%s' "$_committed_slice" | \
+                    jq -c --argjson n "${_effective_retain}" '.[-$n:]'
                 return 0
             fi
             # Ceiling mismatch → committed file is stale for this caller → fall through
@@ -128,10 +144,6 @@ resolve_version_set() {
         echo "::error::version-set-resolver: resolver not found or not executable: $(_esc_gha "${abs_resolver}")" >&2
         return 1
     fi
-
-    # Read optional retain_count; default empty string means resolver uses its own default.
-    local retain_count
-    retain_count=$(yq -r ".extensions.${ext_name}.version_set.retain_count // \"\"" "${_config_file}")
 
     # Invoke resolver with env contract; propagate rc.
     # CEILING_VERSION bounds the resolver to the pinned config version so that

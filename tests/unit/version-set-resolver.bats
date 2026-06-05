@@ -474,3 +474,90 @@ YAMLEOF
     # Must produce no stdout (live resolver failed, fail-closed; stderr suppressed)
     [[ -z "$output" ]]
 }
+
+# ── CV-trim: committed fast path respects retain_count ───────────────────────
+
+@test "CV-trim-retain5: committed fast path trims to retain_count when slice is larger" {
+    # Committed file has 12 versions for pg18, caller config has retain_count=5.
+    # Fast path must return only the last 5 (newest, ceiling-inclusive), not all 12.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.22.0","2.23.0","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.2"]}}
+JSONEOF
+
+    # Config with retain_count=5 and ceiling=2.27.2 (matches committed ceiling).
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 5
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed: committed fast path used (live resolver fixture absent but never reached)
+    [[ "$status" -eq 0 ]]
+    # Result must be exactly the last 5 elements (newest, ceiling-inclusive)
+    local count
+    count=$(echo "$output" | jq 'length')
+    [[ "$count" -eq 5 ]]
+    # The last element must be the ceiling
+    local last
+    last=$(echo "$output" | jq -r '.[-1]')
+    [[ "$last" == "2.27.2" ]]
+    # The first element must be the 8th of the 12 (index 7: 2.26.1)
+    local first
+    first=$(echo "$output" | jq -r '.[0]')
+    [[ "$first" == "2.26.1" ]]
+}
+
+@test "CV-trim-shorter-than-retain: committed fast path returns full slice when smaller than retain_count" {
+    # Committed file has 2 versions for pg18, caller config has retain_count=5.
+    # When the slice is shorter than retain_count, all elements must be returned.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.25.0","2.27.2"]}}
+JSONEOF
+
+    # Config with retain_count=5 and ceiling=2.27.2 (matches committed ceiling).
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 5
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed and return the full 2-element slice (2 < 5, no trim)
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == '["2.25.0","2.27.2"]' ]]
+}
