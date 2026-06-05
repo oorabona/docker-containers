@@ -2180,65 +2180,109 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read the index digest of the freshly-seeded GHCR-mirrored buildkit
-          # image via docker buildx imagetools inspect — the same idiom used by
-          # detect-base-digest-drift.sh (scripts/detect-base-digest-drift.sh:154).
-          # imagetools works on the default builder; no setup-buildx step needed.
-          # GHCR login (above) makes the private image readable.
-          new_digest=$(docker buildx imagetools inspect \
+          # --- FINDING 1: verify GHCR mirror == docker.io upstream (fail-closed) ---
+          # The sync-base-images seed step runs with continue-on-error, so the GHCR
+          # tag may be stale (seed failure, 429 throttle, etc.).  We must not promote
+          # an UNVERIFIED digest.  Both registries are inspected; the bump only
+          # proceeds when the two digests are equal, proving the GHCR mirror is a
+          # current, faithful copy of official upstream.  Inequality → skip + warning.
+          # docker.io access is intentional here: this is the upstream-monitor job,
+          # the one job authorised to contact docker.io for upstream comparison.
+          ghcr_digest=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' \
             "ghcr.io/${OWNER}/buildkit:buildx-stable-1" \
             | jq -r '.digest // empty')
 
-          if [[ -z "$new_digest" ]]; then
-            echo "::error::Could not read digest from ghcr.io/${OWNER}/buildkit:buildx-stable-1 — skipping"
+          hub_digest=$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' \
+            "docker.io/moby/buildkit:buildx-stable-1" \
+            | jq -r '.digest // empty')
+
+          echo "::notice::GHCR mirror digest : ${ghcr_digest:-<empty>}"
+          echo "::notice::docker.io upstream  : ${hub_digest:-<empty>}"
+
+          # Fail-closed: either digest empty → GHCR probe or docker.io unreachable.
+          if [[ -z "$ghcr_digest" || -z "$hub_digest" ]]; then
+            echo "::warning::Could not read one or both digests (ghcr='${ghcr_digest:-<empty>}' hub='${hub_digest:-<empty>}') — skipping bump"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Extract the currently pinned digest from the repo.  All occurrences
-          # share the same literal, so any one grep hit is authoritative.
-          current_pin=$(grep -rhoE 'buildkit@sha256:[0-9a-f]{64}' .github/ \
-            | sort -u | head -1)
-          if [[ -z "$current_pin" ]]; then
-            echo "::error::Could not find buildkit@sha256:<hex> pin in .github/ — repo state unexpected"
+          # Fail-closed: digests differ → seed did not refresh GHCR or upstream
+          # updated between the seed and this inspect.  Do not bump to a digest that
+          # hasn't been verified against the authoritative upstream source.
+          if [[ "$ghcr_digest" != "$hub_digest" ]]; then
+            echo "::warning::GHCR mirror digest (${ghcr_digest}) != docker.io upstream (${hub_digest}) — GHCR copy may be stale; skipping bump"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # current_pin is "buildkit@sha256:<hex>"; strip the "buildkit@" prefix
-          current_digest="${current_pin#buildkit@}"
+          # Both digests agree: the verified new digest is this value.
+          new_digest="$ghcr_digest"
 
-          echo "::notice::Pinned digest  : ${current_digest}"
-          echo "::notice::Upstream digest: ${new_digest}"
+          # --- Collect all distinct pins currently in the allowlisted files ---
+          # (These are the only files that embed the buildkit digest.)
+          allowlisted_files=(
+            .github/actions/build-container/action.yaml
+            .github/workflows/auto-build.yaml
+            .github/workflows/recreate-manifests.yaml
+            .github/workflows/upstream-monitor.yaml
+          )
 
-          if [[ "$new_digest" == "$current_digest" ]]; then
+          # FINDING 2: gather ALL distinct pinned digests across allowlisted files so
+          # we can detect diverged pins and report an accurate old_digest in the PR.
+          existing_pins=$(grep -rhoE 'buildkit@sha256:[0-9a-f]{64}' \
+            "${allowlisted_files[@]}" 2>/dev/null | sort -u || true)
+
+          if [[ -z "$existing_pins" ]]; then
+            echo "::error::Could not find any buildkit@sha256:<hex> pin in allowlisted files — repo state unexpected"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Derive the distinct old digest(s) for the PR body.
+          old_digest=$(echo "$existing_pins" | sed 's/buildkit@//' | sort -u | tr '\n' ' ' | sed 's/ $//')
+
+          echo "::notice::Pinned digest(s): ${old_digest}"
+          echo "::notice::Verified new    : ${new_digest}"
+
+          # Check whether any pinned occurrence differs from the new digest.
+          # If every occurrence already equals new_digest → nothing to do.
+          needs_bump=false
+          while IFS= read -r pin; do
+            pinned_digest="${pin#buildkit@}"
+            if [[ "$pinned_digest" != "$new_digest" ]]; then
+              needs_bump=true
+              break
+            fi
+          done <<< "$existing_pins"
+
+          if [[ "$needs_bump" == "false" ]]; then
             echo "::notice::buildkit digest unchanged — no PR needed"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "::notice::Digest drift detected — updating pins and opening PR"
+          echo "::notice::Digest drift detected — replacing ALL pins and opening PR"
 
-          # Rewrite all occurrences of the old pin to the new digest across the
-          # files that reference it.
-          for f in \
-            .github/actions/build-container/action.yaml \
-            .github/workflows/auto-build.yaml \
-            .github/workflows/recreate-manifests.yaml \
-            .github/workflows/upstream-monitor.yaml
-          do
-            if [[ -f "$f" ]]; then
-              sed -i "s#buildkit@${current_digest}#buildkit@${new_digest}#g" "$f"
-              echo "::notice::Updated pin in ${f}"
-            else
-              echo "::warning::Expected file not found: ${f}"
-            fi
-          done
+          # FINDING 2: replace EVERY buildkit@sha256:<64-hex> occurrence (not just
+          # the first) across all allowlisted files in one global regex pass.
+          # This handles the case where pins have diverged across files.
+          files_with_pin=$(grep -rlE 'buildkit@sha256:[0-9a-f]{64}' \
+            "${allowlisted_files[@]}" 2>/dev/null || true)
 
-          echo "changed=true"                   >> "$GITHUB_OUTPUT"
-          echo "new_digest=${new_digest}"        >> "$GITHUB_OUTPUT"
-          echo "old_digest=${current_digest}"    >> "$GITHUB_OUTPUT"
+          if [[ -n "$files_with_pin" ]]; then
+            while IFS= read -r f; do
+              sed -i -E "s#buildkit@sha256:[0-9a-f]{64}#buildkit@${new_digest}#g" "$f"
+              echo "::notice::Updated all pins in ${f}"
+            done <<< "$files_with_pin"
+          fi
+
+          {
+            echo "changed=true"
+            echo "new_digest=${new_digest}"
+            echo "old_digest=${old_digest}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Import GPG key
         # Repo requires signed commits (SECURITY.md §branch-protection).
