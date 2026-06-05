@@ -13,13 +13,16 @@ setup() {
 # ── timescaledb has version_set: returns resolver output ─────────────────────
 
 @test "resolve_version_set timescaledb 18 returns the capped resolver JSON array" {
-    # Default retain_count=12 from config.yaml: pg18 has 13 versions, capped to 12.
-    # The oldest (2.23.0) is dropped; result is 2.23.1..2.27.1 (12 elements).
+    # Default retain_count=12 from config.yaml: pg18 fixture has 13 versions (2.23.0..2.27.1)
+    # plus the ceiling (2.27.2) injected by the resolver = 14 total; capped to 12.
+    # The two oldest (2.23.0, 2.23.1) are dropped; result is 2.24.0..2.27.2 (12 elements).
+    # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _COMMITTED_VERSIONSET_FILE=/nonexistent \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.23.1","2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1"]' ]]
+    [[ "$output" == '["2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1","2.27.2"]' ]]
 }
 
 @test "resolve_version_set timescaledb 18 output is valid JSON array" {
@@ -57,41 +60,55 @@ setup() {
 }
 
 # ── Resolver failure propagates non-zero exit ─────────────────────────────────
+# When the committed version-set file is absent/misses the major, the live resolver
+# is the only path.  A live resolver failure must propagate non-zero exit (fail-closed).
+# (When the committed file covers the major, the fast path succeeds without the
+# live resolver — see CV-hit-no-live below.)
 
-@test "resolver failure propagates non-zero exit" {
+@test "resolver failure propagates non-zero exit when committed file absent" {
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE='/nonexistent/timescaledb-version-set.json'
+            resolve_version_set timescaledb 18
+        "
     [[ "$status" -ne 0 ]]
 }
 
-@test "resolver failure produces empty stdout" {
+@test "resolver failure produces empty stdout when committed file absent" {
     result=$(env \
         _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
-        bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18" 2>/dev/null || true)
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE='/nonexistent/timescaledb-version-set.json'
+            resolve_version_set timescaledb 18
+        " 2>/dev/null || true)
     [[ -z "$result" ]]
 }
 
 # ── Different pg_major values produce different arrays via helper ─────────────
 
 @test "timescaledb pg17 floor differs from pg18 floor" {
-    # With default retain_count=12, pg17 returns the 12 most-recent versions.
-    # The floor of that capped window is 2.23.1 (12th from the end of the 32-version set).
+    # With default retain_count=12 and ceiling=2.27.2, pg17 fixture has versions up to
+    # 2.27.1 + injected ceiling 2.27.2 = many total; tail-12 starts at 2.24.0.
+    # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _COMMITTED_VERSIONSET_FILE=/nonexistent \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 17"
     [[ "$status" -eq 0 ]]
     first=$(echo "$output" | jq -r '.[0]')
-    [[ "$first" == "2.23.1" ]]
+    [[ "$first" == "2.24.0" ]]
 }
 
 # ── CEILING_VERSION clamps resolver output ────────────────────────────────────
 
 @test "above-ceiling version excluded when CEILING_VERSION is set" {
-    # The HA fixture only contains tags up to 2.27.1.
-    # The resolver ceiling (from config) is 2.27.1 — so the output must not exceed it.
+    # The HA fixture contains tags up to 2.27.1; config ceiling is 2.27.2.
     # This test uses a synthetic fixture that adds a hypothetical 2.28.0 HA tag
-    # to verify the ceiling filter works.
+    # to verify the ceiling filter excludes it.
+    # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     local above_fixture
     above_fixture="$(mktemp)"
     # Copy the real fixture and append a hypothetical pg18.99-ts2.28.0 tag
@@ -100,14 +117,15 @@ setup() {
 
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$above_fixture" \
+        _COMMITTED_VERSIONSET_FILE=/nonexistent \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     rm -f "$above_fixture"
     [[ "$status" -eq 0 ]]
-    # 2.28.0 must NOT appear in the output (ceiling is 2.27.1 from config)
+    # 2.28.0 must NOT appear in the output (ceiling is 2.27.2 from config)
     [[ "$output" != *'"2.28.0"'* ]]
-    # The ceiling version itself (2.27.1) must be the last element
+    # The ceiling version itself (2.27.2) must be the last element
     last=$(echo "$output" | jq -r '.[-1]')
-    [[ "$last" == "2.27.1" ]]
+    [[ "$last" == "2.27.2" ]]
 }
 
 # ── XX: config_file parameter — resolver reads from caller-supplied config ────
@@ -182,18 +200,20 @@ YAMLEOF
     # Regression: direct invocation without a config_file must still work correctly
     # using the implicit default (postgres/extensions/config.yaml).
     # Default retain_count=12 in config.yaml so count must be exactly 12.
+    # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
+        _COMMITTED_VERSIONSET_FILE=/nonexistent \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
     # Must return the capped timescaledb set from the default config (retain_count=12)
     local count
     count=$(echo "$output" | jq 'length')
     [[ "$count" -eq 12 ]]
-    # The default ceiling 2.27.1 must be the last element
+    # The default ceiling 2.27.2 must be the last element
     local last
     last=$(echo "$output" | jq -r '.[-1]')
-    [[ "$last" == "2.27.1" ]]
+    [[ "$last" == "2.27.2" ]]
 }
 
 # ── RC: retain_count config key threading ────────────────────────────────────
@@ -300,4 +320,157 @@ YAMLEOF
 
     # Output must not be a valid non-empty array with empty or null element.
     [[ "$output" != *'[""]'* ]]
+}
+
+# ── CV: _read_committed_versionset — committed file fast path ─────────────────
+
+@test "CV-hit: _read_committed_versionset returns committed slice when file+major present" {
+    # Write a minimal committed file with a pg18 entry.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.24.0","2.25.0","2.27.2"],"pg17":["2.24.0","2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _read_committed_versionset timescaledb 18
+    "
+    rm -f "$tmp_committed"
+
+    [[ "$status" -eq 0 ]]
+    # Must return the committed pg18 slice exactly
+    [[ "$output" == '["2.24.0","2.25.0","2.27.2"]' ]]
+}
+
+@test "CV-miss-absent: _read_committed_versionset exits non-zero when file is absent" {
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"/nonexistent/timescaledb-version-set.json\"
+        _read_committed_versionset timescaledb 18
+    "
+    [[ "$status" -ne 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "CV-miss-major: _read_committed_versionset exits non-zero when major key missing" {
+    # File present but pg15 key absent.
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.27.2"],"pg17":["2.27.2"],"pg16":["2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _read_committed_versionset timescaledb 15
+    "
+    rm -f "$tmp_committed"
+
+    [[ "$status" -ne 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "CV-miss-ext: _read_committed_versionset exits non-zero when ext key missing" {
+    # File present but pgvector key absent (only timescaledb in file).
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.27.2"]}}
+JSONEOF
+
+    run bash -c "
+        source \"$HELPER\"
+        _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+        _read_committed_versionset pgvector 18
+    "
+    rm -f "$tmp_committed"
+
+    [[ "$status" -ne 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "CV-hit-no-live: resolve_version_set uses committed slice, live resolver NOT called" {
+    # Wire: committed file has a pg18 entry with ceiling=2.27.2 (matches config ceiling).
+    # The live resolver (timescaledb-ha.sh) is pointed at a nonexistent fixture so any
+    # live-path invocation would fail.  The fast path must return the committed slice
+    # without invoking the live resolver (observable: exit 0 despite bad fixture).
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.25.0","2.27.2"]}}
+JSONEOF
+
+    # Temp config: real resolver path, ceiling=2.27.2 (matches committed ceiling).
+    # Any live invocation of timescaledb-ha.sh would fail because fixture is absent.
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 12
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 18 \"$tmp_config\"
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must succeed: committed slice returned, live resolver never reached
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == '["2.25.0","2.27.2"]' ]]
+}
+
+@test "CV-miss-fallback: resolve_version_set falls through to live resolver on committed miss" {
+    # Committed file exists but covers only pg18 (not pg19 → miss).
+    # The live resolver is timescaledb-ha.sh pointed at a nonexistent fixture → fails.
+    # Proof: overall exit is non-zero (live resolver was invoked and failed on miss,
+    # not the committed fast path returning successfully).
+    local tmp_committed
+    tmp_committed="$(mktemp)"
+    cat > "$tmp_committed" <<'JSONEOF'
+{"timescaledb":{"pg18":["2.27.2"]}}
+JSONEOF
+
+    # Temp config uses the real resolver with a nonexistent fixture, ceiling=2.27.2.
+    # pg19 is not in the committed file (miss) and the fixture is nonexistent (resolver fails).
+    # Version must match committed ceiling so the ceiling-mismatch guard doesn't interfere;
+    # the miss is on pg19 (key absent), not on version mismatch.
+    local tmp_config
+    tmp_config="$(mktemp --suffix=.yaml)"
+    cat > "$tmp_config" <<'YAMLEOF'
+extensions:
+  timescaledb:
+    version: "2.27.2"
+    repo: "https://github.com/timescale/timescaledb"
+    version_set:
+      resolver: "scripts/resolvers/timescaledb-ha.sh"
+      retain_count: 12
+YAMLEOF
+
+    run env \
+        _RESOLVER_HA_TAGS_FIXTURE="/nonexistent/ha.txt" \
+        bash -c "
+            source \"$HELPER\"
+            _COMMITTED_VERSIONSET_FILE=\"$tmp_committed\"
+            resolve_version_set timescaledb 19 \"$tmp_config\" 2>/dev/null
+        "
+
+    rm -f "$tmp_committed" "$tmp_config"
+
+    # Must fail: committed miss for pg19, live resolver also fails (bad fixture) → non-zero
+    [[ "$status" -ne 0 ]]
+    # Must produce no stdout (live resolver failed, fail-closed; stderr suppressed)
+    [[ -z "$output" ]]
 }

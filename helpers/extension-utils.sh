@@ -756,16 +756,19 @@ generate_dockerfile() {
                 if [[ "$_artifact_valid" -eq 0 ]] && [[ -f "$versionset_file" ]]; then
                     log_error "generate_dockerfile: versionset artifact for $ext_name pg${pg_major} is malformed, missing .available array, or has empty available[] — treating as absent, triggering self-heal"
                 fi
-                # skopeo is required by resolve_version_set (list-tags probe).
-                # It is installed in CI but may be absent on a local dev machine.
-                # Fail fast here with a clear, actionable message — before the
-                # resolver is invoked — so the operator sees what to install rather
-                # than an opaque "skopeo: command not found" deep in the resolver.
-                # This check fires ONLY on the self-heal/resolve branch; the valid-
-                # artifact path above does not use skopeo and is not affected.
-                if ! command -v skopeo &>/dev/null; then
-                    log_error "generate_dockerfile: skopeo is required to resolve the ${ext_name} version set when no version-set artifact is present; install skopeo (see postgres/README.md) or supply the artifact manually"
-                    return 1
+                # skopeo is required by the LIVE resolver path (skopeo list-tags docker.io).
+                # When the committed version-set file covers this ext+major, resolve_version_set
+                # returns the committed slice without invoking skopeo — skip the guard in that case.
+                # When the committed file is absent/misses this major, skopeo is still required;
+                # fail fast with a clear, actionable message before the resolver is invoked so the
+                # operator sees what to install rather than an opaque "skopeo: command not found".
+                # This check fires ONLY on the self-heal/resolve branch; the valid-artifact path
+                # above does not use skopeo and is not affected.
+                if ! _read_committed_versionset "$ext_name" "$pg_major" &>/dev/null; then
+                    if ! command -v skopeo &>/dev/null; then
+                        log_error "generate_dockerfile: skopeo is required to resolve the ${ext_name} version set when neither a version-set artifact nor the committed version-set file covers pg${pg_major}; install skopeo (see postgres/README.md) or supply the artifact manually"
+                        return 1
+                    fi
                 fi
                 local _sh_resolved_json
                 if ! _sh_resolved_json=$(resolve_version_set "$ext_name" "$pg_major" "$config_file"); then

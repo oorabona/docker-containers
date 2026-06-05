@@ -1049,6 +1049,62 @@ jobs:
             done < <(echo "$UPDATES" | jq -c '.[]')
           fi
 
+      - name: Refresh timescaledb committed version-set
+        # Runs when the postgres container has a timescaledb update so the PR
+        # includes BOTH the bumped ceiling in config.yaml AND the refreshed
+        # committed version-set file (postgres/extensions/timescaledb-version-set.json).
+        # The ceiling applied to the resolver is the version just written by
+        # "Apply dependency updates" (read fresh from config.yaml via yq).
+        # skopeo is available on ubuntu-latest runners.
+        if: >-
+          steps.prepare.outputs.update_count != '0' &&
+          matrix.container == 'postgres' &&
+          contains(steps.prepare.outputs.updates, '"timescaledb"')
+        env:
+          RETAIN_COUNT: "12"
+        run: |
+          set -euo pipefail
+
+          # Read PG versions from variants.yaml
+          pg_versions=$(yq -r '.versions[].tag' postgres/variants.yaml | tr '\n' ' ')
+          echo "PG versions: $pg_versions"
+
+          # Read the NEW ceiling written by "Apply dependency updates"
+          CEILING_VERSION=$(yq -r '.extensions.timescaledb.version' postgres/extensions/config.yaml)
+          echo "Ceiling version: $CEILING_VERSION"
+
+          # Resolve version-set per PG major
+          declare -A vsets
+          for pg in $pg_versions; do
+              echo "  Resolving timescaledb version-set for pg${pg}..."
+              arr=$(PG_MAJOR="$pg" CEILING_VERSION="$CEILING_VERSION" \
+                    RETAIN_COUNT="$RETAIN_COUNT" \
+                    bash scripts/resolvers/timescaledb-ha.sh)
+              vsets["pg${pg}"]="$arr"
+              count=$(printf '%s' "$arr" | jq 'length')
+              echo "  pg${pg}: ${count} versions (ceiling: $CEILING_VERSION)"
+          done
+
+          # Assemble JSON and write committed file atomically
+          jq_args=()
+          jq_obj="{"
+          first=true
+          for key in "${!vsets[@]}"; do
+              jq_args+=("--argjson" "${key}" "${vsets[$key]}")
+              if [[ "$first" == "true" ]]; then
+                  jq_obj+="\"${key}\":\$${key}"
+                  first=false
+              else
+                  jq_obj+=",\"${key}\":\$${key}"
+              fi
+          done
+          jq_obj+="}"
+
+          jq -n "${jq_args[@]}" "{timescaledb: ${jq_obj}}" \
+              > postgres/extensions/timescaledb-version-set.json
+          echo "Updated postgres/extensions/timescaledb-version-set.json"
+          jq . postgres/extensions/timescaledb-version-set.json
+
       - name: Import GPG key
         if: steps.env_check.outputs.is_local_test != 'true' && steps.prepare.outputs.update_count != '0'
         uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0

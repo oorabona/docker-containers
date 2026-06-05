@@ -25,6 +25,42 @@ fi
 # Path to extensions config, relative to project root
 _EXT_CONFIG="${_HELPER_DIR}/../postgres/extensions/config.yaml"
 
+# Committed version-set file for extensions whose resolver contacts docker.io.
+# Schema (kept consistent by upstream-monitor and this function):
+#   { "<ext_name>": { "pg<major>": ["X.Y.Z", ...], ... }, ... }
+# Example:
+#   { "timescaledb": { "pg18": ["2.24.0","2.27.2"], "pg17": [...], ... } }
+_COMMITTED_VERSIONSET_FILE="${_HELPER_DIR}/../postgres/extensions/timescaledb-version-set.json"
+
+# _read_committed_versionset <ext_name> <pg_major>
+#   Returns the JSON array for this ext+major from the committed file (stdout).
+#   Exit 0 on hit; exit 1 on miss (file absent, ext absent, major key absent,
+#   or empty/non-array result).  No docker.io or skopeo required.
+_read_committed_versionset() {
+    local ext_name="${1:?ext_name is required}"
+    local pg_major="${2:?pg_major is required}"
+    local key="pg${pg_major}"
+
+    # File absent → miss
+    [[ -f "$_COMMITTED_VERSIONSET_FILE" ]] || return 1
+
+    # jq extracts .ext.pg<major>; outputs "null" when key is absent.
+    local arr
+    arr=$(jq -c --arg ext "$ext_name" --arg key "$key" \
+        '.[$ext][$key] // empty' "$_COMMITTED_VERSIONSET_FILE" 2>/dev/null) || return 1
+
+    # empty output → miss
+    [[ -n "$arr" ]] || return 1
+
+    # Verify it is actually a non-empty JSON array
+    local count
+    count=$(printf '%s' "$arr" | jq 'if type == "array" and length > 0 then length else 0 end' 2>/dev/null) || return 1
+    [[ "${count:-0}" -gt 0 ]] || return 1
+
+    printf '%s\n' "$arr"
+    return 0
+}
+
 resolve_version_set() {
     local ext_name="${1:?ext_name is required}"
     local pg_major="${2:?pg_major is required}"
@@ -53,6 +89,29 @@ resolve_version_set() {
         fi
         echo "[\"${single_version}\"]"
         return 0
+    fi
+
+    # Fast path: consult the committed version-set file BEFORE invoking the live
+    # resolver (which contacts docker.io via skopeo).  This eliminates all docker.io
+    # egress during the build path when the file is present and covers this major.
+    #
+    # Guard: the ceiling from the caller's config must match the highest element in
+    # the committed slice.  If they differ, the committed file is stale relative to
+    # the caller's pinned version (e.g. a caller-supplied test config with a lower
+    # ceiling) → fall through to the live resolver so the correct ceiling is applied.
+    #
+    # Falls through on any miss (file absent, ext absent, major key absent, empty
+    # array, or ceiling mismatch) — existing fail-closed semantics preserved.
+    if [[ -n "$single_version" && "$single_version" != "null" ]]; then
+        local _committed_slice _committed_ceiling
+        if _committed_slice=$(_read_committed_versionset "$ext_name" "$pg_major" 2>/dev/null); then
+            _committed_ceiling=$(printf '%s' "$_committed_slice" | jq -r '.[-1]' 2>/dev/null) || true
+            if [[ "$_committed_ceiling" == "$single_version" ]]; then
+                printf '%s\n' "$_committed_slice"
+                return 0
+            fi
+            # Ceiling mismatch → committed file is stale for this caller → fall through
+        fi
     fi
 
     # Resolve path relative to project root
