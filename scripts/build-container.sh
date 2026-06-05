@@ -415,13 +415,25 @@ build_container() {
     local dockerfile="${5:-Dockerfile}"
     local build_flavor="${6:-$flavor}"
     local is_default="${7:-}"
-    # Restore the pre-refactor self-sufficient contract: when a caller omits
-    # is_default (direct/local `make --flavor`, legacy 6-arg callers), derive it
-    # from the variant config keyed by flavor — exactly as the original did.
-    # Explicit callers (build_container_variants, and the CI action via
-    # `make --is-default`) pass the correct variant-name-based value, which
-    # overrides this. compute_cell_tags consults is_default ONLY when flavor is
-    # non-empty, so no-flavor callers are unaffected regardless of this fallback.
+    # Self-heal (best-effort legacy-parity fallback for direct/6-arg callers):
+    # When is_default is omitted — e.g. `./make build github-runner <v> --flavor ubuntu-2404`
+    # without --is-default — derive it from variant config keyed by FLAVOR, matching
+    # the pre-refactor behaviour.
+    #
+    # Edge case — name != flavor: for containers where the variant NAME differs from its
+    # flavor (e.g. github-runner: variant name "ubuntu-2404-base", flavor "ubuntu-2404"),
+    # this lookup finds NO variant named "ubuntu-2404", returns empty, and is_default falls
+    # back to "false" → the rolling tag becomes :latest-ubuntu-2404 instead of :latest.
+    # This is intentional: a flavor→variant-name reverse lookup is ambiguous when multiple
+    # variants share a flavor, so we preserve the pre-refactor behaviour rather than guess.
+    #
+    # Authoritative callers are unaffected: build_container_variants passes the variant
+    # name explicitly, and the CI composite action resolves is_default via
+    # `variant_property … <variant_name>` before calling `make --is-default`. Published
+    # (CI) tags are always correct; only a direct local single-flavor build of a
+    # name-differs-from-flavor container is affected by this limitation.
+    # No-flavor callers are also unaffected (compute_cell_tags ignores is_default when
+    # flavor is empty).
     if [[ -z "$is_default" && -n "$flavor" ]]; then
         is_default=$(variant_property "$PROJECT_ROOT/$container" "$flavor" "default" 2>/dev/null || echo "false")
     fi

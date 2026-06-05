@@ -222,6 +222,10 @@ runs:
           source ./helpers/variant-utils.sh 2>/dev/null || true
           if declare -f variant_property >/dev/null 2>&1; then
             local_is_default=$(variant_property "$container" "${variant:-$flavor}" "default" 2>/dev/null || echo "false")
+            # variant_property exits 0 with empty output when the variant doesn't exist
+            # in variants.yaml; the || fallback above does NOT catch that case.
+            # Coerce the empty result to "false" so the is_default output is always set.
+            [[ -z "$local_is_default" ]] && local_is_default="false"
           fi
         else
           # No flavor = single-variant container, always default

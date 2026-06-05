@@ -303,7 +303,10 @@ variant_image_tag() {
 #
 # Usage: compute_cell_tags <tag> <flavor> <is_default> <dockerhub_image> <ghcr_image>
 #   tag             : image tag for this build cell (e.g. "18-alpine", "1.14.6-alpine")
-#   flavor          : variant flavor name (e.g. "base", "vector", "") — empty for no-flavor containers
+#   flavor          : the variants.yaml `.flavor` field for this variant — the rolling-tag suffix source
+#                     (e.g. "base", "ubuntu-2404", "") — empty for no-flavor containers.
+#                     Distinct from `build_flavor` (the --build-arg FLAVOR value); for containers like
+#                     github-runner the variant name ("ubuntu-2404-base") differs from this flavor field.
 #   is_default      : "true" if this variant is the default; any other value means non-default.
 #                     Caller computes this via variant_property <dir> <variant_name> "default".
 #   dockerhub_image : docker.io/<owner>/<container>  (no tag)
