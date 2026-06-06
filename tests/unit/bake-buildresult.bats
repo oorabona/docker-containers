@@ -300,3 +300,72 @@ _partial_meta() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"::notice::bake-buildresult:"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# FIX C: BAKE_GENERATE_ALL_RETAINED env controls --all-retained in --cells
+# ---------------------------------------------------------------------------
+
+# Helper: get cells count from generator directly (with or without --all-retained)
+_latest_cell_count() {
+    bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells "$1" | jq 'length'
+}
+_retained_cell_count() {
+    bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained "$1" | jq 'length'
+}
+
+@test "BBR-13: without BAKE_GENERATE_ALL_RETAINED, emit covers latest-only cells" {
+    # terraform has more retained cells than latest-only cells (github-runner is
+    # bake_latest_only, so it can't exercise the retained path).
+    local latest_count
+    latest_count=$(_latest_cell_count terraform)
+    local retained_count
+    retained_count=$(_retained_cell_count terraform)
+    # Prerequisite: retained set is strictly larger than latest-only set.
+    [ "$retained_count" -gt "$latest_count" ]
+
+    # Build a metadata fixture that marks ALL cells (retained) as success so
+    # the file-count diff is purely from cell enumeration, not from missing metadata.
+    local meta_file="$TEST_OUT_DIR/meta_retained.json"
+    cells_all=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform)
+    echo "$cells_all" | jq -c '
+        reduce .[] as $cell (
+            {};
+            . + {($cell.target_id): {"containerimage.digest":("sha256:" + $cell.target_id), "image.name":"ghcr.io/test"}}
+        )
+    ' > "$meta_file"
+
+    # Run WITHOUT the retained env (default: latest-only).
+    run env -u BAKE_GENERATE_ALL_RETAINED bash "$BBR" "$meta_file" amd64 "$TEST_OUT_DIR/out" terraform
+    [ "$status" -eq 0 ]
+
+    local file_count
+    file_count=$(find "$TEST_OUT_DIR/out" -name 'build-result-*.json' | wc -l)
+    # Must match latest-only count, NOT retained count.
+    [ "$file_count" -eq "$latest_count" ]
+}
+
+@test "BBR-14: with BAKE_GENERATE_ALL_RETAINED=true, emit covers all retained cells" {
+    # terraform has more retained cells than latest-only cells (github-runner is
+    # bake_latest_only, so it can't exercise the retained path).
+    local retained_count
+    retained_count=$(_retained_cell_count terraform)
+
+    # Build a metadata fixture that marks ALL retained cells as success.
+    local meta_file="$TEST_OUT_DIR/meta_retained.json"
+    cells_all=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform)
+    echo "$cells_all" | jq -c '
+        reduce .[] as $cell (
+            {};
+            . + {($cell.target_id): {"containerimage.digest":("sha256:" + $cell.target_id), "image.name":"ghcr.io/test"}}
+        )
+    ' > "$meta_file"
+
+    # Run WITH BAKE_GENERATE_ALL_RETAINED=true.
+    run env BAKE_GENERATE_ALL_RETAINED=true bash "$BBR" "$meta_file" amd64 "$TEST_OUT_DIR/out" terraform
+    [ "$status" -eq 0 ]
+
+    local file_count
+    file_count=$(find "$TEST_OUT_DIR/out" -name 'build-result-*.json' | wc -l)
+    # Must match the full retained count.
+    [ "$file_count" -eq "$retained_count" ]
+}

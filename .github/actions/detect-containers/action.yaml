@@ -640,6 +640,10 @@ runs:
       shell: bash
       env:
         BUILDS: ${{ steps.expand-variants.outputs.builds }}
+        SCOPE_VERSIONS: ${{ inputs.scope_versions }}
+        SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
+        BUILD_SCOPE: ${{ inputs.scope }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -650,7 +654,27 @@ runs:
         builds_input="${BUILDS:-[]}"
         [[ -z "$builds_input" ]] && builds_input="[]"
 
-        partitioned=$(partition_builds "$builds_input")
+        # force_matrix=true disables bake routing — all cells go to the flat matrix.
+        # Two independent reasons force this:
+        #   1. Scoped runs (scope_versions, scope_flavors, or unified BUILD_SCOPE
+        #      non-empty) build only a subset of cells.  Routing bake-managed containers
+        #      to the bake engine would cause bake to publish ALL variants while only
+        #      the scoped cells receive scan/attest coverage.
+        #   2. pull_request events: bake jobs skip push/load so the 3 bake-managed
+        #      containers lose PR-time Trivy coverage.  Route them to the flat matrix
+        #      so every cell gets the existing per-cell PR build+Trivy pass.
+        #      (The bake-build.yaml --print smoke validates the bake HCL on PRs
+        #      independently; bake push/load is a push-time concern only.)
+        force_matrix="false"
+        scope_active="false"
+        if [[ -n "${SCOPE_VERSIONS}" || -n "${SCOPE_FLAVORS}" || -n "${BUILD_SCOPE}" ]]; then
+          scope_active="true"
+        fi
+        if [[ "$scope_active" == "true" || "$EVENT_NAME" == "pull_request" ]]; then
+          force_matrix="true"
+        fi
+
+        partitioned=$(partition_builds "$builds_input" "$force_matrix")
 
         bake_builds=$(echo "$partitioned" | jq -c '.bake')
         matrix_builds=$(echo "$partitioned" | jq -c '.matrix')
@@ -660,4 +684,4 @@ runs:
 
         echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
         echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
-        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count"
+        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count (scope_active=${scope_active} force_matrix=${force_matrix} event=${EVENT_NAME})"

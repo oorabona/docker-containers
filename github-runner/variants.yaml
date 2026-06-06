@@ -12,6 +12,11 @@
 # Build configuration
 build:
   version_retention: 3
+  # bake builds all github-runner variants in one invocation sharing a single
+  # runner.tar.gz, so retained older versions cannot be built correctly via bake
+  # — keep latest-only (retained github-runner rebuilds are a follow-up needing
+  # per-version build contexts).
+  bake_latest_only: true
 versions:
   - tag: 2.334.0
     variants:

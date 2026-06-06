@@ -57,10 +57,18 @@ emit_bake_build_results() {
     # Step 1: enumerate cells via generate-bake-hcl.sh --cells
     # stderr passes through to the caller (generator may emit ::error:: or
     # ::warning:: annotations that must surface in CI logs).
+    #
+    # When BAKE_GENERATE_ALL_RETAINED=true, pass --all-retained so the
+    # result set matches the built set (mirrors the RETAINED_FLAG decision
+    # in the bake build steps).
     # ------------------------------------------------------------------
     local cells_json
     local generator="${_BBR_SCRIPT_DIR}/../scripts/generate-bake-hcl.sh"
-    if ! cells_json=$("$generator" --cells "${containers[@]}"); then
+    local -a cells_args=("--cells")
+    if [[ "${BAKE_GENERATE_ALL_RETAINED:-}" == "true" ]]; then
+        cells_args=("--cells" "--all-retained")
+    fi
+    if ! cells_json=$("$generator" "${cells_args[@]}" "${containers[@]}"); then
         printf '::error::bake-buildresult: --cells failed for %s\n' \
             "${containers[*]}" >&2
         return 1

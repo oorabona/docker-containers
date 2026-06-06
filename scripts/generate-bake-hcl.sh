@@ -641,8 +641,20 @@ _enumerate_cells_init() {
     # F4: use the caller-supplied include_all_retained flag (default false = latest-only).
     local _ec_all_retained="${_BAKE_INCLUDE_ALL_RETAINED:-false}"
     for c in "${_EC_closure_containers[@]}"; do
+        # bake_latest_only: when true, force latest-only for this container regardless
+        # of the global --all-retained flag (e.g. github-runner shares a single
+        # runner.tar.gz across all variants in one bake invocation — retained older
+        # versions would get the wrong binary).
+        local _c_bake_latest_only
+        _c_bake_latest_only=$(yq -r '.build.bake_latest_only // false' "./${c}/variants.yaml" 2>/dev/null || echo "false")
+        local _c_retained="$_ec_all_retained"
+        if [[ "$_c_bake_latest_only" == "true" && "$_ec_all_retained" == "true" ]]; then
+            _c_retained="false"
+            printf '::notice::bake: %s forced latest-only (bake_latest_only=true; shared runner.tar.gz; retained rebuilds need per-version build contexts)\n' "$c" >&2
+        fi
+
         local matrix
-        if ! matrix=$(list_build_matrix "./${c}" "" "$_ec_all_retained" 2>/dev/null); then
+        if ! matrix=$(list_build_matrix "./${c}" "" "$_c_retained" 2>/dev/null); then
             printf 'ERROR: list_build_matrix failed for %q\n' "$c" >&2
             return 1
         fi

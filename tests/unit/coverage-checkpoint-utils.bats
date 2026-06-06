@@ -948,6 +948,193 @@ make_results_json() {
     [ "$unmapped" = "false" ]
 }
 
+# ---------------------------------------------------------------------------
+# Bake alias tests — maps_to_container bake leg
+# ---------------------------------------------------------------------------
+
+@test "aggregate_build_results: bake-leg crash — web-shell success record NOT cleanly recovered (bake alias lock)" {
+    # Reproduction of codex's shape: matrix contains web-shell (a bake-managed
+    # container) and others.  The arm64 bake leg crashes before its emit step —
+    # no failure record is written; only a web-shell success record exists.
+    # Without the bake alias, bad_build_job_count=0, failure_record_count=0 →
+    # 0 > 0 = false → unmapped=false → web-shell would falsely appear in
+    # recovered_candidates as a clean recovery.
+    # With the bake alias: maps_to_container("Bake build (arm64)"; "web-shell")=true
+    # (web-shell ∈ bake_managed) → bad_build_job_count=1, failure_record_count=0 →
+    # 1 > 0 = true → unmapped=true → web-shell is NOT a clean recovery.
+    # Mutation locked: removing the bake alias → bad_build_job_count=0 → unmapped=false
+    # → web-shell wrongly recovered — the bake-managed container gap is silently lost.
+    results=$(make_results_json "web-shell:success" "debian:success")
+    jobs='{"jobs":[
+        {"name":"Bake build (arm64)","conclusion":"failure"},
+        {"name":"Build debian (amd64)","conclusion":"success"}
+    ]}'
+    matrix='["web-shell","debian","ansible"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates')
+    # bake alias counts the crashed bake leg → 1 bad build job > 0 failure records
+    [ "$unmapped" = "true" ]
+    # failed_this_run is artifact-precise: no failure records → empty
+    [ "$failed" = "[]" ]
+    # web-shell appears in recovered (success record, no failure record) but
+    # merge_failed_set carry-all path (unmapped=true) will carry it anyway
+    # — the key assertion is that unmapped=true fires, blocking silent recovery
+    [ "$(echo "$recovered" | jq 'index("web-shell") != null')" = "true" ]
+    # merge_failed_set carry-all: prior ∪ matrix keeps web-shell in retry set
+    run merge_failed_set '["web-shell"]' "$failed" "$recovered" "$matrix" "$unmapped"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'index("web-shell") != null')" = "true" ]
+}
+
+@test "aggregate_build_results: bake build amd64 job name triggers anchored alias" {
+    # "Bake build (amd64)" starts with "Bake build" → matched by "^Bake build" anchor.
+    # Mutation locked: if the alias were removed or the anchor changed to not match this
+    # name, bad_build_job_count=0 → unmapped=false → bake-managed container falsely recovered.
+    results=$(make_results_json "github-runner:success")
+    jobs='{"jobs":[{"name":"Bake build (amd64)","conclusion":"failure"}]}'
+    matrix='["github-runner","wordpress"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    # bad_build_job_count=1 (Bake build maps to github-runner via alias),
+    # failure_record_count=0 → unmapped=true
+    [ "$unmapped" = "true" ]
+}
+
+@test "aggregate_build_results: non-bake container still maps via token — no alias regression" {
+    # Non-bake container "openresty" maps via token match, not the bake alias.
+    # "Build openresty (amd64)" contains the token "openresty" → maps normally.
+    # bad_build_job_count=1, failure_record_count=0 → unmapped=true (COUNT gap).
+    # This confirms the token path is unaffected by the bake alias addition.
+    results=$(make_results_json "openresty:success")
+    jobs='{"jobs":[{"name":"Build openresty (amd64)","conclusion":"failure"}]}'
+    matrix='["openresty"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    # token match fires → bad_build_job_count=1 > 0 → unmapped=true
+    [ "$unmapped" = "true" ]
+}
+
+@test "aggregate_build_results: postgres alias still works alongside bake alias" {
+    # Regression guard: the bake alias must not disturb the postgres alias.
+    # A crashed "Build PostgreSQL Extensions (arm64)" job (no record produced)
+    # must still be counted for "postgres" via the postgres alias.
+    results='[{"container":"postgres","variant":"vector","result":"success"}]'
+    jobs='{"jobs":[{"name":"Build PostgreSQL Extensions (arm64)","conclusion":"failure"}]}'
+    matrix='["postgres","web-shell"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    # postgres alias counts the ext job → 1 bad build job > 0 failure records → unmapped=true
+    [ "$unmapped" = "true" ]
+    [ "$failed" = "[]" ]
+}
+
+@test "aggregate_build_results: successful bake jobs not counted — bake alias only fires on bad jobs" {
+    # Negative: when ALL bake legs succeed, bad_build_job_count=0 (no bad jobs to alias),
+    # failure_record_count=0 → unmapped=false → bake-managed containers recover normally.
+    # Mutation locked: if bake jobs were counted regardless of conclusion, count > 0 →
+    # unmapped=true on every green bake run → bake-managed containers never cleared.
+    results=$(make_results_json "web-shell:success" "github-runner:success")
+    jobs='{"jobs":[
+        {"name":"Bake build (amd64)","conclusion":"success"},
+        {"name":"Bake build (arm64)","conclusion":"success"}
+    ]}'
+    matrix='["web-shell","github-runner"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates | sort')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    # No bad jobs → unmapped=false
+    [ "$unmapped" = "false" ]
+    [ "$failed" = "[]" ]
+    # Both bake-managed containers have success records → recovered normally
+    json_eq "$recovered" '["github-runner","web-shell"]'
+}
+
+@test "aggregate_build_results: advisory Trivy scan (bake) WITH container token does NOT poison checkpoint" {
+    # Realistic job name: "Trivy scan (bake) web-shell:1.7.7 (amd64)" contains the
+    # container token "web-shell" as a boundary-matched substring.  Without the advisory
+    # exclusion guard, token_re("web-shell") fires → bad_build_job_count=1 > 0 failure
+    # records → unmapped=true → web-shell carried forward even though it built successfully.
+    # The guard short-circuits maps_to_container to false for any job starting with
+    # "Trivy scan (bake)" BEFORE token matching runs, so the advisory failure does not
+    # inflate bad_build_job_count regardless of what tokens appear in the name.
+    # Mutation locked: removing the advisory exclusion → token_re fires → unmapped=true
+    # → web-shell poisoned on every Trivy SARIF-upload failure.
+    results=$(make_results_json "web-shell:success" "debian:success")
+    jobs='{"jobs":[
+        {"name":"Trivy scan (bake) web-shell:1.7.7 (amd64)","conclusion":"failure"},
+        {"name":"Build debian (amd64)","conclusion":"success"}
+    ]}'
+    matrix='["web-shell","debian"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates | sort')
+    # advisory guard fires → bad_build_job_count=0 → unmapped=false
+    [ "$unmapped" = "false" ]
+    [ "$failed" = "[]" ]
+    # web-shell and debian both have success records → cleanly recovered
+    json_eq "$recovered" '["debian","web-shell"]'
+}
+
+@test "aggregate_build_results: advisory Attest SBOM (bake) WITH container token does NOT poison checkpoint" {
+    # Realistic job name: "Attest SBOM (bake) web-shell:1.7.7" contains the container
+    # token "web-shell". Without the advisory exclusion, token_re fires → unmapped=true.
+    # The guard returns false before token matching → bad_build_job_count=0 → unmapped=false.
+    # Mutation locked: removing the guard → token_re("web-shell") fires → unmapped=true
+    # → web-shell poisoned on every attest failure.
+    results=$(make_results_json "web-shell:success")
+    jobs='{"jobs":[
+        {"name":"Attest SBOM (bake) web-shell:1.7.7","conclusion":"failure"}
+    ]}'
+    matrix='["web-shell","ansible"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    recovered=$(echo "$output" | jq -c '.recovered_candidates')
+    # advisory guard fires → bad_build_job_count=0 → unmapped=false
+    [ "$unmapped" = "false" ]
+    [ "$failed" = "[]" ]
+    # web-shell has a success record → IS cleanly recovered
+    [ "$(echo "$recovered" | jq 'index("web-shell") != null')" = "true" ]
+}
+
+@test "aggregate_build_results: Bake merge manifests job crash triggers gate (producer alias lock)" {
+    # "Bake merge manifests + DockerHub mirror" starts with "Bake merge" → INCLUDED.
+    # This is a build-result-producing job; a crash before emit means no failure record.
+    # COUNT invariant: bad_build_job_count=1 (job matches every bake-managed container),
+    # failure_record_count=0 → 1 > 0 → unmapped=true → carry-all.
+    # Mutation locked: if "Bake merge" were excluded from the alias, bad_build_job_count=0
+    # → unmapped=false → bake-managed containers falsely recovered after a merge crash.
+    results=$(make_results_json "web-shell:success" "github-runner:success")
+    jobs='{"jobs":[
+        {"name":"Bake merge manifests + DockerHub mirror","conclusion":"failure"}
+    ]}'
+    matrix='["web-shell","github-runner"]'
+    run aggregate_build_results "$results" "$matrix" "$jobs"
+    [ "$status" -eq 0 ]
+    unmapped=$(echo "$output" | jq '.unmapped_failure')
+    failed=$(echo "$output" | jq -c '.failed_this_run')
+    # producer crash counted → bad_build_job_count=1 > 0 failure records → unmapped=true
+    [ "$unmapped" = "true" ]
+    [ "$failed" = "[]" ]
+    # carry-all: prior ∪ matrix keeps bake-managed containers in retry set
+    recovered=$(echo "$output" | jq -c '.recovered_candidates')
+    run merge_failed_set '["web-shell"]' "$failed" "$recovered" "$matrix" "$unmapped"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'index("web-shell") != null')" = "true" ]
+}
+
 @test "extract_failed_recovered: bare-array form of large payload (>128KB) succeeds — stdin normalisation" {
     # Same as the previous test but the payload is a bare JSON array [...] rather than
     # {"jobs":[...]}.  Verifies that the stdin-path normalisation

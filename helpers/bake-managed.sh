@@ -60,12 +60,59 @@ is_bake_managed() {
 }
 
 # ---------------------------------------------------------------------------
-# partition_builds <builds_json>
+# _bake_container_latest_only <container>
+#
+# Returns 0 (true) if the container declares build.bake_latest_only: true in
+# its variants.yaml; returns 1 (false) otherwise.  Tolerates a missing file,
+# a missing field, or a non-true value — all default to false.
+#
+# Uses the resolved _BM_SCRIPT_DIR to locate <container>/variants.yaml
+# relative to the repo root (parent of helpers/).
+# ---------------------------------------------------------------------------
+_bake_container_latest_only() {
+    local container="$1"
+    local repo_root
+    repo_root="$(dirname "${_BM_SCRIPT_DIR}")"
+    local variants_file="${repo_root}/${container}/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        return 1
+    fi
+
+    local val
+    val=$(yq e '.build.bake_latest_only // false' "$variants_file" 2>/dev/null) || return 1
+    [[ "$val" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# partition_builds <builds_json> [<scope_active>]
 #
 # Given the `builds` JSON array (cells with a `.container` field), prints a
 # compact JSON object:
-#   {"bake": [...cells whose .container is bake-managed...],
+#   {"bake": [...cells routed to the bake engine...],
 #    "matrix": [...all remaining cells...]}
+#
+# When <scope_active> is "true" (second argument), bake is disabled for this
+# run: ALL cells route to .matrix.  This preserves per-cell scan/attest
+# fidelity for scoped dispatches (scope_versions / scope_flavors non-empty),
+# which build only a subset of a container's cells while bake would publish
+# the full container plan.
+#
+# When <scope_active> is absent or any value other than "true", per-cell
+# routing applies:
+#   A cell lands in .bake only when ALL of the following hold:
+#     1. Its .container is in the bake-managed set.
+#     2. Its .os is "linux" or absent/empty (linux cells may omit the field).
+#     3. Its .is_latest_version is explicitly true.
+#   All other cells go to .matrix so the flat matrix handles them faithfully.
+#
+# Design rationale: bake is latest-only by design — it always generates and
+# builds the full container plan for the latest version of each container.
+# Any retained (non-latest) cell detected by the carry-forward / diff-failure /
+# container-file-change / PR-smoke logic is routed to the flat matrix, which
+# builds exactly the detected cells per-cell with full scan/attest coverage.
+# This prevents a retained cell from being falsely recovered (unscanned,
+# unpublished) by a bake run that regenerates latest-only.
 #
 # Cell order within each partition is preserved.
 #
@@ -74,6 +121,7 @@ is_bake_managed() {
 # ---------------------------------------------------------------------------
 partition_builds() {
     local builds_json="$1"
+    local scope_active="${2:-false}"
 
     # Validate: must be a non-empty string
     if [[ -z "$builds_json" ]]; then
@@ -87,6 +135,13 @@ partition_builds() {
         return 1
     fi
 
+    # Scoped run or forced-matrix: bake disabled — all cells to matrix for full
+    # per-cell fidelity (scope_versions / scope_flavors / PR routing).
+    if [[ "$scope_active" == "true" ]]; then
+        echo "$builds_json" | jq -c '{bake: [], matrix: [.[]]}'
+        return 0
+    fi
+
     # Build jq array argument from the managed set.
     # Read into an array so word-splitting is explicit and shellcheck-clean.
     local managed
@@ -96,12 +151,32 @@ partition_builds() {
     local managed_jq_array
     managed_jq_array=$(printf '%s\n' "${managed_arr[@]}" | jq -R . | jq -s -c .)
 
-    # Partition in a single jq pass; cell order preserved within each partition
+    # Partition in a single jq pass; cell order preserved within each partition.
+    #
+    # A cell lands in .bake only when ALL hold:
+    #   (a) container is bake-managed
+    #   (b) .os is "linux" or absent/empty (linux cells may omit the field)
+    #   (c) .is_latest_version is explicitly true
+    #
+    # Retained (non-latest) cells for bake-managed containers route to .matrix
+    # so the flat matrix builds them with per-cell scan/attest fidelity.
+    # Note: .container is captured as $c before entering $managed so the
+    # any() filter runs in string context (not object context).
     echo "$builds_json" | jq -c \
         --argjson managed "$managed_jq_array" \
         '{
-            bake:   [.[] | select(.container as $c | $managed | any(. == $c))],
-            matrix: [.[] | select(.container as $c | $managed | any(. == $c) | not)]
+            bake:   [.[] | select(
+                        (.container as $c | $managed | any(. == $c))
+                        and ((.os // "") == "" or (.os // "") == "linux")
+                        and (.is_latest_version == true)
+                    )],
+            matrix: [.[] | select(
+                        (
+                            (.container as $c | $managed | any(. == $c))
+                            and ((.os // "") == "" or (.os // "") == "linux")
+                            and (.is_latest_version == true)
+                        ) | not
+                    )]
         }'
 }
 
@@ -113,20 +188,21 @@ main() {
     case "$cmd" in
         partition)
             if [[ $# -lt 2 ]]; then
-                printf 'Usage: %s partition <builds_json_or_@file>\n' \
+                printf 'Usage: %s partition <builds_json_or_@file> [scope_active]\n' \
                     "$(basename "$0")" >&2
                 return 1
             fi
             local input="$2"
+            local scope_arg="${3:-false}"
             # Support @file syntax: @path reads from file
             if [[ "$input" == @* ]]; then
                 local filepath="${input#@}"
                 input="$(cat "$filepath")"
             fi
-            partition_builds "$input"
+            partition_builds "$input" "$scope_arg"
             ;;
         *)
-            printf 'Usage: %s partition <builds_json_or_@file>\n' \
+            printf 'Usage: %s partition <builds_json_or_@file> [scope_active]\n' \
                 "$(basename "$0")" >&2
             return 1
             ;;
