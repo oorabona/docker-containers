@@ -971,3 +971,59 @@ YAML
     [ "$status" -ne 0 ]
     [[ "$output" == *"dependency-graph resolution failed"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# GBH-43: #595 — --cells objects include target_id field
+# Catches: omitting target_id from cells output → bake-buildresult cannot
+# correlate --metadata-file keys to cells.
+# ---------------------------------------------------------------------------
+@test "GBH-43: --cells objects include target_id field (non-empty string)" {
+    _run_generator --cells web-shell
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'length')" -gt 0 ]
+
+    # Every cell must have a non-empty target_id
+    local missing_tid
+    missing_tid=$(echo "$output" | jq '[.[] | select((.target_id | type) != "string" or .target_id == "")] | length')
+    [ "$missing_tid" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# GBH-44: #595 — --cells[].target_id values equal bake-mode .target keys (MG10 extension)
+# The join key is correct: the set of target_ids from --cells must be exactly
+# the set of target keys emitted by bake mode for the same requested containers
+# (dep-closure exclusion in --cells is correct: dep targets like debian_trixie
+#  appear in bake mode but not in --cells for a requested set that doesn't
+#  include debian directly).
+# ---------------------------------------------------------------------------
+@test "GBH-44: --cells target_id set equals bake-mode target key set for web-shell" {
+    # --cells target_ids (sorted)
+    _run_generator --cells web-shell
+    [ "$status" -eq 0 ]
+    local cells_tids
+    cells_tids=$(echo "$output" | jq -r '[.[].target_id] | sort | join("\n")')
+
+    # bake-mode target keys for web-shell only (exclude dep targets like debian_trixie)
+    _run_generator web-shell
+    [ "$status" -eq 0 ]
+    local bake_keys
+    bake_keys=$(echo "$output" | jq -r '[.target | keys[] | select(startswith("web_shell_"))] | sort | join("\n")')
+
+    # Both sets must be identical
+    [ "$cells_tids" = "$bake_keys" ]
+}
+
+# ---------------------------------------------------------------------------
+# GBH-45: #595 — target_id format is a valid bake identifier (no dots/hyphens/slashes)
+# _target_id sanitises: [.\-\/] → _; leading digit → v prefix.
+# Catching: a target_id with literal dots would not match the bake metadata key.
+# ---------------------------------------------------------------------------
+@test "GBH-45: --cells target_id values contain only [A-Za-z0-9_] characters" {
+    _run_generator --cells web-shell github-runner
+    [ "$status" -eq 0 ]
+
+    # All target_ids must match the bake-identifier alphabet
+    local invalid_tids
+    invalid_tids=$(echo "$output" | jq -r '[.[].target_id | select(test("[^A-Za-z0-9_]"))] | length')
+    [ "$invalid_tids" -eq 0 ]
+}

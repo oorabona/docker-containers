@@ -1074,8 +1074,10 @@ _emit_cells_json() {
     # F2: include is_latest_version so the merge job can gate rolling tags.
     # FIX F: include variant (unique per cell) for rolling-alias routing in merge;
     #        flavor is non-unique for multi-build_flavor containers (github-runner).
+    # #595: include target_id (byte-identical to the bake target key) so that
+    #        bake-buildresult.sh can correlate --metadata-file keys to cells.
     _on_cell_plain() {
-        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}"
+        local _c="$1" _tag="$2" _flavor="$3" _is_default="$4" _iref="$5" _is_latest="${6:-false}" _variant="${7:-}" _tid="${8:-}"
         local _obj
         _obj=$(jq -cn \
             --arg container    "$_c" \
@@ -1085,7 +1087,8 @@ _emit_cells_json() {
             --argjson is_default       "$( [ "$_is_default" = "true" ] && echo 'true' || echo 'false')" \
             --argjson is_latest_version "$( [ "$_is_latest"  = "true" ] && echo 'true' || echo 'false')" \
             --arg intermediate_ref "$_iref" \
-            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref}')
+            --arg target_id    "$_tid" \
+            '{container: $container, tag: $tag, flavor: $flavor, variant: $variant, is_default: $is_default, is_latest_version: $is_latest_version, intermediate_ref: $intermediate_ref, target_id: $target_id}')
         cells_json=$(jq -cn --argjson arr "$cells_json" --argjson obj "$_obj" '$arr + [$obj]')
     }
 
@@ -1105,7 +1108,8 @@ _emit_cells_json() {
             local cell
             cell=$(jq -c ".[$i]" <<< "$matrix")
 
-            local tag flavor variant cell_os is_default_raw is_latest_raw
+            local version tag flavor variant cell_os is_default_raw is_latest_raw
+            version=$(jq -r '.version'          <<< "$cell")
             tag=$(jq -r '.tag'              <<< "$cell")
             flavor=$(jq -r '.flavor // ""'  <<< "$cell")
             # FIX F: variant is the unique per-cell name for rolling-alias routing
@@ -1120,8 +1124,17 @@ _emit_cells_json() {
                 continue
             fi
 
+            # #595: Compute target_id using IDENTICAL logic to _on_cell_bake so
+            # that --cells[].target_id matches the bake --metadata-file keys.
+            local cell_tid
+            if [[ -z "$variant" ]]; then
+                cell_tid="$(_target_id "${c}_${tag}")"
+            else
+                cell_tid="$(_target_id "${c}_${version}_${variant}")"
+            fi
+
             local intermediate_ref="${_BAKE_REMOTE_CR}/${c}:${tag}"
-            _on_cell_plain "$c" "$tag" "$flavor" "$is_default_raw" "$intermediate_ref" "$is_latest_raw" "$variant"
+            _on_cell_plain "$c" "$tag" "$flavor" "$is_default_raw" "$intermediate_ref" "$is_latest_raw" "$variant" "$cell_tid"
         done
     done
 
