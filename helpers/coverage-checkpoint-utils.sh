@@ -228,10 +228,28 @@ aggregate_build_results() {
     [[ -z "$results_json" ]] && results_json='[]'
     [[ -z "$jobs_json" ]]    && jobs_json='{"jobs":[]}'
 
+    # Build the bake-managed JSON array for the alias in maps_to_container.
+    # Run bake-managed.sh in a subshell to avoid inheriting its set -euo pipefail;
+    # fall back to an empty array if it cannot be executed (alias won't fire — no
+    # regression on callers that don't have the bake pipeline deployed yet).
+    local _bm_script_dir
+    _bm_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _bm_script_dir=""
+    local bake_managed_json='[]'
+    if [[ -n "$_bm_script_dir" && -r "$_bm_script_dir/bake-managed.sh" ]]; then
+        # Run in a subshell: source + call bake_managed_containers; convert
+        # space-separated output to a compact JSON array.  Any failure → [].
+        # shellcheck disable=SC1091
+        bake_managed_json="$(
+            source "$_bm_script_dir/bake-managed.sh" 2>/dev/null &&
+            bake_managed_containers | jq -Rc 'split(" ") | map(select(length>0))'
+        )" 2>/dev/null || bake_managed_json='[]'
+    fi
+
     jq -cn \
         --arg results_str "$results_json" \
         --argjson matrix "$matrix_json" \
         --arg jobs_str "$jobs_json" \
+        --argjson bake_managed "$bake_managed_json" \
         '
         # Parse results_str; treat any non-array (or parse failure) as [] (fail-safe).
         # fromjson? silently becomes empty on invalid JSON; // [] recovers to empty array.
@@ -260,16 +278,37 @@ aggregate_build_results() {
         # Used ONLY for the COUNT completeness gate (bad_build_job_count) — NOT for
         # failure attribution (failed_this_run stays artifact-record-based).
         #
-        # The postgres extension pipeline jobs ("Build PostgreSQL Extensions (arm64)",
-        # "Merge Extension Manifests (multi-arch)") emit records attributed to the
-        # "postgres" container, but their display names contain no lowercase "postgres"
-        # token. Without the alias, a crashed ext/merge job (no record produced) would
-        # go unnoticed by the count gate → bad_build_job_count stays 0 → no gap →
-        # postgres is falsely recovered. The alias fixes this: when the matrix contains
-        # "postgres", extension/merge job names also count toward the gate.
+        # Postgres alias: the extension pipeline jobs ("Build PostgreSQL Extensions
+        # (arm64)", "Merge Extension Manifests (multi-arch)") emit records attributed
+        # to "postgres", but their display names contain no lowercase "postgres" token.
+        # Without the alias a crashed ext/merge job (no record produced) goes unnoticed
+        # by the count gate → bad_build_job_count stays 0 → no gap → postgres is
+        # falsely recovered. The alias fixes this: when the matrix contains "postgres",
+        # extension/merge job names also count toward the gate.
+        #
+        # Bake alias: only build-result-PRODUCING bake jobs ("Bake build (amd64)",
+        # "Bake build (arm64)", "Bake merge manifests + DockerHub mirror") contain no
+        # container token. If a producing leg crashes before its "Emit build-result
+        # artifacts" step it produces no failure record, so bad_build_job_count stays 0
+        # without the alias and the completeness gate cannot fire → bake-managed
+        # containers are falsely recovered. The alias fixes this: a job whose display
+        # name starts with "Bake build" or "Bake merge" is counted toward the gate for
+        # every bake-managed container.
+        #
+        # Advisory bake exclusion: "Trivy scan (bake) <container>:<tag> (<arch>)" and
+        # "Attest SBOM (bake) <container>:<tag>" embed the container token in their
+        # display name. They are best-effort; their failures produce NO build-result
+        # artifacts and must NOT count toward the completeness gate for any container.
+        # The guard returns false for these jobs BEFORE any token or alias match fires,
+        # so even the realistic form "Trivy scan (bake) web-shell:1.7.7 (amd64)" does
+        # not inflate bad_build_job_count and does not poison the checkpoint.
         def maps_to_container($jobname; $c):
-            ($jobname | test(token_re($c)))
-            or ($c == "postgres" and ($jobname | test("PostgreSQL Extensions|Extension Manifests")));
+            if ($jobname | test("^Trivy scan \\(bake\\)|^Attest SBOM \\(bake\\)")) then false
+            else
+              ($jobname | test(token_re($c)))
+              or ($c == "postgres" and ($jobname | test("PostgreSQL Extensions|Extension Manifests")))
+              or (($bake_managed | index($c)) != null and ($jobname | test("^Bake build|^Bake merge")))
+            end;
 
         # fail_rec: matrix containers that have >=1 failure RECORD (artifact-precise).
         [ $m[] | . as $c |
@@ -291,8 +330,9 @@ aggregate_build_results() {
         # bad_build_job_count: number of terminal-failed jobs that map to >=1 matrix
         # container via maps_to_container.  Each job counted at most once; infra jobs
         # (matching nothing) contribute 0 — this preserves the Sync-base-images all-13
-        # fix.  The postgres extension/merge alias ensures a crashed ext/merge job is
-        # counted even though its display name contains no "postgres" token.
+        # fix.  The postgres extension/merge alias and the bake alias ensure that a
+        # crashed ext/merge/bake job is counted even when its display name contains no
+        # container token.
         ($bad_jobs | map(
             . as $job |
             if ([ $m[] | . as $c | select(maps_to_container($job.name; $c)) ] | length) > 0

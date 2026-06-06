@@ -52,6 +52,10 @@ inputs:
       unreliable. Helper compares with explicit string equality.
     required: false
     default: "false"
+  run_tests:
+    description: 'When true, route all bake-managed containers to the flat matrix so test hooks run'
+    required: false
+    default: "false"
 
 outputs:
   containers_list:
@@ -72,6 +76,12 @@ outputs:
   builds_count:
     description: 'Total number of builds (including variants)'
     value: ${{ steps.expand-variants.outputs.builds_count }}
+  bake_builds:
+    description: 'JSON array of builds routed to the bake engine (github-runner, web-shell, wordpress by default)'
+    value: ${{ steps.split-build-engine.outputs.bake_builds }}
+  matrix_builds:
+    description: 'JSON array of builds routed to the flat matrix engine (all non-bake containers)'
+    value: ${{ steps.split-build-engine.outputs.matrix_builds }}
   expand_retained_map:
     description: |
       JSON object mapping container name to boolean. true = expand all retained
@@ -628,3 +638,58 @@ runs:
         echo "builds_count=$builds_count" >> $GITHUB_OUTPUT
         echo "📋 Total builds: $builds_count"
         echo "$builds_json" | jq .
+
+    - name: Split builds by engine (bake vs matrix)
+      id: split-build-engine
+      shell: bash
+      env:
+        BUILDS: ${{ steps.expand-variants.outputs.builds }}
+        SCOPE_VERSIONS: ${{ inputs.scope_versions }}
+        SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
+        BUILD_SCOPE: ${{ inputs.scope }}
+        EVENT_NAME: ${{ github.event_name }}
+        RUN_TESTS: ${{ inputs.run_tests }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/bake-managed.sh"
+
+        # When expand-variants was skipped (no containers detected), BUILDS is
+        # empty — treat as an empty array so consumers always get valid JSON.
+        builds_input="${BUILDS:-[]}"
+        [[ -z "$builds_input" ]] && builds_input="[]"
+
+        # force_matrix=true disables bake routing — all cells go to the flat matrix.
+        # Three independent reasons force this:
+        #   1. Scoped runs (scope_versions, scope_flavors, or unified BUILD_SCOPE
+        #      non-empty) build only a subset of cells.  Routing bake-managed containers
+        #      to the bake engine would cause bake to publish ALL variants while only
+        #      the scoped cells receive scan/attest coverage.
+        #   2. pull_request events: bake jobs skip push/load so the 3 bake-managed
+        #      containers lose PR-time Trivy coverage.  Route them to the flat matrix
+        #      so every cell gets the existing per-cell PR build+Trivy pass.
+        #      (The bake-build.yaml --print smoke validates the bake HCL on PRs
+        #      independently; bake push/load is a push-time concern only.)
+        #   3. run_tests=true: test hooks (bats/Pester) live only in the flat matrix
+        #      build-and-push job.  Routing bake-managed containers to bake would
+        #      silently skip tests for github-runner, web-shell, and wordpress.
+        force_matrix="false"
+        scope_active="false"
+        if [[ -n "${SCOPE_VERSIONS}" || -n "${SCOPE_FLAVORS}" || -n "${BUILD_SCOPE}" ]]; then
+          scope_active="true"
+        fi
+        if [[ "$scope_active" == "true" || "$EVENT_NAME" == "pull_request" || "$RUN_TESTS" == "true" ]]; then
+          force_matrix="true"
+        fi
+
+        partitioned=$(partition_builds "$builds_input" "$force_matrix")
+
+        bake_builds=$(echo "$partitioned" | jq -c '.bake')
+        matrix_builds=$(echo "$partitioned" | jq -c '.matrix')
+
+        bake_count=$(echo "$bake_builds" | jq 'length')
+        matrix_count=$(echo "$matrix_builds" | jq 'length')
+
+        echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
+        echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
+        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count (scope_active=${scope_active} force_matrix=${force_matrix} event=${EVENT_NAME})"

@@ -18,6 +18,7 @@
 #   MG14: Hardcode include_all_retained=true → default mode emits retained versions (F4)
 #   MG15: --cells iterates full closure → dep container appears in merge publish-set (FIX D)
 #   MG16: --cells uses flavor instead of variant → github-runner cells share rolling alias (FIX F)
+#   MG17: bake_latest_only flag ignored → retained github-runner versions enter bake (security bug)
 
 load "../test_helper"
 
@@ -657,28 +658,40 @@ YAML
         '[.target | to_entries[] | select(.key | startswith("github_runner_") and test($t))] | length')
     [ "$latest_targets" -gt 0 ]
 
-    # Retained versions count: bake should have fewer targets than --all-retained
-    local default_count
-    default_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("github_runner_"))] | length')
-
-    _run_generator --all-retained github-runner debian
+    # bake_latest_only=true: github-runner is always latest-only regardless of --all-retained.
+    # Use terraform (no bake_latest_only) to verify F4 --all-retained expansion still works.
+    local tf_default_count
+    tf_default_count=$(bash -c "
+        source '${HELPERS_DIR}/variant-utils.sh'
+        source '${PROJECT_ROOT}/helpers/dependency-graph.sh'
+        '${PROJECT_ROOT}/scripts/generate-bake-hcl.sh' terraform 2>/dev/null \
+            | jq '[.target | to_entries[] | select(.key | startswith(\"terraform_\"))] | length'
+    ")
+    _run_generator --all-retained terraform
     [ "$status" -eq 0 ]
-    local retained_count
-    retained_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("github_runner_"))] | length')
-
-    # retained_count > default_count (3 versions vs 1)
-    [ "$retained_count" -gt "$default_count" ]
+    local tf_retained_count
+    tf_retained_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("terraform_"))] | length')
+    # terraform --all-retained must expand beyond latest-only
+    [ "$tf_retained_count" -gt "$tf_default_count" ]
 }
 
-@test "GBH-31: F4 — --all-retained emits multiple versions for github-runner" {
-    _run_generator --all-retained github-runner debian
+@test "GBH-31: F4 — --all-retained emits multiple versions for terraform (retained, no bake_latest_only)" {
+    # github-runner now has bake_latest_only=true so it is always latest-only.
+    # Use terraform (version_retention=3, no bake_latest_only) to verify --all-retained.
+    _run_generator --all-retained terraform
     [ "$status" -eq 0 ]
 
-    local runner_counts
-    runner_counts=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("github_runner_"))] | length')
-    # github-runner has 3 retained versions × 4 linux variants = 12 targets;
-    # assert > 4 to verify multiple versions are present (latest-only = 4 max).
-    [ "$runner_counts" -gt 4 ]
+    local tf_counts
+    tf_counts=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("terraform_"))] | length')
+    # terraform has 3 retained versions × multiple variants; assert > the single-version count.
+    local tf_default_count
+    tf_default_count=$(bash -c "
+        export _DEPGRAPH_LINEAGE_DIR=/nonexistent
+        export GITHUB_ACTIONS=''
+        '${PROJECT_ROOT}/scripts/generate-bake-hcl.sh' terraform 2>/dev/null \
+            | jq '[.target | to_entries[] | select(.key | startswith(\"terraform_\"))] | length'
+    ")
+    [ "$tf_counts" -gt "$tf_default_count" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -970,4 +983,137 @@ YAML
     rm -rf "$_tmpdir"
     [ "$status" -ne 0 ]
     [[ "$output" == *"dependency-graph resolution failed"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# GBH-43: #595 — --cells objects include target_id field
+# Catches: omitting target_id from cells output → bake-buildresult cannot
+# correlate --metadata-file keys to cells.
+# ---------------------------------------------------------------------------
+@test "GBH-43: --cells objects include target_id field (non-empty string)" {
+    _run_generator --cells web-shell
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | jq 'length')" -gt 0 ]
+
+    # Every cell must have a non-empty target_id
+    local missing_tid
+    missing_tid=$(echo "$output" | jq '[.[] | select((.target_id | type) != "string" or .target_id == "")] | length')
+    [ "$missing_tid" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# GBH-44: #595 — --cells[].target_id values equal bake-mode .target keys (MG10 extension)
+# The join key is correct: the set of target_ids from --cells must be exactly
+# the set of target keys emitted by bake mode for the same requested containers
+# (dep-closure exclusion in --cells is correct: dep targets like debian_trixie
+#  appear in bake mode but not in --cells for a requested set that doesn't
+#  include debian directly).
+# ---------------------------------------------------------------------------
+@test "GBH-44: --cells target_id set equals bake-mode target key set for web-shell" {
+    # --cells target_ids (sorted)
+    _run_generator --cells web-shell
+    [ "$status" -eq 0 ]
+    local cells_tids
+    cells_tids=$(echo "$output" | jq -r '[.[].target_id] | sort | join("\n")')
+
+    # bake-mode target keys for web-shell only (exclude dep targets like debian_trixie)
+    _run_generator web-shell
+    [ "$status" -eq 0 ]
+    local bake_keys
+    bake_keys=$(echo "$output" | jq -r '[.target | keys[] | select(startswith("web_shell_"))] | sort | join("\n")')
+
+    # Both sets must be identical
+    [ "$cells_tids" = "$bake_keys" ]
+}
+
+# ---------------------------------------------------------------------------
+# GBH-45: #595 — target_id format is a valid bake identifier (no dots/hyphens/slashes)
+# _target_id sanitises: [.\-\/] → _; leading digit → v prefix.
+# Catching: a target_id with literal dots would not match the bake metadata key.
+# ---------------------------------------------------------------------------
+@test "GBH-45: --cells target_id values contain only [A-Za-z0-9_] characters" {
+    _run_generator --cells web-shell github-runner
+    [ "$status" -eq 0 ]
+
+    # All target_ids must match the bake-identifier alphabet
+    local invalid_tids
+    invalid_tids=$(echo "$output" | jq -r '[.[].target_id | select(test("[^A-Za-z0-9_]"))] | length')
+    [ "$invalid_tids" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# bake_latest_only: github-runner must be latest-only even with --all-retained
+# MG17: bake_latest_only flag ignored → retained github-runner versions included
+# ---------------------------------------------------------------------------
+
+@test "GBH-46: bake_latest_only — github-runner --all-retained emits SAME count as without flag" {
+    # Arrange: capture latest-only cell count (stderr silenced — ::notice:: annotations ignored)
+    local latest_only_count
+    latest_only_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells github-runner 2>/dev/null \
+        | jq '[.[] | select(.container == "github-runner")] | length')
+    [ -n "$latest_only_count" ]
+    [ "$latest_only_count" -gt 0 ]
+
+    # Act: --all-retained must produce the SAME count (flag forced off for github-runner)
+    local all_retained_count
+    all_retained_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained github-runner 2>/dev/null \
+        | jq '[.[] | select(.container == "github-runner")] | length')
+    [ -n "$all_retained_count" ]
+
+    # Assert: counts are identical — bake_latest_only overrides --all-retained
+    [ "$all_retained_count" -eq "$latest_only_count" ]
+}
+
+@test "GBH-47: bake_latest_only — github-runner bake mode --all-retained emits only latest version targets" {
+    # Capture the latest version tag
+    local latest_tag
+    latest_tag=$(bash -c "
+        source '${HELPERS_DIR}/variant-utils.sh'
+        source '${PROJECT_ROOT}/helpers/dependency-graph.sh'
+        list_build_matrix './github-runner' '' 'false' 2>/dev/null \
+            | jq -r 'first(.[] | select(.is_latest_version==true)) | .tag'
+    ")
+    [ -n "$latest_tag" ]
+
+    # With --all-retained the bake document must still have only latest version targets
+    # (stderr silenced — ::notice:: bake_latest_only annotation is expected but irrelevant)
+    local bake_out
+    bake_out=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --all-retained github-runner debian 2>/dev/null)
+    [ -n "$bake_out" ]
+
+    # All github-runner targets must belong to the latest version
+    local safe_tag="${latest_tag//[.\-\/]/_}"
+    local non_latest_targets
+    non_latest_targets=$(echo "$bake_out" | jq --arg t "$safe_tag" \
+        '[.target | to_entries[]
+         | select(.key | startswith("github_runner_"))
+         | select(.key | test($t) | not)] | length')
+    [ "$non_latest_targets" -eq 0 ]
+}
+
+@test "GBH-48: bake_latest_only — --all-retained terraform still expands (non-flagged container unaffected)" {
+    # terraform has version_retention=3 and no bake_latest_only flag
+    _run_generator terraform
+    [ "$status" -eq 0 ]
+    local default_count
+    default_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("terraform_"))] | length')
+
+    _run_generator --all-retained terraform
+    [ "$status" -eq 0 ]
+    local retained_count
+    retained_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("terraform_"))] | length')
+
+    # --all-retained must expand to MORE targets for terraform
+    [ "$retained_count" -gt "$default_count" ]
+}
+
+@test "GBH-49: bake_latest_only — ::notice:: emitted to stderr when flag overrides --all-retained" {
+    # The generator must emit a ::notice:: annotation when it overrides --all-retained
+    run bash -c "
+        export _DEPGRAPH_LINEAGE_DIR=/nonexistent
+        export GITHUB_ACTIONS=''
+        '${PROJECT_ROOT}/scripts/generate-bake-hcl.sh' --all-retained github-runner 2>&1 >/dev/null
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"github-runner"* ]] && [[ "$output" == *"bake_latest_only"* || "$output" == *"latest-only"* ]]
 }

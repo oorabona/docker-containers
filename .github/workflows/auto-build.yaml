@@ -175,7 +175,6 @@ on:
         type: boolean
         default: false
         required: false
-
 # Serialize runs of this workflow on the same ref. The extension pipeline runs
 # in two stages — per-arch build (Stage A) then multi-arch merge (Stage B) —
 # and Stage A publishes mutable per-arch tags (-amd64 / -arm64) that Stage B
@@ -223,6 +222,8 @@ jobs:
       versions: ${{ steps.detect.outputs.versions }}
       builds: ${{ steps.detect.outputs.builds }}
       builds_count: ${{ steps.detect.outputs.builds_count }}
+      bake_builds: ${{ steps.detect.outputs.bake_builds }}
+      matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -245,6 +246,7 @@ jobs:
           scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
           event_name: ${{ github.event_name }}
           build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
+          run_tests: ${{ github.event.inputs.run_tests || inputs.run_tests || 'false' }}
 
   # Build and push PostgreSQL extension images if postgres is in the build list.
   # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg
@@ -865,7 +867,8 @@ jobs:
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
-      needs.detect-containers.outputs.builds_count > 0 &&
+      fromJson(needs.detect-containers.outputs.matrix_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.matrix_builds || '[]')) != '[]' &&
       (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
       (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
@@ -900,7 +903,7 @@ jobs:
       fail-fast: false
       max-parallel: 10  # Bumped from 4: Linux builds are fast; Windows (60-90min) should not starve Linux slots
       matrix:
-        build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
+        build: ${{ fromJson(needs.detect-containers.outputs.matrix_builds) }}
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -1252,17 +1255,23 @@ jobs:
     # fail gracefully if their arch-specific images are missing). This prevents
     # one failed build from blocking manifests for all other successful builds.
     # Skip entirely when rebuild=sync (build-and-push was skipped, nothing to manifest).
+    # Shares the publish-${{ github.ref }} concurrency group with bake-merge so that
+    # the flat-matrix publisher and the bake publisher cannot write manifests concurrently.
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
-      needs.detect-containers.outputs.builds_count > 0 &&
+      fromJson(needs.detect-containers.outputs.matrix_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.matrix_builds || '[]')) != '[]' &&
       github.event_name != 'pull_request'
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       matrix:
-        build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
+        build: ${{ fromJson(needs.detect-containers.outputs.matrix_builds) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1478,6 +1487,977 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  # ---------------------------------------------------------------------------
+  # Bake pipeline (ADR-013 production cutover)
+  #
+  # Routes github-runner, web-shell, and wordpress through `docker buildx bake`
+  # while the flat matrix above continues to handle all other containers.
+  #
+  # Architecture:
+  #   bake-build-amd64 / bake-build-arm64  — Stage A: per-arch native builds
+  #   bake-merge                            — Stage B: multi-arch manifest merge +
+  #                                           best-effort DockerHub mirror
+  # ---------------------------------------------------------------------------
+
+  bake-build-amd64:
+    name: Bake build (amd64)
+    needs: [detect-containers, sync-base-images]
+    if: |
+      always() &&
+      inputs.rebuild != 'sync' &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Resolve bake container names
+        id: bake-containers
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          # Extract unique container names from the bake_builds cell array (injection-safe via env)
+          containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "::notice::bake containers (amd64): ${containers}"
+
+      - name: Resolve github-runner version from bake set
+        id: resolve-gh-version
+        if: contains(steps.bake-containers.outputs.containers, 'github-runner')
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          # github-runner is latest-only: exactly one version in the bake set.
+          gh_version=$(printf '%s' "$BAKE_BUILDS_JSON" \
+            | jq -r '[.[] | select(.container == "github-runner") | .version] | unique | first // ""')
+          echo "gh_version=${gh_version}" >> "$GITHUB_OUTPUT"
+          echo "::notice::github-runner version in bake set (amd64): ${gh_version}"
+
+      - name: Restore runner agent cache (amd64)
+        if: steps.resolve-gh-version.outputs.gh_version != ''
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            github-runner/runner.tar.gz
+            github-runner/runner.zip
+            github-runner/runner.sha256
+          key: runner-agent-${{ steps.resolve-gh-version.outputs.gh_version }}-amd64
+          restore-keys: |
+            runner-agent-${{ steps.resolve-gh-version.outputs.gh_version }}-
+
+      - name: Prepare build contexts (github-runner agent cache)
+        if: contains(steps.bake-containers.outputs.containers, 'github-runner')
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          # Restore runner agent cache for each github-runner version in the bake set
+          # Version is extracted from the bake cell tag (injection-safe via env)
+          versions=$(printf '%s' "$BAKE_BUILDS_JSON" \
+            | jq -r '[.[] | select(.container == "github-runner") | .version] | unique | .[]')
+          while IFS= read -r ver; do
+            [[ -z "$ver" ]] && continue
+            echo "::notice::Preparing github-runner build context for version ${ver} (amd64)"
+            if [[ -f "github-runner/prepare-build-context.sh" ]]; then
+              bash github-runner/prepare-build-context.sh "$ver" amd64 linux
+            fi
+          done <<< "$versions"
+
+      - name: Generate bake HCL and build (amd64)
+        id: bake-build
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          ARCH_SUFFIX: -amd64
+          IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+          DRY_RUN: ${{ env.DRY_RUN }}
+          DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-bake-hcl.sh
+
+          # Validate each BAKE_CONTAINERS token against the expected name pattern.
+          # Tokens come from detect-containers JSON (trusted pipeline), but the check
+          # makes word-splitting injection-safe for any future change in the source.
+          set -f  # disable globbing while validating tokens
+          for _c in ${BAKE_CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+              echo "::error::BAKE_CONTAINERS token '${_c}' contains invalid characters — aborting"
+              exit 1
+            fi
+          done
+          set +f
+
+          # Generate the bake JSON to a temp file (avoids process-sub portability issues
+          # with `docker buildx bake -f <(...)` on some buildkit versions).
+          # Using the real REMOTE_CR ensures base FROM refs resolve.
+          #
+          # Bake is latest-only by design: retained (non-latest) cells are routed to the
+          # flat matrix by partition_builds, so they never reach this job.
+          # No --all-retained flag is passed here.
+          bake_file="${RUNNER_TEMP}/bake-amd64.json"
+          # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
+          # shellcheck disable=SC2086
+          REMOTE_CR="$REMOTE_CR" ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+
+          # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
+          no_cache_flag=""
+          [[ "$DOCKER_NO_CACHE" == "true" ]] && no_cache_flag="--no-cache"
+
+          # Stage A: push per-arch intermediates with -amd64 suffix.
+          # ARCH_SUFFIX is exported so the generator's intermediate_ref path is consistent.
+          # Three-way branch:
+          #   DRY_RUN → skip docker buildx bake entirely (no build, no push)
+          #   IS_PR   → build-only (validate the bake DAG compiles); no --push
+          #   else    → full build + push
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Bake build (amd64) DRY-RUN — skipping docker buildx bake (no build, no push)"
+          elif [[ "$IS_PR" == "true" ]]; then
+            # PR: validate the bake DAG compiles and builds — no registry push.
+            # shellcheck disable=SC2086
+            docker buildx bake \
+              -f "$bake_file" \
+              --set "*.platform=linux/amd64" \
+              ${no_cache_flag} \
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json"
+            echo "::notice::Bake build (amd64) build-only (PR; no push)"
+          else
+            # shellcheck disable=SC2086
+            docker buildx bake \
+              -f "$bake_file" \
+              --set "*.platform=linux/amd64" \
+              ${no_cache_flag} \
+              --push \
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-amd64.json"
+            echo "::notice::Bake build (amd64) complete"
+          fi
+
+      - name: Emit build-result artifacts (amd64)
+        if: always() && env.DRY_RUN != 'true'
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+        run: |
+          set -euo pipefail
+          chmod +x helpers/bake-buildresult.sh
+          source helpers/bake-buildresult.sh
+
+          # Bake is latest-only by design; emit covers only the latest cells.
+          export BAKE_GENERATE_ALL_RETAINED=false
+
+          mkdir -p .build-lineage
+          # BAKE_CONTAINERS is operator-set (trusted context)
+          # shellcheck disable=SC2086
+          emit_bake_build_results \
+            "${RUNNER_TEMP}/bake-metadata-amd64.json" \
+            amd64 \
+            .build-lineage \
+            ${BAKE_CONTAINERS}
+
+      - name: Upload build-result artifacts (amd64)
+        id: upload-bres-amd64
+        if: always() && env.DRY_RUN != 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-amd64-${{ github.run_id }}
+          path: .build-lineage/build-result-*-amd64.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload build-result artifacts (amd64, retry)
+        if: always() && env.DRY_RUN != 'true' && steps.upload-bres-amd64.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-amd64-${{ github.run_id }}
+          path: .build-lineage/build-result-*-amd64.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+      # Trivy scanning is handled by the dedicated bake-trivy job (FIX 5).
+      # amd64-only: SBOM generation + attestation + lineage emission.
+      # v1 behaviour: on pull_request the bake job is BUILD-ONLY (compile validation);
+      # nothing is pushed to the registry so SBOM generation and attestation are
+      # skipped — scanning stale or absent refs would produce misleading results.
+      # Advisory Trivy/SBOM/attestation run on the push/merge run via the
+      # bake-trivy matrix + bake-attest matrix jobs, which provide full coverage.
+      - name: Install syft (bake SBOM)
+        id: install-syft-bake
+        if: steps.bake-build.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
+        continue-on-error: true
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Generate SBOM and emit lineage (bake amd64)
+        id: bake-sbom
+        if: steps.install-syft-bake.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          source ./helpers/sbom-utils.sh
+          chmod +x scripts/generate-bake-hcl.sh
+
+          # Bake is latest-only by design; generate cells for the latest version only.
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          ncells=$(jq 'length' <<< "$cells_json")
+          mkdir -p .build-lineage
+
+          # Attest manifest: [{subject_name, subject_digest, sbom_path}] written for the
+          # real-attestation step below (parity with flat matrix).
+          attest_manifest=".build-lineage/.bake-attest-entries.json"
+          printf '[]' > "$attest_manifest"
+
+          for (( i=0; i<ncells; i++ )); do
+            cell=$(jq -c ".[$i]" <<< "$cells_json")
+            container=$(jq -r '.container'       <<< "$cell")
+            tag=$(jq -r '.tag'                   <<< "$cell")
+            flavor=$(jq -r '.flavor // ""'       <<< "$cell")
+            is_default=$(jq -r 'if .is_default then "true" else "false" end' <<< "$cell")
+            is_latest=$(jq -r 'if has("is_latest_version") then (if .is_latest_version then "true" else "false" end) else "true" end' <<< "$cell")
+            iref=$(jq -r '.intermediate_ref'     <<< "$cell")
+            image_ref="${iref//\$\{REMOTE_CR\}/${REMOTE_CR}}-amd64"
+
+            echo "::group::SBOM + lineage for ${container}:${tag} (amd64)"
+
+            # SBOM
+            sbom_file=".build-lineage/${container}-${tag}.sbom.json"
+            generate_sbom "$image_ref" "$sbom_file" || \
+              echo "::warning::SBOM generation failed for ${container}:${tag} — continuing"
+
+            # Capture digest for attestation (mirrors build-and-push job pattern)
+            digest=""
+            raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+            if [[ -n "$raw_manifest" ]]; then
+              digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+            fi
+            echo "digest_${container}_${tag}=${digest}" >> "$GITHUB_OUTPUT"
+
+            # Append to attest manifest when digest + SBOM are both present
+            if [[ -n "$digest" && -f "$sbom_file" ]]; then
+              jq -c \
+                --arg sn "${REMOTE_CR}/${container}" \
+                --arg sd "$digest" \
+                --arg sp "$sbom_file" \
+                '. + [{subject_name:$sn, subject_digest:$sd, sbom_path:$sp}]' \
+                "$attest_manifest" > "${attest_manifest}.tmp" && mv "${attest_manifest}.tmp" "$attest_manifest" || true
+            fi
+
+            # Emit schema-v2 lineage JSON
+            lineage_file=".build-lineage/${container}-${tag}.json"
+            built_at="$(date -Iseconds)"
+            ghcr_image="${REMOTE_CR}/${container}:${tag}"
+            jq -cn \
+              --arg container "$container" \
+              --arg version   "$tag" \
+              --arg tag       "$tag" \
+              --arg flavor    "$flavor" \
+              --arg platform  "linux/amd64" \
+              --arg build_digest "$digest" \
+              --arg base_image_ref "" \
+              --arg ghcr      "$ghcr_image" \
+              --arg dockerhub "docker.io/oorabona/${container}:${tag}" \
+              --arg built_at  "$built_at" \
+              --arg is_default "$is_default" \
+              --arg is_latest  "$is_latest" \
+              '{container:$container, version:$version, tag:$tag, flavor:$flavor,
+                platform:$platform, build_digest:$build_digest,
+                base_image_ref:$base_image_ref,
+                images:{ghcr:$ghcr, dockerhub:$dockerhub},
+                built_at:$built_at,
+                is_default:($is_default == "true"),
+                is_latest_version:($is_latest == "true")}' \
+              > "$lineage_file" || true
+
+            echo "::endgroup::"
+          done
+          echo "attest_manifest=${attest_manifest}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      # Upload all bake SBOMs as a single combined artifact so the bake-attest
+      # matrix job can download them in one step.  The glob .build-lineage/*.sbom.json
+      # captures every cell file produced by the bake-sbom step above.
+      - name: Upload bake SBOM artifact
+        id: upload-bake-sboms
+        if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: bake-sboms-${{ github.run_id }}
+          path: .build-lineage/*.sbom.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload bake SBOM artifact (retry on transient failure)
+        if: steps.bake-sbom.outcome == 'success' && steps.upload-bake-sboms.outcome == 'failure' && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: bake-sboms-${{ github.run_id }}
+          path: .build-lineage/*.sbom.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+      - name: Upload build lineage (bake amd64)
+        if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-lineage-bake-amd64-${{ github.run_id }}
+          # Lineage sidecars only — exclude build-result records and SBOMs so the
+          # cache-lineage enrichment/drift logic does not ingest them as lineage.
+          path: |
+            .build-lineage/*.json
+            !.build-lineage/build-result-*.json
+            !.build-lineage/*.sbom.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
+  bake-build-arm64:
+    name: Bake build (arm64)
+    needs: [detect-containers, sync-base-images]
+    if: |
+      always() &&
+      inputs.rebuild != 'sync' &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_arm64
+          echo "4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Resolve bake container names
+        id: bake-containers
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "::notice::bake containers (arm64): ${containers}"
+
+      - name: Resolve github-runner version from bake set
+        id: resolve-gh-version
+        if: contains(steps.bake-containers.outputs.containers, 'github-runner')
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          # github-runner is latest-only: exactly one version in the bake set.
+          gh_version=$(printf '%s' "$BAKE_BUILDS_JSON" \
+            | jq -r '[.[] | select(.container == "github-runner") | .version] | unique | first // ""')
+          echo "gh_version=${gh_version}" >> "$GITHUB_OUTPUT"
+          echo "::notice::github-runner version in bake set (arm64): ${gh_version}"
+
+      - name: Restore runner agent cache (arm64)
+        if: steps.resolve-gh-version.outputs.gh_version != ''
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            github-runner/runner.tar.gz
+            github-runner/runner.zip
+            github-runner/runner.sha256
+          key: runner-agent-${{ steps.resolve-gh-version.outputs.gh_version }}-arm64
+          restore-keys: |
+            runner-agent-${{ steps.resolve-gh-version.outputs.gh_version }}-
+
+      - name: Prepare build contexts (github-runner agent cache)
+        if: contains(steps.bake-containers.outputs.containers, 'github-runner')
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          versions=$(printf '%s' "$BAKE_BUILDS_JSON" \
+            | jq -r '[.[] | select(.container == "github-runner") | .version] | unique | .[]')
+          while IFS= read -r ver; do
+            [[ -z "$ver" ]] && continue
+            echo "::notice::Preparing github-runner build context for version ${ver} (arm64)"
+            if [[ -f "github-runner/prepare-build-context.sh" ]]; then
+              bash github-runner/prepare-build-context.sh "$ver" arm64 linux
+            fi
+          done <<< "$versions"
+
+      - name: Generate bake HCL and build (arm64)
+        id: bake-build
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          ARCH_SUFFIX: -arm64
+          IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+          DRY_RUN: ${{ env.DRY_RUN }}
+          DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-bake-hcl.sh
+
+          # Validate each BAKE_CONTAINERS token against the expected name pattern.
+          set -f
+          for _c in ${BAKE_CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+              echo "::error::BAKE_CONTAINERS token '${_c}' contains invalid characters — aborting"
+              exit 1
+            fi
+          done
+          set +f
+
+          # Using the real REMOTE_CR ensures base FROM refs resolve.
+          #
+          # Bake is latest-only by design: retained (non-latest) cells are routed to the
+          # flat matrix by partition_builds, so they never reach this job.
+          # No --all-retained flag is passed here.
+          bake_file="${RUNNER_TEMP}/bake-arm64.json"
+          # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
+          # shellcheck disable=SC2086
+          REMOTE_CR="$REMOTE_CR" ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+
+          # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
+          no_cache_flag=""
+          [[ "$DOCKER_NO_CACHE" == "true" ]] && no_cache_flag="--no-cache"
+
+          # Three-way branch:
+          #   DRY_RUN → skip docker buildx bake entirely (no build, no push)
+          #   IS_PR   → build-only (validate the bake DAG compiles); no --push
+          #   else    → full build + push
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Bake build (arm64) DRY-RUN — skipping docker buildx bake (no build, no push)"
+          elif [[ "$IS_PR" == "true" ]]; then
+            # PR: validate the bake DAG compiles and builds — no registry push.
+            # shellcheck disable=SC2086
+            docker buildx bake \
+              -f "$bake_file" \
+              --set "*.platform=linux/arm64" \
+              ${no_cache_flag} \
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json"
+            echo "::notice::Bake build (arm64) build-only (PR; no push)"
+          else
+            # shellcheck disable=SC2086
+            docker buildx bake \
+              -f "$bake_file" \
+              --set "*.platform=linux/arm64" \
+              ${no_cache_flag} \
+              --push \
+              --metadata-file "${RUNNER_TEMP}/bake-metadata-arm64.json"
+            echo "::notice::Bake build (arm64) complete"
+          fi
+
+      - name: Emit build-result artifacts (arm64)
+        if: always() && env.DRY_RUN != 'true'
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+        run: |
+          set -euo pipefail
+          chmod +x helpers/bake-buildresult.sh
+          source helpers/bake-buildresult.sh
+
+          # Bake is latest-only by design; emit covers only the latest cells.
+          export BAKE_GENERATE_ALL_RETAINED=false
+
+          mkdir -p .build-lineage
+          # shellcheck disable=SC2086
+          emit_bake_build_results \
+            "${RUNNER_TEMP}/bake-metadata-arm64.json" \
+            arm64 \
+            .build-lineage \
+            ${BAKE_CONTAINERS}
+
+      - name: Upload build-result artifacts (arm64)
+        id: upload-bres-arm64
+        if: always() && env.DRY_RUN != 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-arm64-${{ github.run_id }}
+          path: .build-lineage/build-result-*-arm64.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload build-result artifacts (arm64, retry)
+        if: always() && env.DRY_RUN != 'true' && steps.upload-bres-arm64.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-arm64-${{ github.run_id }}
+          path: .build-lineage/build-result-*-arm64.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+      # Trivy scanning is handled by the dedicated bake-trivy job (FIX 5).
+
+  # ---------------------------------------------------------------------------
+  # FIX 5 — Dedicated Trivy scan job for bake-managed containers.
+  #
+  # Runs AFTER both arch builds have pushed their intermediates.
+  # Uses the same pinned aquasecurity/trivy-action as the flat matrix.
+  # Advisory only: bake-merge does NOT need bake-trivy (trivy never gates merge).
+  # Skipped on pull_request (nothing is pushed so no registry ref to scan).
+  # ---------------------------------------------------------------------------
+  bake-trivy:
+    name: Trivy scan (bake) ${{ matrix.build.container }}:${{ matrix.build.tag }} (${{ matrix.arch }})
+    needs: [detect-containers, bake-build-amd64, bake-build-arm64]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.dry_run != true &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      needs.bake-build-amd64.result == 'success' &&
+      needs.bake-build-arm64.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.bake_builds || '[]') }}
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to GHCR (pull intermediates)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan for vulnerabilities (Trivy)
+        id: trivy-scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          # Scan the pushed per-arch intermediate ref (pushed by bake-build-<arch>)
+          image-ref: 'ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}-${{ matrix.arch }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          timeout: '15m0s'
+        continue-on-error: true  # Vulnerability scan is advisory — never gates the build
+
+      - name: Write Trivy scan history (bake)
+        if: steps.trivy-scan.outcome != 'skipped'
+        env:
+          CONTAINER: ${{ matrix.build.container }}
+          TAG: ${{ matrix.build.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p .trivy-scan-history
+
+          last_scan="$(date -Iseconds)"
+          alert_count=-1
+          status="error"
+          counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
+
+          # Parse SARIF to count findings per severity (parity with build-container action).
+          # A missing or unparsable SARIF means the scan did not complete — record as
+          # status="error" with alert_count=-1 (sentinel) so the dashboard/history
+          # reports a failed scan rather than a false clean.
+          if [[ -f trivy-results.sarif ]] && jq -e . trivy-results.sarif >/dev/null 2>&1; then
+            severities_json=$(jq -c '
+              [.runs[].tool.driver.rules // [] | .[] |
+                {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
+                  map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
+                  first // "info")}]
+              | add // {}
+            ' trivy-results.sarif 2>/dev/null || echo "{}")
+
+            counts_json=$(jq -c --argjson sev_map "$severities_json" '
+              reduce ([.runs[].results // [] | .[]][] | (.ruleId? // "")) as $rid
+                ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
+                  ($sev_map[$rid] // "info") as $s
+                  | if .[$s] != null then .[$s] += 1 else . end)
+            ' trivy-results.sarif 2>/dev/null || echo '{"critical":0,"high":0,"medium":0,"low":0,"info":0}')
+
+            alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo -1)
+            if [[ "$alert_count" -lt 0 ]]; then
+              status="error"
+            elif [[ "$alert_count" -gt 0 ]]; then
+              status="dirty"
+            else
+              status="clean"
+            fi
+          fi
+
+          scan_file=".trivy-scan-history/${CONTAINER}-${TAG}-linux-${ARCH}.json"
+          jq -nc \
+            --arg ls "$last_scan" \
+            --argjson ac "$alert_count" \
+            --arg st "$status" \
+            --argjson c "$counts_json" \
+            --argjson ss '["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"]' \
+            '{last_scan:$ls,alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}' \
+            > "$scan_file"
+          echo "::notice::Trivy scan history: ${scan_file} (alert_count=${alert_count}, status=${status})"
+
+      - name: Upload SARIF to GitHub Security
+        if: steps.trivy-scan.outcome != 'skipped'
+        uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
+          wait-for-processing: false
+        continue-on-error: true  # SARIF upload is advisory — never gates the build
+
+      - name: Upload Trivy scan history (bake)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: trivy-scan-history-bake-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: .trivy-scan-history/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
+  bake-merge:
+    # Require BOTH arch builds to succeed before merging.  If either fails the
+    # mutable :<tag>-amd64 / :<tag>-arm64 intermediate refs may be stale from a
+    # prior run; fusing them would produce a corrupt canonical multi-arch manifest.
+    # A failed build leaves the failure visible and the run re-runnable.
+    name: Bake merge manifests + DockerHub mirror
+    needs: [detect-containers, bake-build-amd64, bake-build-arm64]
+    if: |
+      github.event_name != 'pull_request' &&
+      inputs.rebuild != 'sync' &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      needs.bake-build-amd64.result == 'success' &&
+      needs.bake-build-arm64.result == 'success'
+    # Shared concurrency group with create-manifest so the two publishers never
+    # write to the same GHCR namespace concurrently on the same ref.
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Resolve bake container names
+        id: bake-containers
+        env:
+          BAKE_BUILDS_JSON: ${{ needs.detect-containers.outputs.bake_builds }}
+        run: |
+          set -euo pipefail
+          containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+
+      - name: Canonical GHCR manifest merge (strict, fail-closed)
+        id: bake-merge-step
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          DRY_RUN: ${{ env.DRY_RUN }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/bake-merge-manifests.sh scripts/generate-bake-hcl.sh
+
+          # Validate each BAKE_CONTAINERS token against the expected name pattern.
+          set -f
+          for _c in ${BAKE_CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+              echo "::error::BAKE_CONTAINERS token '${_c}' contains invalid characters — aborting"
+              exit 1
+            fi
+          done
+          set +f
+
+          # Bake is latest-only by design; merge only the latest cells.
+          # No --all-retained flag is passed here.
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::manifest merge running in DRY-RUN (no canonical tags published; dry_run=${DRY_RUN})"
+            # shellcheck disable=SC2086
+            DRY_RUN=true REMOTE_CR="$REMOTE_CR" ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+          else
+            # BAKE_CONTAINERS is operator-set from bake_builds JSON (trusted context)
+            # shellcheck disable=SC2086
+            REMOTE_CR="$REMOTE_CR" ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+          fi
+
+      - name: Best-effort DockerHub mirror (bake)
+        if: always() && steps.bake-merge-step.outcome == 'success'
+        continue-on-error: true
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          chmod +x helpers/mirror-dockerhub.sh
+          # Bake is latest-only by design; mirror only the latest cells.
+          export BAKE_GENERATE_ALL_RETAINED=false
+          source helpers/mirror-dockerhub.sh
+          # BAKE_CONTAINERS is operator-set (trusted context)
+          # shellcheck disable=SC2086
+          mirror_to_dockerhub ${BAKE_CONTAINERS}
+
+      - name: Emit manifest build-result artifacts (bake)
+        if: always()
+        env:
+          BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          MERGE_OUTCOME: ${{ steps.bake-merge-step.outcome }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-bake-hcl.sh
+
+          mkdir -p .build-lineage
+
+          result="failure"
+          [[ "$MERGE_OUTCOME" == "success" ]] && result="success"
+
+          # Emit one manifest build-result per cell (mirrors create-manifest job shape).
+          # Bake is latest-only by design; generate cells for the latest version only.
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          ncells=$(jq 'length' <<< "$cells_json")
+          for (( i=0; i<ncells; i++ )); do
+            cell=$(jq -c ".[$i]" <<< "$cells_json")
+            container=$(jq -r '.container'        <<< "$cell")
+            tag=$(jq -r '.tag'                    <<< "$cell")
+            variant=$(jq -r '.variant // ""'      <<< "$cell")
+            out_file=".build-lineage/build-result-manifest-${container}-${tag}.json"
+            jq -cn \
+              --arg c "$container" \
+              --arg v "$variant" \
+              --arg t "$tag" \
+              --arg a "manifest" \
+              --arg r "$result" \
+              '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+              > "$out_file" || true
+          done
+
+      - name: Upload manifest build-result artifacts (bake)
+        id: upload-bres-manifest-bake
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-manifest-${{ github.run_id }}
+          path: .build-lineage/build-result-manifest-*.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload manifest build-result artifacts (bake, retry)
+        if: always() && steps.upload-bres-manifest-bake.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-result-bake-manifest-${{ github.run_id }}
+          path: .build-lineage/build-result-manifest-*.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+  # ---------------------------------------------------------------------------
+  # Bake SBOM attestation — per-cell matrix job (parity with flat matrix).
+  #
+  # Runs once per bake cell (container × tag) on amd64 only (attestation is per
+  # container image, same as the flat matrix build-and-push job which attests the
+  # amd64 intermediate).  Advisory only: never gates bake-merge or publish.
+  # Skipped on pull_request (nothing pushed) and dry_run (no canonical artifact).
+  # ---------------------------------------------------------------------------
+  bake-attest:
+    name: Attest SBOM (bake) ${{ matrix.build.container }}:${{ matrix.build.tag }}
+    needs: [detect-containers, bake-build-amd64]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.dry_run != true &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.bake-build-amd64.result == 'success' || needs.bake-build-amd64.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.bake_builds || '[]') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to GHCR (imagetools inspect)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download SBOM artifact
+        id: download-sbom
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: bake-sboms-${{ github.run_id }}
+          path: .sbom-attest/
+        continue-on-error: true  # SBOM upload may have failed — advisory, never gates
+
+      - name: Derive amd64 OCI digest and attest SBOM
+        id: attest-setup
+        if: steps.download-sbom.outcome == 'success'
+        env:
+          MATRIX_CONTAINER: ${{ matrix.build.container }}
+          MATRIX_TAG: ${{ matrix.build.tag }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          image_ref="${REMOTE_CR}/${MATRIX_CONTAINER}:${MATRIX_TAG}-amd64"
+
+          # Derive digest via raw-manifest hash (same method as bake-build-amd64 so
+          # subject digest matches what was captured during the build).
+          raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+          if [[ -z "$raw_manifest" ]]; then
+            echo "::warning::Cannot inspect ${image_ref} — skipping attestation for ${MATRIX_CONTAINER}:${MATRIX_TAG}"
+            echo "has_digest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+          # Locate this cell's SBOM file by its known name convention
+          # (<container>-<tag>.sbom.json, matching bake-sbom generation above).
+          sbom_file=".sbom-attest/${MATRIX_CONTAINER}-${MATRIX_TAG}.sbom.json"
+          if [[ ! -f "$sbom_file" ]]; then
+            echo "::warning::SBOM file missing for ${MATRIX_CONTAINER}:${MATRIX_TAG} — skipping attestation"
+            echo "has_digest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "sbom_file=${sbom_file}" >> "$GITHUB_OUTPUT"
+          echo "has_digest=true" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SBOM (bake)
+        if: steps.attest-setup.outputs.has_digest == 'true'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
+          subject-digest: ${{ steps.attest-setup.outputs.digest }}
+          sbom-path: ${{ steps.attest-setup.outputs.sbom_file }}
+        continue-on-error: true  # Attestation is advisory — never gates
+
   # Advance the coverage checkpoint tag on every master push run that completes
   # (even when individual build jobs failed).  The tag carries a JSON state record
   # of which containers failed so the next run can retry them while other containers
@@ -1496,7 +2476,7 @@ jobs:
   #     next run via the carry-forward logic in detect-containers.
   publish-coverage-checkpoint:
     name: Publish coverage checkpoint tag
-    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, bake-build-amd64, bake-build-arm64, bake-merge]
     # Advance on every completed master push, even when build jobs failed.
     # A cancelled run or a failed detect-containers job blocks advancement.
     if: |
@@ -1740,7 +2720,7 @@ jobs:
           echo "failed_this_run=${ftr_safe}" >> "$GITHUB_OUTPUT"
 
   summary:
-    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, build-and-push, create-manifest, sync-registries, publish-coverage-checkpoint, bake-build-amd64, bake-build-arm64, bake-merge, bake-attest]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1786,11 +2766,16 @@ jobs:
           bex_result="${{ needs.build-extensions.result }}"
           mem_result="${{ needs.merge-extension-manifests.result }}"
           cm_result="${{ needs.create-manifest.result }}"
+          bake_amd64_result="${{ needs.bake-build-amd64.result }}"
+          bake_arm64_result="${{ needs.bake-build-arm64.result }}"
+          bake_merge_result="${{ needs.bake-merge.result }}"
           dry_run_flag="${{ env.DRY_RUN }}"
 
           # build_failed: any monitored pipeline job failed or cancelled.
+          # Includes bake jobs so a bake-only master run surfaces failures correctly.
           build_failed=false
-          for _r in "$detect_result" "$bap_result" "$bex_result" "$mem_result" "$cm_result"; do
+          for _r in "$detect_result" "$bap_result" "$bex_result" "$mem_result" "$cm_result" \
+                    "$bake_amd64_result" "$bake_arm64_result" "$bake_merge_result"; do
             if [ "$_r" = "failure" ] || [ "$_r" = "cancelled" ]; then
               build_failed=true
             fi
@@ -1802,17 +2787,33 @@ jobs:
           [[ "$container_count" =~ ^[0-9]+$ ]] || count_valid=false
 
           # build_succeeded: a REAL successful build was published.
-          # Requires: not build_failed, a valid count > 0, build-and-push
-          # success, and NOT a dry run.
+          # Requires: not build_failed, a valid count > 0, NOT a dry run, AND
+          # at least one publishing path succeeded.
+          #
+          # Two publishing paths are possible on a single run:
+          #   flat matrix: build-and-push = 'success'
+          #   bake pipeline: bake-merge = 'success' (build-and-push is 'skipped')
+          # A run that only uses the bake path has bap_result='skipped' but
+          # bake_merge_result='success'; recognising it as a success prevents
+          # spurious generic "Auto Build Failed" issues from never being closed
+          # on bake-only master runs.
+          #
           # count=0 is explicitly NOT a success signal — closing an issue
           # requires evidence that something was actually built and published.
           # DRY_RUN runs are NOT a recovery signal: docker/skopeo become echo
-          # no-ops, so build-and-push reports success without publishing anything.
+          # no-ops, so build-and-push / bake-merge report success without publishing.
+          bake_path_ok=false
+          if [ "$bake_amd64_result" = "success" ] && [ "$bake_arm64_result" = "success" ] \
+             && [ "$bake_merge_result" = "success" ]; then
+            bake_path_ok=true
+          fi
+
           build_succeeded=false
           if [ "$build_failed" = "false" ] && [ "$count_valid" = "true" ] \
-             && [ "$container_count" -gt 0 ] && [ "$bap_result" = "success" ] \
-             && [ "$dry_run_flag" != "true" ]; then
-            build_succeeded=true
+             && [ "$container_count" -gt 0 ] && [ "$dry_run_flag" != "true" ]; then
+            if [ "$bap_result" = "success" ] || [ "$bake_path_ok" = "true" ]; then
+              build_succeeded=true
+            fi
           fi
 
           # Emit BOTH signals unconditionally — never inside a conditional branch.
@@ -1857,7 +2858,7 @@ jobs:
               echo "- ✅ All container images are up to date in registries" >> $GITHUB_STEP_SUMMARY
               echo "- 🔍 No new upstream versions detected" >> $GITHUB_STEP_SUMMARY
             fi
-          elif [ "$bap_result" = "success" ]; then
+          elif [ "$bap_result" = "success" ] || [ "$bake_path_ok" = "true" ]; then
             echo "### ✅ All builds completed successfully!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**🎯 Smart Detection Features:**" >> $GITHUB_STEP_SUMMARY
@@ -2193,12 +3194,16 @@ jobs:
 
   cache-lineage:
     name: Cache build lineage
-    needs: [build-and-push, create-manifest]
-    # Run on partial failure: successful builds still have lineage to cache
+    needs: [build-and-push, create-manifest, bake-build-amd64, bake-build-arm64, bake-merge, bake-trivy]
+    # Run on partial failure: successful builds still have lineage to cache.
+    # bake-trivy is advisory and skipped on PR / when no bake containers detected —
+    # tolerate all outcomes (success/failure/skipped) so lineage is not blocked.
     if: |
       always() &&
-      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure') &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure' || needs.build-and-push.result == 'skipped') &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
+      (needs.bake-merge.result == 'success' || needs.bake-merge.result == 'failure' || needs.bake-merge.result == 'skipped') &&
+      (needs.bake-trivy.result == 'success' || needs.bake-trivy.result == 'failure' || needs.bake-trivy.result == 'skipped') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -2278,6 +3283,14 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           pattern: sbom-*
+          path: .build-lineage-sbom-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Download bake SBOM artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: bake-sboms-*
           path: .build-lineage-sbom-artifacts/
           merge-multiple: false
         continue-on-error: true
