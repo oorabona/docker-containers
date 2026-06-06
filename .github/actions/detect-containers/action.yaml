@@ -72,6 +72,12 @@ outputs:
   builds_count:
     description: 'Total number of builds (including variants)'
     value: ${{ steps.expand-variants.outputs.builds_count }}
+  bake_builds:
+    description: 'JSON array of builds routed to the bake engine (github-runner, web-shell, wordpress by default)'
+    value: ${{ steps.split-build-engine.outputs.bake_builds }}
+  matrix_builds:
+    description: 'JSON array of builds routed to the flat matrix engine (all non-bake containers)'
+    value: ${{ steps.split-build-engine.outputs.matrix_builds }}
   expand_retained_map:
     description: |
       JSON object mapping container name to boolean. true = expand all retained
@@ -628,3 +634,30 @@ runs:
         echo "builds_count=$builds_count" >> $GITHUB_OUTPUT
         echo "📋 Total builds: $builds_count"
         echo "$builds_json" | jq .
+
+    - name: Split builds by engine (bake vs matrix)
+      id: split-build-engine
+      shell: bash
+      env:
+        BUILDS: ${{ steps.expand-variants.outputs.builds }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/bake-managed.sh"
+
+        # When expand-variants was skipped (no containers detected), BUILDS is
+        # empty — treat as an empty array so consumers always get valid JSON.
+        builds_input="${BUILDS:-[]}"
+        [[ -z "$builds_input" ]] && builds_input="[]"
+
+        partitioned=$(partition_builds "$builds_input")
+
+        bake_builds=$(echo "$partitioned" | jq -c '.bake')
+        matrix_builds=$(echo "$partitioned" | jq -c '.matrix')
+
+        bake_count=$(echo "$bake_builds" | jq 'length')
+        matrix_count=$(echo "$matrix_builds" | jq 'length')
+
+        echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
+        echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
+        echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count"
