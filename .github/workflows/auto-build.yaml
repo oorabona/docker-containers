@@ -230,9 +230,8 @@ jobs:
           fetch-depth: 0
 
       - name: Install yq for variant detection
-        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
-        with:
-          cmd: yq --version
+        shell: bash
+        run: yq --version
 
       - name: Detect containers to build
         id: detect
@@ -771,9 +770,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install yq
-        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
-        with:
-          cmd: yq --version
+        shell: bash
+        run: yq --version
 
       # Authenticate BOTH registries: GHCR (push the sync results) AND Docker Hub
       # (the imagetools-create source). Auth raises the per-IP rate-limit ceiling
