@@ -129,29 +129,46 @@ runs:
         image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 
     - name: Set up Docker Buildx
+      if: runner.os != 'Windows'
       uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
       with:
-        # Linux: docker-container driver (BuildKit container) — supports --push, multi-platform.
-        # Windows: docker driver (native daemon's BuildKit) — required because Linux containers
-        # for BuildKit aren't available on Windows runners. We don't need a builder for the
-        # imagetools create calls anyway — they operate on registry manifests, not on a builder.
-        # Per #357: this step is now also run on Windows so `docker buildx imagetools create`
-        # uses the action-installed buildx (recent), not the runner's outdated stock buildx
-        # which rejects `--tag` and `-t` for imagetools create.
-        driver: ${{ runner.os == 'Windows' && 'docker' || 'docker-container' }}
-        # Pin buildx version: setup-buildx-action does NOT replace an already-installed
-        # buildx unless `version` is set explicitly (it only configures the builder otherwise).
-        # Without this, the Windows runner's outdated stock buildx would keep running and
-        # reject `--tag` / `-t` for imagetools create. Pinned on both OS for reproducibility.
+        # docker-container driver: supports --push and multi-platform builds.
+        driver: docker-container
+        # Pin buildx version so setup-buildx-action replaces any pre-installed binary.
         version: 'v0.33.0'
         # Pin BuildKit image to GHCR-seeded copy (docker.io egress containment, #628).
         # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
-        # On Windows, driver=docker — the image= key applies only to the docker-container
-        # driver and is meaningless (and potentially harmful) on the docker driver, so
-        # driver-opts is left empty on Windows to avoid silent misconfiguration.
-        driver-opts: ${{ runner.os != 'Windows' && format('image=ghcr.io/{0}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f', github.repository_owner) || '' }}
-      # GitHub runners cache moby/buildkit images, so Docker Hub dependency is minimal.
-      # Retry logic handles intermittent Docker Hub issues.
+        driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+    - name: Set up Docker Buildx (Windows)
+      # On Windows, setup-buildx-action downloads the buildx binary from GitHub Releases
+      # outside the build's retry logic, causing transient failures (#656). Instead,
+      # download the pinned binary directly with retry + sha256 verification.
+      # Per #357: only `docker buildx imagetools create --tag` is needed on Windows —
+      # no container builder required.
+      if: runner.os == 'Windows'
+      shell: bash
+      env:
+        BUILDX_VERSION: "v0.33.0"
+        BUILDX_WIN_SHA256: "832ddf42373203ee3836a7cb3b16fe5080231491e7edb32019ac0f6fe03b99ed"
+      run: |
+        set -euo pipefail
+        # shellcheck source=helpers/retry.sh
+        source ./helpers/retry.sh
+
+        dest="$USERPROFILE/.docker/cli-plugins/docker-buildx.exe"
+        mkdir -p "$(dirname "$dest")"
+        url="https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.windows-amd64.exe"
+
+        retry_with_backoff 3 10 curl -fsSL -o "$dest" "$url"
+
+        actual=$(powershell.exe -NoProfile -Command \
+          "(Get-FileHash -Algorithm SHA256 '$(cygpath -w "$dest")').Hash.ToLower()")
+        if [ "$actual" != "$BUILDX_WIN_SHA256" ]; then
+          echo "SHA256 mismatch for buildx-${BUILDX_VERSION}.windows-amd64.exe: expected $BUILDX_WIN_SHA256 got $actual" >&2
+          exit 1
+        fi
+        docker buildx version
 
     - name: Check if build is needed and get version
       id: check-build

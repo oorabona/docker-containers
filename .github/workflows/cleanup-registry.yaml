@@ -46,9 +46,8 @@ jobs:
 
       - name: Install yq
         if: github.event_name == 'schedule' || inputs.purge_obsolete == true
-        uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c # v4.53.2
-        with:
-          cmd: yq --version
+        shell: bash
+        run: yq --version
 
       - name: Purge obsolete images
         if: github.event_name == 'schedule' || inputs.purge_obsolete == true
