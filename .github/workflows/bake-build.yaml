@@ -1,0 +1,417 @@
+# ADR-013 bake pipeline — docker buildx bake-driven build-ordering VALIDATION.
+#
+# PURPOSE: Validate dependency-ordered builds with docker buildx bake.
+# This workflow is BUILD/VALIDATION-ONLY (v1 scope).  Nothing is published
+# to GHCR.  Per-arch builds stay in the build cache; bake-merge runs in
+# DRY_RUN mode (emits the imagetools create command without executing it).
+#
+# Supply-chain gates (Trivy scan, SBOM generation, Sigstore attestation,
+# build-lineage) are ported at the ADR-013 cutover; use auto-build.yaml
+# as the production publish path until that cutover is complete.
+#
+# The `smoke` job is the PR gate: it runs `bake --print` (no builder, no
+# secrets, fork-safe) to validate the generated bake file structure on every
+# PR that touches the bake scripts or this workflow.
+#
+# Per-arch build (bake-amd64 / bake-arm64) and manifest merge (bake-merge)
+# run only on workflow_dispatch during the incremental, gated rollout.  They
+# intentionally do NOT auto-trigger on push so this pipeline does not
+# clobber the existing auto-build.yaml flat-matrix pipeline during cutover.
+#
+# Reference: docs/adr/ADR-013-dependency-ordered-builds.md
+
+name: Bake Build (ADR-013)
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: "Space-separated container names to build (empty = whole fleet)"
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - scripts/generate-bake-hcl.sh
+      - scripts/bake-merge-manifests.sh
+      - 'helpers/**'
+      - '*/generate-dockerfile.sh'
+      - .github/workflows/bake-build.yaml
+
+concurrency:
+  group: bake-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # smoke — PR gate. Fork-safe: no secrets, no registry, no builder boot.
+  # Validates the bake file is well-formed and structurally correct.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke (bake --print)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Generate bake file
+        env:
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          set -euo pipefail
+          # Validate containers input: each token must be a bare container name
+          # (lowercase alphanum start, alphanum/dash/dot/underscore only).
+          # Rejects flag injection (e.g. --all-retained, foo*) which would alter
+          # generator behaviour in ways the rest of the pipeline cannot handle.
+          set -f
+          for _c in ${CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
+              echo "::error::invalid container token '${_c}' (containers input must be space-separated bare names matching [a-z0-9][a-z0-9._-]*)"; exit 1
+            fi
+          done
+          set +f
+          chmod +x scripts/generate-bake-hcl.sh
+          # Empty containers input on PR → whole fleet; on dispatch uses the provided value.
+          # shellcheck disable=SC2086
+          ./scripts/generate-bake-hcl.sh ${CONTAINERS} > docker-bake.json
+          echo "::notice::Bake targets: $(jq -r '[.target | keys[]] | join(", ")' docker-bake.json)"
+
+      - name: Resolve bake file (bake --print smoke)
+        run: |
+          set -euo pipefail
+          # bake --print resolves all targets and writes the resolved JSON to
+          # stdout — no builder daemon required.  This validates cross-target
+          # context references and variable resolution without pushing anything.
+          if ! docker buildx bake -f docker-bake.json --print > bake-resolved.json 2> bake-err.txt; then
+            echo "::error::docker buildx bake --print failed:"
+            cat bake-err.txt
+            echo "::group::generated docker-bake.json (first 120 lines)"
+            head -120 docker-bake.json
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "::notice::bake --print succeeded; $(jq '.target | length' bake-resolved.json) targets resolved"
+
+      - name: Structural assertions
+        run: |
+          set -euo pipefail
+
+          # FIX P: generation exiting 0 with an empty target graph means every
+          # requested container was excluded from the bake graph (e.g. postgres,
+          # which is extension-owned).  This is a valid, expected outcome — skip
+          # all assertions and succeed with an informational notice.
+          # (An invalid container makes the generator exit non-zero, caught earlier.)
+          target_count=$(jq '.target | length' bake-resolved.json)
+          if [[ "$target_count" -eq 0 ]]; then
+            echo "::notice::All requested containers are extension-owned or excluded from the bake graph (e.g. postgres — built by the extension pipeline); nothing to validate"
+            exit 0
+          fi
+
+          # 2. every target has context AND (dockerfile or dockerfile-inline) AND tags AND platforms
+          bad=$(jq -r '
+            .target | to_entries[] |
+            select(
+              (.value.context == null or .value.context == "") or
+              (.value.dockerfile == null and (.value["dockerfile-inline"] == null or .value["dockerfile-inline"] == "")) or
+              (.value.tags == null or (.value.tags | length) == 0) or
+              (.value.platforms == null or (.value.platforms | length) == 0)
+            ) | .key
+          ' bake-resolved.json)
+          if [[ -n "$bad" ]]; then
+            echo "::error::assertion failed: targets missing required fields (context/dockerfile/tags/platforms): $bad"
+            exit 1
+          fi
+
+          # 3. no unexpanded @@ markers anywhere in the resolved output
+          if grep -q '@@' bake-resolved.json; then
+            echo "::error::assertion failed: unexpanded @@ marker found in bake-resolved.json"
+            exit 1
+          fi
+
+          # 4. contexts wiring — informational only; leaf-only subsets (e.g. debian, php)
+          # legitimately have zero consumer targets with contexts.  The bats suite
+          # already proves the wiring for wordpress→php.  Do not hard-fail here.
+          consumer_count=$(jq '[.target[] | select(.contexts != null and (.contexts | length) > 0)] | length' bake-resolved.json)
+          echo "::notice::${consumer_count} target(s) carry a 'contexts' map for base-ref remapping"
+
+          # 5. no tag contains 'docker.io' literal
+          docker_io_tags=$(jq -r '[.target[] | .tags[]? | select(test("docker\\.io"))] | join(", ")' bake-resolved.json)
+          if [[ -n "$docker_io_tags" ]]; then
+            echo "::error::assertion failed: tags must not contain docker.io literal: $docker_io_tags"
+            exit 1
+          fi
+
+          # 6. no tag ends in ':latest' (intermediate refs must carry an arch suffix or version)
+          latest_tags=$(jq -r '[.target[] | .tags[]? | select(endswith(":latest"))] | join(", ")' bake-resolved.json)
+          if [[ -n "$latest_tags" ]]; then
+            echo "::error::assertion failed: generator must not emit :latest tags (intermediate-only shape required): $latest_tags"
+            exit 1
+          fi
+
+          echo "::notice::All structural assertions PASSED ($target_count targets)"
+
+  # ---------------------------------------------------------------------------
+  # bake-amd64 — per-arch build, amd64. workflow_dispatch only.
+  # ---------------------------------------------------------------------------
+  bake-amd64:
+    name: Bake (amd64)
+    if: github.event_name == 'workflow_dispatch'
+    needs: [smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to GHCR
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Generate bake file
+        env:
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          set -euo pipefail
+          set -f
+          for _c in ${CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
+              echo "::error::invalid container token '${_c}' (containers input must be space-separated bare names matching [a-z0-9][a-z0-9._-]*)"; exit 1
+            fi
+          done
+          set +f
+          chmod +x scripts/generate-bake-hcl.sh
+          # shellcheck disable=SC2086
+          ./scripts/generate-bake-hcl.sh ${CONTAINERS} > docker-bake.json
+
+      - name: Prepare build contexts
+        env:
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          set -euo pipefail
+          # For each container in the build set that ships a prepare-build-context.sh,
+          # invoke it now (before bake) so any downloaded artifacts are present.
+          # Currently only github-runner requires this (runner.tar.gz COPY in Dockerfile).
+          # The version is sourced from the --cells plan for that container.
+          #
+          # LATEST-ONLY INVARIANT: the bake dispatch builds the latest version only
+          # (generator default; --all-retained is rejected as input above).  Each
+          # container therefore has a single version in the cell plan, so the
+          # per-container prepare-build-context.sh fetch is always correct.
+          # Multi-version retained rebuilds are out of scope for this pipeline.
+          chmod +x scripts/generate-bake-hcl.sh
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${CONTAINERS} 2>/dev/null)
+          while IFS= read -r container; do
+            prep="${container}/prepare-build-context.sh"
+            if [[ -x "$prep" ]]; then
+              version=$(printf '%s' "$cells_json" \
+                | jq -r --arg c "$container" \
+                    'map(select(.container == $c)) | first | .tag // empty')
+              if [[ -n "$version" ]]; then
+                echo "::notice::Preparing build context for ${container} version=${version} arch=amd64"
+                bash "$prep" "$version" "amd64" linux
+              fi
+            fi
+          done < <(printf '%s' "$cells_json" | jq -r '[.[].container] | unique[]')
+
+      - name: Build (amd64)
+        env:
+          REMOTE_CR: ghcr.io/oorabona
+          ARCH_SUFFIX: "-amd64"
+        run: |
+          set -euo pipefail
+          # REMOTE_CR / ARCH_SUFFIX / NPROC are exported so bake maps them to its
+          # variable blocks.  Build-only: result stays in the build cache,
+          # nothing published to GHCR (no --push, no --load).
+          export REMOTE_CR ARCH_SUFFIX
+          NPROC="$(nproc)"
+          export NPROC
+          docker buildx bake -f docker-bake.json \
+            --set "*.platform=linux/amd64"
+
+  # ---------------------------------------------------------------------------
+  # bake-arm64 — per-arch build, arm64. workflow_dispatch only.
+  # ---------------------------------------------------------------------------
+  bake-arm64:
+    name: Bake (arm64)
+    if: github.event_name == 'workflow_dispatch'
+    needs: [smoke]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_arm64
+          echo "4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to GHCR
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        timeout-minutes: 10
+        with:
+          # Digest is bumped via a reviewed PR when buildkit upstream is upgraded.
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Generate bake file
+        env:
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          set -euo pipefail
+          set -f
+          for _c in ${CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
+              echo "::error::invalid container token '${_c}' (containers input must be space-separated bare names matching [a-z0-9][a-z0-9._-]*)"; exit 1
+            fi
+          done
+          set +f
+          chmod +x scripts/generate-bake-hcl.sh
+          # shellcheck disable=SC2086
+          ./scripts/generate-bake-hcl.sh ${CONTAINERS} > docker-bake.json
+
+      - name: Prepare build contexts
+        env:
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          set -euo pipefail
+          # LATEST-ONLY INVARIANT: see bake-amd64 "Prepare build contexts" comment.
+          chmod +x scripts/generate-bake-hcl.sh
+          # shellcheck disable=SC2086
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${CONTAINERS} 2>/dev/null)
+          while IFS= read -r container; do
+            prep="${container}/prepare-build-context.sh"
+            if [[ -x "$prep" ]]; then
+              version=$(printf '%s' "$cells_json" \
+                | jq -r --arg c "$container" \
+                    'map(select(.container == $c)) | first | .tag // empty')
+              if [[ -n "$version" ]]; then
+                echo "::notice::Preparing build context for ${container} version=${version} arch=arm64"
+                bash "$prep" "$version" "arm64" linux
+              fi
+            fi
+          done < <(printf '%s' "$cells_json" | jq -r '[.[].container] | unique[]')
+
+      - name: Build (arm64)
+        env:
+          REMOTE_CR: ghcr.io/oorabona
+          ARCH_SUFFIX: "-arm64"
+        run: |
+          set -euo pipefail
+          # Build-only: result stays in the build cache,
+          # nothing published to GHCR (no --push, no --load).
+          export REMOTE_CR ARCH_SUFFIX
+          NPROC="$(nproc)"
+          export NPROC
+          docker buildx bake -f docker-bake.json \
+            --set "*.platform=linux/arm64"
+
+  # ---------------------------------------------------------------------------
+  # bake-merge — DRY-RUN validation of manifest merge commands.
+  # workflow_dispatch only. imagetools create is NOT executed; the commands
+  # are emitted to stdout for inspection (DRY_RUN=true contract).
+  # No GHCR writes, no registry login required.
+  # ---------------------------------------------------------------------------
+  bake-merge:
+    name: Merge manifests (dry-run)
+    if: github.event_name == 'workflow_dispatch'
+    needs: [bake-amd64, bake-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Merge manifests (dry-run)
+        env:
+          REMOTE_CR: ghcr.io/oorabona
+          CONTAINERS: ${{ github.event.inputs.containers }}
+          DRY_RUN: "true"
+        run: |
+          set -euo pipefail
+          set -f
+          for _c in ${CONTAINERS}; do
+            if ! printf '%s' "$_c" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
+              echo "::error::invalid container token '${_c}' (containers input must be space-separated bare names matching [a-z0-9][a-z0-9._-]*)"; exit 1
+            fi
+          done
+          set +f
+          chmod +x scripts/bake-merge-manifests.sh
+          # DRY_RUN=true: emits the imagetools create commands to stdout without
+          # executing them.  No registry writes; no GHCR login required.
+          # GHCR-only (ADR-013 egress-containment).
+          export REMOTE_CR DRY_RUN
+          # shellcheck disable=SC2086
+          ./scripts/bake-merge-manifests.sh ${CONTAINERS}

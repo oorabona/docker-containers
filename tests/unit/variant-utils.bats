@@ -1218,3 +1218,59 @@ setup_fallback_test() {
     bare_latest_count=$(echo "$output" | grep -cxF "docker.io/owner/github-runner:latest" || true)
     [ "$bare_latest_count" -eq 0 ]
 }
+
+# --- compute_cell_tag_suffixes ---
+#
+# Unit tests for the registry-independent suffix helper. Four cases:
+#   (a) no-flavor non-default           → versioned + "latest"
+#   (b) flavor set + is_default=true    → versioned + "latest"  (flavor ignored for default)
+#   (c) flavor set + is_default=false   → versioned + "latest-<flavor>"
+#   (d) tag already == "latest"         → only versioned suffix, no alias
+
+@test "compute_cell_tag_suffixes: (a) no-flavor non-default → versioned + bare latest" {
+    run compute_cell_tag_suffixes "2.3.1" "" "false"
+    [ "$status" -eq 0 ]
+    # Exactly 2 lines
+    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    # Line 1: versioned suffix
+    [ "$(echo "$output" | sed -n '1p')" = "2.3.1" ]
+    # Line 2: bare latest
+    [ "$(echo "$output" | sed -n '2p')" = "latest" ]
+    # Must NOT contain any "latest-" flavor alias
+    [[ "$output" != *"latest-"* ]]
+}
+
+@test "compute_cell_tag_suffixes: (b) flavor + is_default=true → versioned + bare latest (flavor ignored)" {
+    run compute_cell_tag_suffixes "1.0.0-base" "base" "true"
+    [ "$status" -eq 0 ]
+    # Exactly 2 lines
+    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    # Line 1: versioned suffix
+    [ "$(echo "$output" | sed -n '1p')" = "1.0.0-base" ]
+    # Line 2: bare latest (NOT latest-base)
+    [ "$(echo "$output" | sed -n '2p')" = "latest" ]
+    [[ "$output" != *"latest-base"* ]]
+}
+
+@test "compute_cell_tag_suffixes: (c) flavor + is_default=false → versioned + latest-<flavor>" {
+    run compute_cell_tag_suffixes "18-alpine-vector" "vector" "false"
+    [ "$status" -eq 0 ]
+    # Exactly 2 lines
+    [ "$(echo "$output" | wc -l)" -eq 2 ]
+    # Line 1: versioned suffix
+    [ "$(echo "$output" | sed -n '1p')" = "18-alpine-vector" ]
+    # Line 2: flavor rolling alias
+    [ "$(echo "$output" | sed -n '2p')" = "latest-vector" ]
+    # Must NOT contain bare :latest line
+    local bare_latest_count
+    bare_latest_count=$(echo "$output" | grep -cxF "latest" || true)
+    [ "$bare_latest_count" -eq 0 ]
+}
+
+@test "compute_cell_tag_suffixes: (d) tag==latest → single line, no alias added" {
+    run compute_cell_tag_suffixes "latest" "" "false"
+    [ "$status" -eq 0 ]
+    # Exactly 1 line — the versioned "latest" suffix with no additional rolling alias
+    [ "$(echo "$output" | wc -l)" -eq 1 ]
+    [ "$(echo "$output" | sed -n '1p')" = "latest" ]
+}

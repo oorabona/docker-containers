@@ -285,6 +285,41 @@ variant_image_tag() {
     fi
 }
 
+# Compute the set of TAG SUFFIXES for a build cell — the rolling-tag-routing
+# decision, independent of registry. This is the single source of truth for
+# "which tags does this cell get": the versioned tag plus, when applicable,
+# the rolling :latest / :latest-<flavor> alias. Reused by compute_cell_tags
+# (build path, both registries), the bake generator (single registry +
+# arch suffix), and the manifest-merge job (both registries, multi-arch).
+#
+# Rules (tag != "latest"):
+#   is_default == "true"            -> + "latest"
+#   is_default != "true", flavor set -> + "latest-<flavor>"
+#   is_default != "true", no flavor  -> + "latest"
+# When tag == "latest", only the versioned suffix is emitted (no alias).
+#
+# Usage: compute_cell_tag_suffixes <tag> <flavor> <is_default>
+# Output: one tag suffix per line (e.g. "18-alpine", "latest", "latest-vector").
+compute_cell_tag_suffixes() {
+    local tag="$1"
+    local flavor="$2"
+    local is_default="$3"
+
+    # Versioned suffix — always present
+    printf '%s\n' "$tag"
+
+    # Rolling latest suffix — only when this is not already a "latest" tag
+    if [[ "$tag" != "latest" ]]; then
+        if [[ "$is_default" == "true" ]]; then
+            printf 'latest\n'
+        elif [[ -n "$flavor" ]]; then
+            printf 'latest-%s\n' "$flavor"
+        else
+            printf 'latest\n'
+        fi
+    fi
+}
+
 # Compute the full set of image refs to tag for one build cell.
 #
 # This is the single source of truth for tag-set logic; build-container.sh
@@ -321,23 +356,11 @@ compute_cell_tags() {
     local dockerhub_image="$4"
     local ghcr_image="$5"
 
-    # Versioned tag — always present on both registries
-    printf '%s:%s\n' "$dockerhub_image" "$tag"
-    printf '%s:%s\n' "$ghcr_image"      "$tag"
-
-    # Rolling latest tags — only when this is not already a "latest" tag
-    if [[ "$tag" != "latest" ]]; then
-        if [[ "$is_default" == "true" ]]; then
-            printf '%s:latest\n' "$dockerhub_image"
-            printf '%s:latest\n' "$ghcr_image"
-        elif [[ -n "$flavor" ]]; then
-            printf '%s:latest-%s\n' "$dockerhub_image" "$flavor"
-            printf '%s:latest-%s\n' "$ghcr_image"      "$flavor"
-        else
-            printf '%s:latest\n' "$dockerhub_image"
-            printf '%s:latest\n' "$ghcr_image"
-        fi
-    fi
+    local _sfx
+    while IFS= read -r _sfx; do
+        printf '%s:%s\n' "$dockerhub_image" "$_sfx"
+        printf '%s:%s\n' "$ghcr_image"      "$_sfx"
+    done < <(compute_cell_tag_suffixes "$tag" "$flavor" "$is_default")
 }
 
 # Check if a container always builds all retained versions (not just the latest)
@@ -802,4 +825,4 @@ latest_per_major_versions() {
 export -f resolve_major_version has_variants list_versions version_count list_variants variant_count
 export -f variant_property default_variant base_suffix version_retention
 export -f version_dockerfile requires_extensions variant_image_tag list_build_matrix list_container_builds list_variant_tags
-export -f always_all_versions compute_cell_tags compute_expand_retained_map latest_per_major_versions
+export -f always_all_versions compute_cell_tag_suffixes compute_cell_tags compute_expand_retained_map latest_per_major_versions
