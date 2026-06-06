@@ -52,6 +52,10 @@ inputs:
       unreliable. Helper compares with explicit string equality.
     required: false
     default: "false"
+  run_tests:
+    description: 'When true, route all bake-managed containers to the flat matrix so test hooks run'
+    required: false
+    default: "false"
 
 outputs:
   containers_list:
@@ -644,6 +648,7 @@ runs:
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
         BUILD_SCOPE: ${{ inputs.scope }}
         EVENT_NAME: ${{ github.event_name }}
+        RUN_TESTS: ${{ inputs.run_tests }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -655,7 +660,7 @@ runs:
         [[ -z "$builds_input" ]] && builds_input="[]"
 
         # force_matrix=true disables bake routing — all cells go to the flat matrix.
-        # Two independent reasons force this:
+        # Three independent reasons force this:
         #   1. Scoped runs (scope_versions, scope_flavors, or unified BUILD_SCOPE
         #      non-empty) build only a subset of cells.  Routing bake-managed containers
         #      to the bake engine would cause bake to publish ALL variants while only
@@ -665,12 +670,15 @@ runs:
         #      so every cell gets the existing per-cell PR build+Trivy pass.
         #      (The bake-build.yaml --print smoke validates the bake HCL on PRs
         #      independently; bake push/load is a push-time concern only.)
+        #   3. run_tests=true: test hooks (bats/Pester) live only in the flat matrix
+        #      build-and-push job.  Routing bake-managed containers to bake would
+        #      silently skip tests for github-runner, web-shell, and wordpress.
         force_matrix="false"
         scope_active="false"
         if [[ -n "${SCOPE_VERSIONS}" || -n "${SCOPE_FLAVORS}" || -n "${BUILD_SCOPE}" ]]; then
           scope_active="true"
         fi
-        if [[ "$scope_active" == "true" || "$EVENT_NAME" == "pull_request" ]]; then
+        if [[ "$scope_active" == "true" || "$EVENT_NAME" == "pull_request" || "$RUN_TESTS" == "true" ]]; then
           force_matrix="true"
         fi
 

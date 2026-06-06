@@ -246,6 +246,7 @@ jobs:
           scope_flavors: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors }}
           event_name: ${{ github.event_name }}
           build_all_retained: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || false }}
+          run_tests: ${{ github.event.inputs.run_tests || inputs.run_tests || 'false' }}
 
   # Build and push PostgreSQL extension images if postgres is in the build list.
   # Runs as a two-leg arch matrix (amd64 + arm64) on native runners so each leg
@@ -1723,6 +1724,7 @@ jobs:
       - name: Install syft (bake SBOM)
         id: install-syft-bake
         if: steps.bake-build.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
+        continue-on-error: true
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM and emit lineage (bake amd64)
@@ -1820,6 +1822,7 @@ jobs:
       - name: Upload bake SBOM artifact
         id: upload-bake-sboms
         if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: bake-sboms-${{ github.run_id }}
@@ -1830,6 +1833,7 @@ jobs:
 
       - name: Upload bake SBOM artifact (retry on transient failure)
         if: steps.bake-sbom.outcome == 'success' && steps.upload-bake-sboms.outcome == 'failure' && github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: bake-sboms-${{ github.run_id }}
@@ -1841,6 +1845,7 @@ jobs:
 
       - name: Upload build lineage (bake amd64)
         if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: build-lineage-bake-amd64-${{ github.run_id }}
