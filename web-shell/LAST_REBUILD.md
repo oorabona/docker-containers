@@ -42,3 +42,10 @@
 - Variant: 1.7.7, base ghcr.io/oorabona/debian:trixie
   Old digest: sha256:009dde9de2ff9c51970de6adcb8ab4b2393146b4b230a4a2683e9dcf96931b9f
   New digest: sha256:1abd2f0baee6edde737bc2563b0bed657af32e675206865e5851aa90af14ce4d
+
+<!-- drift-content-hash: 8929c28c2f6e1874 run:27055689500 -->
+## base-digest-drift (2026-06-06)
+
+- Variant: 1.7.7, base ghcr.io/oorabona/debian:trixie
+  Old digest: sha256:7535519644e607560fb62cc13a6209e182ccebc24427094e18edf75ef392126c
+  New digest: sha256:f4bb8b55dff085fe70754e0201a044fc1ec4de3e338cbe17e3d74ab482f1ddfb
