@@ -3282,6 +3282,14 @@ jobs:
           merge-multiple: false
         continue-on-error: true
 
+      - name: Download bake SBOM artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: bake-sboms-*
+          path: .build-lineage-sbom-artifacts/
+          merge-multiple: false
+        continue-on-error: true
+
       - name: Process SBOMs (compare + history)
         id: process-sboms
         run: |
