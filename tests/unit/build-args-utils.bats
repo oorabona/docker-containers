@@ -241,8 +241,8 @@ EOF
     [[ "$_BUILD_ARGS" =~ "--build-arg VERSION=8.4" ]]
     [[ "$_BUILD_ARGS" =~ "--build-arg COMPOSER_VERSION=2.9.8" ]]
     [[ "$_BUILD_ARGS" =~ "--build-arg APCU_VERSION=5.1.28" ]]
-    # Must NOT contain REMOTE_CR
-    [[ ! "$_BUILD_ARGS" =~ "REMOTE_CR" ]]
+    # REMOTE_CR must be present (emitted unconditionally by prepare_build_args)
+    [[ "$_BUILD_ARGS" =~ "--build-arg REMOTE_CR=" ]]
 }
 
 # Regression lock: no config.yaml → prepare_build_args still succeeds (no abort)
@@ -252,4 +252,77 @@ EOF
     prepare_build_args "2.0"
     [ $? -eq 0 ]
     cd ..
+}
+
+# ─── REMOTE_CR emission from prepare_build_args ───────────────────────────────
+
+@test "PAB-REMOTE_CR-01: prepare_build_args emits default REMOTE_CR when env unset" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  COMPOSER_VERSION: "2.9.8"
+EOF
+)"
+    make_version_stub
+    unset REMOTE_CR
+    prepare_build_args "8.4"
+    [ $? -eq 0 ]
+    [[ "$_BUILD_ARGS" =~ "--build-arg REMOTE_CR=ghcr.io/oorabona" ]]
+}
+
+@test "PAB-REMOTE_CR-02: prepare_build_args emits REMOTE_CR from env when set" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  COMPOSER_VERSION: "2.9.8"
+EOF
+)"
+    make_version_stub
+    export REMOTE_CR="ghcr.io/fork"
+    prepare_build_args "8.4"
+    local rc=$?
+    unset REMOTE_CR
+    [ $rc -eq 0 ]
+    [[ "$_BUILD_ARGS" =~ "--build-arg REMOTE_CR=ghcr.io/fork" ]]
+    # Must NOT fall back to default when env is explicitly set
+    [[ ! "$_BUILD_ARGS" =~ "--build-arg REMOTE_CR=ghcr.io/oorabona" ]]
+}
+
+# ─── REMOTE_CR injection-guard: reject unsafe values (fail-closed) ────────────
+
+@test "PAB-REMOTE_CR-03: prepare_build_args rejects REMOTE_CR with injected flag (space+--no-cache), blocks injection" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  COMPOSER_VERSION: "2.9.8"
+EOF
+)"
+    make_version_stub
+    export REMOTE_CR="ghcr.io/x --no-cache"
+    # Reset _BUILD_ARGS; capture rc via if-clause (avoids set-e killing the test)
+    _BUILD_ARGS=""
+    local rc=0
+    if ! prepare_build_args "8.4" 2>/dev/null; then rc=1; fi
+    local captured_build_args="$_BUILD_ARGS"
+    unset REMOTE_CR
+    # Must fail closed — non-zero exit
+    [ $rc -ne 0 ]
+    # Injected token must NOT appear in _BUILD_ARGS (the actual docker arg string)
+    [[ ! "$captured_build_args" =~ "--no-cache" ]]
+}
+
+@test "PAB-REMOTE_CR-04: prepare_build_args rejects REMOTE_CR with shell-metachar injection (semicolon), blocks injection" {
+    make_container "." "$(cat <<'EOF'
+build_args:
+  COMPOSER_VERSION: "2.9.8"
+EOF
+)"
+    make_version_stub
+    export REMOTE_CR="ghcr.io/x;rm -rf /"
+    _BUILD_ARGS=""
+    local rc=0
+    if ! prepare_build_args "8.4" 2>/dev/null; then rc=1; fi
+    local captured_build_args="$_BUILD_ARGS"
+    unset REMOTE_CR
+    # Must fail closed — non-zero exit
+    [ $rc -ne 0 ]
+    # Destructive token must NOT appear in _BUILD_ARGS
+    [[ ! "$captured_build_args" =~ "rm -rf" ]]
 }
