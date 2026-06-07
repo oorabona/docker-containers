@@ -5,6 +5,7 @@
 #   MM1: Remove github-runner from default set → github-runner lands in matrix instead of bake
 #   MM2: Remove web-shell from default set → web-shell lands in matrix instead of bake
 #   MM3: Remove wordpress from default set → wordpress lands in matrix instead of bake
+#   MM3b: Remove debian/vector/jekyll/ansible from default set → they land in matrix instead of bake
 #   MM4: Ignore BAKE_MANAGED_CONTAINERS override → env override has no effect
 #   MM5: Skip bake partition entirely → all cells end up in matrix (wrong)
 #   MM6: Duplicate cells across partitions → total count exceeds input length
@@ -72,7 +73,8 @@ _fixture_os_builds() {
 
 # ---------------------------------------------------------------------------
 # BM-01: Default partition — bake-managed containers (github-runner/web-shell/wordpress)
-#        land in .bake; debian and terraform land in .matrix.
+#        land in .bake; debian (no is_latest_version:true in fixture) and terraform
+#        land in .matrix.
 # Catches: MM1, MM2, MM3, MM5, MM8
 # ---------------------------------------------------------------------------
 @test "BM-01: default partition routes github-runner/web-shell/wordpress to bake, others to matrix" {
@@ -85,19 +87,20 @@ _fixture_os_builds() {
     # Validate JSON structure
     echo "$result" | jq -e 'has("bake") and has("matrix")' >/dev/null
 
-    # bake partition contains exactly the 3 bake-managed containers (web-shell has 2 entries = 3 total)
+    # bake partition contains the bake-managed containers that carry is_latest_version:true
+    # (web-shell has 2 entries; debian in fixture lacks is_latest_version:true so stays in matrix)
     bake_containers=$(echo "$result" | jq -r '[.bake[].container] | sort | unique | .[]')
     echo "$bake_containers" | grep -q "^github-runner$"
     echo "$bake_containers" | grep -q "^web-shell$"
     echo "$bake_containers" | grep -q "^wordpress$"
 
-    # matrix partition must NOT contain bake-managed containers
+    # matrix partition must NOT contain bake-managed containers that carried is_latest_version:true
     matrix_containers=$(echo "$result" | jq -r '[.matrix[].container] | unique | .[]')
     ! echo "$matrix_containers" | grep -q "^github-runner$"
     ! echo "$matrix_containers" | grep -q "^web-shell$"
     ! echo "$matrix_containers" | grep -q "^wordpress$"
 
-    # matrix contains debian and terraform
+    # debian fixture cell (no is_latest_version:true) and terraform route to matrix
     echo "$matrix_containers" | grep -q "^debian$"
     echo "$matrix_containers" | grep -q "^terraform$"
 }
@@ -208,15 +211,15 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-07: is_bake_managed — debian returns 1 (not in default set).
+# BM-07: is_bake_managed — debian returns 0 (now in default set, PR-B slice 1).
 # Catches: MM9
 # ---------------------------------------------------------------------------
-@test "BM-07: is_bake_managed returns 1 for debian (not in default set)" {
+@test "BM-07: is_bake_managed returns 0 for debian (now in default set)" {
     # shellcheck disable=SC1090
     source "$BM"
 
     run is_bake_managed "debian"
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -228,6 +231,30 @@ ubuntu-1.0.0"
     source "$BM"
 
     run is_bake_managed "web-shell"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "terraform"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-08b: is_bake_managed — PR-B slice 1 new containers (debian/vector/jekyll/ansible)
+#          return 0 (in default set); terraform returns 1 (still matrix-only).
+# ---------------------------------------------------------------------------
+@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible; 1 for terraform" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    run is_bake_managed "debian"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "vector"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "jekyll"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "ansible"
     [[ "$status" -eq 0 ]]
 
     run is_bake_managed "terraform"
@@ -291,7 +318,7 @@ ubuntu-1.0.0"
     windows_in_bake=$(echo "$result" | jq -r '[.bake[] | select(.container == "github-runner" and .os == "windows")] | length')
     [[ "$windows_in_bake" -eq 0 ]]
 
-    # debian (non-bake-managed, linux) must also stay in .matrix
+    # debian (bake-managed but no is_latest_version:true in fixture) must also stay in .matrix
     debian_in_matrix=$(echo "$result" | jq -r '[.matrix[] | select(.container == "debian")] | length')
     [[ "$debian_in_matrix" -eq 1 ]]
 }
@@ -407,7 +434,7 @@ ubuntu-1.0.0"
     retained_in_bake=$(echo "$result" | jq '[.bake[] | select(.is_latest_version == false)] | length')
     [[ "$retained_in_bake" -eq 0 ]]
 
-    # debian (not bake-managed) must land in .matrix
+    # debian (bake-managed but no is_latest_version:true in fixture) must land in .matrix
     deb_in_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "debian")] | length')
     [[ "$deb_in_matrix" -eq 1 ]]
 
