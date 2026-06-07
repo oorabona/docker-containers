@@ -7,13 +7,13 @@
 # so running it from a temp dir with a version.sh stub makes the conditional branch
 # testable without touching the real openresty/version.sh or making network calls.
 #
-# The script emits: "Building OpenResty ${VERSION} (source: ${RESTY_VERSION})"
-# We extract RESTY_VERSION from that line for assertions.
+# The script emits: "Building OpenResty ${VERSION} (source: ${UPSTREAM_VERSION})"
+# We extract UPSTREAM_VERSION from that line for assertions.
 #
 # Mutation each test catches:
 #   TC1: removing the VERSION branch → version.sh called, returns STUB-UPSTREAM-VAL ≠ "1.29.2.4"
-#   TC2: removing suffix strip → RESTY_VERSION would equal "1.29.2.5-alpine" ≠ "1.29.2.5"
-#   TC3: removing the else branch → version.sh never called, RESTY_VERSION empty or wrong
+#   TC2: removing suffix strip → UPSTREAM_VERSION would equal "1.29.2.5-alpine" ≠ "1.29.2.5"
+#   TC3: removing the else branch → version.sh never called, UPSTREAM_VERSION empty or wrong
 #   TC4: removing the -z guard → script exits 0 and emits "(source: )" instead of error exit 1
 #   TC5: suffix strip using sed/grep instead of %-alpine → "1.29.2.4" (no suffix) would break
 
@@ -78,9 +78,9 @@ _run_build() {
     run --separate-stderr bash "$TEST_TEMP_DIR/build"
 }
 
-# Extract the RESTY_VERSION resolved by the build script from its stdout line:
-# "Building OpenResty <VERSION> (source: <RESTY_VERSION>)"
-# Prints the captured RESTY_VERSION or fails if the line is absent.
+# Extract the UPSTREAM_VERSION resolved by the build script from its stdout line:
+# "Building OpenResty <VERSION> (source: <UPSTREAM_VERSION>)"
+# Prints the captured UPSTREAM_VERSION or fails if the line is absent.
 _extract_resty_version() {
     local line
     line=$(echo "$output" | grep "^Building OpenResty") || {

@@ -13,7 +13,7 @@ FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG}
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
 ARG NGX_PROXY_CONNECT_VERSION
-ARG RESTY_VERSION=${VERSION}
+ARG UPSTREAM_VERSION
 ARG RESTY_OPENSSL_VERSION
 ARG RESTY_OPENSSL_PATCH_VERSION
 ARG RESTY_OPENSSL_URL_BASE="https://www.openssl.org/source"
@@ -66,11 +66,11 @@ ARG _RESTY_CONFIG_DEPS="--with-pcre \
 ARG LUAROCKS_VERSION
 
 # Validate required build args
-RUN : "${RESTY_VERSION:?required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
+RUN : "${UPSTREAM_VERSION:?UPSTREAM_VERSION build-arg is required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
 
 LABEL resty_image_base="alpine"
 LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
-LABEL resty_version="${RESTY_VERSION}"
+LABEL resty_version="${UPSTREAM_VERSION}"
 LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"
 LABEL resty_pcre_version="${RESTY_PCRE_VERSION}"
 LABEL resty_pcre_sha256="${RESTY_PCRE_SHA256}"
@@ -157,8 +157,8 @@ RUN set -ex \
     && CFLAGS="-g -O3" make -j${RESTY_J} \
     && CFLAGS="-g -O3" make -j${RESTY_J} install \
     && cd /tmp \
-    && curl -fSL https://openresty.org/download/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
-    && tar xzf openresty-${RESTY_VERSION}.tar.gz
+    && curl -fSL https://openresty.org/download/openresty-${UPSTREAM_VERSION}.tar.gz -o openresty-${UPSTREAM_VERSION}.tar.gz \
+    && tar xzf openresty-${UPSTREAM_VERSION}.tar.gz
 
 # STEP 2 - Configure OpenResty
 RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
@@ -166,7 +166,7 @@ RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/v${NGX_PROXY_CONNECT_VERSION}.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
     && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-${NGX_PROXY_CONNECT_VERSION} ${RESTY_CONFIG_OPTIONS}" \
     && tar zxf ngx_http_proxy_connect_module.tar.gz; fi \
-    && cd /tmp/openresty-${RESTY_VERSION} \
+    && cd /tmp/openresty-${UPSTREAM_VERSION} \
     && eval ./configure ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
     && if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     cd build/nginx-* \
@@ -174,7 +174,7 @@ RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     fi
 
 # STEP 3 - Build OpenResty and luarocks, then unwind all dev files/packages
-RUN cd /tmp/openresty-${RESTY_VERSION} \
+RUN cd /tmp/openresty-${UPSTREAM_VERSION} \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
     && cd /tmp \
