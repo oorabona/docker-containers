@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # GitHub Actions self-hosted runner — Windows ltsc2022
 # Multi-stage build:
 #   - base: servercore — lightweight runner for general workflows
