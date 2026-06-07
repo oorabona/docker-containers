@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # GitHub Actions self-hosted runner — Linux template
 # Multi-distro: ubuntu-2404, ubuntu-2204, debian-trixie, debian-bookworm
 # Generated Dockerfiles are produced by generate-dockerfile.sh (do NOT edit generated output)
