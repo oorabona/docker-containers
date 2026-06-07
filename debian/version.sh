@@ -8,5 +8,11 @@ if [ "$1" = "--registry-pattern" ]; then
     exit 0
 fi
 
+# Debian tags are plain codenames (trixie/bookworm/bullseye) — no suffix.
+if [ "$1" = "--tag-suffix" ]; then
+    echo ""
+    exit 0
+fi
+
 # Get latest upstream version from official Debian registry using direct helper symlink
 "$(dirname "$0")/../helpers/latest-docker-tag" library/debian "^(trixie|bookworm|bullseye)$"

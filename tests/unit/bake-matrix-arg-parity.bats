@@ -350,6 +350,19 @@ openresty_regression_lock_bake_emits_raw_source_version_and_no_resty_version() {
     ! grep -qE '\bRESTY_VERSION\b' "$PROJECT_ROOT/openresty/Dockerfile"
 }
 
+bake_managed_version_sh_tag_suffix_is_network_free_and_exits_0() { # @test
+    # Mutation guard BMP7: a bake-managed version.sh that lacks a network-free
+    # --tag-suffix branch reintroduces a live lookup in the generator.
+    # Every container in the fleet must return exit 0 within 5 seconds (offline-safe).
+    local managed container
+    managed=$(bake_managed_containers)
+    for container in $managed; do
+        run timeout 5 bash -c "cd '$PROJECT_ROOT/$container' && ./version.sh --tag-suffix"
+        assert_equals 0 "$status" \
+            "$container version.sh --tag-suffix must exit 0 and be network-free (offline contract)"
+    done
+}
+
 source_critical_dockerfiles_declare_upstream_version_without_defaults_and_required_guards() { # @test
     local container dockerfile arg_count
     for container in openresty vector sslh openvpn terraform ansible; do

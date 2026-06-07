@@ -21,6 +21,11 @@ case "${1:-}" in
         echo "^[0-9]+\.[0-9]+\.[0-9]+$"
         exit 0
         ;;
+    --tag-suffix)
+        # Linux runner tags are bare versions (2.334.0) — no suffix.
+        echo ""
+        exit 0
+        ;;
 esac
 
 # Build curl arguments — inject Authorization header only when GITHUB_TOKEN is set
