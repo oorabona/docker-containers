@@ -567,8 +567,14 @@ build_container() {
         fi
 
         if [[ -z "${_PLATFORMS:-}" ]]; then
-            # Windows runner: plain docker build (no buildx, no --platform, no --load needed)
+            # Windows runner: plain docker build (no buildx, no --platform, no --load needed).
+            # --pull ensures the rolling base tag (mcr.microsoft.com/windows/servercore:ltsc2022 /
+            # server:ltsc2022) is re-fetched from the registry, keeping the build aligned with the
+            # remote digest recorded by `docker buildx imagetools inspect` above.  Without --pull an
+            # ephemeral runner's pre-cached layer could be used while the lineage records a different
+            # (current) digest.  Docker still reuses cached layers when the remote tag is unchanged.
             $DOCKER build \
+                --pull \
                 -f "$dockerfile" \
                 ${_target_arg} \
                 ${_no_cache} \
