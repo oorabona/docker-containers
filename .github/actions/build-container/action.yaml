@@ -155,6 +155,8 @@ runs:
         set -euo pipefail
         # shellcheck source=helpers/retry.sh
         source ./helpers/retry.sh
+        # shellcheck source=helpers/hash-utils.sh
+        source ./helpers/hash-utils.sh
 
         dest="$USERPROFILE/.docker/cli-plugins/docker-buildx.exe"
         mkdir -p "$(dirname "$dest")"
@@ -162,7 +164,7 @@ runs:
 
         retry_with_backoff 3 10 curl -fsSL -o "$dest" "$url"
 
-        actual=$(sha256sum "$dest" | awk '{print $1}')
+        actual=$(sha256_file "$dest")
         if [ "$actual" != "$BUILDX_WIN_SHA256" ]; then
           echo "SHA256 mismatch for buildx-${BUILDX_VERSION}.windows-amd64.exe: expected $BUILDX_WIN_SHA256 got $actual" >&2
           exit 1
