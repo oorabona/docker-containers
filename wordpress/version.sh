@@ -12,6 +12,11 @@ if [[ "$1" == "--registry-pattern" ]]; then
     exit 0
 fi
 
+if [[ "$1" == "--tag-suffix" ]]; then
+    echo "-alpine"
+    exit 0
+fi
+
 if [[ "$1" == "--major" ]]; then
     major="$2"
     if [[ -z "$major" || ! "$major" =~ ^[0-9]+$ ]]; then
