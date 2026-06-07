@@ -1633,9 +1633,21 @@ jobs:
           # flat matrix by partition_builds, so they never reach this job.
           # No --all-retained flag is passed here.
           bake_file="${RUNNER_TEMP}/bake-amd64.json"
+          # BAKE_CACHE_EXPORT gates cache-to emission in the generator:
+          #   true  → real publish path (push/dispatch): emit cache-to so master builds
+          #           write to the canonical buildcache refs.
+          #   false → PR build-only (IS_PR=true) or DRY_RUN: emit cache-from only;
+          #           the HCL has no cache-to → PR code cannot poison canonical buildcache.
+          # This is the only correct place to set it: the generator reads it at HCL-
+          # generation time, before the three-way DRY_RUN/IS_PR/push branch below.
+          bake_cache_export="false"
+          if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
+            bake_cache_export="true"
+          fi
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
-          REMOTE_CR="$REMOTE_CR" ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" \
+            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
           no_cache_flag=""
@@ -1986,9 +1998,16 @@ jobs:
           # flat matrix by partition_builds, so they never reach this job.
           # No --all-retained flag is passed here.
           bake_file="${RUNNER_TEMP}/bake-arm64.json"
+          # BAKE_CACHE_EXPORT gates cache-to emission: true only on the real publish
+          # path (not IS_PR, not DRY_RUN).  See amd64 step comment for full rationale.
+          bake_cache_export="false"
+          if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
+            bake_cache_export="true"
+          fi
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
-          REMOTE_CR="$REMOTE_CR" ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" \
+            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
           no_cache_flag=""
