@@ -6,6 +6,7 @@
 #   MM2: Remove web-shell from default set → web-shell lands in matrix instead of bake
 #   MM3: Remove wordpress from default set → wordpress lands in matrix instead of bake
 #   MM3b: Remove debian/vector/jekyll/ansible from default set → they land in matrix instead of bake
+#   MM3c: Remove sslh/openvpn/php/openresty/terraform from default set → they land in matrix instead of bake
 #   MM4: Ignore BAKE_MANAGED_CONTAINERS override → env override has no effect
 #   MM5: Skip bake partition entirely → all cells end up in matrix (wrong)
 #   MM6: Duplicate cells across partitions → total count exceeds input length
@@ -44,6 +45,11 @@ teardown() {
 # Note: linux cells may omit .os (treated as linux); windows cells have .os="windows".
 # All bake-managed cells carry is_latest_version:true — bake is latest-only by
 # design and partition_builds requires is_latest_version==true for .bake routing.
+#
+# debian: bake-managed but no is_latest_version:true → stays in .matrix (not latest).
+# terraform: bake-managed (PR-B slices 2-4) but no is_latest_version:true → stays in
+#   .matrix (not latest).  postgres would be the "not bake-managed" negative example
+#   for is_bake_managed tests — terraform is now in the managed set.
 # ---------------------------------------------------------------------------
 _fixture_builds() {
     jq -cn '
@@ -74,7 +80,9 @@ _fixture_os_builds() {
 # ---------------------------------------------------------------------------
 # BM-01: Default partition — bake-managed containers (github-runner/web-shell/wordpress)
 #        land in .bake; debian (no is_latest_version:true in fixture) and terraform
-#        land in .matrix.
+#        (no is_latest_version:true in fixture) land in .matrix.
+# Both debian and terraform are bake-managed; they stay in .matrix only because their
+# fixture cells lack is_latest_version:true (the is_latest_version gate fires first).
 # Catches: MM1, MM2, MM3, MM5, MM8
 # ---------------------------------------------------------------------------
 @test "BM-01: default partition routes github-runner/web-shell/wordpress to bake, others to matrix" {
@@ -88,7 +96,7 @@ _fixture_os_builds() {
     echo "$result" | jq -e 'has("bake") and has("matrix")' >/dev/null
 
     # bake partition contains the bake-managed containers that carry is_latest_version:true
-    # (web-shell has 2 entries; debian in fixture lacks is_latest_version:true so stays in matrix)
+    # (web-shell has 2 entries; debian/terraform in fixture lack is_latest_version:true so stay in matrix)
     bake_containers=$(echo "$result" | jq -r '[.bake[].container] | sort | unique | .[]')
     echo "$bake_containers" | grep -q "^github-runner$"
     echo "$bake_containers" | grep -q "^web-shell$"
@@ -100,7 +108,7 @@ _fixture_os_builds() {
     ! echo "$matrix_containers" | grep -q "^web-shell$"
     ! echo "$matrix_containers" | grep -q "^wordpress$"
 
-    # debian fixture cell (no is_latest_version:true) and terraform route to matrix
+    # debian and terraform fixture cells (no is_latest_version:true) route to matrix
     echo "$matrix_containers" | grep -q "^debian$"
     echo "$matrix_containers" | grep -q "^terraform$"
 }
@@ -223,25 +231,28 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08: is_bake_managed — web-shell returns 0; terraform returns 1.
+# BM-08: is_bake_managed — web-shell returns 0; postgres returns 1 (stays on
+#         extension pipeline / flat matrix, never bake-managed).
 # Catches: MM1, MM2, MM3, MM9 (broader coverage)
 # ---------------------------------------------------------------------------
-@test "BM-08: is_bake_managed covers web-shell (0) and terraform (1)" {
+@test "BM-08: is_bake_managed covers web-shell (0) and postgres (1)" {
     # shellcheck disable=SC1090
     source "$BM"
 
     run is_bake_managed "web-shell"
     [[ "$status" -eq 0 ]]
 
-    run is_bake_managed "terraform"
+    run is_bake_managed "postgres"
     [[ "$status" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
-# BM-08b: is_bake_managed — PR-B slice 1 new containers (debian/vector/jekyll/ansible)
-#          return 0 (in default set); terraform returns 1 (still matrix-only).
+# BM-08b: is_bake_managed — PR-B slice 1 containers (debian/vector/jekyll/ansible)
+#          return 0 (in default set); postgres returns 1 (extension pipeline — never
+#          bake-managed).  terraform is no longer the negative example: it joined
+#          the bake-managed set in PR-B slices 2-4 (see BM-08c).
 # ---------------------------------------------------------------------------
-@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible; 1 for terraform" {
+@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible; 1 for postgres" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -257,7 +268,59 @@ ubuntu-1.0.0"
     run is_bake_managed "ansible"
     [[ "$status" -eq 0 ]]
 
+    run is_bake_managed "postgres"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-08c: is_bake_managed — PR-B slices 2-4 new containers (sslh/openvpn/php/
+#          openresty/terraform) return 0 (now in default set); postgres returns 1
+#          (extension pipeline, stays on flat matrix — canonical negative example).
+# Catches: MM3c
+# ---------------------------------------------------------------------------
+@test "BM-08c: is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for postgres" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    run is_bake_managed "sslh"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "openvpn"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "php"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "openresty"
+    [[ "$status" -eq 0 ]]
+
     run is_bake_managed "terraform"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "postgres"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-08d: Full 12-container bake-managed set — every Linux container that routes
+#          through bake is listed; postgres is the canonical not-managed container.
+#          Mutation guard for the complete set (MM3c comprehensive coverage).
+# ---------------------------------------------------------------------------
+@test "BM-08d: all 12 bake-managed containers return 0; postgres returns 1" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    local -a managed_12=(
+        github-runner web-shell wordpress
+        debian vector jekyll ansible
+        sslh openvpn php openresty terraform
+    )
+    for c in "${managed_12[@]}"; do
+        run is_bake_managed "$c"
+        [[ "$status" -eq 0 ]] || { echo "FAIL: $c should be bake-managed"; return 1; }
+    done
+
+    run is_bake_managed "postgres"
     [[ "$status" -eq 1 ]]
 }
 
