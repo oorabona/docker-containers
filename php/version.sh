@@ -8,5 +8,10 @@ if [ "$1" = "--registry-pattern" ]; then
     exit 0
 fi
 
+if [ "$1" = "--tag-suffix" ]; then
+    echo "-fpm-alpine"
+    exit 0
+fi
+
 # Get latest upstream version from official PHP registry using direct helper symlink
 "$(dirname "$0")/../helpers/latest-docker-tag" library/php "^[0-9]+\.[0-9]+\.[0-9]+-fpm-alpine$"

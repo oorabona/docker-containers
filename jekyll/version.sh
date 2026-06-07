@@ -11,6 +11,11 @@ if [[ "${1:-}" == "--registry-pattern" ]]; then
     exit 0
 fi
 
+if [[ "${1:-}" == "--tag-suffix" ]]; then
+    echo "-alpine"
+    exit 0
+fi
+
 # Fetch latest Jekyll version from RubyGems API
 JEKYLL_VERSION=$(curl -sf "https://rubygems.org/api/v1/versions/jekyll/latest.json" | jq -r '.version' 2>/dev/null)
 

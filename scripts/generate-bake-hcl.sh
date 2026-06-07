@@ -282,6 +282,24 @@ _materialize_dockerfile() {
 }
 
 # ---------------------------------------------------------------------------
+# Returns 0 if the Dockerfile declares "ARG <name>" (no default, any spacing).
+# Args: <arg_name> <df_content_or_path> <is_inline>
+#   is_inline=1 → second arg is inline Dockerfile content
+#   is_inline=0 → second arg is an absolute path to the Dockerfile
+# Returns 1 (false) when df is empty or the file is missing.
+# ---------------------------------------------------------------------------
+_df_declares_arg() {
+    local arg_name="$1" df="$2" is_inline="${3:-0}"
+    [[ -n "$df" ]] || return 1
+    local re="^ARG[[:space:]]+${arg_name}([[:space:]=]|\$)"
+    if [[ "$is_inline" == "1" ]]; then
+        printf '%s' "$df" | grep -qE "$re" 2>/dev/null
+    else
+        [[ -f "$df" ]] && grep -qE "$re" "$df" 2>/dev/null
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Compute the complete build-args JSON object for one build cell.
 # Replicates helpers/build-args-utils.sh::prepare_build_args exactly:
 #
@@ -327,13 +345,32 @@ _compute_cell_build_args() {
         args=$(jq -cn --argjson base "$args" --arg m "$major" '$base + {MAJOR_VERSION: $m}')
     fi
 
-    # 4. UPSTREAM_VERSION — mirrors prepare_build_args: run version.sh --upstream
-    #    from the container directory; emit only when non-empty AND != version.
+    # 4. UPSTREAM_VERSION — derived DETERMINISTICALLY from the selected cell tag
+    #    ($version) by stripping the tag suffix returned by version.sh --tag-suffix.
+    #    Never a live upstream query: a live query can drift past the pinned tag
+    #    (build a newer source under an older tag → silent wrong-version) or fail.
+    #    Emit only when: upstream is non-empty AND differs from version AND the
+    #    Dockerfile declares ARG UPSTREAM_VERSION (avoids unused build-arg warnings
+    #    and keeps parity with the matrix path, which only passes what the Dockerfile
+    #    consumes — same rationale as NPROC in STEP 7 below).
     local version_sh="${PROJECT_ROOT}/${container}/version.sh"
     if [[ -x "$version_sh" ]]; then
-        local upstream
-        upstream=$(cd "${PROJECT_ROOT}/${container}" && ./version.sh --upstream 2>/dev/null || true)
-        if [[ -n "$upstream" && "$upstream" != "$version" ]]; then
+        local suffix upstream
+        suffix=$(cd "${PROJECT_ROOT}/${container}" && ./version.sh --tag-suffix 2>/dev/null || true)
+        # Robustness guard: treat suffix as valid ONLY when it is empty OR
+        # (starts with '-' AND $version ends with it).  A version.sh that lacks
+        # --tag-suffix support falls through to its default output (e.g. "8.5.7-fpm-alpine"),
+        # which does NOT start with '-' — treat that as no-suffix.
+        if [[ -n "$suffix" && ( "${suffix:0:1}" != "-" || "${version%"$suffix"}" == "$version" ) ]]; then
+            suffix=""  # invalid/garbage suffix — treat as no-suffix
+        fi
+        if [[ -n "$suffix" ]]; then
+            upstream="${version%"$suffix"}"
+        else
+            upstream="$version"
+        fi
+        if [[ -n "$upstream" && "$upstream" != "$version" ]] && \
+               _df_declares_arg "UPSTREAM_VERSION" "$df_content_or_path" "$is_inline"; then
             args=$(jq -cn --argjson base "$args" --arg u "$upstream" \
                 '$base + {UPSTREAM_VERSION: $u}')
         fi
@@ -358,20 +395,7 @@ _compute_cell_build_args() {
     #    CI sets NPROC env var for parallel builds.
     #    NOTE: CUSTOM_BUILD_ARGS are an R3 concern — applied via `bake --set "*.args.KEY=VAL"`
     #    at the merge-job layer, never embedded in this generated document.
-    local declares_nproc=false
-    if [[ -n "$df_content_or_path" ]]; then
-        if [[ "$is_inline" == "1" ]]; then
-            if printf '%s' "$df_content_or_path" | grep -qE '^ARG[[:space:]]+NPROC([[:space:]=]|$)' 2>/dev/null; then
-                declares_nproc=true
-            fi
-        else
-            if [[ -f "$df_content_or_path" ]] && \
-               grep -qE '^ARG[[:space:]]+NPROC([[:space:]=]|$)' "$df_content_or_path" 2>/dev/null; then
-                declares_nproc=true
-            fi
-        fi
-    fi
-    if [[ "$declares_nproc" == "true" ]]; then
+    if _df_declares_arg "NPROC" "$df_content_or_path" "$is_inline"; then
         args=$(jq -cn --argjson base "$args" '$base + {NPROC: "${NPROC}"}')
     fi
 

@@ -1,0 +1,52 @@
+name: Unit Tests
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install jq
+        timeout-minutes: 5
+        run: |
+          command -v jq >/dev/null 2>&1 || {
+            sudo apt-get update
+            sudo apt-get install -y jq
+          }
+          jq --version
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install bats
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+          bats --version
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          # Keep this lightweight gate on deterministic bake tests. The full
+          # historical unit suite is still available locally via
+          # ./tests/run-tests.sh, but is not yet reliable as a minimal CI gate.
+          ./tests/run-tests.sh bake 2>&1 | tee /tmp/unit-tests.log
