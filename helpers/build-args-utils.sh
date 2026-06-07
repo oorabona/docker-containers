@@ -92,6 +92,18 @@ prepare_build_args() {
         fi
     fi
 
+    # Emit REMOTE_CR unconditionally — all matrix Dockerfiles declare ARG REMOTE_CR.
+    # Value mirrors the bake path (scripts/generate-bake-hcl.sh L45): env-or-default.
+    # Validate before emitting: REMOTE_CR enters a word-split arg string, so a value
+    # containing whitespace or flag-like tokens would inject extra Docker CLI args.
+    # Allow only the safe registry-reference charset: letters, digits, and ._-:/
+    local remote_cr="${REMOTE_CR:-ghcr.io/oorabona}"
+    if [[ ! "$remote_cr" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+        log_error "REMOTE_CR value is unsafe and was rejected: '${remote_cr}'" >&2
+        return 1
+    fi
+    _BUILD_ARGS="$_BUILD_ARGS --build-arg REMOTE_CR=$remote_cr"
+
     [[ -n "$flavor" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg FLAVOR=$flavor"
     [[ -n "${NPROC:-}" ]] && _BUILD_ARGS="$_BUILD_ARGS --build-arg NPROC=$NPROC"
 
