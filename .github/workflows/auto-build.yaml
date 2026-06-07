@@ -1255,8 +1255,10 @@ jobs:
     # fail gracefully if their arch-specific images are missing). This prevents
     # one failed build from blocking manifests for all other successful builds.
     # Skip entirely when rebuild=sync (build-and-push was skipped, nothing to manifest).
-    # Shares the publish-${{ github.ref }} concurrency group with bake-merge so that
-    # the flat-matrix publisher and the bake publisher cannot write manifests concurrently.
+    # NOTE: No job-level concurrency here — each matrix cell targets a unique
+    # (container, tag) ref; bake-merge and create-manifest write disjoint ref sets
+    # so no serialization is needed.  Job-level concurrency on a matrix job evicts
+    # pending cells (GHA holds only 1 pending slot), silently dropping manifests.
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
@@ -1264,9 +1266,6 @@ jobs:
       fromJson(needs.detect-containers.outputs.matrix_builds || '[]') != null &&
       toJson(fromJson(needs.detect-containers.outputs.matrix_builds || '[]')) != '[]' &&
       github.event_name != 'pull_request'
-    concurrency:
-      group: publish-${{ github.ref }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -2207,11 +2206,10 @@ jobs:
       toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
       needs.bake-build-amd64.result == 'success' &&
       needs.bake-build-arm64.result == 'success'
-    # Shared concurrency group with create-manifest so the two publishers never
-    # write to the same GHCR namespace concurrently on the same ref.
-    concurrency:
-      group: publish-${{ github.ref }}
-      cancel-in-progress: false
+    # NOTE: No job-level concurrency here — bake-merge writes only the
+    # linux-latest refs for github-runner/web-shell/wordpress; create-manifest
+    # writes retained + windows refs.  The ref sets are disjoint, so no
+    # serialization is needed (same rationale as build-and-push).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
