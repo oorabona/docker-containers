@@ -335,8 +335,11 @@ runs:
           }
         }
 
-        # Docker cleanup
-        docker system prune -af --volumes 2>$null
+        # No `docker system prune` here: GitHub-hosted Windows runners are ephemeral
+        # (fresh VM per job), so there is nothing from a prior job to reclaim — and a
+        # full prune would delete the Windows base images (servercore/nanoserver) the
+        # runner image pre-caches, forcing a slow multi-GB re-pull during the build.
+        # The Remove-Item cleanup above frees the actual reclaimable space.
 
         $after = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
         Write-Host "::notice::Disk space after cleanup: $after GB (freed $([math]::Round($after - $before, 1)) GB)"
