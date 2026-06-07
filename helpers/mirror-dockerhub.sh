@@ -15,10 +15,17 @@
 # aliases, gated on is_latest_version (retained non-latest versions only get the
 # versioned tag; no rolling :latest/:latest-<variant> to avoid clobbering).
 #
-# BEST-EFFORT: a failure on any individual tag emits ::warning:: and continues.
+# BEST-EFFORT (default): a failure on any individual tag emits ::warning:: and continues.
 # The function returns 0 even when individual mirrors fail — it never gates the build.
 #
-# SKIP: when DOCKERHUB_USERNAME is unset the function emits ::notice:: and returns 0.
+# STRICT MODE (MIRROR_STRICT=true): fail-closed on total/structural failure.
+# Returns non-zero when credentials are absent, the generator fails, no cells are
+# produced, or every attempted mirror call fails (0/<n> succeeded).  Partial success
+# (_succeeded > 0) still returns 0 — transient single-tag flakes must not red the
+# nightly cron.  Emits ::notice:: with counts on success, ::error:: on total failure.
+#
+# SKIP: when DOCKERHUB_USERNAME is unset the function emits ::notice:: and returns 0
+# (or ::error:: + returns 1 in strict mode).
 #
 # DRY_RUN / DOCKER indirection:
 #   - When DRY_RUN=true the explicit dry-run branch at the mirror call site prints
@@ -69,16 +76,35 @@ DOCKER="${DOCKER:-docker}"
 #                                 contract as helpers/bake-buildresult.sh)
 #   DRY_RUN                     — when "true", print commands without executing
 #   DOCKER                      — docker binary / mock (set by logging.sh)
+#   MIRROR_STRICT               — when "true", enables fail-closed return semantics:
+#                                 returns non-zero on structural error (unset username,
+#                                 generator failure, no cells produced) OR when
+#                                 _attempted > 0 && _succeeded == 0 (total failure).
+#                                 Partial success (_succeeded > 0) still returns 0 —
+#                                 transient single-tag flakes must not red the nightly job.
+#                                 Emits a ::notice:: summary on success and ::error:: on
+#                                 total failure to stderr.  Default mode (MIRROR_STRICT
+#                                 unset/false) is unchanged: always returns 0 (best-effort).
 #
 # Return value:
-#   0 always (best-effort; individual failures do not propagate)
+#   Default mode (MIRROR_STRICT != "true"):
+#     0 always (best-effort; individual failures do not propagate)
+#   Strict mode (MIRROR_STRICT == "true"):
+#     0 — at least one tag mirrored successfully (full or partial success)
+#     1 — structural error (credentials absent, generator failed, no cells) or
+#         total failure (_attempted > 0 && _succeeded == 0)
 # ---------------------------------------------------------------------------
 mirror_to_dockerhub() {
     local -a containers=("$@")
+    local _strict="${MIRROR_STRICT:-false}"
 
     # Skip entirely when DockerHub credentials are absent.
     if [[ -z "${DOCKERHUB_USERNAME:-}" ]]; then
         printf '::notice::mirror-dockerhub: DOCKERHUB_USERNAME unset — skipping DockerHub mirror\n' >&2
+        if [[ "$_strict" == "true" ]]; then
+            printf '::error::mirror-dockerhub: DOCKERHUB_USERNAME unset — reconciliation cannot proceed\n' >&2
+            return 1
+        fi
         return 0
     fi
 
@@ -93,14 +119,24 @@ mirror_to_dockerhub() {
     fi
 
     local cells_json
-    local generator="${_MDH_SCRIPT_DIR}/../scripts/generate-bake-hcl.sh"
+    # _MDH_GENERATOR_OVERRIDE allows bats tests to inject a mock generator without
+    # patching the filesystem.  Not used in production (env var not set by callers).
+    local generator="${_MDH_GENERATOR_OVERRIDE:-${_MDH_SCRIPT_DIR}/../scripts/generate-bake-hcl.sh}"
     if ! cells_json=$("$generator" --cells "${_gen_retained_flag[@]}" "${containers[@]}"); then
         printf '::warning::mirror-dockerhub: generate-bake-hcl.sh --cells failed — skipping DockerHub mirror\n' >&2
+        if [[ "$_strict" == "true" ]]; then
+            printf '::error::mirror-dockerhub: generator failed — reconciliation cannot proceed\n' >&2
+            return 1
+        fi
         return 0
     fi
 
     if ! jq -e 'type == "array"' <<< "$cells_json" >/dev/null 2>&1; then
         printf '::warning::mirror-dockerhub: --cells returned non-array — skipping DockerHub mirror\n' >&2
+        if [[ "$_strict" == "true" ]]; then
+            printf '::error::mirror-dockerhub: generator returned non-array — reconciliation cannot proceed\n' >&2
+            return 1
+        fi
         return 0
     fi
 
@@ -109,8 +145,16 @@ mirror_to_dockerhub() {
 
     if [[ "$ncells" -eq 0 ]]; then
         printf '::notice::mirror-dockerhub: no cells to mirror\n' >&2
+        if [[ "$_strict" == "true" ]]; then
+            printf '::error::mirror-dockerhub: generator produced no cells — reconciliation cannot proceed\n' >&2
+            return 1
+        fi
         return 0
     fi
+
+    # Counters for strict-mode observability: track across all cells/tags.
+    local _attempted=0
+    local _succeeded=0
 
     local i
     for (( i=0; i<ncells; i++ )); do
@@ -155,13 +199,27 @@ mirror_to_dockerhub() {
                 printf 'DRY-RUN: docker buildx imagetools create -t %s %s\n' \
                     "$dh_dst" "$ghcr_src" >&2
             else
-                if ! "$DOCKER" buildx imagetools create -t "$dh_dst" "$ghcr_src" 2>&1; then
+                (( _attempted++ )) || true
+                if "$DOCKER" buildx imagetools create -t "$dh_dst" "$ghcr_src" 2>&1; then
+                    (( _succeeded++ )) || true
+                else
                     printf '::warning::mirror-dockerhub: imagetools create failed for %s (best-effort, continuing)\n' \
                         "$dh_dst" >&2
                 fi
             fi
         done < <(compute_cell_tag_suffixes "$tag" "$routing_suffix" "$is_default")
     done
+
+    # Strict-mode: emit summary and return non-zero on total failure.
+    if [[ "$_strict" == "true" ]]; then
+        if [[ "$_attempted" -gt 0 && "$_succeeded" -eq 0 ]]; then
+            printf '::error::mirror-dockerhub: 0/%d tags mirrored — reconciliation failed\n' \
+                "$_attempted" >&2
+            return 1
+        fi
+        printf '::notice::mirror-dockerhub: %d/%d tags mirrored\n' \
+            "$_succeeded" "$_attempted" >&2
+    fi
 
     return 0
 }

@@ -1,0 +1,121 @@
+name: DockerHub Reconciliation
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # 9 PM UTC — end-of-day gap fill after bake-merge runs
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — print imagetools commands, no writes'
+        required: false
+        type: boolean
+        default: false
+      all_retained:
+        description: 'Mirror retained (non-latest) tags too'
+        required: false
+        type: boolean
+        default: true
+      containers:
+        description: 'Override bake-managed containers (space-separated, optional)'
+        required: false
+        type: string
+        default: ''
+
+# Never cancel — a partial run leaves DockerHub inconsistent.
+concurrency:
+  group: dockerhub-reconcile
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  reconcile:
+    name: Reconcile GHCR → DockerHub (bake-managed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/master' || github.event_name == 'schedule'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: refs/heads/master
+
+      - name: Install yq
+        timeout-minutes: 5
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to container registries
+        uses: ./.github/actions/docker-login
+        timeout-minutes: 5
+        with:
+          ghcr_username: ${{ github.actor }}
+          ghcr_password: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight BuildKit image
+        uses: ./.github/actions/preflight-buildkit
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        timeout-minutes: 10
+        with:
+          driver: docker-container
+          version: 'v0.33.0'
+          driver-opts: image=ghcr.io/${{ github.repository_owner }}/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+
+      - name: Mirror GHCR → DockerHub (bake-managed containers)
+        id: mirror
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+          BAKE_GENERATE_ALL_RETAINED: ${{ (github.event_name == 'workflow_dispatch' && inputs.all_retained == false) && 'false' || 'true' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          BAKE_MANAGED_CONTAINERS: ${{ inputs.containers }}
+          MIRROR_STRICT: 'true'
+        run: |
+          set -euo pipefail
+          chmod +x helpers/mirror-dockerhub.sh helpers/bake-managed.sh scripts/generate-bake-hcl.sh
+          # shellcheck source=helpers/bake-managed.sh
+          source helpers/bake-managed.sh
+          # Read containers: honour BAKE_MANAGED_CONTAINERS override (set via inputs.containers);
+          # falls back to default "github-runner web-shell wordpress" when empty.
+          read -ra containers <<< "$(bake_managed_containers)"
+          # Fail closed if the parsed array is empty — a whitespace-only override is a
+          # misconfiguration; silently falling back to the whole fleet would be wrong.
+          if [[ ${#containers[@]} -eq 0 ]]; then
+            echo "::error::dockerhub-reconcile: empty container set (whitespace-only override?) — refusing whole-fleet fallback" >&2
+            exit 1
+          fi
+          # Validate every container token against a strict allowlist — rejects flag injection
+          # (e.g. --all-retained) and shell metacharacters before any downstream use.
+          for _c in "${containers[@]}"; do
+            if [[ ! "$_c" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+              echo "::error::Invalid container name in reconcile set: '$_c'" >&2
+              exit 1
+            fi
+          done
+          echo "::notice::Reconciling DockerHub for: ${containers[*]} (all_retained=${BAKE_GENERATE_ALL_RETAINED} dry_run=${DRY_RUN})"
+          # shellcheck source=helpers/mirror-dockerhub.sh
+          source helpers/mirror-dockerhub.sh
+          mirror_to_dockerhub "${containers[@]}"
+
+      - name: Summary
+        if: always()
+        env:
+          MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
+        run: |
+          if [[ "$MIRROR_OUTCOME" == "success" ]]; then
+            echo "### DockerHub Reconciliation: success" >> "$GITHUB_STEP_SUMMARY"
+            echo "Reconciliation completed (see warnings above for any per-tag failures)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### DockerHub Reconciliation: FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "DockerHub mirroring did not succeed for any tag (check credentials / GHCR source)." >> "$GITHUB_STEP_SUMMARY"
+          fi

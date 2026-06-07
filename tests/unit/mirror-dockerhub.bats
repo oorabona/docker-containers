@@ -8,6 +8,12 @@
 #   MD4: Function skips when DOCKERHUB_USERNAME is unset
 #   MD5: A single mirror failure does NOT fail the function (best-effort; rc=0)
 #   MD6: BAKE_GENERATE_ALL_RETAINED ignored → retained GHCR tags absent on DockerHub
+#   MS1: MIRROR_STRICT unset → returns 0 even when all imagetools fail (best-effort preserved)
+#   MS2: MIRROR_STRICT=true + all imagetools succeed → returns 0
+#   MS3: MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0) → returns non-zero
+#   MS4: MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0
+#   MS5: MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero (structural)
+#   MS6: MIRROR_STRICT=true + generator yields no cells → returns non-zero (structural)
 
 load "../test_helper"
 
@@ -52,11 +58,14 @@ MOCK_EOF
 
     # Default to latest-only (no retained) between tests
     export BAKE_GENERATE_ALL_RETAINED="false"
+
+    # Default to best-effort (strict mode off) between tests
+    export MIRROR_STRICT="false"
 }
 
 teardown() {
     rm -rf "$TEST_LOG_DIR"
-    unset DOCKERHUB_USERNAME REMOTE_CR DRY_RUN BAKE_GENERATE_ALL_RETAINED || true
+    unset DOCKERHUB_USERNAME REMOTE_CR DRY_RUN BAKE_GENERATE_ALL_RETAINED MIRROR_STRICT _MDH_GENERATOR_OVERRIDE || true
 }
 
 # ---------------------------------------------------------------------------
@@ -74,6 +83,8 @@ _run_mirror() {
         export GITHUB_ACTIONS
         export _DEPGRAPH_LINEAGE_DIR
         export BAKE_GENERATE_ALL_RETAINED
+        export MIRROR_STRICT
+        export _MDH_GENERATOR_OVERRIDE
 
         source "$MDH"
         mirror_to_dockerhub "$@"
@@ -358,4 +369,175 @@ FAIL_EOF
     # A ::warning:: should have been emitted for the failure
     grep -q "warning" "${TEST_LOG_DIR}/run.log" || \
         (echo "Expected ::warning:: annotation not found:" >&2; cat "${TEST_LOG_DIR}/run.log" >&2; false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-01: MIRROR_STRICT unset → returns 0 even when all imagetools fail.
+# Catches: MS1 — best-effort behavior must be unchanged when strict mode is off.
+# ---------------------------------------------------------------------------
+@test "MS-01: MIRROR_STRICT unset returns 0 even when all imagetools fail" {
+    unset MIRROR_STRICT
+
+    # All docker calls fail
+    cat > "$MOCK_DOCKER" <<'FAIL_EOF'
+#!/usr/bin/env bash
+printf 'FAILED: %s\n' "$*" >> "${DOCKER_LOG}"
+exit 1
+FAIL_EOF
+    chmod +x "$MOCK_DOCKER"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -eq 0 ] || \
+        (echo "Expected rc=0 (best-effort, MIRROR_STRICT unset) but got $status" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-02: MIRROR_STRICT=true + all imagetools succeed → returns 0.
+# Catches: MS2 — strict mode must not break the happy path.
+# ---------------------------------------------------------------------------
+@test "MS-02: MIRROR_STRICT=true all-succeed returns 0" {
+    export MIRROR_STRICT="true"
+
+    # MOCK_DOCKER already exits 0 (default setup)
+    run _run_mirror "web-shell"
+
+    [ "$status" -eq 0 ] || \
+        (echo "Expected rc=0 (strict, all succeed) but got $status" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # ::notice:: summary must be emitted
+    grep -q "notice.*mirror-dockerhub:.*/" "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected ::notice:: summary not found:" >&2; cat "${TEST_LOG_DIR}/run.log" >&2; false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-03: MIRROR_STRICT=true + ALL imagetools fail (attempted>0, succeeded==0)
+#        → returns non-zero.
+# Catches: MS3 — total failure must be observable in strict mode.
+# ---------------------------------------------------------------------------
+@test "MS-03: MIRROR_STRICT=true all-fail returns non-zero" {
+    export MIRROR_STRICT="true"
+
+    # All docker calls fail
+    cat > "$MOCK_DOCKER" <<'FAIL_EOF'
+#!/usr/bin/env bash
+printf 'FAILED: %s\n' "$*" >> "${DOCKER_LOG}"
+exit 1
+FAIL_EOF
+    chmod +x "$MOCK_DOCKER"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -ne 0 ] || \
+        (echo "Expected non-zero rc (strict, all fail) but got 0" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # ::error:: annotation must be emitted
+    grep -q "error.*mirror-dockerhub:.*0/" "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected ::error:: total-failure annotation not found:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-04: MIRROR_STRICT=true + PARTIAL success (some succeed, some fail) → returns 0.
+# Catches: MS4 — transient single-tag flakes must not red the nightly cron.
+#
+# Strategy: the first imagetools call succeeds, subsequent ones fail.
+# web-shell produces at least 2 tags (versioned + :latest), so the counter
+# will have succeeded≥1 and attempted≥2.
+# ---------------------------------------------------------------------------
+@test "MS-04: MIRROR_STRICT=true partial-success returns 0" {
+    export MIRROR_STRICT="true"
+
+    # First call succeeds, all subsequent fail
+    cat > "$MOCK_DOCKER" <<'PARTIAL_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_LOG}"
+# Succeed only on first invocation (line count == 1 after writing)
+lines=$(wc -l < "${DOCKER_LOG}")
+if [[ "$lines" -eq 1 ]]; then
+    exit 0
+fi
+exit 1
+PARTIAL_EOF
+    chmod +x "$MOCK_DOCKER"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -eq 0 ] || \
+        (echo "Expected rc=0 (strict, partial success) but got $status" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # ::notice:: summary (not ::error::) must be emitted
+    grep -q "notice.*mirror-dockerhub:.*/" "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected ::notice:: summary not found (should be partial success):" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-05: MIRROR_STRICT=true + DOCKERHUB_USERNAME unset → returns non-zero.
+# Catches: MS5 — missing credentials is a structural misconfiguration.
+# ---------------------------------------------------------------------------
+@test "MS-05: MIRROR_STRICT=true DOCKERHUB_USERNAME unset returns non-zero" {
+    export MIRROR_STRICT="true"
+    unset DOCKERHUB_USERNAME
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -ne 0 ] || \
+        (echo "Expected non-zero rc (strict, no credentials) but got 0" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # ::error:: annotation must be emitted
+    grep -q "error.*mirror-dockerhub:.*DOCKERHUB_USERNAME" "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected ::error:: credentials annotation not found:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+}
+
+# ---------------------------------------------------------------------------
+# MS-06: MIRROR_STRICT=true + generator yields no cells → returns non-zero.
+# Catches: MS6 — empty cell set is a structural failure (no-op reconciliation).
+#
+# Strategy: set _MDH_GENERATOR_OVERRIDE to a mock that returns an empty JSON array.
+# ---------------------------------------------------------------------------
+@test "MS-06: MIRROR_STRICT=true generator no-cells returns non-zero" {
+    export MIRROR_STRICT="true"
+
+    # Mock generator returns an empty array
+    export MOCK_GENERATOR="${TEST_LOG_DIR}/generate-bake-hcl-empty.sh"
+    cat > "$MOCK_GENERATOR" <<'GEN_EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--cells" ]]; then
+    printf '[]'
+    exit 0
+fi
+exit 1
+GEN_EOF
+    chmod +x "$MOCK_GENERATOR"
+    export _MDH_GENERATOR_OVERRIDE="$MOCK_GENERATOR"
+
+    run _run_mirror "web-shell"
+
+    [ "$status" -ne 0 ] || \
+        (echo "Expected non-zero rc (strict, no cells) but got 0" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    # ::error:: annotation must be emitted
+    grep -q "error.*mirror-dockerhub:" "${TEST_LOG_DIR}/run.log" || \
+        (echo "Expected ::error:: no-cells annotation not found:" >&2
+         cat "${TEST_LOG_DIR}/run.log" >&2
+         false)
+
+    unset _MDH_GENERATOR_OVERRIDE
 }
