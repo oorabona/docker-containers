@@ -50,6 +50,8 @@ build_valid_tags() {
   fi
 
   # Tags from builds + latest + buildcache + latest-{variant}
+  # buildcache        — flat-matrix per-container registry cache (mode=max)
+  # buildcache-*      — bake per-target registry cache (keyed by container+tag+arch)
   local tags
   tags=$(echo "$builds_json" | jq -r '.[].tag')
   tags+=$'\n'"latest"
@@ -84,6 +86,42 @@ is_valid_tag() {
   base_tag="${base_tag%-arm64}"
   if [[ "$base_tag" != "$tag" ]] && echo "$valid_tags" | grep -qxF "$base_tag"; then
     return 0
+  fi
+
+  # Bake per-target registry cache tags: buildcache-<base-tag>-{amd64,arm64}
+  # (e.g. buildcache-2.334.0-amd64, buildcache-2.334.0-dev-arm64).
+  # A bake cache tag is valid IFF its underlying base tag is itself valid.
+  # This prevents stale cache entries for rotated-out versions from accumulating.
+  # Bare "buildcache" (flat-matrix cache, no arch suffix) is already covered by
+  # the direct-match path above (it's emitted into valid_tags by build_valid_tags).
+  if [[ "$tag" == buildcache-* ]]; then
+    # Strip the "buildcache-" prefix to get the remainder
+    local remainder="${tag#buildcache-}"
+
+    # Guard against malformed double-prefix (buildcache-buildcache-...)
+    if [[ "$remainder" == buildcache-* || -z "$remainder" ]]; then
+      return 1
+    fi
+
+    # Strip exactly the arch suffix (anchored to end) to recover the base tag
+    local cache_base_tag="$remainder"
+    if [[ "$cache_base_tag" == *-amd64 ]]; then
+      cache_base_tag="${cache_base_tag%-amd64}"
+    elif [[ "$cache_base_tag" == *-arm64 ]]; then
+      cache_base_tag="${cache_base_tag%-arm64}"
+    else
+      # No recognised arch suffix — not a bake cache tag we manage; treat as invalid
+      return 1
+    fi
+
+    # Base tag must be non-empty after stripping
+    if [[ -z "$cache_base_tag" ]]; then
+      return 1
+    fi
+
+    # The cache tag is valid iff its underlying base tag is currently valid
+    is_valid_tag "$cache_base_tag" "$valid_tags"
+    return $?
   fi
 
   return 1

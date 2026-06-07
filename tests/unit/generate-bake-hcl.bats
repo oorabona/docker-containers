@@ -1117,3 +1117,150 @@ YAML
     [ "$status" -eq 0 ]
     [[ "$output" == *"github-runner"* ]] && [[ "$output" == *"bake_latest_only"* || "$output" == *"latest-only"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Registry cache: per-target cache-from/cache-to (MG18)
+#   MG18: Omit cache-from → bake builds cold; emit cache-to unconditionally → PR poisons canonical buildcache
+#
+# cache-from is UNCONDITIONAL (always emitted; reading is always safe).
+# cache-to is GATED on BAKE_CACHE_EXPORT=true (only the real publish path writes
+# to canonical buildcache refs — PR/dry-run builds must never poison it).
+# ---------------------------------------------------------------------------
+
+@test "GBH-50: MG18 — every bake target has cache-from unconditionally (BAKE_CACHE_EXPORT unset)" {
+    # cache-from must be present regardless of BAKE_CACHE_EXPORT
+    _run_generator debian
+    [ "$status" -eq 0 ]
+
+    # Every target must have cache-from: [{type: registry, ref: ...}]
+    local missing_cf
+    missing_cf=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | select(."value"."cache-from" == null or (."value"."cache-from" | length) == 0)
+    ] | length')
+    [ "$missing_cf" -eq 0 ]
+
+    # Every cache-from ref must be type=registry
+    local wrong_type
+    wrong_type=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | ."value"."cache-from"[]
+        | select(.type != "registry")
+    ] | length')
+    [ "$wrong_type" -eq 0 ]
+
+    # Every cache-from ref must contain "buildcache-"
+    local bad_ref
+    bad_ref=$(echo "$output" | jq -r '[
+        .target | to_entries[]
+        | ."value"."cache-from"[]
+        | .ref
+        | select(contains("buildcache-") | not)
+    ] | length')
+    [ "$bad_ref" -eq 0 ]
+
+    # Every cache-from ref must end with the literal "${ARCH_SUFFIX}" bake token
+    local no_arch_suffix
+    no_arch_suffix=$(echo "$output" | jq --arg suffix '${ARCH_SUFFIX}' '[
+        .target | to_entries[]
+        | ."value"."cache-from"[]
+        | .ref
+        | select(endswith($suffix) | not)
+    ] | length')
+    [ "$no_arch_suffix" -eq 0 ]
+}
+
+@test "GBH-50b: MG18 — cache-from also present when BAKE_CACHE_EXPORT=true (publish path)" {
+    # cache-from must also be present on the publish path (reads from prior master cache)
+    run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
+    [ "$status" -eq 0 ]
+
+    local missing_cf
+    missing_cf=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | select(."value"."cache-from" == null or (."value"."cache-from" | length) == 0)
+    ] | length')
+    [ "$missing_cf" -eq 0 ]
+}
+
+@test "GBH-51: MG18 — BAKE_CACHE_EXPORT=true: every target has cache-to with mode=max and ignore-error=true" {
+    # Cache-to must be present ONLY when BAKE_CACHE_EXPORT=true (the publish path).
+    run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
+    [ "$status" -eq 0 ]
+
+    # Every target must have cache-to
+    local missing_ct
+    missing_ct=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | select(."value"."cache-to" == null or (."value"."cache-to" | length) == 0)
+    ] | length')
+    [ "$missing_ct" -eq 0 ]
+
+    # mode=max required
+    local wrong_mode
+    wrong_mode=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | ."value"."cache-to"[]
+        | select(.mode != "max")
+    ] | length')
+    [ "$wrong_mode" -eq 0 ]
+
+    # ignore-error=true required (transient GHCR cache-export must not fail build)
+    local missing_ie
+    missing_ie=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | ."value"."cache-to"[]
+        | select(."ignore-error" != true)
+    ] | length')
+    [ "$missing_ie" -eq 0 ]
+}
+
+@test "GBH-51b: MG18 — BAKE_CACHE_EXPORT unset/false: NO cache-to emitted (PR/dry-run safety gate)" {
+    # When BAKE_CACHE_EXPORT is unset (default), cache-to must be absent from all targets.
+    # This is the PR/dry-run path — we must never poison canonical buildcache from unmerged code.
+    _run_generator debian
+    [ "$status" -eq 0 ]
+
+    local has_cache_to
+    has_cache_to=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | select(."value"."cache-to" != null and (."value"."cache-to" | length) > 0)
+    ] | length')
+    [ "$has_cache_to" -eq 0 ]
+}
+
+@test "GBH-51c: MG18 — BAKE_CACHE_EXPORT=false: NO cache-to emitted" {
+    # Explicit false must also suppress cache-to.
+    run env BAKE_CACHE_EXPORT=false bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian
+    [ "$status" -eq 0 ]
+
+    local has_cache_to
+    has_cache_to=$(echo "$output" | jq '[
+        .target | to_entries[]
+        | select(."value"."cache-to" != null and (."value"."cache-to" | length) > 0)
+    ] | length')
+    [ "$has_cache_to" -eq 0 ]
+}
+
+@test "GBH-52: MG18 — two different bake targets (different containers or tags) get DISTINCT cache refs" {
+    # Request two containers with distinct tags so both produce cache refs.
+    # Verify no two targets share the same cache-from ref.
+    run env BAKE_CACHE_EXPORT=true bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" debian sslh
+    [ "$status" -eq 0 ]
+
+    # Collect all cache-from refs across all targets
+    local all_refs
+    all_refs=$(echo "$output" | jq -r '[
+        .target | to_entries[]
+        | ."value"."cache-from"[]
+        | .ref
+    ]')
+
+    local total_refs unique_refs
+    total_refs=$(echo "$all_refs" | jq 'length')
+    unique_refs=$(echo "$all_refs" | jq 'unique | length')
+
+    # Every ref must be unique — no two targets share a cache ref
+    [ "$total_refs" -gt 1 ]
+    [ "$unique_refs" -eq "$total_refs" ]
+}

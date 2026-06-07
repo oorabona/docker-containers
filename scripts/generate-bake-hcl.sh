@@ -906,6 +906,35 @@ _on_cell_bake() {
             '$t + {contexts: $c}')
     fi
 
+    # Registry cache: per-target ref keyed by container+tag+arch so each target
+    # reuses its own layer cache across runs.  ARCH_SUFFIX is the bake variable
+    # (declared in the document header); it interpolates to -amd64/-arm64 at bake
+    # invocation time.  ignore-error on cache-to ensures a transient GHCR export
+    # failure never fails the build job.
+    #
+    # cache-from is UNCONDITIONAL — reading is always safe and PR/dry-run builds
+    # benefit from master's warm cache.
+    # cache-to is GATED on BAKE_CACHE_EXPORT=true — writing to canonical GHCR
+    # buildcache refs must only happen on the real publish path (push/dispatch).
+    # PR builds have packages:write but must NOT poison the canonical buildcache
+    # that master builds consume via cache-from.
+    local cache_ref="${_BAKE_REMOTE_CR}/${c}:buildcache-${tag}\${ARCH_SUFFIX}"
+    local cache_from_json
+    cache_from_json=$(jq -cn --arg ref "$cache_ref" \
+        '[{"type": "registry", "ref": $ref}]')
+    target_obj=$(jq -cn --argjson t "$target_obj" \
+        --argjson cf "$cache_from_json" \
+        '$t + {"cache-from": $cf}')
+
+    if [[ "${BAKE_CACHE_EXPORT:-false}" == "true" ]]; then
+        local cache_to_json
+        cache_to_json=$(jq -cn --arg ref "$cache_ref" \
+            '[{"type": "registry", "ref": $ref, "mode": "max", "ignore-error": true}]')
+        target_obj=$(jq -cn --argjson t "$target_obj" \
+            --argjson ct "$cache_to_json" \
+            '$t + {"cache-to": $ct}')
+    fi
+
     # Accumulate into caller-scope variables (set -n nameref not in bash 4.3; use globals)
     targets_json=$(jq -cn --argjson base "$targets_json" \
         --arg tid "$tid" --argjson obj "$target_obj" \
