@@ -140,8 +140,6 @@ RUN set -ex \
         --disable-never-backslash-C \
         --enable-newline-is-lf \
         --enable-pcre2-8 \
-        --enable-pcre2-16 \
-        --enable-pcre2-32 \
         --enable-pcre2grep-callout \
         --enable-pcre2grep-callout-fork \
         --disable-pcre2grep-libbz2 \
