@@ -224,6 +224,7 @@ jobs:
       builds_count: ${{ steps.detect.outputs.builds_count }}
       bake_builds: ${{ steps.detect.outputs.bake_builds }}
       matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
+      postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -991,6 +992,7 @@ jobs:
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_base_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          scan_vulnerabilities: ${{ (matrix.build.container != 'postgres' || github.event_name == 'pull_request') && 'true' || 'false' }}
         continue-on-error: true
 
       - name: Handle build failure
@@ -1196,7 +1198,7 @@ jobs:
 
       - name: Upload Trivy scan history
         id: upload_trivy_scan_history
-        if: steps.build.outcome == 'success' && matrix.build.os != 'windows'
+        if: steps.build.outcome == 'success' && matrix.build.os != 'windows' && matrix.build.container != 'postgres'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
@@ -1220,7 +1222,7 @@ jobs:
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
         id: install-syft
-        if: matrix.build.os != 'windows' && steps.build.outputs.image_loaded == 'true' && matrix.arch == 'amd64' && github.event_name != 'pull_request'
+        if: matrix.build.os != 'windows' && steps.build.outputs.image_loaded == 'true' && matrix.arch == 'amd64' && github.event_name != 'pull_request' && matrix.build.container != 'postgres'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM
@@ -2237,6 +2239,154 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  postgres-trivy:
+    name: Trivy scan (postgres) ${{ matrix.build.tag }} (${{ matrix.arch }})
+    needs: [detect-containers, build-and-push]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.dry_run != true &&
+      needs.detect-containers.outputs.postgres_matrix_builds != '[]' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.postgres_matrix_builds) }}
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to GHCR (pull postgres)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download build result (freshness probe)
+        id: download-build-result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: build-result-postgres-${{ matrix.build.tag }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/postgres-build-result
+        continue-on-error: true
+
+      - name: Check build result freshness
+        id: fresh
+        env:
+          MATRIX_TAG: ${{ matrix.build.tag }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          RESULT_DIR: ${{ runner.temp }}/postgres-build-result
+        run: |
+          set -euo pipefail
+
+          result_file=""
+          result_name="build-result-postgres-${MATRIX_TAG}-${MATRIX_ARCH}.json"
+          if [[ -d "$RESULT_DIR" ]]; then
+            result_file="$(find "$RESULT_DIR" -type f -name "$result_name" -print -quit)"
+          fi
+
+          if [[ -n "$result_file" ]] && [[ "$(jq -r '.result // empty' "$result_file" 2>/dev/null || true)" == "success" ]]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Fresh postgres build result found for ${MATRIX_TAG}/${MATRIX_ARCH}: ${result_file}"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No successful build-result-postgres-${MATRIX_TAG}-${MATRIX_ARCH} JSON found; skipping postgres:${MATRIX_TAG}-${MATRIX_ARCH} Trivy scan"
+          fi
+
+      - name: Scan for vulnerabilities (Trivy)
+        id: trivy-scan
+        if: steps.fresh.outputs.built == 'true'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: 'ghcr.io/${{ github.repository_owner }}/postgres:${{ matrix.build.tag }}-${{ matrix.arch }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          timeout: '15m0s'
+        continue-on-error: true  # Vulnerability scan is advisory — never gates the build
+
+      - name: Write Trivy scan history (postgres)
+        if: steps.fresh.outputs.built == 'true' && steps.trivy-scan.outcome != 'skipped'
+        env:
+          CONTAINER: postgres
+          TAG: ${{ matrix.build.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p .trivy-scan-history
+
+          last_scan="$(date -Iseconds)"
+          alert_count=-1
+          status="error"
+          counts_json='{"critical":0,"high":0,"medium":0,"low":0,"info":0}'
+
+          # Parse SARIF to count findings per severity (parity with build-container action).
+          # A missing or unparsable SARIF means the scan did not complete — record as
+          # status="error" with alert_count=-1 (sentinel) so the dashboard/history
+          # reports a failed scan rather than a false clean.
+          if [[ -f trivy-results.sarif ]] && jq -e . trivy-results.sarif >/dev/null 2>&1; then
+            severities_json=$(jq -c '
+              [.runs[].tool.driver.rules // [] | .[] |
+                {(.id): ([.properties.tags // [] | .[] | ascii_downcase] |
+                  map(select(. == "critical" or . == "high" or . == "medium" or . == "low")) |
+                  first // "info")}]
+              | add // {}
+            ' trivy-results.sarif 2>/dev/null || echo "{}")
+
+            counts_json=$(jq -c --argjson sev_map "$severities_json" '
+              reduce ([.runs[].results // [] | .[]][] | (.ruleId? // "")) as $rid
+                ({"critical":0,"high":0,"medium":0,"low":0,"info":0};
+                  ($sev_map[$rid] // "info") as $s
+                  | if .[$s] != null then .[$s] += 1 else . end)
+            ' trivy-results.sarif 2>/dev/null || echo '{"critical":0,"high":0,"medium":0,"low":0,"info":0}')
+
+            alert_count=$(jq '[.runs[].results // [] | .[]] | length' trivy-results.sarif 2>/dev/null || echo -1)
+            if [[ "$alert_count" -lt 0 ]]; then
+              status="error"
+            elif [[ "$alert_count" -gt 0 ]]; then
+              status="dirty"
+            else
+              status="clean"
+            fi
+          fi
+
+          scan_file=".trivy-scan-history/${CONTAINER}-${TAG}-linux-${ARCH}.json"
+          jq -nc \
+            --arg ls "$last_scan" \
+            --argjson ac "$alert_count" \
+            --arg st "$status" \
+            --argjson c "$counts_json" \
+            --argjson ss '["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"]' \
+            '{last_scan:$ls,alert_count:$ac,status:$st,counts:$c,scanned_severities:$ss}' \
+            > "$scan_file"
+          echo "::notice::Trivy scan history: ${scan_file} (alert_count=${alert_count}, status=${status})"
+
+      - name: Upload SARIF to GitHub Security
+        if: steps.fresh.outputs.built == 'true' && steps.trivy-scan.outcome != 'skipped'
+        uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'container-postgres-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
+          wait-for-processing: false
+        continue-on-error: true  # SARIF upload is advisory — never gates the build
+
+      - name: Upload Trivy scan history (postgres)
+        if: always() && steps.fresh.outputs.built == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: trivy-scan-history-postgres-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: .trivy-scan-history/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+
   bake-merge:
     # Require BOTH arch builds to succeed before merging.  If either fails the
     # mutable :<tag>-amd64 / :<tag>-arm64 intermediate refs may be stale from a
@@ -2499,6 +2649,128 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}
           subject-digest: ${{ steps.attest-setup.outputs.digest }}
           sbom-path: ${{ steps.attest-setup.outputs.sbom_file }}
+        continue-on-error: true  # Attestation is advisory — never gates
+
+  postgres-attest:
+    name: Attest SBOM (postgres) ${{ matrix.build.tag }}
+    needs: [detect-containers, build-and-push]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.dry_run != true &&
+      needs.detect-containers.outputs.postgres_matrix_builds != '[]' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.postgres_matrix_builds) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to GHCR (imagetools inspect)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download build result (freshness probe)
+        id: download-build-result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: build-result-postgres-${{ matrix.build.tag }}-amd64
+          path: ${{ runner.temp }}/postgres-build-result
+        continue-on-error: true
+
+      - name: Check build result freshness
+        id: fresh
+        env:
+          MATRIX_TAG: ${{ matrix.build.tag }}
+          RESULT_DIR: ${{ runner.temp }}/postgres-build-result
+        run: |
+          set -euo pipefail
+
+          result_file=""
+          result_name="build-result-postgres-${MATRIX_TAG}-amd64.json"
+          if [[ -d "$RESULT_DIR" ]]; then
+            result_file="$(find "$RESULT_DIR" -type f -name "$result_name" -print -quit)"
+          fi
+
+          if [[ -n "$result_file" ]] && [[ "$(jq -r '.result // empty' "$result_file" 2>/dev/null || true)" == "success" ]]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Fresh postgres amd64 build result found for ${MATRIX_TAG}: ${result_file}"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No successful build-result-postgres-${MATRIX_TAG}-amd64 JSON found; skipping postgres:${MATRIX_TAG} SBOM/attestation"
+          fi
+
+      - name: Install syft (postgres SBOM)
+        id: install-syft-postgres
+        if: steps.fresh.outputs.built == 'true'
+        continue-on-error: true
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Generate SBOM and derive digest (postgres)
+        id: postgres-sbom
+        if: steps.fresh.outputs.built == 'true' && steps.install-syft-postgres.outcome == 'success'
+        env:
+          MATRIX_TAG: ${{ matrix.build.tag }}
+          REMOTE_CR: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          source ./helpers/sbom-utils.sh
+
+          image_ref="${REMOTE_CR}/postgres:${MATRIX_TAG}-amd64"
+          sbom_file=".build-lineage/postgres-${MATRIX_TAG}.sbom.json"
+          mkdir -p .build-lineage
+
+          generate_sbom "$image_ref" "$sbom_file"
+          echo "sbom_file=${sbom_file}" >> "$GITHUB_OUTPUT"
+
+          # Derive digest via raw-manifest hash (same method as bake-attest so
+          # subject digest matches the published amd64 artifact).
+          raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+          if [[ -z "$raw_manifest" ]]; then
+            echo "::warning::Cannot inspect ${image_ref} — skipping attestation for postgres:${MATRIX_TAG}"
+            echo "has_digest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
+
+          {
+            echo "digest=${digest}"
+            echo "published_digest=${digest}"
+            echo "has_digest=true"
+          } >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Upload SBOM artifact (postgres)
+        if: steps.fresh.outputs.built == 'true' && steps.postgres-sbom.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: sbom-postgres-${{ matrix.build.tag }}
+          path: ${{ steps.postgres-sbom.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Attest SBOM (postgres)
+        if: steps.fresh.outputs.built == 'true' && steps.postgres-sbom.outputs.has_digest == 'true'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/postgres
+          subject-digest: ${{ steps.postgres-sbom.outputs.published_digest }}
+          sbom-path: ${{ steps.postgres-sbom.outputs.sbom_file }}
         continue-on-error: true  # Attestation is advisory — never gates
 
   # Advance the coverage checkpoint tag on every master push run that completes
@@ -3237,16 +3509,18 @@ jobs:
 
   cache-lineage:
     name: Cache build lineage
-    needs: [build-and-push, create-manifest, bake-build-amd64, bake-build-arm64, bake-merge, bake-trivy]
+    needs: [build-and-push, create-manifest, bake-build-amd64, bake-build-arm64, bake-merge, bake-trivy, postgres-trivy, postgres-attest]
     # Run on partial failure: successful builds still have lineage to cache.
-    # bake-trivy is advisory and skipped on PR / when no bake containers detected —
-    # tolerate all outcomes (success/failure/skipped) so lineage is not blocked.
+    # Post-build scan/attest jobs are advisory and skipped on PR / when no matching
+    # containers are detected — tolerate all outcomes so lineage is not blocked.
     if: |
       always() &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'failure' || needs.build-and-push.result == 'skipped') &&
       (needs.create-manifest.result == 'success' || needs.create-manifest.result == 'skipped' || needs.create-manifest.result == 'failure') &&
       (needs.bake-merge.result == 'success' || needs.bake-merge.result == 'failure' || needs.bake-merge.result == 'skipped') &&
       (needs.bake-trivy.result == 'success' || needs.bake-trivy.result == 'failure' || needs.bake-trivy.result == 'skipped') &&
+      (needs.postgres-trivy.result == 'success' || needs.postgres-trivy.result == 'failure' || needs.postgres-trivy.result == 'skipped') &&
+      (needs.postgres-attest.result == 'success' || needs.postgres-attest.result == 'failure' || needs.postgres-attest.result == 'skipped') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
