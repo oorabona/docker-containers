@@ -203,6 +203,39 @@ GH_SHIM
 # D2-test-1: cache_hit_no_refetch — the Observable Success proof
 # ---------------------------------------------------------------------------
 
+@test "content-digest extract: valid Docker-Content-Digest header returns hex" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    local hex
+    hex="$(printf 'a%.0s' {1..64})"
+
+    run _ghcr_extract_content_digest_hex "Docker-Content-Digest: sha256:${hex}"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$hex" ]
+}
+
+@test "content-digest extract: absent header returns 1 and empty output" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    run _ghcr_extract_content_digest_hex $'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+@test "content-digest extract: multi-header input returns digest hex" {
+    source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
+    source "$REPO_ROOT/helpers/registry-utils.sh"
+
+    local hex
+    hex="$(printf 'b%.0s' {1..64})"
+
+    run _ghcr_extract_content_digest_hex $'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nDocker-Content-Digest: sha256:'"$hex"$'\r\nX-Other: value\r\n'
+    [ "$status" -eq 0 ]
+    [ "$output" = "$hex" ]
+}
+
 @test "per-arch manifest served from cache on 2nd call (no re-fetch)" {
     source "$REPO_ROOT/helpers/logging.sh" 2>/dev/null || true
     source "$REPO_ROOT/helpers/registry-utils.sh"

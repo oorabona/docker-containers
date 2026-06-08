@@ -1261,9 +1261,12 @@ jobs:
     # for ordering (run after sync attempts), but outcome does not matter.
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Serialize concurrent cron + workflow_dispatch runs (never cancel mid-run)
     concurrency:
-      group: digest-drift-detect
+      # Repeated manual dispatches supersede the pending detect (idempotent re-probe of
+      # current registry state); cancel-in-progress stays false so a scoped manual run
+      # near the daily cron cannot cancel the full scheduled scan. Group is namespaced
+      # to the workflow since GHA concurrency groups are otherwise repo-wide.
+      group: ${{ github.workflow }}-digest-drift-detect
       cancel-in-progress: false
     permissions:
       contents: read
@@ -1461,8 +1464,8 @@ jobs:
     # Per-container concurrency lane: each matrix entry gets its own group so
     # GitHub's 1-running-1-pending limit does not cancel pending drift PRs for
     # other containers when multiple containers drift simultaneously.
-    # The broader digest-drift-detect group (on detect-digest-drift job) still
-    # serialises the detect phase across concurrent workflow runs.
+    # The broader workflow-namespaced detect group still serialises the detect
+    # phase across concurrent workflow runs.
     concurrency:
       group: digest-drift-${{ matrix.container }}
       cancel-in-progress: false
@@ -1756,8 +1759,8 @@ jobs:
     # Per-container concurrency lane: each matrix entry gets its own group so
     # GitHub's 1-running-1-pending limit does not cancel pending drift PRs for
     # other containers when multiple containers drift simultaneously.
-    # The broader digest-drift-detect group (on detect-digest-drift job) still
-    # serialises the detect phase across concurrent workflow runs.
+    # The broader workflow-namespaced detect group still serialises the detect
+    # phase across concurrent workflow runs.
     concurrency:
       group: digest-drift-${{ matrix.container }}
       cancel-in-progress: false
