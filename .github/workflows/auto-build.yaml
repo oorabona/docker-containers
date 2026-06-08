@@ -74,6 +74,7 @@ on:
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
       - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
+      - '.github/actions/retry-run/**'          # Reusable retry wrapper (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
@@ -101,6 +102,7 @@ on:
       - 'make'                                  # Top-level build orchestrator
       - '.github/actions/build-container/**'    # Composite action used by build matrix
       - '.github/actions/preflight-buildkit/**' # Preflight action (shared build infra)
+      - '.github/actions/retry-run/**'          # Reusable retry wrapper (shared build infra)
       - '!docs/**'                              # Jekyll site + ADRs (no build impact)
       - '!examples/**'                          # Docker Compose usage examples
       - '!tests/**'                             # Test suite (has its own CI)
