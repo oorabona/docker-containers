@@ -2155,7 +2155,7 @@ jobs:
 
       - name: Scan for vulnerabilities (Trivy)
         id: trivy-scan
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           # Scan the pushed per-arch intermediate ref (pushed by bake-build-<arch>)
           image-ref: 'ghcr.io/${{ github.repository_owner }}/${{ matrix.build.container }}:${{ matrix.build.tag }}-${{ matrix.arch }}'
@@ -2304,7 +2304,7 @@ jobs:
       - name: Scan for vulnerabilities (Trivy)
         id: trivy-scan
         if: steps.fresh.outputs.built == 'true'
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'ghcr.io/${{ github.repository_owner }}/postgres:${{ matrix.build.tag }}-${{ matrix.arch }}'
           format: 'sarif'
