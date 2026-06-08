@@ -1572,7 +1572,7 @@ jobs:
 
       - name: Restore runner agent cache (amd64)
         if: steps.resolve-gh-version.outputs.gh_version != ''
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             github-runner/runner.tar.gz
@@ -1943,7 +1943,7 @@ jobs:
 
       - name: Restore runner agent cache (arm64)
         if: steps.resolve-gh-version.outputs.gh_version != ''
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             github-runner/runner.tar.gz
