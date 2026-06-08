@@ -34,6 +34,25 @@ is_expected_uncached() {
     # shellcheck disable=SC2053
     [[ "$img" == $pattern ]] && return 0
   done
+  # Project-internal self-reference: ${REMOTE_CR}/<name>:<tag> where REMOTE_CR is not
+  # declared in build_args.  Only single-segment paths that correspond to an ACTUAL
+  # project container (a top-level directory with a config.yaml) are exempt.
+  # This guards against bare Docker Hub official image names (ubuntu, mysql, redis…)
+  # that happen to be single-segment: if a Dockerfile uses ${REMOTE_CR}/ubuntu without
+  # a base_image_cache entry and ubuntu/ has no config.yaml in this repo, it must
+  # surface as a GAP, not be silently suppressed.
+  # Multi-segment paths (library/ubuntu, hashicorp/terraform) are upstream Docker Hub
+  # mirrors that MUST have a base_image_cache entry; they are never exempt here.
+  if [[ "$img" == "<unresolved:REMOTE_CR>/"* ]]; then
+    local path_part="${img#<unresolved:REMOTE_CR>/}"
+    # Strip tag (everything from first ':' onward)
+    local name_part="${path_part%%:*}"
+    # Allow only if single-segment AND the name is a known project container
+    # (i.e. a top-level repo directory that owns a config.yaml — our own GHCR output).
+    if [[ "$name_part" != */* ]] && [[ -f "$ROOT_DIR/$name_part/config.yaml" ]]; then
+      return 0
+    fi
+  fi
   return 1
 }
 
