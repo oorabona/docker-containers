@@ -85,6 +85,9 @@ outputs:
   matrix_builds:
     description: 'JSON array of builds routed to the flat matrix engine (all non-bake containers)'
     value: ${{ steps.split-build-engine.outputs.matrix_builds }}
+  postgres_matrix_builds:
+    description: 'JSON array of postgres builds routed to the flat matrix engine'
+    value: ${{ steps.split-build-engine.outputs.postgres_matrix_builds }}
   expand_retained_map:
     description: |
       JSON object mapping container name to boolean. true = expand all retained
@@ -689,10 +692,12 @@ runs:
 
         bake_builds=$(echo "$partitioned" | jq -c '.bake')
         matrix_builds=$(echo "$partitioned" | jq -c '.matrix')
+        postgres_matrix_builds=$(echo "$matrix_builds" | jq -c '[.[] | select(.container == "postgres")]')
 
         bake_count=$(echo "$bake_builds" | jq 'length')
         matrix_count=$(echo "$matrix_builds" | jq 'length')
 
         echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
         echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
+        echo "postgres_matrix_builds=$postgres_matrix_builds" >> "$GITHUB_OUTPUT"
         echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count (scope_active=${scope_active} force_matrix=${force_matrix} event=${EVENT_NAME})"
