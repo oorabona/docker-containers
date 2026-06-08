@@ -81,11 +81,11 @@ _scoped_tag() {
 }
 
 
-# Override build_ext_image from extension-utils.sh to inject --build-arg REMOTE_CR.
-# This ensures the trusted CI registry root reaches extension builder stages.
-# When BUILD_PLATFORM is set (CI per-arch leg), uses `docker buildx build --platform`
-# to build for that single architecture; without BUILD_PLATFORM, falls back to
-# plain `docker build` (host platform, local usage).
+# Override build_ext_image from extension-utils.sh for the CI buildx per-arch
+# path: explicit --platform builds, PR-scoped cache refs, separate compile/push
+# handling, and rc=2 for push failures. It also injects REMOTE_CR into extension
+# builder stages. Do not delete this override merely by upstreaming REMOTE_CR;
+# extension-utils.sh would need the whole buildx/cache/push path first.
 build_ext_image() {
     local ext_name="$1"
     local ext_version="$2"

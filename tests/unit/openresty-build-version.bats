@@ -11,11 +11,12 @@
 # We extract UPSTREAM_VERSION from that line for assertions.
 #
 # Mutation each test catches:
-#   TC1: removing the VERSION branch → version.sh called, returns STUB-UPSTREAM-VAL ≠ "1.29.2.4"
+#   TC1: removing the VERSION branch → version.sh called, returns 9.8.7 ≠ "1.29.2.4"
 #   TC2: removing suffix strip → UPSTREAM_VERSION would equal "1.29.2.5-alpine" ≠ "1.29.2.5"
 #   TC3: removing the else branch → version.sh never called, UPSTREAM_VERSION empty or wrong
 #   TC4: removing the -z guard → script exits 0 and emits "(source: )" instead of error exit 1
 #   TC5: suffix strip using sed/grep instead of %-alpine → "1.29.2.4" (no suffix) would break
+#   TC6-TC8: removing dotted-numeric validation → invalid upstream versions pass
 
 bats_require_minimum_version 1.5.0
 
@@ -35,8 +36,8 @@ setup() {
     cp "$build_script" "$TEST_TEMP_DIR/build"
     chmod +x "$TEST_TEMP_DIR/build"
 
-    # Default stub: version.sh echoes a sentinel when called with --upstream.
-    _write_version_stub "STUB-UPSTREAM-VAL"
+    # Default stub: version.sh echoes a valid dotted numeric version when called with --upstream.
+    _write_version_stub "9.8.7"
 
     # Stub yq: the build script checks for yq but does not use it; stub satisfies
     # the `command -v yq` guard without installing the real binary.
@@ -127,13 +128,12 @@ _extract_resty_version() {
 
 @test "TC3: VERSION unset falls back to version.sh --upstream" {
     unset VERSION
-    _write_version_stub "STUB-UPSTREAM-VAL"
     _run_build
 
     [ "$status" -eq 0 ]
     local resty
     resty=$(_extract_resty_version)
-    [ "$resty" = "STUB-UPSTREAM-VAL" ]
+    [ "$resty" = "9.8.7" ]
 }
 
 # =============================================================================
@@ -160,4 +160,41 @@ _extract_resty_version() {
     local resty
     resty=$(_extract_resty_version)
     [ "$resty" = "1.29.2.4" ]
+}
+
+# =============================================================================
+# TC6: VERSION="alpine-alpine" -> RESTY_VERSION="alpine" -> invalid
+# =============================================================================
+
+@test "TC6: VERSION=alpine-alpine rejects non-numeric stripped version" {
+    export VERSION="alpine-alpine"
+    _run_build
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"UPSTREAM_VERSION='alpine' is not a valid dotted numeric version"* ]]
+}
+
+# =============================================================================
+# TC7: VERSION="1.29.2.5-alpine-beta" -> invalid
+# =============================================================================
+
+@test "TC7: VERSION=1.29.2.5-alpine-beta rejects prerelease suffix" {
+    export VERSION="1.29.2.5-alpine-beta"
+    _run_build
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"is not a valid dotted numeric version"* ]]
+}
+
+# =============================================================================
+# TC8: VERSION unset and version.sh --upstream returns garbage -> invalid
+# =============================================================================
+
+@test "TC8: VERSION unset rejects invalid version.sh --upstream output" {
+    unset VERSION
+    _write_version_stub "alpine"
+    _run_build
+
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"UPSTREAM_VERSION='alpine' is not a valid dotted numeric version"* ]]
 }
