@@ -1172,7 +1172,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload build lineage
+        id: upload_build_lineage
         if: steps.build.outcome == 'success' && matrix.arch == 'amd64'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
@@ -1181,8 +1183,21 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+      - name: Upload build lineage (retry on transient failure)
+        if: always() && steps.upload_build_lineage.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-lineage-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: .build-lineage/${{ matrix.build.container }}-${{ matrix.build.tag }}.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
       - name: Upload Trivy scan history
+        id: upload_trivy_scan_history
         if: steps.build.outcome == 'success' && matrix.build.os != 'windows'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
@@ -1190,6 +1205,17 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 1
+
+      - name: Upload Trivy scan history (retry on transient failure)
+        if: always() && steps.upload_trivy_scan_history.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: trivy-scan-history-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}
+          path: .trivy-scan-history/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
       # SBOM generation (amd64 only — packages are identical across arches)
       - name: Install syft
