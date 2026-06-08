@@ -14,6 +14,82 @@ source "$PROJECT_ROOT/helpers/retry.sh"
 # Source build utilities for platform detection
 source "$SCRIPT_DIR/build-container.sh"
 
+# Count distinct linux/* platforms from "docker buildx imagetools inspect" output.
+# Shared by both _guard_local_single_arch_push and _ghcr_source_is_single_arch.
+# Prints the count; returns 0 on success, 1 if inspect failed (tag absent /
+# registry unreachable).
+_count_linux_platforms() {
+    local ref="$1"
+
+    local inspect_out
+    inspect_out=$($DOCKER buildx imagetools inspect "$ref" 2>&1) || return 1
+
+    printf '%s\n' "$inspect_out" \
+        | grep -oE 'linux/(amd64|arm64|arm/v[0-9]+|386|s390x|ppc64le|riscv64)' \
+        | sort -u \
+        | wc -l
+}
+
+# Returns 0 (true) if the ref is confirmed multi-arch (>1 linux/* platforms).
+# Returns 1 (false) for single-arch, absent, or any probe failure.
+# Used to decide whether a skopeo --all copy is safe to skip the target guard:
+# only a positively-confirmed multi-arch GHCR source is safe to mirror without
+# guarding the target (it faithfully reproduces multi-arch on the destination).
+# Any uncertainty — including probe failure — falls through to the target guard.
+_ghcr_source_is_multiarch() {
+    local ref="$1"
+
+    local count
+    count=$(_count_linux_platforms "$ref") || return 1
+
+    [[ "$count" -gt 1 ]]
+}
+
+# Guard against a local single-arch bare-tag push clobbering a published
+# multi-arch OCI image index.  Only fires when ALL of these are true:
+#   - Running outside CI (GITHUB_ACTIONS unset or not "true")
+#   - Single-arch local build (platform_suffix is empty, no QEMU)
+#   - ALLOW_MULTIARCH_CLOBBER is NOT set to 1 or true
+# Probes the target ref with "docker buildx imagetools inspect".
+# Fail-open: if the ref is absent or the registry is unreachable the push is
+# allowed.  Only a positively-confirmed multi-platform manifest blocks.
+# Returns: 0 = safe to push, 1 = blocked (clobber detected)
+_guard_local_single_arch_push() {
+    local ref="$1"
+
+    # No-op in CI
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        return 0
+    fi
+
+    # Override: operator explicitly allows the clobber
+    if [[ "${ALLOW_MULTIARCH_CLOBBER:-0}" == "1" || "${ALLOW_MULTIARCH_CLOBBER:-}" == "true" ]]; then
+        log_warning "ALLOW_MULTIARCH_CLOBBER override active — skipping multi-arch clobber guard for $ref"
+        return 0
+    fi
+
+    # Count distinct non-unknown linux/* platform entries reported by inspect.
+    local platform_count
+    platform_count=$(_count_linux_platforms "$ref") || {
+        # inspect failed — tag absent or registry unreachable; fail-open
+        return 0
+    }
+
+    if [[ "$platform_count" -gt 1 ]]; then
+        log_error "REFUSED: $ref is a multi-platform manifest ($platform_count platforms)."
+        log_error "A local single-arch push would overwrite the multi-arch OCI index"
+        log_error "and break consumers on the other architecture(s)."
+        log_error "Escape hatches:"
+        log_error "  (a) Let CI publish the canonical tag via GitHub Actions."
+        log_error "  (b) Push to a namespace you own: GITHUB_REPOSITORY_OWNER=<you> ./make push ..."
+        log_error "  (c) Override intentionally:   ALLOW_MULTIARCH_CLOBBER=1 ./make push ..."
+        return 1
+    fi
+
+    # Single-arch or empty manifest — no clobber risk
+    return 0
+}
+
 # Get platform configuration - sets global variables
 # After calling: PLATFORM_CONFIG_PLATFORMS, PLATFORM_CONFIG_SUFFIX, PLATFORM_CONFIG_EFFECTIVE_TAG
 get_platform_config() {
@@ -102,6 +178,18 @@ push_ghcr() {
     log_success "Build args: $build_args"
     log_success "Cache: $cache_image"
 
+    # Guard: refuse if a local single-arch push would clobber a multi-arch tag.
+    # Fires only when ALL of:
+    #   - no arch suffix (bare-tag path)
+    #   - single-arch build (not the QEMU multi-platform linux/amd64,linux/arm64 path)
+    # Probes every tag that will be pushed (effective_tag and, when wanted=latest, :latest).
+    if [[ -z "$platform_suffix" && "$platforms" == "linux/amd64" ]]; then
+        _guard_local_single_arch_push "$ghcr_image:$effective_tag" || return 1
+        if [[ "$wanted" == "latest" ]]; then
+            _guard_local_single_arch_push "$ghcr_image:latest" || return 1
+        fi
+    fi
+
     # Build and push with retry (includes cache update)
     retry_with_backoff 3 5 $DOCKER buildx build \
         --platform "$platforms" \
@@ -153,6 +241,19 @@ push_dockerhub() {
     if command -v skopeo >/dev/null 2>&1; then
         log_info "Using skopeo copy: GHCR → Docker Hub (no rebuild)"
 
+        # Source-aware clobber guard for the skopeo path:
+        # skopeo copy --all mirrors whatever the GHCR source contains.  When
+        # the GHCR source is single-arch (or when the source probe fails for
+        # any reason) and the Docker Hub target is currently multi-arch, --all
+        # would overwrite the multi-arch index with a single-arch image.
+        # Apply the target guard unless the GHCR source is positively confirmed
+        # to be multi-arch (the only case where --all is a safe faithful mirror).
+        # Fail-closed on probe failure: uncertainty about the source defaults
+        # to guarding the target.
+        if ! _ghcr_source_is_multiarch "$ghcr_image:$effective_tag"; then
+            _guard_local_single_arch_push "$dockerhub_image:$effective_tag" || return 1
+        fi
+
         # Copy the tagged image
         if retry_with_backoff 5 10 $SKOPEO copy \
             --all \
@@ -163,6 +264,10 @@ push_dockerhub() {
 
             # Also copy as :latest if requested
             if [[ "$wanted" == "latest" ]]; then
+                # Guard the :latest target unless the GHCR source is confirmed multi-arch
+                if ! _ghcr_source_is_multiarch "$ghcr_image:$effective_tag"; then
+                    _guard_local_single_arch_push "$dockerhub_image:latest" || return 1
+                fi
                 $SKOPEO copy --all \
                     "docker://$ghcr_image:$effective_tag" \
                     "docker://$dockerhub_image:latest" 2>/dev/null || \
@@ -197,6 +302,16 @@ push_dockerhub() {
 
     log_success "Image: $dockerhub_image:$effective_tag"
     log_success "Platform: $platforms"
+
+    # Guard: a local single-arch buildx fallback must not overwrite a published
+    # multi-arch Docker Hub tag (mirrors the GHCR guard in push_ghcr). Fires only
+    # on the bare-tag single-arch local path; no-op in CI and the QEMU multi-arch path.
+    if [[ -z "$platform_suffix" && "$platforms" == "linux/amd64" ]]; then
+        _guard_local_single_arch_push "$dockerhub_image:$effective_tag" || return 1
+        if [[ "$wanted" == "latest" ]]; then
+            _guard_local_single_arch_push "$dockerhub_image:latest" || return 1
+        fi
+    fi
 
     retry_with_backoff 5 10 $DOCKER buildx build \
         --platform "$platforms" \
