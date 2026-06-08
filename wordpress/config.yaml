@@ -2,10 +2,6 @@
 # Base image and third-party dependency versions
 
 base_image: "${REMOTE_CR}/php:${PHP_TAG}"
-base_image_cache:
-  - source: /php          # chained-on-own marker: sync upstream PHP into library/php cache,
-                          # but probe ghcr.io/<owner>/php (our customized published container)
-    tags: ["latest"]
 build_args:
   PHP_TAG: "latest"
   WPCLI_VERSION: "2.12.0"

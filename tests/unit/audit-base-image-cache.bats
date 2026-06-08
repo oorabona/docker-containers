@@ -22,6 +22,9 @@
 #     ABA-06  bare source: debian matches FROM ${BASE_IMAGE} resolved to debian → CACHED
 #   is_expected_uncached
 #     ABA-07  ghcr.io/oorabona/postgres:17-alpine → matches self-ref pattern
+#     ABA-13  <unresolved:REMOTE_CR>/php:latest (single-seg own container) → expected-uncached
+#     ABA-13b <unresolved:REMOTE_CR>/library/ubuntu (multi-seg DockerHub mirror) → GAP (NOT exempt)
+#     ABA-13c <unresolved:OTHER_REG>/mysql:8 → GAP (only REMOTE_CR single-seg is exempt)
 #   Full audit run (real repo — integration smoke)
 #     SMOKE-01  postgres has no GAP in full audit run
 
@@ -226,6 +229,51 @@ build_args:
     # resolve_image_ref emits "<unresolved:REMOTE_CR>/php:<unresolved:VERSION>"
     run is_cached "<unresolved:REMOTE_CR>/php:<unresolved:VERSION>" "mywp2/config.yaml"
     [ "$status" -eq 0 ]
+}
+
+# ABA-13: ${REMOTE_CR}/<own-container>:<tag> without REMOTE_CR in build_args — single-segment
+# path is exempt ONLY when the name is a known project container (top-level dir with config.yaml).
+# Regression lock for #666: removing wordpress base_image_cache must not create a spurious gap.
+# Mutation this test catches: exempting a single-segment REMOTE_CR ref without verifying the
+# name is an actual project container would hide real cache gaps for Docker Hub official images.
+@test "ABA-13: <unresolved:REMOTE_CR>/php:latest (project container with config.yaml) is expected-uncached" {
+    # php must exist as a project container in ROOT_DIR for the exemption to fire.
+    mkdir -p "$TEST_DIR/php"
+    touch "$TEST_DIR/php/config.yaml"
+    run is_expected_uncached "<unresolved:REMOTE_CR>/php:latest"
+    [ "$status" -eq 0 ]
+}
+
+# ABA-13b: ${REMOTE_CR}/library/ubuntu (Docker Hub mirror, multi-segment) must NOT be exempt —
+# if base_image_cache is missing it must surface as a GAP, not be silently suppressed.
+@test "ABA-13b: <unresolved:REMOTE_CR>/library/ubuntu (multi-segment) is NOT expected-uncached" {
+    run is_expected_uncached "<unresolved:REMOTE_CR>/library/ubuntu:latest"
+    [ "$status" -ne 0 ]
+}
+
+# ABA-13c: other unresolved registry vars remain gaps regardless of path
+@test "ABA-13c: <unresolved:OTHER_REG>/mysql:8 is NOT expected-uncached" {
+    run is_expected_uncached "<unresolved:OTHER_REG>/mysql:8"
+    [ "$status" -ne 0 ]
+}
+
+# ABA-13d: ${REMOTE_CR}/ubuntu:latest — single-segment but NOT a project container (no ubuntu/
+# config.yaml in repo) — must NOT be exempt; codex-flagged regression: the prior broad
+# single-segment exemption silently suppressed this legitimate cache gap.
+# Mutation this test catches: exempting a single-segment name without checking config.yaml
+# would hide a real cache gap (ubuntu is a Docker Hub official image, not our output).
+@test "ABA-13d: <unresolved:REMOTE_CR>/ubuntu:latest (no ubuntu/config.yaml) is NOT expected-uncached" {
+    # Ensure ubuntu/ has no config.yaml (cleanup any stray fixture from other tests)
+    rm -rf "$TEST_DIR/ubuntu"
+    run is_expected_uncached "<unresolved:REMOTE_CR>/ubuntu:latest"
+    [ "$status" -ne 0 ]
+}
+
+# ABA-13e: ${REMOTE_CR}/mysql:8 — single-segment, not a project container → GAP, not exempt.
+@test "ABA-13e: <unresolved:REMOTE_CR>/mysql:8 (no mysql/config.yaml) is NOT expected-uncached" {
+    rm -rf "$TEST_DIR/mysql"
+    run is_expected_uncached "<unresolved:REMOTE_CR>/mysql:8"
+    [ "$status" -ne 0 ]
 }
 
 # ─── is_expected_uncached ─────────────────────────────────────────────────────
