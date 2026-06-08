@@ -67,6 +67,9 @@ outputs:
   count:
     description: 'Number of containers to build'
     value: ${{ steps.find-containers.outputs.count }}
+  changed_files_file:
+    description: 'Path to the temporary changed-files list consumed by compute-expand-map'
+    value: ${{ steps.find-containers.outputs.changed_files_file }}
   versions:
     description: 'JSON object mapping container names to their versions'
     value: ${{ steps.compute-versions.outputs.versions }}

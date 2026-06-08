@@ -526,7 +526,10 @@ sync_base_images_to_ghcr() {
     fi
 
     local count
-    count=$(echo "$images_json" | jq 'length')
+    count=$(printf '%s' "$images_json" | jq -e 'if type=="array" then length else error("images_json is not an array") end') || {
+        log_error "sync_base_images_to_ghcr: images_json is not a JSON array"
+        return 1
+    }
 
     if [[ "$count" -eq 0 ]]; then
         echo "ℹ️ No base images to sync"

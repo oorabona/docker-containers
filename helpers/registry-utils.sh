@@ -184,6 +184,22 @@ _ghcr_keyfile() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# _ghcr_extract_content_digest_hex <header_text>
+# Extracts the 64-char sha256 hex from a Docker-Content-Digest line, or empty.
+# Returns 0 on hit, 1 if no parseable digest.
+_ghcr_extract_content_digest_hex() {
+    local hdrs="$1"
+    local line hex=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
+            hex="${BASH_REMATCH[1]}"
+            break
+        fi
+    done <<< "$hdrs"
+    [[ -n "$hex" ]] || return 1
+    printf '%s\n' "$hex"
+}
+
 # Verify that a cached file's sha256 matches an expected digest hex.
 # Usage: _ghcr_verify_content_digest <file> <expected_sha256_hex>
 # Returns 0 on match, 1 on mismatch or invalid input.
@@ -328,21 +344,10 @@ _ghcr_fetch_index() {
     # PID-reuse conflict, OOM mid-write, manual tampering).  A mismatch evicts
     # both cache files and falls through to the network fetch branch below.
     if [[ -s "$body_file" && -f "$hdrs_file" ]]; then
-        local cached_expected hdr_line
-        hdr_line=$(grep -i '^Docker-Content-Digest:' "$hdrs_file" 2>/dev/null || true)
-        cached_expected=""
-        if [[ -n "$hdr_line" ]]; then
-            # Strict single-token extraction: reject headers with multiple sha256:
-            # tokens (e.g. sha256:<good>sha256:<bad>) which greedy patterns would
-            # silently parse to the last token, bypassing digest verification.
-            local _hdr_norm
-            _hdr_norm=$(printf '%s' "$hdr_line" | tr -d '\r\n')
-            if [[ "$_hdr_norm" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
-                cached_expected="${BASH_REMATCH[1]}"
-            fi
-            # If pattern doesn't match exactly (malformed, multiple tokens, wrong
-            # length), cached_expected stays "" → length guard below skips
-            # verification → falls through to trust-cache path (same as no header).
+        local cached_expected hdrs_text
+        hdrs_text=$(cat "$hdrs_file" 2>/dev/null || true)
+        if ! cached_expected=$(_ghcr_extract_content_digest_hex "$hdrs_text"); then
+            cached_expected=""
         fi
         # Only trust the cache when we have a full 64-char lowercase hex digest to
         # verify against.  A missing, malformed, or short digest (e.g. the default
@@ -443,9 +448,11 @@ _ghcr_fetch_index() {
         # On mismatch: warn, clean up temps, and return 1.
         # The caller already has data in _GHCR_IDX_BODY/_GHCR_IDX_HDRS but a
         # digest mismatch signals a corrupt or tampered response — do not use it.
-        local idx_digest_header idx_digest_hex
-        idx_digest_header=$(printf '%s' "$hdrs" | grep -iE '^docker-content-digest:' 2>/dev/null | head -1 | tr -d '\r' || true)
-        if [[ -z "$idx_digest_header" ]]; then
+        local idx_digest_hex
+        if ! idx_digest_hex=$(_ghcr_extract_content_digest_hex "$hdrs"); then
+            idx_digest_hex=""
+        fi
+        if [[ -z "$idx_digest_hex" ]] && ! printf '%s' "$hdrs" | grep -qiE '^docker-content-digest:'; then
             # Fresh response carries no Docker-Content-Digest header.  GHCR is
             # documented to always send this header on manifest responses; its
             # absence signals a stripped/tampered response or a non-compliant
@@ -457,14 +464,6 @@ _ghcr_fetch_index() {
             _GHCR_IDX_BODY=""
             _GHCR_IDX_HDRS=""
             return 1
-        fi
-        # Strict single-token extraction: anchored regex rejects headers with
-        # multiple sha256: tokens (e.g. sha256:<good>sha256:<bad>) that greedy
-        # ##*sha256: would silently parse to the last token.
-        if [[ "$idx_digest_header" =~ ^[Dd]ocker-[Cc]ontent-[Dd]igest:[[:space:]]*sha256:([a-f0-9]{64})[[:space:]]*$ ]]; then
-            idx_digest_hex="${BASH_REMATCH[1]}"
-        else
-            idx_digest_hex=""
         fi
         if [[ "${#idx_digest_hex}" -ne 64 ]]; then
             # Header present but malformed (wrong length, non-hex, multiple tokens).
@@ -786,10 +785,12 @@ ghcr_get_multi_arch_digests() {
     fi
 
     # Index digest from the Docker-Content-Digest header.
-    # || true guards against grep returning 1 (no match) under set -euo pipefail.
-    local index_digest
-    index_digest=$(printf '%s' "$headers" | grep -iE '^docker-content-digest:' 2>/dev/null | awk '{print $2}' | tr -d '\r' | head -1 || true)
-    [[ -z "$index_digest" ]] && index_digest="null"
+    local index_digest index_digest_hex
+    if index_digest_hex=$(_ghcr_extract_content_digest_hex "$headers"); then
+        index_digest="sha256:${index_digest_hex}"
+    else
+        index_digest="null"
+    fi
 
     # Per-arch manifest digests from the body (.manifests[].{platform.architecture, digest}).
     # jq returns empty output (not "null") when the key is absent, so we test with [[ -z ]].

@@ -736,6 +736,12 @@ EOF
     [[ "$output" == *"No base images to sync"* ]]
 }
 
+@test "sync_base_images_to_ghcr: non-array images_json returns error" {
+    run sync_base_images_to_ghcr '{"source":"library/alpine","tag":"3.18"}'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"sync_base_images_to_ghcr: images_json is not a JSON array"* ]]
+}
+
 @test "sync_base_images_to_ghcr: single library/X image uses explicit library/ prefix" {
     # Mock docker to capture the source_ref argument
     docker() {

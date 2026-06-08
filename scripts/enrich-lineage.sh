@@ -47,23 +47,24 @@ done
 # Source helpers
 # ---------------------------------------------------------------------------
 # shellcheck source=../helpers/logging.sh
+# shellcheck disable=SC1091
 source "${PROJECT_ROOT}/helpers/logging.sh"
 # shellcheck source=../helpers/registry-utils.sh
+# shellcheck disable=SC1091
 source "${PROJECT_ROOT}/helpers/registry-utils.sh"
 # shellcheck source=../helpers/attestation-utils.sh
+# shellcheck disable=SC1091
 source "${PROJECT_ROOT}/helpers/attestation-utils.sh"
+# shellcheck source=../helpers/lineage-utils.sh
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 
 # ---------------------------------------------------------------------------
 # Constants: files to skip (not container lineage files)
 # ---------------------------------------------------------------------------
 # Pattern matches: *.sbom.json  *.changelog.json  *.history.json  ext-*.json
 _is_skippable_file() {
-    local f="$1"
-    case "$f" in
-        *.sbom.json|*.changelog.json|*.history.json) return 0 ;;
-        ext-*.json) return 0 ;;
-        *) return 1 ;;
-    esac
+    is_lineage_sidecar "$1"
 }
 
 # ---------------------------------------------------------------------------
