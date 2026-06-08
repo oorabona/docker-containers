@@ -19,6 +19,8 @@ else
     log_warning() { echo "WARN: $*" >&2; }
 fi
 
+source "$_SBOM_UTILS_DIR/retry.sh"
+
 # Install syft if not present
 # Downloads the latest release from Anchore's install script
 install_syft() {
@@ -58,7 +60,15 @@ generate_sbom() {
     mkdir -p "$output_dir"
 
     log_info "Generating SBOM for $image_ref..."
-    if syft "registry:${image_ref}" -o "spdx-json=${output_file}" --quiet 2>/dev/null; then
+    local syft_args=("registry:${image_ref}" -o "spdx-json=${output_file}" --quiet)
+    local syft_cmd=(syft)
+    if syft --timeout 10m --help &>/dev/null; then
+        syft_args=(--timeout 10m "${syft_args[@]}")
+    elif command -v timeout &>/dev/null; then
+        syft_cmd=(timeout 10m syft)
+    fi
+
+    if retry_with_backoff 2 30 "${syft_cmd[@]}" "${syft_args[@]}"; then
         log_success "SBOM generated: $output_file ($(wc -c < "$output_file") bytes)"
     else
         log_error "Failed to generate SBOM for $image_ref"

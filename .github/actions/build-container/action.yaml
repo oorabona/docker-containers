@@ -626,12 +626,35 @@ runs:
 
     - name: Upload SARIF to GitHub Security
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' }}
+      id: sarif-upload
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
       with:
         sarif_file: 'trivy-results.sarif'
         category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
         wait-for-processing: false
-      # No continue-on-error: SARIF upload to Security tab must succeed for visibility
+
+    - name: Wait before SARIF upload retry
+      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' }}
+      shell: bash
+      run: sleep 15
+
+    - name: Upload SARIF to GitHub Security (retry on transient failure)
+      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' }}
+      id: sarif-upload-retry
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
+      with:
+        sarif_file: 'trivy-results.sarif'
+        category: 'container-${{ inputs.container }}-${{ steps.check-build.outputs.current_tag }}-${{ inputs.platform }}'
+        wait-for-processing: false
+
+    - name: Fail if SARIF upload failed after retries
+      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && steps.trivy-scan.outcome != 'skipped' && steps.sarif-upload.outcome == 'failure' && steps.sarif-upload-retry.outcome != 'success' }}
+      shell: bash
+      run: |
+        echo "::error::SARIF upload to GitHub Security failed after retries"
+        exit 1
 
     - name: Check scan result
       if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' && github.event_name != 'pull_request' }}
