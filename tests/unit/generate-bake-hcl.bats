@@ -1264,3 +1264,78 @@ YAML
     [ "$total_refs" -gt 1 ]
     [ "$unique_refs" -eq "$total_refs" ]
 }
+
+# ---------------------------------------------------------------------------
+# B4 scope filters: generator-only filtering for bake/cells emission
+# ---------------------------------------------------------------------------
+
+@test "GBH-53: B4 — --scope-versions keeps only matching terraform retained-version cells" {
+    local unscoped_count
+    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null \
+        | jq 'length')
+    [ "$unscoped_count" -gt 0 ]
+
+    _run_generator --cells --all-retained --scope-versions 1.15.4 terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_tags
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_tags=$(echo "$output" | jq '[.[] | select(.tag | startswith("1.15.4-alpine") | not)] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$scoped_count" -lt "$unscoped_count" ]
+    [ "$bad_tags" -eq 0 ]
+}
+
+@test "GBH-54: B4 — --scope-flavors keeps only matching terraform flavor cells" {
+    _run_generator --cells --scope-flavors aws terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_flavors
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_flavors=$(echo "$output" | jq '[.[] | select(.flavor != "aws")] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_flavors" -eq 0 ]
+}
+
+@test "GBH-55: B4 — --scope filters terraform cells by variant substring" {
+    _run_generator --cells --scope azure terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_variants
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_variants=$(echo "$output" | jq '[.[] | select(.variant | contains("azure") | not)] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_variants" -eq 0 ]
+}
+
+@test "GBH-56: B4 — no scope flags preserve the latest-only terraform cell count" {
+    local expected_count
+    expected_count=$(bash -c "
+        source '${HELPERS_DIR}/variant-utils.sh'
+        list_build_matrix './terraform' '' 'false' 2>/dev/null \
+            | jq '[.[] | select((.os // \"linux\") != \"windows\")] | length'
+    ")
+    [ "$expected_count" -gt 0 ]
+
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+
+    local actual_count
+    actual_count=$(echo "$output" | jq 'length')
+    [ "$actual_count" -eq "$expected_count" ]
+}
+
+@test "GBH-57: B4 — over-narrow --scope-versions emits an empty bake target set" {
+    _run_generator --scope-versions 999 terraform
+    [ "$status" -eq 0 ]
+
+    local target_count default_count
+    target_count=$(echo "$output" | jq '.target | length')
+    default_count=$(echo "$output" | jq '.group.default.targets | length')
+
+    [ "$target_count" -eq 0 ]
+    [ "$default_count" -eq 0 ]
+}
