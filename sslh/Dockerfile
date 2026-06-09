@@ -110,3 +110,5 @@ ENTRYPOINT ["/usr/local/bin/sslh-ev"]
 
 # Show version by default
 CMD ["-V"]
+
+# B3 validation: temporary no-op touch to route sslh through bake build-only on this PR (reverted before merge).
