@@ -2209,6 +2209,70 @@ jobs:
 
       # Trivy scanning is handled by the dedicated bake-trivy job (FIX 5).
 
+  bake-test:
+    name: Run bats tests (bake) ${{ matrix.build.container }}:${{ matrix.build.tag }}
+    needs: [detect-containers, bake-build-amd64]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.dry_run != true &&
+      inputs.run_tests == true &&
+      fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
+      toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      needs.bake-build-amd64.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: { contents: read, packages: read }
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.detect-containers.outputs.bake_builds || '[]') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Log in to GHCR (pull intermediates)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run bats tests (bake)
+        if: matrix.build.build_flavor == 'base' || matrix.build.build_flavor == ''
+        # Advisory, matching the legacy flat-matrix bats step: a test result is
+        # surfaced in this job's log/annotations but does NOT fail the run.
+        # bake-merge does not depend on bake-test, so a hard failure here would
+        # only mark the run failed AFTER publish already happened — incoherent.
+        # (If tests should gate release, that's a separate change: make publish
+        # depend on bake-test, applied to both bake + matrix paths.)
+        # STEP-level timeout (not just job-level): a step timeout is absorbed by
+        # continue-on-error, whereas a JOB timeout would cancel+fail the run. The
+        # job-level timeout below is only a backstop. Mirrors the legacy step.
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="${{ matrix.build.container }}"
+          if [[ ! -f "${container}/tests/test-runner-linux.bats" ]]; then
+            echo "::notice::No Linux bats for ${container}; skipping"
+            exit 0
+          fi
+          # Install pinned bats (mirror build-and-push)
+          if ! command -v bats &>/dev/null; then
+            BATS_VERSION=1.11.1
+            curl -sL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" -o /tmp/bats.tar.gz
+            tar -xzf /tmp/bats.tar.gz -C /tmp
+            sudo "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
+          fi
+          # Point integration tests (openresty) at this run's published per-arch ref.
+          # No eager pull: openresty's test `docker run`s it (auto-pull on demand);
+          # github-runner's tests are pure unit tests that never touch the image, so
+          # eagerly pulling its multi-GB image here would only waste time + risk hangs.
+          export OPENRESTY_IMAGE="ghcr.io/${{ github.repository_owner }}/${container}:${{ matrix.build.tag }}-amd64"
+          bats "${container}/tests/test-runner-linux.bats"
+
   # ---------------------------------------------------------------------------
   # FIX 5 — Dedicated Trivy scan job for bake-managed containers.
   #
