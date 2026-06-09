@@ -717,6 +717,12 @@ _contexts_for_cell() {
 _enumerate_cells_init() {
     local -a requested_containers=("$@")
 
+    local -A _requested_set=()
+    local _rc
+    for _rc in "${requested_containers[@]}"; do
+        _requested_set["$_rc"]=1
+    done
+
     # Validate each requested container against ./make list
     local all_containers_newline
     if ! all_containers_newline="$(_list_all_containers)"; then
@@ -768,7 +774,8 @@ _enumerate_cells_init() {
         _EC_all_matrix_json[$c]="$matrix"
 
         local first_entry
-        if [[ -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || -n "${_BAKE_SCOPE:-}" ]]; then
+        if [[ -n "${_requested_set[$c]+set}" && \
+              ( -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || -n "${_BAKE_SCOPE:-}" ) ]]; then
             first_entry=""
             local _first_ncells
             _first_ncells=$(jq 'length' <<< "$matrix")
@@ -1082,6 +1089,12 @@ _on_cell_bake() {
 _build_bake_json() {
     local -a requested_containers=("$@")
 
+    local -A _requested_set=()
+    local _rc
+    for _rc in "${requested_containers[@]}"; do
+        _requested_set["$_rc"]=1
+    done
+
     # Shared init: validate, expand closure, fetch matrices
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
@@ -1138,7 +1151,8 @@ _build_bake_json() {
             if [[ "$cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+            if [[ -n "${_requested_set[$c]+set}" ]] && \
+                    ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -1149,6 +1163,32 @@ _build_bake_json() {
 
         container_target_lists[$c]="$container_targets"
     done
+
+    local dangling_context_targets
+    dangling_context_targets=$(jq -r '
+        . as $targets
+        | [
+            to_entries[]
+            | (.value.contexts // {})
+            | to_entries[]
+            | .value
+            | select(type == "string" and startswith("target:"))
+            | sub("^target:"; "") as $target_id
+            | select(($targets | has($target_id)) | not)
+            | $target_id
+        ]
+        | unique
+        | .[]
+    ' <<< "$targets_json")
+    if [[ -n "$dangling_context_targets" ]]; then
+        local dangling_target
+        while IFS= read -r dangling_target; do
+            [[ -n "$dangling_target" ]] || continue
+            printf '::error::bake: dangling internal base context target:%s — refusing to emit an incomplete bake graph\n' \
+                "$dangling_target" >&2
+        done <<< "$dangling_context_targets"
+        return 1
+    fi
 
     # -----------------------------------------------------------------------
     # Group construction

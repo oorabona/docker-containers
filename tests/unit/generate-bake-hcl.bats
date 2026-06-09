@@ -1339,3 +1339,67 @@ YAML
     [ "$target_count" -eq 0 ]
     [ "$default_count" -eq 0 ]
 }
+
+@test "GBH-58: B4 gate — scoped github-runner graph keeps debian internal base target and contexts" {
+    _run_generator --scope-flavors debian-trixie github-runner
+    [ "$status" -eq 0 ]
+
+    local has_base
+    has_base=$(echo "$output" | jq -r '.target | has("debian_trixie")')
+    [ "$has_base" = "true" ]
+
+    local ctx_count
+    ctx_count=$(echo "$output" | jq '[
+        .target
+        | to_entries[]
+        | select((.key | startswith("github_runner_")) and (.key | contains("_debian_trixie_")))
+        | (.value.contexts // {})
+        | to_entries[]
+        | select(.value == "target:debian_trixie")
+    ] | length')
+    [ "$ctx_count" -gt 0 ]
+
+    local dangling_count
+    dangling_count=$(echo "$output" | jq '
+        .target as $targets
+        | [
+            .target
+            | to_entries[]
+            | (.value.contexts // {})
+            | to_entries[]
+            | .value
+            | select(type == "string" and startswith("target:"))
+            | sub("^target:"; "") as $target_id
+            | select(($targets | has($target_id)) | not)
+            | $target_id
+        ]
+        | length')
+    [ "$dangling_count" -eq 0 ]
+}
+
+@test "GBH-59: B4 gate — scoped github-runner --cells emits only requested scoped cells, not debian deps" {
+    _run_generator --cells --scope-flavors debian-trixie github-runner
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_containers bad_flavors debian_cells
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_containers=$(echo "$output" | jq '[.[] | select(.container != "github-runner")] | length')
+    bad_flavors=$(echo "$output" | jq '[.[] | select(.flavor != "debian-trixie")] | length')
+    debian_cells=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_containers" -eq 0 ]
+    [ "$bad_flavors" -eq 0 ]
+    [ "$debian_cells" -eq 0 ]
+}
+
+@test "GBH-60: B4 gate — unscoped github-runner graph target keys stay on the pre-fix default set" {
+    _run_generator github-runner
+    [ "$status" -eq 0 ]
+
+    local actual_keys
+    actual_keys=$(echo "$output" | jq -cS '.target | keys')
+    local expected_keys='["debian_trixie","github_runner_2_335_1_debian_trixie_base","github_runner_2_335_1_debian_trixie_dev","github_runner_2_335_1_ubuntu_2404_base","github_runner_2_335_1_ubuntu_2404_dev"]'
+
+    [ "$actual_keys" = "$expected_keys" ]
+}
