@@ -119,7 +119,7 @@ extensions:
     shared_preload: false
     priority: 1
   postgis:
-    version: "3.6.3"
+    version: "3.6.4"
     description: "Geospatial database extension (PostGIS)"
     repo: "postgis/postgis"
     build_deps:
