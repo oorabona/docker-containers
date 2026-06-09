@@ -7,6 +7,9 @@
 #   scripts/generate-bake-hcl.sh                  # whole fleet
 #   scripts/generate-bake-hcl.sh wordpress         # wordpress + dep closure
 #   scripts/generate-bake-hcl.sh github-runner     # github-runner + debian dep
+#   scripts/generate-bake-hcl.sh --cells --scope-versions 1.31 openresty
+#   scripts/generate-bake-hcl.sh --scope-flavors aws terraform
+#   scripts/generate-bake-hcl.sh --scope alpine web-shell
 #
 # Output is a JSON bake file (same schema as HCL; docker-buildx bake -f -)
 # written to stdout.  It is a generated artifact — do NOT commit it.
@@ -100,6 +103,22 @@ _assert_arg_key() {
     fi
 }
 
+# Print CLI help.
+_usage() {
+    cat <<'EOF'
+Usage:
+  scripts/generate-bake-hcl.sh [options] [container ...]
+
+Options:
+  --cells                 Emit compact cell JSON instead of a bake document.
+  --all-retained          Include retained versions where allowed.
+  --scope-versions <csv>  Keep versions matching a comma-separated version list.
+  --scope-flavors <csv>   Keep cells whose flavor is in a comma-separated list.
+  --scope <str>           Keep cells whose variant/os/build_flavor/flavor contains this string.
+  -h, --help              Show this help.
+EOF
+}
+
 # Enumerate all containers from `./make list`, strictly filtered to container-
 # name characters to drop any diagnostic noise.
 _list_all_containers() {
@@ -151,6 +170,65 @@ _expand_closure() {
     done
 
     printf '%s\n' "${closure[@]:-}"
+}
+
+# _cell_passes_scope <version> <flavor> <variant> <os> <build_flavor>
+# Returns 0 if the cell passes the active bake scope filters.
+# Empty scope variables mean pass-all.
+_cell_passes_scope() {
+    local version="$1"
+    local flavor="$2"
+    local variant="$3"
+    local cell_os="$4"
+    local build_flavor="$5"
+
+    if [[ -n "${_BAKE_SCOPE_VERSIONS:-}" ]]; then
+        local version_match="false"
+        local versions_csv="${_BAKE_SCOPE_VERSIONS},"
+        local scope_version
+        while [[ "$versions_csv" == *,* ]]; do
+            scope_version="${versions_csv%%,*}"
+            versions_csv="${versions_csv#*,}"
+
+            # Keep byte-identical semantics with
+            # .github/actions/detect-containers/action.yaml scope_versions jq:
+            # V == S OR V startswith(S + ".") OR V startswith(S + "-").
+            if [[ "$version" == "$scope_version" || \
+                  "$version" == "$scope_version."* || \
+                  "$version" == "$scope_version-"* ]]; then
+                version_match="true"
+                break
+            fi
+        done
+        [[ "$version_match" == "true" ]] || return 1
+    fi
+
+    if [[ -n "${_BAKE_SCOPE_FLAVORS:-}" ]]; then
+        local flavor_match="false"
+        local flavors_csv="${_BAKE_SCOPE_FLAVORS},"
+        local scope_flavor
+        while [[ "$flavors_csv" == *,* ]]; do
+            scope_flavor="${flavors_csv%%,*}"
+            flavors_csv="${flavors_csv#*,}"
+            if [[ "$flavor" == "$scope_flavor" ]]; then
+                flavor_match="true"
+                break
+            fi
+        done
+        [[ "$flavor_match" == "true" ]] || return 1
+    fi
+
+    if [[ -n "${_BAKE_SCOPE:-}" ]]; then
+        local scope="${_BAKE_SCOPE}"
+        if [[ "$variant" != *"$scope"* && \
+              "$cell_os" != *"$scope"* && \
+              "$build_flavor" != *"$scope"* && \
+              "$flavor" != *"$scope"* ]]; then
+            return 1
+        fi
+    fi
+
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -639,6 +717,12 @@ _contexts_for_cell() {
 _enumerate_cells_init() {
     local -a requested_containers=("$@")
 
+    local -A _requested_set=()
+    local _rc
+    for _rc in "${requested_containers[@]}"; do
+        _requested_set["$_rc"]=1
+    done
+
     # Validate each requested container against ./make list
     local all_containers_newline
     if ! all_containers_newline="$(_list_all_containers)"; then
@@ -690,8 +774,36 @@ _enumerate_cells_init() {
         _EC_all_matrix_json[$c]="$matrix"
 
         local first_entry
-        first_entry=$(jq -c 'first(.[] | select(.is_latest_version == true)) // .[0]' \
-            <<< "$matrix" 2>/dev/null) || first_entry=""
+        if [[ -n "${_requested_set[$c]+set}" && \
+              ( -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || -n "${_BAKE_SCOPE:-}" ) ]]; then
+            first_entry=""
+            local _first_ncells
+            _first_ncells=$(jq 'length' <<< "$matrix")
+            local _first_i
+            for (( _first_i=0; _first_i<_first_ncells; _first_i++ )); do
+                local _first_cell
+                _first_cell=$(jq -c ".[$_first_i]" <<< "$matrix")
+
+                local _first_version _first_flavor _first_variant _first_os _first_build_flavor
+                _first_version=$(jq -r '.version' <<< "$_first_cell")
+                _first_flavor=$(jq -r '.flavor // ""' <<< "$_first_cell")
+                _first_variant=$(jq -r '.variant // ""' <<< "$_first_cell")
+                _first_os=$(jq -r '.os // "linux"' <<< "$_first_cell")
+                _first_build_flavor=$(jq -r '.build_flavor // ""' <<< "$_first_cell")
+
+                if [[ "$_first_os" == "windows" ]]; then
+                    continue
+                fi
+                if _cell_passes_scope "$_first_version" "$_first_flavor" "$_first_variant" \
+                        "$_first_os" "$_first_build_flavor"; then
+                    first_entry="$_first_cell"
+                    break
+                fi
+            done
+        else
+            first_entry=$(jq -c 'first(.[] | select(.is_latest_version == true)) // .[0]' \
+                <<< "$matrix" 2>/dev/null) || first_entry=""
+        fi
         if [[ -n "$first_entry" && "$first_entry" != "null" ]]; then
             local fver fvariant ftag
             fver=$(jq -r '.version'           <<< "$first_entry")
@@ -765,6 +877,9 @@ _enumerate_cells() {
 
             # Skip Windows cells — bake/linux-native only.
             if [[ "$cell_os" == "windows" ]]; then
+                continue
+            fi
+            if ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -974,6 +1089,12 @@ _on_cell_bake() {
 _build_bake_json() {
     local -a requested_containers=("$@")
 
+    local -A _requested_set=()
+    local _rc
+    for _rc in "${requested_containers[@]}"; do
+        _requested_set["$_rc"]=1
+    done
+
     # Shared init: validate, expand closure, fetch matrices
     declare -a _EC_closure_containers=()
     declare -A _EC_all_matrix_json=()
@@ -1030,6 +1151,10 @@ _build_bake_json() {
             if [[ "$cell_os" == "windows" ]]; then
                 continue
             fi
+            if [[ -n "${_requested_set[$c]+set}" ]] && \
+                    ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+                continue
+            fi
 
             _on_cell_bake "$c" "$cell" "$dep_target_ids_json" "$config_args" \
                 "$version" "$variant" "$tag" "$flavor" "$build_flavor" \
@@ -1038,6 +1163,32 @@ _build_bake_json() {
 
         container_target_lists[$c]="$container_targets"
     done
+
+    local dangling_context_targets
+    dangling_context_targets=$(jq -r '
+        . as $targets
+        | [
+            to_entries[]
+            | (.value.contexts // {})
+            | to_entries[]
+            | .value
+            | select(type == "string" and startswith("target:"))
+            | sub("^target:"; "") as $target_id
+            | select(($targets | has($target_id)) | not)
+            | $target_id
+        ]
+        | unique
+        | .[]
+    ' <<< "$targets_json")
+    if [[ -n "$dangling_context_targets" ]]; then
+        local dangling_target
+        while IFS= read -r dangling_target; do
+            [[ -n "$dangling_target" ]] || continue
+            printf '::error::bake: dangling internal base context target:%s — refusing to emit an incomplete bake graph\n' \
+                "$dangling_target" >&2
+        done <<< "$dangling_context_targets"
+        return 1
+    fi
 
     # -----------------------------------------------------------------------
     # Group construction
@@ -1173,10 +1324,11 @@ _emit_cells_json() {
             local cell
             cell=$(jq -c ".[$i]" <<< "$matrix")
 
-            local version tag flavor variant cell_os is_default_raw is_latest_raw
+            local version tag flavor build_flavor variant cell_os is_default_raw is_latest_raw
             version=$(jq -r '.version'          <<< "$cell")
             tag=$(jq -r '.tag'              <<< "$cell")
             flavor=$(jq -r '.flavor // ""'  <<< "$cell")
+            build_flavor=$(jq -r '.build_flavor // ""' <<< "$cell")
             # FIX F: variant is the unique per-cell name for rolling-alias routing
             variant=$(jq -r '.variant // ""' <<< "$cell")
             cell_os=$(jq -r '.os // "linux"' <<< "$cell")
@@ -1186,6 +1338,9 @@ _emit_cells_json() {
 
             # Skip Windows cells — same filter as bake mode
             if [[ "$cell_os" == "windows" ]]; then
+                continue
+            fi
+            if ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -1227,18 +1382,58 @@ main() {
     local -a requested=()
     local mode="bake"      # default mode
     local include_all_retained="false"   # F4: default = latest-only
+    local scope_versions=""
+    local scope_flavors=""
+    local scope=""
 
     # Parse flags (order-independent):
-    #   --cells        → cells plan mode
-    #   --all-retained → pass include_all_retained=true to list_build_matrix
+    #   --cells                → cells plan mode
+    #   --all-retained         → pass include_all_retained=true to list_build_matrix
+    #   --scope-versions <csv> → scope version filter
+    #   --scope-flavors <csv>  → scope flavor filter
+    #   --scope <str>          → free-form variant/os/build_flavor/flavor filter
     local -a args=()
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
             --cells)        mode="cells" ;;
             --all-retained) include_all_retained="true" ;;
-            *)              args+=("$arg") ;;
+            --scope-versions)
+                if [[ $# -lt 2 ]]; then
+                    printf 'ERROR: --scope-versions requires a value\n' >&2
+                    _usage >&2
+                    exit 2
+                fi
+                scope_versions="$2"
+                shift
+                ;;
+            --scope-versions=*) scope_versions="${1#*=}" ;;
+            --scope-flavors)
+                if [[ $# -lt 2 ]]; then
+                    printf 'ERROR: --scope-flavors requires a value\n' >&2
+                    _usage >&2
+                    exit 2
+                fi
+                scope_flavors="$2"
+                shift
+                ;;
+            --scope-flavors=*) scope_flavors="${1#*=}" ;;
+            --scope)
+                if [[ $# -lt 2 ]]; then
+                    printf 'ERROR: --scope requires a value\n' >&2
+                    _usage >&2
+                    exit 2
+                fi
+                scope="$2"
+                shift
+                ;;
+            --scope=*)      scope="${1#*=}" ;;
+            -h|--help)
+                _usage
+                exit 0
+                ;;
+            *)              args+=("$1") ;;
         esac
+        shift
     done
 
     if [[ ${#args[@]} -gt 0 ]]; then
@@ -1284,6 +1479,9 @@ main() {
 
     # Export include_all_retained so _enumerate_cells_init can read it.
     export _BAKE_INCLUDE_ALL_RETAINED="$include_all_retained"
+    export _BAKE_SCOPE_VERSIONS="$scope_versions"
+    export _BAKE_SCOPE_FLAVORS="$scope_flavors"
+    export _BAKE_SCOPE="$scope"
 
     if [[ "$mode" == "cells" ]]; then
         _emit_cells_json "${requested[@]}"

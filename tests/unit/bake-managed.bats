@@ -528,11 +528,12 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-15: scope_active="true" — ALL cells (including bake-managed latest linux)
-#         route to .matrix; .bake is empty.  Verifies the scope-override fix
-#         that prevents unscanned images when scope_flavors/scope_versions is set.
+# BM-15: scoped runs are filtered before partitioning and no longer force the
+#         matrix.  With force_matrix=false, scoped bake-managed latest Linux
+#         cells route to .bake, while retained/windows/non-bake cells stay in
+#         .matrix through the normal partition gates.
 # ---------------------------------------------------------------------------
-@test "BM-15: scope_active=true routes all cells to matrix (bake disabled)" {
+@test "BM-15: scoped subset allows bake-managed Linux cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -546,15 +547,28 @@ ubuntu-1.0.0"
       {"container":"debian","os":"linux","tag":"bookworm-12.0.0"}
     ]')
 
-    result=$(partition_builds "$fixture" "true")
+    # The split-build-engine step keeps force_matrix=false for scoped runs.
+    result=$(partition_builds "$fixture" "false")
 
-    # bake must be empty
+    # bake contains the scoped latest Linux bake-managed cells.
     bake_count=$(echo "$result" | jq '.bake | length')
-    [[ "$bake_count" -eq 0 ]]
+    [[ "$bake_count" -eq 2 ]]
 
-    # matrix must contain all 5 cells
+    # matrix keeps retained, Windows, and non-bake cells.
     matrix_count=$(echo "$result" | jq '.matrix | length')
-    [[ "$matrix_count" -eq 5 ]]
+    [[ "$matrix_count" -eq 3 ]]
+
+    gh_linux_bake_count=$(echo "$result" | jq '[.bake[] | select(.container == "github-runner" and .os == "linux" and .is_latest_version == true)] | length')
+    [[ "$gh_linux_bake_count" -eq 1 ]]
+
+    ws_bake_count=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell")] | length')
+    [[ "$ws_bake_count" -eq 1 ]]
+
+    gh_retained_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .os == "linux" and .is_latest_version == false)] | length')
+    [[ "$gh_retained_matrix_count" -eq 1 ]]
+
+    gh_windows_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .os == "windows")] | length')
+    [[ "$gh_windows_matrix_count" -eq 1 ]]
 
     # Lossless
     total=$(echo "$result" | jq '.bake + .matrix | length')
@@ -607,10 +621,10 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-16: scope_active default (absent) applies per-cell logic — not scope_active.
-#         Confirms that omitting the second arg is equivalent to scope_active=false.
+# BM-16: force_matrix default (absent) applies per-cell logic.
+#         Confirms that omitting the second arg is equivalent to force_matrix=false.
 # ---------------------------------------------------------------------------
-@test "BM-16: scope_active absent is equivalent to false (per-cell routing)" {
+@test "BM-16: force_matrix absent is equivalent to false (per-cell routing)" {
     # shellcheck disable=SC1090
     source "$BM"
 

@@ -1264,3 +1264,142 @@ YAML
     [ "$total_refs" -gt 1 ]
     [ "$unique_refs" -eq "$total_refs" ]
 }
+
+# ---------------------------------------------------------------------------
+# B4 scope filters: generator-only filtering for bake/cells emission
+# ---------------------------------------------------------------------------
+
+@test "GBH-53: B4 — --scope-versions keeps only matching terraform retained-version cells" {
+    local unscoped_count
+    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null \
+        | jq 'length')
+    [ "$unscoped_count" -gt 0 ]
+
+    _run_generator --cells --all-retained --scope-versions 1.15.4 terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_tags
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_tags=$(echo "$output" | jq '[.[] | select(.tag | startswith("1.15.4-alpine") | not)] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$scoped_count" -lt "$unscoped_count" ]
+    [ "$bad_tags" -eq 0 ]
+}
+
+@test "GBH-54: B4 — --scope-flavors keeps only matching terraform flavor cells" {
+    _run_generator --cells --scope-flavors aws terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_flavors
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_flavors=$(echo "$output" | jq '[.[] | select(.flavor != "aws")] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_flavors" -eq 0 ]
+}
+
+@test "GBH-55: B4 — --scope filters terraform cells by variant substring" {
+    _run_generator --cells --scope azure terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_variants
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_variants=$(echo "$output" | jq '[.[] | select(.variant | contains("azure") | not)] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_variants" -eq 0 ]
+}
+
+@test "GBH-56: B4 — no scope flags preserve the latest-only terraform cell count" {
+    local expected_count
+    expected_count=$(bash -c "
+        source '${HELPERS_DIR}/variant-utils.sh'
+        list_build_matrix './terraform' '' 'false' 2>/dev/null \
+            | jq '[.[] | select((.os // \"linux\") != \"windows\")] | length'
+    ")
+    [ "$expected_count" -gt 0 ]
+
+    _run_generator --cells terraform
+    [ "$status" -eq 0 ]
+
+    local actual_count
+    actual_count=$(echo "$output" | jq 'length')
+    [ "$actual_count" -eq "$expected_count" ]
+}
+
+@test "GBH-57: B4 — over-narrow --scope-versions emits an empty bake target set" {
+    _run_generator --scope-versions 999 terraform
+    [ "$status" -eq 0 ]
+
+    local target_count default_count
+    target_count=$(echo "$output" | jq '.target | length')
+    default_count=$(echo "$output" | jq '.group.default.targets | length')
+
+    [ "$target_count" -eq 0 ]
+    [ "$default_count" -eq 0 ]
+}
+
+@test "GBH-58: B4 gate — scoped github-runner graph keeps debian internal base target and contexts" {
+    _run_generator --scope-flavors debian-trixie github-runner
+    [ "$status" -eq 0 ]
+
+    local has_base
+    has_base=$(echo "$output" | jq -r '.target | has("debian_trixie")')
+    [ "$has_base" = "true" ]
+
+    local ctx_count
+    ctx_count=$(echo "$output" | jq '[
+        .target
+        | to_entries[]
+        | select((.key | startswith("github_runner_")) and (.key | contains("_debian_trixie_")))
+        | (.value.contexts // {})
+        | to_entries[]
+        | select(.value == "target:debian_trixie")
+    ] | length')
+    [ "$ctx_count" -gt 0 ]
+
+    local dangling_count
+    dangling_count=$(echo "$output" | jq '
+        .target as $targets
+        | [
+            .target
+            | to_entries[]
+            | (.value.contexts // {})
+            | to_entries[]
+            | .value
+            | select(type == "string" and startswith("target:"))
+            | sub("^target:"; "") as $target_id
+            | select(($targets | has($target_id)) | not)
+            | $target_id
+        ]
+        | length')
+    [ "$dangling_count" -eq 0 ]
+}
+
+@test "GBH-59: B4 gate — scoped github-runner --cells emits only requested scoped cells, not debian deps" {
+    _run_generator --cells --scope-flavors debian-trixie github-runner
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_containers bad_flavors debian_cells
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_containers=$(echo "$output" | jq '[.[] | select(.container != "github-runner")] | length')
+    bad_flavors=$(echo "$output" | jq '[.[] | select(.flavor != "debian-trixie")] | length')
+    debian_cells=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_containers" -eq 0 ]
+    [ "$bad_flavors" -eq 0 ]
+    [ "$debian_cells" -eq 0 ]
+}
+
+@test "GBH-60: B4 gate — unscoped github-runner graph target keys stay on the pre-fix default set" {
+    _run_generator github-runner
+    [ "$status" -eq 0 ]
+
+    local actual_keys
+    actual_keys=$(echo "$output" | jq -cS '.target | keys')
+    local expected_keys='["debian_trixie","github_runner_2_335_1_debian_trixie_base","github_runner_2_335_1_debian_trixie_dev","github_runner_2_335_1_ubuntu_2404_base","github_runner_2_335_1_ubuntu_2404_dev"]'
+
+    [ "$actual_keys" = "$expected_keys" ]
+}

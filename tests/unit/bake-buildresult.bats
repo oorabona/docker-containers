@@ -369,3 +369,38 @@ _retained_cell_count() {
     # Must match the full retained count.
     [ "$file_count" -eq "$retained_count" ]
 }
+
+@test "BBR-15: scoped build-result enumeration ignores scoped-out terraform flavors" {
+    local scoped_cells
+    scoped_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
+        --cells --scope-flavors aws terraform)
+
+    local scoped_count
+    scoped_count=$(echo "$scoped_cells" | jq 'length')
+    [ "$scoped_count" -eq 1 ]
+
+    local meta_file="$TEST_OUT_DIR/meta_scoped.json"
+    echo "$scoped_cells" | jq -c '
+        reduce .[] as $cell (
+            {};
+            . + {($cell.target_id): {"containerimage.digest":("sha256:" + $cell.target_id), "image.name":"ghcr.io/test"}}
+        )
+    ' > "$meta_file"
+
+    run env SCOPE_FLAVORS=aws bash "$BBR" "$meta_file" amd64 "$TEST_OUT_DIR/out" terraform
+    [ "$status" -eq 0 ]
+
+    local file_count fail_count
+    file_count=$(find "$TEST_OUT_DIR/out" -name 'build-result-*.json' | wc -l)
+    fail_count=$(find "$TEST_OUT_DIR/out" -name '*.json' \
+        -exec jq -r '.result' {} \; | grep -c '^failure$' || true)
+
+    [ "$file_count" -eq "$scoped_count" ]
+    [ "$fail_count" -eq 0 ]
+
+    local expected_tags actual_tags
+    expected_tags=$(echo "$scoped_cells" | jq -r '.[].tag' | sort)
+    actual_tags=$(find "$TEST_OUT_DIR/out" -name '*.json' \
+        -exec jq -r '.tag' {} \; | sort)
+    [ "$actual_tags" = "$expected_tags" ]
+}

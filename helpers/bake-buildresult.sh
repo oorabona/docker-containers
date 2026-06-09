@@ -66,8 +66,14 @@ emit_bake_build_results() {
     local generator="${_BBR_SCRIPT_DIR}/../scripts/generate-bake-hcl.sh"
     local -a cells_args=("--cells")
     if [[ "${BAKE_GENERATE_ALL_RETAINED:-}" == "true" ]]; then
-        cells_args=("--cells" "--all-retained")
+        cells_args+=("--all-retained")
     fi
+    # Match the scoped bake build set. If this helper enumerates unscoped
+    # cells, scoped-out targets that are absent from metadata become false
+    # failures in coverage lineage.
+    [[ -n "${SCOPE_VERSIONS:-}" ]] && cells_args+=("--scope-versions" "${SCOPE_VERSIONS}")
+    [[ -n "${SCOPE_FLAVORS:-}" ]] && cells_args+=("--scope-flavors" "${SCOPE_FLAVORS}")
+    [[ -n "${BUILD_SCOPE:-}" ]] && cells_args+=("--scope" "${BUILD_SCOPE}")
     if ! cells_json=$("$generator" "${cells_args[@]}" "${containers[@]}"); then
         printf '::error::bake-buildresult: --cells failed for %s\n' \
             "${containers[*]}" >&2

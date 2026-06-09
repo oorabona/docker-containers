@@ -211,8 +211,10 @@ env:
   SKIP_EXISTING_BUILDS: ${{ (inputs.rebuild == 'all' || inputs.rebuild == 'force' || inputs.force_rebuild == true) && 'false' || 'true' }}
   # Pass --no-cache to docker build when rebuild=force
   DOCKER_NO_CACHE: ${{ inputs.rebuild == 'force' && 'true' || 'false' }}
+  SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions || '' }}
+  SCOPE_FLAVORS: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors || '' }}
   # Variant scope filter (free-text, matched against variant/os/build_flavor fields)
-  BUILD_SCOPE: ${{ inputs.scope || '' }}
+  BUILD_SCOPE: ${{ github.event.inputs.scope || inputs.scope || '' }}
   BUILD_ALL_RETAINED: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || 'false' }}
 
 jobs:
@@ -1678,11 +1680,15 @@ jobs:
           if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
             bake_cache_export="true"
           fi
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           bake_latest_file="${RUNNER_TEMP}/bake-amd64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
           REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
-            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_latest_file"
+            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
@@ -1690,7 +1696,7 @@ jobs:
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             # Merge latest + retained HCL. On a target-key collision (a container's
             # latest target appears in both passes) the retained pass wins. Safe
             # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
@@ -1824,8 +1830,13 @@ jobs:
           source ./helpers/sbom-utils.sh
           chmod +x scripts/generate-bake-hcl.sh
 
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+
           # shellcheck disable=SC2086
-          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" ${BAKE_CONTAINERS})
           # B1-core: also SBOM the retained cells of eligible containers, else
           # bake-attest (which matrices over all bake_builds incl. retained) finds
           # no SBOM and silently skips attestation for retained images. Merge +
@@ -1833,7 +1844,7 @@ jobs:
           # the SBOM loop is per-cell independent).
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # shellcheck disable=SC2086
-            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells --all-retained ${BAKE_RETAINED_CONTAINERS})
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
           fi
           ncells=$(jq 'length' <<< "$cells_json")
@@ -2090,11 +2101,15 @@ jobs:
           if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
             bake_cache_export="true"
           fi
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           bake_latest_file="${RUNNER_TEMP}/bake-arm64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
           REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
-            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_latest_file"
+            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
@@ -2102,7 +2117,7 @@ jobs:
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             # Merge latest + retained HCL. On a target-key collision (a container's
             # latest target appears in both passes) the retained pass wins. Safe
             # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
@@ -2636,29 +2651,34 @@ jobs:
           done
           set +f
 
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+
           # Bake defaults to latest-only.  When build_all_retained is true,
           # merge retained cells only for the retained-eligible container subset.
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "::notice::manifest merge running in DRY-RUN (no canonical tags published; dry_run=${DRY_RUN})"
             # shellcheck disable=SC2086
             DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
-              ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" ${BAKE_CONTAINERS}
           else
             # BAKE_CONTAINERS is operator-set from bake_builds JSON (trusted context)
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
-              ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" ${BAKE_CONTAINERS}
           fi
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             if [[ "$DRY_RUN" == "true" ]]; then
               # shellcheck disable=SC2086
               DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             else
               # shellcheck disable=SC2086
               REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             fi
           fi
 
@@ -2674,16 +2694,20 @@ jobs:
           set -euo pipefail
           chmod +x helpers/mirror-dockerhub.sh
           source helpers/mirror-dockerhub.sh
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           # BAKE_CONTAINERS is operator-set (trusted context)
           export BAKE_GENERATE_ALL_RETAINED=false
           # shellcheck disable=SC2086
-          mirror_to_dockerhub ${BAKE_CONTAINERS}
+          mirror_to_dockerhub "${scope_args[@]}" ${BAKE_CONTAINERS}
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             export BAKE_GENERATE_ALL_RETAINED=true
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            mirror_to_dockerhub ${BAKE_RETAINED_CONTAINERS}
+            mirror_to_dockerhub "${scope_args[@]}" ${BAKE_RETAINED_CONTAINERS}
           fi
 
       - name: Emit manifest build-result artifacts (bake)
@@ -2700,6 +2724,11 @@ jobs:
 
           result="failure"
           [[ "$MERGE_OUTCOME" == "success" ]] && result="success"
+
+          scope_args=()
+          [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
+          [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
+          [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
 
           emit_manifest_results() {
             local cells_json="$1"
@@ -2724,13 +2753,13 @@ jobs:
 
           # BAKE_CONTAINERS is operator-set (trusted context)
           # shellcheck disable=SC2086
-          cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=false ./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=false ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" ${BAKE_CONTAINERS})
           emit_manifest_results "$cells_json"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             emit_manifest_results "$cells_json"
           fi
 
