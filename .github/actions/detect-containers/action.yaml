@@ -655,6 +655,7 @@ runs:
         BUILD_SCOPE: ${{ inputs.scope }}
         EVENT_NAME: ${{ github.event_name }}
         RUN_TESTS: ${{ inputs.run_tests }}
+        BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -688,7 +689,7 @@ runs:
           force_matrix="true"
         fi
 
-        partitioned=$(partition_builds "$builds_input" "$force_matrix")
+        partitioned=$(partition_builds "$builds_input" "$force_matrix" "$BUILD_ALL_RETAINED")
 
         bake_builds=$(echo "$partitioned" | jq -c '.bake')
         matrix_builds=$(echo "$partitioned" | jq -c '.matrix')

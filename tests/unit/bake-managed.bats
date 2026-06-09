@@ -32,10 +32,12 @@ setup() {
 
     # Clear any env override between tests
     unset BAKE_MANAGED_CONTAINERS || true
+    unset BAKE_RETAINED_CORE_CONTAINERS || true
 }
 
 teardown() {
     unset BAKE_MANAGED_CONTAINERS || true
+    unset BAKE_RETAINED_CORE_CONTAINERS || true
 }
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,25 @@ _fixture_os_builds() {
       {"container":"github-runner","os":"windows", "tag":"windows-2022-1.2.3","variant":"windows-2022","is_latest_version":true},
       {"container":"github-runner","tag":"linux-noos-1.2.3","variant":"ubuntu-2204","is_latest_version":true},
       {"container":"debian",       "os":"linux",   "tag":"bookworm-12.0.0",  "variant":"bookworm"}
+    ]'
+}
+
+# Fixture for retained-bake B1-core routing.  It includes latest + retained
+# cells for one eligible container, three non-eligible bake-managed containers,
+# and one non-bake-managed control.
+_fixture_retained_bake_builds() {
+    jq -cn '
+    [
+      {"container":"debian",       "os":"linux","tag":"bookworm-13.0.0",     "variant":"bookworm","is_latest_version":true},
+      {"container":"debian",       "os":"linux","tag":"bookworm-12.0.0",     "variant":"bookworm","is_latest_version":false},
+      {"container":"github-runner","os":"linux","tag":"ubuntu-2404-2.334.0","variant":"ubuntu-2404","is_latest_version":true},
+      {"container":"github-runner","os":"linux","tag":"ubuntu-2404-2.333.0","variant":"ubuntu-2404","is_latest_version":false},
+      {"container":"wordpress",    "os":"linux","tag":"latest-6.5.0",       "variant":"latest","is_latest_version":true},
+      {"container":"wordpress",    "os":"linux","tag":"latest-6.4.0",       "variant":"latest","is_latest_version":false},
+      {"container":"web-shell",    "os":"linux","tag":"alpine-2.0.0",       "variant":"alpine","is_latest_version":true},
+      {"container":"web-shell",    "os":"linux","tag":"alpine-1.0.0",       "variant":"alpine","is_latest_version":false},
+      {"container":"postgres",     "os":"linux","tag":"17-alpine",          "variant":"17-alpine","is_latest_version":true},
+      {"container":"postgres",     "os":"linux","tag":"16-alpine",          "variant":"16-alpine","is_latest_version":false}
     ]'
 }
 
@@ -606,4 +627,117 @@ ubuntu-1.0.0"
     # debian must land in .matrix
     deb_in_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "debian")] | length')
     [[ "$deb_in_matrix" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-18: _bake_retained_eligible — direct eligibility checks for B1-core.
+# ---------------------------------------------------------------------------
+@test "BM-18: _bake_retained_eligible accepts standalone eligible containers only" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    run _bake_retained_eligible "debian"
+    [[ "$status" -eq 0 ]]
+
+    run _bake_retained_eligible "github-runner"
+    [[ "$status" -eq 1 ]]
+
+    run _bake_retained_eligible "wordpress"
+    [[ "$status" -eq 1 ]]
+
+    run _bake_retained_eligible "web-shell"
+    [[ "$status" -eq 1 ]]
+
+    run _bake_retained_eligible "postgres"
+    [[ "$status" -eq 1 ]]
+
+    run _bake_retained_eligible "php"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-19: _bake_retained_eligible — missing config.yaml fails closed even when a
+#         test override places the container in both managed and rollout sets.
+# ---------------------------------------------------------------------------
+@test "BM-19: _bake_retained_eligible fails closed for missing config.yaml" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    BAKE_MANAGED_CONTAINERS="missing-retained"
+    BAKE_RETAINED_CORE_CONTAINERS="missing-retained"
+
+    run _bake_retained_eligible "missing-retained"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-20: include_retained=true — eligible retained cells route to bake; retained
+#         cells for latest-only, chained, and non-bake containers stay matrix.
+# ---------------------------------------------------------------------------
+@test "BM-20: include_retained=true routes only eligible retained cells to bake" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    fixture=$(_fixture_retained_bake_builds)
+    result=$(partition_builds "$fixture" "false" "true")
+
+    # Eligible debian latest + retained both route to bake.
+    debian_bake=$(echo "$result" | jq '[.bake[] | select(.container == "debian")] | length')
+    [[ "$debian_bake" -eq 2 ]]
+    debian_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "debian" and .is_latest_version == false)] | length')
+    [[ "$debian_retained_bake" -eq 1 ]]
+
+    # Non-eligible retained cells stay in matrix and do not vanish.
+    gr_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .is_latest_version == false)] | length')
+    [[ "$gr_retained_matrix" -eq 1 ]]
+    wp_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "wordpress" and .is_latest_version == false)] | length')
+    [[ "$wp_retained_matrix" -eq 1 ]]
+    ws_retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
+    [[ "$ws_retained_matrix" -eq 1 ]]
+
+    gr_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "github-runner" and .is_latest_version == false)] | length')
+    [[ "$gr_retained_bake" -eq 0 ]]
+    wp_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "wordpress" and .is_latest_version == false)] | length')
+    [[ "$wp_retained_bake" -eq 0 ]]
+    ws_retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
+    [[ "$ws_retained_bake" -eq 0 ]]
+
+    # Latest cells for all bake-managed containers still route to bake.
+    gr_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "github-runner" and .is_latest_version == true)] | length')
+    [[ "$gr_latest_bake" -eq 1 ]]
+    wp_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "wordpress" and .is_latest_version == true)] | length')
+    [[ "$wp_latest_bake" -eq 1 ]]
+    ws_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == true)] | length')
+    [[ "$ws_latest_bake" -eq 1 ]]
+
+    # Non-bake postgres stays matrix for both latest and retained.
+    postgres_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "postgres")] | length')
+    [[ "$postgres_matrix" -eq 2 ]]
+    postgres_bake=$(echo "$result" | jq '[.bake[] | select(.container == "postgres")] | length')
+    [[ "$postgres_bake" -eq 0 ]]
+
+    total=$(echo "$result" | jq '.bake + .matrix | length')
+    [[ "$total" -eq 10 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-21: include_retained=false/absent preserves current retained routing.
+# ---------------------------------------------------------------------------
+@test "BM-21: include_retained false or absent leaves all retained cells on matrix" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    fixture=$(_fixture_retained_bake_builds)
+
+    result_false=$(partition_builds "$fixture" "false" "false")
+    retained_bake_false=$(echo "$result_false" | jq '[.bake[] | select(.is_latest_version == false)] | length')
+    [[ "$retained_bake_false" -eq 0 ]]
+    retained_matrix_false=$(echo "$result_false" | jq '[.matrix[] | select(.is_latest_version == false)] | length')
+    [[ "$retained_matrix_false" -eq 5 ]]
+
+    result_absent=$(partition_builds "$fixture")
+    retained_bake_absent=$(echo "$result_absent" | jq '[.bake[] | select(.is_latest_version == false)] | length')
+    [[ "$retained_bake_absent" -eq 0 ]]
+    retained_matrix_absent=$(echo "$result_absent" | jq '[.matrix[] | select(.is_latest_version == false)] | length')
+    [[ "$retained_matrix_absent" -eq 5 ]]
 }
