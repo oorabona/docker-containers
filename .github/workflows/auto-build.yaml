@@ -213,6 +213,7 @@ env:
   DOCKER_NO_CACHE: ${{ inputs.rebuild == 'force' && 'true' || 'false' }}
   # Variant scope filter (free-text, matched against variant/os/build_flavor fields)
   BUILD_SCOPE: ${{ inputs.scope || '' }}
+  BUILD_ALL_RETAINED: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || 'false' }}
 
 jobs:
   detect-containers:
@@ -1584,8 +1585,11 @@ jobs:
           set -euo pipefail
           # Extract unique container names from the bake_builds cell array (injection-safe via env)
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (amd64): ${containers}"
+          echo "::notice::bake retained-eligible containers (amd64): ${retained_containers:-<none>}"
 
       - name: Resolve github-runner version from bake set
         id: resolve-gh-version
@@ -1634,6 +1638,7 @@ jobs:
         id: bake-build
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           ARCH_SUFFIX: -amd64
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
@@ -1659,9 +1664,8 @@ jobs:
           # with `docker buildx bake -f <(...)` on some buildkit versions).
           # Using the real REMOTE_CR ensures base FROM refs resolve.
           #
-          # Bake is latest-only by design: retained (non-latest) cells are routed to the
-          # flat matrix by partition_builds, so they never reach this job.
-          # No --all-retained flag is passed here.
+          # Bake defaults to latest-only.  When build_all_retained is true,
+          # partition_builds admits only B1-core retained-eligible cells here.
           bake_file="${RUNNER_TEMP}/bake-amd64.json"
           # BAKE_CACHE_EXPORT gates cache-to emission in the generator:
           #   true  → real publish path (push/dispatch): emit cache-to so master builds
@@ -1674,10 +1678,39 @@ jobs:
           if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
             bake_cache_export="true"
           fi
+          bake_latest_file="${RUNNER_TEMP}/bake-amd64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
-          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" \
-            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
+            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_latest_file"
+          cp "$bake_latest_file" "$bake_file"
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            bake_retained_file="${RUNNER_TEMP}/bake-amd64-retained.json"
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
+              ./scripts/generate-bake-hcl.sh --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+            # Merge latest + retained HCL. On a target-key collision (a container's
+            # latest target appears in both passes) the retained pass wins. Safe
+            # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
+            # NO internal base dependency (_bake_retained_eligible in
+            # helpers/bake-managed.sh) → their targets carry no `contexts` key, so
+            # both definitions are byte-identical and $extra-wins is a no-op. If a
+            # chained container is ever admitted to retained-bake (B1b), this
+            # object-merge would silently drop the latest target's `contexts` —
+            # revisit the merge then (e.g. emit retained cells only).
+            jq -s '
+              .[0] as $base | .[1] as $extra |
+              ($base.group.default.targets + $extra.group.default.targets) as $default_targets |
+              $base
+              | .target = ($base.target + $extra.target)
+              | .group = ($base.group + $extra.group)
+              | .group.default.targets = (
+                  reduce $default_targets[] as $t ([]; if index($t) then . else . + [$t] end)
+                )
+            ' "$bake_latest_file" "$bake_retained_file" > "$bake_file"
+          fi
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
           no_cache_flag=""
@@ -1715,22 +1748,32 @@ jobs:
         if: always() && env.DRY_RUN != 'true'
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
           source helpers/bake-buildresult.sh
 
-          # Bake is latest-only by design; emit covers only the latest cells.
-          export BAKE_GENERATE_ALL_RETAINED=false
-
           mkdir -p .build-lineage
           # BAKE_CONTAINERS is operator-set (trusted context)
+          export BAKE_GENERATE_ALL_RETAINED=false
           # shellcheck disable=SC2086
           emit_bake_build_results \
             "${RUNNER_TEMP}/bake-metadata-amd64.json" \
             amd64 \
             .build-lineage \
             ${BAKE_CONTAINERS}
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            export BAKE_GENERATE_ALL_RETAINED=true
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            emit_bake_build_results \
+              "${RUNNER_TEMP}/bake-metadata-amd64.json" \
+              amd64 \
+              .build-lineage \
+              ${BAKE_RETAINED_CONTAINERS}
+          fi
 
       - name: Upload build-result artifacts (amd64)
         id: upload-bres-amd64
@@ -1773,6 +1816,7 @@ jobs:
         if: steps.install-syft-bake.outcome == 'success' && github.event_name != 'pull_request' && env.DRY_RUN != 'true'
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
@@ -1780,9 +1824,18 @@ jobs:
           source ./helpers/sbom-utils.sh
           chmod +x scripts/generate-bake-hcl.sh
 
-          # Bake is latest-only by design; generate cells for the latest version only.
           # shellcheck disable=SC2086
           cells_json=$(./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          # B1-core: also SBOM the retained cells of eligible containers, else
+          # bake-attest (which matrices over all bake_builds incl. retained) finds
+          # no SBOM and silently skips attestation for retained images. Merge +
+          # dedupe by version-keyed cell identity (unique_by reorders, harmless —
+          # the SBOM loop is per-cell independent).
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # shellcheck disable=SC2086
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
+          fi
           ncells=$(jq 'length' <<< "$cells_json")
           mkdir -p .build-lineage
 
@@ -1955,8 +2008,11 @@ jobs:
         run: |
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (arm64): ${containers}"
+          echo "::notice::bake retained-eligible containers (arm64): ${retained_containers:-<none>}"
 
       - name: Resolve github-runner version from bake set
         id: resolve-gh-version
@@ -2003,6 +2059,7 @@ jobs:
         id: bake-build
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           ARCH_SUFFIX: -arm64
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
@@ -2024,9 +2081,8 @@ jobs:
 
           # Using the real REMOTE_CR ensures base FROM refs resolve.
           #
-          # Bake is latest-only by design: retained (non-latest) cells are routed to the
-          # flat matrix by partition_builds, so they never reach this job.
-          # No --all-retained flag is passed here.
+          # Bake defaults to latest-only.  When build_all_retained is true,
+          # partition_builds admits only B1-core retained-eligible cells here.
           bake_file="${RUNNER_TEMP}/bake-arm64.json"
           # BAKE_CACHE_EXPORT gates cache-to emission: true only on the real publish
           # path (not IS_PR, not DRY_RUN).  See amd64 step comment for full rationale.
@@ -2034,10 +2090,39 @@ jobs:
           if [[ "$IS_PR" != "true" && "$DRY_RUN" != "true" ]]; then
             bake_cache_export="true"
           fi
+          bake_latest_file="${RUNNER_TEMP}/bake-arm64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
-          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" \
-            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_file"
+          REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
+            ./scripts/generate-bake-hcl.sh ${BAKE_CONTAINERS} > "$bake_latest_file"
+          cp "$bake_latest_file" "$bake_file"
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            bake_retained_file="${RUNNER_TEMP}/bake-arm64-retained.json"
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
+              ./scripts/generate-bake-hcl.sh --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+            # Merge latest + retained HCL. On a target-key collision (a container's
+            # latest target appears in both passes) the retained pass wins. Safe
+            # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
+            # NO internal base dependency (_bake_retained_eligible in
+            # helpers/bake-managed.sh) → their targets carry no `contexts` key, so
+            # both definitions are byte-identical and $extra-wins is a no-op. If a
+            # chained container is ever admitted to retained-bake (B1b), this
+            # object-merge would silently drop the latest target's `contexts` —
+            # revisit the merge then (e.g. emit retained cells only).
+            jq -s '
+              .[0] as $base | .[1] as $extra |
+              ($base.group.default.targets + $extra.group.default.targets) as $default_targets |
+              $base
+              | .target = ($base.target + $extra.target)
+              | .group = ($base.group + $extra.group)
+              | .group.default.targets = (
+                  reduce $default_targets[] as $t ([]; if index($t) then . else . + [$t] end)
+                )
+            ' "$bake_latest_file" "$bake_retained_file" > "$bake_file"
+          fi
 
           # FIX 3: honor DOCKER_NO_CACHE (rebuild=force) → --no-cache
           no_cache_flag=""
@@ -2073,21 +2158,31 @@ jobs:
         if: always() && env.DRY_RUN != 'true'
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
           source helpers/bake-buildresult.sh
 
-          # Bake is latest-only by design; emit covers only the latest cells.
-          export BAKE_GENERATE_ALL_RETAINED=false
-
           mkdir -p .build-lineage
+          export BAKE_GENERATE_ALL_RETAINED=false
           # shellcheck disable=SC2086
           emit_bake_build_results \
             "${RUNNER_TEMP}/bake-metadata-arm64.json" \
             arm64 \
             .build-lineage \
             ${BAKE_CONTAINERS}
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            export BAKE_GENERATE_ALL_RETAINED=true
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            emit_bake_build_results \
+              "${RUNNER_TEMP}/bake-metadata-arm64.json" \
+              arm64 \
+              .build-lineage \
+              ${BAKE_RETAINED_CONTAINERS}
+          fi
 
       - name: Upload build-result artifacts (arm64)
         id: upload-bres-arm64
@@ -2452,12 +2547,15 @@ jobs:
         run: |
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
+          echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
 
       - name: Canonical GHCR manifest merge (strict, fail-closed)
         id: bake-merge-step
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
         run: |
@@ -2474,16 +2572,30 @@ jobs:
           done
           set +f
 
-          # Bake is latest-only by design; merge only the latest cells.
-          # No --all-retained flag is passed here.
+          # Bake defaults to latest-only.  When build_all_retained is true,
+          # merge retained cells only for the retained-eligible container subset.
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "::notice::manifest merge running in DRY-RUN (no canonical tags published; dry_run=${DRY_RUN})"
             # shellcheck disable=SC2086
-            DRY_RUN=true REMOTE_CR="$REMOTE_CR" ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+            DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
+              ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
           else
             # BAKE_CONTAINERS is operator-set from bake_builds JSON (trusted context)
             # shellcheck disable=SC2086
-            REMOTE_CR="$REMOTE_CR" ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+            REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
+              ./scripts/bake-merge-manifests.sh ${BAKE_CONTAINERS}
+          fi
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+              # shellcheck disable=SC2086
+              DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
+                ./scripts/bake-merge-manifests.sh --all-retained ${BAKE_RETAINED_CONTAINERS}
+            else
+              # shellcheck disable=SC2086
+              REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
+                ./scripts/bake-merge-manifests.sh --all-retained ${BAKE_RETAINED_CONTAINERS}
+            fi
           fi
 
       - name: Best-effort DockerHub mirror (bake)
@@ -2491,22 +2603,30 @@ jobs:
         continue-on-error: true
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
         run: |
           set -euo pipefail
           chmod +x helpers/mirror-dockerhub.sh
-          # Bake is latest-only by design; mirror only the latest cells.
-          export BAKE_GENERATE_ALL_RETAINED=false
           source helpers/mirror-dockerhub.sh
           # BAKE_CONTAINERS is operator-set (trusted context)
+          export BAKE_GENERATE_ALL_RETAINED=false
           # shellcheck disable=SC2086
           mirror_to_dockerhub ${BAKE_CONTAINERS}
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            export BAKE_GENERATE_ALL_RETAINED=true
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            mirror_to_dockerhub ${BAKE_RETAINED_CONTAINERS}
+          fi
 
       - name: Emit manifest build-result artifacts (bake)
         if: always()
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
+          BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
           MERGE_OUTCOME: ${{ steps.bake-merge-step.outcome }}
         run: |
           set -euo pipefail
@@ -2517,26 +2637,38 @@ jobs:
           result="failure"
           [[ "$MERGE_OUTCOME" == "success" ]] && result="success"
 
-          # Emit one manifest build-result per cell (mirrors create-manifest job shape).
-          # Bake is latest-only by design; generate cells for the latest version only.
+          emit_manifest_results() {
+            local cells_json="$1"
+            local ncells
+            ncells=$(jq 'length' <<< "$cells_json")
+            for (( i=0; i<ncells; i++ )); do
+              cell=$(jq -c ".[$i]" <<< "$cells_json")
+              container=$(jq -r '.container'        <<< "$cell")
+              tag=$(jq -r '.tag'                    <<< "$cell")
+              variant=$(jq -r '.variant // ""'      <<< "$cell")
+              out_file=".build-lineage/build-result-manifest-${container}-${tag}.json"
+              jq -cn \
+                --arg c "$container" \
+                --arg v "$variant" \
+                --arg t "$tag" \
+                --arg a "manifest" \
+                --arg r "$result" \
+                '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
+                > "$out_file" || true
+            done
+          }
+
+          # BAKE_CONTAINERS is operator-set (trusted context)
           # shellcheck disable=SC2086
-          cells_json=$(./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
-          ncells=$(jq 'length' <<< "$cells_json")
-          for (( i=0; i<ncells; i++ )); do
-            cell=$(jq -c ".[$i]" <<< "$cells_json")
-            container=$(jq -r '.container'        <<< "$cell")
-            tag=$(jq -r '.tag'                    <<< "$cell")
-            variant=$(jq -r '.variant // ""'      <<< "$cell")
-            out_file=".build-lineage/build-result-manifest-${container}-${tag}.json"
-            jq -cn \
-              --arg c "$container" \
-              --arg v "$variant" \
-              --arg t "$tag" \
-              --arg a "manifest" \
-              --arg r "$result" \
-              '{container:$c, variant:$v, tag:$t, arch:$a, result:$r}' \
-              > "$out_file" || true
-          done
+          cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=false ./scripts/generate-bake-hcl.sh --cells ${BAKE_CONTAINERS})
+          emit_manifest_results "$cells_json"
+
+          if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
+            # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
+            # shellcheck disable=SC2086
+            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells --all-retained ${BAKE_RETAINED_CONTAINERS})
+            emit_manifest_results "$cells_json"
+          fi
 
       - name: Upload manifest build-result artifacts (bake)
         id: upload-bres-manifest-bake
