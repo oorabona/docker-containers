@@ -1,0 +1,64 @@
+name: Retry shell command with backoff
+description: |
+  Run a shell script with exponential-backoff retry and an optional per-attempt
+  timeout, sourcing the repo's helpers/retry.sh. Use this for any network-dependent
+  `run:` step (registry probe/pull/push, GHCR/API call) so a transient failure
+  retries with backoff instead of failing the job on the first blip.
+
+  Scope: this wraps a SHELL script. It cannot wrap a `uses:` action step (GitHub
+  composite actions cannot re-invoke another action) — for those (setup-buildx,
+  attest-sbom, upload-sarif) use a staged retry (attempt + conditional retry +
+  fatal gate) or the action's own retry/continue-on-error.
+
+  PREREQUISITE: the calling job has checked out the repository (helpers/retry.sh
+  must exist in the workspace).
+
+inputs:
+  run:
+    description: The shell script to execute. Retried as a single unit.
+    required: true
+  max-attempts:
+    description: Maximum number of attempts.
+    required: false
+    default: '3'
+  delay:
+    description: Initial backoff delay in seconds (doubles after each failed attempt).
+    required: false
+    default: '5'
+  timeout:
+    description: |
+      Per-attempt wall-clock timeout (coreutils `timeout` duration, e.g. `30s`, `5m`).
+      Kills a hung attempt so retry/backoff can proceed. Empty = no per-attempt timeout.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Run with backoff retry
+      shell: bash
+      env:
+        RR_RUN: ${{ inputs.run }}
+        RR_MAX: ${{ inputs.max-attempts }}
+        RR_DELAY: ${{ inputs.delay }}
+        RR_TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        set -uo pipefail
+        # Anchor retry.sh to this action's location so it resolves regardless of
+        # the caller's checkout path. .github/actions/retry-run -> repo root.
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/retry.sh"
+
+        script="$(mktemp)"
+        printf '%s\n' "$RR_RUN" > "$script"
+        trap 'rm -f "$script"' EXIT
+
+        run_once() {
+          if [[ -n "$RR_TIMEOUT" ]] && command -v timeout >/dev/null 2>&1; then
+            timeout "$RR_TIMEOUT" bash -e -o pipefail "$script"
+          else
+            bash -e -o pipefail "$script"
+          fi
+        }
+
+        retry_with_backoff "$RR_MAX" "$RR_DELAY" run_once

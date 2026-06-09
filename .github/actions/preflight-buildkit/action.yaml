@@ -18,19 +18,30 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Verify BuildKit image is present in GHCR
+    # Validate format FIRST and fail-fast (no retry): a malformed/non-digest ref
+    # is a definitive config error, not a transient one.
+    - name: Validate BuildKit image ref format (fail-fast)
       shell: bash
       env:
         IMAGE: "${{ inputs.image }}"
       run: |
-        # Validate format: must be a digest-pinned image ref
-        # Accepts: <registry>/<path>@sha256:<64-hex>
-        # where registry may include an optional :port component
+        # Accepts: <registry>/<path>@sha256:<64-hex> (registry may include :port)
         if [[ ! "$IMAGE" =~ ^[a-z0-9._/-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
           echo "::error::preflight-buildkit: refusing malformed/non-digest image ref (value redacted for safety)"
           exit 1
         fi
-        docker manifest inspect "$IMAGE" >/dev/null 2>&1 || {
-          echo "::error::buildkit builder image '$IMAGE' is not present in GHCR. It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
-          exit 1
-        }
+
+    # The GHCR presence probe is network-dependent: retry with backoff + a
+    # per-attempt timeout so a transient registry 5xx/429/timeout does not fail
+    # the build. The ref was format-validated (and is digest-pinned) above.
+    - name: Verify BuildKit image is present in GHCR (retry on transient)
+      uses: ./.github/actions/retry-run
+      with:
+        max-attempts: '4'
+        delay: '5'
+        timeout: '45s'
+        run: |
+          docker manifest inspect "${{ inputs.image }}" >/dev/null 2>&1 || {
+            echo "::error::buildkit builder image is not present in GHCR (after retries). It is seeded by the upstream-monitor workflow (Seed buildkit image to GHCR). Trigger upstream-monitor (workflow_dispatch) to seed it, then re-run. (Egress is fail-closed: there is no Docker Hub fallback for the builder image.)"
+            exit 1
+          }
