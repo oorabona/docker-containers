@@ -654,8 +654,8 @@ runs:
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
         BUILD_SCOPE: ${{ inputs.scope }}
         EVENT_NAME: ${{ github.event_name }}
-        RUN_TESTS: ${{ inputs.run_tests }}
         BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
+        RUN_TESTS: ${{ inputs.run_tests }}
         # Fork PRs cannot rely on the owner's GHCR base-image mirror (sync is
         # skipped on PR + a fork's token may not read it); keep them on the flat
         # matrix, whose use_base_cache falls back to direct upstream pulls.
@@ -676,13 +676,12 @@ runs:
         #      non-empty) build only a subset of cells.  Routing bake-managed containers
         #      to the bake engine would cause bake to publish ALL variants while only
         #      the scoped cells receive scan/attest coverage.
-        #   2. run_tests=true: test hooks (bats/Pester) live only in the flat matrix
-        #      build-and-push job.  Routing bake-managed containers to bake would
-        #      silently skip tests for github-runner, web-shell, and wordpress.
-        #   3. fork pull_request: a fork cannot rely on the owner's GHCR base-image
+        #   2. fork pull_request: a fork cannot rely on the owner's GHCR base-image
         #      mirror (PR sync is skipped + the fork token may not read it); the
         #      flat matrix's use_base_cache falls back to direct upstream pulls, so
         #      fork PRs stay on the matrix.
+        # run_tests=true no longer disables bake routing: bake-managed Linux bats
+        # tests run in the bake-test job, while Windows Pester stays in build-and-push.
         # SAME-REPO pull_request events route bake-managed Linux cells through
         # bake-build (build-only, no push, no Trivy/SBOM/attest — those run on the
         # push/merge path via bake-trivy/bake-attest on the published image).
@@ -697,7 +696,11 @@ runs:
         if [[ -n "${SCOPE_VERSIONS}" || -n "${SCOPE_FLAVORS}" || -n "${BUILD_SCOPE}" ]]; then
           scope_active="true"
         fi
-        if [[ "$scope_active" == "true" || "$RUN_TESTS" == "true" || "${IS_FORK_PR:-false}" == "true" ]]; then
+        # run_tests on a pull_request stays on the matrix: bake-test needs a
+        # PUSHED per-arch ref to pull, which does not exist on a PR (build-only).
+        # run_tests is dispatch-only in practice, so this is a belt-and-suspenders
+        # guard for a workflow_call-from-PR carrying run_tests=true.
+        if [[ "$scope_active" == "true" || "${IS_FORK_PR:-false}" == "true" || ( "${RUN_TESTS:-false}" == "true" && "$EVENT_NAME" == "pull_request" ) ]]; then
           force_matrix="true"
         fi
 
