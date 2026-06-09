@@ -280,7 +280,7 @@ partition_builds() {
     fi
 
     # Scoped run or forced-matrix: bake disabled — all cells to matrix for full
-    # per-cell fidelity (scope_versions / scope_flavors / PR routing).
+    # per-cell fidelity (scope_versions / scope_flavors / test routing).
     if [[ "$scope_active" == "true" ]]; then
         echo "$builds_json" | jq -c '{bake: [], matrix: [.[]]}'
         return 0

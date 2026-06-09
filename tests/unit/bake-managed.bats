@@ -562,14 +562,13 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-17: force_matrix=true (PR routing) — ALL cells (including bake-managed latest
-#         linux) route to .matrix; .bake is empty.  This is the same partition_builds
-#         2nd-arg semantics used by the split-build-engine step on pull_request events,
-#         ensuring bake-managed containers receive per-cell PR build+Trivy coverage
-#         via the flat matrix instead of being orphaned by a skipped bake job.
-# Catches: PR routing — bake-managed containers skipping PR Trivy coverage
+# BM-17: PR routing no longer forces matrix.  With force_matrix=false, bake-managed
+#         latest Linux cells route to .bake, while postgres/windows stay in .matrix
+#         through the normal partition gates.  PR Trivy coverage now runs inline in
+#         bake-build for those bake-managed cells.
+# Catches: PR routing accidentally preserving pull_request in force_matrix
 # ---------------------------------------------------------------------------
-@test "BM-17: force_matrix=true (PR event routing) routes all cells to matrix" {
+@test "BM-17: PR routing allows bake-managed Linux cells to bake" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -578,29 +577,33 @@ ubuntu-1.0.0"
       {"container":"github-runner","os":"linux","tag":"2.334.0","is_latest_version":true},
       {"container":"web-shell","os":"linux","tag":"alpine-1.0.0","is_latest_version":true},
       {"container":"wordpress","os":"linux","tag":"latest-6.5.0","is_latest_version":true},
-      {"container":"debian","os":"linux","tag":"bookworm-12.0.0"}
+      {"container":"github-runner","os":"windows","tag":"windows-2022-2.334.0","is_latest_version":true},
+      {"container":"postgres","os":"linux","tag":"17-alpine","is_latest_version":true}
     ]')
 
-    # The split-build-engine step passes force_matrix="true" when EVENT_NAME == pull_request
-    result=$(partition_builds "$fixture" "true")
+    # The split-build-engine step keeps force_matrix="false" when EVENT_NAME == pull_request.
+    result=$(partition_builds "$fixture" "false")
 
-    # bake must be empty — no bake jobs run on PR
     bake_count=$(echo "$result" | jq '.bake | length')
-    [[ "$bake_count" -eq 0 ]]
+    [[ "$bake_count" -eq 3 ]]
 
-    # matrix must contain all 4 cells (bake-managed containers included)
     matrix_count=$(echo "$result" | jq '.matrix | length')
-    [[ "$matrix_count" -eq 4 ]]
+    [[ "$matrix_count" -eq 2 ]]
 
-    # All three bake-managed containers must be in matrix
-    matrix_containers=$(echo "$result" | jq -r '[.matrix[].container] | unique | sort | .[]')
-    echo "$matrix_containers" | grep -q "^github-runner$"
-    echo "$matrix_containers" | grep -q "^web-shell$"
-    echo "$matrix_containers" | grep -q "^wordpress$"
+    bake_containers=$(echo "$result" | jq -r '[.bake[].container] | unique | sort | .[]')
+    echo "$bake_containers" | grep -q "^github-runner$"
+    echo "$bake_containers" | grep -q "^web-shell$"
+    echo "$bake_containers" | grep -q "^wordpress$"
+
+    windows_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .os == "windows")] | length')
+    [[ "$windows_matrix_count" -eq 1 ]]
+
+    postgres_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "postgres")] | length')
+    [[ "$postgres_matrix_count" -eq 1 ]]
 
     # Lossless
     total=$(echo "$result" | jq '.bake + .matrix | length')
-    [[ "$total" -eq 4 ]]
+    [[ "$total" -eq 5 ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -656,6 +656,10 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         RUN_TESTS: ${{ inputs.run_tests }}
         BUILD_ALL_RETAINED: ${{ inputs.build_all_retained }}
+        # Fork PRs cannot rely on the owner's GHCR base-image mirror (sync is
+        # skipped on PR + a fork's token may not read it); keep them on the flat
+        # matrix, whose use_base_cache falls back to direct upstream pulls.
+        IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091
@@ -667,25 +671,33 @@ runs:
         [[ -z "$builds_input" ]] && builds_input="[]"
 
         # force_matrix=true disables bake routing — all cells go to the flat matrix.
-        # Three independent reasons force this:
+        # Two independent reasons force this:
         #   1. Scoped runs (scope_versions, scope_flavors, or unified BUILD_SCOPE
         #      non-empty) build only a subset of cells.  Routing bake-managed containers
         #      to the bake engine would cause bake to publish ALL variants while only
         #      the scoped cells receive scan/attest coverage.
-        #   2. pull_request events: bake jobs skip push/load so the 3 bake-managed
-        #      containers lose PR-time Trivy coverage.  Route them to the flat matrix
-        #      so every cell gets the existing per-cell PR build+Trivy pass.
-        #      (The bake-build.yaml --print smoke validates the bake HCL on PRs
-        #      independently; bake push/load is a push-time concern only.)
-        #   3. run_tests=true: test hooks (bats/Pester) live only in the flat matrix
+        #   2. run_tests=true: test hooks (bats/Pester) live only in the flat matrix
         #      build-and-push job.  Routing bake-managed containers to bake would
         #      silently skip tests for github-runner, web-shell, and wordpress.
+        #   3. fork pull_request: a fork cannot rely on the owner's GHCR base-image
+        #      mirror (PR sync is skipped + the fork token may not read it); the
+        #      flat matrix's use_base_cache falls back to direct upstream pulls, so
+        #      fork PRs stay on the matrix.
+        # SAME-REPO pull_request events route bake-managed Linux cells through
+        # bake-build (build-only, no push, no Trivy/SBOM/attest — those run on the
+        # push/merge path via bake-trivy/bake-attest on the published image).
+        # PR-time Trivy is intentionally NOT run: it is advisory only (never gates),
+        # and its purpose is to SURFACE upstream-image CVEs we cannot fix —
+        # surfacing on the published artifact post-merge is the authoritative
+        # signal, so duplicating it on every PR only adds latency.
+        # postgres/windows/non-bake cells stay on the flat matrix through the
+        # normal partition gates.
         force_matrix="false"
         scope_active="false"
         if [[ -n "${SCOPE_VERSIONS}" || -n "${SCOPE_FLAVORS}" || -n "${BUILD_SCOPE}" ]]; then
           scope_active="true"
         fi
-        if [[ "$scope_active" == "true" || "$EVENT_NAME" == "pull_request" || "$RUN_TESTS" == "true" ]]; then
+        if [[ "$scope_active" == "true" || "$RUN_TESTS" == "true" || "${IS_FORK_PR:-false}" == "true" ]]; then
           force_matrix="true"
         fi
 
