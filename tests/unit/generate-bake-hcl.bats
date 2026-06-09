@@ -12,7 +12,7 @@
 #   MG8: --cells emits bake document instead of array → type check fails
 #   MG9: intermediate_ref includes ${ARCH_SUFFIX} → merge consumer would double-suffix sources
 #   MG10: Cell set for --cells differs from bake mode → plan drift between generator and merge job
-#   MG11: Allow postgres into bake graph → extension sub-pipeline conflict (F1)
+#   MG11: Allow unflagged extension containers into bake graph -> extension sub-pipeline conflict (F1)
 #   MG12: Omit is_latest_version from --cells output → merge job cannot gate rolling tags (F2)
 #   MG13: Remove absolute-path guard in _resolve_cell_base_ref → doubled path → empty contexts (F3)
 #   MG14: Hardcode include_all_retained=true → default mode emits retained versions (F4)
@@ -39,6 +39,25 @@ teardown() {
 # ---------------------------------------------------------------------------
 _run_generator() {
     run bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
+_run_generator_with_lineage_root() {
+    local lineage_root="$1"
+    shift
+    run env ROOT_DIR="$lineage_root" GITHUB_REPOSITORY_OWNER=oorabona \
+        bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" "$@"
+}
+
+_make_timescaledb_lineage_root() {
+    local lineage_root="$1"
+    mkdir -p "${lineage_root}/.build-lineage"
+
+    local pg
+    for pg in 18 17 16; do
+        jq -nc --arg pg "$pg" \
+            '{ext:"timescaledb", pg_major:$pg, ceiling:"2.27.2", resolved:["2.27.2"], available:["2.27.2"], excluded:[]}' \
+            > "${lineage_root}/.build-lineage/ext-timescaledb-pg${pg}-versionset.json"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -555,16 +574,74 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-25: F1 — postgres excluded from bake graph (extension sub-pipeline)
-# Catches MG11: allowing postgres to enter the graph would invoke the
-# extension generator which is not network-free.
+# GBH-25: F1 — postgres final image is explicitly bake-emittable
+# Catches: dropping build.bake_final_build support would re-exclude postgres.
 # ---------------------------------------------------------------------------
-@test "GBH-25: postgres is excluded from bake graph with exit 0 and skip notice" {
-    run bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" postgres 2>&1
-    # Must exit 0 (skip, not failure)
+@test "GBH-25: postgres --cells emits 21 final-image cells across all supported majors/flavors" {
+    _run_generator --cells postgres
     [ "$status" -eq 0 ]
-    # The skip ::notice:: must appear somewhere in combined output (stderr or stdout)
-    [[ "$output" == *"Skipping postgres"* ]] || [[ "$output" == *"extension sub-pipeline"* ]]
+
+    local count majors flavor_count
+    count=$(echo "$output" | jq '[.[] | select(.container == "postgres")] | length')
+    majors=$(echo "$output" | jq -r '[.[].tag | capture("^(?<major>[0-9]+)").major] | unique | sort | join(" ")')
+    flavor_count=$(echo "$output" | jq '[.[].flavor] | unique | length')
+
+    [ "$count" -eq 21 ]
+    [ "$majors" = "16 17 18" ]
+    [ "$flavor_count" -eq 7 ]
+}
+
+@test "GBH-25b: postgres bake graph materializes inline base/vector/timeseries Dockerfiles offline" {
+    local lineage_root
+    lineage_root=$(mktemp -d)
+    _make_timescaledb_lineage_root "$lineage_root"
+
+    _run_generator_with_lineage_root "$lineage_root" postgres
+    rm -rf "$lineage_root"
+    [ "$status" -eq 0 ]
+
+    local target_count
+    target_count=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("postgres_"))] | length')
+    [ "$target_count" -eq 21 ]
+
+    local base_inline vector_inline timeseries_inline
+    base_inline=$(echo "$output" | jq -r '.target.postgres_18_base["dockerfile-inline"] // ""')
+    vector_inline=$(echo "$output" | jq -r '.target.postgres_18_vector["dockerfile-inline"] // ""')
+    timeseries_inline=$(echo "$output" | jq -r '.target.postgres_18_timeseries["dockerfile-inline"] // ""')
+
+    [ -n "$base_inline" ]
+    [ -n "$vector_inline" ]
+    [ -n "$timeseries_inline" ]
+    [[ "$base_inline" != *"@@"* ]]
+    [[ "$vector_inline" != *"@@"* ]]
+    [[ "$timeseries_inline" != *"@@"* ]]
+
+    local base_ext_from_count
+    base_ext_from_count=$(printf '%s\n' "$base_inline" | grep -cE '^FROM .*ext-' || true)
+    [ "$base_ext_from_count" -eq 0 ]
+
+    [[ "$vector_inline" == *"FROM ghcr.io/oorabona/ext-pgvector:pg18-0.8.2 AS ext-pgvector"* ]]
+    [[ "$vector_inline" == *"COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"* ]]
+    [[ "$timeseries_inline" == *"FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.27.2 AS ext-timescaledb"* ]]
+}
+
+@test "GBH-25c: postgres inline Dockerfiles escape bake interpolation triggers" {
+    local lineage_root
+    lineage_root=$(mktemp -d)
+    _make_timescaledb_lineage_root "$lineage_root"
+
+    _run_generator_with_lineage_root "$lineage_root" postgres
+    rm -rf "$lineage_root"
+    [ "$status" -eq 0 ]
+
+    local all_inline stripped_doubles bare_count
+    all_inline=$(echo "$output" | jq -r '[.target | to_entries[] | select(.key | startswith("postgres_")) | .value["dockerfile-inline"] // empty] | join("\n")')
+    [ -n "$all_inline" ]
+    [[ "$all_inline" == *'$${REMOTE_CR}'* ]]
+
+    stripped_doubles="${all_inline//\$\$\{/ESCAPED}"
+    bare_count=$(printf '%s' "$stripped_doubles" | grep -cF '${' || true)
+    [ "$bare_count" -eq 0 ]
 }
 
 @test "GBH-26: F1 — whole-fleet generate has no postgres target" {
@@ -575,6 +652,50 @@ YAML
     local postgres_targets
     postgres_targets=$(echo "$output" | jq '[.target | to_entries[] | select(.key | startswith("postgres_"))] | length')
     [ "$postgres_targets" -eq 0 ]
+}
+
+@test "GBH-26b: F1 — extension container without bake_final_build remains excluded" {
+    local variants backup out err
+    variants="${PROJECT_ROOT}/postgres/variants.yaml"
+    backup=$(mktemp)
+    out=$(mktemp)
+    err=$(mktemp)
+
+    run bash -c '
+        set -euo pipefail
+        variants="$1"
+        backup="$2"
+        out="$3"
+        err="$4"
+        cp "$variants" "$backup"
+        restore() { cp "$backup" "$variants"; }
+        trap restore EXIT
+        yq -i "del(.build.bake_final_build)" "$variants"
+        "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" postgres >"$out" 2>"$err"
+    ' bash "$variants" "$backup" "$out" "$err"
+
+    [ "$status" -eq 0 ]
+    grep -q "Skipping postgres" "$err"
+    [ "$(jq '.target | length' "$out")" -eq 0 ]
+
+    rm -f "$backup" "$out" "$err"
+}
+
+@test "GBH-26c: non-postgres extensionless graph stays on the committed-Dockerfile path" {
+    [ ! -f "${PROJECT_ROOT}/debian/extensions/config.yaml" ]
+    [ "$(yq -r '.build.bake_final_build // false' "${PROJECT_ROOT}/debian/variants.yaml")" = "false" ]
+
+    _run_generator debian
+    [ "$status" -eq 0 ]
+    local first="$output"
+
+    _run_generator debian
+    [ "$status" -eq 0 ]
+    local second="$output"
+
+    [ "$(jq -cS . <<< "$first")" = "$(jq -cS . <<< "$second")" ]
+    [ "$(echo "$first" | jq '[.target | to_entries[] | select(.key | startswith("debian_")) | select(.value["dockerfile-inline"] != null)] | length')" -eq 0 ]
+    [ "$(echo "$first" | jq -r '.target.debian_trixie.dockerfile')" = "Dockerfile" ]
 }
 
 # ---------------------------------------------------------------------------
