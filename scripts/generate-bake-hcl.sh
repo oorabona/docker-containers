@@ -418,8 +418,16 @@ _compute_cell_build_args() {
     local args
     args="$config_args"
 
-    # 2. VERSION
-    args=$(jq -cn --argjson base "$args" --arg v "$version" '$base + {VERSION: $v}')
+    # 2. VERSION — mirror the non-bake build's base_image_version
+    #    (build-container.sh: "${major_version}${base_suffix}"). postgres declares
+    #    base_suffix "-alpine", and its Dockerfile does FROM library/postgres:${VERSION},
+    #    so VERSION must carry the suffix ("18" -> "18-alpine") or the bake build would
+    #    pull the Debian base and publish *-alpine tags backed by the wrong distro.
+    #    base_suffix is empty for every container except postgres today, so this is a
+    #    no-op for the rest of the fleet.
+    local _base_sfx
+    _base_sfx=$(base_suffix "${PROJECT_ROOT}/${container}" 2>/dev/null || echo "")
+    args=$(jq -cn --argjson base "$args" --arg v "${version}${_base_sfx}" '$base + {VERSION: $v}')
 
     # 3. MAJOR_VERSION (leading integer: "18" from "18-alpine", "2" from "2.334.0")
     local major

@@ -625,6 +625,24 @@ YAML
     [[ "$timeseries_inline" == *"FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.27.2 AS ext-timescaledb"* ]]
 }
 
+@test "GBH-25e: postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
+    local lineage_root
+    lineage_root=$(mktemp -d)
+    _make_timescaledb_lineage_root "$lineage_root"
+
+    _run_generator_with_lineage_root "$lineage_root" --include-final-build postgres
+    rm -rf "$lineage_root"
+    [ "$status" -eq 0 ]
+
+    # postgres declares base_suffix "-alpine" + FROM library/postgres:${VERSION};
+    # the bake VERSION arg must be "<major>-alpine", not the bare major, else the
+    # build pulls the Debian base and publishes *-alpine tags backed by it.
+    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.VERSION')" = "18-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_17_vector.args.VERSION')" = "17-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_16_full.args.VERSION')" = "16-alpine" ]
+    [ "$(echo "$output" | jq -r '.target.postgres_18_base.args.MAJOR_VERSION')" = "18" ]
+}
+
 @test "GBH-25c: postgres inline Dockerfiles escape bake interpolation triggers" {
     local lineage_root
     lineage_root=$(mktemp -d)
