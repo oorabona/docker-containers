@@ -51,6 +51,10 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${PROJECT_ROOT}/helpers/lineage-utils.sh"
 # shellcheck source=../helpers/dependency-graph.sh
 source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
+# shellcheck source=../helpers/logging.sh
+source "${PROJECT_ROOT}/helpers/logging.sh"
+# shellcheck source=../helpers/retry.sh
+source "${PROJECT_ROOT}/helpers/retry.sh"
 
 # ---------------------------------------------------------------------------
 # _escape_gha_command <value>
@@ -151,7 +155,7 @@ _probe_digest() {
     else
         # `--` separates options from the image ref: belt-and-suspenders against
         # dash-prefix option injection if a poisoned ref slips past _validate_image_ref.
-        raw=$(docker buildx imagetools inspect --format '{{json .Manifest}}' -- "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
+        raw=$(retry_with_backoff 3 5 docker buildx imagetools inspect --format '{{json .Manifest}}' -- "${image_ref}" 2>"$probe_stderr") || probe_exit=$?
         if [[ $probe_exit -ne 0 ]]; then
             local err_detail
             err_detail=$(cat "$probe_stderr" 2>/dev/null || true)
