@@ -58,6 +58,26 @@ source "${_MDH_SCRIPT_DIR}/variant-utils.sh"
 # only when the caller sourced this file before logging.sh.
 DOCKER="${DOCKER:-docker}"
 
+# _mdh_any_bake_final <container...>
+# Returns 0 if any named container is a bake final-build container — it has an
+# extensions/config.yaml AND declares build.bake_final_build:true. Such a
+# container's final image is bake-built (its extensions are consumed as registry
+# pulls), so the generator excludes it from the graph unless --include-final-build
+# is passed. Self-deriving here means every caller of mirror_to_dockerhub (the
+# inline bake-merge mirror AND the nightly dockerhub-reconcile workflow) includes
+# those containers' tags in the mirror set without having to set an env var.
+_mdh_any_bake_final() {
+    local _root="${_MDH_SCRIPT_DIR}/.."
+    local _c
+    for _c in "$@"; do
+        if [[ -f "${_root}/${_c}/extensions/config.yaml" ]] \
+           && [[ "$(yq -r '.build.bake_final_build // false' "${_root}/${_c}/variants.yaml" 2>/dev/null)" == "true" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # mirror_to_dockerhub <container...>
 #
@@ -120,7 +140,7 @@ mirror_to_dockerhub() {
         _gen_retained_flag=("--all-retained")
     fi
     local _gen_final_flag=()
-    if [[ "${BAKE_GENERATE_FINAL_BUILD:-false}" == "true" ]]; then
+    if [[ "${BAKE_GENERATE_FINAL_BUILD:-false}" == "true" ]] || _mdh_any_bake_final "${containers[@]}"; then
         _gen_final_flag=("--include-final-build")
     fi
 
