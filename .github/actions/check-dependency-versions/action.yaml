@@ -26,9 +26,27 @@ runs:
       run: |
         # Install yq if not available
         if ! command -v yq &> /dev/null; then
-          sudo wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          # Composite actions cannot invoke retry-run, so use the same helper inline.
+          # shellcheck disable=SC1091
+          source "${GITHUB_WORKSPACE}/helpers/retry.sh"
+
+          install_yq() {
+            sudo wget -qO /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+            echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /usr/local/bin/yq" | sha256sum -c -
+            sudo chmod +x /usr/local/bin/yq
+          }
+
+          install_yq_with_timeout() {
+            if command -v timeout >/dev/null 2>&1; then
+              timeout 60s bash -e -o pipefail -c install_yq
+            else
+              install_yq
+            fi
+          }
+
+          export -f install_yq
+          retry_with_backoff 3 5 install_yq_with_timeout
         fi
         # Install jq if not available
         if ! command -v jq &> /dev/null; then
