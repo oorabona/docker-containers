@@ -81,6 +81,7 @@ emit_bake_build_results() {
     [[ -n "${SCOPE_VERSIONS:-}" ]] && cells_args+=("--scope-versions" "${SCOPE_VERSIONS}")
     [[ -n "${SCOPE_FLAVORS:-}" ]] && cells_args+=("--scope-flavors" "${SCOPE_FLAVORS}")
     [[ -n "${BUILD_SCOPE:-}" ]] && cells_args+=("--scope" "${BUILD_SCOPE}")
+    [[ -n "${CONTAINER_SCOPES:-}" ]] && cells_args+=("--container-scopes" "${CONTAINER_SCOPES}")
     if ! cells_json=$("$generator" "${cells_args[@]}" "${containers[@]}"); then
         printf '::error::bake-buildresult: --cells failed for %s\n' \
             "${containers[*]}" >&2

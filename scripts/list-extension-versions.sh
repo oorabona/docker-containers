@@ -14,10 +14,24 @@ source "$PROJECT_ROOT/helpers/variant-utils.sh"
 
 containers_with_extensions=""
 versions_by_container=""
+extension_containers_json="${EXTENSION_CONTAINERS_JSON:-}"
+
+if [[ -n "$extension_containers_json" ]]; then
+    if ! extension_containers_json=$(printf '%s' "$extension_containers_json" | jq -c 'if type == "array" then . else error("not array") end' 2>/dev/null); then
+        echo "::error::EXTENSION_CONTAINERS_JSON must be a JSON array when set" >&2
+        exit 1
+    fi
+fi
 
 for container_dir in "$PROJECT_ROOT"/*/; do
     container="$(basename "$container_dir")"
     [[ ! -f "$container_dir/variants.yaml" ]] && continue
+
+    if [[ -n "$extension_containers_json" ]]; then
+        if ! printf '%s' "$extension_containers_json" | jq -e --arg c "$container" 'index($c) != null' >/dev/null; then
+            continue
+        fi
+    fi
 
     if requires_extensions "$container_dir"; then
         echo "::notice::Container $container requires extensions"

@@ -8,6 +8,11 @@ on:
         description: 'Specific container to build (leave empty for all)'
         required: false
         type: string
+      container_scopes:
+        description: 'JSON map of per-container scope for batched recovery dispatch, e.g. {"postgres":{"versions":"17","flavors":"full","extensions":"pgvector"},"debian":{}}. When non-empty, its KEYS are the containers to build and each value carries that container''s scope (any of versions/flavors/extensions; omit/empty = no scope for that container). Takes precedence over `container` and diff detection. Empty = legacy container/diff path.'
+        required: false
+        type: string
+        default: ''
       force_rebuild:
         description: '[deprecated] Force rebuild even if up-to-date — use rebuild=all instead'
         required: false
@@ -123,6 +128,11 @@ on:
         description: 'Specific container to build (leave empty for all)'
         required: false
         type: string
+      container_scopes:
+        description: 'JSON map of per-container scope for batched recovery dispatch, e.g. {"postgres":{"versions":"17","flavors":"full","extensions":"pgvector"},"debian":{}}. When non-empty, its KEYS are the containers to build and each value carries that container''s scope (any of versions/flavors/extensions; omit/empty = no scope for that container). Takes precedence over `container` and diff detection. Empty = legacy container/diff path.'
+        required: false
+        type: string
+        default: ''
       force_rebuild:
         description: '[deprecated] Force rebuild even if no updates — use rebuild=all instead'
         required: false
@@ -213,6 +223,7 @@ env:
   DOCKER_NO_CACHE: ${{ inputs.rebuild == 'force' && 'true' || 'false' }}
   SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions || '' }}
   SCOPE_FLAVORS: ${{ github.event.inputs.scope_flavors || inputs.scope_flavors || '' }}
+  CONTAINER_SCOPES: ${{ github.event.inputs.container_scopes || inputs.container_scopes || '' }}
   # Variant scope filter (free-text, matched against variant/os/build_flavor fields)
   BUILD_SCOPE: ${{ github.event.inputs.scope || inputs.scope || '' }}
   BUILD_ALL_RETAINED: ${{ github.event.inputs.build_all_retained || inputs.build_all_retained || 'false' }}
@@ -232,6 +243,7 @@ jobs:
       extension_builds: ${{ steps.detect.outputs.extension_builds }}
       bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
+      container_scopes: ${{ steps.detect.outputs.container_scopes }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -247,6 +259,7 @@ jobs:
         uses: ./.github/actions/detect-containers
         with:
           container: ${{ github.event.inputs.container || inputs.container }}
+          container_scopes: ${{ github.event.inputs.container_scopes || inputs.container_scopes || '' }}
           force_rebuild: ${{ github.event.inputs.force_rebuild || inputs.force_rebuild }}
           rebuild: ${{ env.REBUILD_MODE }}
           scope: ${{ env.BUILD_SCOPE }}
@@ -369,6 +382,9 @@ jobs:
       - name: Get versions requiring extensions
         id: ext-versions
         timeout-minutes: 5
+        env:
+          CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
+          EXTENSION_CONTAINERS_JSON: ${{ needs.detect-containers.outputs.container_scopes != '' && needs.detect-containers.outputs.extension_builds || '' }}
         run: |
           chmod +x scripts/list-extension-versions.sh
           scripts/list-extension-versions.sh
@@ -380,6 +396,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
+          CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
           REBUILD: ${{ env.REBUILD_MODE }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           # USE_BASE_CACHE mirrors the use_base_cache gate in build-container: true only for
@@ -423,15 +440,21 @@ jobs:
             [[ -z "$entry" ]] && continue
             container="${entry%%:*}"
             versions="${entry#*:}"
+            container_scope_versions="$SCOPE_VERSIONS"
+            container_scope_extensions="$SCOPE_EXTENSIONS"
+            if [[ -n "$CONTAINER_SCOPES" ]]; then
+              container_scope_versions=$(echo "$CONTAINER_SCOPES" | jq -r --arg c "$container" '.[$c].versions // ""')
+              container_scope_extensions=$(echo "$CONTAINER_SCOPES" | jq -r --arg c "$container" '.[$c].extensions // ""')
+            fi
 
             IFS=',' read -ra VERSION_LIST <<< "$versions"
             for major_version in "${VERSION_LIST[@]}"; do
               [[ -z "$major_version" ]] && continue
 
               # Skip versions not in scope (if scope_versions is set)
-              if [[ -n "$SCOPE_VERSIONS" ]]; then
-                if ! echo ",$SCOPE_VERSIONS," | grep -q ",$major_version,"; then
-                  echo "⏭️ Skipping extensions for $container v$major_version (not in scope: $SCOPE_VERSIONS)"
+              if [[ -n "$container_scope_versions" ]]; then
+                if ! echo ",$container_scope_versions," | grep -q ",$major_version,"; then
+                  echo "⏭️ Skipping extensions for $container v$major_version (not in scope: $container_scope_versions)"
                   continue
                 fi
               fi
@@ -462,9 +485,9 @@ jobs:
               export REMOTE_CR
 
               # Build specific extensions or all
-              if [[ -n "$SCOPE_EXTENSIONS" ]]; then
-                echo "🔧 Building scoped extensions ($SCOPE_EXTENSIONS) for $container v$major_version..."
-                IFS=',' read -ra EXT_LIST <<< "$SCOPE_EXTENSIONS"
+              if [[ -n "$container_scope_extensions" ]]; then
+                echo "🔧 Building scoped extensions ($container_scope_extensions) for $container v$major_version..."
+                IFS=',' read -ra EXT_LIST <<< "$container_scope_extensions"
                 for ext in "${EXT_LIST[@]}"; do
                   [[ -z "$ext" ]] && continue
                   ./scripts/build-extensions.sh "$container" --major-version "$major_version" --extension "$ext" "${force_arg[@]}"
@@ -644,6 +667,9 @@ jobs:
       - name: Get versions requiring extensions
         id: ext-versions
         timeout-minutes: 5
+        env:
+          CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
+          EXTENSION_CONTAINERS_JSON: ${{ needs.detect-containers.outputs.container_scopes != '' && needs.detect-containers.outputs.extension_builds || '' }}
         run: |
           chmod +x scripts/list-extension-versions.sh
           scripts/list-extension-versions.sh
@@ -655,6 +681,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCOPE_VERSIONS: ${{ github.event.inputs.scope_versions || inputs.scope_versions }}
           SCOPE_EXTENSIONS: ${{ github.event.inputs.scope_extensions || inputs.scope_extensions }}
+          CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
           VERSIONS_MAP: ${{ steps.ext-versions.outputs.versions_map }}
           REPO_OWNER: ${{ github.repository_owner }}
           # BB-1: must match the suffix used by the build-extensions stage A leg so
@@ -679,14 +706,20 @@ jobs:
             [[ -z "$entry" ]] && continue
             container="${entry%%:*}"
             versions="${entry#*:}"
+            container_scope_versions="$SCOPE_VERSIONS"
+            container_scope_extensions="$SCOPE_EXTENSIONS"
+            if [[ -n "$CONTAINER_SCOPES" ]]; then
+              container_scope_versions=$(echo "$CONTAINER_SCOPES" | jq -r --arg c "$container" '.[$c].versions // ""')
+              container_scope_extensions=$(echo "$CONTAINER_SCOPES" | jq -r --arg c "$container" '.[$c].extensions // ""')
+            fi
 
             IFS=',' read -ra VERSION_LIST <<< "$versions"
             for major_version in "${VERSION_LIST[@]}"; do
               [[ -z "$major_version" ]] && continue
 
-              if [[ -n "$SCOPE_VERSIONS" ]]; then
-                if ! echo ",$SCOPE_VERSIONS," | grep -q ",$major_version,"; then
-                  echo "Skipping manifest merge for $container v$major_version (not in scope: $SCOPE_VERSIONS)"
+              if [[ -n "$container_scope_versions" ]]; then
+                if ! echo ",$container_scope_versions," | grep -q ",$major_version,"; then
+                  echo "Skipping manifest merge for $container v$major_version (not in scope: $container_scope_versions)"
                   continue
                 fi
               fi
@@ -700,8 +733,8 @@ jobs:
               fi
               export REMOTE_CR
 
-              if [[ -n "$SCOPE_EXTENSIONS" ]]; then
-                IFS=',' read -ra EXT_LIST <<< "$SCOPE_EXTENSIONS"
+              if [[ -n "$container_scope_extensions" ]]; then
+                IFS=',' read -ra EXT_LIST <<< "$container_scope_extensions"
                 for ext in "${EXT_LIST[@]}"; do
                   [[ -z "$ext" ]] && continue
                   ./scripts/build-extensions.sh "$container" --major-version "$major_version" \
@@ -1598,6 +1631,8 @@ jobs:
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
     permissions:
       contents: read
       packages: write
@@ -1776,6 +1811,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           final_args=()
           if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
             final_args=(--include-final-build)
@@ -1934,6 +1970,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           final_args=()
           if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
             final_args=(--include-final-build)
@@ -2098,6 +2135,8 @@ jobs:
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
+    env:
+      CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
     permissions:
       contents: read
       packages: write
@@ -2264,6 +2303,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           final_args=()
           if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
             final_args=(--include-final-build)
@@ -2623,6 +2663,8 @@ jobs:
     # serialization is needed (same rationale as build-and-push).
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CONTAINER_SCOPES: ${{ needs.detect-containers.outputs.container_scopes }}
     permissions:
       contents: read
       packages: write
@@ -2709,6 +2751,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           final_args=()
           if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
             final_args=(--include-final-build)
@@ -2757,6 +2800,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           # BAKE_CONTAINERS is operator-set (trusted context)
           export BAKE_GENERATE_ALL_RETAINED=false
           # shellcheck disable=SC2086
@@ -2789,6 +2833,7 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          [[ -n "${CONTAINER_SCOPES:-}" ]] && scope_args+=(--container-scopes "${CONTAINER_SCOPES}")
           final_args=()
           if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
             final_args=(--include-final-build)

@@ -6,6 +6,10 @@ inputs:
     description: 'Specific container to build (overrides detection)'
     required: false
     default: ''
+  container_scopes:
+    description: 'JSON map of per-container scope. When non-empty, keys are the containers to build and values may contain versions/flavors/extensions.'
+    required: false
+    default: ''
   force_rebuild:
     description: '[deprecated] Force rebuild even if image exists — use rebuild=all instead'
     required: false
@@ -100,6 +104,9 @@ outputs:
       versions, false = latest version only. Computed by compute_expand_retained_map
       helper. Consumed downstream by the Expand variants step.
     value: ${{ steps.compute-expand-map.outputs.map }}
+  container_scopes:
+    description: 'Normalized JSON map of per-container scopes, or empty for legacy callers'
+    value: ${{ steps.find-containers.outputs.container_scopes }}
   carried_forward:
     description: |
       JSON array of container names that were newly appended to the build list
@@ -249,12 +256,22 @@ runs:
         # Passed via env (not inline ${{ }}) to avoid injection through JSON content.
         BASELINE_FAILED: ${{ steps.resolve-coverage-baseline.outputs.baseline_failed_containers }}
         BASELINE_VALID: ${{ steps.resolve-coverage-baseline.outputs.baseline_valid }}
+        CONTAINER_SCOPES_INPUT: ${{ inputs.container_scopes }}
       run: |
         set -e
         # shellcheck disable=SC1091  # path resolved at runtime in the action dir
         source "${GITHUB_ACTION_PATH}/../../../helpers/coverage-checkpoint-utils.sh"
+        # shellcheck disable=SC1091  # path resolved at runtime in the action dir
+        source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
         diff_rc=0
+        changed_files=""
+        coverage_fallback=false
         containers_to_build=()
+        normalized_container_scopes=""
+
+        if [[ -n "${CONTAINER_SCOPES_INPUT:-}" ]]; then
+          normalized_container_scopes=$(normalize_container_scopes "$CONTAINER_SCOPES_INPUT") || exit 1
+        fi
 
         # Get list of valid containers from make script (source of truth)
         echo "🔍 Getting list of valid containers from make script..."
@@ -267,10 +284,16 @@ runs:
 
         echo "📋 Valid containers from make: $(echo "$valid_containers" | tr '\n' ' ')"
 
+        # If per-container scopes are provided, their keys are the requested containers.
+        if [[ -n "$normalized_container_scopes" ]]; then
+          echo "🎯 Validating container_scopes keys..."
+          validate_container_scope_keys "$normalized_container_scopes" "$valid_containers" || exit 1
+          mapfile -t containers_to_build < <(container_scope_keys "$normalized_container_scopes")
+          echo "✅ container_scopes keys validated"
         # If specific container requested, validate it
-        if [ -n "${{ inputs.container }}" ]; then
+        elif [ -n "${{ inputs.container }}" ]; then
           echo "🎯 Validating specific container: ${{ inputs.container }}"
-          if echo "$valid_containers" | grep -qx "${{ inputs.container }}"; then
+          if echo "$valid_containers" | grep -Fxq "${{ inputs.container }}"; then
             containers_to_build=("${{ inputs.container }}")
             echo "✅ Container validated"
           else
@@ -449,7 +472,7 @@ runs:
         # carried = baseline_failed ∩ valid  (all valid prior-failed containers)
         # queued' = queued ∪ carried         (full build list, deduped)
         carried_forward_json='[]'
-        if [[ "$BASELINE_VALID" == "true" && "$coverage_fallback" != "true" \
+        if [[ -z "$normalized_container_scopes" && "$BASELINE_VALID" == "true" && "$coverage_fallback" != "true" \
               && -n "$BASELINE_FAILED" && "$BASELINE_FAILED" != "[]" ]]; then
           if [ ${#containers_to_build[@]} -eq 0 ]; then
             queued_json='[]'
@@ -467,6 +490,7 @@ runs:
         fi
 
         # Create outputs (CSV first, then JSON for matrix compatibility)
+        echo "container_scopes=$normalized_container_scopes" >> $GITHUB_OUTPUT
         if [ ${#containers_to_build[@]} -eq 0 ]; then
           echo "containers_list=" >> $GITHUB_OUTPUT
           echo "containers=[]" >> $GITHUB_OUTPUT
@@ -574,77 +598,25 @@ runs:
         SCOPE_FLAVORS: ${{ inputs.scope_flavors }}
         BUILD_SCOPE: ${{ inputs.scope }}
         EXPAND_RETAINED_MAP: ${{ steps.compute-expand-map.outputs.map }}
+        CONTAINER_SCOPES: ${{ steps.find-containers.outputs.container_scopes }}
       run: |
         set -e
         # shellcheck disable=SC1091
         source "${GITHUB_ACTION_PATH}/../../../helpers/variant-utils.sh"
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/container-scopes.sh"
         containers_json='${{ steps.find-containers.outputs.containers }}'
         versions_json='${{ steps.compute-versions.outputs.versions }}'
 
-        builds_json="[]"
-        builds_count=0
-
-        for container in $(echo "$containers_json" | jq -r '.[]'); do
-          version=$(echo "$versions_json" | jq -r --arg c "$container" '.[$c]')
-          echo "📦 Expanding builds for $container (version: $version)..."
-
-          expand_for_container=$(echo "$EXPAND_RETAINED_MAP" | jq -r --arg c "$container" '.[$c] // "false"')
-          # scope_versions is an explicit user request for specific versions. Pre-filtering
-          # to latest-only would defeat it. Bypass the filter when scope_versions is set.
-          if [[ -n "$SCOPE_VERSIONS" ]]; then
-            expand_for_container="true"
-          fi
-          container_builds=$(list_container_builds "$container" "$version" "$expand_for_container")
-
-          # Apply scope_versions / scope_flavors filters (legacy inputs)
-          if [[ -n "$SCOPE_VERSIONS" || -n "$SCOPE_FLAVORS" ]]; then
-            # Convert comma-separated values to JSON arrays for jq
-            versions_filter="[]"
-            if [[ -n "$SCOPE_VERSIONS" ]]; then
-              versions_filter=$(echo "$SCOPE_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
-            fi
-            flavors_filter="[]"
-            if [[ -n "$SCOPE_FLAVORS" ]]; then
-              flavors_filter=$(echo "$SCOPE_FLAVORS" | tr ',' '\n' | jq -R . | jq -s -c .)
-            fi
-
-            before_count=$(echo "$container_builds" | jq 'length')
-            container_builds=$(echo "$container_builds" | jq -c \
-              --argjson sv "$versions_filter" --argjson sf "$flavors_filter" \
-              '[.[] | select(
-                (($sv | length) == 0 or (.version as $v | $sv | any(. as $s | $v == $s or ($v | startswith($s + ".")) or ($v | startswith($s + "-"))))) and
-                (($sf | length) == 0 or (.flavor as $f | $sf | any(. == $f)))
-              )]')
-            after_count=$(echo "$container_builds" | jq 'length')
-
-            if [[ "$before_count" != "$after_count" ]]; then
-              echo "  🔍 Scope filter: $before_count → $after_count builds (versions=${SCOPE_VERSIONS:-all}, flavors=${SCOPE_FLAVORS:-all})"
-            fi
-          fi
-
-          # Apply BUILD_SCOPE filter (new unified scope input)
-          # Matches against: variant, os, build_flavor — any field containing the scope string
-          if [[ -n "$BUILD_SCOPE" ]]; then
-            before_count=$(echo "$container_builds" | jq 'length')
-            container_builds=$(echo "$container_builds" | jq -c \
-              --arg s "$BUILD_SCOPE" \
-              '[.[] | select(
-                (.variant // "" | contains($s)) or
-                (.os // "" | contains($s)) or
-                (.build_flavor // "" | contains($s)) or
-                (.flavor // "" | contains($s))
-              )]')
-            after_count=$(echo "$container_builds" | jq 'length')
-            echo "  🔍 BUILD_SCOPE \"$BUILD_SCOPE\" filter: $before_count → $after_count builds"
-          fi
-
-          count=$(echo "$container_builds" | jq 'length')
-
-          builds_json=$(echo "$builds_json" | jq -c ". + $container_builds")
-          builds_count=$((builds_count + count))
-          echo "  → $count build(s)"
-          echo "$container_builds" | jq -c '.[]'
-        done
+        builds_json=$(expand_variants_for_containers \
+          "$containers_json" \
+          "$versions_json" \
+          "$EXPAND_RETAINED_MAP" \
+          "$CONTAINER_SCOPES" \
+          "$SCOPE_VERSIONS" \
+          "$SCOPE_FLAVORS" \
+          "$BUILD_SCOPE")
+        builds_count=$(echo "$builds_json" | jq 'length')
 
         echo "builds=$builds_json" >> $GITHUB_OUTPUT
         echo "builds_count=$builds_count" >> $GITHUB_OUTPUT

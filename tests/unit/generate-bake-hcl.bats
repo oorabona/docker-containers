@@ -1566,3 +1566,129 @@ YAML
 
     [ "$actual_keys" = "$expected_keys" ]
 }
+
+@test "GBH-61: container scopes — terraform flavor scope keeps only aws cells" {
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_flavors per_container_json
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_flavors=$(echo "$output" | jq '[.[] | select(.flavor != "aws")] | length')
+    per_container_json=$(echo "$output" | jq -cS '.')
+
+    _run_generator --cells --scope-flavors aws terraform
+    [ "$status" -eq 0 ]
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$bad_flavors" -eq 0 ]
+    [ "$per_container_json" = "$(echo "$output" | jq -cS '.')" ]
+}
+
+@test "GBH-62: container scopes — terraform retained version scope keeps only 1.15.4 cells" {
+    local unscoped_count
+    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null \
+        | jq 'length')
+    [ "$unscoped_count" -gt 0 ]
+
+    _run_generator --cells --all-retained --container-scopes '{"terraform":{"versions":"1.15.4"}}' terraform
+    [ "$status" -eq 0 ]
+
+    local scoped_count bad_tags
+    scoped_count=$(echo "$output" | jq 'length')
+    bad_tags=$(echo "$output" | jq '[.[] | select(.tag | startswith("1.15.4-alpine") | not)] | length')
+
+    [ "$scoped_count" -gt 0 ]
+    [ "$scoped_count" -lt "$unscoped_count" ]
+    [ "$bad_tags" -eq 0 ]
+}
+
+@test "GBH-63: container scopes — different containers keep isolated scope filters" {
+    _run_generator --cells debian
+    [ "$status" -eq 0 ]
+    local unscoped_debian_count
+    unscoped_debian_count=$(echo "$output" | jq 'length')
+    [ "$unscoped_debian_count" -gt 0 ]
+
+    _run_generator --cells --container-scopes '{"terraform":{"flavors":"aws"},"debian":{}}' terraform debian
+    [ "$status" -eq 0 ]
+
+    local terraform_count terraform_bad_flavors debian_count
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    debian_count=$(echo "$output" | jq '[.[] | select(.container == "debian")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$debian_count" -eq "$unscoped_debian_count" ]
+}
+
+@test "GBH-64: container scopes — containers absent from the map fall back to global flavor scope" {
+    _run_generator --cells --include-final-build \
+        --container-scopes '{"terraform":{"flavors":"aws"}}' \
+        --scope-flavors full postgres terraform
+    [ "$status" -eq 0 ]
+
+    local terraform_count terraform_bad_flavors postgres_count postgres_bad_flavors
+    terraform_count=$(echo "$output" | jq '[.[] | select(.container == "terraform")] | length')
+    terraform_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "terraform" and .flavor != "aws")] | length')
+    postgres_count=$(echo "$output" | jq '[.[] | select(.container == "postgres")] | length')
+    postgres_bad_flavors=$(echo "$output" | jq '[.[] | select(.container == "postgres" and .flavor != "full")] | length')
+
+    [ "$terraform_count" -gt 0 ]
+    [ "$terraform_bad_flavors" -eq 0 ]
+    [ "$postgres_count" -gt 0 ]
+    [ "$postgres_bad_flavors" -eq 0 ]
+}
+
+@test "GBH-65: container scopes — scoped github-runner graph keeps debian dependency target and contexts" {
+    _run_generator --container-scopes '{"github-runner":{"flavors":"debian-trixie"}}' github-runner
+    [ "$status" -eq 0 ]
+
+    local has_base bad_runner_targets ctx_count dangling_count
+    has_base=$(echo "$output" | jq -r '.target | has("debian_trixie")')
+    bad_runner_targets=$(echo "$output" | jq '[
+        .target
+        | to_entries[]
+        | select(.key | startswith("github_runner_"))
+        | select((.key | contains("_debian_trixie_")) | not)
+    ] | length')
+    ctx_count=$(echo "$output" | jq '[
+        .target
+        | to_entries[]
+        | select((.key | startswith("github_runner_")) and (.key | contains("_debian_trixie_")))
+        | (.value.contexts // {})
+        | to_entries[]
+        | select(.value == "target:debian_trixie")
+    ] | length')
+    dangling_count=$(echo "$output" | jq '
+        .target as $targets
+        | [
+            .target
+            | to_entries[]
+            | (.value.contexts // {})
+            | to_entries[]
+            | .value
+            | select(type == "string" and startswith("target:"))
+            | sub("^target:"; "") as $target_id
+            | select(($targets | has($target_id)) | not)
+            | $target_id
+        ]
+        | length')
+
+    [ "$has_base" = "true" ]
+    [ "$bad_runner_targets" -eq 0 ]
+    [ "$ctx_count" -gt 0 ]
+    [ "$dangling_count" -eq 0 ]
+}
+
+@test "GBH-66: container scopes — empty map is byte-identical to no container scope flag" {
+    _run_generator terraform debian
+    [ "$status" -eq 0 ]
+    local no_flag_json
+    no_flag_json=$(echo "$output" | jq -cS '.')
+
+    _run_generator --container-scopes '{}' terraform debian
+    [ "$status" -eq 0 ]
+
+    [ "$(echo "$output" | jq -cS '.')" = "$no_flag_json" ]
+}
