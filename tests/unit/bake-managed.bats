@@ -6,7 +6,7 @@
 #   MM2: Remove web-shell from default set → web-shell lands in matrix instead of bake
 #   MM3: Remove wordpress from default set → wordpress lands in matrix instead of bake
 #   MM3b: Remove debian/vector/jekyll/ansible from default set → they land in matrix instead of bake
-#   MM3c: Remove sslh/openvpn/php/openresty/terraform from default set → they land in matrix instead of bake
+#   MM3c: Remove sslh/openvpn/php/openresty/terraform/postgres from default set → they land in matrix instead of bake
 #   MM4: Ignore BAKE_MANAGED_CONTAINERS override → env override has no effect
 #   MM5: Skip bake partition entirely → all cells end up in matrix (wrong)
 #   MM6: Duplicate cells across partitions → total count exceeds input length
@@ -50,8 +50,8 @@ teardown() {
 #
 # debian: bake-managed but no is_latest_version:true → stays in .matrix (not latest).
 # terraform: bake-managed (PR-B slices 2-4) but no is_latest_version:true → stays in
-#   .matrix (not latest).  postgres would be the "not bake-managed" negative example
-#   for is_bake_managed tests — terraform is now in the managed set.
+#   .matrix (not latest).  Since the whole repo is now bake-managed, synthetic
+#   legacy-matrix cells are used as the not-managed negative examples.
 # ---------------------------------------------------------------------------
 _fixture_builds() {
     jq -cn '
@@ -93,8 +93,39 @@ _fixture_retained_bake_builds() {
       {"container":"wordpress",    "os":"linux","tag":"latest-6.4.0",       "variant":"latest","is_latest_version":false},
       {"container":"web-shell",    "os":"linux","tag":"alpine-2.0.0",       "variant":"alpine","is_latest_version":true},
       {"container":"web-shell",    "os":"linux","tag":"alpine-1.0.0",       "variant":"alpine","is_latest_version":false},
-      {"container":"postgres",     "os":"linux","tag":"17-alpine",          "variant":"17-alpine","is_latest_version":true},
-      {"container":"postgres",     "os":"linux","tag":"16-alpine",          "variant":"16-alpine","is_latest_version":false}
+      {"container":"legacy-matrix","os":"linux","tag":"17-alpine",          "variant":"17-alpine","is_latest_version":true},
+      {"container":"legacy-matrix","os":"linux","tag":"16-alpine",          "variant":"16-alpine","is_latest_version":false}
+    ]'
+}
+
+# Fixture for postgres final-image routing.  The real postgres variants.yaml has
+# 3 supported majors and 7 flavors; non-latest majors are intentionally included
+# because build.always_all_versions:true must route them to bake.
+_fixture_postgres_all_versions_builds() {
+    jq -cn '
+    ["18","17","16"] as $majors |
+    [
+      {"flavor":"base", "suffix":"", "default":true},
+      {"flavor":"vector", "suffix":"-vector", "default":false},
+      {"flavor":"analytics", "suffix":"-analytics", "default":false},
+      {"flavor":"timeseries", "suffix":"-timeseries", "default":false},
+      {"flavor":"spatial", "suffix":"-spatial", "default":false},
+      {"flavor":"distributed", "suffix":"-distributed", "default":false},
+      {"flavor":"full", "suffix":"-full", "default":false}
+    ] as $flavors |
+    [
+      $majors[] as $major |
+      $flavors[] as $flavor |
+      {
+        "container": "postgres",
+        "os": "linux",
+        "version": $major,
+        "tag": ($major + $flavor.suffix + "-alpine"),
+        "variant": ($major + $flavor.suffix + "-alpine"),
+        "flavor": $flavor.flavor,
+        "is_default": $flavor.default,
+        "is_latest_version": ($major == "18")
+      }
     ]'
 }
 
@@ -252,11 +283,11 @@ ubuntu-1.0.0"
 }
 
 # ---------------------------------------------------------------------------
-# BM-08: is_bake_managed — web-shell returns 0; postgres returns 1 (stays on
-#         extension pipeline / flat matrix, never bake-managed).
+# BM-08: is_bake_managed — web-shell and postgres return 0; a synthetic
+#         legacy-matrix container returns 1.
 # Catches: MM1, MM2, MM3, MM9 (broader coverage)
 # ---------------------------------------------------------------------------
-@test "BM-08: is_bake_managed covers web-shell (0) and postgres (1)" {
+@test "BM-08: is_bake_managed covers web-shell/postgres (0) and legacy-matrix (1)" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -264,16 +295,18 @@ ubuntu-1.0.0"
     [[ "$status" -eq 0 ]]
 
     run is_bake_managed "postgres"
+    [[ "$status" -eq 0 ]]
+
+    run is_bake_managed "legacy-matrix"
     [[ "$status" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
 # BM-08b: is_bake_managed — PR-B slice 1 containers (debian/vector/jekyll/ansible)
-#          return 0 (in default set); postgres returns 1 (extension pipeline — never
-#          bake-managed).  terraform is no longer the negative example: it joined
-#          the bake-managed set in PR-B slices 2-4 (see BM-08c).
+#          return 0 (in default set).  terraform joined the bake-managed set in
+#          PR-B slices 2-4 (see BM-08c).
 # ---------------------------------------------------------------------------
-@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible; 1 for postgres" {
+@test "BM-08b: is_bake_managed returns 0 for debian/vector/jekyll/ansible/postgres" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -290,16 +323,16 @@ ubuntu-1.0.0"
     [[ "$status" -eq 0 ]]
 
     run is_bake_managed "postgres"
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
 }
 
 # ---------------------------------------------------------------------------
 # BM-08c: is_bake_managed — PR-B slices 2-4 new containers (sslh/openvpn/php/
-#          openresty/terraform) return 0 (now in default set); postgres returns 1
-#          (extension pipeline, stays on flat matrix — canonical negative example).
+#          openresty/terraform) return 0 (now in default set); synthetic
+#          legacy-matrix returns 1.
 # Catches: MM3c
 # ---------------------------------------------------------------------------
-@test "BM-08c: is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for postgres" {
+@test "BM-08c: is_bake_managed returns 0 for sslh/openvpn/php/openresty/terraform; 1 for legacy-matrix" {
     # shellcheck disable=SC1090
     source "$BM"
 
@@ -318,30 +351,31 @@ ubuntu-1.0.0"
     run is_bake_managed "terraform"
     [[ "$status" -eq 0 ]]
 
-    run is_bake_managed "postgres"
+    run is_bake_managed "legacy-matrix"
     [[ "$status" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
-# BM-08d: Full 12-container bake-managed set — every Linux container that routes
-#          through bake is listed; postgres is the canonical not-managed container.
+# BM-08d: Full 13-container bake-managed set — every Linux container that routes
+#          through bake is listed.
 #          Mutation guard for the complete set (MM3c comprehensive coverage).
 # ---------------------------------------------------------------------------
-@test "BM-08d: all 12 bake-managed containers return 0; postgres returns 1" {
+@test "BM-08d: all 13 bake-managed containers return 0; legacy-matrix returns 1" {
     # shellcheck disable=SC1090
     source "$BM"
 
-    local -a managed_12=(
+    local -a managed_13=(
         github-runner web-shell wordpress
         debian vector jekyll ansible
         sslh openvpn php openresty terraform
+        postgres
     )
-    for c in "${managed_12[@]}"; do
+    for c in "${managed_13[@]}"; do
         run is_bake_managed "$c"
         [[ "$status" -eq 0 ]] || { echo "FAIL: $c should be bake-managed"; return 1; }
     done
 
-    run is_bake_managed "postgres"
+    run is_bake_managed "legacy-matrix"
     [[ "$status" -eq 1 ]]
 }
 
@@ -577,7 +611,7 @@ ubuntu-1.0.0"
 
 # ---------------------------------------------------------------------------
 # BM-17: PR routing no longer forces matrix.  With force_matrix=false, bake-managed
-#         latest Linux cells route to .bake, while postgres/windows stay in .matrix
+#         latest Linux cells route to .bake, while legacy-matrix/windows stay in .matrix
 #         through the normal partition gates.  PR Trivy coverage now runs inline in
 #         bake-build for those bake-managed cells.
 # Catches: PR routing accidentally preserving pull_request in force_matrix
@@ -592,7 +626,7 @@ ubuntu-1.0.0"
       {"container":"web-shell","os":"linux","tag":"alpine-1.0.0","is_latest_version":true},
       {"container":"wordpress","os":"linux","tag":"latest-6.5.0","is_latest_version":true},
       {"container":"github-runner","os":"windows","tag":"windows-2022-2.334.0","is_latest_version":true},
-      {"container":"postgres","os":"linux","tag":"17-alpine","is_latest_version":true}
+      {"container":"legacy-matrix","os":"linux","tag":"17-alpine","is_latest_version":true}
     ]')
 
     # The split-build-engine step keeps force_matrix="false" when EVENT_NAME == pull_request.
@@ -612,8 +646,8 @@ ubuntu-1.0.0"
     windows_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "github-runner" and .os == "windows")] | length')
     [[ "$windows_matrix_count" -eq 1 ]]
 
-    postgres_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "postgres")] | length')
-    [[ "$postgres_matrix_count" -eq 1 ]]
+    legacy_matrix_count=$(echo "$result" | jq '[.matrix[] | select(.container == "legacy-matrix")] | length')
+    [[ "$legacy_matrix_count" -eq 1 ]]
 
     # Lossless
     total=$(echo "$result" | jq '.bake + .matrix | length')
@@ -727,11 +761,11 @@ ubuntu-1.0.0"
     ws_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == true)] | length')
     [[ "$ws_latest_bake" -eq 1 ]]
 
-    # Non-bake postgres stays matrix for both latest and retained.
-    postgres_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "postgres")] | length')
-    [[ "$postgres_matrix" -eq 2 ]]
-    postgres_bake=$(echo "$result" | jq '[.bake[] | select(.container == "postgres")] | length')
-    [[ "$postgres_bake" -eq 0 ]]
+    # Non-bake legacy-matrix stays matrix for both latest and retained.
+    legacy_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "legacy-matrix")] | length')
+    [[ "$legacy_matrix" -eq 2 ]]
+    legacy_bake=$(echo "$result" | jq '[.bake[] | select(.container == "legacy-matrix")] | length')
+    [[ "$legacy_bake" -eq 0 ]]
 
     total=$(echo "$result" | jq '.bake + .matrix | length')
     [[ "$total" -eq 10 ]]
@@ -757,4 +791,133 @@ ubuntu-1.0.0"
     [[ "$retained_bake_absent" -eq 0 ]]
     retained_matrix_absent=$(echo "$result_absent" | jq '[.matrix[] | select(.is_latest_version == false)] | length')
     [[ "$retained_matrix_absent" -eq 5 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-22: postgres build.always_all_versions routes every final-image cell to
+#         bake, including non-latest PG majors 17/16.
+# ---------------------------------------------------------------------------
+@test "BM-22: postgres always_all_versions routes all 21 cells to bake" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    fixture=$(_fixture_postgres_all_versions_builds)
+    result=$(partition_builds "$fixture" "false" "false")
+
+    postgres_bake=$(echo "$result" | jq '[.bake[] | select(.container == "postgres")] | length')
+    [[ "$postgres_bake" -eq 21 ]]
+
+    postgres_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "postgres")] | length')
+    [[ "$postgres_matrix" -eq 0 ]]
+
+    non_latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "postgres" and .is_latest_version == false)] | length')
+    [[ "$non_latest_bake" -eq 14 ]]
+
+    majors=$(echo "$result" | jq -r '[.bake[] | select(.container == "postgres") | .version] | unique | sort | join(" ")')
+    [[ "$majors" == "16 17 18" ]]
+
+    flavor_count=$(echo "$result" | jq '[.bake[] | select(.container == "postgres") | .flavor] | unique | length')
+    [[ "$flavor_count" -eq 7 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-23: Non-always-all managed containers still keep non-latest cells on the
+#         matrix when include_retained=false.
+# ---------------------------------------------------------------------------
+@test "BM-23: non-always-all managed retained cell stays matrix when include_retained=false" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    fixture=$(jq -cn '
+    [
+      {"container":"web-shell","os":"linux","tag":"alpine-2.0.0","variant":"alpine","is_latest_version":true},
+      {"container":"web-shell","os":"linux","tag":"alpine-1.0.0","variant":"alpine","is_latest_version":false}
+    ]')
+
+    result=$(partition_builds "$fixture" "false" "false")
+
+    latest_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == true)] | length')
+    [[ "$latest_bake" -eq 1 ]]
+
+    retained_matrix=$(echo "$result" | jq '[.matrix[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
+    [[ "$retained_matrix" -eq 1 ]]
+
+    retained_bake=$(echo "$result" | jq '[.bake[] | select(.container == "web-shell" and .is_latest_version == false)] | length')
+    [[ "$retained_bake" -eq 0 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-24: Vanish-proof invariant — every input cell appears in exactly one
+#         output partition.
+# ---------------------------------------------------------------------------
+@test "BM-24: partition is lossless and non-overlapping with postgres always-all cells" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    postgres_fixture=$(_fixture_postgres_all_versions_builds)
+    fixture=$(jq -cn --argjson pg "$postgres_fixture" '
+      $pg + [
+        {"container":"web-shell","os":"linux","tag":"alpine-2.0.0","flavor":"base","is_latest_version":true},
+        {"container":"web-shell","os":"linux","tag":"alpine-1.0.0","flavor":"base","is_latest_version":false},
+        {"container":"legacy-matrix","os":"linux","tag":"1.0.0","flavor":"base","is_latest_version":true}
+      ]')
+
+    result=$(partition_builds "$fixture" "false" "false")
+
+    input_count=$(echo "$fixture" | jq 'length')
+    output_count=$(echo "$result" | jq '.bake + .matrix | length')
+    [[ "$output_count" -eq "$input_count" ]]
+
+    echo "$result" | jq -e --argjson input "$fixture" '
+      def key: [.container, .tag, (.flavor // "")];
+      (($input | map(key) | sort) == ((.bake + .matrix) | map(key) | sort))
+      and (((.bake + .matrix) | map(key) | unique | length) == ($input | length))
+    ' >/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# BM-25: _has_extension_pipeline detects containers with extensions/config.yaml.
+# ---------------------------------------------------------------------------
+@test "BM-25: _has_extension_pipeline returns true for postgres and false for debian" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    run _has_extension_pipeline "postgres"
+    [[ "$status" -eq 0 ]]
+
+    run _has_extension_pipeline "debian"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-26: extension_containers_in returns sorted-unique extension/final-build
+#         container lists from build-cell JSON.
+# ---------------------------------------------------------------------------
+@test "BM-26: extension_containers_in returns postgres for mixed builds and empty for postgres-free builds" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    postgres_fixture=$(_fixture_postgres_all_versions_builds)
+    mixed_fixture=$(jq -cn --argjson pg "$postgres_fixture" '
+      $pg + [
+        {"container":"debian","os":"linux","tag":"bookworm-13.0.0","is_latest_version":true},
+        {"container":"debian","os":"linux","tag":"bookworm-12.0.0","is_latest_version":false}
+      ]')
+    postgres_free_fixture=$(jq -cn '
+      [
+        {"container":"debian","os":"linux","tag":"bookworm-13.0.0","is_latest_version":true},
+        {"container":"web-shell","os":"linux","tag":"alpine-2.0.0","is_latest_version":true}
+      ]')
+
+    extension_builds=$(extension_containers_in "$mixed_fixture" "any")
+    [[ "$extension_builds" == '["postgres"]' ]]
+
+    bake_final_builds=$(extension_containers_in "$mixed_fixture" "final")
+    [[ "$bake_final_builds" == '["postgres"]' ]]
+
+    extension_builds_empty=$(extension_containers_in "$postgres_free_fixture" "any")
+    [[ "$extension_builds_empty" == '[]' ]]
+
+    bake_final_builds_empty=$(extension_containers_in "$postgres_free_fixture" "final")
+    [[ "$bake_final_builds_empty" == '[]' ]]
 }

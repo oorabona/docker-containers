@@ -541,3 +541,23 @@ GEN_EOF
 
     unset _MDH_GENERATOR_OVERRIDE
 }
+
+# ---------------------------------------------------------------------------
+# MD8: mirror self-derives --include-final-build for bake-final containers, so
+# the nightly reconcile (which sets no BAKE_GENERATE_FINAL_BUILD) still mirrors
+# postgres final-image tags after the bake migration.
+# ---------------------------------------------------------------------------
+@test "MD-08: _mdh_any_bake_final true for postgres, false for non-extension containers" {
+    run bash -c '
+        set +u
+        _MDH_SCRIPT_DIR="'"${HELPERS_DIR}"'"
+        source "'"${HELPERS_DIR}"'/mirror-dockerhub.sh" >/dev/null 2>&1
+        _mdh_any_bake_final postgres        && echo "pg=final"
+        _mdh_any_bake_final debian vector   || echo "deb=plain"
+        _mdh_any_bake_final debian postgres && echo "mixed=final"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"pg=final"* ]]
+    [[ "$output" == *"deb=plain"* ]]
+    [[ "$output" == *"mixed=final"* ]]
+}

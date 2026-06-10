@@ -27,6 +27,10 @@
 #   0  — all files written (individual results are in the files, not the exit code)
 #   1  — --cells invocation failed (cannot enumerate cells; no files written)
 #
+# Environment variables honoured:
+#   BAKE_GENERATE_ALL_RETAINED  — when "true", pass --all-retained to the generator
+#   BAKE_GENERATE_FINAL_BUILD   — when "true", pass --include-final-build to the generator
+#
 # Requirements: bash 4+, jq
 
 set -euo pipefail
@@ -67,6 +71,9 @@ emit_bake_build_results() {
     local -a cells_args=("--cells")
     if [[ "${BAKE_GENERATE_ALL_RETAINED:-}" == "true" ]]; then
         cells_args+=("--all-retained")
+    fi
+    if [[ "${BAKE_GENERATE_FINAL_BUILD:-}" == "true" ]]; then
+        cells_args+=("--include-final-build")
     fi
     # Match the scoped bake build set. If this helper enumerates unscoped
     # cells, scoped-out targets that are absent from metadata become false

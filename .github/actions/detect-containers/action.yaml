@@ -85,6 +85,12 @@ outputs:
   matrix_builds:
     description: 'JSON array of builds routed to the flat matrix engine (all non-bake containers)'
     value: ${{ steps.split-build-engine.outputs.matrix_builds }}
+  extension_builds:
+    description: 'JSON array of distinct detected containers that have extensions/config.yaml'
+    value: ${{ steps.split-build-engine.outputs.extension_builds }}
+  bake_final_builds:
+    description: 'JSON array of distinct bake-routed extension containers with build.bake_final_build enabled'
+    value: ${{ steps.split-build-engine.outputs.bake_final_builds }}
   postgres_matrix_builds:
     description: 'JSON array of postgres builds routed to the flat matrix engine'
     value: ${{ steps.split-build-engine.outputs.postgres_matrix_builds }}
@@ -704,6 +710,8 @@ runs:
 
         bake_builds=$(echo "$partitioned" | jq -c '.bake')
         matrix_builds=$(echo "$partitioned" | jq -c '.matrix')
+        extension_builds=$(extension_containers_in "$builds_input" "any")
+        bake_final_builds=$(extension_containers_in "$bake_builds" "final")
         postgres_matrix_builds=$(echo "$matrix_builds" | jq -c '[.[] | select(.container == "postgres")]')
 
         bake_count=$(echo "$bake_builds" | jq 'length')
@@ -711,5 +719,7 @@ runs:
 
         echo "bake_builds=$bake_builds" >> "$GITHUB_OUTPUT"
         echo "matrix_builds=$matrix_builds" >> "$GITHUB_OUTPUT"
+        echo "extension_builds=$extension_builds" >> "$GITHUB_OUTPUT"
+        echo "bake_final_builds=$bake_final_builds" >> "$GITHUB_OUTPUT"
         echo "postgres_matrix_builds=$postgres_matrix_builds" >> "$GITHUB_OUTPUT"
         echo "::notice::Build engine split: bake=$bake_count matrix=$matrix_count (force_matrix=${force_matrix} event=${EVENT_NAME})"

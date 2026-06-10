@@ -13,7 +13,7 @@
 #
 # The bake-managed set defaults to:
 #   github-runner web-shell wordpress debian vector jekyll ansible
-#   sslh openvpn php openresty terraform
+#   sslh openvpn php openresty terraform postgres
 # Override at any time via BAKE_MANAGED_CONTAINERS env (space-separated).
 #
 # Requirements: bash 4+, jq
@@ -41,7 +41,7 @@ source "${_BM_SCRIPT_DIR}/logging.sh"
 # operators and tests to expand the set without code changes.
 # ---------------------------------------------------------------------------
 bake_managed_containers() {
-    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform}"
+    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres}"
 }
 
 # ---------------------------------------------------------------------------
@@ -85,6 +85,108 @@ _bake_container_latest_only() {
     local val
     val=$(yq e '.build.bake_latest_only // false' "$variants_file" 2>/dev/null) || return 1
     [[ "$val" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# _bake_container_always_all_versions <container>
+#
+# Returns 0 (true) if the container declares build.always_all_versions: true in
+# its variants.yaml; returns 1 (false) otherwise.  Tolerates a missing file,
+# a missing field, or a non-true value — all default to false.
+# ---------------------------------------------------------------------------
+_bake_container_always_all_versions() {
+    local container="$1"
+    local repo_root
+    repo_root="$(dirname "${_BM_SCRIPT_DIR}")"
+    local variants_file="${repo_root}/${container}/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        return 1
+    fi
+
+    local val
+    val=$(yq -r '.build.always_all_versions // false' "$variants_file" 2>/dev/null) || return 1
+    [[ "$val" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# _has_extension_pipeline <container>
+#
+# Returns 0 (true) if the container owns an extension sub-pipeline via
+# <container>/extensions/config.yaml; returns 1 otherwise.
+# ---------------------------------------------------------------------------
+_has_extension_pipeline() {
+    local container="$1"
+    local repo_root
+    repo_root="${PROJECT_ROOT:-$(dirname "${_BM_SCRIPT_DIR}")}"
+
+    [[ -f "${repo_root}/${container}/extensions/config.yaml" ]]
+}
+
+# ---------------------------------------------------------------------------
+# bake_final_build_enabled <container>
+#
+# Returns 0 (true) if the container declares build.bake_final_build: true in
+# variants.yaml; returns 1 (false) otherwise.  Tolerates a missing file, a
+# missing field, or a non-true value — all default to false.
+# ---------------------------------------------------------------------------
+bake_final_build_enabled() {
+    local container="$1"
+    local repo_root
+    repo_root="${PROJECT_ROOT:-$(dirname "${_BM_SCRIPT_DIR}")}"
+    local variants_file="${repo_root}/${container}/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        return 1
+    fi
+
+    local val
+    val=$(yq -r '.build.bake_final_build // false' "$variants_file" 2>/dev/null) || return 1
+    [[ "$val" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# extension_containers_in <builds_json> [any|final]
+#
+# Prints a compact JSON array of sorted-unique container names from builds_json
+# that have extensions/config.yaml.  In "final" mode, containers must also opt
+# into build.bake_final_build:true.
+# ---------------------------------------------------------------------------
+extension_containers_in() {
+    local builds_json="$1"
+    local mode="${2:-any}"
+
+    if [[ "$mode" != "any" && "$mode" != "final" ]]; then
+        echo "::error::extension_containers_in: mode must be any or final" >&2
+        return 1
+    fi
+
+    if [[ -z "$builds_json" ]]; then
+        echo "::error::extension_containers_in: empty input" >&2
+        return 1
+    fi
+
+    if ! echo "$builds_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        echo "::error::extension_containers_in: input is not a JSON array" >&2
+        return 1
+    fi
+
+    local -a containers=()
+    local container
+    while IFS= read -r container; do
+        [[ -n "$container" ]] || continue
+        _has_extension_pipeline "$container" || continue
+        if [[ "$mode" == "final" ]]; then
+            bake_final_build_enabled "$container" || continue
+        fi
+        containers+=("$container")
+    done < <(echo "$builds_json" | jq -r '[.[] | .container // empty] | unique | .[]')
+
+    if [[ ${#containers[@]} -eq 0 ]]; then
+        echo '[]'
+    else
+        printf '%s\n' "${containers[@]}" | jq -R . | jq -s -c 'sort | unique'
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -248,8 +350,9 @@ _bake_retained_eligible() {
 #   A cell lands in .bake only when ALL of the following hold:
 #     1. Its .container is in the bake-managed set.
 #     2. Its .os is "linux" or absent/empty (linux cells may omit the field).
-#     3. Its .is_latest_version is explicitly true OR include_retained is
-#        "true" and the container is retained-eligible.
+#     3. Its .is_latest_version is explicitly true OR the container declares
+#        build.always_all_versions:true OR include_retained is "true" and the
+#        container is retained-eligible.
 #   All other cells go to .matrix so the flat matrix handles them faithfully.
 #
 # Design rationale: retained-bake is deliberately limited to B1-core standalone
@@ -286,7 +389,8 @@ partition_builds() {
         return 0
     fi
 
-    # Build jq array arguments from the managed set and retained-eligible set.
+    # Build jq array arguments from the managed set, always-all set, and
+    # retained-eligible set.
     # Read into an array so word-splitting is explicit and shellcheck-clean.
     local managed
     managed=$(bake_managed_containers)
@@ -297,6 +401,18 @@ partition_builds() {
         managed_jq_array=$(printf '%s\n' "${managed_arr[@]}" | jq -R . | jq -s -c .)
     else
         managed_jq_array='[]'
+    fi
+
+    local -a always_all_arr=()
+    local always_c
+    for always_c in "${managed_arr[@]}"; do
+        if _bake_container_always_all_versions "$always_c"; then
+            always_all_arr+=("$always_c")
+        fi
+    done
+    local always_all_jq_array='[]'
+    if [[ ${#always_all_arr[@]} -gt 0 ]]; then
+        always_all_jq_array=$(printf '%s\n' "${always_all_arr[@]}" | jq -R . | jq -s -c .)
     fi
 
     local eligible_jq_array='[]'
@@ -324,8 +440,9 @@ partition_builds() {
     # A cell lands in .bake only when ALL hold:
     #   (a) container is bake-managed
     #   (b) .os is "linux" or absent/empty (linux cells may omit the field)
-    #   (c) .is_latest_version is explicitly true OR include_retained=true and
-    #       the container is retained-eligible
+    #   (c) .is_latest_version is explicitly true OR build.always_all_versions
+    #       is true for the container OR include_retained=true and the container
+    #       is retained-eligible
     #
     # Non-eligible retained cells route to .matrix so the flat matrix builds
     # them with per-cell scan/attest fidelity.
@@ -333,35 +450,28 @@ partition_builds() {
     # any() filter runs in string context (not object context).
     echo "$builds_json" | jq -c \
         --argjson managed "$managed_jq_array" \
+        --argjson always_all "$always_all_jq_array" \
         --argjson eligible "$eligible_jq_array" \
         --arg include_retained "$include_retained" \
-        '{
-            bake:   [.[] | select(
-                        (
-                            (.container as $c | $managed | any(. == $c))
-                            and ((.os // "") == "" or (.os // "") == "linux")
-                            and (
-                                (.is_latest_version == true)
-                                or (
-                                    $include_retained == "true"
-                                    and (.container as $c | $eligible | any(. == $c))
-                                )
-                            )
-                        )
-                    )],
-            matrix: [.[] | select(
-                        (
-                            (.container as $c | $managed | any(. == $c))
-                            and ((.os // "") == "" or (.os // "") == "linux")
-                            and (
-                                (.is_latest_version == true)
-                                or (
-                                    $include_retained == "true"
-                                    and (.container as $c | $eligible | any(. == $c))
-                                )
-                            )
-                        ) | not
-                    )]
+        '
+        def in_set($arr; $v): $arr | any(. == $v);
+        def routes_to_bake:
+            .container as $c
+            | (
+                in_set($managed; $c)
+                and ((.os // "") == "" or (.os // "") == "linux")
+                and (
+                    (.is_latest_version == true)
+                    or in_set($always_all; $c)
+                    or (
+                        $include_retained == "true"
+                        and in_set($eligible; $c)
+                    )
+                )
+            );
+        {
+            bake:   [.[] | select(routes_to_bake)],
+            matrix: [.[] | select(routes_to_bake | not)]
         }'
 }
 

@@ -7,6 +7,7 @@
 #   ./version.sh 17               # Latest version for major 17
 #   ./version.sh --registry-pattern       # Pattern for any version
 #   ./version.sh --registry-pattern 17    # Pattern for major 17
+#   ./version.sh --tag-suffix             # Published tag suffix (-alpine), offline
 
 MAJOR_VERSION=""
 REGISTRY_PATTERN=false
@@ -14,6 +15,15 @@ REGISTRY_PATTERN=false
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --tag-suffix)
+            # Network-free suffix of the published tags (e.g. 18-alpine,
+            # 17-vector-alpine). Mirrors the other bake-managed version.sh
+            # scripts so the bake generator's UPSTREAM_VERSION derivation stays
+            # offline. postgres's Dockerfile does not consume UPSTREAM_VERSION
+            # today, but the branch keeps the fleet parity contract intact.
+            echo "-alpine"
+            exit 0
+            ;;
         --registry-pattern)
             REGISTRY_PATTERN=true
             shift

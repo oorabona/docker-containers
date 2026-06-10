@@ -229,6 +229,8 @@ jobs:
       builds_count: ${{ steps.detect.outputs.builds_count }}
       bake_builds: ${{ steps.detect.outputs.bake_builds }}
       matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
+      extension_builds: ${{ steps.detect.outputs.extension_builds }}
+      bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
     steps:
       - name: Checkout repository
@@ -281,7 +283,7 @@ jobs:
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      needs.detect-containers.outputs.extension_builds != '[]' &&
       github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -548,7 +550,7 @@ jobs:
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      needs.detect-containers.outputs.extension_builds != '[]' &&
       github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       needs.build-extensions.result == 'success' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -1533,12 +1535,14 @@ jobs:
 
   bake-build-amd64:
     name: Bake build (amd64)
-    needs: [detect-containers, sync-base-images]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
       fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
       toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -1588,6 +1592,15 @@ jobs:
           # Extract unique container names from the bake_builds cell array (injection-safe via env)
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (amd64): ${containers}"
@@ -1636,6 +1649,24 @@ jobs:
             fi
           done <<< "$versions"
 
+      - name: Download extension lineage (postgres final-image bake)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+        continue-on-error: true
+
+      - name: Install skopeo (extension final-build self-heal fallback)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        shell: bash
+        run: |
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y skopeo
+          fi
+          skopeo --version
+
       - name: Generate bake HCL and build (amd64)
         id: bake-build
         env:
@@ -1646,6 +1677,9 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+          REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
           chmod +x scripts/generate-bake-hcl.sh
@@ -1684,11 +1718,15 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
           bake_latest_file="${RUNNER_TEMP}/bake-amd64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
           REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
-            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
+            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
@@ -1696,7 +1734,7 @@ jobs:
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             # Merge latest + retained HCL. On a target-key collision (a container's
             # latest target appears in both passes) the retained pass wins. Safe
             # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
@@ -1755,6 +1793,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
@@ -1823,6 +1862,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
@@ -1834,9 +1874,13 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           # shellcheck disable=SC2086
-          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" ${BAKE_CONTAINERS})
+          cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
           # B1-core: also SBOM the retained cells of eligible containers, else
           # bake-attest (which matrices over all bake_builds incl. retained) finds
           # no SBOM and silently skips attestation for retained images. Merge +
@@ -1844,7 +1888,7 @@ jobs:
           # the SBOM loop is per-cell independent).
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # shellcheck disable=SC2086
-            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            retained_cells=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             cells_json=$(jq -s '(.[0] + .[1]) | unique_by([.container, (.tag // ""), (.flavor // "")])' <<< "$cells_json"$'\n'"$retained_cells")
           fi
           ncells=$(jq 'length' <<< "$cells_json")
@@ -1966,12 +2010,14 @@ jobs:
 
   bake-build-arm64:
     name: Bake build (arm64)
-    needs: [detect-containers, sync-base-images]
+    needs: [detect-containers, build-extensions, merge-extension-manifests, sync-base-images]
     if: |
       always() &&
       inputs.rebuild != 'sync' &&
       fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
       toJson(fromJson(needs.detect-containers.outputs.bake_builds || '[]')) != '[]' &&
+      (needs.build-extensions.result == 'success' || needs.build-extensions.result == 'skipped') &&
+      (needs.merge-extension-manifests.result == 'success' || needs.merge-extension-manifests.result == 'skipped') &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
@@ -2020,6 +2066,15 @@ jobs:
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (arm64): ${containers}"
@@ -2066,6 +2121,24 @@ jobs:
             fi
           done <<< "$versions"
 
+      - name: Download extension lineage (postgres final-image bake)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/
+        continue-on-error: true
+
+      - name: Install skopeo (extension final-build self-heal fallback)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        shell: bash
+        run: |
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y skopeo
+          fi
+          skopeo --version
+
       - name: Generate bake HCL and build (arm64)
         id: bake-build
         env:
@@ -2076,6 +2149,9 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+          REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
           chmod +x scripts/generate-bake-hcl.sh
@@ -2105,11 +2181,15 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
           bake_latest_file="${RUNNER_TEMP}/bake-arm64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
           REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=false \
-            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
+            ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS} > "$bake_latest_file"
           cp "$bake_latest_file" "$bake_file"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
@@ -2117,7 +2197,7 @@ jobs:
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" BAKE_CACHE_EXPORT="$bake_cache_export" _BAKE_INCLUDE_ALL_RETAINED=true \
-              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
+              ./scripts/generate-bake-hcl.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS} > "$bake_retained_file"
             # Merge latest + retained HCL. On a target-key collision (a container's
             # latest target appears in both passes) the retained pass wins. Safe
             # ONLY because BAKE_RETAINED_CONTAINERS are retained-eligible, i.e. have
@@ -2174,6 +2254,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
@@ -2627,6 +2708,15 @@ jobs:
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
 
@@ -2635,6 +2725,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
         run: |
@@ -2655,6 +2746,10 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           # Bake defaults to latest-only.  When build_all_retained is true,
           # merge retained cells only for the retained-eligible container subset.
@@ -2662,23 +2757,23 @@ jobs:
             echo "::notice::manifest merge running in DRY-RUN (no canonical tags published; dry_run=${DRY_RUN})"
             # shellcheck disable=SC2086
             DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
-              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" ${BAKE_CONTAINERS}
+              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS}
           else
             # BAKE_CONTAINERS is operator-set from bake_builds JSON (trusted context)
             # shellcheck disable=SC2086
             REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=false \
-              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" ${BAKE_CONTAINERS}
+              ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS}
           fi
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             if [[ "$DRY_RUN" == "true" ]]; then
               # shellcheck disable=SC2086
               DRY_RUN=true REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             else
               # shellcheck disable=SC2086
               REMOTE_CR="$REMOTE_CR" _BAKE_INCLUDE_ALL_RETAINED=true \
-                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
+                ./scripts/bake-merge-manifests.sh "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS}
             fi
           fi
 
@@ -2688,6 +2783,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
         run: |
@@ -2715,6 +2811,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           MERGE_OUTCOME: ${{ steps.bake-merge-step.outcome }}
         run: |
           set -euo pipefail
@@ -2729,6 +2826,10 @@ jobs:
           [[ -n "${SCOPE_VERSIONS:-}" ]] && scope_args+=(--scope-versions "${SCOPE_VERSIONS}")
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
+          final_args=()
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           emit_manifest_results() {
             local cells_json="$1"
@@ -2753,13 +2854,13 @@ jobs:
 
           # BAKE_CONTAINERS is operator-set (trusted context)
           # shellcheck disable=SC2086
-          cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=false ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" ${BAKE_CONTAINERS})
+          cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=false ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
           emit_manifest_results "$cells_json"
 
           if [[ "${BUILD_ALL_RETAINED:-false}" == "true" && -n "${BAKE_RETAINED_CONTAINERS:-}" ]]; then
             # BAKE_RETAINED_CONTAINERS is derived from bake_builds retained cells.
             # shellcheck disable=SC2086
-            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
+            cells_json=$(_BAKE_INCLUDE_ALL_RETAINED=true ./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" --all-retained ${BAKE_RETAINED_CONTAINERS})
             emit_manifest_results "$cells_json"
           fi
 

@@ -55,6 +55,6 @@ This is delivered incrementally through the #666 consolidation, plus one path-sp
 - Separate scan jobs add job-scheduling overhead and a small wall-clock cost vs inline scanning; acceptable given the correctness/DRY win.
 
 **Out of scope (unchanged from #666):**
-- postgres → bake (extension build model differs; no base→consumer race).
+- ~~postgres → bake~~ — **amended by ADR-015 (2026-06-10):** the postgres *final image* build moves to bake; only extension *compilation* stays a separate pipeline. The original out-of-scope call conflated the two.
 - Windows → bake (no Linux BuildKit container driver on Windows runners).
 - External base-cache mirror decommission (permanent docker.io rate-limit mitigation, consumed by both paths).
