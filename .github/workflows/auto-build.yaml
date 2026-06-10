@@ -477,7 +477,9 @@ jobs:
           done
 
       - name: Upload extension per-version lineage files (${{ matrix.arch }})
+        id: upload_ext_lineage_per_version
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           # Arch-specific artifact name: the versionset artifact (with bundle_digest)
@@ -492,6 +494,24 @@ jobs:
           # `.build-lineage/` is a dot-prefixed directory; v4 of upload-artifact
           # silently skips files inside hidden directories unless this is set.
           include-hidden-files: true
+
+      - name: Upload extension per-version lineage files (${{ matrix.arch }}) (retry on transient failure)
+        if: always() && steps.upload_ext_lineage_per_version.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          # Arch-specific artifact name: the versionset artifact (with bundle_digest)
+          # is written by merge-extension-manifests (stage B), not here.
+          # Per-version duration files use arch-suffixed names (ext-*-<ver>-amd64.json,
+          # etc.) to avoid collision when both arch artifacts are downloaded together;
+          # AX-3 consolidation in stage B merges them with MAX policy.
+          name: ext-lineage-${{ github.run_id }}-${{ matrix.arch }}
+          path: .build-lineage/ext-*.json
+          retention-days: 1
+          if-no-files-found: ignore
+          # `.build-lineage/` is a dot-prefixed directory; v4 of upload-artifact
+          # silently skips files inside hidden directories unless this is set.
+          include-hidden-files: true
+          overwrite: true
 
       - name: Emit build-result artifact (postgres extensions, ${{ matrix.arch }})
         if: always()
@@ -695,7 +715,9 @@ jobs:
           done
 
       - name: Upload canonical lineage (versionset + consolidated duration files)
+        id: upload_ext_lineage_canonical
         if: always() && hashFiles('.build-lineage/ext-*.json') != ''
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           # Canonical artifact: consumed by the postgres build-and-push job.
@@ -710,6 +732,24 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
           include-hidden-files: true
+
+      - name: Upload canonical lineage (versionset + consolidated duration files) (retry on transient failure)
+        if: always() && steps.upload_ext_lineage_canonical.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          # Canonical artifact: consumed by the postgres build-and-push job.
+          # Contains versionset artifacts (ext-*-versionset.json) and consolidated
+          # per-version duration files (ext-<ext>-pg<major>-<ver>.json, no arch suffix)
+          # after AX-3 MAX-policy consolidation by finalize_multiarch_manifests.
+          # Arch-specific duration files (*-amd64.json, *-arm64.json) are removed by
+          # AX-3 consolidation before upload; after consolidation only the canonical
+          # (un-suffixed) files remain.
+          name: ext-lineage-${{ github.run_id }}
+          path: .build-lineage/ext-*.json
+          retention-days: 1
+          if-no-files-found: ignore
+          include-hidden-files: true
+          overwrite: true
 
       - name: Emit build-result artifact (postgres extmerge)
         if: always()
@@ -1249,7 +1289,9 @@ jobs:
         continue-on-error: true
 
       - name: Upload SBOM artifact
+        id: upload_sbom_artifact
         if: steps.sbom.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
@@ -1257,6 +1299,17 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 1
+
+      - name: Upload SBOM artifact (retry on transient failure)
+        if: always() && steps.upload_sbom_artifact.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: ${{ steps.sbom.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
       - name: Attest SBOM
         if: steps.sbom.outcome == 'success' && steps.sbom.outputs.digest != ''
@@ -1446,7 +1499,9 @@ jobs:
         continue-on-error: true
 
       - name: Upload SBOM artifact (Windows)
+        id: upload_sbom_artifact_windows
         if: steps.sbom-windows.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
@@ -1454,6 +1509,17 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 1
+
+      - name: Upload SBOM artifact (Windows) (retry on transient failure)
+        if: always() && steps.upload_sbom_artifact_windows.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: sbom-${{ matrix.build.container }}-${{ matrix.build.tag }}
+          path: ${{ steps.sbom-windows.outputs.sbom_file }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
       - name: Attest SBOM (Windows)
         if: steps.sbom-windows.outcome == 'success' && steps.sbom-windows.outputs.digest != ''
@@ -1987,6 +2053,7 @@ jobs:
           overwrite: true
 
       - name: Upload build lineage (bake amd64)
+        id: upload_build_lineage_bake_amd64
         if: steps.bake-sbom.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
@@ -2001,6 +2068,22 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 1
+
+      - name: Upload build lineage (bake amd64) (retry on transient failure)
+        if: always() && steps.upload_build_lineage_bake_amd64.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: build-lineage-bake-amd64-${{ github.run_id }}
+          # Lineage sidecars only — exclude build-result records and SBOMs so the
+          # cache-lineage enrichment/drift logic does not ingest them as lineage.
+          path: |
+            .build-lineage/*.json
+            !.build-lineage/build-result-*.json
+            !.build-lineage/*.sbom.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
   bake-build-arm64:
     name: Bake build (arm64)
@@ -2478,16 +2561,28 @@ jobs:
           echo "::notice::Trivy scan history: ${scan_file} (alert_count=${alert_count}, status=${status})"
 
       - name: Upload SARIF to GitHub Security
+        id: upload_sarif_bake
         if: steps.trivy-scan.outcome != 'skipped'
+        continue-on-error: true  # SARIF upload is advisory — never gates the build
         uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
           wait-for-processing: false
+
+      - name: Upload SARIF to GitHub Security (retry on transient failure)
+        if: always() && steps.upload_sarif_bake.outcome == 'failure'
         continue-on-error: true  # SARIF upload is advisory — never gates the build
+        uses: github/codeql-action/upload-sarif@bb471cdcf4dda2c934c5b656f554d43c1434ed13 # v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'container-${{ matrix.build.container }}-${{ matrix.build.tag }}-linux/${{ matrix.arch }}'
+          wait-for-processing: false
 
       - name: Upload Trivy scan history (bake)
+        id: upload_trivy_scan_history_bake
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: trivy-scan-history-bake-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
@@ -2495,6 +2590,18 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 1
+
+      - name: Upload Trivy scan history (bake) (retry on transient failure)
+        if: always() && steps.upload_trivy_scan_history_bake.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: trivy-scan-history-bake-${{ matrix.build.container }}-${{ matrix.build.tag }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: .trivy-scan-history/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
 
   bake-merge:
     # Require BOTH arch builds to succeed before merging.  If either fails the
@@ -3758,7 +3865,22 @@ jobs:
           echo "::notice::Processed $sbom_count SBOM(s); $sbom_failed processing error(s)"
 
       - name: Upload derived lineage files (changelog + history)
+        id: upload_derived_lineage
         if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: lineage-derived-${{ github.run_id }}
+          path: |
+            .build-lineage/*.changelog.json
+            .build-lineage/*.history.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+      - name: Upload derived lineage files (changelog + history) (retry on transient failure)
+        if: always() && steps.upload_derived_lineage.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: lineage-derived-${{ github.run_id }}
