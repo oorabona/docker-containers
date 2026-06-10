@@ -10,6 +10,7 @@
 #   scripts/generate-bake-hcl.sh --cells --scope-versions 1.31 openresty
 #   scripts/generate-bake-hcl.sh --scope-flavors aws terraform
 #   scripts/generate-bake-hcl.sh --scope alpine web-shell
+#   scripts/generate-bake-hcl.sh --include-final-build postgres
 #
 # Output is a JSON bake file (same schema as HCL; docker-buildx bake -f -)
 # written to stdout.  It is a generated artifact — do NOT commit it.
@@ -112,6 +113,9 @@ Usage:
 Options:
   --cells                 Emit compact cell JSON instead of a bake document.
   --all-retained          Include retained versions where allowed.
+  --include-final-build   include flag-marked extension containers' FINAL image build in the graph
+                          (requires their extension lineage artifacts to be present; used by the
+                          postgres bake routing -- NOT by the whole-fleet smoke).
   --scope-versions <csv>  Keep versions matching a comma-separated version list.
   --scope-flavors <csv>   Keep cells whose flavor is in a comma-separated list.
   --scope <str>           Keep cells whose variant/os/build_flavor/flavor contains this string.
@@ -1386,7 +1390,16 @@ _bake_final_build_enabled() {
 _is_bake_excluded_extension_container() {
     local container="$1"
     _is_extension_container "$container" || return 1
-    _bake_final_build_enabled "$container" && return 1
+
+    # build.bake_final_build is only a capability marker. Existing whole-fleet
+    # smoke (bake-build.yaml) and bake_managed fleet builds do not pass
+    # --include-final-build, so postgres stays excluded there; only the future
+    # postgres bake-build job, after downloading extension lineage artifacts,
+    # should activate final-image inclusion.
+    if [[ "${_BAKE_INCLUDE_FINAL_BUILD:-}" == "1" ]] && _bake_final_build_enabled "$container"; then
+        return 1
+    fi
+
     return 0
 }
 
@@ -1397,13 +1410,17 @@ main() {
     local -a requested=()
     local mode="bake"      # default mode
     local include_all_retained="false"   # F4: default = latest-only
+    local include_final_build=""
     local scope_versions=""
     local scope_flavors=""
     local scope=""
 
+    unset _BAKE_INCLUDE_FINAL_BUILD
+
     # Parse flags (order-independent):
     #   --cells                → cells plan mode
     #   --all-retained         → pass include_all_retained=true to list_build_matrix
+    #   --include-final-build  → include flag-marked extension final image builds
     #   --scope-versions <csv> → scope version filter
     #   --scope-flavors <csv>  → scope flavor filter
     #   --scope <str>          → free-form variant/os/build_flavor/flavor filter
@@ -1412,6 +1429,7 @@ main() {
         case "$1" in
             --cells)        mode="cells" ;;
             --all-retained) include_all_retained="true" ;;
+            --include-final-build) include_final_build="1" ;;
             --scope-versions)
                 if [[ $# -lt 2 ]]; then
                     printf 'ERROR: --scope-versions requires a value\n' >&2
@@ -1450,6 +1468,10 @@ main() {
         esac
         shift
     done
+
+    if [[ "$include_final_build" == "1" ]]; then
+        export _BAKE_INCLUDE_FINAL_BUILD=1
+    fi
 
     if [[ ${#args[@]} -gt 0 ]]; then
         requested=("${args[@]}")

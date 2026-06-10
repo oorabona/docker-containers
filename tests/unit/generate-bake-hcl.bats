@@ -574,11 +574,11 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# GBH-25: F1 — postgres final image is explicitly bake-emittable
+# GBH-25: F1 — postgres final image is explicitly bake-emittable when activated
 # Catches: dropping build.bake_final_build support would re-exclude postgres.
 # ---------------------------------------------------------------------------
-@test "GBH-25: postgres --cells emits 21 final-image cells across all supported majors/flavors" {
-    _run_generator --cells postgres
+@test "GBH-25: postgres --include-final-build --cells emits 21 final-image cells across all supported majors/flavors" {
+    _run_generator --include-final-build --cells postgres
     [ "$status" -eq 0 ]
 
     local count majors flavor_count
@@ -596,7 +596,7 @@ YAML
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
 
-    _run_generator_with_lineage_root "$lineage_root" postgres
+    _run_generator_with_lineage_root "$lineage_root" --include-final-build postgres
     rm -rf "$lineage_root"
     [ "$status" -eq 0 ]
 
@@ -630,7 +630,7 @@ YAML
     lineage_root=$(mktemp -d)
     _make_timescaledb_lineage_root "$lineage_root"
 
-    _run_generator_with_lineage_root "$lineage_root" postgres
+    _run_generator_with_lineage_root "$lineage_root" --include-final-build postgres
     rm -rf "$lineage_root"
     [ "$status" -eq 0 ]
 
@@ -642,6 +642,30 @@ YAML
     stripped_doubles="${all_inline//\$\$\{/ESCAPED}"
     bare_count=$(printf '%s' "$stripped_doubles" | grep -cF '${' || true)
     [ "$bare_count" -eq 0 ]
+}
+
+@test "GBH-25d: no-arg whole-fleet generate excludes postgres without final-build activation" {
+    local lineage_root out err
+    lineage_root=$(mktemp -d)
+    out=$(mktemp)
+    err=$(mktemp)
+
+    run bash -c '
+        set -euo pipefail
+        lineage_root="$1"
+        out="$2"
+        err="$3"
+        ROOT_DIR="$lineage_root" GITHUB_REPOSITORY_OWNER=oorabona \
+            "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" >"$out" 2>"$err"
+    ' bash "$lineage_root" "$out" "$err"
+    rm -rf "$lineage_root"
+    [ "$status" -eq 0 ]
+
+    local postgres_targets
+    postgres_targets=$(jq '[.target | to_entries[] | select(.key | startswith("postgres_"))] | length' "$out")
+    [ "$postgres_targets" -eq 0 ]
+
+    rm -f "$out" "$err"
 }
 
 @test "GBH-26: F1 — whole-fleet generate has no postgres target" {
