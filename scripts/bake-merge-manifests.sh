@@ -154,7 +154,7 @@ _merge_cell() {
     fi
 
     local err_output
-    if ! err_output=$(retry_with_backoff 3 5 \
+    if ! err_output=$(retry_with_backoff 3 10 \
         "$DOCKER" buildx imagetools create \
         "${ghcr_tag_args[@]}" \
         "$src_amd64" \

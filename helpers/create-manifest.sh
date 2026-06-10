@@ -130,9 +130,9 @@ create_registry_manifest() {
     version_specific_tag_args=$(_compute_version_specific_tag_args "$target_image" 2>/dev/null) || true
 
     # Try multi-arch manifest first (amd64 + arm64).
-    # retry_with_backoff 3 5: imagetools create is idempotent (same manifest list on retry).
+    # retry_with_backoff 3 10: imagetools create is idempotent (same manifest list on retry).
     local err_output
-    if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $tag_args \
+    if err_output=$(retry_with_backoff 3 10 $DOCKER buildx imagetools create $tag_args \
         "$source_image:$TAG-amd64" \
         "$source_image:$TAG-arm64" 2>&1); then
         echo "::notice::Multi-arch manifest created successfully for $target_image:$TAG"
@@ -142,8 +142,8 @@ create_registry_manifest() {
 
     # Fallback amd64-only — skip if no safe version-specific anchor (P2 fix)
     if [[ -n "$version_specific_tag_args" ]]; then
-        # retry_with_backoff 3 5: idempotent — recreates the same single-arch manifest.
-        if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $version_specific_tag_args \
+        # retry_with_backoff 3 10: idempotent — recreates the same single-arch manifest.
+        if err_output=$(retry_with_backoff 3 10 $DOCKER buildx imagetools create $version_specific_tag_args \
             "$source_image:$TAG-amd64" 2>&1); then
             echo "::warning::Manifest created with amd64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
             return 0
@@ -155,8 +155,8 @@ create_registry_manifest() {
 
     # Fallback arm64-only — skip if no safe version-specific anchor (P2 fix)
     if [[ -n "$version_specific_tag_args" ]]; then
-        # retry_with_backoff 3 5: idempotent — recreates the same single-arch manifest.
-        if err_output=$(retry_with_backoff 3 5 $DOCKER buildx imagetools create $version_specific_tag_args \
+        # retry_with_backoff 3 10: idempotent — recreates the same single-arch manifest.
+        if err_output=$(retry_with_backoff 3 10 $DOCKER buildx imagetools create $version_specific_tag_args \
             "$source_image:$TAG-arm64" 2>&1); then
             echo "::warning::Manifest created with arm64 only for $target_image:$TAG (version-specific tag only; rolling/latest preserved)"
             return 0
