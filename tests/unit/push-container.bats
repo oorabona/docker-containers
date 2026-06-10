@@ -192,16 +192,21 @@ teardown() {
     [[ "$output" == *"--no-cache --pull"* ]]
 }
 
-@test "get_build_args returns empty for no version and no extras" {
+@test "get_build_args emits only the REMOTE_CR default for no version and no extras" {
     source_push_script
 
     unset NPROC
     unset CUSTOM_BUILD_ARGS
+    unset REMOTE_CR
 
     run get_build_args ""
 
-    # Output should be empty or just whitespace
-    [ -z "$(echo "$output" | tr -d '[:space:]')" ]
+    # prepare_build_args always emits the base-image registry namespace
+    # (REMOTE_CR defaults to ghcr.io/oorabona — the egress-mitigation base
+    # default). With no version and no extras that is the ONLY build arg.
+    [[ "$output" == *"--build-arg REMOTE_CR=ghcr.io/oorabona"* ]]
+    [[ "$output" != *"VERSION="* ]]
+    [[ "$output" != *"NPROC="* ]]
 }
 
 @test "get_build_args combines all arguments" {
