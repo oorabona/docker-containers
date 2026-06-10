@@ -1592,6 +1592,15 @@ jobs:
           # Extract unique container names from the bake_builds cell array (injection-safe via env)
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (amd64): ${containers}"
@@ -1647,6 +1656,16 @@ jobs:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
         continue-on-error: true
+
+      - name: Install skopeo (extension final-build self-heal fallback)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        shell: bash
+        run: |
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y skopeo
+          fi
+          skopeo --version
 
       - name: Generate bake HCL and build (amd64)
         id: bake-build
@@ -2047,6 +2066,15 @@ jobs:
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
           echo "::notice::bake containers (arm64): ${containers}"
@@ -2100,6 +2128,16 @@ jobs:
           name: ext-lineage-${{ github.run_id }}
           path: .build-lineage/
         continue-on-error: true
+
+      - name: Install skopeo (extension final-build self-heal fallback)
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
+        shell: bash
+        run: |
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y skopeo
+          fi
+          skopeo --version
 
       - name: Generate bake HCL and build (arm64)
         id: bake-build
@@ -2670,6 +2708,15 @@ jobs:
           set -euo pipefail
           containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[].container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
           retained_containers=$(printf '%s' "$BAKE_BUILDS_JSON" | jq -r '[.[] | select(.is_latest_version != true) | .container] | unique | .[]' | tr '\n' ' ' | sed 's/ $//')
+          # Drop always_all_versions containers: their non-latest majors are already in
+          # the primary pass, so a separate retained pass would publish them twice.
+          _filtered=""
+          for _c in $retained_containers; do
+            if [[ "$(yq -r '.build.always_all_versions // false' "./${_c}/variants.yaml" 2>/dev/null)" != "true" ]]; then
+              _filtered="${_filtered:+$_filtered }$_c"
+            fi
+          done
+          retained_containers="$_filtered"
           echo "containers=${containers}" >> "$GITHUB_OUTPUT"
           echo "retained_containers=${retained_containers}" >> "$GITHUB_OUTPUT"
 
