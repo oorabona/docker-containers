@@ -410,22 +410,25 @@ source_dashboard_fns() {
 # Finding #3 (gate r5 copilot HIGH): Template-container lineage regression
 # Pre-fix: generated Dockerfile has ARG REMOTE_CR (no default) → ${REMOTE_CR}
 # survives all substitution passes → dashboard shows "unknown".
-# Post-fix: ARG REMOTE_CR=docker.io in generated Dockerfile → Step 4 substitutes
-# docker.io → _BASE_IMAGE_REF = "docker.io/library/alpine:3.21".
+# Post-fix: a concrete REMOTE_CR resolves the placeholder. The default is the
+# public GHCR mirror namespace (ghcr.io/oorabona), per the egress-mitigation
+# decision (#648): even local/standalone builds resolve bases through the
+# mirror rather than Docker Hub. So _BASE_IMAGE_REF = "ghcr.io/oorabona/library/alpine:3.21".
 # ---------------------------------------------------------------------------
-@test "SMOKE-10: Template container with ARG REMOTE_CR=docker.io default resolves to docker.io base" {
+@test "SMOKE-10: Template container resolves \${REMOTE_CR} to the GHCR mirror default (no placeholder leak)" {
     # Simulates web-shell alpine variant local build (no REMOTE_CR in env).
-    # The generated Dockerfile must declare ARG REMOTE_CR=docker.io so that
-    # _resolve_base_image Step 4 (Dockerfile ARG defaults) can resolve the placeholder.
+    # The generated Dockerfile declares ARG REMOTE_CR=ghcr.io/oorabona (matching the
+    # real web-shell/Dockerfile) and _prepare_build_args defaults REMOTE_CR to the
+    # same mirror namespace, so _resolve_base_image substitutes a concrete value.
 
     local work="$TEST_TEMP_DIR/tpl-remote-cr"
     mkdir -p "$work"
     mkdir -p "$work/.build-lineage"
 
     # Create a minimal generated Dockerfile as the real web-shell generator would,
-    # but WITH the fixed default (ARG REMOTE_CR=docker.io).
+    # with the mirror default (ARG REMOTE_CR=ghcr.io/oorabona, per web-shell/Dockerfile).
     cat > "$work/Dockerfile.generated" <<'DOCKERFILE'
-ARG REMOTE_CR=docker.io
+ARG REMOTE_CR=ghcr.io/oorabona
 ARG ALPINE_TAG=3.21
 FROM ${REMOTE_CR}/library/alpine:${ALPINE_TAG}
 RUN echo test
@@ -452,9 +455,9 @@ DOCKERFILE
     local label_args=""
     _resolve_base_image "$work/Dockerfile.generated" "3.21" "label_args" "1" 2>/dev/null || true
 
-    # Post-fix: ARG REMOTE_CR=docker.io default is used → resolved to docker.io/library/alpine:3.21
-    [[ "$_BASE_IMAGE_REF" == "docker.io/library/alpine:3.21" ]] || {
-        echo "FAIL: expected 'docker.io/library/alpine:3.21', got: '$_BASE_IMAGE_REF'"
+    # REMOTE_CR resolves to the GHCR mirror default → ghcr.io/oorabona/library/alpine:3.21
+    [[ "$_BASE_IMAGE_REF" == "ghcr.io/oorabona/library/alpine:3.21" ]] || {
+        echo "FAIL: expected 'ghcr.io/oorabona/library/alpine:3.21', got: '$_BASE_IMAGE_REF'"
         echo "  (pre-fix: ARG REMOTE_CR has no default → \${REMOTE_CR} unresolved → dashboard shows unknown)"
         return 1
     }
