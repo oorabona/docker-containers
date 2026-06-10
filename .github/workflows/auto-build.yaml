@@ -1658,6 +1658,9 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+          REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
           chmod +x scripts/generate-bake-hcl.sh
@@ -1697,12 +1700,9 @@ jobs:
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           final_args=()
-          for _c in ${BAKE_CONTAINERS}; do
-            if [[ "$_c" == "postgres" ]]; then
-              final_args=(--include-final-build)
-              break
-            fi
-          done
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
           bake_latest_file="${RUNNER_TEMP}/bake-amd64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
@@ -1843,6 +1843,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
@@ -1855,12 +1856,9 @@ jobs:
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           final_args=()
-          for _c in ${BAKE_CONTAINERS}; do
-            if [[ "$_c" == "postgres" ]]; then
-              final_args=(--include-final-build)
-              break
-            fi
-          done
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           # shellcheck disable=SC2086
           cells_json=$(./scripts/generate-bake-hcl.sh --cells "${scope_args[@]}" "${final_args[@]}" ${BAKE_CONTAINERS})
@@ -2113,6 +2111,9 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           DRY_RUN: ${{ env.DRY_RUN }}
           DOCKER_NO_CACHE: ${{ env.DOCKER_NO_CACHE }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
+          PR_TAG_SUFFIX: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && format('-pr{0}', github.event.pull_request.number) || '' }}
+          REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
           chmod +x scripts/generate-bake-hcl.sh
@@ -2143,12 +2144,9 @@ jobs:
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           final_args=()
-          for _c in ${BAKE_CONTAINERS}; do
-            if [[ "$_c" == "postgres" ]]; then
-              final_args=(--include-final-build)
-              break
-            fi
-          done
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
           bake_latest_file="${RUNNER_TEMP}/bake-arm64-latest.json"
           # BAKE_CONTAINERS is operator-set (from bake_builds JSON, trusted context)
           # shellcheck disable=SC2086
@@ -2680,6 +2678,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
           DRY_RUN: ${{ env.DRY_RUN }}
         run: |
@@ -2701,12 +2700,9 @@ jobs:
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           final_args=()
-          for _c in ${BAKE_CONTAINERS}; do
-            if [[ "$_c" == "postgres" ]]; then
-              final_args=(--include-final-build)
-              break
-            fi
-          done
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           # Bake defaults to latest-only.  When build_all_retained is true,
           # merge retained cells only for the retained-eligible container subset.
@@ -2768,6 +2764,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
+          BAKE_FINAL_BUILDS: ${{ needs.detect-containers.outputs.bake_final_builds }}
           MERGE_OUTCOME: ${{ steps.bake-merge-step.outcome }}
         run: |
           set -euo pipefail
@@ -2783,12 +2780,9 @@ jobs:
           [[ -n "${SCOPE_FLAVORS:-}" ]] && scope_args+=(--scope-flavors "${SCOPE_FLAVORS}")
           [[ -n "${BUILD_SCOPE:-}" ]] && scope_args+=(--scope "${BUILD_SCOPE}")
           final_args=()
-          for _c in ${BAKE_CONTAINERS}; do
-            if [[ "$_c" == "postgres" ]]; then
-              final_args=(--include-final-build)
-              break
-            fi
-          done
+          if [[ -n "${BAKE_FINAL_BUILDS:-}" && "${BAKE_FINAL_BUILDS}" != "[]" ]]; then
+            final_args=(--include-final-build)
+          fi
 
           emit_manifest_results() {
             local cells_json="$1"
