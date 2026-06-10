@@ -15,6 +15,9 @@ build:
   # Postgres builds all supported PG majors on every push (not just the latest line).
   # Rationale: each major is a long-lived supported release stream, not a rolling history.
   always_all_versions: true
+  # Explicit bake opt-in for the FINAL image only. Extension compilation remains
+  # owned by build-extensions; bake only consumes pre-built extension images.
+  bake_final_build: true
 # Versions to build (all maintained PostgreSQL releases)
 versions:
   - tag: "18"

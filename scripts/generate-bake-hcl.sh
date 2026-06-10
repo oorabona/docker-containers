@@ -10,6 +10,7 @@
 #   scripts/generate-bake-hcl.sh --cells --scope-versions 1.31 openresty
 #   scripts/generate-bake-hcl.sh --scope-flavors aws terraform
 #   scripts/generate-bake-hcl.sh --scope alpine web-shell
+#   scripts/generate-bake-hcl.sh --include-final-build postgres
 #
 # Output is a JSON bake file (same schema as HCL; docker-buildx bake -f -)
 # written to stdout.  It is a generated artifact — do NOT commit it.
@@ -23,7 +24,7 @@
 # target (no working-tree file written; compatible with --print and real builds):
 #   web-shell     — generate-dockerfile.sh <template> <flavor> <version>
 #   github-runner — generate-dockerfile.sh <template> <flavor> <version> <build_flavor>
-#   postgres      — uses single Dockerfile + FLAVOR build-arg (no template markers)
+#   postgres      — extension-marker template via generate-dockerfile.sh
 #
 # CUSTOM_BUILD_ARGS: operator-supplied extra args are applied at the R3 merge-job
 # layer via `bake --set "*.args.KEY=VAL"`, NOT embedded here.
@@ -112,6 +113,9 @@ Usage:
 Options:
   --cells                 Emit compact cell JSON instead of a bake document.
   --all-retained          Include retained versions where allowed.
+  --include-final-build   include flag-marked extension containers' FINAL image build in the graph
+                          (requires their extension lineage artifacts to be present; used by the
+                          postgres bake routing -- NOT by the whole-fleet smoke).
   --scope-versions <csv>  Keep versions matching a comma-separated version list.
   --scope-flavors <csv>   Keep cells whose flavor is in a comma-separated list.
   --scope <str>           Keep cells whose variant/os/build_flavor/flavor contains this string.
@@ -158,8 +162,9 @@ _expand_closure() {
         fi
         local dep
         for dep in ${deps}; do
-            # F1: extension containers must not appear in the closure even as deps.
-            if _is_extension_container "$dep"; then
+            # F1: extension compilation stays out of bake; a flag-gated FINAL
+            # image build may enter the graph when explicitly requested.
+            if _is_bake_excluded_extension_container "$dep"; then
                 printf '::notice::Skipping %s from bake graph (extension sub-pipeline owns it; see build-extensions)\n' \
                     "$dep" >&2
                 continue
@@ -413,8 +418,16 @@ _compute_cell_build_args() {
     local args
     args="$config_args"
 
-    # 2. VERSION
-    args=$(jq -cn --argjson base "$args" --arg v "$version" '$base + {VERSION: $v}')
+    # 2. VERSION — mirror the non-bake build's base_image_version
+    #    (build-container.sh: "${major_version}${base_suffix}"). postgres declares
+    #    base_suffix "-alpine", and its Dockerfile does FROM library/postgres:${VERSION},
+    #    so VERSION must carry the suffix ("18" -> "18-alpine") or the bake build would
+    #    pull the Debian base and publish *-alpine tags backed by the wrong distro.
+    #    base_suffix is empty for every container except postgres today, so this is a
+    #    no-op for the rest of the fleet.
+    local _base_sfx
+    _base_sfx=$(base_suffix "${PROJECT_ROOT}/${container}" 2>/dev/null || echo "")
+    args=$(jq -cn --argjson base "$args" --arg v "${version}${_base_sfx}" '$base + {VERSION: $v}')
 
     # 3. MAJOR_VERSION (leading integer: "18" from "18-alpine", "2" from "2.334.0")
     local major
@@ -1075,9 +1088,8 @@ _on_cell_bake() {
     fi
 
     # Accumulate into caller-scope variables (set -n nameref not in bash 4.3; use globals)
-    targets_json=$(jq -cn --argjson base "$targets_json" \
-        --arg tid "$tid" --argjson obj "$target_obj" \
-        '$base + {($tid): $obj}')
+    targets_json=$(printf '%s\n%s\n' "$targets_json" "$target_obj" | \
+        jq -sc --arg tid "$tid" '.[0] + {($tid): .[1]}')
 
     container_targets=$(jq -cn --argjson arr "$container_targets" --arg tid "$tid" \
         '$arr + [$tid]')
@@ -1222,16 +1234,14 @@ _build_bake_json() {
     # variable would allow a bake-time override that diverges from the concrete
     # contexts keys, breaking BuildKit named-context matching.
     # ARCH_SUFFIX and NPROC genuinely vary per-arch job and remain bake variables.
-    bake_doc=$(jq -cn \
-        --argjson targets "$targets_json" \
-        --argjson groups  "$groups_json" \
+    bake_doc=$(printf '%s\n%s\n' "$targets_json" "$groups_json" | jq -sc \
         '{
             variable: {
                 ARCH_SUFFIX: { default: "" },
                 NPROC:       { default: "1" }
             },
-            target:   $targets,
-            group:    $groups
+            target:   .[0],
+            group:    .[1]
         }')
 
     # Belt-and-suspenders: verify the assembled document is valid JSON
@@ -1363,16 +1373,42 @@ _emit_cells_json() {
 }
 
 # ---------------------------------------------------------------------------
-# Extension-sub-pipeline exclusion check (F1).
+# Extension-sub-pipeline exclusion checks (F1).
 #
-# Returns 0 (true) when a container has <container>/extensions/config.yaml,
-# meaning it is owned by the build-extensions sub-pipeline and must NOT
-# enter the bake graph.  Generation for such containers is not deterministic
-# or network-free (skopeo/manifest-inspect fires during generate_dockerfile).
+# _is_extension_container returns 0 when a container has
+# <container>/extensions/config.yaml. Extension COMPILATION remains excluded;
+# only the FINAL image build (flag-gated by build.bake_final_build) may enter
+# the graph.
 # ---------------------------------------------------------------------------
 _is_extension_container() {
     local container="$1"
     [[ -f "${PROJECT_ROOT}/${container}/extensions/config.yaml" ]]
+}
+
+_bake_final_build_enabled() {
+    local container="$1"
+    local variants_file="${PROJECT_ROOT}/${container}/variants.yaml"
+    [[ -f "$variants_file" ]] || return 1
+
+    local flag
+    flag=$(yq -r '.build.bake_final_build // false' "$variants_file" 2>/dev/null || echo "false")
+    [[ "$flag" == "true" ]]
+}
+
+_is_bake_excluded_extension_container() {
+    local container="$1"
+    _is_extension_container "$container" || return 1
+
+    # build.bake_final_build is only a capability marker. Existing whole-fleet
+    # smoke (bake-build.yaml) and bake_managed fleet builds do not pass
+    # --include-final-build, so postgres stays excluded there; only the future
+    # postgres bake-build job, after downloading extension lineage artifacts,
+    # should activate final-image inclusion.
+    if [[ "${_BAKE_INCLUDE_FINAL_BUILD:-}" == "1" ]] && _bake_final_build_enabled "$container"; then
+        return 1
+    fi
+
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1382,13 +1418,17 @@ main() {
     local -a requested=()
     local mode="bake"      # default mode
     local include_all_retained="false"   # F4: default = latest-only
+    local include_final_build=""
     local scope_versions=""
     local scope_flavors=""
     local scope=""
 
+    unset _BAKE_INCLUDE_FINAL_BUILD
+
     # Parse flags (order-independent):
     #   --cells                → cells plan mode
     #   --all-retained         → pass include_all_retained=true to list_build_matrix
+    #   --include-final-build  → include flag-marked extension final image builds
     #   --scope-versions <csv> → scope version filter
     #   --scope-flavors <csv>  → scope flavor filter
     #   --scope <str>          → free-form variant/os/build_flavor/flavor filter
@@ -1397,6 +1437,7 @@ main() {
         case "$1" in
             --cells)        mode="cells" ;;
             --all-retained) include_all_retained="true" ;;
+            --include-final-build) include_final_build="1" ;;
             --scope-versions)
                 if [[ $# -lt 2 ]]; then
                     printf 'ERROR: --scope-versions requires a value\n' >&2
@@ -1436,6 +1477,10 @@ main() {
         shift
     done
 
+    if [[ "$include_final_build" == "1" ]]; then
+        export _BAKE_INCLUDE_FINAL_BUILD=1
+    fi
+
     if [[ ${#args[@]} -gt 0 ]]; then
         requested=("${args[@]}")
     else
@@ -1455,7 +1500,7 @@ main() {
     # the fleet enumeration).
     local -a filtered_requested=()
     for c in "${requested[@]}"; do
-        if _is_extension_container "$c"; then
+        if _is_bake_excluded_extension_container "$c"; then
             printf '::notice::Skipping %s from bake graph (extension sub-pipeline owns it; see build-extensions)\n' \
                 "$c" >&2
         else
