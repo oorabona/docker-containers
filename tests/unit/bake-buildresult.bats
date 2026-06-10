@@ -404,3 +404,42 @@ _retained_cell_count() {
         -exec jq -r '.tag' {} \; | sort)
     [ "$actual_tags" = "$expected_tags" ]
 }
+
+@test "BBR-16: container_scopes build-result enumeration ignores scoped-out github-runner flavors" {
+    local container_scopes='{"github-runner":{"flavors":"debian-trixie"}}'
+    local scoped_cells
+    scoped_cells=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
+        --cells --container-scopes "$container_scopes" github-runner)
+
+    local scoped_count unscoped_count
+    scoped_count=$(echo "$scoped_cells" | jq 'length')
+    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" \
+        --cells github-runner | jq 'length')
+    [ "$scoped_count" -gt 0 ]
+    [ "$unscoped_count" -gt "$scoped_count" ]
+
+    local meta_file="$TEST_OUT_DIR/meta_container_scopes.json"
+    echo "$scoped_cells" | jq -c '
+        reduce .[] as $cell (
+            {};
+            . + {($cell.target_id): {"containerimage.digest":("sha256:" + $cell.target_id), "image.name":"ghcr.io/test"}}
+        )
+    ' > "$meta_file"
+
+    run env CONTAINER_SCOPES="$container_scopes" bash "$BBR" "$meta_file" amd64 "$TEST_OUT_DIR/out" github-runner
+    [ "$status" -eq 0 ]
+
+    local file_count fail_count
+    file_count=$(find "$TEST_OUT_DIR/out" -name 'build-result-*.json' | wc -l)
+    fail_count=$(find "$TEST_OUT_DIR/out" -name '*.json' \
+        -exec jq -r '.result' {} \; | grep -c '^failure$' || true)
+
+    [ "$file_count" -eq "$scoped_count" ]
+    [ "$fail_count" -eq 0 ]
+
+    local expected_tags actual_tags
+    expected_tags=$(echo "$scoped_cells" | jq -r '.[].tag' | sort)
+    actual_tags=$(find "$TEST_OUT_DIR/out" -name '*.json' \
+        -exec jq -r '.tag' {} \; | sort)
+    [ "$actual_tags" = "$expected_tags" ]
+}

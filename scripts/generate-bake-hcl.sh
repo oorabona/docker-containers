@@ -9,6 +9,7 @@
 #   scripts/generate-bake-hcl.sh github-runner     # github-runner + debian dep
 #   scripts/generate-bake-hcl.sh --cells --scope-versions 1.31 openresty
 #   scripts/generate-bake-hcl.sh --scope-flavors aws terraform
+#   scripts/generate-bake-hcl.sh --container-scopes '{"terraform":{"flavors":"aws"}}' terraform
 #   scripts/generate-bake-hcl.sh --scope alpine web-shell
 #   scripts/generate-bake-hcl.sh --include-final-build postgres
 #
@@ -119,6 +120,9 @@ Options:
   --scope-versions <csv>  Keep versions matching a comma-separated version list.
   --scope-flavors <csv>   Keep cells whose flavor is in a comma-separated list.
   --scope <str>           Keep cells whose variant/os/build_flavor/flavor contains this string.
+  --container-scopes <json>
+                          Per-container scope map:
+                          {"<container>":{"versions":"csv","flavors":"csv","extensions":"csv"}}
   -h, --help              Show this help.
 EOF
 }
@@ -177,19 +181,52 @@ _expand_closure() {
     printf '%s\n' "${closure[@]:-}"
 }
 
-# _cell_passes_scope <version> <flavor> <variant> <os> <build_flavor>
+# _effective_scope_filters <container>
+# Prints "<versions>\t<flavors>" for the container's effective scope filters.
+# A per-container map entry overrides the global version/flavor filters for
+# that container; containers absent from the map keep the global filters.
+_effective_scope_filters() {
+    local container="$1"
+    local scope_versions="${_BAKE_SCOPE_VERSIONS:-}"
+    local scope_flavors="${_BAKE_SCOPE_FLAVORS:-}"
+
+    if [[ -n "${_BAKE_CONTAINER_SCOPES:-}" ]] && \
+       jq -e --arg c "$container" 'has($c)' <<< "$_BAKE_CONTAINER_SCOPES" >/dev/null; then
+        scope_versions=$(jq -r --arg c "$container" '.[$c].versions // ""' <<< "$_BAKE_CONTAINER_SCOPES")
+        scope_flavors=$(jq -r --arg c "$container" '.[$c].flavors // ""' <<< "$_BAKE_CONTAINER_SCOPES")
+    fi
+
+    printf '%s\t%s\n' "$scope_versions" "$scope_flavors"
+}
+
+_scope_filters_active_for_container() {
+    local container="$1"
+    local filters
+    filters=$(_effective_scope_filters "$container")
+    local scope_versions="${filters%%$'\t'*}"
+    local scope_flavors="${filters#*$'\t'}"
+
+    [[ -n "$scope_versions" || -n "$scope_flavors" || -n "${_BAKE_SCOPE:-}" ]]
+}
+
+# _cell_passes_scope <container> <version> <flavor> <variant> <os> <build_flavor>
 # Returns 0 if the cell passes the active bake scope filters.
 # Empty scope variables mean pass-all.
 _cell_passes_scope() {
-    local version="$1"
-    local flavor="$2"
-    local variant="$3"
-    local cell_os="$4"
-    local build_flavor="$5"
+    local container="$1"
+    local version="$2"
+    local flavor="$3"
+    local variant="$4"
+    local cell_os="$5"
+    local build_flavor="$6"
+    local filters
+    filters=$(_effective_scope_filters "$container")
+    local scope_versions="${filters%%$'\t'*}"
+    local scope_flavors="${filters#*$'\t'}"
 
-    if [[ -n "${_BAKE_SCOPE_VERSIONS:-}" ]]; then
+    if [[ -n "$scope_versions" ]]; then
         local version_match="false"
-        local versions_csv="${_BAKE_SCOPE_VERSIONS},"
+        local versions_csv="${scope_versions},"
         local scope_version
         while [[ "$versions_csv" == *,* ]]; do
             scope_version="${versions_csv%%,*}"
@@ -208,9 +245,9 @@ _cell_passes_scope() {
         [[ "$version_match" == "true" ]] || return 1
     fi
 
-    if [[ -n "${_BAKE_SCOPE_FLAVORS:-}" ]]; then
+    if [[ -n "$scope_flavors" ]]; then
         local flavor_match="false"
-        local flavors_csv="${_BAKE_SCOPE_FLAVORS},"
+        local flavors_csv="${scope_flavors},"
         local scope_flavor
         while [[ "$flavors_csv" == *,* ]]; do
             scope_flavor="${flavors_csv%%,*}"
@@ -787,8 +824,7 @@ _enumerate_cells_init() {
         _EC_all_matrix_json[$c]="$matrix"
 
         local first_entry
-        if [[ -n "${_requested_set[$c]+set}" && \
-              ( -n "${_BAKE_SCOPE_VERSIONS:-}" || -n "${_BAKE_SCOPE_FLAVORS:-}" || -n "${_BAKE_SCOPE:-}" ) ]]; then
+        if [[ -n "${_requested_set[$c]+set}" ]] && _scope_filters_active_for_container "$c"; then
             first_entry=""
             local _first_ncells
             _first_ncells=$(jq 'length' <<< "$matrix")
@@ -807,7 +843,7 @@ _enumerate_cells_init() {
                 if [[ "$_first_os" == "windows" ]]; then
                     continue
                 fi
-                if _cell_passes_scope "$_first_version" "$_first_flavor" "$_first_variant" \
+                if _cell_passes_scope "$c" "$_first_version" "$_first_flavor" "$_first_variant" \
                         "$_first_os" "$_first_build_flavor"; then
                     first_entry="$_first_cell"
                     break
@@ -892,7 +928,7 @@ _enumerate_cells() {
             if [[ "$cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+            if ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -1164,7 +1200,7 @@ _build_bake_json() {
                 continue
             fi
             if [[ -n "${_requested_set[$c]+set}" ]] && \
-                    ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+                    ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -1350,7 +1386,7 @@ _emit_cells_json() {
             if [[ "$cell_os" == "windows" ]]; then
                 continue
             fi
-            if ! _cell_passes_scope "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
+            if ! _cell_passes_scope "$c" "$version" "$flavor" "$variant" "$cell_os" "$build_flavor"; then
                 continue
             fi
 
@@ -1422,6 +1458,7 @@ main() {
     local scope_versions=""
     local scope_flavors=""
     local scope=""
+    local container_scopes=""
 
     unset _BAKE_INCLUDE_FINAL_BUILD
 
@@ -1432,6 +1469,8 @@ main() {
     #   --scope-versions <csv> → scope version filter
     #   --scope-flavors <csv>  → scope flavor filter
     #   --scope <str>          → free-form variant/os/build_flavor/flavor filter
+    #   --container-scopes <json>
+    #                           → per-container version/flavor scope map
     local -a args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1468,6 +1507,16 @@ main() {
                 shift
                 ;;
             --scope=*)      scope="${1#*=}" ;;
+            --container-scopes)
+                if [[ $# -lt 2 ]]; then
+                    printf 'ERROR: --container-scopes requires a JSON object value\n' >&2
+                    _usage >&2
+                    exit 2
+                fi
+                container_scopes="$2"
+                shift
+                ;;
+            --container-scopes=*) container_scopes="${1#*=}" ;;
             -h|--help)
                 _usage
                 exit 0
@@ -1476,6 +1525,19 @@ main() {
         esac
         shift
     done
+
+    if [[ -n "$container_scopes" ]]; then
+        if ! jq -e '
+            type == "object"
+            and all(.[]; type == "object")
+            and all(.[]; ((.versions? // "") | type == "string"))
+            and all(.[]; ((.flavors? // "") | type == "string"))
+            and all(.[]; ((.extensions? // "") | type == "string"))
+        ' <<< "$container_scopes" >/dev/null 2>&1; then
+            printf 'ERROR: --container-scopes must be a JSON object mapping container names to scope objects with string versions/flavors/extensions fields\n' >&2
+            exit 2
+        fi
+    fi
 
     if [[ "$include_final_build" == "1" ]]; then
         export _BAKE_INCLUDE_FINAL_BUILD=1
@@ -1527,6 +1589,7 @@ main() {
     export _BAKE_SCOPE_VERSIONS="$scope_versions"
     export _BAKE_SCOPE_FLAVORS="$scope_flavors"
     export _BAKE_SCOPE="$scope"
+    export _BAKE_CONTAINER_SCOPES="$container_scopes"
 
     if [[ "$mode" == "cells" ]]; then
         _emit_cells_json "${requested[@]}"
