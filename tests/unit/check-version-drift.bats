@@ -1535,10 +1535,19 @@ GH_EOF
     # opening "(" and the function call in the same awk block.
     local subshell_block
     subshell_block=$(awk '
-        /^\s*\(/ && !seen { seen=1; capture=1 }
-        capture { print }
-        capture && /open_version_drift_issue/ { found=1 }
-        capture && /^\s*\)/ { capture=0 }
+        # Capture only the subshell that ACTUALLY wraps the call. Open at a
+        # line-leading "(", accumulate, and close on the first ")" (the real
+        # form closes inline: "open_version_drift_issue ... ) || rc=$?"). The
+        # block is emitted only if the call was seen BEFORE that close, so a
+        # call placed AFTER the subshell ")" — i.e. outside the protected
+        # subshell — does not satisfy the guard. Not tied to the first "(" in
+        # the file nor to a line-leading ")".
+        /^[[:space:]]*\(/ && !inblock { inblock=1; block=""; hascall=0 }
+        inblock {
+            block = block $0 ORS
+            if ($0 ~ /open_version_drift_issue/) hascall=1
+            if ($0 ~ /\)/) { if (hascall) print block; inblock=0 }
+        }
     ' "$DRIFT_YAML" || true)
 
     # Must find open_version_drift_issue inside a subshell block
@@ -1559,10 +1568,19 @@ GH_EOF
     # and verify open-dep-failure-issue.sh is sourced within it.
     local subshell_block
     subshell_block=$(awk '
-        /^\s*\(/ && !seen { seen=1; capture=1 }
-        capture { print }
-        capture && /open_version_drift_issue/ { found=1 }
-        capture && /^\s*\)/ { capture=0 }
+        # Capture only the subshell that ACTUALLY wraps the call. Open at a
+        # line-leading "(", accumulate, and close on the first ")" (the real
+        # form closes inline: "open_version_drift_issue ... ) || rc=$?"). The
+        # block is emitted only if the call was seen BEFORE that close, so a
+        # call placed AFTER the subshell ")" — i.e. outside the protected
+        # subshell — does not satisfy the guard. Not tied to the first "(" in
+        # the file nor to a line-leading ")".
+        /^[[:space:]]*\(/ && !inblock { inblock=1; block=""; hascall=0 }
+        inblock {
+            block = block $0 ORS
+            if ($0 ~ /open_version_drift_issue/) hascall=1
+            if ($0 ~ /\)/) { if (hascall) print block; inblock=0 }
+        }
     ' "$AUTO_BUILD_YAML" || true)
 
     local fn_in_subshell
