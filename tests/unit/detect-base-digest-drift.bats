@@ -1242,7 +1242,9 @@ STUB_EOF
     PROBE_CMD="/bin/false" bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>"$stderr_log" >/dev/null || true
 
     # The injected command must NOT appear as a standalone GHA command line
-    ! grep -q '^::add-mask::' "$stderr_log"
+    if grep -q '^::add-mask::' "$stderr_log"; then
+        return 1
+    fi
 
     # The ::error:: line must be present (probe failure was emitted)
     grep -q '::error::' "$stderr_log"
@@ -1491,9 +1493,9 @@ EOF
     # foo must appear (has error variant)
     [[ "$error_csv" == *"foo"* ]]
     # bar must NOT appear (only drift, no error)
-    ! [[ "$error_csv" == *"bar"* ]]
+    [[ "$error_csv" != *"bar"* ]]
     # baz must NOT appear (stable only)
-    ! [[ "$error_csv" == *"baz"* ]]
+    [[ "$error_csv" != *"baz"* ]]
 }
 
 @test "DefectL: error_containers_csv jq — mixed error+drift container appears in error CSV" {
@@ -1542,9 +1544,11 @@ EOF
     local fake_root="$TEST_TEMP_DIR/r7fix4a"
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
-    # The script sources PROJECT_ROOT/helpers/lineage-utils.sh and dependency-graph.sh — must exist in fake root
+    # The script sources PROJECT_ROOT/helpers/*.sh helpers — they must exist in fake root
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -1581,6 +1585,8 @@ STUB
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -2351,7 +2357,9 @@ STUB
     [ "$rc" -eq 0 ]
 
     # Probe must NOT have been called
-    ! echo "$stderr_out" | grep -q "PROBE WAS CALLED"
+    if grep -q "PROBE WAS CALLED" <<<"$stderr_out"; then
+        return 1
+    fi
 
     # r29 Finding 3: rejected ref emits error record (not empty array)
     local result_len err_reason
@@ -2893,10 +2901,6 @@ EOF
     local lineage_dir="$TEST_TEMP_DIR/r25a2/.build-lineage"
     mkdir -p "$lineage_dir"
 
-    # tag with embedded newline + injection payload after it
-    local poisoned_tag
-    poisoned_tag=$'1.0\n::add-mask::SECRET'
-
     # Write file with Python to preserve literal newline in JSON value
     python3 -c "
 import json, pathlib
@@ -3135,7 +3139,9 @@ EOF
     [ "$rc" -eq 0 ]
 
     # Probe must NOT have been called (SSRF prevention intact)
-    ! echo "$stderr_out" | grep -q "PROBE CALLED"
+    if grep -q "PROBE CALLED" <<<"$stderr_out"; then
+        return 1
+    fi
 
     # ::warning:: must still be emitted on stderr (audit trail preserved)
     echo "$stderr_out" | grep -q "Refusing to probe untrusted"
@@ -3269,7 +3275,8 @@ STUBEOF
 
     # Multi-line _ACTIVE_TAGS_OVERRIDE requires explicit export in subshell
     result=$(
-        export _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseA\nbaseB')"
+        _VALID_CONTAINERS_OVERRIDE="$(printf 'myapp\nbaseA\nbaseB')"
+        export _VALID_CONTAINERS_OVERRIDE
         export _DEPGRAPH_CONTAINERS_OVERRIDE="myapp baseA baseB"
         export _DEPGRAPH_LINEAGE_DIR="$lineage_dir"
         export _ACTIVE_TAGS_OVERRIDE_myapp
@@ -3336,6 +3343,8 @@ STUBEOF
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
 
     # A container with an internal-looking ref so _depgraph_get_deps must be called
     cat > "$fake_root/.build-lineage/myapp-1.0.json" <<'EOF'
@@ -3410,6 +3419,8 @@ STUB
     mkdir -p "$fake_root/scripts" "$fake_root/helpers" "$fake_root/.build-lineage"
     cp "${DETECTOR_SCRIPT}" "$fake_root/scripts/detect-base-digest-drift.sh"
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
 
     # Patch dependency-graph.sh: _depgraph_get_deps fails for "failcontainer",
     # succeeds (returns empty deps = leaf) for any other container.
@@ -3661,7 +3672,9 @@ EOF
     )
 
     # Valid name must not be rejected by the charset gate
-    ! grep -q 'invalid characters' "$stderr_log"
+    if grep -q 'invalid characters' "$stderr_log"; then
+        return 1
+    fi
     # Container must appear in output (unchanged status is OK)
     container_in_output=$(printf '%s' "$result" | jq -r '.[0].container // empty')
     [ "$container_in_output" = "web-shell" ]

@@ -836,6 +836,9 @@ jobs:
       matrix:
         build: ${{ fromJson(needs.detect-containers.outputs.builds) }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
       - name: Log in to GHCR
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
@@ -863,10 +866,13 @@ jobs:
             exit 0
           fi
 
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+
           src="docker://ghcr.io/$GITHUB_USERNAME/$CONTAINER:$TAG"
           dst="docker://docker.io/$DOCKERHUB_USERNAME/$CONTAINER:$TAG"
           echo "::notice::Syncing $src → $dst"
-          skopeo copy --all "$src" "$dst" || \
+          retry_with_backoff 3 5 skopeo copy --all "$src" "$dst" || \
             echo "::warning::Sync failed for $CONTAINER:$TAG — image may not exist on GHCR"
 
   build-and-push:
@@ -2899,13 +2905,17 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
           source "${GITHUB_WORKSPACE}/helpers/coverage-checkpoint-utils.sh"
+          # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
+          source "${GITHUB_WORKSPACE}/helpers/logging.sh"
+          # shellcheck disable=SC1091  # path resolved at runtime in GITHUB_WORKSPACE
+          source "${GITHUB_WORKSPACE}/helpers/retry.sh"
 
           # Step 1: Fetch this run's job conclusions (kept for fallback path).
           # On gh failure we cannot determine per-container outcomes via the fallback,
           # so we fail closed (force unmapped) rather than advancing the baseline while
           # silently dropping this run's real failures.
           set +e
-          jobs_json=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '{jobs: [.jobs[] | {name, conclusion}]}' 2>/dev/null)
+          jobs_json=$(retry_with_backoff 3 5 gh run view "$GITHUB_RUN_ID" --json jobs --jq '{jobs: [.jobs[] | {name, conclusion}]}' 2>/dev/null)
           gh_rc=$?
           set -e
           gh_failed=false
@@ -2929,7 +2939,7 @@ jobs:
           # Guard: use find+mapfile (not a glob) to count files — an empty download dir
           # leaves the glob un-expanded (nullglob off), which would feed the literal path
           # string to jq and produce a malformed payload instead of falling back.
-          gh run download "$GITHUB_RUN_ID" --pattern 'build-result-*' -D "$RUNNER_TEMP/bres" 2>/dev/null || true
+          retry_with_backoff 3 5 gh run download "$GITHUB_RUN_ID" --pattern 'build-result-*' -D "$RUNNER_TEMP/bres" 2>/dev/null || true
           mapfile -t _bres_files < <(find "$RUNNER_TEMP/bres" -type f -name '*.json' 2>/dev/null)
           if [[ ${#_bres_files[@]} -gt 0 ]]; then
             results_json=$(jq -s -c '.' "${_bres_files[@]}")
@@ -3265,6 +3275,9 @@ jobs:
           GH_RUN_ID: ${{ github.run_id }}
           GH_REPOSITORY: ${{ github.repository }}
         run: |
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+
           commit_subject=$(git log -1 --format=%s "$GH_SHA" 2>/dev/null || true)
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -3289,7 +3302,7 @@ jobs:
             fi
           fi
 
-          failed_jobs_json=$(gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
+          failed_jobs_json=$(retry_with_backoff 3 5 gh run view "$GH_RUN_ID" --repo "$GH_REPOSITORY" --json jobs \
             --jq '[.jobs[] | select(.conclusion == "failure") | {name, id: .databaseId}] | .[:5]' \
             2>/dev/null || echo '[]')
 
