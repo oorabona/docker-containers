@@ -74,6 +74,8 @@ DOCKER="${DOCKER:-docker}"
 #   BAKE_GENERATE_ALL_RETAINED  — when "true", pass --all-retained to the generator so the
 #                                 mirrored tag set matches what bake-merge published (same
 #                                 contract as helpers/bake-buildresult.sh)
+#   BAKE_GENERATE_FINAL_BUILD   — when "true", pass --include-final-build to the generator
+#                                 so flag-gated final-image cells are mirrored.
 #   DRY_RUN                     — when "true", print commands without executing
 #   DOCKER                      — docker binary / mock (set by logging.sh)
 #   MIRROR_STRICT               — when "true", enables fail-closed return semantics:
@@ -117,12 +119,16 @@ mirror_to_dockerhub() {
     if [[ "${BAKE_GENERATE_ALL_RETAINED:-false}" == "true" ]]; then
         _gen_retained_flag=("--all-retained")
     fi
+    local _gen_final_flag=()
+    if [[ "${BAKE_GENERATE_FINAL_BUILD:-false}" == "true" ]]; then
+        _gen_final_flag=("--include-final-build")
+    fi
 
     local cells_json
     # _MDH_GENERATOR_OVERRIDE allows bats tests to inject a mock generator without
     # patching the filesystem.  Not used in production (env var not set by callers).
     local generator="${_MDH_GENERATOR_OVERRIDE:-${_MDH_SCRIPT_DIR}/../scripts/generate-bake-hcl.sh}"
-    if ! cells_json=$("$generator" --cells "${_gen_retained_flag[@]}" "${containers[@]}"); then
+    if ! cells_json=$("$generator" --cells "${_gen_retained_flag[@]}" "${_gen_final_flag[@]}" "${containers[@]}"); then
         printf '::warning::mirror-dockerhub: generate-bake-hcl.sh --cells failed — skipping DockerHub mirror\n' >&2
         if [[ "$_strict" == "true" ]]; then
             printf '::error::mirror-dockerhub: generator failed — reconciliation cannot proceed\n' >&2
