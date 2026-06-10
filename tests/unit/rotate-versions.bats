@@ -73,6 +73,34 @@ versions:
 EOF
 }
 
+create_retention_window_container() {
+    local dir="${1:-tf}"
+    mkdir -p "$dir"
+    cat > "$dir/variants.yaml" <<'EOF'
+build:
+  version_retention: 3
+
+versions:
+  - tag: "1.15.4"
+  - tag: "1.15.3"
+  - tag: "1.15.2"
+EOF
+}
+
+create_rotated_retention_window_container() {
+    local dir="${1:-tf}"
+    mkdir -p "$dir"
+    cat > "$dir/variants.yaml" <<'EOF'
+build:
+  version_retention: 3
+
+versions:
+  - tag: "1.15.5"
+  - tag: "1.15.4"
+  - tag: "1.15.3"
+EOF
+}
+
 # --- Tests ---
 
 @test "rotate: basic prepend + trim" {
@@ -126,6 +154,12 @@ EOF
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
 
     create_versioned_container "myapp"
+    cat > myapp/config.yaml <<'EOF'
+base_image_cache:
+  - source: example/myapp
+    tags: ["2.0.0", "1.9.0"]
+EOF
+
     run scripts/rotate-versions.sh "myapp" "2.0.0"
     [ "$status" -eq 0 ]
 
@@ -133,6 +167,10 @@ EOF
     local count
     count=$(yq -r '.versions | length' myapp/variants.yaml)
     [ "$count" -eq 2 ]
+
+    local tags
+    tags=$(yq -r '.base_image_cache[] | select(.source == "example/myapp") | .tags | join(",")' myapp/config.yaml)
+    [ "$tags" = "2.0.0,1.9.0" ]
 }
 
 @test "rotate: container with variants copies variants from first entry" {
@@ -168,4 +206,155 @@ EOF
     mkdir -p "nonexistent"
     run scripts/rotate-versions.sh "nonexistent" "1.0.0"
     [ "$status" -eq 1 ]
+}
+
+@test "rotate: base_image_cache version tags mirror retained variants" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image: "${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION}"
+base_image_cache:
+  - source: hashicorp/terraform
+    tags: ["1.15.4", "1.15.3", "1.15.2"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    local tags
+    tags=$(yq -r '.base_image_cache[] | select(.source == "hashicorp/terraform") | .tags | join(",")' tf/config.yaml)
+    [ "$tags" = "1.15.5,1.15.4,1.15.3" ]
+}
+
+@test "rotate: base_image_cache version tags preserve suffix format" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image_cache:
+  - source: hashicorp/terraform
+    tags: ["1.15.4-alpine", "1.15.3-alpine", "1.15.2-alpine"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    local tags
+    tags=$(yq -r '.base_image_cache[] | select(.source == "hashicorp/terraform") | .tags | join(",")' tf/config.yaml)
+    [ "$tags" = "1.15.5-alpine,1.15.4-alpine,1.15.3-alpine" ]
+}
+
+@test "rotate: idempotent variants path reconciles stale base_image_cache" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_rotated_retention_window_container "tf"
+    cp tf/variants.yaml tf/variants.before.yaml
+    cat > tf/config.yaml <<'EOF'
+base_image_cache:
+  - source: hashicorp/terraform
+    tags: ["1.15.4", "1.15.3", "1.15.2"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    cmp -s tf/variants.before.yaml tf/variants.yaml
+
+    local tags
+    tags=$(yq -r '.base_image_cache[] | select(.source == "hashicorp/terraform") | .tags | join(",")' tf/config.yaml)
+    [ "$tags" = "1.15.5,1.15.4,1.15.3" ]
+}
+
+@test "rotate: idempotent cache reconciliation leaves unrelated entries untouched" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_rotated_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image_cache:
+  - source: hashicorp/terraform
+    tags: ["1.15.4", "1.15.3", "1.15.2"]
+  - source: library/alpine
+    tags: ["latest"]
+  - source: library/python
+    tags: ["3.12-alpine"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    local terraform_tags
+    local alpine_tags
+    local python_tags
+    terraform_tags=$(yq -r '.base_image_cache[] | select(.source == "hashicorp/terraform") | .tags | join(",")' tf/config.yaml)
+    alpine_tags=$(yq -r '.base_image_cache[] | select(.source == "library/alpine") | .tags | join(",")' tf/config.yaml)
+    python_tags=$(yq -r '.base_image_cache[] | select(.source == "library/python") | .tags | join(",")' tf/config.yaml)
+
+    [ "$terraform_tags" = "1.15.5,1.15.4,1.15.3" ]
+    [ "$alpine_tags" = "latest" ]
+    [ "$python_tags" = "3.12-alpine" ]
+}
+
+@test "rotate: non-version base_image_cache entries are untouched" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image_cache:
+  - source: library/alpine
+    tags: ["latest"]
+  - source: library/python
+    tags: ["3.12-alpine"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    local alpine_tags
+    local python_tags
+    alpine_tags=$(yq -r '.base_image_cache[] | select(.source == "library/alpine") | .tags | join(",")' tf/config.yaml)
+    python_tags=$(yq -r '.base_image_cache[] | select(.source == "library/python") | .tags | join(",")' tf/config.yaml)
+
+    [ "$alpine_tags" = "latest" ]
+    [ "$python_tags" = "3.12-alpine" ]
+}
+
+@test "rotate: config without base_image_cache is unchanged" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image: "${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION}"
+build_args:
+  TFLINT_VERSION: "0.63.1"
+EOF
+    cp tf/config.yaml tf/config.before.yaml
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+    cmp -s tf/config.before.yaml tf/config.yaml
+}
+
+@test "rotate: mixed base_image_cache rotates only version-keyed entry" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+
+    create_retention_window_container "tf"
+    cat > tf/config.yaml <<'EOF'
+base_image_cache:
+  - source: hashicorp/terraform
+    tags: ["1.15.4", "1.15.3", "1.15.2"]
+  - source: library/alpine
+    tags: ["latest"]
+EOF
+
+    run scripts/rotate-versions.sh "tf" "1.15.5"
+    [ "$status" -eq 0 ]
+
+    local terraform_tags
+    local alpine_tags
+    terraform_tags=$(yq -r '.base_image_cache[] | select(.source == "hashicorp/terraform") | .tags | join(",")' tf/config.yaml)
+    alpine_tags=$(yq -r '.base_image_cache[] | select(.source == "library/alpine") | .tags | join(",")' tf/config.yaml)
+
+    [ "$terraform_tags" = "1.15.5,1.15.4,1.15.3" ]
+    [ "$alpine_tags" = "latest" ]
 }
