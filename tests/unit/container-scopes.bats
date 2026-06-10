@@ -73,6 +73,51 @@ normalize_json() {
     jq -S -c . <<< "$1"
 }
 
+@test "version recovery batch merges disjoint container scopes" {
+    mkdir -p fragments
+    jq -n '{"postgres":{"versions":"17"}}' > fragments/ver-postgres.json
+    jq -n '{"debian":{}}' > fragments/ver-debian.json
+
+    run jq -s -c 'reduce .[] as $o ({}; . * $o)' fragments/ver-*.json
+
+    [ "$status" -eq 0 ]
+    expected='{"postgres":{"versions":"17"},"debian":{}}'
+    [ "$(normalize_json "$output")" = "$(normalize_json "$expected")" ]
+    [ "$(jq 'length' <<< "$output")" -eq 2 ]
+}
+
+@test "dependency recovery batch merges disjoint container scopes" {
+    mkdir -p fragments
+    jq -n '{"postgres":{"flavors":"full","extensions":"pgvector"}}' > fragments/dep-postgres.json
+    jq -n '{"debian":{}}' > fragments/dep-debian.json
+
+    run jq -s -c 'reduce .[] as $o ({}; . * $o)' fragments/dep-*.json
+
+    [ "$status" -eq 0 ]
+    expected='{"postgres":{"flavors":"full","extensions":"pgvector"},"debian":{}}'
+    [ "$(normalize_json "$output")" = "$(normalize_json "$expected")" ]
+    [ "$(jq 'length' <<< "$output")" -eq 2 ]
+}
+
+@test "version and dependency recovery scopes stay source separated for same container" {
+    mkdir -p recovery-scopes-version recovery-scopes-dependency
+    jq -n '{"postgres":{"versions":"17"}}' > recovery-scopes-version/ver-postgres.json
+    jq -n '{"postgres":{"flavors":"full","extensions":"pgvector"}}' > recovery-scopes-dependency/dep-postgres.json
+
+    run jq -s -c 'reduce .[] as $o ({}; . * $o)' recovery-scopes-version/ver-*.json
+    [ "$status" -eq 0 ]
+    version_scopes="$output"
+
+    run jq -s -c 'reduce .[] as $o ({}; . * $o)' recovery-scopes-dependency/dep-*.json
+    [ "$status" -eq 0 ]
+    dependency_scopes="$output"
+
+    [ "$(normalize_json "$version_scopes")" = "$(normalize_json '{"postgres":{"versions":"17"}}')" ]
+    [ "$(normalize_json "$dependency_scopes")" = "$(normalize_json '{"postgres":{"flavors":"full","extensions":"pgvector"}}')" ]
+    [ "$(jq -r '.postgres | keys | sort | join(",")' <<< "$version_scopes")" = "versions" ]
+    [ "$(jq -r '.postgres | keys | sort | join(",")' <<< "$dependency_scopes")" = "extensions,flavors" ]
+}
+
 @test "empty object container_scopes normalizes to empty string" {
     run --separate-stderr normalize_container_scopes '{}'
 

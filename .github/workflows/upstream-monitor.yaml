@@ -575,23 +575,22 @@ jobs:
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Trigger container build
+      - name: Write recovery build scope
+        id: write_recovery_scope
         if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTAINER: ${{ steps.resolve.outputs.container_name }}
           NEW_VERSION: ${{ steps.classify.outputs.new_version }}
           ROTATED: ${{ steps.rotate.outputs.rotated }}
         run: |
-          echo "🔨 Triggering build for $CONTAINER after successful merge"
+          echo "🔨 Recording recovery build scope for $CONTAINER after successful merge"
 
-          scope_args=""
+          affected_major=""
           # Only scope by major version for containers without rotation (e.g., postgres with always_all_versions).
           # Rotated containers (version_retention or latest_per_major) already updated their versions[] list — no scoping needed.
           if [[ "$ROTATED" != "true" ]]; then
             affected_major=$(echo "$NEW_VERSION" | grep -oE '^[0-9]+')
             if [[ -n "$affected_major" ]]; then
-              scope_args="-f scope_versions=$affected_major"
               echo "🎯 Scoped to version: $affected_major"
             fi
           fi
@@ -599,8 +598,32 @@ jobs:
           # build_all_retained=true: workflow_dispatch has no diff; without this flag, the
           # latest-only default would silently skip retained-version rebuilds — defeating
           # upstream-monitor's "propagate dep update to every supported version" purpose.
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true -f build_all_retained=true $scope_args
-          echo "✅ Build workflow triggered for $CONTAINER"
+          mkdir -p recovery-scope
+          jq -n --arg c "$CONTAINER" --arg v "$affected_major" \
+            '{($c): ({} + (if $v != "" then {versions:$v} else {} end))}' \
+            > "recovery-scope/ver-${CONTAINER}.json"
+          jq . "recovery-scope/ver-${CONTAINER}.json"
+
+      - name: Upload recovery build scope
+        id: upload_recovery_scope
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: recovery-scope-ver-${{ steps.resolve.outputs.container_name }}-${{ github.run_id }}
+          path: recovery-scope/ver-${{ steps.resolve.outputs.container_name }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload recovery build scope (retry on transient failure)
+        if: always() && steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true' && steps.upload_recovery_scope.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: recovery-scope-ver-${{ steps.resolve.outputs.container_name }}-${{ github.run_id }}
+          path: recovery-scope/ver-${{ steps.resolve.outputs.container_name }}.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
       - name: Cleanup outdated registry images
         if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_pr.outputs.merged == 'true' && steps.rotate.outputs.rotated == 'true'
@@ -624,6 +647,114 @@ jobs:
           echo "   Labels: automation, ${{ steps.resolve.outputs.container_name }}, ${{ steps.classify.outputs.change_type }}-update"
           echo "   Assignees: ${{ steps.classify.outputs.change_type == 'major' && github.repository_owner || '(none - minor update)' }}"
           echo "   Auto-merge: ${{ steps.classify.outputs.change_type == 'minor' && 'Yes (minor update)' || 'No (major update - requires manual review)' }}"
+
+  dispatch-recovery-builds:
+    needs: [check-upstream-versions, create-update-prs]
+    if: always() && needs.check-upstream-versions.outputs.update_count > 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Detect test environment
+        id: env_check
+        run: |
+          if [ "$ACT" = "true" ]; then
+            echo "is_local_test=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_local_test=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download recovery scope artifacts
+        id: download_recovery_scopes
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: recovery-scope-ver-*-${{ github.run_id }}
+          path: recovery-scopes
+          merge-multiple: true
+
+      - name: Dispatch recovery builds
+        if: steps.env_check.outputs.is_local_test != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p recovery-scopes
+          mapfile -t scope_files < <(find recovery-scopes -type f -name 'ver-*.json' | sort)
+          if [[ "${#scope_files[@]}" -eq 0 ]]; then
+            echo "no version recovery scope fragments, nothing to dispatch"
+            exit 0
+          fi
+
+          scopes_json=$(jq -c -s 'reduce .[] as $o ({}; . * $o)' "${scope_files[@]}")
+          echo "Dispatching version recovery build for container_scopes=${scopes_json}"
+
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          retry_with_backoff 3 5 gh workflow run auto-build.yaml -f container_scopes="$scopes_json" -f force_rebuild=true -f build_all_retained=true
+
+  dispatch-dependency-recovery-builds:
+    needs: [check-dependency-updates, create-dependency-update-prs]
+    if: always() && needs.check-dependency-updates.outputs.dep_update_count > 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Detect test environment
+        id: env_check
+        run: |
+          if [ "$ACT" = "true" ]; then
+            echo "is_local_test=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_local_test=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download recovery scope artifacts
+        id: download_recovery_scopes
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        with:
+          pattern: recovery-scope-dep-*-${{ github.run_id }}
+          path: recovery-scopes
+          merge-multiple: true
+
+      - name: Dispatch dependency recovery builds
+        if: steps.env_check.outputs.is_local_test != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p recovery-scopes
+          mapfile -t scope_files < <(find recovery-scopes -type f -name 'dep-*.json' | sort)
+          if [[ "${#scope_files[@]}" -eq 0 ]]; then
+            echo "no dependency recovery scope fragments, nothing to dispatch"
+            exit 0
+          fi
+
+          scopes_json=$(jq -c -s 'reduce .[] as $o ({}; . * $o)' "${scope_files[@]}")
+          echo "Dispatching dependency recovery build for container_scopes=${scopes_json}"
+
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          retry_with_backoff 3 5 gh workflow run auto-build.yaml -f container_scopes="$scopes_json" -f force_rebuild=true -f build_all_retained=true
 
   # Update dashboard after PRs are merged to reflect new versions
   update-dashboard:
@@ -1203,16 +1334,17 @@ jobs:
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Trigger container build
+      - name: Write recovery build scope
+        id: write_recovery_scope
         if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_dep_pr.outputs.merged == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTAINER: ${{ matrix.container }}
           DEP_INFO: ${{ needs.check-dependency-updates.outputs.dep_version_info }}
         run: |
-          echo "🔨 Triggering build for $CONTAINER after dependency update merge"
+          echo "🔨 Recording recovery build scope for $CONTAINER after dependency update merge"
 
-          scope_args=""
+          scope_flavors=""
+          scope_extensions=""
 
           # For containers with extensions (e.g., postgres), compute affected flavors
           if [[ -f "$CONTAINER/extensions/config.yaml" ]]; then
@@ -1233,7 +1365,8 @@ jobs:
                 "$CONTAINER/extensions/config.yaml" "$updated_extensions")
 
               if [[ -n "$affected_flavors" ]]; then
-                scope_args="-f scope_flavors=$affected_flavors -f scope_extensions=$updated_extensions"
+                scope_flavors="$affected_flavors"
+                scope_extensions="$updated_extensions"
                 echo "🎯 Scoped to flavors: $affected_flavors, extensions: $updated_extensions"
               fi
             fi
@@ -1242,8 +1375,32 @@ jobs:
           # build_all_retained=true: workflow_dispatch has no diff; without this flag, the
           # latest-only default would silently skip retained-version rebuilds — defeating
           # upstream-monitor's "propagate dep update to every supported version" purpose.
-          gh workflow run auto-build.yaml -f container="$CONTAINER" -f force_rebuild=true -f build_all_retained=true $scope_args
-          echo "✅ Build workflow triggered for $CONTAINER"
+          mkdir -p recovery-scope
+          jq -n --arg c "$CONTAINER" --arg f "$scope_flavors" --arg e "$scope_extensions" \
+            '{($c): ({} + (if $f != "" then {flavors:$f} else {} end) + (if $e != "" then {extensions:$e} else {} end))}' \
+            > "recovery-scope/dep-${CONTAINER}.json"
+          jq . "recovery-scope/dep-${CONTAINER}.json"
+
+      - name: Upload recovery build scope
+        id: upload_recovery_scope
+        if: steps.env_check.outputs.is_local_test != 'true' && steps.merge_dep_pr.outputs.merged == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: recovery-scope-dep-${{ matrix.container }}-${{ github.run_id }}
+          path: recovery-scope/dep-${{ matrix.container }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload recovery build scope (retry on transient failure)
+        if: always() && steps.env_check.outputs.is_local_test != 'true' && steps.merge_dep_pr.outputs.merged == 'true' && steps.upload_recovery_scope.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: recovery-scope-dep-${{ matrix.container }}-${{ github.run_id }}
+          path: recovery-scope/dep-${{ matrix.container }}.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
       - name: Show PR details (test mode)
         if: steps.env_check.outputs.is_local_test == 'true'
