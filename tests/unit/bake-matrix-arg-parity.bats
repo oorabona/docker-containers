@@ -284,7 +284,7 @@ bake_managed_fleet_list_is_expected_parity_surface() { # @test
     local managed
     managed=$(bake_managed_containers)
     assert_equals \
-        "github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform" \
+        "github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres" \
         "$managed" \
         "bake-managed containers"
 }
