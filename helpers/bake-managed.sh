@@ -110,6 +110,86 @@ _bake_container_always_all_versions() {
 }
 
 # ---------------------------------------------------------------------------
+# _has_extension_pipeline <container>
+#
+# Returns 0 (true) if the container owns an extension sub-pipeline via
+# <container>/extensions/config.yaml; returns 1 otherwise.
+# ---------------------------------------------------------------------------
+_has_extension_pipeline() {
+    local container="$1"
+    local repo_root
+    repo_root="${PROJECT_ROOT:-$(dirname "${_BM_SCRIPT_DIR}")}"
+
+    [[ -f "${repo_root}/${container}/extensions/config.yaml" ]]
+}
+
+# ---------------------------------------------------------------------------
+# bake_final_build_enabled <container>
+#
+# Returns 0 (true) if the container declares build.bake_final_build: true in
+# variants.yaml; returns 1 (false) otherwise.  Tolerates a missing file, a
+# missing field, or a non-true value — all default to false.
+# ---------------------------------------------------------------------------
+bake_final_build_enabled() {
+    local container="$1"
+    local repo_root
+    repo_root="${PROJECT_ROOT:-$(dirname "${_BM_SCRIPT_DIR}")}"
+    local variants_file="${repo_root}/${container}/variants.yaml"
+
+    if [[ ! -f "$variants_file" ]]; then
+        return 1
+    fi
+
+    local val
+    val=$(yq -r '.build.bake_final_build // false' "$variants_file" 2>/dev/null) || return 1
+    [[ "$val" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# extension_containers_in <builds_json> [any|final]
+#
+# Prints a compact JSON array of sorted-unique container names from builds_json
+# that have extensions/config.yaml.  In "final" mode, containers must also opt
+# into build.bake_final_build:true.
+# ---------------------------------------------------------------------------
+extension_containers_in() {
+    local builds_json="$1"
+    local mode="${2:-any}"
+
+    if [[ "$mode" != "any" && "$mode" != "final" ]]; then
+        echo "::error::extension_containers_in: mode must be any or final" >&2
+        return 1
+    fi
+
+    if [[ -z "$builds_json" ]]; then
+        echo "::error::extension_containers_in: empty input" >&2
+        return 1
+    fi
+
+    if ! echo "$builds_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        echo "::error::extension_containers_in: input is not a JSON array" >&2
+        return 1
+    fi
+
+    local -a containers=()
+    local container
+    while IFS= read -r container; do
+        [[ -n "$container" ]] || continue
+        _has_extension_pipeline "$container" || continue
+        if [[ "$mode" == "final" ]]; then
+            bake_final_build_enabled "$container" || continue
+        fi
+        containers+=("$container")
+    done < <(echo "$builds_json" | jq -r '[.[] | .container // empty] | unique | .[]')
+
+    if [[ ${#containers[@]} -eq 0 ]]; then
+        echo '[]'
+    else
+        printf '%s\n' "${containers[@]}" | jq -R . | jq -s -c 'sort | unique'
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # _bake_retained_core_containers
 #
 # Echoes the B1-core retained-bake rollout set.  This is intentionally narrower

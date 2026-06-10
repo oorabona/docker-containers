@@ -874,3 +874,50 @@ ubuntu-1.0.0"
       and (((.bake + .matrix) | map(key) | unique | length) == ($input | length))
     ' >/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# BM-25: _has_extension_pipeline detects containers with extensions/config.yaml.
+# ---------------------------------------------------------------------------
+@test "BM-25: _has_extension_pipeline returns true for postgres and false for debian" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    run _has_extension_pipeline "postgres"
+    [[ "$status" -eq 0 ]]
+
+    run _has_extension_pipeline "debian"
+    [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# BM-26: extension_containers_in returns sorted-unique extension/final-build
+#         container lists from build-cell JSON.
+# ---------------------------------------------------------------------------
+@test "BM-26: extension_containers_in returns postgres for mixed builds and empty for postgres-free builds" {
+    # shellcheck disable=SC1090
+    source "$BM"
+
+    postgres_fixture=$(_fixture_postgres_all_versions_builds)
+    mixed_fixture=$(jq -cn --argjson pg "$postgres_fixture" '
+      $pg + [
+        {"container":"debian","os":"linux","tag":"bookworm-13.0.0","is_latest_version":true},
+        {"container":"debian","os":"linux","tag":"bookworm-12.0.0","is_latest_version":false}
+      ]')
+    postgres_free_fixture=$(jq -cn '
+      [
+        {"container":"debian","os":"linux","tag":"bookworm-13.0.0","is_latest_version":true},
+        {"container":"web-shell","os":"linux","tag":"alpine-2.0.0","is_latest_version":true}
+      ]')
+
+    extension_builds=$(extension_containers_in "$mixed_fixture" "any")
+    [[ "$extension_builds" == '["postgres"]' ]]
+
+    bake_final_builds=$(extension_containers_in "$mixed_fixture" "final")
+    [[ "$bake_final_builds" == '["postgres"]' ]]
+
+    extension_builds_empty=$(extension_containers_in "$postgres_free_fixture" "any")
+    [[ "$extension_builds_empty" == '[]' ]]
+
+    bake_final_builds_empty=$(extension_containers_in "$postgres_free_fixture" "final")
+    [[ "$bake_final_builds_empty" == '[]' ]]
+}

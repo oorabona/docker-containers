@@ -229,6 +229,8 @@ jobs:
       builds_count: ${{ steps.detect.outputs.builds_count }}
       bake_builds: ${{ steps.detect.outputs.bake_builds }}
       matrix_builds: ${{ steps.detect.outputs.matrix_builds }}
+      extension_builds: ${{ steps.detect.outputs.extension_builds }}
+      bake_final_builds: ${{ steps.detect.outputs.bake_final_builds }}
       postgres_matrix_builds: ${{ steps.detect.outputs.postgres_matrix_builds }}
     steps:
       - name: Checkout repository
@@ -281,7 +283,7 @@ jobs:
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      needs.detect-containers.outputs.extension_builds != '[]' &&
       github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       (needs.sync-base-images.result == 'success' || needs.sync-base-images.result == 'skipped') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -548,7 +550,7 @@ jobs:
     if: |
       always() &&
       needs.detect-containers.outputs.count > 0 &&
-      contains(needs.detect-containers.outputs.containers, 'postgres') &&
+      needs.detect-containers.outputs.extension_builds != '[]' &&
       github.event.inputs.skip_extensions != 'true' && inputs.skip_extensions != true && inputs.skip_extensions != 'true' &&
       needs.build-extensions.result == 'success' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -1639,7 +1641,7 @@ jobs:
           done <<< "$versions"
 
       - name: Download extension lineage (postgres final-image bake)
-        if: contains(needs.detect-containers.outputs.bake_builds, 'postgres')
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
@@ -1772,7 +1774,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
-          BAKE_GENERATE_FINAL_BUILD: ${{ contains(steps.bake-containers.outputs.containers, 'postgres') && 'true' || 'false' }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
@@ -2094,7 +2096,7 @@ jobs:
           done <<< "$versions"
 
       - name: Download extension lineage (postgres final-image bake)
-        if: contains(needs.detect-containers.outputs.bake_builds, 'postgres')
+        if: needs.detect-containers.outputs.bake_final_builds != '[]'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         with:
           name: ext-lineage-${{ github.run_id }}
@@ -2216,7 +2218,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
-          BAKE_GENERATE_FINAL_BUILD: ${{ contains(steps.bake-containers.outputs.containers, 'postgres') && 'true' || 'false' }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           chmod +x helpers/bake-buildresult.sh
@@ -2738,7 +2740,7 @@ jobs:
         env:
           BAKE_CONTAINERS: ${{ steps.bake-containers.outputs.containers }}
           BAKE_RETAINED_CONTAINERS: ${{ steps.bake-containers.outputs.retained_containers }}
-          BAKE_GENERATE_FINAL_BUILD: ${{ contains(steps.bake-containers.outputs.containers, 'postgres') && 'true' || 'false' }}
+          BAKE_GENERATE_FINAL_BUILD: ${{ needs.detect-containers.outputs.bake_final_builds != '[]' && 'true' || 'false' }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
         run: |

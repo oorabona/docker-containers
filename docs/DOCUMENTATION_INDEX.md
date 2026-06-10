@@ -22,6 +22,15 @@
 | [ADR-004](adr/ADR-004-build-lineage-tracking.md) | Build lineage tracking |
 | [ADR-005](adr/ADR-005-github-runner-container.md) | GitHub Actions runner container |
 | [ADR-006](adr/ADR-006-multi-distro-template-pattern.md) | Multi-distro template pattern |
+| [ADR-007](adr/ADR-007-phase-c-redesign.md) | Dashboard Phase C redesign |
+| [ADR-008](adr/ADR-008-trivy-severity-policy.md) | Trivy severity policy |
+| [ADR-009](adr/ADR-009-dockerhub-pullthrough-mirror.md) | Docker Hub pull-through mirror |
+| [ADR-010](adr/ADR-010-chained-on-own-and-digest-drift.md) | Chained-on-own marker + digest drift detection |
+| [ADR-011](adr/ADR-011-cascade-aware-drift-detection.md) | Cascade-aware drift detection |
+| [ADR-012](adr/ADR-012-version-drift-guard.md) | Version drift guard |
+| [ADR-013](adr/ADR-013-dependency-ordered-builds.md) | Dependency-ordered container builds (bake engine) |
+| [ADR-014](adr/ADR-014-postbuild-supply-chain-convergence.md) | Post-build supply-chain convergence |
+| [ADR-015](adr/ADR-015-postgres-final-build-to-bake.md) | postgres final build → bake (extension-container framework) |
 
 ## Container Documentation
 

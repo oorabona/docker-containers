@@ -150,6 +150,41 @@ extensions:
     requires_glibc: true  # Note: Alpine uses musl
 ```
 
+### Building an extension container through bake
+
+An extension container's **final image** (the multi-stage build that consumes the
+pre-built `ext-*` images via `FROM` / `COPY --from=`) builds through `docker buildx
+bake` like the rest of the Linux fleet. The extension **compilation** stays its own
+pipeline (`build-extensions` → `merge-extension-manifests`); only the final image
+build is on bake. See `docs/adr/ADR-015-postgres-final-build-to-bake.md`.
+
+This is a **reusable framework**, not a postgres special case. The pieces:
+
+| Piece | What it does |
+|-------|--------------|
+| `<container>/extensions/config.yaml` | Marks the container as an *extension container* (drives the `extension_builds` detect output → gates the compilation jobs). |
+| `build.bake_final_build: true` in `variants.yaml` | Marks the final image as bake-buildable. Combined with the activation flag, it admits the container into the bake graph (drives the `bake_final_builds` detect output). |
+| `--include-final-build` (generator flag) | Per-run activation. The whole-fleet smoke and the normal fleet build never pass it, so the capability is **dormant** until a bake job opts in — a new extension container cannot perturb existing builds. |
+| `<container>/generate-dockerfile.sh` | Thin bridge so the generic bake materializer can expand the `@@…@@` template via `generate_dockerfile()`. |
+| `build.always_all_versions: true` | Routes every major (not just the latest) to bake, so the container does not split across the bake and matrix engines. |
+| `base_suffix` in `variants.yaml` | The bake `VERSION` build arg carries it (e.g. `18` → `18-alpine`), matching the base image the Dockerfile pulls. |
+
+The CI wiring keys off `extensions/config.yaml` presence and the `bake_final_build`
+flag (via the `extension_builds` / `bake_final_builds` detect-containers outputs) —
+**not** off the container name. The shared bake scan / attest / multi-arch-merge jobs
+are generic over the build set, so a new extension container is covered with no
+per-container jobs.
+
+**Checklist — add a new extension container to bake:**
+
+1. Give it `extensions/config.yaml` + per-extension Dockerfiles/resolvers (see *Adding a New Extension* above).
+2. Add a `<container>/generate-dockerfile.sh` wrapper that sources `helpers/extension-utils.sh` and calls `generate_dockerfile <config> <template> <flavor> <major>` (mirror `postgres/generate-dockerfile.sh`).
+3. In `variants.yaml`: set `build.bake_final_build: true` (and `build.always_all_versions: true` if every major must build), and `base_suffix` if the upstream base is suffixed (e.g. `-alpine`).
+4. Add the container name to `bake_managed_containers` in `helpers/bake-managed.sh`.
+5. No workflow edits: the extension-pipeline and bake jobs pick it up via the generic signals.
+
+> Scope note: the extension image tag scheme is PostgreSQL-shaped (`ext-<name>:pg<major>`, `pg_major_version()`). Reusable as-is for a PostgreSQL-family container; a genuinely different engine would need that vocabulary parameterized (deferred — only postgres exists today).
+
 ## Variant System
 
 ### How Variants Work
