@@ -176,7 +176,7 @@ EOF
 
     # Three per-version COPYs inside the collector (one per available version)
     local collector_ver_count
-    collector_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-.* /output/ /.+" || true)
+    collector_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$collector_ver_count" -eq 3 ]
 }
 
@@ -216,7 +216,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Final-stage COPY lands at /tmp/ext/timescaledb/
-    echo "$output" | grep -qx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
+    echo "$output" | grep -Fxq "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
 }
 
 @test "multi-version: ceiling version 2.27.1 — collector stage succeeds, single final COPY" {
@@ -233,7 +233,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage present
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # Exactly ONE final-stage COPY
     local final_count
@@ -262,11 +262,11 @@ EOF
 
     # Exactly ONE FROM stage for pgvector
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
+    from_count=$(echo "$output" | grep -cxE "FROM ghcr\.io/testowner/ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ "$from_count" -eq 1 ]
 
     # Stage alias uses extension name only (no version suffix)
-    echo "$output" | grep -q "FROM.*ext-pgvector:pg18-0.8.2 AS ext-pgvector$"
+    echo "$output" | grep -Fxq "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector"
 }
 
 @test "backward-compat: no versionset → COPYs go into flat /tmp/ext/pgvector/{extension,lib}/" {
@@ -280,11 +280,11 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/"
 
     # Must NOT have version-subdirectory COPYs
-    echo "$output" | grep -qv "/tmp/ext/pgvector/0\."
+    ! grep -q "/tmp/ext/pgvector/0\." <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -313,19 +313,19 @@ EOF
 
     # timescaledb: per-version COPYs are INSIDE the collector (3 versions in stages_block)
     local ts_per_ver_count
-    ts_per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    ts_per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$ts_per_ver_count" -eq 3 ]
 
     # pgvector: exactly 1 FROM stage (single-version, non-resolver path unchanged)
     local pv_count
-    pv_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
+    pv_count=$(echo "$output" | grep -cxE "FROM ghcr\.io/testowner/ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ "$pv_count" -eq 1 ]
 
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/lib/ /tmp/ext/pgvector/lib/"
 
     # pgvector must NOT have version-subdirectory paths
-    ! echo "$output" | grep -q "/tmp/ext/pgvector/0\."
+    ! grep -q "/tmp/ext/pgvector/0\." <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -448,7 +448,7 @@ EOF
     # Self-heal path emits per-version COPYs INSIDE the collector stage.
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector (no bundle tag in output)
@@ -547,16 +547,16 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage must be present (3 versions → multi-version path).
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # Every per-version COPY inside the collector must use custom.io/customowner.
     local copy_count
-    copy_count=$(echo "$output" | grep -cxE "COPY --from=custom\.io/customowner/ext-timescaledb:pg18-[0-9].* /output/ /.+" || true)
+    copy_count=$(echo "$output" | grep -cxE "COPY --from=custom\.io/customowner/ext-timescaledb:pg18-[0-9][^[:space:]]* /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$copy_count" -eq 3 ]
 
     # Must NOT use the default get_registry() value (ghcr.io) set up in setup().
     local wrong_count
-    wrong_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9].* /output/ /.+" || true)
+    wrong_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9][^[:space:]]* /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$wrong_count" -eq 0 ]
 }
 
@@ -795,7 +795,7 @@ EOF
     # Self-heal emits per-version COPYs INSIDE the collector stage (/output/ → /<ver>/).
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector (no pg18-bundle in output)
@@ -878,11 +878,11 @@ EOF
 
     # pgvector must still produce exactly 1 FROM stage (single-version, non-resolver path unchanged).
     local pv_count
-    pv_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-pgvector:pg18-")
+    pv_count=$(echo "$output" | grep -cxE "FROM ghcr\.io/testowner/ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ "$pv_count" -eq 1 ]
 
     # pgvector must use flat COPY paths (single-version format).
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 }
 
 # ---------------------------------------------------------------------------
@@ -919,7 +919,7 @@ EOF
     # Self-heal emits per-version COPYs INSIDE the collector stage.
     # Three versions proved present: 2.23.0, 2.25.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -950,7 +950,7 @@ EOF
 
     # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -981,7 +981,7 @@ EOF
 
     # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -1091,7 +1091,7 @@ EOF
 
     # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     local final_copy_count
@@ -1144,7 +1144,7 @@ EOF
 
     # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     local final_copy_count
@@ -1208,7 +1208,7 @@ EOF
     # (2 = the exactly-wrong fail-open behavior that drops 2.23.0).
     if [ "$status" -eq 0 ]; then
         local from_count
-        from_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-.*/extension/" || true)
+        from_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[^[:space:]]+ /output/extension/ /tmp/ext/timescaledb/extension/" || true)
         [ "$from_count" -eq 3 ]
     fi
 }
@@ -1259,15 +1259,15 @@ EOF
     # Self-heal emits per-version COPYs for the proved-present set (2.25.0, 2.27.1).
     # 2.23.0 is definitively absent and must NOT appear.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
 
     # 2.23.0 must NOT appear in the collector (definitively absent).
     local absent_count
-    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    absent_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /2.23.0/" || true)
     [ "$absent_count" -eq 0 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -1494,7 +1494,7 @@ _run_registry_probe_3state() {
     # Self-heal emits per-version COPYs inside the collector stage.
     # Three versions proved present locally: 2.25.0, 2.26.0, 2.27.1.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     local final_copy_count
@@ -1540,7 +1540,7 @@ _run_registry_probe_3state() {
 
     # Self-heal emits per-version COPYs inside the collector stage.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     local final_copy_count
@@ -1759,7 +1759,7 @@ _run_registry_probe_3state() {
     [ "$status" -ne 0 ]
 
     # The smuggled "2.26.0" must NOT appear as a FROM stage (non-vacuous).
-    echo "$output" | grep -qv "FROM.*ext-timescaledb:pg18-2.26.0" || true
+    ! grep -Eq "FROM .*ext-timescaledb:pg18-2\.26\.0" <<<"$output"
     # And "2.25.0\n2.26.0" (the raw poisoned element) must not appear literally.
     [[ "$output" != *"2.25.0"$'\n'"2.26.0"* ]]
 }
@@ -1841,7 +1841,7 @@ _run_registry_probe_3state() {
 
     # Three per-version COPYs inside the collector
     local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_count" -eq 3 ]
 }
 
@@ -1921,7 +1921,7 @@ _run_registry_probe_3state() {
 
     # Three per-version COPYs inside the collector (one per available version)
     local per_ver_copy_count
-    per_ver_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_copy_count" -eq 3 ]
 }
 
@@ -1943,7 +1943,7 @@ _run_registry_probe_3state() {
     [ "$status" -eq 0 ]
 
     # The final-stage COPY lands at /tmp/ext/timescaledb/
-    echo "$output" | grep -qx "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
+    echo "$output" | grep -Fxq "COPY --from=ext_collect_timescaledb / /tmp/ext/timescaledb/"
 }
 
 # ---------------------------------------------------------------------------
@@ -1963,7 +1963,7 @@ _run_registry_probe_3state() {
     [ "$status" -eq 0 ]
 
     # Collector stage name must appear
-    echo "$output" | grep -q "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 }
 
 # ---------------------------------------------------------------------------
@@ -1984,14 +1984,14 @@ _run_registry_probe_3state() {
 
     # pgvector must still emit exactly one FROM stage
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM.*ext-pgvector:pg18-")
+    from_count=$(echo "$output" | grep -cxE "FROM .*ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ "$from_count" -eq 1 ]
 
     # pgvector must still use flat COPY paths
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 
     # pgvector must NOT have a bundle COPY
-    ! echo "$output" | grep -q "ext-pgvector:pg18-bundle"
+    ! grep -q "ext-pgvector:pg18-bundle" <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -2022,11 +2022,11 @@ _run_registry_probe_3state() {
 
     # pgvector: exactly one FROM stage (single-version path unchanged)
     local pv_from_count
-    pv_from_count=$(echo "$output" | grep -c "^FROM.*ext-pgvector:pg18-")
+    pv_from_count=$(echo "$output" | grep -cxE "FROM .*ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ "$pv_from_count" -eq 1 ]
 
     # pgvector: flat COPY paths
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 }
 
 # ---------------------------------------------------------------------------
@@ -2061,7 +2061,7 @@ _run_registry_probe_3state() {
 
     # Three per-version COPYs inside the collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -2112,7 +2112,7 @@ _run_registry_probe_3state() {
 
     # 3 per-version COPYs inside collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -2162,15 +2162,15 @@ _run_registry_probe_3state() {
 
     # Only the 2 proved-present versions must appear inside the collector.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/"
 
     # 2.23.0 must NOT appear inside the collector.
     local absent_count
-    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    absent_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /2.23.0/" || true)
     [ "$absent_count" -eq 0 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -2206,9 +2206,7 @@ _run_registry_probe_3state() {
     [ "$status" -ne 0 ]
 
     # No bundle COPY in output.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    ! grep -q ":pg18-bundle" <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -2241,18 +2239,16 @@ EOF
 
     # RED before fix: emits a bundle COPY (available_count > 0 unconditionally enters bundle path).
     # GREEN after fix: no bundle reference anywhere in the output.
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    ! grep -q ":pg18-bundle" <<<"$output"
 
     # Must emit a single FROM stage for the ceiling version (single-version path).
     local from_count
-    from_count=$(echo "$output" | grep -c "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1")
+    from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 AS ext-timescaledb" || true)
     [ "$from_count" -eq 1 ]
 
     # Must emit flat COPY lines (single-version layout).
-    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/"
-    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/lib/ /tmp/ext/timescaledb/lib/"
+    echo "$output" | grep -Fxq "COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-timescaledb /output/lib/ /tmp/ext/timescaledb/lib/"
 }
 
 # ---------------------------------------------------------------------------
@@ -2281,7 +2277,7 @@ EOF
 
     # Per-version COPYs must use repo@digest format inside the collector.
     local pinned_count
-    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    pinned_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pinned_count" -eq 2 ]
 
     # Final-stage COPY from collector
@@ -2318,7 +2314,7 @@ EOF
 
     # Still has 2 per-version COPYs inside collector
     local per_ver_count
-    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_count" -eq 2 ]
 }
 
@@ -2450,11 +2446,11 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$status" -eq 0 ]
 
     # Collector stage present
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # Digest-pinned COPYs inside the collector
     local pinned_count
-    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    pinned_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pinned_count" -eq 2 ]
 }
 
@@ -2471,7 +2467,7 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$status" -eq 0 ]
 
     # Collector stage still present (tag-based fallback)
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # No @sha256: in output (tag-based refs, no pinning when version_digests absent).
     local pinned_count
@@ -2544,7 +2540,7 @@ _write_versionset_with_malformed_ver_digest() {
     # must appear (that would reference a non-existent image).
     if [ "$status" -eq 0 ]; then
         local ceiling_from_count
-        ceiling_from_count=$(echo "$output" | grep -c "FROM.*ext-timescaledb:pg18-2.27.1" || true)
+        ceiling_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 AS ext-timescaledb" || true)
         [ "$ceiling_from_count" -eq 0 ]
     fi
 }
@@ -2579,13 +2575,11 @@ _write_versionset_with_malformed_ver_digest() {
 
     # Must emit exactly one FROM stage for the ceiling version (single-version path).
     local from_count
-    from_count=$(echo "$output" | grep -c "^FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1" || true)
+    from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 AS ext-timescaledb" || true)
     [ "$from_count" -eq 1 ]
 
     # Must NOT emit a bundle COPY (no bundle for count==1).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    ! grep -q "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-bundle" <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -2639,7 +2633,7 @@ _write_versionset_with_malformed_ver_digest() {
 
     # 3 per-version COPYs inside the collector (/output/ → /<ver>/)
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 3 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -2680,12 +2674,12 @@ _write_versionset_with_malformed_ver_digest() {
 
     # Only proved-present versions inside collector (2.25.0 and 2.27.1).
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
     # 2.23.0 must NOT appear.
     local absent_count
-    absent_count=$(echo "$output" | grep -c "ext-timescaledb:pg18-2.23.0" || true)
+    absent_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /2.23.0/" || true)
     [ "$absent_count" -eq 0 ]
 }
 
@@ -2703,11 +2697,11 @@ _write_versionset_with_malformed_ver_digest() {
     [ "$status" -eq 0 ]
 
     # Collector stage present
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # Digest-pinned per-version COPYs inside the collector (2 versions)
     local pinned_count
-    pinned_count=$(echo "$output" | grep -cE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:" || true)
+    pinned_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pinned_count" -eq 2 ]
 
     # Exactly ONE final-stage COPY from collector
@@ -2746,7 +2740,7 @@ _write_versionset_with_malformed_ver_digest() {
 
     # No per-version or bundle COPY must appear.
     local copy_count
-    copy_count=$(echo "$output" | grep -cE "COPY --from=.*ext-timescaledb" || true)
+    copy_count=$(echo "$output" | grep -cxE "COPY --from=.*ext-timescaledb.*" || true)
     [ "$copy_count" -eq 0 ]
 }
 
@@ -2787,7 +2781,7 @@ EOF
 
     # No FROM stage for the ceiling must appear in the output.
     local ceiling_from_count
-    ceiling_from_count=$(echo "$output" | grep -c ":pg18-2\.27\.1" || true)
+    ceiling_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 AS ext-timescaledb" || true)
     [ "$ceiling_from_count" -eq 0 ]
 }
 
@@ -2810,13 +2804,11 @@ EOF
 
     # The single-version FROM stage for the ceiling must appear.
     local ceiling_from_count
-    ceiling_from_count=$(echo "$output" | grep -c "FROM.*ext-timescaledb:pg18-2\.27\.1" || true)
+    ceiling_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1 AS ext-timescaledb" || true)
     [ "$ceiling_from_count" -eq 1 ]
 
     # No bundle COPY (available_count == 1, bundle path not taken).
-    local bundle_count
-    bundle_count=$(echo "$output" | grep -c ":pg18-bundle" || true)
-    [ "$bundle_count" -eq 0 ]
+    ! grep -q ":pg18-bundle" <<<"$output"
 }
 
 # ---------------------------------------------------------------------------
@@ -3093,7 +3085,7 @@ ARTIFACT_EOF
 
     # Self-heal emits per-version COPYs for the 2 proved-present versions inside collector.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
     # A reduction warning must have been emitted.
@@ -3153,7 +3145,7 @@ ARTIFACT_EOF
 
     # All per-version COPYs must use repo@digest format (no tag segment).
     local copy_lines
-    copy_lines=$(echo "$output" | grep "COPY --from=.*timescaledb@sha256:" || true)
+    copy_lines=$(echo "$output" | grep -xE "COPY --from=.*timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ -n "$copy_lines" ]
 
     # No ":pg" before @sha256: (no tag segment in the ref).
@@ -3163,7 +3155,7 @@ ARTIFACT_EOF
 
     # 2 such digest-pinned COPYs (one per version in the collector stage)
     local copy_count
-    copy_count=$(echo "$output" | grep -c "ghcr.io/testowner/ext-timescaledb@sha256:" || true)
+    copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[^[:space:]]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$copy_count" -eq 2 ]
 }
 
@@ -3207,15 +3199,15 @@ ARTIFACT_EOF
 
     # FROM ref must carry -pr42 suffix.
     local from_line
-    from_line=$(echo "$output" | grep "^FROM ghcr.io/testowner/ext-pgvector:pg18-" || true)
+    from_line=$(echo "$output" | grep -xE "FROM ghcr\.io/testowner/ext-pgvector:pg18-[^[:space:]]+ AS ext-pgvector" || true)
     [ -n "$from_line" ]
     [[ "$from_line" == *"-pr42"* ]]
 
     # Must be: FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector
-    echo "$output" | grep -q "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector"
+    echo "$output" | grep -Fxq "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector"
 
     # The COPY still references the stage alias (no suffix in --from).
-    echo "$output" | grep -q "COPY --from=ext-pgvector /output/extension/"
+    echo "$output" | grep -Fxq "COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"
 }
 
 @test "BC1-consumer-canonical-no-suffix: PR_TAG_SUFFIX empty → FROM ref is canonical (no suffix)" {
@@ -3233,7 +3225,7 @@ ARTIFACT_EOF
     [ "$status" -eq 0 ]
 
     # FROM ref must be exactly the canonical tag (no -pr suffix).
-    echo "$output" | grep -q "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector"
+    echo "$output" | grep -Fxq "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector"
 
     # Must NOT have any -pr suffix.
     local pr_count
@@ -3287,12 +3279,12 @@ ARTIFACT_EOF
     # Self-heal emits per-version COPYs inside collector with -pr42 suffix.
     # Canonical absent + PR-scoped present → each per-version ref must carry -pr42.
     local per_ver_ext_count
-    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /.+" || true)
+    per_ver_ext_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$per_ver_ext_count" -eq 2 ]
 
     # Both expected pr42 refs present inside collector.
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/ /2.25.0/"
-    echo "$output" | grep -qx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/ /2.27.1/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.25.0-pr42 /output/ /2.25.0/"
+    echo "$output" | grep -Fxq "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/ /2.27.1/"
 }
 
 # ---------------------------------------------------------------------------
@@ -3343,7 +3335,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage present with tag-based refs
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     # No @sha256: anywhere (tag-based fallback, no digest pin).
     local pinned_count
@@ -3403,7 +3395,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage present with tag-based refs (no digest pin).
-    echo "$output" | grep -qx "FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Fxq "FROM scratch AS ext_collect_timescaledb"
 
     local pinned_count
     pinned_count=$(echo "$output" | grep -c "@sha256:" || true)
@@ -3484,12 +3476,12 @@ EOF
 
     # Self-heal emits per-version COPYs inside collector with -pr42 suffix.
     local pr_copy_count
-    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /.+" || true)
+    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+-pr42 /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pr_copy_count" -eq 2 ]
 
     # No canonical (un-suffixed) per-version COPYs (canonical was absent for all versions).
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+[^-].* /output/ /.+" || true)
+    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$canonical_copy_count" -eq 0 ]
 }
 
@@ -3532,12 +3524,12 @@ EOF
 
     # Self-heal emits per-version COPYs inside collector with NO pr suffix.
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /.+" || true)
+    canonical_copy_count=$(echo "$output" | grep -cxE "COPY --from=ghcr\.io/testowner/ext-timescaledb:pg18-[0-9]+\.[0-9]+\.[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$canonical_copy_count" -eq 2 ]
 
     # No -pr<N> suffixed COPY lines inside collector.
     local pr_copy_count
-    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*-pr[0-9]+ /output/ /.+" || true)
+    pr_copy_count=$(echo "$output" | grep -cxE "COPY --from=.*-pr[0-9]+ /output/ /[0-9]+\.[0-9]+\.[0-9]+/" || true)
     [ "$pr_copy_count" -eq 0 ]
 }
 
@@ -3598,12 +3590,12 @@ EOF
     # RED before fix: emits ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42
     # GREEN after fix: emits ghcr.io/testowner/ext-pgvector:pg18-0.8.2 (canonical)
     local canonical_from_count
-    canonical_from_count=$(echo "$output" | grep -cE "FROM ghcr\.io/testowner/ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$" || true)
+    canonical_from_count=$(echo "$output" | grep -cxE "FROM ghcr\.io/testowner/ext-pgvector:pg18-0\.8\.2 AS ext-pgvector" || true)
     [ "$canonical_from_count" -eq 1 ]
 
     # PR-scoped ref must NOT appear.
     local pr_from_count
-    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    pr_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector" || true)
     [ "$pr_from_count" -eq 0 ]
 }
 
@@ -3642,7 +3634,7 @@ EOF
 
     # FROM must reference PR-scoped ref (canonical absent, PR-scoped present).
     local pr_from_count
-    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    pr_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector" || true)
     [ "$pr_from_count" -eq 1 ]
 }
 
@@ -3720,7 +3712,7 @@ EOF
 
     # 2.23.0 must be emitted as the CANONICAL ref (no -pr42 suffix) inside the collector.
     local canonical_copy_count
-    canonical_copy_count=$(echo "$output" | grep -c 'ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /' || true)
+    canonical_copy_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0 /output/ /2.23.0/" || true)
     [ "$canonical_copy_count" -eq 1 ] || {
         echo "FAIL: 2.23.0 must appear as canonical ref in collector COPY. Output was:"
         echo "$output"
@@ -3729,7 +3721,7 @@ EOF
 
     # 2.23.0 must NOT appear with -pr42 suffix.
     local pr_copy_count
-    pr_copy_count=$(echo "$output" | grep -c 'pg18-2.23.0-pr42' || true)
+    pr_copy_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.23.0-pr42 /output/ /2.23.0/" || true)
     [ "$pr_copy_count" -eq 0 ] || {
         echo "FAIL: 2.23.0 must not appear as pr42-scoped ref. Output was:"
         echo "$output"
@@ -3738,7 +3730,7 @@ EOF
 
     # 2.27.1 (bumped, built this PR) must appear as PR-scoped ref inside the collector.
     local pr42_count
-    pr42_count=$(echo "$output" | grep -c 'pg18-2.27.1-pr42 /output/ /' || true)
+    pr42_count=$(echo "$output" | grep -Fcx "COPY --from=ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 /output/ /2.27.1/" || true)
     [ "$pr42_count" -eq 1 ] || {
         echo "FAIL: 2.27.1 must appear as pr42-scoped ref. Output was:"
         echo "$output"
@@ -3801,7 +3793,7 @@ EOF
 
     # The FROM stage must use the pr42-scoped ref.
     local pr42_from_count
-    pr42_from_count=$(echo "$output" | grep -c 'ext-timescaledb:pg18-2.27.1-pr42' || true)
+    pr42_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-timescaledb:pg18-2.27.1-pr42 AS ext-timescaledb" || true)
     [ "$pr42_from_count" -ge 1 ] || {
         echo "FAIL: bumped version must be emitted as pr42-scoped ref. Output was:"
         echo "$output"
@@ -3874,7 +3866,7 @@ EOF
     # GREEN after fix: FORCE derived from REBUILD=force → ext_ref_resolve prefers
     #   PR-scoped → emits -pr42 ref (freshly rebuilt pgvector).
     local pr_from_count
-    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    pr_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector" || true)
     [ "$pr_from_count" -eq 1 ] || {
         echo 'FAIL: expected FROM with -pr42 ref. Output was:'
         echo "$output"
@@ -3883,7 +3875,7 @@ EOF
 
     # Canonical ref must NOT appear (FORCE overrides canonical-first).
     local canonical_from_count
-    canonical_from_count=$(echo "$output" | grep -cE 'ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$' || true)
+    canonical_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector" || true)
     [ "$canonical_from_count" -eq 0 ] || {
         echo 'FAIL: canonical ref must not appear when FORCE=true and PR-scoped exists. Output was:'
         echo "$output"
@@ -3929,7 +3921,7 @@ EOF
 
     # REBUILD unset → FORCE false → canonical-first → emits canonical ref.
     local canonical_from_count
-    canonical_from_count=$(echo "$output" | grep -cE 'ext-pgvector:pg18-0\.8\.2 AS ext-pgvector$' || true)
+    canonical_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2 AS ext-pgvector" || true)
     [ "$canonical_from_count" -eq 1 ] || {
         echo 'FAIL: expected canonical FROM ref when REBUILD unset. Output was:'
         echo "$output"
@@ -3938,7 +3930,7 @@ EOF
 
     # PR-scoped ref must NOT appear (not forced).
     local pr_from_count
-    pr_from_count=$(echo "$output" | grep -c 'ext-pgvector:pg18-0.8.2-pr42' || true)
+    pr_from_count=$(echo "$output" | grep -Fcx "FROM ghcr.io/testowner/ext-pgvector:pg18-0.8.2-pr42 AS ext-pgvector" || true)
     [ "$pr_from_count" -eq 0 ] || {
         echo 'FAIL: PR-scoped ref must not appear when REBUILD unset. Output was:'
         echo "$output"

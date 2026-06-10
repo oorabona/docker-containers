@@ -6365,10 +6365,10 @@ EOCFG
     if [ -f "$tmpd/bundle_dockerfile.log" ]; then
         local bundle_df
         bundle_df=$(cat "$tmpd/bundle_dockerfile.log")
-        [[ "$bundle_df" != *'pg18-2.25.0'* ]]
+        ! grep -Fxq "COPY --from=ghcr.io/test/ext-timescaledb:pg18-2.25.0 /output/ /2.25.0/" <<<"$bundle_df"
         # Bundle must contain 2.26.0 and 2.27.1.
-        [[ "$bundle_df" == *'pg18-2.26.0'* ]]
-        [[ "$bundle_df" == *'pg18-2.27.1'* ]]
+        grep -Fxq "COPY --from=ghcr.io/test/ext-timescaledb:pg18-2.26.0 /output/ /2.26.0/" <<<"$bundle_df"
+        grep -Fxq "COPY --from=ghcr.io/test/ext-timescaledb:pg18-2.27.1 /output/ /2.27.1/" <<<"$bundle_df"
     fi
 
     # Bundle available[] count must equal artifact available[] count.
@@ -10545,8 +10545,8 @@ EOF
 
     # imagetools create must have been called for available versions (2.26.0 + 2.27.1).
     [ -f "$imagetools_log" ]
-    grep -q 'pg18-2.26.0' "$imagetools_log"
-    grep -q 'pg18-2.27.1' "$imagetools_log"
+    grep -Fxq "IMAGETOOLS_CREATE buildx imagetools create -t ghcr.io/test/ext-timescaledb:pg18-2.26.0 ghcr.io/test/ext-timescaledb:pg18-2.26.0-amd64 ghcr.io/test/ext-timescaledb:pg18-2.26.0-arm64" "$imagetools_log"
+    grep -Fxq "IMAGETOOLS_CREATE buildx imagetools create -t ghcr.io/test/ext-timescaledb:pg18-2.27.1 ghcr.io/test/ext-timescaledb:pg18-2.27.1-amd64 ghcr.io/test/ext-timescaledb:pg18-2.27.1-arm64" "$imagetools_log"
 
     # 2.25.0 (excluded: arm64 absent) must NOT appear in imagetools create calls.
     local excl_imagetools
