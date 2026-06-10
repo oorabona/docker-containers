@@ -1216,6 +1216,8 @@ jobs:
           TAG: ${{ matrix.build.tag }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
           source ./helpers/sbom-utils.sh
           image_ref="ghcr.io/${GITHUB_USERNAME}/${CONTAINER}:${TAG}-amd64"
           sbom_file=".build-lineage/${CONTAINER}-${TAG}.sbom.json"
@@ -1230,7 +1232,7 @@ jobs:
           # `--format '{{.Digest}}'` proved unreliable in CI (empty output);
           # `docker inspect ... RepoDigests` returns the LOCAL pre-flatten
           # digest, which would mismatch the post-flatten registry artifact.
-          raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+          raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
           if [[ -n "$raw_manifest" ]]; then
             digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
           else
@@ -1418,6 +1420,8 @@ jobs:
           TAG: ${{ matrix.build.tag }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
           source ./helpers/sbom-utils.sh
           image_ref="ghcr.io/${GITHUB_USERNAME}/${CONTAINER}:${TAG}-amd64"
           sbom_file=".build-lineage/${CONTAINER}-${TAG}.sbom.json"
@@ -1426,7 +1430,7 @@ jobs:
           echo "sbom_file=$sbom_file" >> "$GITHUB_OUTPUT"
 
           # Capture digest for attestation
-          digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image_ref" 2>/dev/null \
+          digest=$(retry_with_backoff 3 10 docker buildx imagetools inspect --format '{{json .Manifest}}' "$image_ref" 2>/dev/null \
             | jq -r '.digest // empty' || echo "")
           if [[ -z "$digest" ]]; then
             digest=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{end}}' "$image_ref" 2>/dev/null \
@@ -1658,6 +1662,8 @@ jobs:
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
+          source helpers/logging.sh
+          source helpers/retry.sh
           chmod +x scripts/generate-bake-hcl.sh
 
           # Validate each BAKE_CONTAINERS token against the expected name pattern.
@@ -1747,7 +1753,7 @@ jobs:
           elif [[ "$IS_PR" == "true" ]]; then
             # PR: validate the bake DAG compiles and builds — no registry push.
             # shellcheck disable=SC2086
-            docker buildx bake \
+            retry_with_backoff 3 10 docker buildx bake \
               -f "$bake_file" \
               --set "*.platform=linux/amd64" \
               ${no_cache_flag} \
@@ -1755,7 +1761,7 @@ jobs:
             echo "::notice::Bake build (amd64) build-only (PR; no push)"
           else
             # shellcheck disable=SC2086
-            docker buildx bake \
+            retry_with_backoff 3 10 docker buildx bake \
               -f "$bake_file" \
               --set "*.platform=linux/amd64" \
               ${no_cache_flag} \
@@ -1843,6 +1849,8 @@ jobs:
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
           source ./helpers/sbom-utils.sh
           chmod +x scripts/generate-bake-hcl.sh
 
@@ -1894,7 +1902,7 @@ jobs:
 
             # Capture digest for attestation (mirrors build-and-push job pattern)
             digest=""
-            raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+            raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
             if [[ -n "$raw_manifest" ]]; then
               digest="sha256:$(printf '%s' "$raw_manifest" | sha256sum | awk '{print $1}')"
             fi
@@ -2130,6 +2138,8 @@ jobs:
           REBUILD: ${{ (inputs.rebuild != '' && inputs.rebuild != 'none' && inputs.rebuild) || (inputs.force_rebuild == true && 'all') || 'none' }}
         run: |
           set -euo pipefail
+          source helpers/logging.sh
+          source helpers/retry.sh
           chmod +x scripts/generate-bake-hcl.sh
 
           # Validate each BAKE_CONTAINERS token against the expected name pattern.
@@ -2208,7 +2218,7 @@ jobs:
           elif [[ "$IS_PR" == "true" ]]; then
             # PR: validate the bake DAG compiles and builds — no registry push.
             # shellcheck disable=SC2086
-            docker buildx bake \
+            retry_with_backoff 3 10 docker buildx bake \
               -f "$bake_file" \
               --set "*.platform=linux/arm64" \
               ${no_cache_flag} \
@@ -2216,7 +2226,7 @@ jobs:
             echo "::notice::Bake build (arm64) build-only (PR; no push)"
           else
             # shellcheck disable=SC2086
-            docker buildx bake \
+            retry_with_backoff 3 10 docker buildx bake \
               -f "$bake_file" \
               --set "*.platform=linux/arm64" \
               ${no_cache_flag} \
@@ -2772,12 +2782,14 @@ jobs:
           REMOTE_CR: ghcr.io/${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
 
           image_ref="${REMOTE_CR}/${MATRIX_CONTAINER}:${MATRIX_TAG}-amd64"
 
           # Derive digest via raw-manifest hash (same method as bake-build-amd64 so
           # subject digest matches what was captured during the build).
-          raw_manifest=$(docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
+          raw_manifest=$(retry_with_backoff 3 10 docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null || true)
           if [[ -z "$raw_manifest" ]]; then
             echo "::warning::Cannot inspect ${image_ref} — skipping attestation for ${MATRIX_CONTAINER}:${MATRIX_TAG}"
             echo "has_digest=false" >> "$GITHUB_OUTPUT"
