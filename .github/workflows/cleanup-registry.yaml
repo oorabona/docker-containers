@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ''
+      execute_ext_cleanup:
+        description: 'Actually delete out-of-window extension tags (default: dry-run)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   packages: write
@@ -63,4 +68,32 @@ jobs:
             ./scripts/cleanup-outdated-tags.sh "$CONTAINER_FILTER"
           else
             ./scripts/cleanup-outdated-tags.sh
+          fi
+
+  cleanup-ext-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Independent lifecycle job — not in any build/consume path.
+    # Runs monthly on schedule, or on operator dispatch with explicit opt-in.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install yq
+        shell: bash
+        run: yq --version
+
+      - name: Prune out-of-window extension image tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          # Boolean input moved to env to avoid expression injection in run:
+          EXECUTE_EXT_CLEANUP: ${{ inputs.execute_ext_cleanup || 'false' }}
+        run: |
+          # Default: dry-run.  Operator must set execute_ext_cleanup=true to delete.
+          if [[ "$EXECUTE_EXT_CLEANUP" == "true" ]]; then
+            ./scripts/cleanup-ext-images.sh --execute
+          else
+            ./scripts/cleanup-ext-images.sh --dry-run
           fi
