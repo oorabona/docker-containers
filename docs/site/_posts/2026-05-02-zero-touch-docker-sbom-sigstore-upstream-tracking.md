@@ -3,6 +3,7 @@ layout: post
 title: "Zero-Touch Docker Image Maintenance: SBOMs, Sigstore, and Automated Upstream Tracking for 13 Containers"
 description: "How we keep 13 container images in sync with upstream releases, signed with Sigstore, and shipped with SPDX SBOMs — without anyone manually running docker build."
 date: 2026-05-02 10:00:00 +0000
+dateModified: 2026-06-11
 tags: [docker, supply-chain-security, sbom, sigstore, github-actions, ci-cd]
 ---
 
@@ -12,7 +13,7 @@ This post is about how we keep **13 Docker images** fresh without anyone running
 
 ## The fleet
 
-Pulls on Docker Hub (last check):
+Pulls on Docker Hub (last check, 2026-05-02 — numbers will drift):
 
 | Container | Pulls | Role |
 |---|---|---|
