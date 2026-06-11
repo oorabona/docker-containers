@@ -11,7 +11,7 @@ base_image_cache:
   # tags explicitly until rotate-versions.sh learns to update this array
   # alongside variants.yaml — see #515 follow-up.
   - source: hashicorp/terraform
-    tags: ["1.15.5", "1.15.4", "1.15.3"]
+    tags: ["1.15.6", "1.15.5", "1.15.4"]
   - source: library/alpine
     tags: ["latest"]
   - source: library/python
