@@ -121,7 +121,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage must be declared
-    echo "$output" | grep -q "^FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Eqx '^FROM scratch AS ext_collect_timescaledb$'
 
     # Per-version COPYs inside collector must use repo@digest format
     local pinned_count
@@ -129,8 +129,8 @@ EOF
     [ "$pinned_count" -eq 3 ]
 
     # Each per-version COPY must land at /<ver>/ inside the collector
-    echo "$output" | grep -qE "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:.* /output/ /2\.23\.0/"
-    echo "$output" | grep -qE "COPY --from=ghcr.io/testowner/ext-timescaledb@sha256:.* /output/ /2\.27\.1/"
+    echo "$output" | grep -Eqx '^COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[a-f0-9]+ /output/ /2\.23\.0/$'
+    echo "$output" | grep -Eqx '^COPY --from=ghcr\.io/testowner/ext-timescaledb@sha256:[a-f0-9]+ /output/ /2\.27\.1/$'
 
     # Exactly ONE final-stage COPY from the collector
     local final_count
@@ -161,7 +161,7 @@ EOF
     [ "$status" -eq 0 ]
 
     # Collector stage present
-    echo "$output" | grep -q "^FROM scratch AS ext_collect_timescaledb"
+    echo "$output" | grep -Eqx '^FROM scratch AS ext_collect_timescaledb$'
 
     # Per-version COPYs inside collector use tag-based refs (no @digest)
     local per_ver_count
@@ -202,7 +202,7 @@ EOF
     [ "$from_count" -eq 1 ]
 
     # Flat COPY paths (no /<ver>/ subdirectory)
-    echo "$output" | grep -q "COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/"
+    echo "$output" | grep -Eqx '^COPY --from=ext-timescaledb /output/extension/ /tmp/ext/timescaledb/extension/$'
 }
 
 # ---------------------------------------------------------------------------

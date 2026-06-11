@@ -620,9 +620,9 @@ YAML
     base_ext_from_count=$(printf '%s\n' "$base_inline" | grep -cE '^FROM .*ext-' || true)
     [ "$base_ext_from_count" -eq 0 ]
 
-    [[ "$vector_inline" == *"FROM ghcr.io/oorabona/ext-pgvector:pg18-0.8.2 AS ext-pgvector"* ]]
-    [[ "$vector_inline" == *"COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/"* ]]
-    [[ "$timeseries_inline" == *"FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.27.2 AS ext-timescaledb"* ]]
+    grep -Fxq 'FROM ghcr.io/oorabona/ext-pgvector:pg18-0.8.2 AS ext-pgvector' <<< "$vector_inline"
+    grep -Fxq 'COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/' <<< "$vector_inline"
+    grep -Fxq 'FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.27.2 AS ext-timescaledb' <<< "$timeseries_inline"
 }
 
 @test "GBH-25e: postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
