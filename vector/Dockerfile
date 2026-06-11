@@ -24,10 +24,13 @@ RUN set -ex \
         *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
     esac \
     && apk add --no-cache ca-certificates tzdata \
-    && wget -qO- "https://github.com/vectordotdev/vector/releases/download/v${UPSTREAM_VERSION}/vector-${UPSTREAM_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
-        | tar xzf - -C /tmp/ \
+    && for attempt in 1 2 3; do \
+         wget -qO /tmp/vector.tgz "https://github.com/vectordotdev/vector/releases/download/v${UPSTREAM_VERSION}/vector-${UPSTREAM_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" && break; \
+         [ "$attempt" -lt 3 ] && sleep 2 || { echo "vector download failed after retries" >&2; exit 1; }; \
+       done \
+    && tar xzf /tmp/vector.tgz -C /tmp/ \
     && mv /tmp/vector-${ARCH}-unknown-linux-musl/bin/vector /usr/local/bin/vector \
-    && rm -rf /tmp/vector-* \
+    && rm -rf /tmp/vector-* /tmp/vector.tgz \
     && vector --version
 
 # Create vector user and data directory

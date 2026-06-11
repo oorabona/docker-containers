@@ -40,7 +40,7 @@ ARG WPCLI_VERSION
 RUN : "${WPCLI_VERSION:?required}"
 
 RUN set -ex; \
-    curl -fsSL -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/wp https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar; \
     chmod +x /usr/local/bin/wp; \
     # Suppress deprecation warnings for CLI only (E_ALL & ~E_DEPRECATED = 22527)
     echo 'error_reporting = E_ALL & ~E_DEPRECATED' > /usr/local/etc/php/conf.d/cli-no-deprecated.ini; \
@@ -62,7 +62,7 @@ RUN set -ex; \
     WP_VERSION="${VERSION%%-*}"; \
     wp core download --path=/var/www/html --version="$WP_VERSION" --allow-root; \
     # Pre-install SQLite Database Integration plugin (used when WP_DB_TYPE=sqlite)
-    curl -fsSL -o /tmp/sqlite-plugin.zip \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o /tmp/sqlite-plugin.zip \
         "https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip"; \
     unzip -qo /tmp/sqlite-plugin.zip -d /var/www/html/wp-content/plugins/; \
     rm /tmp/sqlite-plugin.zip; \

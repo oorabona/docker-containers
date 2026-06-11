@@ -107,7 +107,7 @@ RUN set -ex \
     && update-ca-certificates \
     && cd /tmp \
     && cd /tmp \
-    && curl -fSL "${RESTY_OPENSSL_URL_BASE}/openssl-${RESTY_OPENSSL_VERSION}.tar.gz" -o openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${RESTY_OPENSSL_URL_BASE}/openssl-${RESTY_OPENSSL_VERSION}.tar.gz" -o openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
     && tar xzf openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
     && cd openssl-${RESTY_OPENSSL_VERSION} \
     && if [ $(echo ${RESTY_OPENSSL_VERSION} | cut -c 1-2) = "3." ] ; then \
@@ -123,7 +123,7 @@ RUN set -ex \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install_sw \
     && cd /tmp \
-    && curl -fSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${RESTY_PCRE_VERSION}/pcre2-${RESTY_PCRE_VERSION}.tar.gz" -o pcre2-${RESTY_PCRE_VERSION}.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${RESTY_PCRE_VERSION}/pcre2-${RESTY_PCRE_VERSION}.tar.gz" -o pcre2-${RESTY_PCRE_VERSION}.tar.gz \
     && echo "${RESTY_PCRE_SHA256}  pcre2-${RESTY_PCRE_VERSION}.tar.gz" | shasum -a 256 --check \
     && tar xzf pcre2-${RESTY_PCRE_VERSION}.tar.gz \
     && cd /tmp/pcre2-${RESTY_PCRE_VERSION} \
@@ -155,13 +155,13 @@ RUN set -ex \
     && CFLAGS="-g -O3" make -j${RESTY_J} \
     && CFLAGS="-g -O3" make -j${RESTY_J} install \
     && cd /tmp \
-    && curl -fSL https://openresty.org/download/openresty-${UPSTREAM_VERSION}.tar.gz -o openresty-${UPSTREAM_VERSION}.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://openresty.org/download/openresty-${UPSTREAM_VERSION}.tar.gz -o openresty-${UPSTREAM_VERSION}.tar.gz \
     && tar xzf openresty-${UPSTREAM_VERSION}.tar.gz
 
 # STEP 2 - Configure OpenResty
 RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     cd /tmp \
-    && curl -fSL https://github.com/chobits/ngx_http_proxy_connect_module/archive/v${NGX_PROXY_CONNECT_VERSION}.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/chobits/ngx_http_proxy_connect_module/archive/v${NGX_PROXY_CONNECT_VERSION}.tar.gz -o ngx_http_proxy_connect_module.tar.gz \
     && export RESTY_CONFIG_OPTIONS="--add-module=/tmp/ngx_http_proxy_connect_module-${NGX_PROXY_CONNECT_VERSION} ${RESTY_CONFIG_OPTIONS}" \
     && tar zxf ngx_http_proxy_connect_module.tar.gz; fi \
     && cd /tmp/openresty-${UPSTREAM_VERSION} \
@@ -176,7 +176,7 @@ RUN cd /tmp/openresty-${UPSTREAM_VERSION} \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
     && cd /tmp \
-    && curl -fSL https://luarocks.org/releases/luarocks-${LUAROCKS_VERSION}.tar.gz -o luarocks-${LUAROCKS_VERSION}.tar.gz \
+    && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://luarocks.org/releases/luarocks-${LUAROCKS_VERSION}.tar.gz -o luarocks-${LUAROCKS_VERSION}.tar.gz \
     && tar zxf luarocks-${LUAROCKS_VERSION}.tar.gz \
     && cd /tmp/luarocks-${LUAROCKS_VERSION} \
     && export PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin \

@@ -36,11 +36,11 @@ RUN apk add --no-cache curl unzip ca-certificates && \
     TRIVY_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "ARM64" || echo "64bit") && \
     # TFLint - Terraform linter (supports amd64/arm64)
     echo "Downloading TFLint v${TFLINT_VERSION} for ${TARGETARCH}" && \
-    curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_${TARGETARCH}.zip" -o tflint.zip && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_${TARGETARCH}.zip" -o tflint.zip && \
     unzip tflint.zip && chmod +x tflint && \
     # Trivy - Security scanner (supports 64bit/ARM64)
     echo "Downloading Trivy v${TRIVY_VERSION} for ${TRIVY_ARCH}" && \
-    curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" -o trivy.tar.gz && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" -o trivy.tar.gz && \
     tar -xzf trivy.tar.gz trivy && \
     chmod +x trivy
 
@@ -56,17 +56,17 @@ ARG GITHUB_CLI_VERSION
 RUN : "${TERRAGRUNT_VERSION:?required}" "${TERRAFORM_DOCS_VERSION:?required}" "${INFRACOST_VERSION:?required}" "${GITHUB_CLI_VERSION:?required}"
 RUN apk add --no-cache curl tar ca-certificates && \
     # Terragrunt - Terraform wrapper (supports amd64/arm64)
-    curl -fsSL https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_${TARGETARCH} -o terragrunt && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_${TARGETARCH} -o terragrunt && \
     chmod +x terragrunt && \
     # Terraform-docs - Generate docs from modules (supports amd64/arm64)
-    curl -fsSL https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-${TARGETARCH}.tar.gz -o terraform-docs.tar.gz && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-${TARGETARCH}.tar.gz -o terraform-docs.tar.gz && \
     tar -xzf terraform-docs.tar.gz terraform-docs && chmod +x terraform-docs && \
     # Infracost - Cloud cost estimation (supports amd64/arm64)
-    curl -fsSL https://github.com/infracost/infracost/releases/download/v${INFRACOST_VERSION}/infracost-linux-${TARGETARCH}.tar.gz -o infracost.tar.gz && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/infracost/infracost/releases/download/v${INFRACOST_VERSION}/infracost-linux-${TARGETARCH}.tar.gz -o infracost.tar.gz && \
     tar -xzf infracost.tar.gz && chmod +x infracost-linux-${TARGETARCH} && \
     mv infracost-linux-${TARGETARCH} infracost && \
     # GitHub CLI (supports amd64/arm64)
-    curl -fsSL https://github.com/cli/cli/releases/download/v${GITHUB_CLI_VERSION}/gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}.tar.gz -o gh.tar.gz && \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/cli/cli/releases/download/v${GITHUB_CLI_VERSION}/gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}.tar.gz -o gh.tar.gz && \
     tar -xzf gh.tar.gz && \
     mv gh_${GITHUB_CLI_VERSION}_linux_${TARGETARCH}/bin/gh . && \
     chmod +x gh
