@@ -349,10 +349,10 @@
       font-size: 1.5rem;
     }
 
-    .stat-icon.blue { background: linear-gradient(135deg, var(--accent-blue), #60a5fa); }
-    .stat-icon.green { background: linear-gradient(135deg, var(--accent-green), #34d399); }
-    .stat-icon.yellow { background: linear-gradient(135deg, var(--accent-yellow), #fbbf24); }
-    .stat-icon.purple { background: linear-gradient(135deg, var(--accent-purple), #a78bfa); }
+    .stat-icon.blue { background: linear-gradient(135deg, var(--accent-blue), var(--color-blue-400)); }
+    .stat-icon.green { background: linear-gradient(135deg, var(--accent-green), var(--color-green-400)); }
+    .stat-icon.yellow { background: linear-gradient(135deg, var(--accent-yellow), var(--color-amber-400)); }
+    .stat-icon.purple { background: linear-gradient(135deg, var(--accent-purple), var(--color-violet-400)); }
 
     .stat-value {
       font-size: 2.5rem;
@@ -724,7 +724,7 @@
 
     .activity-icon.success {
       background: rgba(16, 185, 129, 0.2);
-      color: var(--accent-green);
+      color: var(--color-feedback-success-fg);
     }
 
     .activity-icon.failure {
@@ -794,7 +794,7 @@
 
     .health-value {
       font-weight: 600;
-      color: var(--accent-green);
+      color: var(--color-feedback-success-fg);
     }
 
     /* Focus visible styles for accessibility */
