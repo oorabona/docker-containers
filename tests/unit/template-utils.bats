@@ -65,12 +65,12 @@ with open('$file', 'w') as f:
     _make_template_marker_last "$tpl"
 
     run expand_template "$tpl" \
-        "BLOCK_A" "FROM builder AS stage1" \
+        "BLOCK_A" $'FROM builder AS stage1\n' \
         "BLOCK_B" "COPY --from=stage1 /out /app"
 
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "FROM builder AS stage1"
-    echo "$output" | grep -q "COPY --from=stage1 /out /app"
+    echo "$output" | grep -Fqx 'FROM builder AS stage1'
+    echo "$output" | grep -Fqx 'COPY --from=stage1 /out /app'
 }
 
 # ---------------------------------------------------------------------------
@@ -87,11 +87,11 @@ with open('$file', 'w') as f:
 
     # BLOCK_B is the last line; empty replacement triggers the spurious-1 bug.
     run expand_template "$tpl" \
-        "BLOCK_A" "FROM builder AS stage1" \
+        "BLOCK_A" $'FROM builder AS stage1\n' \
         "BLOCK_B" ""
 
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "FROM builder AS stage1"
+    echo "$output" | grep -Fqx 'FROM builder AS stage1'
     # Marker line is suppressed (empty replacement → nothing printed)
     ! echo "$output" | grep -q "@@BLOCK_B@@"
 }
@@ -110,7 +110,7 @@ with open('$file', 'w') as f:
     [ "$status" -eq 0 ]
     ! echo "$output" | grep -q "@@BLOCK_A@@"
     ! echo "$output" | grep -q "@@BLOCK_B@@"
-    echo "$output" | grep -q "ARG VERSION"
+    echo "$output" | grep -Fqx 'ARG VERSION'
 }
 
 # ---------------------------------------------------------------------------
@@ -125,8 +125,8 @@ with open('$file', 'w') as f:
         "BLOCK_B" ""
 
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "ARG VERSION"
-    echo "$output" | grep -q 'CMD \["postgres"\]'
+    echo "$output" | grep -Fqx 'ARG VERSION'
+    echo "$output" | grep -Fqx 'CMD ["postgres"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,6 @@ with open('$file', 'w') as f:
         "BLOCK_B" ""
 
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q "ARG VERSION"
-    echo "$output" | grep -q 'CMD \["postgres"\]'
+    echo "$output" | grep -Fqx 'ARG VERSION'
+    echo "$output" | grep -Fqx 'CMD ["postgres"]'
 }
