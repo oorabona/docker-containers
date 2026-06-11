@@ -1,6 +1,6 @@
 # Terraform container configuration
 # Base image and third-party dependency versions
-# NOTE: Tool versions are auto-updated during build by terraform/build script
+# NOTE: Tool versions are pinned here and updated by upstream-monitor, not at build time.
 
 base_image: "${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION}"
 base_image_cache:
