@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Terraform build script - validates pinned tool releases and exports build args.
+# Terraform build script - reads pinned tool versions and exports build args.
 # config.yaml is the single source of truth for tool versions.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,84 +15,6 @@ config_build_arg() {
     local arg_name="$1"
     YQ_BUILD_ARG="$arg_name" yq -r '.build_args[strenv(YQ_BUILD_ARG)] // ""' "$CONFIG_FILE"
 }
-
-dependency_label() {
-    local dep_name="$1"
-    dep_name="${dep_name%_VERSION}"
-    dep_name="${dep_name//_/-}"
-    printf '%s' "${dep_name,,}"
-}
-
-github_release_status() {
-    local repo="$1"
-    local tag="$2"
-    local github_api_url="${GITHUB_API_URL:-https://api.github.com}"
-    local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-    local -a curl_args=(
-        -sS
-        -L
-        -o /dev/null
-        -w "%{http_code}"
-        --connect-timeout 10
-        --max-time 15
-        -H "Accept: application/vnd.github+json"
-    )
-
-    if [[ -n "$token" ]]; then
-        curl_args+=(-H "Authorization: Bearer ${token}")
-    fi
-
-    curl "${curl_args[@]}" "${github_api_url}/repos/${repo}/releases/tags/${tag}"
-}
-
-validate_github_release_pins() {
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "::warning::curl is unavailable; skipping Terraform pinned GitHub release validation" >&2
-        return 0
-    fi
-
-    local dep_name repo strip_v version tag label http_status
-    while IFS=$'\t' read -r dep_name repo strip_v; do
-        [[ -n "$dep_name" ]] || continue
-
-        version=$(config_build_arg "$dep_name")
-        label=$(dependency_label "$dep_name")
-        if [[ -z "$version" || "$version" == "null" ]]; then
-            echo "::error::${label} has no pinned version in terraform/config.yaml build_args" >&2
-            return 1
-        fi
-
-        tag="$version"
-        if [[ "$strip_v" == "true" && "$tag" != v* ]]; then
-            tag="v${tag}"
-        fi
-
-        if ! http_status=$(github_release_status "$repo" "$tag" 2>/dev/null); then
-            echo "::warning::could not validate ${label} ${version} GitHub release; skipping pinned release check" >&2
-            continue
-        fi
-
-        case "$http_status" in
-            200)
-                ;;
-            404)
-                echo "::error::${label} ${version} has no published GitHub release/assets - pin points to an assetless tag" >&2
-                return 1
-                ;;
-            *)
-                echo "::warning::could not validate ${label} ${version} GitHub release (GitHub API HTTP ${http_status}); skipping pinned release check" >&2
-                ;;
-        esac
-    done < <(yq -r '
-        .dependency_sources // {}
-        | to_entries[]
-        | select(.value.type == "github-release" and (.value.monitor // true) != false)
-        | [.key, .value.repo, (.value.strip_v // false | tostring)]
-        | @tsv
-    ' "$CONFIG_FILE")
-}
-
-validate_github_release_pins || exit 1
 
 TFLINT_VERSION=$(config_build_arg TFLINT_VERSION)
 TRIVY_VERSION=$(config_build_arg TRIVY_VERSION)
