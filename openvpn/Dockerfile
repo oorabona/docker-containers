@@ -36,9 +36,9 @@ RUN set -ex \
         make \
         libcap-ng-dev \
         libcap-dev \
-    && cd /tmp && curl -sSL https://github.com/openvpn/openvpn/archive/$DOWNLOAD_VERSION.tar.gz --output openvpn.tgz \
+    && cd /tmp && curl -sSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/openvpn/openvpn/archive/$DOWNLOAD_VERSION.tar.gz --output openvpn.tgz \
     # Download pinned version of OpenSC pkcs11-helper
-    && curl -sSL https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \
+    && curl -sSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 https://github.com/opensc/pkcs11-helper/archive/pkcs11-helper-${PKCS11_HELPER_VERSION}.tar.gz --output pkcs11-helper.tgz \
     && tar zxvf pkcs11-helper.tgz \
     && cd pkcs11-helper-pkcs11-helper-${PKCS11_HELPER_VERSION} \
     && autoreconf -ivf \

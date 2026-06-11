@@ -38,7 +38,7 @@ RUN set -ex \
         # For healthcheck binary (static)
         busybox-static \
     # Download and extract sslh source
-    && wget -q https://github.com/yrutschle/sslh/archive/$DOWNLOAD_VERSION.tar.gz \
+    && wget -q --tries=3 --waitretry=2 --retry-connrefused --retry-on-http-error=404,429,500,502,503,504 https://github.com/yrutschle/sslh/archive/$DOWNLOAD_VERSION.tar.gz \
     && tar zxf $DOWNLOAD_VERSION.tar.gz \
     && cd /build/sslh-* \
     # Configure for dynamic build (musl shared libs are small)
