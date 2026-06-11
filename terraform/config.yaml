@@ -19,11 +19,11 @@ base_image_cache:
 build_args:
   TFLINT_VERSION: "0.63.1"
   TRIVY_VERSION: "0.71.0"
-  TERRAGRUNT_VERSION: "1.0.7"
+  TERRAGRUNT_VERSION: "1.0.8"
   TERRAFORM_DOCS_VERSION: "0.24.0"
   INFRACOST_VERSION: "0.10.44"
-  GITHUB_CLI_VERSION: "2.93.0"
-  AWS_CLI_VERSION: "1.45.26"
+  GITHUB_CLI_VERSION: "2.94.0"
+  AWS_CLI_VERSION: "1.45.27"
   AZURE_CLI_VERSION: "2.87.0"
   GCP_CLI_VERSION: "latest"
 # Maps build_arg names to their upstream source for monitoring
