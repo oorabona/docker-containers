@@ -913,11 +913,18 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Log in to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Retry the GHCR login: a transient runner DNS/registry blip at login
+          # otherwise fails the whole job (advisory or not). Mirrors the
+          # retry_with_backoff idiom already used for docker buildx ops below.
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
+          retry_with_backoff 3 5 ghcr_login
 
       - name: Log in to Docker Hub
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
@@ -2451,11 +2458,18 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Log in to GHCR (pull intermediates)
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Retry the GHCR login: a transient runner DNS/registry blip at login
+          # otherwise fails the whole job (advisory or not). Mirrors the
+          # retry_with_backoff idiom already used for docker buildx ops below.
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
+          retry_with_backoff 3 5 ghcr_login
 
       - name: Run bats tests (bake)
         if: matrix.build.build_flavor == 'base' || matrix.build.build_flavor == ''
@@ -2527,11 +2541,18 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Log in to GHCR (pull intermediates)
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Retry the GHCR login: a transient runner DNS/registry blip at login
+          # otherwise fails the whole job (advisory or not). Mirrors the
+          # retry_with_backoff idiom already used for docker buildx ops below.
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
+          retry_with_backoff 3 5 ghcr_login
 
       - name: Scan for vulnerabilities (Trivy)
         id: trivy-scan
@@ -2929,11 +2950,18 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Log in to GHCR (imagetools inspect)
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Retry the GHCR login: a transient runner DNS/registry blip at login
+          # otherwise fails the whole job (advisory or not). Mirrors the
+          # retry_with_backoff idiom already used for docker buildx ops below.
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
+          retry_with_backoff 3 5 ghcr_login
 
       - name: Download SBOM artifact
         id: download-sbom
@@ -3608,11 +3636,18 @@ jobs:
         # drift check.  Skipped on pull_request (same guard as the advisory step
         # below) because GITHUB_TOKEN is read-only on packages for PRs.
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Retry the GHCR login: a transient runner DNS/registry blip at login
+          # otherwise fails the whole job (advisory or not). Mirrors the
+          # retry_with_backoff idiom already used for docker buildx ops below.
+          source ./helpers/logging.sh
+          source ./helpers/retry.sh
+          ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
+          retry_with_backoff 3 5 ghcr_login
         continue-on-error: true
 
       - name: Install skopeo (summary job)
