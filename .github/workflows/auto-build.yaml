@@ -2672,6 +2672,7 @@ jobs:
     name: Bake merge manifests + DockerHub mirror
     needs: [detect-containers, bake-build-amd64, bake-build-arm64]
     if: |
+      !cancelled() &&
       github.event_name != 'pull_request' &&
       inputs.rebuild != 'sync' &&
       fromJson(needs.detect-containers.outputs.bake_builds || '[]') != null &&
