@@ -33,10 +33,17 @@ _compute_tag_args() {
     # Enables dashboard version tracking via registry pattern matching
     # Guard: TAG must start with VERSION to safely strip the prefix (P3 fix)
     if [[ -n "${FULL_VERSION:-}" && "$FULL_VERSION" != "$TAG" && "$TAG" == "$VERSION"* ]]; then
-        local rest="${TAG#$VERSION}"
+        local rest="${TAG#"$VERSION"}"
         local full_numeric
         full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
-        if [[ -n "$full_numeric" ]]; then
+        local version_numeric
+        version_numeric=$(echo "$VERSION" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
+        # Only emit when FULL_VERSION's numeric STRICTLY EXTENDS the cell's VERSION
+        # numeric (e.g. 18 -> 18.3). Skip a different or equal version: a retained
+        # cell whose FULL_VERSION carries the latest (e.g. terraform 1.15.4 built with
+        # FULL_VERSION=1.15.6) would otherwise mis-tag a cross-version, -alpine-stripped
+        # alias (1.15.6 onto the 1.15.4 image).
+        if [[ -n "$full_numeric" && -n "$version_numeric" && "$full_numeric" == "$version_numeric".* ]]; then
             local full_tag="${full_numeric}${rest}"
             if [[ "$full_tag" != "$TAG" ]]; then
                 tag_args="$tag_args -t $target_image:$full_tag"
@@ -94,7 +101,13 @@ _compute_version_specific_tag_args() {
         local rest="${TAG#"$VERSION"}"
         local full_numeric
         full_numeric=$(echo "$FULL_VERSION" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
-        if [[ -n "$full_numeric" ]]; then
+        local version_numeric
+        version_numeric=$(echo "$VERSION" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)
+        # Only emit when FULL_VERSION's numeric STRICTLY EXTENDS the cell's VERSION
+        # numeric (e.g. 18 -> 18.3). Skip a different/equal version so a terraform-style
+        # full-version TAG falls through to Path C (TAG itself) instead of a
+        # cross-version, -alpine-stripped alias.
+        if [[ -n "$full_numeric" && -n "$version_numeric" && "$full_numeric" == "$version_numeric".* ]]; then
             local full_tag="${full_numeric}${rest}"
             if [[ "$full_tag" != "$TAG" ]]; then
                 echo "-t $target_image:$full_tag"
