@@ -144,11 +144,12 @@ RUN Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -Out
     Start-Process -Wait -FilePath C:\vs_buildtools.exe -ArgumentList \
       '--quiet', '--wait', '--norestart', \
       '--add', 'Microsoft.VisualStudio.Workload.VCTools', \
-      '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100', \
-      '--includeRecommended'; \
-    Remove-Item C:\vs_buildtools.exe -Force
+      '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'; \
+    Remove-Item C:\vs_buildtools.exe -Force; \
+    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
 
-# Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe) + cleanup caches
+# Add MSVC + SDK tools to PATH (rc.exe, cl.exe, link.exe)
+# (the VS installer Package Cache is purged in the install layer above)
 # No double quotes — pwsh -Command from Docker SHELL breaks on embedded double quotes
 RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'; \
     $msvcVer = (Get-ChildItem $vsBase -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name; \
@@ -157,8 +158,7 @@ RUN $vsBase = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
     Write-Host ('MSVC: ' + $msvcBin); \
     Write-Host ('SDK:  ' + $sdkBin); \
     $machPath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine'); \
-    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine'); \
-    Remove-Item -Recurse -Force 'C:\ProgramData\Package Cache' -ErrorAction SilentlyContinue
+    [System.Environment]::SetEnvironmentVariable('Path', ($machPath + ';' + $msvcBin + ';' + $sdkBin), 'Machine')
 
 LABEL org.opencontainers.image.description="GitHub Actions self-hosted runner (Windows ltsc2022 — dev)"
 LABEL org.opencontainers.image.source="https://github.com/oorabona/docker-containers"
