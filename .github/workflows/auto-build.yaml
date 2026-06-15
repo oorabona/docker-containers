@@ -1043,6 +1043,32 @@ jobs:
         shell: bash
         run: yq --version
 
+      - name: Ensure Docker daemon is ready (Windows)
+        # Hosted windows-latest VMs intermittently start with dockerd not running
+        # (npipe //./pipe/docker_engine missing) → the build dies at the first FROM.
+        # Probe, and restart + wait if the daemon is not responding. Best-effort:
+        # if it still won't come up the build fails with its own clear error.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          docker info *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Docker daemon not responding — restarting the docker service'
+            Restart-Service docker -Force -ErrorAction SilentlyContinue
+            $deadline = (Get-Date).AddMinutes(3)
+            do {
+              Start-Sleep -Seconds 5
+              docker info *> $null
+            } until ($LASTEXITCODE -eq 0 -or (Get-Date) -gt $deadline)
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host '::warning::Docker daemon still not ready after restart + 3min wait'
+            } else {
+              Write-Host 'Docker daemon ready after restart'
+            }
+          } else {
+            Write-Host 'Docker daemon already responding'
+          }
+
       - name: Build container with retry logic
         id: build
         uses: ./.github/actions/build-container
