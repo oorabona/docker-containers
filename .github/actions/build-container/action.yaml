@@ -405,7 +405,11 @@ runs:
         # GHCR cache images may not exist there — fall back to Docker Hub defaults.
         if [[ "${{ inputs.use_base_cache }}" == "true" ]]; then
           source ./helpers/base-cache-utils.sh
-          if has_base_cache "./$container"; then
+          if ! distro_uses_base_cache "./$container/config.yaml" "$flavor"; then
+            echo "::notice::Skipping GHCR base cache probe for $container distro '$flavor' because distros.$flavor.use_base_cache is false"
+          elif [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            echo "::notice::Skipping GHCR base cache probe on Windows runner"
+          elif has_base_cache "./$container"; then
               # Probe every base_image_cache entry individually for GHCR accessibility.
               # Only reachable entries contribute to the final build args.
               #

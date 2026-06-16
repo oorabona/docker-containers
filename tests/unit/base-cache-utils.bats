@@ -4,6 +4,7 @@
 # Covers: resolve_cache_check_tag  — tag resolution for GHCR accessibility checks
 #         emit_reachable_cache_args — --build-arg emission (sole validated emitter)
 #         remote_cr_applicable      — REMOTE_CR applicability decision (pure function)
+#         distro_uses_base_cache    — distro-level base-cache opt-out
 #         collect_all_cache_images / _collect_entry_tags — image dest path for old and new styles
 
 setup() {
@@ -22,6 +23,52 @@ teardown() {
     unset SYNC_MANIFEST_OUT
     cd "$ORIG_DIR" || true
     rm -rf "$TEST_DIR"
+}
+
+# --- distro_uses_base_cache ---
+
+@test "BCU-DISTRO-01: distro_uses_base_cache returns false for explicit opt-out" {
+    cat > config.yaml <<'EOF'
+distros:
+  debian:
+    use_base_cache: false
+EOF
+
+    run distro_uses_base_cache "config.yaml" "debian"
+    [ "$status" -eq 1 ]
+}
+
+@test "BCU-DISTRO-02: distro_uses_base_cache returns true when key is absent" {
+    cat > config.yaml <<'EOF'
+distros:
+  alpine:
+    base_image: "alpine:3.21"
+EOF
+
+    run distro_uses_base_cache "config.yaml" "alpine"
+    [ "$status" -eq 0 ]
+}
+
+@test "BCU-DISTRO-03: distro_uses_base_cache returns true without distros block" {
+    cat > config.yaml <<'EOF'
+base_image_cache:
+  - source: library/alpine
+    tags: ["3.21"]
+EOF
+
+    run distro_uses_base_cache "config.yaml" "alpine"
+    [ "$status" -eq 0 ]
+}
+
+@test "BCU-DISTRO-04: distro_uses_base_cache returns true for empty distro arg" {
+    cat > config.yaml <<'EOF'
+distros:
+  debian:
+    use_base_cache: false
+EOF
+
+    run distro_uses_base_cache "config.yaml" ""
+    [ "$status" -eq 0 ]
 }
 
 # --- resolve_cache_check_tag ---

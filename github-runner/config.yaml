@@ -59,6 +59,8 @@ distros:
       amd64: x64
       arm64: arm64
   debian-trixie:
+    # Already GHCR, so the GHCR base-cache mirror is not used.
+    use_base_cache: false
     base_image: "ghcr.io/oorabona/debian:trixie"
     base_image_arg: DEBIAN_TRIXIE_BASE
     pkg_manager: apt
@@ -70,6 +72,8 @@ distros:
       amd64: x64
       arm64: arm64
   windows-ltsc2022:
+    # MCR Windows base requires EULA flow and is not GHCR-cacheable.
+    use_base_cache: false
     base_image: "mcr.microsoft.com/windows/servercore:ltsc2022"
     pkg_manager: none # chocolatey / direct download
     runner_user: runneradmin
