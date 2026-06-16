@@ -55,7 +55,7 @@ _make_timescaledb_lineage_root() {
     local pg
     for pg in 18 17 16; do
         jq -nc --arg pg "$pg" \
-            '{ext:"timescaledb", pg_major:$pg, ceiling:"2.27.2", resolved:["2.27.2"], available:["2.27.2"], excluded:[]}' \
+            '{ext:"timescaledb", pg_major:$pg, ceiling:"2.28.0", resolved:["2.28.0"], available:["2.28.0"], excluded:[]}' \
             > "${lineage_root}/.build-lineage/ext-timescaledb-pg${pg}-versionset.json"
     done
 }
@@ -622,7 +622,7 @@ YAML
 
     grep -Fxq 'FROM ghcr.io/oorabona/ext-pgvector:pg18-0.8.2 AS ext-pgvector' <<< "$vector_inline"
     grep -Fxq 'COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/' <<< "$vector_inline"
-    grep -Fxq 'FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.27.2 AS ext-timescaledb' <<< "$timeseries_inline"
+    grep -Fxq 'FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.28.0 AS ext-timescaledb' <<< "$timeseries_inline"
 }
 
 @test "GBH-25e: postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {
