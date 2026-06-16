@@ -14,9 +14,12 @@ setup() {
     source "$ORIG_DIR/helpers/logging.sh"
     source "$ORIG_DIR/helpers/variant-utils.sh"
     source "$ORIG_DIR/helpers/base-cache-utils.sh"
+
+    unset SYNC_MANIFEST_OUT
 }
 
 teardown() {
+    unset SYNC_MANIFEST_OUT
     cd "$ORIG_DIR" || true
     rm -rf "$TEST_DIR"
 }
@@ -800,6 +803,52 @@ EOF
     # Workflow warning surfaced for each image AND for the summary
     [[ "$output" == *"::warning::sync_base_images_to_ghcr: failed to sync"* ]]
     [[ "$output" == *"::warning::sync_base_images_to_ghcr: 2 image(s) failed to sync"* ]]
+}
+
+@test "sync_base_images_to_ghcr: writes manifest records for synced and failed bases" {
+    local manifest_file="$TEST_DIR/base-sync-manifest.jsonl"
+    export SYNC_MANIFEST_OUT="$manifest_file"
+    export SLEEP_CMD=:
+
+    docker() {
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "create" ]]; then
+            local source_ref="${6:-}"
+            if [[ "$source_ref" == "docker.io/library/alpine:3.18" ]]; then
+                return 0
+            fi
+            echo "simulated registry error" >&2
+            return 1
+        fi
+        if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+            printf '{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}'
+            return 0
+        fi
+        return 0
+    }
+    export -f docker
+
+    local input='[{"source":"alpine","tag":"3.18","sync_image":"ghcr.io/x/library/alpine:3.18"},{"source":"postgres","tag":"18-alpine","sync_image":"ghcr.io/x/library/postgres:18-alpine"}]'
+    run sync_base_images_to_ghcr "$input"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"1 synced"* ]]
+    [[ "$output" == *"1 failed"* ]]
+
+    [ -f "$manifest_file" ]
+    [ "$(jq -s 'length' "$manifest_file")" -eq 2 ]
+
+    local synced_digest failed_status failed_digest synced_source failed_source
+    synced_source=$(jq -sr 'map(select(.source_ref == "docker.io/library/alpine:3.18"))[0].source_ref' "$manifest_file")
+    synced_digest=$(jq -sr 'map(select(.source_ref == "docker.io/library/alpine:3.18"))[0].digest' "$manifest_file")
+    failed_source=$(jq -sr 'map(select(.source_ref == "docker.io/library/postgres:18-alpine"))[0].source_ref' "$manifest_file")
+    failed_status=$(jq -sr 'map(select(.source_ref == "docker.io/library/postgres:18-alpine"))[0].status' "$manifest_file")
+    failed_digest=$(jq -sr 'map(select(.source_ref == "docker.io/library/postgres:18-alpine"))[0].digest' "$manifest_file")
+
+    [ "$synced_source" = "docker.io/library/alpine:3.18" ]
+    [ "$synced_digest" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
+    [ "$failed_source" = "docker.io/library/postgres:18-alpine" ]
+    [ "$failed_status" = "failed" ]
+    [ "$failed_digest" = "" ]
+    jq -se 'map(select(.status == "synced" and .sync_image == "ghcr.io/x/library/alpine:3.18" and (.synced_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")))) | length == 1' "$manifest_file" >/dev/null
 }
 
 @test "sync_base_images_to_ghcr: multiline docker stderr cannot inject workflow commands" {

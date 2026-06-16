@@ -467,6 +467,132 @@ _sync_one_with_backoff() {
     done
 }
 
+# base_cache_canonical_source_ref <source_img> <tag> [source_registry]
+#
+# Canonicalize the source side of a base_image_cache entry exactly as the
+# sync loop does: strip a chained-on-own leading slash, preserve multi-segment
+# paths, and add explicit library/ for single-segment Docker Hub names.
+base_cache_canonical_source_ref() {
+    local source_img="$1"
+    local tag="$2"
+    local source_registry="${3:-docker.io}"
+
+    if [[ -z "$source_registry" || -z "$source_img" || -z "$tag" ]]; then
+        return 1
+    fi
+
+    if [[ "$source_registry" =~ [[:cntrl:]] ]] \
+        || [[ "$source_img" =~ [[:cntrl:]] ]] \
+        || [[ "$tag" =~ [[:cntrl:]] ]]; then
+        return 1
+    fi
+
+    local src="${source_img#/}"
+    if [[ "$src" == */* ]]; then
+        printf '%s/%s:%s' "$source_registry" "$src" "$tag"
+    else
+        printf '%s/library/%s:%s' "$source_registry" "$src" "$tag"
+    fi
+}
+
+# base_cache_is_docker_io_origin_ref <image_ref>
+#
+# True for lineage-style refs that resolve to Docker Hub: bare names
+# (alpine:3.21), Docker Hub namespaces (hashicorp/terraform:...), and explicit
+# docker.io aliases. False for GHCR/MCR/other explicit registries.
+base_cache_is_docker_io_origin_ref() {
+    local image_ref="$1"
+    local ref="${image_ref%%@*}"
+
+    [[ -z "$ref" || "$ref" == -* || "$ref" == /* ]] && return 1
+    [[ "$ref" =~ [[:space:][:cntrl:]] ]] && return 1
+
+    if [[ "$ref" != */* ]]; then
+        return 0
+    fi
+
+    local first_segment="${ref%%/*}"
+    case "$first_segment" in
+        docker.io | registry-1.docker.io | index.docker.io)
+            return 0
+            ;;
+    esac
+
+    if [[ "$first_segment" != *"."* && "$first_segment" != *":"* ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# base_cache_canonical_docker_io_ref <image_ref>
+#
+# Convert a lineage base_image_ref that resolves to Docker Hub into the same
+# canonical source_ref emitted by sync_base_images_to_ghcr, e.g.
+# alpine:3.21 -> docker.io/library/alpine:3.21.
+base_cache_canonical_docker_io_ref() {
+    local image_ref="$1"
+    local ref="${image_ref%%@*}"
+
+    base_cache_is_docker_io_origin_ref "$image_ref" || return 1
+
+    local path_tag="$ref"
+    if [[ "$ref" == */* ]]; then
+        local first_segment="${ref%%/*}"
+        case "$first_segment" in
+            docker.io | registry-1.docker.io | index.docker.io)
+                path_tag="${ref#*/}"
+                ;;
+        esac
+    fi
+
+    local last_segment="${path_tag##*/}"
+    if [[ "$last_segment" != *:* ]]; then
+        return 1
+    fi
+
+    local source_img="${path_tag%:*}"
+    local tag="${path_tag##*:}"
+    [[ -z "$source_img" || -z "$tag" ]] && return 1
+
+    base_cache_canonical_source_ref "$source_img" "$tag" "docker.io"
+}
+
+# _append_base_sync_manifest_record <source_ref> <sync_image> <digest> <status>
+#
+# Append a JSONL record when SYNC_MANIFEST_OUT is set. Manifest write failures
+# are reported but do not alter sync counters or return code; consumers fail
+# closed when a record is absent or digestless.
+_append_base_sync_manifest_record() {
+    local manifest_out="${SYNC_MANIFEST_OUT:-}"
+    [[ -z "$manifest_out" ]] && return 0
+
+    local source_ref="$1"
+    local sync_image="$2"
+    local digest="$3"
+    local status="$4"
+    local synced_at
+    synced_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    local manifest_dir
+    manifest_dir="$(dirname "$manifest_out")"
+    if [[ "$manifest_dir" != "." ]] && ! mkdir -p "$manifest_dir"; then
+        echo "::warning::sync_base_images_to_ghcr: could not create manifest directory ${manifest_dir}"
+        return 0
+    fi
+
+    if ! jq -cn \
+        --arg source_ref "$source_ref" \
+        --arg sync_image "$sync_image" \
+        --arg digest "$digest" \
+        --arg status "$status" \
+        --arg synced_at "$synced_at" \
+        '{source_ref: $source_ref, sync_image: $sync_image, digest: $digest, status: $status, synced_at: $synced_at}' \
+        >> "$manifest_out"; then
+        echo "::warning::sync_base_images_to_ghcr: could not append sync manifest record for ${sync_image}"
+    fi
+}
+
 # _escape_gha_command <value>
 #
 # Escape a value for safe inclusion in a `::keyword::value` GitHub Actions
@@ -558,23 +684,15 @@ sync_base_images_to_ghcr() {
             continue
         fi
 
-        # Strip leading slash for chained-on-own markers (e.g. source: /php).
-        # This must happen BEFORE the slash-presence check so that single-segment
-        # chained sources (/php → php) route to the library/ branch, not the
-        # multi-segment branch. Without this strip, /php would match */* and
-        # produce docker.io/php:tag via double-slash collapse — which works for
-        # the Docker daemon (client-side aliasing) but NOT for skopeo or imagetools,
-        # breaking the idempotent-mirror goal.
-        local src="${source_img#/}"
-        if [[ "$src" == */* ]]; then
-            # Multi-segment path (e.g. library/postgres or /library/postgres after strip):
-            # use as-is — the caller has already provided the full registry path.
-            source_ref="${source_registry}/${src}:${tag}"
-        else
-            # Single-segment (e.g. php, debian): prepend explicit library/ so the
-            # resulting ref is docker.io/library/php:tag, not docker.io/php:tag.
-            source_ref="${source_registry}/library/${src}:${tag}"
-        fi
+        # Keep this canonicalization in one helper so the daily sync manifest and
+        # drift consumers share the exact Docker Hub key. The daily sync must keep
+        # skip_present=false (blind copy, documented above) so a status=synced
+        # manifest digest means GHCR == upstream for this cycle.
+        source_ref=$(base_cache_canonical_source_ref "$source_img" "$tag" "$source_registry") || {
+            echo "::warning::sync_base_images_to_ghcr: refusing image entry with invalid source ref"
+            failed=$((failed + 1))
+            continue
+        }
 
         echo ""
         echo "🔄 ${source_ref} → ${sync_image}"
@@ -592,6 +710,15 @@ sync_base_images_to_ghcr() {
 
         if output=$(_sync_one_with_backoff "$source_ref" "$sync_image"); then
             echo "  ✅ Synced"
+            if [[ -n "${SYNC_MANIFEST_OUT:-}" ]]; then
+                local sync_digest=""
+                sync_digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$sync_image" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true)
+                if [[ -n "$sync_digest" && ! "$sync_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                    echo "::warning::sync_base_images_to_ghcr: GHCR digest for ${sync_image} had unexpected shape; manifest record will fail closed"
+                    sync_digest=""
+                fi
+                _append_base_sync_manifest_record "$source_ref" "$sync_image" "$sync_digest" "synced"
+            fi
             synced=$((synced + 1))
         else
             echo "  ⚠️ Failed (continuing; daily sync will retry)"
@@ -611,6 +738,7 @@ sync_base_images_to_ghcr() {
             safe_source_ref=$(_escape_gha_command "$source_ref")
             safe_sync_image=$(_escape_gha_command "$sync_image")
             echo "::warning::sync_base_images_to_ghcr: failed to sync ${safe_source_ref} → ${safe_sync_image}"
+            _append_base_sync_manifest_record "$source_ref" "$sync_image" "" "failed"
             failed=$((failed + 1))
         fi
     done < <(echo "$images_json" | jq -c '.[]')
@@ -630,4 +758,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff _escape_gha_command sync_base_images_to_ghcr
+export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr

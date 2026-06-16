@@ -39,9 +39,14 @@ myimage"
     export TEST_TEMP_DIR
     export DETECTOR_SCRIPT
     export FIXTURES_DIR_DRIFT
+
+    unset SYNC_MANIFEST_FILE
+    unset PROBE_SENTINEL
 }
 
 teardown() {
+    unset SYNC_MANIFEST_FILE
+    unset PROBE_SENTINEL
     teardown_temp_dir
 }
 
@@ -104,6 +109,23 @@ _make_digest_probe_stub() {
     mkdir -p "$TEST_TEMP_DIR/bin"
     cat > "$stub_path" <<STUB_EOF
 #!/usr/bin/env bash
+printf '{"digest":"%s"}' "${digest}"
+exit 0
+STUB_EOF
+    chmod +x "$stub_path"
+    printf '%s' "$stub_path"
+}
+
+# ---------------------------------------------------------------------------
+# Helper: create a probe stub that records if it was called.
+# ---------------------------------------------------------------------------
+_make_probe_sentinel_stub() {
+    local digest="$1"
+    local stub_path="$TEST_TEMP_DIR/bin/probe-sentinel-$$"
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$stub_path" <<STUB_EOF
+#!/usr/bin/env bash
+touch "\${PROBE_SENTINEL:?}"
 printf '{"digest":"%s"}' "${digest}"
 exit 0
 STUB_EOF
@@ -1549,6 +1571,8 @@ EOF
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -1587,6 +1611,8 @@ STUB
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
 
     cat > "$fake_root/.build-lineage/foo-1.0.json" <<'EOF'
 {
@@ -2255,6 +2281,269 @@ EOF
     local status
     status=$(printf '%s' "$result" | jq -r '.[] | .variants[].status')
     [ "$status" = "drift" ]
+}
+
+@test "sync-manifest: docker.io base uses synced record and does not probe" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-hit/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest.jsonl"
+    jq -cn \
+        --arg source_ref "docker.io/library/alpine:3.21" \
+        --arg sync_image "ghcr.io/oorabona/library/alpine:3.21" \
+        --arg digest "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+        '{source_ref:$source_ref,sync_image:$sync_image,digest:$digest,status:"synced",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ ! -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "drift" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest')" = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
+}
+
+@test "sync-manifest: failed docker.io record emits error without probe" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-failed/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "docker.io/library/alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-failed.jsonl"
+    jq -cn \
+        --arg source_ref "docker.io/library/alpine:3.21" \
+        --arg sync_image "ghcr.io/oorabona/library/alpine:3.21" \
+        '{source_ref:$source_ref,sync_image:$sync_image,digest:"",status:"failed",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-failed"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ ! -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
+    [[ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" == *"base not synced this cycle"* ]]
+}
+
+@test "sync-manifest: absent docker.io record emits error without probe" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-absent/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-absent.jsonl"
+    jq -cn \
+        '{source_ref:"docker.io/library/debian:trixie",sync_image:"ghcr.io/oorabona/library/debian:trixie",digest:"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",status:"synced",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-absent"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ ! -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
+    [[ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" == *"base not synced this cycle"* ]]
+}
+
+@test "sync-manifest: failed ghcr mirror record emits error without probe" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-ghcr-mirror-failed/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/owner/library/alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-ghcr-mirror-failed.jsonl"
+    jq -cn \
+        --arg source_ref "docker.io/library/alpine:3.21" \
+        --arg sync_image "ghcr.io/owner/library/alpine:3.21" \
+        '{source_ref:$source_ref,sync_image:$sync_image,digest:"",status:"failed",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-ghcr-mirror-failed"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ ! -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "error" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest // "absent"')" = "absent" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].error_reason')" = "GHCR mirror not synced this cycle (sync failed/digestless); drift unknown, re-checked next sync" ]
+}
+
+@test "sync-manifest: synced ghcr mirror record uses recorded digest without probe" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-ghcr-mirror-hit/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/owner/library/alpine:3.21" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-ghcr-mirror-hit.jsonl"
+    jq -cn \
+        --arg source_ref "docker.io/library/alpine:3.21" \
+        --arg sync_image "ghcr.io/owner/library/alpine:3.21" \
+        --arg digest "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+        '{source_ref:$source_ref,sync_image:$sync_image,digest:$digest,status:"synced",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-ghcr-mirror-hit"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ ! -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "drift" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest')" = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
+}
+
+@test "sync-manifest: absent project ghcr record keeps live probe path" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-ghcr-project-absent/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/owner/debian:trixie" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-ghcr-project-absent.jsonl"
+    jq -cn \
+        '{source_ref:"docker.io/library/alpine:3.21",sync_image:"ghcr.io/owner/library/alpine:3.21",digest:"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",status:"synced",synced_at:"2026-06-16T00:00:00Z"}' \
+        > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-ghcr-project-absent"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "drift" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest')" = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" ]
+}
+
+@test "sync-manifest: ghcr.io base keeps live probe path when manifest is set" {
+    local lineage_dir="$TEST_TEMP_DIR/syncmanifest-ghcr/.build-lineage"
+    mkdir -p "$lineage_dir"
+
+    jq -cn \
+        --arg container "myimage" \
+        --arg tag "1.0" \
+        --arg base_ref "ghcr.io/oorabona/debian:trixie" \
+        --arg recorded "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        '{"lineage_schema_version":2,"container":$container,"tag":$tag,"base_image_ref":$base_ref,"base_image_digest":$recorded}' \
+        > "$lineage_dir/myimage-1.0.json"
+
+    local manifest_file="$TEST_TEMP_DIR/base-sync-manifest-ghcr.jsonl"
+    : > "$manifest_file"
+
+    local marker="$TEST_TEMP_DIR/probe-called-ghcr"
+    local probe_stub
+    probe_stub=$(_make_probe_sentinel_stub "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    local result
+    result=$(_VALID_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_CONTAINERS_OVERRIDE="myimage" \
+        _DEPGRAPH_LINEAGE_DIR="$lineage_dir" \
+        _ACTIVE_TAGS_OVERRIDE_myimage="1.0" \
+        SYNC_MANIFEST_FILE="$manifest_file" \
+        PROBE_SENTINEL="$marker" \
+        PROBE_CMD="$probe_stub" \
+        bash "${DETECTOR_SCRIPT}" "$lineage_dir" 2>/dev/null)
+
+    [ -f "$marker" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].status')" = "drift" ]
+    [ "$(printf '%s' "$result" | jq -r '.[] | .variants[].current_digest')" = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -3345,6 +3634,8 @@ STUBEOF
     cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
 
     # A container with an internal-looking ref so _depgraph_get_deps must be called
     cat > "$fake_root/.build-lineage/myapp-1.0.json" <<'EOF'
@@ -3421,6 +3712,8 @@ STUB
     cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$fake_root/helpers/"
     cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$fake_root/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$fake_root/helpers/"
 
     # Patch dependency-graph.sh: _depgraph_get_deps fails for "failcontainer",
     # succeeds (returns empty deps = leaf) for any other container.

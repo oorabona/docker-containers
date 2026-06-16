@@ -812,19 +812,23 @@ jobs:
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
+          SYNC_MANIFEST_OUT: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
+          mkdir -p "$(dirname "$SYNC_MANIFEST_OUT")"
+          : > "$SYNC_MANIFEST_OUT"
           echo "::notice::Seeding buildkit image to GHCR: ghcr.io/${OWNER}/buildkit:buildx-stable-1"
-          _sync_one_with_backoff \
-            "docker.io/moby/buildkit:buildx-stable-1" \
-            "ghcr.io/${OWNER}/buildkit:buildx-stable-1"
+          buildkit_images=$(jq -nc --arg owner "$OWNER" \
+            '[{source:"moby/buildkit",tag:"buildx-stable-1",sync_image:("ghcr.io/" + $owner + "/buildkit:buildx-stable-1")}]')
+          sync_base_images_to_ghcr "$buildkit_images"
 
       - name: Sync base images to GHCR (all containers)
         id: sync
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
+          SYNC_MANIFEST_OUT: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
@@ -860,6 +864,27 @@ jobs:
             echo "success=false" >> "$GITHUB_OUTPUT"
             exit "$sync_rc"
           fi
+
+      - name: Upload base sync manifest
+        id: upload_base_sync_manifest
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest/base-sync-manifest.jsonl
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload base sync manifest (retry on transient failure)
+        if: always() && steps.upload_base_sync_manifest.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest/base-sync-manifest.jsonl
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -1417,20 +1442,17 @@ jobs:
 
   detect-digest-drift:
     name: Detect base image digest drift
-    # Wait for sync-base-images so probes compare against today's freshly-synced
-    # GHCR mirror rather than yesterday's copy.  Without this ordering, a real
+    # Wait for sync-base-images so Docker Hub-origin refs are compared against
+    # today's freshly recorded blind-sync manifest. Without this ordering, a real
     # upstream rebase that happened since the previous sync would be invisible for
     # the current day's run.
     # NOTE: create-dependency-update-prs is intentionally NOT in needs — drift
     # detection is independent of dep-PR fanout.  Including it would silently
     # skip drift detection whenever skip_dep_fanout (or equivalent) is set.
     needs: [sync-base-images]
-    # No `if:` gate on sync_succeeded: drift detection probes UPSTREAM via
-    # `buildx imagetools inspect` and does NOT read from the local GHCR mirror
-    # that sync-base-images populates.  The two jobs are orthogonal.  Gating on
-    # sync_succeeded caused one transient per-image 429/blip to skip drift
-    # detection for ALL containers — a silent miss repo-wide.  `needs` is kept
-    # for ordering (run after sync attempts), but outcome does not matter.
+    # No `if:` gate on sync_succeeded: the manifest carries per-base success and
+    # failure status. Failed/absent records become per-variant error statuses
+    # rather than skipping drift detection for ALL containers.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -1462,15 +1484,12 @@ jobs:
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
-      - name: Log in to Docker Hub
-        # Authenticated probes avoid 429 rate-limiting that would silently drop
-        # drift signals for busy Docker Hub images.
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Download base sync manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         continue-on-error: true
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest
 
       - name: Log in to GitHub Container Registry
         # GHCR login avoids rate-limiting for base_image_ref values pointing at
@@ -1504,6 +1523,7 @@ jobs:
           # to prevent GHA expression injection in the run: shell body.
           # Never reference ${{ inputs.container }} inside run: directly.
           REQUESTED_CONTAINER: ${{ inputs.container }}
+          SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
           detect_rc=0
@@ -1629,7 +1649,7 @@ jobs:
 
   open-drift-prs-leaves:
     name: Open drift PR (leaf) for ${{ matrix.container }}
-    needs: [detect-digest-drift]
+    needs: [detect-digest-drift, sync-base-images]
     if: |
       needs.detect-digest-drift.result == 'success' &&
       needs.detect-digest-drift.outputs.drift_matrix_leaves != '[]' &&
@@ -1678,15 +1698,12 @@ jobs:
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
-      - name: Log in to Docker Hub
-        # Re-detect probes registry anonymously without this; anonymous Docker Hub
-        # requests are rate-limited and can silently fail → false "no drift" result.
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Download base sync manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         continue-on-error: true
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest
 
       - name: Log in to GitHub Container Registry
         # Required when base_image_ref points to the GHCR mirror (ghcr.io/owner/*).
@@ -1715,6 +1732,7 @@ jobs:
         id: drift-data
         env:
           CONTAINER: ${{ matrix.container }}
+          SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
           # Unique temp paths per matrix entry — no cross-container contamination
@@ -1912,7 +1930,7 @@ jobs:
 
   open-drift-prs-consumers:
     name: Open drift PR (consumer) for ${{ matrix.container }}
-    needs: [detect-digest-drift, open-drift-prs-leaves]
+    needs: [detect-digest-drift, open-drift-prs-leaves, sync-base-images]
     # always() is required for two reasons:
     # 1. open-drift-prs-leaves is SKIPPED when no leaf container has drift (matrix
     #    is empty). Without always(), GitHub Actions would cascade-skip this consumer
@@ -1976,15 +1994,12 @@ jobs:
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
-      - name: Log in to Docker Hub
-        # Re-detect probes registry anonymously without this; anonymous Docker Hub
-        # requests are rate-limited and can silently fail → false "no drift" result.
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Download base sync manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
         continue-on-error: true
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest
 
       - name: Log in to GitHub Container Registry
         # Required when base_image_ref points to the GHCR mirror (ghcr.io/owner/*).
@@ -2013,6 +2028,7 @@ jobs:
         id: drift-data
         env:
           CONTAINER: ${{ matrix.container }}
+          SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           chmod +x scripts/detect-base-digest-drift.sh
           # Unique temp paths per matrix entry — no cross-container contamination
@@ -2433,46 +2449,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Download base sync manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
+        continue-on-error: true
+        with:
+          name: base-sync-manifest-${{ github.run_id }}
+          path: base-sync-manifest
+
       - name: Detect buildkit digest drift
         id: detect
         env:
           OWNER: ${{ github.repository_owner }}
+          SYNC_MANIFEST_FILE: base-sync-manifest/base-sync-manifest.jsonl
         run: |
           set -euo pipefail
 
-          # --- FINDING 1: verify GHCR mirror == docker.io upstream (fail-closed) ---
-          # The sync-base-images seed step runs with continue-on-error, so the GHCR
-          # tag may be stale (seed failure, 429 throttle, etc.).  We must not promote
-          # an UNVERIFIED digest.  Both registries are inspected; the bump only
-          # proceeds when the two digests are equal, proving the GHCR mirror is a
-          # current, faithful copy of official upstream.  Inequality → skip + warning.
-          # docker.io access is intentional here: this is the upstream-monitor job,
-          # the one job authorised to contact docker.io for upstream comparison.
+          # --- FINDING 1: verify GHCR mirror == sync-recorded upstream (fail-closed) ---
+          # The daily sync is the single docker.io touchpoint and runs as a blind
+          # copy (skip_present=false) before writing this manifest. A synced
+          # buildkit record therefore captures the upstream digest observed by
+          # that copy. The bump proceeds only when the current GHCR digest still
+          # equals the manifest digest; failed/absent records leave hub_digest
+          # empty and the existing guard skips the bump.
           ghcr_digest=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' \
             "ghcr.io/${OWNER}/buildkit:buildx-stable-1" \
             2>/dev/null | jq -r '.digest // empty') || ghcr_digest=""
 
-          hub_digest=$(docker buildx imagetools inspect \
-            --format '{{json .Manifest}}' \
-            "docker.io/moby/buildkit:buildx-stable-1" \
-            2>/dev/null | jq -r '.digest // empty') || hub_digest=""
+          hub_digest=$(jq -cser --arg source_ref "docker.io/moby/buildkit:buildx-stable-1" '
+            map(if type == "array" then .[] else . end)
+            | map(select((.source_ref // "") == $source_ref and (.status // "") == "synced"))
+            | last.digest // empty
+          ' "$SYNC_MANIFEST_FILE" 2>/dev/null) || hub_digest=""
 
           echo "::notice::GHCR mirror digest : ${ghcr_digest:-<empty>}"
-          echo "::notice::docker.io upstream  : ${hub_digest:-<empty>}"
+          echo "::notice::sync manifest digest: ${hub_digest:-<empty>}"
 
-          # Fail-closed: either digest empty → GHCR probe or docker.io unreachable.
+          # Fail-closed: either digest empty → GHCR probe failed or manifest
+          # absent/failed/digestless.
           if [[ -z "$ghcr_digest" || -z "$hub_digest" ]]; then
             echo "::warning::Could not read one or both digests (ghcr='${ghcr_digest:-<empty>}' hub='${hub_digest:-<empty>}') — skipping bump"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Fail-closed: digests differ → seed did not refresh GHCR or upstream
-          # updated between the seed and this inspect.  Do not bump to a digest that
-          # hasn't been verified against the authoritative upstream source.
+          # Fail-closed: digests differ → GHCR no longer matches the digest
+          # captured by the blind sync. Do not bump to a digest that has not been
+          # verified by this cycle's single Docker Hub touchpoint.
           if [[ "$ghcr_digest" != "$hub_digest" ]]; then
-            echo "::warning::GHCR mirror digest (${ghcr_digest}) != docker.io upstream (${hub_digest}) — GHCR copy may be stale; skipping bump"
+            echo "::warning::GHCR mirror digest (${ghcr_digest}) != sync manifest (${hub_digest}) — GHCR copy may be stale; skipping bump"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
