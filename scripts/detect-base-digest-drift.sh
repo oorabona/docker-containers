@@ -29,6 +29,10 @@
 #                     (canonical multi-arch image-index digest via buildx
 #                     imagetools — order-independent, single source of truth,
 #                     matches scripts/build-container.sh digest extraction)
+#   SYNC_MANIFEST_FILE
+#                     Optional path to the daily base-image sync JSONL/JSON-array
+#                     manifest. When set, Docker Hub-origin base refs are resolved
+#                     from that manifest instead of probing docker.io.
 #
 # Exit codes:
 #   0   — Success (drift/unchanged/legacy/error records emitted; drift itself is NOT an error)
@@ -55,6 +59,8 @@ source "${PROJECT_ROOT}/helpers/dependency-graph.sh"
 source "${PROJECT_ROOT}/helpers/logging.sh"
 # shellcheck source=../helpers/retry.sh
 source "${PROJECT_ROOT}/helpers/retry.sh"
+# shellcheck source=../helpers/base-cache-utils.sh
+source "${PROJECT_ROOT}/helpers/base-cache-utils.sh"
 
 # ---------------------------------------------------------------------------
 # _escape_gha_command <value>
@@ -217,6 +223,56 @@ _probe_digest_cached() {
         return 0
     fi
     return 1   # failures left UNCACHED (smallest semantic change)
+}
+
+# ---------------------------------------------------------------------------
+# _sync_manifest_lookup_by_key <manifest_key> <manifest_value>
+#
+# Look up one manifest record by a supported manifest key. Supports
+# both JSONL (the workflow writer) and JSON-array inputs. Output is returned via
+# _SYNC_MANIFEST_LOOKUP_STATUS and _SYNC_MANIFEST_LOOKUP_DIGEST.
+# ---------------------------------------------------------------------------
+_SYNC_MANIFEST_LOOKUP_STATUS=""
+_SYNC_MANIFEST_LOOKUP_DIGEST=""
+_sync_manifest_lookup_by_key() {
+    local lookup_key="$1"
+    local lookup_value="$2"
+    local manifest_file="${SYNC_MANIFEST_FILE:-}"
+    _SYNC_MANIFEST_LOOKUP_STATUS=""
+    _SYNC_MANIFEST_LOOKUP_DIGEST=""
+
+    [[ -n "$manifest_file" && -f "$manifest_file" ]] || return 1
+
+    local record
+    record=$(jq -cser --arg lookup_key "$lookup_key" --arg lookup_value "$lookup_value" '
+        map(if type == "array" then .[] else . end)
+        | map(select(type == "object" and ((.[$lookup_key] // "") == $lookup_value)))
+        | last // empty
+    ' "$manifest_file" 2>/dev/null || true)
+
+    [[ -n "$record" ]] || return 1
+
+    _SYNC_MANIFEST_LOOKUP_STATUS=$(printf '%s' "$record" | jq -r '.status // empty' 2>/dev/null || true)
+    _SYNC_MANIFEST_LOOKUP_DIGEST=$(printf '%s' "$record" | jq -r '.digest // empty' 2>/dev/null || true)
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _sync_manifest_lookup <canonical_source_ref>
+#
+# Look up one canonical Docker Hub source_ref in the sync manifest.
+# ---------------------------------------------------------------------------
+_sync_manifest_lookup() {
+    _sync_manifest_lookup_by_key "source_ref" "$1"
+}
+
+# ---------------------------------------------------------------------------
+# _sync_manifest_lookup_by_sync_image <sync_image>
+#
+# Look up one GHCR sync_image in the sync manifest.
+# ---------------------------------------------------------------------------
+_sync_manifest_lookup_by_sync_image() {
+    _sync_manifest_lookup_by_key "sync_image" "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -647,21 +703,63 @@ for lineage_file in "${lineage_files[@]}"; do
         continue
     fi
 
-    # Probe current digest (memoized: same ref probed at most once per run).
-    # Use the output-variable pattern — NOT $(...) — so _DIGEST_CACHE writes
-    # propagate to the parent shell (command substitution creates a subshell
-    # whose variable writes are lost on exit).
+    # Resolve current digest. When the daily sync manifest is present, Docker
+    # Hub-origin refs must use the digest recorded by that blind sync. A failed
+    # or absent sync record means upstream state is unknown for this cycle; do
+    # not re-probe docker.io and amplify the same exhausted 429 path.
+    #
+    # GHCR mirror refs produced via REMOTE_CR are already sync_image values in
+    # the manifest. If a matching record failed this cycle, fail closed instead
+    # of live-probing stale GHCR state. Project-internal GHCR refs that are not
+    # in the manifest keep the existing live-probe behavior.
     current_digest=""
     probe_failed=false
-    _probe_digest_cached_out=""
-    if _probe_digest_cached "$base_image_ref"; then
-        current_digest="$_probe_digest_cached_out"
-    else
-        probe_failed=true
+    manifest_resolution_handled=false
+    if [[ -n "${SYNC_MANIFEST_FILE:-}" ]] && base_cache_is_docker_io_origin_ref "$base_image_ref"; then
+        manifest_resolution_handled=true
+        _manifest_source_ref=""
+        if _manifest_source_ref=$(base_cache_canonical_docker_io_ref "$base_image_ref"); then
+            if _sync_manifest_lookup "$_manifest_source_ref" \
+                && [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" == "synced" ]] \
+                && [[ -n "$_SYNC_MANIFEST_LOOKUP_DIGEST" ]]; then
+                current_digest="$_SYNC_MANIFEST_LOOKUP_DIGEST"
+            else
+                probe_failed=true
+                error_reason="base not synced this cycle (sync failed/absent); drift unknown, re-checked next sync"
+            fi
+        else
+            probe_failed=true
+            error_reason="base not synced this cycle (manifest key unavailable); drift unknown, re-checked next sync"
+        fi
+    elif [[ -n "${SYNC_MANIFEST_FILE:-}" && "$base_image_ref" == ghcr.io/* ]]; then
+        if _sync_manifest_lookup_by_sync_image "$base_image_ref"; then
+            manifest_resolution_handled=true
+            if [[ "$_SYNC_MANIFEST_LOOKUP_STATUS" == "synced" && -n "$_SYNC_MANIFEST_LOOKUP_DIGEST" ]]; then
+                current_digest="$_SYNC_MANIFEST_LOOKUP_DIGEST"
+            else
+                probe_failed=true
+                error_reason="GHCR mirror not synced this cycle (sync failed/digestless); drift unknown, re-checked next sync"
+            fi
+        fi
+    fi
+
+    if [[ "$manifest_resolution_handled" != "true" ]]; then
+        # Probe current digest (memoized: same ref probed at most once per run).
+        # Use the output-variable pattern — NOT $(...) — so _DIGEST_CACHE writes
+        # propagate to the parent shell (command substitution creates a subshell
+        # whose variable writes are lost on exit).
+        _probe_digest_cached_out=""
+        if _probe_digest_cached "$base_image_ref"; then
+            current_digest="$_probe_digest_cached_out"
+        else
+            probe_failed=true
+        fi
     fi
 
     if [[ "$probe_failed" == "true" || -z "$current_digest" ]]; then
-        error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
+        if [[ -z "$error_reason" ]]; then
+            error_reason="registry probe failed for ${base_image_ref} (container=${container} tag=${variant_tag})"
+        fi
         printf '::error::probe-error: %s\n' "$(_escape_gha_command "$error_reason")" >&2
         safe_ref=$(_sanitize_for_json "$base_image_ref")
         safe_recorded=$(_sanitize_for_json "$recorded_digest")
