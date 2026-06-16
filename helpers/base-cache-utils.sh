@@ -196,6 +196,19 @@ has_base_cache() {
         yq -e '.base_image_cache | length > 0' "$config_file" &>/dev/null
 }
 
+# distro_uses_base_cache <config_file> <distro>
+# True (default) unless the distro entry explicitly sets use_base_cache: false.
+# Containers with no distros block, or an empty/unknown distro, default to true.
+distro_uses_base_cache() {
+    local config_file="$1" distro="$2"
+    [[ -z "$distro" ]] && return 0
+
+    local val
+    val=$(yq -r ".distros.\"${distro}\".use_base_cache" "$config_file" 2>/dev/null || echo "true")
+    [[ -z "$val" || "$val" == "null" ]] && val="true"
+    [[ "$val" != "false" ]]
+}
+
 # Collect all cache images across all containers, deduplicated
 # Usage: collect_all_cache_images <containers_json> <versions_json> <owner>
 #   containers_json: JSON array of container names, e.g. '["ansible","postgres"]'
@@ -758,4 +771,4 @@ sync_base_images_to_ghcr() {
 }
 
 # Export functions
-export -f _resolve_tag_template _collect_entry_tags has_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr
+export -f _resolve_tag_template _collect_entry_tags has_base_cache distro_uses_base_cache collect_all_cache_images resolve_cache_check_tag remote_cr_applicable emit_reachable_cache_args _sync_one_with_backoff base_cache_canonical_source_ref base_cache_is_docker_io_origin_ref base_cache_canonical_docker_io_ref _append_base_sync_manifest_record _escape_gha_command sync_base_images_to_ghcr

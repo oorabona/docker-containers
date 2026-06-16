@@ -43,6 +43,8 @@ base_image_cache:
 # Each distro declares its base image, package manager, user setup, and package groups
 distros:
   debian:
+    # Already GHCR, so the GHCR base-cache mirror is not used.
+    use_base_cache: false
     base_image: "ghcr.io/oorabona/debian:${DEBIAN_TAG}"
     pkg_manager: apt
     install_cmd: "apt-get update && apt-get install -y --no-install-recommends"
