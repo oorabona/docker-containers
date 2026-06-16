@@ -24,11 +24,29 @@ runs:
   using: composite
   steps:
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-      with:
-        registry: ghcr.io
-        username: ${{ inputs.ghcr_username }}
-        password: ${{ inputs.ghcr_password }}
+      shell: bash
+      env:
+        GHCR_USER: ${{ inputs.ghcr_username }}
+        GHCR_TOKEN: ${{ inputs.ghcr_password }}
+      run: |
+        # Retry the GHCR login: docker/login-action has no built-in retry, and a
+        # transient runner DNS/registry blip at login otherwise fails every build
+        # job (this composite is on the critical path). Mirrors the
+        # retry_with_backoff idiom used for the standalone GHCR logins (#736).
+        # GITHUB_ACTION_PATH is .github/actions/docker-login; ../../../ reaches the
+        # repo root where helpers/ lives (same anchor as the retry-run composite).
+        # NOTE: docker/login-action ran a post-job `docker logout`; a composite
+        # action has no post: hook, so this run: step cannot. Acceptable here:
+        # every caller runs on ephemeral GitHub-hosted runners, where the docker
+        # config is discarded with the VM. Revisit if ever run on a self-hosted /
+        # persistent runner.
+        # shellcheck disable=SC1091
+        source "${GITHUB_ACTION_PATH}/../../../helpers/logging.sh"
+        source "${GITHUB_ACTION_PATH}/../../../helpers/retry.sh"
+        ghcr_login() {
+          printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+        }
+        retry_with_backoff 3 5 ghcr_login
 
     - name: Log in to Docker Hub
       if: inputs.dockerhub_username != '' && inputs.dockerhub_token != ''
