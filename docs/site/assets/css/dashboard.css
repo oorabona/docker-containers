@@ -458,7 +458,12 @@
 
     /* Name + version column */
     .row-id { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-    .row-id-name { font-size: 0.95rem; font-weight: 600; }
+    .row-id-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0;
+      line-height: 1.2;
+    }
     .row-id-version {
       font-family: var(--font-family-mono);
       font-size: 0.72rem;
@@ -514,7 +519,7 @@
 
     .row-body section { min-width: 0; }
 
-    .row-body section h3 {
+    .row-body section h4 {
       font-family: var(--font-family-mono);
       font-size: 0.7rem;
       text-transform: uppercase;
@@ -1010,6 +1015,30 @@
       margin: 3rem auto 2rem;
       padding: 0 1.25rem;
       text-align: center;
+    }
+
+    .dashboard-hero-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 0.5rem 0.75rem;
+    }
+
+    .dashboard-hero-build-stat {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      color: var(--color-text-secondary);
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+
+    .dashboard-hero-freshness {
+      color: var(--color-text-muted);
+      font-size: 0.72rem;
     }
 
     .dashboard-hero-title {
