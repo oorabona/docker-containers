@@ -39,22 +39,27 @@
     {%- assign total = s.total_containers | default: 0 -%}
     {%- assign updates = s.updates_available | default: 0 -%}
     {%- assign success_rate = s.build_success_rate | default: 100 -%}
-    {%- if success_rate < 80 -%}
-      {%- assign health_status = "err" -%}
-      {%- assign health_label = "Build failures detected" -%}
-      {%- assign health_icon = "ti-circle-x" -%}
-    {%- elsif success_rate < 95 -%}
+    {%- assign stats_updated = s.last_updated | default: "unknown" -%}
+    {%- assign current_issue_count = 0 -%}
+    {%- for container in site.data.containers -%}
+      {%- unless container.status_color == "green" -%}
+        {%- assign current_issue_count = current_issue_count | plus: 1 -%}
+      {%- endunless -%}
+    {%- endfor -%}
+    {%- if current_issue_count > 0 -%}
       {%- assign health_status = "warn" -%}
-      {%- assign health_label = "Build attention needed" -%}
-      {%- assign health_icon = "ti-alert-triangle" -%}
-    {%- elsif updates > 0 -%}
-      {%- assign health_status = "info" -%}
-      {%- if updates == 1 -%}
-        {%- assign health_label = "1 update available" -%}
+      {%- if updates > 0 and updates == current_issue_count -%}
+        {%- if updates == 1 -%}
+          {%- assign health_label = "1 update available" -%}
+        {%- else -%}
+          {%- assign health_label = updates | append: " updates available" -%}
+        {%- endif -%}
+      {%- elsif current_issue_count == 1 -%}
+        {%- assign health_label = "1 container needs attention" -%}
       {%- else -%}
-        {%- assign health_label = updates | append: " updates available" -%}
+        {%- assign health_label = current_issue_count | append: " containers need attention" -%}
       {%- endif -%}
-      {%- assign health_icon = "ti-arrow-up-circle" -%}
+      {%- assign health_icon = "ti-alert-triangle" -%}
     {%- else -%}
       {%- assign health_status = "ok" -%}
       {%- assign health_label = "All systems green" -%}
@@ -62,10 +67,16 @@
     {%- endif -%}
 
     <section class="dashboard-hero" aria-labelledby="dashboard-hero-title">
-      <span class="status-pill status-pill-{{ health_status }}">
-        <i class="ti {{ health_icon }}" aria-hidden="true"></i>
-        {{ health_label }}
-      </span>
+      <div class="dashboard-hero-status">
+        <span class="status-pill status-pill-{{ health_status }}">
+          <i class="ti {{ health_icon }}" aria-hidden="true"></i>
+          {{ health_label }}
+        </span>
+        <span class="dashboard-hero-build-stat">
+          Build success: {{ success_rate }}%
+          <span class="dashboard-hero-freshness">Updated {{ stats_updated }}</span>
+        </span>
+      </div>
       <h1 id="dashboard-hero-title" class="dashboard-hero-title">
         Open-source Docker images,<br>
         <span class="dashboard-hero-accent">built and signed every day.</span>

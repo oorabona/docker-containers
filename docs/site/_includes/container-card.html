@@ -1,5 +1,7 @@
 <!-- Container row card — details/summary expand pattern (D1 refactor) -->
 {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
+{%- assign default_variant_tag = default_variant.tag | default: include.current_version | default: "latest" -%}
+{%- capture default_image_ref -%}{{ include.name }}:{{ default_variant_tag }}{%- endcapture -%}
 <details class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
          data-container="{{ include.name }}"
          data-github-username="{{ include.github_username }}"
@@ -14,7 +16,7 @@
 
     <!-- Name + version -->
     <div class="row-id">
-      <div class="row-id-name">{{ include.name }}</div>
+      <h3 class="row-id-name">{{ include.name }}</h3>
       <div class="row-id-version{% if include.status_color == 'warning' %} warn{% endif %}">{{ include.current_version | default: default_variant.tag | default: 'unknown' }}</div>
     </div>
 
@@ -30,8 +32,10 @@
          {% if default_variant.attestation_url and default_variant.attestation_id %}
            href="{{ default_variant.attestation_url }}"
            title="View Sigstore attestation for this image's SBOM"
+           aria-label="View SBOM attestation for {{ default_image_ref | escape }}"
          {% else %}
            title="SBOM attestation not yet generated. Will populate on next successful build with cosign attestation."
+           aria-label="SBOM attestation pending for {{ default_image_ref | escape }}"
          {% endif %}
          rel="noopener"
          >{% if default_variant.attestation_url and default_variant.attestation_id %}📋 SBOM{% else %}📋 SBOM{% endif %}</a>
@@ -81,6 +85,7 @@
            data-trust="multi-arch"
            href="https://github.com/{{ include.github_username }}/docker-containers/pkgs/container/{{ include.name }}"
            rel="noopener"
+           aria-label="Multi-arch manifest for {{ default_image_ref | escape }}: {{ default_variant.multi_arch_platforms | join: ', ' | escape }}"
            title="View this image's multi-arch manifest on GHCR">🏗 ×{{ default_variant.multi_arch_platforms | size }}</a>
       {%- else -%}
         <!-- aria-hidden hides the anchor from the AT tree while it carries display:none (WCAG 4.1.2). trust-strip.js removes the attribute on the show path. href matches the visible-branch destination so a future variant change reveals a working link. -->
@@ -105,7 +110,7 @@
     <!-- About -->
     {% if include.description %}
     <section>
-      <h3>About</h3>
+      <h4>About</h4>
       <p class="card-description">{{ include.description }}</p>
     </section>
     {% endif %}
@@ -113,7 +118,7 @@
     <!-- Pull command -->
     {% if include.ghcr_image and include.dockerhub_image %}
     <section>
-      <h3>Pull command</h3>
+      <h4>Pull command</h4>
       <div class="pull-section"
            data-ghcr-base="ghcr.io/{{ include.github_username }}/{{ include.name }}"
            data-dockerhub-base="docker.io/{{ include.dockerhub_username }}/{{ include.name }}"
@@ -161,6 +166,10 @@
                 {%- endcomment -%}
                 {%- assign synthetic = false -%}
                 {%- if variant.name == "" or variant.name == nil -%}{%- assign synthetic = true -%}{%- endif -%}
+                {%- assign variant_label = variant.name -%}
+                {%- if variant_label == "" or variant_label == nil -%}
+                  {%- assign variant_label = variant.tag | default: version.base_tag | default: version.tag -%}
+                {%- endif -%}
                 <span class="variant-tag{% if forloop.first and forloop.parentloop.first %} selected{% endif %}"
                       {%- if synthetic %} style="display: none" aria-hidden="true"{% endif %}
                       title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
@@ -174,8 +183,8 @@
                       role="button"
                       tabindex="0"
                       aria-pressed="{% if forloop.first and forloop.parentloop.first %}true{% else %}false{% endif %}"
-                      aria-label="Select variant {{ variant.name }}{% if variant.is_default %} (default){% endif %}">
-                  :{{ variant.name }}
+                      aria-label="Select variant {{ variant_label | escape }}{% if variant.is_default %} (default){% endif %}">
+                  :{{ variant_label }}
                   {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
                 </span>
               {% endfor %}
@@ -186,6 +195,7 @@
           <!-- Single-version structure -->
           <div class="variant-tags">
             {% for variant in include.variants %}
+              {%- assign variant_label = variant.tag | default: variant.name -%}
               <span class="variant-tag{% if forloop.first %} selected{% endif %}"
                     title="{{ variant.when_to_use | default: variant.description | escape }} — Click to select"
                     data-tag="{{ variant.tag }}"
@@ -198,8 +208,8 @@
                     role="button"
                     tabindex="0"
                     aria-pressed="{% if forloop.first %}true{% else %}false{% endif %}"
-                    aria-label="Select variant {{ variant.tag }}{% if variant.is_default %} (default){% endif %}">
-                :{{ variant.tag }}
+                    aria-label="Select variant {{ variant_label | escape }}{% if variant.is_default %} (default){% endif %}">
+                :{{ variant_label }}
                 {% if variant.is_default %}<span class="badge badge-primary" aria-hidden="true">default</span>{% endif %}
               </span>
             {% endfor %}

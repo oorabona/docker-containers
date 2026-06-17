@@ -28,18 +28,29 @@
 
     _update(variant) {
       if (!variant) return;
-      this._updateSbom(variant.attestation_url, variant.attestation_id);
+      this._updateSbom(variant);
       this._updateTrivy(variant.trivy_summary);
       this._updateMultiArch(variant.multi_arch_platforms);
     }
 
-    _updateSbom(url, id) {
+    _imageRef(tag) {
+      const card = this.closest('.container-card');
+      const name = card && card.dataset ? card.dataset.container : '';
+      if (name && tag) return name + ':' + tag;
+      return tag || 'this image';
+    }
+
+    _updateSbom(variant) {
       const el = this.querySelector('[data-trust="sbom"]');
       if (!el) return;
+      const url = variant.attestation_url;
+      const id = variant.attestation_id;
+      const imageRef = this._imageRef(variant.tag);
       const isCardSurface = !!this.closest('.container-card');
       if (url && id) {
         el.setAttribute('href', url);
         el.title = "View Sigstore attestation for this image's SBOM";
+        el.setAttribute('aria-label', 'View SBOM attestation for ' + imageRef);
         el.style.display = '';
         el.classList.remove('is-pending');
         el.textContent = isCardSurface ? '📋 SBOM' : '📋 SBOM ATTESTED';
@@ -48,6 +59,7 @@
         el.removeAttribute('href');
         el.classList.add('is-pending');
         el.title = 'SBOM attestation not yet generated. Will populate on next successful build with cosign attestation.';
+        el.setAttribute('aria-label', 'SBOM attestation pending for ' + imageRef);
         el.textContent = isCardSurface ? '📋 SBOM' : '📋 SBOM PENDING';
       }
     }
