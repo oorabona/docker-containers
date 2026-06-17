@@ -52,7 +52,7 @@ docker pull ghcr.io/oorabona/vector:latest-alpine
 - **Multi-arch** (amd64, arm64)
 - **Non-root** (uid 1000)
 - **HEALTHCHECK** via Vector's `/health` endpoint
-- Auto-tracked from [vectordotdev/vector](https://github.com/vectordotdev/vector) releases (with a regex that correctly ignores their `vdev-v*` CLI subproject releases — story [here](/docker-containers/2026/04/24/sslh-docker-port-multiplexing.html))
+- Auto-tracked from [vectordotdev/vector](https://github.com/vectordotdev/vector) releases (with a regex that correctly ignores their `vdev-v*` CLI subproject releases — story [here]({{ '/blog/sslh-docker-port-multiplexing/' | relative_url }}))
 
 ## A minimal config: Nginx logs to Postgres
 

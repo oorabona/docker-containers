@@ -4,6 +4,7 @@ description: >-
   version classification, and CI/CD pipelines.
 baseurl: "/docker-containers"
 url: "https://oorabona.github.io"
+permalink: /blog/:slug/
 
 # Collections
 collections:

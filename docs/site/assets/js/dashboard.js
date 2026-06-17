@@ -142,6 +142,37 @@
       });
     }
 
+    function isLargeImageSize(size) {
+      var match = String(size || '').trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*(MB|GB)$/i);
+      if (!match) return false;
+
+      var value = parseFloat(match[1]);
+      var unit = match[2].toUpperCase();
+      if (!Number.isFinite(value) || value <= 0) return false;
+
+      return unit === 'GB' || (unit === 'MB' && value > 1024);
+    }
+
+    function setAmd64SizeMeta(element, size) {
+      var displaySize = size || '—';
+      element.textContent = displaySize;
+
+      var isLarge = isLargeImageSize(displaySize);
+      element.classList.toggle('image-size--large', isLarge);
+      if (isLarge) {
+        element.title = 'Large image (>1 GB)';
+        element.setAttribute('aria-label', 'Image size ' + displaySize + '. Large image (>1 GB)');
+
+        var sr = document.createElement('span');
+        sr.className = 'sr-only';
+        sr.textContent = ' Large image (>1 GB)';
+        element.appendChild(sr);
+      } else {
+        element.removeAttribute('title');
+        element.removeAttribute('aria-label');
+      }
+    }
+
     // Select a variant tag and update pull command + metadata
     function selectVariantTag(element) {
       var card = element.closest('.container-card');
@@ -191,7 +222,7 @@
 
       var sizeAmd64El = card.querySelector('[data-meta="size-amd64"]');
       var sizeArm64El = card.querySelector('[data-meta="size-arm64"]');
-      if (sizeAmd64El) sizeAmd64El.textContent = element.dataset.sizeAmd64 || '—';
+      if (sizeAmd64El) setAmd64SizeMeta(sizeAmd64El, element.dataset.sizeAmd64 || '—');
       if (sizeArm64El) sizeArm64El.textContent = element.dataset.sizeArm64 || '—';
 
       // Phase B: dispatch event for vanilla custom-element trust strip + Security Scan section

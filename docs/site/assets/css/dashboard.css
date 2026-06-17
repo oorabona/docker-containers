@@ -350,7 +350,7 @@
     }
 
     .stat-icon.blue { background: linear-gradient(135deg, var(--accent-blue), var(--color-blue-400)); }
-    .stat-icon.green { background: linear-gradient(135deg, var(--accent-green), var(--color-green-400)); }
+    .stat-icon.green { background: linear-gradient(135deg, var(--color-green-500), var(--color-green-400)); }
     .stat-icon.yellow { background: linear-gradient(135deg, var(--accent-yellow), var(--color-amber-400)); }
     .stat-icon.purple { background: linear-gradient(135deg, var(--accent-purple), var(--color-violet-400)); }
 
@@ -493,6 +493,23 @@
       white-space: nowrap;
     }
     .row-stats span i { margin-right: 0.25rem; }
+    .row-stats [data-meta="size-amd64"] {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .row-stats [data-meta="size-amd64"].image-size--large {
+      color: var(--color-feedback-warning-fg);
+    }
+    .row-stats [data-meta="size-amd64"].image-size--large::after {
+      content: '';
+      width: 0.38rem;
+      height: 0.38rem;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 2px var(--color-feedback-warning-bg);
+      flex: 0 0 auto;
+    }
 
     /* Spacer keeps chevron aligned to the rightmost column */
     .row-toggle-spacer { display: block; }

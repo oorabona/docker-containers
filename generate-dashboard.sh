@@ -30,6 +30,7 @@ trap 'rm -f -- "$TRIVY_CACHE_FILE"' EXIT
 DATA_FILE="$SCRIPT_DIR/docs/site/_data/containers.yml"
 STATS_FILE="$SCRIPT_DIR/docs/site/_data/stats.yml"
 CONTAINERS_DIR="$SCRIPT_DIR/docs/site/_containers"
+DASHBOARD_BUILD_DATE="$(date -u +"%Y-%m-%d")"
 
 # --- Lineage resolution helpers ---
 
@@ -1129,12 +1130,24 @@ generate_container_page() {
 
     # Append README content (strip front matter if present)
     if [[ -f "$container/README.md" ]]; then
-        awk '
+        local extension_versions_note=""
+        if [[ "$container" == "postgres" ]]; then
+            extension_versions_note="_Extension versions as of the last dashboard build (${DASHBOARD_BUILD_DATE})._"
+        fi
+
+        awk -v note="$extension_versions_note" '
             BEGIN { in_fm = 0; fm_done = 0 }
             NR == 1 && /^---$/ { in_fm = 1; next }
             in_fm && /^---$/ { in_fm = 0; fm_done = 1; next }
             in_fm { next }
-            { print }
+            {
+                print
+                if (note != "" && !inserted && /^### Compiled Extensions[[:space:]]*$/) {
+                    print ""
+                    print note
+                    inserted = 1
+                }
+            }
         ' "$container/README.md" >> "$page_file"
     else
         echo "" >> "$page_file"
