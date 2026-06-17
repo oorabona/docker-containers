@@ -20,6 +20,12 @@
 <meta name="description" content="{{ _seo_desc | strip_html | normalize_whitespace | truncate: 160 | escape }}">
 <link rel="canonical" href="{{ _seo_url }}">
 
+{% comment %} Favicon: explicit links so browsers fetch the project-baseurl asset
+   instead of falling back to the apex /favicon.ico (404). {% endcomment %}
+<link rel="icon" type="image/svg+xml" href="{{ '/favicon.svg' | relative_url }}">
+<link rel="icon" type="image/x-icon" sizes="any" href="{{ '/favicon.ico' | relative_url }}">
+<link rel="apple-touch-icon" href="{{ '/apple-touch-icon.png' | relative_url }}">
+
 <meta property="og:title" content="{{ _seo_title | escape }}">
 <meta property="og:description" content="{{ _seo_desc | strip_html | normalize_whitespace | truncate: 160 | escape }}">
 <meta property="og:url" content="{{ _seo_url }}">
