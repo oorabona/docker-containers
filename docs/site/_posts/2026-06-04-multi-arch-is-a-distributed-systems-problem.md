@@ -92,4 +92,4 @@ The real fix is the ownership rule. CI owns the canonical tags. Local builds —
 - **Keep local tooling out of canonical tags.** CI writes `:trixie`; laptops write `:trixie-dev` or an arch suffix, enforced by a push guard — not by remembering.
 - **Put an audit trail on your tags.** The only reason I could say "a laptop did this" instead of "somehow this happened" was one `runtime: Podman` line in a lineage record.
 
-None of this was an arm64 bug, the same way [the last one wasn't either](/docker-containers/2026/06/01/arm64-three-bugs-none-about-arm64.html). arm64 just reads the entry nobody else was reading.
+None of this was an arm64 bug, the same way [the last one wasn't either]({{ '/blog/arm64-three-bugs-none-about-arm64/' | relative_url }}). arm64 just reads the entry nobody else was reading.

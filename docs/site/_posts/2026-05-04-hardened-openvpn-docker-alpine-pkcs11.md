@@ -6,7 +6,7 @@ date: 2026-05-04 10:00:00 +0000
 tags: [openvpn, docker, security, alpine, networking, pkcs11]
 ---
 
-The [sslh post](/docker-containers/2026/04/24/sslh-docker-port-multiplexing.html) showed how to multiplex OpenVPN on port 443 alongside SSH and HTTPS. This post is the companion: the OpenVPN server itself, in a 15 MB hardened container.
+The [sslh post]({{ '/blog/sslh-docker-port-multiplexing/' | relative_url }}) showed how to multiplex OpenVPN on port 443 alongside SSH and HTTPS. This post is the companion: the OpenVPN server itself, in a 15 MB hardened container.
 
 Running OpenVPN in Docker is [famously easy to get wrong](https://github.com/kylemanna/docker-openvpn/issues). The default answer is `--privileged` because the daemon needs to create a `tun` device. The better answer is: `cap_drop: ALL` + `cap_add: NET_ADMIN` and let the kernel mediate exactly what OpenVPN can do.
 
@@ -129,7 +129,7 @@ Expose nothing to the outside; query from sidecar containers or host scripts:
 echo -e "status\nquit" | nc 127.0.0.1 7505
 ```
 
-Pipe to Prometheus via an exporter, alert on drops. The Vector container ([post](/docker-containers/2026/05/06/vendor-free-observability-vector-postgres.html)) handles this use case well.
+Pipe to Prometheus via an exporter, alert on drops. The Vector container ([post]({{ '/blog/vendor-free-observability-vector-postgres/' | relative_url }})) handles this use case well.
 
 ## Gotchas
 
@@ -162,6 +162,6 @@ docker compose up -d
 
 Full config reference and client examples at the [container dashboard](/docker-containers/container/openvpn/).
 
-Paired with [sslh](/docker-containers/2026/04/24/sslh-docker-port-multiplexing.html), you get OpenVPN on port 443 alongside SSH and HTTPS on the same IP. Works through almost every hotel Wi-Fi.
+Paired with [sslh]({{ '/blog/sslh-docker-port-multiplexing/' | relative_url }}), you get OpenVPN on port 443 alongside SSH and HTTPS on the same IP. Works through almost every hotel Wi-Fi.
 
 [⭐ Star on GitHub](https://github.com/oorabona/docker-containers) if the hardening recipe helped.

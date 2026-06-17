@@ -1,6 +1,17 @@
 <!-- Container row card — details/summary expand pattern (D1 refactor) -->
 {%- assign default_variant = include.versions[0].variants[0] | default: include.variants[0] | default: include -%}
 {%- assign default_variant_tag = default_variant.tag | default: include.current_version | default: "latest" -%}
+{%- assign size_amd64_label = include.size_amd64 | default: "—" -%}
+{%- assign size_amd64_raw = include.size_amd64 | default: "" | strip -%}
+{%- assign size_amd64_compact = size_amd64_raw | remove: " " | downcase -%}
+{%- assign size_amd64_large = false -%}
+{%- if size_amd64_compact contains "gb" -%}
+  {%- assign size_amd64_value = size_amd64_compact | remove: "gb" | plus: 0 -%}
+  {%- if size_amd64_value > 0 -%}{%- assign size_amd64_large = true -%}{%- endif -%}
+{%- elsif size_amd64_compact contains "mb" -%}
+  {%- assign size_amd64_value = size_amd64_compact | remove: "mb" | plus: 0 -%}
+  {%- if size_amd64_value > 1024 -%}{%- assign size_amd64_large = true -%}{%- endif -%}
+{%- endif -%}
 {%- capture default_image_ref -%}{{ include.name }}:{{ default_variant_tag }}{%- endcapture -%}
 <details class="container-card glass status-{{ include.status_color | default: 'secondary' }}"
          data-container="{{ include.name }}"
@@ -96,7 +107,7 @@
     <!-- Pull count + size stats -->
     <div class="row-stats">
       <span><i class="ti ti-download" aria-hidden="true"></i>{{ include.pull_count_formatted | default: "—" }}</span>
-      <span><i class="ti ti-cube" aria-hidden="true"></i><span data-meta="size-amd64">{{ include.size_amd64 | default: "—" }}</span></span>
+      <span><i class="ti ti-cube" aria-hidden="true"></i><span data-meta="size-amd64"{% if size_amd64_large %} class="image-size--large" title="Large image (>1 GB)" aria-label="Image size {{ size_amd64_label | escape }}. Large image (>1 GB)"{% endif %}>{{ size_amd64_label }}{% if size_amd64_large %}<span class="sr-only"> Large image (>1 GB)</span>{% endif %}</span></span>
     </div>
 
     <!-- Spacer + toggle chevron -->

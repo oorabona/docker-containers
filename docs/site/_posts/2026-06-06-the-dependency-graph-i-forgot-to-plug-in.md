@@ -49,6 +49,6 @@ That closes the loud failure mode — a base change now rebuilds its consumers i
 - **In a monorepo of images that build on each other, the build graph is a graph.** Change detection that maps files to containers one-to-one is correct for leaves and wrong for everything with something on top of it. It has to walk the edges.
 - **Derive the edges, don't declare them.** A `FROM`-derived graph can't drift from reality. A hand-maintained `depends_on:` list can, and you won't notice until it silently skips a rebuild.
 - **Before you build infrastructure, grep for it.** I was about to write a reverse-dependency walker that already existed in my own repo, tested, used daily — for one of the two callers that needed it. The expensive part wasn't the graph. It was noticing I'd only plugged it in once.
-- **A base change that doesn't rebuild its consumers is a staleness bug on a delay fuse** — exactly the kind that surfaced when [a base quietly lost an architecture](/docker-containers/2026/06/04/multi-arch-is-a-distributed-systems-problem.html) and the consumers on top of it found out months later.
+- **A base change that doesn't rebuild its consumers is a staleness bug on a delay fuse** — exactly the kind that surfaced when [a base quietly lost an architecture]({{ '/blog/multi-arch-is-a-distributed-systems-problem/' | relative_url }}) and the consumers on top of it found out months later.
 
 The graph was the easy part. I'd done it. I'd just done it for the job that runs at 6 AM and not for the one that runs on every push.
