@@ -1,14 +1,19 @@
-# Dockerfile - alpine
+# Dockerfile - alpine (multi-stage)
 # https://github.com/openresty/docker-openresty
-
-# For Luarocks
-ARG LUAROCKS_VERSION
+#
+# Multi-stage build: the `builder` stage compiles OpenSSL, PCRE2, OpenResty and
+# LuaRocks into /usr/local; the final stage copies that tree onto a clean Alpine
+# base with runtime-only packages. The build toolchain (.build-deps) and source
+# trees never enter the published image — keeping it ~10x smaller than a
+# single-stage build where a later `apk del`/`rm -rf` only whiteouts earlier layers.
 
 ARG REMOTE_CR=ghcr.io/oorabona
-ARG VERSION
 ARG RESTY_IMAGE_TAG
 
-FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG}
+# =====================================================================
+# Builder stage — compile everything into /usr/local (discarded after build)
+# =====================================================================
+FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG} AS builder
 
 # Docker Build Arguments
 ARG ENABLE_HTTP_PROXY_CONNECT="false"
@@ -62,24 +67,11 @@ ARG _RESTY_CONFIG_DEPS="--with-pcre \
     --with-ld-opt='-L/usr/local/openresty/pcre2/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre2/lib:/usr/local/openresty/openssl/lib' \
     "
 
-# For Luarocks
+# For Luarocks
 ARG LUAROCKS_VERSION
 
 # Validate required build args
 RUN : "${UPSTREAM_VERSION:?UPSTREAM_VERSION build-arg is required}" "${RESTY_OPENSSL_VERSION:?required}" "${RESTY_OPENSSL_PATCH_VERSION:?required}" "${RESTY_PCRE_VERSION:?required}" "${RESTY_PCRE_SHA256:?required}" "${RESTY_J:?required}" "${NGX_PROXY_CONNECT_VERSION:?required}" "${LUAROCKS_VERSION:?required}"
-
-LABEL resty_image_base="alpine"
-LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
-LABEL resty_version="${UPSTREAM_VERSION}"
-LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"
-LABEL resty_pcre_version="${RESTY_PCRE_VERSION}"
-LABEL resty_pcre_sha256="${RESTY_PCRE_SHA256}"
-LABEL resty_config_options="${RESTY_CONFIG_OPTIONS}"
-LABEL resty_config_options_more="${RESTY_CONFIG_OPTIONS_MORE}"
-LABEL resty_config_deps="${_RESTY_CONFIG_DEPS}"
-LABEL resty_add_package_builddeps="${RESTY_ADD_PACKAGE_BUILDDEPS}"
-LABEL resty_add_package_rundeps="${RESTY_ADD_PACKAGE_RUNDEPS}"
-LABEL luarocks_version="${LUAROCKS_VERSION}"
 
 # STEP 1 - Bootstrap : download and build prerequisites
 RUN set -ex \
@@ -105,7 +97,6 @@ RUN set -ex \
         zlib \
         ${RESTY_ADD_PACKAGE_RUNDEPS} \
     && update-ca-certificates \
-    && cd /tmp \
     && cd /tmp \
     && curl -fSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 "${RESTY_OPENSSL_URL_BASE}/openssl-${RESTY_OPENSSL_VERSION}.tar.gz" -o openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
     && tar xzf openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
@@ -171,7 +162,7 @@ RUN if [ "$ENABLE_HTTP_PROXY_CONNECT" == "true" ]; then \
     && patch -p 1 < /tmp/ngx_http_proxy_connect_module-${NGX_PROXY_CONNECT_VERSION}/patch/proxy_connect_rewrite_1018.patch ; \
     fi
 
-# STEP 3 - Build OpenResty and luarocks, then unwind all dev files/packages
+# STEP 3 - Build OpenResty and luarocks (installs into /usr/local)
 RUN cd /tmp/openresty-${UPSTREAM_VERSION} \
     && make -j${RESTY_J} \
     && make -j${RESTY_J} install \
@@ -182,14 +173,96 @@ RUN cd /tmp/openresty-${UPSTREAM_VERSION} \
     && export PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin \
     && ./configure \
     && make -j${RESTY_J} \
-    && make -j${RESTY_J} install \
-    && cd /tmp \
-    && rm -rf \
-        openssl* pcre* openresty* lua* luarocks* ngx* \
-    && apk del .build-deps \
-    && mkdir -p /var/run/openresty \
+    && make -j${RESTY_J} install
+
+# =====================================================================
+# Final stage — runtime-only image
+# =====================================================================
+FROM ${REMOTE_CR}/library/alpine:${RESTY_IMAGE_TAG}
+
+# Re-declare the ARGs referenced by runtime metadata/labels and runtime deps.
+# ARGs do not cross build stages, so the provenance LABELs below need their
+# default values restated here (CI does not pass these — they are Dockerfile
+# defaults) to keep the published labels identical to the single-stage image.
+ARG RESTY_IMAGE_TAG
+ARG UPSTREAM_VERSION
+ARG RESTY_OPENSSL_VERSION
+ARG RESTY_PCRE_VERSION
+ARG RESTY_PCRE_SHA256
+ARG RESTY_J
+ARG RESTY_CONFIG_OPTIONS="\
+    --with-compat \
+    --with-file-aio \
+    --with-http_addition_module \
+    --with-http_auth_request_module \
+    --with-http_dav_module \
+    --with-http_flv_module \
+    --with-http_geoip_module=dynamic \
+    --with-http_gunzip_module \
+    --with-http_gzip_static_module \
+    --with-http_image_filter_module=dynamic \
+    --with-http_mp4_module \
+    --with-http_random_index_module \
+    --with-http_realip_module \
+    --with-http_secure_link_module \
+    --with-http_slice_module \
+    --with-http_ssl_module \
+    --with-http_stub_status_module \
+    --with-http_sub_module \
+    --with-http_v2_module \
+    --with-http_xslt_module=dynamic \
+    --with-ipv6 \
+    --with-mail \
+    --with-mail_ssl_module \
+    --with-md5-asm \
+    --with-pcre-jit \
+    --with-sha1-asm \
+    --with-stream \
+    --with-stream_ssl_module \
+    --with-threads \
+    "
+ARG RESTY_CONFIG_OPTIONS_MORE="-j${RESTY_J}"
+ARG RESTY_ADD_PACKAGE_BUILDDEPS=""
+ARG RESTY_ADD_PACKAGE_RUNDEPS=""
+ARG LUAROCKS_VERSION
+ARG _RESTY_CONFIG_DEPS="--with-pcre \
+    --with-cc-opt='-DNGX_LUA_ABORT_AT_PANIC -I/usr/local/openresty/pcre2/include -I/usr/local/openresty/openssl/include' \
+    --with-ld-opt='-L/usr/local/openresty/pcre2/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre2/lib:/usr/local/openresty/openssl/lib' \
+    "
+
+# Runtime dependencies only (matches the package set the single-stage image
+# shipped after `apk del .build-deps`).
+RUN apk add --no-cache \
+        gd \
+        geoip \
+        libgcc \
+        libxslt \
+        zlib \
+        ${RESTY_ADD_PACKAGE_RUNDEPS}
+
+# Copy the compiled OpenResty + LuaRocks tree. On a fresh Alpine base /usr/local
+# is empty, so this captures the entire build output (OpenResty under
+# /usr/local/openresty AND LuaRocks under /usr/local/{bin,lib,share,etc}) and
+# nothing else.
+COPY --from=builder /usr/local /usr/local
+
+# Recreate runtime dirs and log symlinks (these live outside /usr/local)
+RUN mkdir -p /var/run/openresty \
     && ln -sf /dev/stdout /usr/local/openresty/nginx/logs/access.log \
     && ln -sf /dev/stderr /usr/local/openresty/nginx/logs/error.log
+
+LABEL resty_image_base="alpine"
+LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
+LABEL resty_version="${UPSTREAM_VERSION}"
+LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"
+LABEL resty_pcre_version="${RESTY_PCRE_VERSION}"
+LABEL resty_pcre_sha256="${RESTY_PCRE_SHA256}"
+LABEL resty_config_options="${RESTY_CONFIG_OPTIONS}"
+LABEL resty_config_options_more="${RESTY_CONFIG_OPTIONS_MORE}"
+LABEL resty_config_deps="${_RESTY_CONFIG_DEPS}"
+LABEL resty_add_package_builddeps="${RESTY_ADD_PACKAGE_BUILDDEPS}"
+LABEL resty_add_package_rundeps="${RESTY_ADD_PACKAGE_RUNDEPS}"
+LABEL luarocks_version="${LUAROCKS_VERSION}"
 
 # Add additional binaries into PATH for convenience
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
