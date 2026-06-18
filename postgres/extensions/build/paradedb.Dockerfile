@@ -35,16 +35,14 @@ ENV RUSTFLAGS="-C target-feature=-crt-static"
 # pgrx requires Rust, clang (for bindgen/libclang), and OpenSSL
 RUN apk add --no-cache \
     build-base \
-    clang19 \
-    clang19-libclang \
-    llvm19-dev \
+    clang-dev \
+    clang-libclang \
     openssl-dev \
     icu-dev \
     git \
     curl \
     pkgconf \
-    && ln -sf /usr/bin/clang-19 /usr/bin/clang \
-    && ln -sf /usr/bin/clang++-19 /usr/bin/clang++
+    llvm-dev
 
 # Install Rust via rustup (required for pgrx)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

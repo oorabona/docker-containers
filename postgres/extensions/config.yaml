@@ -25,7 +25,7 @@ extensions:
     repo: "pgvector/pgvector"
     build_deps:
       - build-base
-      - clang
+      - clang-dev
       - llvm-dev
     shared_preload: false
     priority: 1 # Build order (lower = first)
@@ -62,9 +62,9 @@ extensions:
       - build-base
       - rust
       - cargo
-      - clang19
-      - clang19-libclang
-      - llvm19-dev
+      - clang-dev
+      - clang-libclang
+      - llvm-dev
       - openssl-dev
       - icu-dev
     shared_preload: false # Not required for PG17+
