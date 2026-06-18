@@ -8,21 +8,30 @@ setup() {
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
     HELPER="${PROJECT_ROOT}/helpers/version-set-resolver.sh"
     HA_FIXTURE="${PROJECT_ROOT}/tests/fixtures/resolver/ha-tags.txt"
+    EXT_CONFIG="${PROJECT_ROOT}/postgres/extensions/config.yaml"
+    # The resolver reads these straight from the real config, so the expected
+    # values must come from the same source — hardcoding them drifts the moment
+    # the upstream-monitor bot bumps a version (#779).
+    TS_CEILING="$(yq -r '.extensions.timescaledb.version' "$EXT_CONFIG")"
+    PGVECTOR_VER="$(yq -r '.extensions.pgvector.version' "$EXT_CONFIG")"
 }
 
 # ── timescaledb has version_set: returns resolver output ─────────────────────
 
 @test "resolve_version_set timescaledb 18 returns the capped resolver JSON array" {
-    # Default retain_count=12 from config.yaml: pg18 fixture has 13 versions (2.23.0..2.27.1)
-    # plus the ceiling (2.27.2) injected by the resolver = 14 total; capped to 12.
-    # The two oldest (2.23.0, 2.23.1) are dropped; result is 2.24.0..2.27.2 (12 elements).
+    # Default retain_count=12 from config.yaml: the pg18 fixture has 13 versions
+    # (2.23.0..2.27.1) plus the config ceiling injected by the resolver = 14 total,
+    # capped to 12. The two oldest are dropped; the result is the 11 newest fixture
+    # versions plus the ceiling as the final element.
     # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$HA_FIXTURE" \
         _COMMITTED_VERSIONSET_FILE=/nonexistent \
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     [[ "$status" -eq 0 ]]
-    [[ "$output" == '["2.24.0","2.25.0","2.25.1","2.25.2","2.26.0","2.26.1","2.26.2","2.26.3","2.26.4","2.27.0","2.27.1","2.27.2"]' ]]
+    # First 11 come from the static HA fixture (stable); the 12th is the config
+    # ceiling the resolver injects as the newest entry (read from config, not hardcoded).
+    [[ "$output" == "[\"2.24.0\",\"2.25.0\",\"2.25.1\",\"2.25.2\",\"2.26.0\",\"2.26.1\",\"2.26.2\",\"2.26.3\",\"2.26.4\",\"2.27.0\",\"2.27.1\",\"${TS_CEILING}\"]" ]]
 }
 
 @test "resolve_version_set timescaledb 18 output is valid JSON array" {
@@ -49,7 +58,8 @@ setup() {
     run bash -c "source \"$HELPER\"; resolve_version_set pgvector 18"
     [[ "$status" -eq 0 ]]
     ver=$(echo "$output" | jq -r '.[0]')
-    [[ "$ver" == "0.8.2" ]]
+    # pgvector has no version_set, so the resolver echoes the configured version.
+    [[ "$ver" == "$PGVECTOR_VER" ]]
 }
 
 @test "pg_partman without version_set returns single-version array" {
@@ -105,15 +115,15 @@ setup() {
 # ── CEILING_VERSION clamps resolver output ────────────────────────────────────
 
 @test "above-ceiling version excluded when CEILING_VERSION is set" {
-    # The HA fixture contains tags up to 2.27.1; config ceiling is 2.27.2.
-    # This test uses a synthetic fixture that adds a hypothetical 2.28.0 HA tag
-    # to verify the ceiling filter excludes it.
+    # The HA fixture tops out below the config ceiling. Append a synthetic tag
+    # whose version is far above any realistic timescaledb ceiling, to verify the
+    # ceiling filter excludes it regardless of how the real ceiling moves.
     # _COMMITTED_VERSIONSET_FILE=/nonexistent forces the live resolver path.
     local above_fixture
     above_fixture="$(mktemp)"
-    # Copy the real fixture and append a hypothetical pg18.99-ts2.28.0 tag
+    # Copy the real fixture and append a hypothetical tag well above the ceiling.
     cat "$HA_FIXTURE" > "$above_fixture"
-    printf 'pg18.99-ts2.28.0\n' >> "$above_fixture"
+    printf 'pg18.99-ts99.0.0\n' >> "$above_fixture"
 
     run env \
         _RESOLVER_HA_TAGS_FIXTURE="$above_fixture" \
@@ -121,11 +131,11 @@ setup() {
         bash -c "source \"$HELPER\"; resolve_version_set timescaledb 18"
     rm -f "$above_fixture"
     [[ "$status" -eq 0 ]]
-    # 2.28.0 must NOT appear in the output (ceiling is 2.27.2 from config)
-    [[ "$output" != *'"2.28.0"'* ]]
-    # The ceiling version itself (2.27.2) must be the last element
+    # The above-ceiling tag must NOT appear in the output.
+    [[ "$output" != *'"99.0.0"'* ]]
+    # The config ceiling itself must be the last (newest retained) element.
     last=$(echo "$output" | jq -r '.[-1]')
-    [[ "$last" == "2.27.2" ]]
+    [[ "$last" == "$TS_CEILING" ]]
 }
 
 # ── XX: config_file parameter — resolver reads from caller-supplied config ────
@@ -210,10 +220,10 @@ YAMLEOF
     local count
     count=$(echo "$output" | jq 'length')
     [[ "$count" -eq 12 ]]
-    # The default ceiling 2.27.2 must be the last element
+    # The default ceiling (read from config) must be the last element
     local last
     last=$(echo "$output" | jq -r '.[-1]')
-    [[ "$last" == "2.27.2" ]]
+    [[ "$last" == "$TS_CEILING" ]]
 }
 
 # ── RC: retain_count config key threading ────────────────────────────────────

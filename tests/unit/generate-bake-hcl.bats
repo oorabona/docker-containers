@@ -52,10 +52,16 @@ _make_timescaledb_lineage_root() {
     local lineage_root="$1"
     mkdir -p "${lineage_root}/.build-lineage"
 
+    # Mirror the real configured timescaledb version so this fixture — and the
+    # assertions that read it back — track upstream-monitor bumps instead of
+    # silently testing a stale version (#779).
+    local ts_ver
+    ts_ver=$(yq -r '.extensions.timescaledb.version' "${PROJECT_ROOT}/postgres/extensions/config.yaml")
+
     local pg
     for pg in 18 17 16; do
-        jq -nc --arg pg "$pg" \
-            '{ext:"timescaledb", pg_major:$pg, ceiling:"2.28.0", resolved:["2.28.0"], available:["2.28.0"], excluded:[]}' \
+        jq -nc --arg pg "$pg" --arg v "$ts_ver" \
+            '{ext:"timescaledb", pg_major:$pg, ceiling:$v, resolved:[$v], available:[$v], excluded:[]}' \
             > "${lineage_root}/.build-lineage/ext-timescaledb-pg${pg}-versionset.json"
     done
 }
@@ -630,7 +636,11 @@ YAML
     [ -n "$pgvector_ver" ]
     grep -Fxq "FROM ghcr.io/oorabona/ext-pgvector:pg18-${pgvector_ver} AS ext-pgvector" <<< "$vector_inline"
     grep -Fxq 'COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/' <<< "$vector_inline"
-    grep -Fxq 'FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.28.0 AS ext-timescaledb' <<< "$timeseries_inline"
+    # timescaledb's version flows through the lineage fixture, which now mirrors
+    # config (_make_timescaledb_lineage_root) — read it from the same source.
+    local timescaledb_ver
+    timescaledb_ver=$(yq -r '.extensions.timescaledb.version' "${PROJECT_ROOT}/postgres/extensions/config.yaml")
+    grep -Fxq "FROM ghcr.io/oorabona/ext-timescaledb:pg18-${timescaledb_ver} AS ext-timescaledb" <<< "$timeseries_inline"
 }
 
 @test "GBH-25e: postgres bake VERSION build arg carries base_suffix (matches the non-bake base image)" {

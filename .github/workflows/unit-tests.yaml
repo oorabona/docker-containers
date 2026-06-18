@@ -46,7 +46,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Keep this lightweight gate on deterministic bake tests. The full
-          # historical unit suite is still available locally via
-          # ./tests/run-tests.sh, but is not yet reliable as a minimal CI gate.
-          ./tests/run-tests.sh bake 2>&1 | tee /tmp/unit-tests.log
+          # Run the FULL unit suite as the gate. run-tests.sh wraps bats with
+          # retry-on-flake protection. The version drift that previously made the
+          # full suite unreliable as a gate was fixed (#779) — keeping the gate on
+          # a subset let broken tests reach master undetected.
+          ./tests/run-tests.sh 2>&1 | tee /tmp/unit-tests.log
