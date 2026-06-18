@@ -620,7 +620,15 @@ YAML
     base_ext_from_count=$(printf '%s\n' "$base_inline" | grep -cE '^FROM .*ext-' || true)
     [ "$base_ext_from_count" -eq 0 ]
 
-    grep -Fxq 'FROM ghcr.io/oorabona/ext-pgvector:pg18-0.8.2 AS ext-pgvector' <<< "$vector_inline"
+    # pgvector has no test lineage fixture (unlike timescaledb below), so the
+    # generator resolves its version straight from the real
+    # postgres/extensions/config.yaml. Read it from that same source instead of
+    # hardcoding, so an upstream-monitor version bump can't drift this test out
+    # from under CI (#779 — broke when the bot bumped pgvector 0.8.2 -> 0.8.3).
+    local pgvector_ver
+    pgvector_ver=$(yq -r '.extensions.pgvector.version' "${PROJECT_ROOT}/postgres/extensions/config.yaml")
+    [ -n "$pgvector_ver" ]
+    grep -Fxq "FROM ghcr.io/oorabona/ext-pgvector:pg18-${pgvector_ver} AS ext-pgvector" <<< "$vector_inline"
     grep -Fxq 'COPY --from=ext-pgvector /output/extension/ /tmp/ext/pgvector/extension/' <<< "$vector_inline"
     grep -Fxq 'FROM ghcr.io/oorabona/ext-timescaledb:pg18-2.28.0 AS ext-timescaledb' <<< "$timeseries_inline"
 }
