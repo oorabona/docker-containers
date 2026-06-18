@@ -25,6 +25,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
       - name: aws
         suffix: "-aws"
         flavor: aws
@@ -36,6 +37,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
       - name: azure
         suffix: "-azure"
@@ -48,6 +50,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AZURE_CLI_VERSION
       - name: gcp
         suffix: "-gcp"
@@ -60,6 +63,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - GCP_CLI_VERSION
       - name: full
         suffix: ""
@@ -73,6 +77,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
           - AZURE_CLI_VERSION
           - GCP_CLI_VERSION
@@ -89,6 +94,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
       - name: aws
         suffix: "-aws"
         flavor: aws
@@ -100,6 +106,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
       - name: azure
         suffix: "-azure"
@@ -112,6 +119,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AZURE_CLI_VERSION
       - name: gcp
         suffix: "-gcp"
@@ -124,6 +132,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - GCP_CLI_VERSION
       - name: full
         suffix: ""
@@ -137,6 +146,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
           - AZURE_CLI_VERSION
           - GCP_CLI_VERSION
@@ -153,6 +163,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
       - name: aws
         suffix: "-aws"
         flavor: aws
@@ -164,6 +175,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
       - name: azure
         suffix: "-azure"
@@ -176,6 +188,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AZURE_CLI_VERSION
       - name: gcp
         suffix: "-gcp"
@@ -188,6 +201,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - GCP_CLI_VERSION
       - name: full
         suffix: ""
@@ -201,6 +215,7 @@ versions:
           - TERRAFORM_DOCS_VERSION
           - INFRACOST_VERSION
           - GITHUB_CLI_VERSION
+          - JINJA2_CLI_VERSION
           - AWS_CLI_VERSION
           - AZURE_CLI_VERSION
           - GCP_CLI_VERSION

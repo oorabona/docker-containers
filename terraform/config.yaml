@@ -26,6 +26,7 @@ build_args:
   AWS_CLI_VERSION: "1.45.32"
   AZURE_CLI_VERSION: "2.87.0"
   GCP_CLI_VERSION: "latest"
+  JINJA2_CLI_VERSION: "1.0.1"
 # Maps build_arg names to their upstream source for monitoring
 # All build_args with pinned versions MUST have an entry here:
 # - monitored deps: type + source info
@@ -73,4 +74,8 @@ dependency_sources:
     monitor: false
     lifecycle: untracked
     reason: "Always latest — no version to track"
+  JINJA2_CLI_VERSION:
+    lifecycle: tracked
+    type: pypi
+    package: jinja2-cli
 value_proposition: Multi-version retention (3 latest). GCP/AWS/Azure providers pre-fetched, full provider cache layer. Daily upstream monitoring of all dependencies.

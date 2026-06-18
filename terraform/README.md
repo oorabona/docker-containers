@@ -35,7 +35,9 @@ All flavors include the core security and DevOps toolkit. The difference is whic
 | **aws** | AWS optimized | AWS CLI | AWS-only infrastructure |
 | **azure** | Azure optimized | Azure CLI | Azure-only infrastructure |
 | **gcp** | GCP optimized | Google Cloud SDK | GCP-only infrastructure |
-| **full** | All clouds | AWS CLI + Azure CLI + Google Cloud SDK + j2cli | Multi-cloud or development |
+| **full** | All clouds | AWS CLI + Azure CLI + Google Cloud SDK | Multi-cloud or development |
+
+> Jinja2 templating (`jinja2-cli`) is bundled in **every** flavor — the entrypoint renders `*.tf.j2` files unconditionally.
 
 ### Flavor Details
 
@@ -50,6 +52,7 @@ Includes Terraform, security scanning, linting, and documentation tools. No clou
 - terraform-docs (documentation generation)
 - Infracost (cost estimation)
 - GitHub CLI
+- jinja2-cli (Jinja2 templating)
 - Git, Jq, Yq
 
 #### AWS (`*-aws`)
@@ -72,7 +75,7 @@ Includes base + Google Cloud SDK for Google Cloud Platform infrastructure.
 - gcloud, gsutil, bq commands
 
 #### Full (`*-full`)
-Includes all cloud CLIs plus Jinja2 templating engine. Recommended for:
+Includes all cloud CLIs. Recommended for:
 - Multi-cloud environments
 - Development and testing
 - CI/CD pipelines
@@ -82,7 +85,6 @@ Includes all cloud CLIs plus Jinja2 templating engine. Recommended for:
 - AWS CLI
 - Azure CLI
 - Google Cloud SDK
-- j2cli (Jinja2 templating)
 
 ### Image Tags
 
@@ -112,7 +114,7 @@ All versions are pinned and automatically monitored for updates:
 | AWS CLI | 1.44.33 | Amazon Web Services CLI | aws, full |
 | Azure CLI | 2.83.0 | Microsoft Azure CLI | azure, full |
 | Google Cloud SDK | latest | Google Cloud Platform CLI | gcp, full |
-| j2cli | (latest) | Jinja2 templating CLI | full |
+| jinja2-cli | 1.0.1 | Jinja2 templating CLI | All |
 
 ### Built-in Utilities
 
@@ -120,6 +122,7 @@ All flavors include:
 - Git - Version control
 - Jq - JSON processor
 - Yq - YAML processor
+- jinja2-cli - Jinja2 templating
 - Bash - Shell scripting
 - Curl - HTTP client
 - Python 3 - Scripting runtime
@@ -178,9 +181,11 @@ docker run --rm -it \
   apply
 ```
 
-### Jinja2 Templating (full flavor only)
+### Jinja2 Templating
 
-The full flavor includes j2cli for template-based infrastructure:
+Every flavor includes `jinja2-cli` for template-based infrastructure. The
+entrypoint renders any `*.tf.j2` files in the working directory to `*.tf`
+(using `$CONFIGFILE`, default `config.json`) before running Terraform:
 
 ```bash
 # Create templated Terraform files with .j2 extension
@@ -201,7 +206,7 @@ resource "aws_instance" "{{ instance_name }}" {
 docker run --rm \
   -v $(pwd):/data \
   ghcr.io/oorabona/terraform:latest \
-  bash -c "for f in *.tf.j2; do j2 \$f config.json > \${f%.j2}; done && terraform plan"
+  bash -c "for f in *.tf.j2; do jinja2 \$f config.json > \${f%.j2}; done && terraform plan"
 ```
 
 ### Security Scanning
@@ -289,12 +294,13 @@ docker build --build-arg VERSION=latest --build-arg FLAVOR=base -t terraform:bas
 | `AWS_CLI_VERSION` | AWS CLI version | 1.44.33 |
 | `AZURE_CLI_VERSION` | Azure CLI version | 2.83.0 |
 | `GCP_CLI_VERSION` | GCP SDK version | latest |
+| `JINJA2_CLI_VERSION` | jinja2-cli version | 1.0.1 |
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CONFIGFILE` | Jinja2 configuration file (full flavor) | config.json |
+| `CONFIGFILE` | Jinja2 template data file (all flavors) | config.json |
 | `TERRAFORM_FLAVOR` | Flavor identifier | (set during build) |
 | `AWS_ACCESS_KEY_ID` | AWS credentials | (pass from environment) |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials | (pass from environment) |
@@ -441,8 +447,9 @@ This approach:
 Build-time `FLAVOR` argument determines:
 - Which cloud CLIs are installed via pip (AWS, Azure)
 - Whether Google Cloud SDK is copied from cloud-tools-gcp stage
-- Whether j2cli is installed (full flavor only)
 - Contents of environment variable `TERRAFORM_FLAVOR`
+
+(`jinja2-cli` is installed in every flavor, independent of `FLAVOR`.)
 
 ## CI/CD Integration
 
