@@ -110,6 +110,8 @@ COPY --from=security-tools /tflint /trivy /usr/local/bin/
 COPY --from=devops-tools /terragrunt /terraform-docs /infracost /gh /usr/local/bin/
 
 # Install base runtime dependencies (always needed)
+# py3-jinja2 + py3-yaml satisfy jinja2-cli's runtime deps from apk (musl wheels,
+# no build toolchain) so the pip install below is a pure-Python wrapper only.
 RUN apk --no-cache add \
     ca-certificates \
     curl \
@@ -119,7 +121,16 @@ RUN apk --no-cache add \
     jq \
     yq \
     python3 \
-    py3-pip
+    py3-pip \
+    py3-jinja2 \
+    py3-yaml
+
+# Jinja2 templating CLI — used UNCONDITIONALLY by docker-entrypoint.sh to render
+# *.tf.j2 files, so it must be present in every flavor (not just full). Replaces
+# j2cli, which is dead on Python 3.12 (it imports the removed `imp` module).
+ARG JINJA2_CLI_VERSION
+RUN : "${JINJA2_CLI_VERSION:?required}" && \
+    pip3 install --break-system-packages --no-cache-dir jinja2-cli==${JINJA2_CLI_VERSION}
 
 # Cloud CLI installation based on FLAVOR
 ARG AWS_CLI_VERSION
@@ -157,8 +168,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             apk --no-cache add --virtual .build-deps gcc musl-dev libffi-dev python3-dev linux-headers && \
             pip3 install --break-system-packages \
                 awscli==${AWS_CLI_VERSION} \
-                azure-cli==${AZURE_CLI_VERSION} \
-                j2cli && \
+                azure-cli==${AZURE_CLI_VERSION} && \
             apk del .build-deps \
             ;; \
         *) \
