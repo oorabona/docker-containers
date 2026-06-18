@@ -30,7 +30,7 @@ fi
 # Test Lua module availability (optional)
 echo "  Testing Lua module..."
 if docker exec "$CONTAINER_NAME" which resty &>/dev/null; then
-    lua_test=$(docker exec "$CONTAINER_NAME" sh -c 'echo "print(1+1)" | resty' 2>/dev/null) || lua_test=""
+    lua_test=$(docker exec "$CONTAINER_NAME" resty -e 'print(1+1)' 2>/dev/null) || lua_test=""
     if [ "$lua_test" = "2" ]; then
         echo "  ✅ Lua/resty working"
     else

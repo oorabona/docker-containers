@@ -230,13 +230,16 @@ ARG _RESTY_CONFIG_DEPS="--with-pcre \
     --with-ld-opt='-L/usr/local/openresty/pcre2/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre2/lib:/usr/local/openresty/openssl/lib' \
     "
 
-# Runtime dependencies only (matches the package set the single-stage image
-# shipped after `apk del .build-deps`).
+# Runtime dependencies. gd/geoip/libgcc/libxslt/zlib back the dynamic modules and
+# the linked binaries; perl is required by the bundled `resty` CLI (a Perl script)
+# — without it `resty` errors with "can't execute 'perl'". The HEALTHCHECK below
+# uses busybox `wget` (already in the base), so no curl is needed at runtime.
 RUN apk add --no-cache \
         gd \
         geoip \
         libgcc \
         libxslt \
+        perl \
         zlib \
         ${RESTY_ADD_PACKAGE_RUNDEPS}
 
@@ -276,9 +279,13 @@ RUN addgroup -g 101 -S nginx \
     && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /var/run/openresty \
     && chown -R nginx:nginx /usr/local/openresty/nginx/logs
 
-# Add healthcheck to verify OpenResty is responding
+# Add healthcheck to verify OpenResty is responding. Uses busybox wget (present
+# in the alpine base; curl is not installed at runtime) against `/`, which the
+# stock OpenResty config serves with 200 — `/nginx_status` is only available when
+# the user adds a stub_status location (see README), so it can't be the default
+# probe target.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost/nginx_status || exit 1
+    CMD wget -q -O /dev/null http://localhost/ || exit 1
 
 LABEL org.opencontainers.image.title="OpenResty" \
       org.opencontainers.image.description="OpenResty (Nginx + Lua) with LuaRocks and custom modules" \
