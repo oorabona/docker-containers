@@ -46,7 +46,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Keep this lightweight gate on deterministic bake tests. The full
-          # historical unit suite is still available locally via
-          # ./tests/run-tests.sh, but is not yet reliable as a minimal CI gate.
+          # Gate on the deterministic `bake` subset for now. Widening to the full
+          # suite is tracked in #785 — blocked on a few green-by-coincidence and
+          # load-flaky tests that must be hardened first. The drift that motivated
+          # widening (#779) is itself covered here via generate-bake-hcl.bats.
           ./tests/run-tests.sh bake 2>&1 | tee /tmp/unit-tests.log

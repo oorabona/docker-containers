@@ -684,8 +684,23 @@ base_image_cache:
     tags_from_versions: true
 EOF
 )"
-    # Run with a PATH that excludes yq — the guard must return non-zero
-    run env PATH="/usr/bin:/bin" bash -c "
+    # Mirror every tool EXCEPT yq into a stub bin, then point PATH at only that,
+    # so `command -v yq` fails regardless of where yq lives. (A bare
+    # PATH=/usr/bin:/bin still found yq on CI runners, which ship it in /usr/bin,
+    # so the guard did not fail-closed and this test flaked the widened gate.)
+    local fake_bin="${BATS_TEST_TMPDIR}/no-yq-bin-$$"
+    mkdir -p "$fake_bin"
+    local _d _t _b
+    for _d in ${PATH//:/ }; do
+        [ -d "$_d" ] || continue
+        for _t in "$_d"/*; do
+            [ -x "$_t" ] || continue
+            _b=$(basename "$_t")
+            [ "$_b" = yq ] && continue
+            [ -e "$fake_bin/$_b" ] || ln -s "$_t" "$fake_bin/$_b"
+        done
+    done
+    run env PATH="$fake_bin" bash -c "
         source '$ORIG_DIR/helpers/validate-base-cache-schema.sh'
         validate_container_base_cache_schema 'myapp'
     "
