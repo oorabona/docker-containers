@@ -11,7 +11,7 @@ permissions:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -46,8 +46,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Gate on the deterministic `bake` subset for now. Widening to the full
-          # suite is tracked in #785 — blocked on a few green-by-coincidence and
-          # load-flaky tests that must be hardened first. The drift that motivated
-          # widening (#779) is itself covered here via generate-bake-hcl.bats.
-          ./tests/run-tests.sh bake 2>&1 | tee /tmp/unit-tests.log
+          # Gate on the FULL unit suite: any unit test reaching a red state blocks
+          # the merge (the #779 lesson — a drift in an ungated test file was invisible).
+          # run-tests.sh runs all unit/*.bats in one `bats --jobs 4` pass (~9-12 min
+          # on the 2-core runner; see timeout-minutes above).
+          ./tests/run-tests.sh 2>&1 | tee /tmp/unit-tests.log

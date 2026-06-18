@@ -143,12 +143,17 @@ _dockerfile_urls_for() {
 
     for config in "$REPO_ROOT"/*/config.yaml; do
         [[ -f "$config" ]] || continue
-        if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
-            continue
-        fi
 
         local container
         container=$(basename "$(dirname "$config")")
+        # Skip ephemeral test-fixture dirs that other suites (e.g. lifecycle-behavior)
+        # inject into REPO_ROOT under parallel runs. Real containers never use the
+        # 'bats-' prefix, so this excludes scaffolding without masking real configs.
+        [[ "$container" == bats-* ]] && continue
+
+        if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
+            continue
+        fi
 
         local dep_names
         dep_names=$(yq -r '.dependency_sources // {} | keys | .[]' "$config")
@@ -371,6 +376,9 @@ _dockerfile_urls_for() {
     for config in "$REPO_ROOT"/*/config.yaml; do
         local container
         container=$(basename "$(dirname "$config")")
+        # Skip ephemeral 'bats-*' fixture dirs injected into REPO_ROOT by other
+        # suites (e.g. lifecycle-behavior) during parallel runs — never real containers.
+        [[ "$container" == bats-* ]] && continue
 
         if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
             continue
