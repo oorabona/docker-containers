@@ -13,7 +13,7 @@ ARG APCU_VERSION
 RUN : "${APCU_VERSION:?required}"
 
 RUN set -ex \
-    && apk add --update libzip freetype libpng libjpeg-turbo git shadow \
+    && apk add --update libzip freetype libpng libjpeg-turbo git shadow fcgi \
     && apk add --update --no-cache --virtual .build-deps \
         $PHPIZE_DEPS \
         icu-dev \
