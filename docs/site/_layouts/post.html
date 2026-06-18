@@ -14,7 +14,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.36.1/dist/tabler-icons.min.css" crossorigin="anonymous">
   <!-- tokens.css MUST load before theme.css — defines variables theme.css references -->
   <link rel="stylesheet" href="{{ site.baseurl }}/assets/css/tokens.css">
@@ -31,7 +31,11 @@
 
   {% include site-nav.html active="blog" %}
 
+  <div class="read-progress" id="readProgress" aria-hidden="true"></div>
+
   <div class="container">
+    <div class="post-layout">
+    <aside class="post-toc" id="postToc" aria-label="On this page" hidden></aside>
     <main id="main-content" class="post-wrapper">
       <a class="post-back-link" href="{{ site.baseurl }}/blog/">
         <i class="ti ti-arrow-left" aria-hidden="true"></i> All posts
@@ -63,7 +67,7 @@
         </div>
       </header>
 
-      <article class="post-content glass">
+      <article class="post-content">
         {{ content }}
       </article>
 
@@ -76,9 +80,14 @@
         </a>
       </nav>
     </main>
+    </div>
 
     {% include site-footer.html %}
   </div>
+
+  <button class="to-top" id="toTop" type="button" aria-label="Back to top" title="Back to top">
+    <i class="ti ti-arrow-up" aria-hidden="true"></i>
+  </button>
 
   <script src="{{ site.baseurl }}/assets/js/theme.js"></script>
   <script>
@@ -89,5 +98,6 @@
       }
     })();
   </script>
+  <script defer src="{{ site.baseurl }}/assets/js/blog-post.js"></script>
 </body>
 </html>
