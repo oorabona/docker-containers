@@ -33,6 +33,8 @@
       this._onMqlChange = null;
       this._onKeydown = null;
       this._raf = null;        // pending requestAnimationFrame handle
+      this._lastOffsetVar = null; // last value written to --page-toc-nav-offset
+      this._barObserver = null;   // watches variant-action-bar collapse state
 
       // Corrective re-aim guards (P2-1)
       this._clickSeq = 0;
@@ -45,6 +47,8 @@
       this._render();
       this._setupScrollHighlight();
       this._setupMobileQuery();
+      this._setupBarObserver();
+      this._syncOffsetVar();
     }
 
     disconnectedCallback() {
@@ -58,6 +62,10 @@
         this._mql.removeEventListener('change', this._onMqlChange);
         this._mql = null;
         this._onMqlChange = null;
+      }
+      if (this._barObserver) {
+        this._barObserver.disconnect();
+        this._barObserver = null;
       }
       if (this._onKeydown) {
         document.removeEventListener('keydown', this._onKeydown);
@@ -252,6 +260,31 @@
       return Math.round(navH + barH + 8);
     }
 
+    // Publish the live sticky-band height to CSS so the fixed TOC clears the
+    // navbar AND the collapsing variant-action-bar. page-toc.css reads
+    // --page-toc-nav-offset (the 72px fallback only applies before this runs).
+    // Cached so we only write on an actual change.
+    _syncOffsetVar() {
+      var offsetVar = this._stickyOffset();
+      if (offsetVar !== this._lastOffsetVar) {
+        this._lastOffsetVar = offsetVar;
+        document.documentElement.style.setProperty('--page-toc-nav-offset', offsetVar + 'px');
+      }
+    }
+
+    // The action bar collapses on its own trigger (toggling [data-collapsed]),
+    // which can land on a frame our scroll handler doesn't process — leaving the
+    // offset stale. Recompute the moment the bar's collapse state flips so the
+    // TOC never overlaps the freshly-pinned bar.
+    _setupBarObserver() {
+      if (typeof MutationObserver === 'undefined') { return; }
+      var bar = document.querySelector('variant-action-bar');
+      if (!bar) { return; }
+      var self = this;
+      this._barObserver = new MutationObserver(function () { self._syncOffsetVar(); });
+      this._barObserver.observe(bar, { attributes: true, attributeFilter: ['data-collapsed'] });
+    }
+
     // -------------------------------------------------------
     // Active-section highlight via scroll + rAF (no IntersectionObserver)
     // -------------------------------------------------------
@@ -283,6 +316,9 @@
 
     _updateActive() {
       if (!this._sections.length) { return; }
+
+      // Keep the fixed-TOC offset fresh on every scroll/resize frame.
+      this._syncOffsetVar();
 
       // Probe line: just below the bottom edge of all sticky bands.
       var line = this._stickyOffset() + 4;
