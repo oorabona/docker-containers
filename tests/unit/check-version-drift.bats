@@ -2120,14 +2120,25 @@ MAKE_EOF
     local root
     root=$(_make_temp_project "foo" "9.9.9")
 
-    # Build a PATH that contains jq but NOT yq.
+    # Mirror every tool EXCEPT yq into a stub bin and point PATH at only that, so
+    # `command -v yq` fails regardless of where yq lives. The old PATH still
+    # included /usr/bin, where CI runners ship yq — so command -v yq succeeded and
+    # the script did not fail-closed (this test flaked the widened gate).
     local fake_bin="${TEST_TEMP_DIR}/no-yq-bin-$$"
     mkdir -p "$fake_bin"
-    # Copy jq (or symlink the real one) so jq is available but yq is not.
-    # We do NOT create a yq stub → command -v yq will fail.
+    local _d _t _b
+    for _d in ${PATH//:/ }; do
+        [ -d "$_d" ] || continue
+        for _t in "$_d"/*; do
+            [ -x "$_t" ] || continue
+            _b=$(basename "$_t")
+            [ "$_b" = yq ] && continue
+            [ -e "$fake_bin/$_b" ] || ln -s "$_t" "$fake_bin/$_b"
+        done
+    done
 
     run --separate-stderr env \
-        PATH="${fake_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        PATH="${fake_bin}" \
         PROJECT_ROOT="$root" \
         _VDRIFT_CONTAINERS_OVERRIDE="foo" \
         _VDRIFT_GHCR_OWNER_OVERRIDE="testowner" \

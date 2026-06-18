@@ -31,6 +31,11 @@ teardown() {
     # A leak means _mk_container was called via $(...) so CONTAINER_SYMLINKS
     # was populated in a subshell — the symlink was created but never registered,
     # and teardown() could not remove it.
+    # Scope the scan to THIS test process's symlinks (every _mk_container name
+    # ends in -$$). A bare "bats-*" scan is parallel-unsafe: under `bats --jobs`
+    # one test's teardown would see — and rm — a concurrent test's in-flight
+    # symlink, failing that test (the cause of the CI flakiness when the gate
+    # was widened to the full suite).
     local leaked=0
     local leaked_list=""
     while IFS= read -r -d '' link; do
@@ -42,7 +47,7 @@ teardown() {
             leaked_list="$leaked_list $link"
             rm -f "$link"  # best-effort cleanup to avoid polluting subsequent tests
         fi
-    done < <(find "$REPO_ROOT" -maxdepth 1 -name "bats-*" -type l -print0 2>/dev/null)
+    done < <(find "$REPO_ROOT" -maxdepth 1 -name "bats-*-$$" -type l -print0 2>/dev/null)
     if [[ "$leaked" -gt 0 ]]; then
         echo "CLEANLINESS FAIL: ${leaked} symlink(s) leaked into REPO_ROOT after teardown."
         echo "  Leaked:${leaked_list}"
