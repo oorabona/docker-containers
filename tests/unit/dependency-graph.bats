@@ -1641,20 +1641,39 @@ EOF
     printf '{"container":"wordpress","tag":"6.9-alpine","base_image_ref":"ghcr.io/oorabona/php:8.3","base_image_digest":"sha256:%064d"}' \
         0 > "$alt_lineage/wordpress-6.9-alpine.json"
 
-    # list-builds stub: exits 1 (simulates failure)
-    mkdir -p "$fake_root/make-stub"
-    printf '#!/usr/bin/env bash\nexit 1\n' > "$fake_root/make"
+    # ./make stub: "list" succeeds with valid container-name lines so valid-container
+    # enumeration cannot be the failure; "list-builds" fails to exercise the
+    # fail-closed active-tag filter path.
+    cat > "$fake_root/make" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list)
+    printf 'wordpress\nphp\n'
+    exit 0
+    ;;
+  list-builds)
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+STUB
     chmod +x "$fake_root/make"
 
     run bash -c "
-        export _DEPGRAPH_CONTAINERS_OVERRIDE='wordpress php'
+        unset _DEPGRAPH_CONTAINERS_OVERRIDE
+        unset _DEPGRAPH_OWNER_OVERRIDE
         export _DEPGRAPH_LINEAGE_DIR='${alt_lineage}'
         export PROJECT_ROOT='${fake_root}'
+        export GITHUB_REPOSITORY_OWNER='oorabona'
         source '${HELPERS_DIR}/dependency-graph.sh'
-        _depgraph_get_deps wordpress
+        _depgraph_get_deps wordpress 2>&1
     "
-    # Must return rc=2 (fail-closed), not rc=0
+    # Must return rc=2 from the list-builds fail-closed path, not owner lookup.
     [ "$status" -eq 2 ]
+    [[ "$output" == *"list-builds wordpress failed"* ]]
+    [[ "$output" == *"refusing to proceed"* ]]
 }
 
 # ---------------------------------------------------------------------------

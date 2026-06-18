@@ -3615,14 +3615,14 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# Defect B.1 fix: _depgraph_get_deps failure → detect script exits non-zero (fail-closed)
+# Defect B.1 fix: _depgraph_get_deps failure → detect script emits an error record
 #
-# When _DEPGRAPH_CONTAINERS_OVERRIDE is unset and _depgraph_valid_containers
-# (which calls ./make list) fails, the dep-graph helper returns non-zero.
-# The detect script must propagate this as a non-zero exit rather than silently
-# producing internal_deps=[] and bypassing cascade gating.
+# When a ghcr.io/<owner>/... ref requires owner resolution but no owner source is
+# available, the dep-graph helper returns non-zero. The detect script must surface
+# the container as an error record rather than silently producing internal_deps=[]
+# and bypassing cascade gating.
 # ---------------------------------------------------------------------------
-@test "internal_deps: dep-graph helper failure → detect exits 0, container emitted as error record (F2 regression-lock)" {
+@test "internal_deps: owner unresolvable in dep-graph → detect exits 0, container emitted as error record (F2 regression-lock)" {
     # FIX 2: dep-graph failure must NOT abort the whole run (old behaviour: exit 1).
     # The failing container must be surfaced as status:error with error_reason:dep_graph_unavailable
     # and no internal_deps field — so it is excluded from the leaf/consumer matrices and
@@ -3648,18 +3648,14 @@ STUBEOF
 }
 EOF
 
-    # ./make list fails — dep-graph cannot enumerate containers
-    cat > "$fake_root/make" <<'STUB'
-#!/usr/bin/env bash
-exit 1
-STUB
-    chmod +x "$fake_root/make"
-
     local rc=0
     local result
     # _VALID_CONTAINERS_OVERRIDE set so detect script's own validation passes (only myapp processed),
-    # but _DEPGRAPH_CONTAINERS_OVERRIDE unset so _depgraph_valid_containers hits the failing ./make list.
+    # then the detector bridges it into _DEPGRAPH_CONTAINERS_OVERRIDE. Owner resolution is forced
+    # to fail deterministically by clearing the ambient owner env in this non-git fake root.
     result=$(cd "$fake_root" && \
+        env -u _DEPGRAPH_OWNER_OVERRIDE \
+        GITHUB_REPOSITORY_OWNER= \
         _VALID_CONTAINERS_OVERRIDE="myapp" \
         bash scripts/detect-base-digest-drift.sh ".build-lineage" 2>/dev/null) || rc=$?
 
@@ -4039,7 +4035,14 @@ php" \
     # No positional arg → LINEAGE_DIR defaults to PROJECT_ROOT/.build-lineage.
     # Uses ghcr.io/oorabona/php:8.3 with GITHUB_REPOSITORY_OWNER=oorabona.
     local default_lineage="$TEST_TEMP_DIR/.build-lineage"
-    mkdir -p "$default_lineage"
+    mkdir -p "$TEST_TEMP_DIR/scripts" "$TEST_TEMP_DIR/helpers" "$default_lineage"
+    cp "${DETECTOR_SCRIPT}" "$TEST_TEMP_DIR/scripts/detect-base-digest-drift.sh"
+    cp "${SCRIPTS_DIR}/../helpers/lineage-utils.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/dependency-graph.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/logging.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/retry.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/variant-utils.sh" "$TEST_TEMP_DIR/helpers/"
+    cp "${SCRIPTS_DIR}/../helpers/base-cache-utils.sh" "$TEST_TEMP_DIR/helpers/"
 
     jq -n '{
       lineage_schema_version: 2,
@@ -4056,13 +4059,13 @@ php" \
     chmod +x "$probe_stub"
 
     result=$(
+        cd "$TEST_TEMP_DIR" && \
         _VALID_CONTAINERS_OVERRIDE="wordpress
 php" \
         _DEPGRAPH_CONTAINERS_OVERRIDE="wordpress php" \
         GITHUB_REPOSITORY_OWNER="oorabona" \
         PROBE_CMD="$probe_stub" \
-        PROJECT_ROOT="$TEST_TEMP_DIR" \
-        bash "${DETECTOR_SCRIPT}" 2>/dev/null
+        bash scripts/detect-base-digest-drift.sh 2>/dev/null
     )
 
     printf '%s' "$result" | jq '.' >/dev/null
