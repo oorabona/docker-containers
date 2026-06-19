@@ -813,6 +813,8 @@
       font-size: 0.875rem;
       color: var(--text-muted);
     }
+    /* Light mode: muted grey misses AA over the glass card; use secondary. */
+    [data-theme="light"] .health-label { color: var(--color-text-secondary); }
 
     .health-value {
       font-weight: 600;
@@ -1081,6 +1083,11 @@
       max-width: 620px;
       margin: 0 auto;
     }
+
+    /* Light mode: the hero sits directly on the page gradient, where muted grey
+       misses AA. Darken hero-internal muted text to secondary. */
+    [data-theme="light"] .dashboard-hero-subtitle,
+    [data-theme="light"] .dashboard-hero-freshness { color: var(--color-text-secondary); }
 
     /* Hero CTA — small inline link below the subtitle, low visual weight. */
     .dashboard-hero-cta {
