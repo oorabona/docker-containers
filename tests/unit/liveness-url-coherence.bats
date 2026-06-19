@@ -22,6 +22,12 @@ teardown() {
     cd "$ORIG_DIR" 2>/dev/null || true
 }
 
+# Real container dirs never use the 'bats-' prefix. Other suites (e.g.
+# lifecycle-behavior) inject ephemeral 'bats-*' fixture dirs into REPO_ROOT
+# while they run; any test here that enumerates REPO_ROOT/*/config.yaml under
+# `bats --jobs` must skip them so it asserts only real container configs.
+_is_fixture_container() { [[ "$1" == bats-* ]]; }
+
 # ---------------------------------------------------------------------------
 # Helper: extract download URLs from a Dockerfile's curl/wget lines
 # and interpolate known ARG values.
@@ -146,10 +152,7 @@ _dockerfile_urls_for() {
 
         local container
         container=$(basename "$(dirname "$config")")
-        # Skip ephemeral test-fixture dirs that other suites (e.g. lifecycle-behavior)
-        # inject into REPO_ROOT under parallel runs. Real containers never use the
-        # 'bats-' prefix, so this excludes scaffolding without masking real configs.
-        [[ "$container" == bats-* ]] && continue
+        _is_fixture_container "$container" && continue
 
         if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
             continue
@@ -376,9 +379,7 @@ _dockerfile_urls_for() {
     for config in "$REPO_ROOT"/*/config.yaml; do
         local container
         container=$(basename "$(dirname "$config")")
-        # Skip ephemeral 'bats-*' fixture dirs injected into REPO_ROOT by other
-        # suites (e.g. lifecycle-behavior) during parallel runs — never real containers.
-        [[ "$container" == bats-* ]] && continue
+        _is_fixture_container "$container" && continue
 
         if ! yq -e '.dependency_sources' "$config" &>/dev/null; then
             continue
