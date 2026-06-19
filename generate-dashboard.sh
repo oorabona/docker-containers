@@ -886,6 +886,7 @@ collect_variant_json() {
         + (if $multi_arch_digests.manifest_digest_amd64 != null then {manifest_digest_amd64: $multi_arch_digests.manifest_digest_amd64} else {} end)
         + (if $multi_arch_digests.manifest_digest_arm64 != null then {manifest_digest_arm64: $multi_arch_digests.manifest_digest_arm64} else {} end)
         + (if ($attestation_id | length) > 0 then {attestation_id: $attestation_id, attestation_url: $attestation_url} else {} end)
+        + (if ($lineage.built_at // "" | length) > 0 then {last_build_iso: $lineage.built_at} else {} end)
         + (if ($build_args | length) > 0 then {build_args: $build_args} else {} end)
         + (if ($sbom_summary | keys | length) > 0 then {sbom_summary: $sbom_summary} else {} end)
         + (if ($sbom_packages | keys | length) > 0 then {sbom_packages: $sbom_packages} else {} end)
