@@ -458,7 +458,7 @@
   --color-variant-tag-bg-hover:     rgba(109, 40, 217, 0.18);
   --color-variant-tag-selected-bg:  rgba(59, 130, 246, 0.14);  /* blue on light-selected */
   --color-variant-tag-selected-shadow: rgba(59, 130, 246, 0.18);
-  --color-variant-badge-default-bg:  rgba(4, 120, 87, 0.14);   /* green-700 alpha on white */
+  --color-variant-badge-default-bg:  #e8f5ef;   /* opaque pale green — keeps green-700 fg above AA on tinted/glass parents (0.14 alpha composited to ~3.9:1) */
   --color-variant-badge-default-fg:  var(--color-green-700);
 
   /* SBOM badges: violet-700 + blue-700 on white */

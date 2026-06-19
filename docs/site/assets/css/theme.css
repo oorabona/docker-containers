@@ -392,6 +392,11 @@ body {
   text-decoration: none;
 }
 
+/* Light mode: the footer rides the page gradient (shared across all layouts),
+   where muted text and the blue-600 link miss AA. Darken both. */
+[data-theme="light"] .footer { color: var(--color-text-secondary); }
+[data-theme="light"] .footer a { color: #1e40af; } /* blue-800 — AA on the gradient */
+
 /* ============================================================
    Sticky nav (shared across all layouts)
    ============================================================ */
