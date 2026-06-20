@@ -24,9 +24,10 @@ ARG REMOTE_CR
 ARG MAJOR_VERSION
 ARG EXT_VERSION
 ARG EXT_REPO
+ARG RUST_VERSION
 
 # Validate required build args
-RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}"
+RUN : "${EXT_VERSION:?required}" "${EXT_REPO:?required}" "${RUST_VERSION:?required}"
 
 # Critical: disable static CRT linking for musl/pgrx compatibility
 ENV RUSTFLAGS="-C target-feature=-crt-static"
@@ -45,7 +46,7 @@ RUN apk add --no-cache \
     llvm-dev
 
 # Install Rust via rustup (required for pgrx)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "${RUST_VERSION}"
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Download ParadeDB source (before pgrx install to auto-detect version)
