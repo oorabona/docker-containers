@@ -38,7 +38,7 @@ extensions:
     shared_preload: false
     priority: 2
   hypopg:
-    version: "1.4.2"
+    version: "1.4.3"
     description: "Hypothetical indexes for query planning analysis"
     repo: "HypoPG/hypopg"
     build_deps:
@@ -46,7 +46,7 @@ extensions:
     shared_preload: false
     priority: 2
   pg_qualstats:
-    version: "2.1.3"
+    version: "2.1.4"
     description: "Statistics about predicates for index suggestions"
     repo: "powa-team/pg_qualstats"
     build_deps:
@@ -54,7 +54,7 @@ extensions:
     shared_preload: true
     priority: 2
   paradedb:
-    version: "0.24.0"
+    version: "0.24.1"
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
