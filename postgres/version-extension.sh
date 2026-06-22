@@ -105,6 +105,9 @@ get_all_versions() {
         local first=true
     fi
 
+    # extensions.paradedb.rust_version is not auto-monitored here: Rust stable is
+    # published at https://static.rust-lang.org/dist/channel-rust-stable.toml,
+    # not as a GitHub release, so bump it manually until a rust-toolchain probe exists.
     for ext in $(list_extensions); do
         local repo
         repo=$(get_ext_repo "$ext")

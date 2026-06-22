@@ -93,6 +93,9 @@ build_ext_image() {
     local pg_major="$4"
     local dockerfile="$5"
     local context_dir="$6"
+    local rust_version="${EXT_RUST_VERSION:-}"
+    local _rust_args=()
+    [[ -n "$rust_version" ]] && _rust_args=(--build-arg "RUST_VERSION=$rust_version")
 
     local local_tag
     local_tag=$(ext_local_image_name "$ext_name" "$pg_major")
@@ -178,6 +181,7 @@ build_ext_image() {
             --build-arg MAJOR_VERSION="$pg_major" \
             --build-arg EXT_VERSION="$ext_version" \
             --build-arg EXT_REPO="$ext_repo" \
+            "${_rust_args[@]}" \
             "$context_dir"; then
             log_error "Docker buildx build (compile) failed for $ext_name $ext_version (pg${pg_major})"
             return 1  # compile failure
@@ -207,6 +211,7 @@ build_ext_image() {
         --build-arg MAJOR_VERSION="$pg_major" \
         --build-arg EXT_VERSION="$ext_version" \
         --build-arg EXT_REPO="$ext_repo" \
+        "${_rust_args[@]}" \
         "$context_dir"; then
         log_error "Docker build failed for $ext_name $ext_version (pg${pg_major})"
         return 1
@@ -406,6 +411,8 @@ build_extension() {
     fi
     local repo
     repo=$(ext_config "$ext_name" "repo" "$config_file")
+    local rust_version
+    rust_version=$(yq -r ".extensions.${ext_name}.rust_version // \"\"" "$config_file")
 
     local dockerfile="$container_dir/extensions/build/${ext_name}.Dockerfile"
     local context_dir="$container_dir/extensions"
@@ -435,7 +442,7 @@ build_extension() {
     while [[ "$_attempt" -lt "$_max_attempts" ]]; do
         _attempt=$(( _attempt + 1 ))
         _build_rc=0
-        build_ext_image "$ext_name" "$ext_version" "$repo" "$major_ver" "$dockerfile" "$context_dir" \
+        EXT_RUST_VERSION="$rust_version" build_ext_image "$ext_name" "$ext_version" "$repo" "$major_ver" "$dockerfile" "$context_dir" \
             || _build_rc=$?
         if [[ "$_build_rc" -eq 0 ]]; then
             return 0

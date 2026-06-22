@@ -55,6 +55,7 @@ extensions:
     priority: 2
   paradedb:
     version: "0.24.1"
+    rust_version: "1.96.0" # Pinned Rust toolchain; update manually when adopting new stable Rust (see postgres/version-extension.sh).
     description: "Full-text search with BM25 ranking (Elasticsearch alternative)"
     repo: "paradedb/paradedb"
     license: "AGPL-3.0"
