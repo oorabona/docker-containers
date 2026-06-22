@@ -18,12 +18,8 @@ on:
 permissions:
   contents: write      # Push version bumps and merge PRs
   pull-requests: write # Create and merge PRs
-  actions: write       # Trigger auto-build and update-dashboard workflows
+  actions: write       # Trigger auto-build workflow (gh workflow run)
   packages: write      # Push base images to GHCR (sync-base-images job)
-  pages: write         # Required by update-dashboard reusable workflow (deploy to Pages)
-  id-token: write      # Required by update-dashboard reusable workflow (OIDC for Pages)
-  attestations: read   # Required by update-dashboard reusable workflow (trust-strip attestation_url)
-  security-events: read # Required by update-dashboard reusable workflow (trust-strip trivy_summary)
 
 jobs:
   check-upstream-versions:
@@ -755,14 +751,6 @@ jobs:
           source ./helpers/logging.sh
           source ./helpers/retry.sh
           retry_with_backoff 3 5 gh workflow run auto-build.yaml -f container_scopes="$scopes_json" -f force_rebuild=true -f build_all_retained=true
-
-  # Update dashboard after PRs are merged to reflect new versions
-  update-dashboard:
-    needs: [create-update-prs, create-dependency-update-prs]
-    if: always() && (needs.create-update-prs.result == 'success' || needs.create-dependency-update-prs.result == 'success')
-    uses: ./.github/workflows/update-dashboard.yaml
-    with:
-      trigger_reason: "Post upstream-monitor PR merge"
 
   # Sync base images: daily blind-copy of all containers' base images from Docker
   # Hub to GHCR. Shares the sync_base_images_to_ghcr helper with the push-trigger
