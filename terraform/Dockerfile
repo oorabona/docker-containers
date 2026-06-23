@@ -1,6 +1,9 @@
 # Multi-stage Dockerfile for modern Terraform with security and DevOps tools
 # Supports multiple flavors: base, aws, azure, gcp, full
-ARG VERSION
+# VERSION defaults to `latest` so the stage-1 FROM ref below resolves to a valid
+# image at parse time (CI always overrides it) — silences BuildKit's
+# InvalidDefaultArgInFrom warning without changing CI behavior.
+ARG VERSION=latest
 ARG UPSTREAM_VERSION
 ARG FLAVOR=full
 
