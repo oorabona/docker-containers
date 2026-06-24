@@ -1,13 +1,27 @@
 version: 2
 updates:
-  # GitHub Actions
+  # GitHub Actions — workflows AND composite actions.
+  # The default `directory: "/"` only scans .github/workflows/; composite
+  # actions under .github/actions/*/action.yaml are invisible to it, so their
+  # pins rot silently (e.g. docker/login-action v3 lingered there until #812).
+  # List each composite dir explicitly — `directories` does not support globs.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/build-container"
+      - "/.github/actions/check-dependency-versions"
+      - "/.github/actions/check-upstream-versions"
+      - "/.github/actions/close-duplicate-prs"
+      - "/.github/actions/detect-containers"
+      - "/.github/actions/docker-login"
+      - "/.github/actions/preflight-buildkit"
+      - "/.github/actions/retry-run"
+      - "/.github/actions/setup-github-cli"
     schedule:
       interval: "weekly"
       day: "monday"
       time: "06:00"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     reviewers:
       - "@me"
     commit-message:
@@ -17,6 +31,15 @@ updates:
       - "dependencies"
       - "github-actions"
       - "automated"
+    # Batch minor/patch action bumps into a single PR; majors stay isolated so
+    # each gets its own CI validation (cache v6, checkout v7, upload-artifact v7…).
+    groups:
+      github-actions-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Docker dependencies
   - package-ecosystem: "docker"
