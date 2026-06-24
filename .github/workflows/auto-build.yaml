@@ -1745,7 +1745,7 @@ jobs:
 
       - name: Restore runner agent cache (amd64)
         if: steps.resolve-gh-version.outputs.gh_version != ''
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: |
             github-runner/runner.tar.gz
@@ -2248,7 +2248,7 @@ jobs:
 
       - name: Restore runner agent cache (arm64)
         if: steps.resolve-gh-version.outputs.gh_version != ''
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: |
             github-runner/runner.tar.gz
@@ -3820,14 +3820,14 @@ jobs:
             scripts
 
       - name: Restore previous lineage cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
           restore-keys: build-lineage-
 
       - name: Restore Trivy scan history cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .trivy-scan-history
           key: trivy-scan-history-${{ github.run_id }}
@@ -4009,13 +4009,13 @@ jobs:
 
       - name: Save consolidated lineage cache
         if: steps.merge.outputs.has_files == 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
 
       - name: Save Trivy scan history cache
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .trivy-scan-history
           key: trivy-scan-history-${{ github.run_id }}
