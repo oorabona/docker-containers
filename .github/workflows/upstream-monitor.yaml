@@ -1466,7 +1466,7 @@ jobs:
 
       - name: Restore lineage cache
         # Cache miss is acceptable — script handles empty dir gracefully (emits warning)
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
@@ -1680,7 +1680,7 @@ jobs:
 
       - name: Restore lineage cache
         # Separate restore per matrix job: detect-digest-drift ran on a different runner.
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
@@ -1976,7 +1976,7 @@ jobs:
 
       - name: Restore lineage cache
         # Separate restore per matrix job: detect-digest-drift ran on a different runner.
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
