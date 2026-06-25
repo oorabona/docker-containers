@@ -1451,17 +1451,21 @@ YAML
 # ---------------------------------------------------------------------------
 
 @test "GBH-53: B4 — --scope-versions keeps only matching terraform retained-version cells" {
-    local unscoped_count
-    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null \
-        | jq 'length')
+    local unscoped_output unscoped_count pick
+    unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
+    unscoped_count=$(echo "$unscoped_output" | jq 'length')
     [ "$unscoped_count" -gt 0 ]
 
-    _run_generator --cells --all-retained --scope-versions 1.15.4 terraform
+    # Pick a version from the LIVE retained window instead of hardcoding one —
+    # retained versions rotate out as upstream bumps (#819 evicted 1.15.4).
+    pick=$(echo "$unscoped_output" | jq -r '.[0].tag | split("-alpine")[0]')
+
+    _run_generator --cells --all-retained --scope-versions "$pick" terraform
     [ "$status" -eq 0 ]
 
     local scoped_count bad_tags
     scoped_count=$(echo "$output" | jq 'length')
-    bad_tags=$(echo "$output" | jq '[.[] | select(.tag | startswith("1.15.4-alpine") | not)] | length')
+    bad_tags=$(echo "$output" | jq --arg v "$pick" '[.[] | select(.tag | startswith($v + "-alpine") | not)] | length')
 
     [ "$scoped_count" -gt 0 ]
     [ "$scoped_count" -lt "$unscoped_count" ]
@@ -1602,18 +1606,21 @@ YAML
     [ "$per_container_json" = "$(echo "$output" | jq -cS '.')" ]
 }
 
-@test "GBH-62: container scopes — terraform retained version scope keeps only 1.15.4 cells" {
-    local unscoped_count
-    unscoped_count=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null \
-        | jq 'length')
+@test "GBH-62: container scopes — terraform retained version scope keeps only matching-version cells" {
+    local unscoped_output unscoped_count pick
+    unscoped_output=$(bash "${PROJECT_ROOT}/scripts/generate-bake-hcl.sh" --cells --all-retained terraform 2>/dev/null)
+    unscoped_count=$(echo "$unscoped_output" | jq 'length')
     [ "$unscoped_count" -gt 0 ]
 
-    _run_generator --cells --all-retained --container-scopes '{"terraform":{"versions":"1.15.4"}}' terraform
+    # Pick a version from the LIVE retained window instead of hardcoding one (#819).
+    pick=$(echo "$unscoped_output" | jq -r '.[0].tag | split("-alpine")[0]')
+
+    _run_generator --cells --all-retained --container-scopes "{\"terraform\":{\"versions\":\"${pick}\"}}" terraform
     [ "$status" -eq 0 ]
 
     local scoped_count bad_tags
     scoped_count=$(echo "$output" | jq 'length')
-    bad_tags=$(echo "$output" | jq '[.[] | select(.tag | startswith("1.15.4-alpine") | not)] | length')
+    bad_tags=$(echo "$output" | jq --arg v "$pick" '[.[] | select(.tag | startswith($v + "-alpine") | not)] | length')
 
     [ "$scoped_count" -gt 0 ]
     [ "$scoped_count" -lt "$unscoped_count" ]

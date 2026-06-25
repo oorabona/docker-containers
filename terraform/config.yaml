@@ -4,14 +4,13 @@
 
 base_image: "${REMOTE_CR}/hashicorp/terraform:${UPSTREAM_VERSION}"
 base_image_cache:
-  # Cache must include ALL retained upstream versions, not just the latest.
-  # Each retained variant build (1.15.5, 1.15.4, 1.15.3) does
-  # `FROM ${REMOTE_CR}/hashicorp/terraform:<that-version>`; if the cache only
-  # has the latest tag, retained builds 404 on the new GHCR path. List the
-  # tags explicitly until rotate-versions.sh learns to update this array
-  # alongside variants.yaml — see #515 follow-up.
+  # Cache must include ALL retained upstream versions, not just the latest:
+  # each retained variant build does
+  # `FROM ${REMOTE_CR}/hashicorp/terraform:<that-version>`, so a cache holding
+  # only the latest tag would 404 retained builds on the GHCR path.
+  # rotate-versions.sh keeps this array in sync with variants.yaml on each bump.
   - source: hashicorp/terraform
-    tags: ["1.15.6", "1.15.5", "1.15.4"]
+    tags: ["1.15.7", "1.15.6", "1.15.5"]
   - source: library/alpine
     tags: ["latest"]
   - source: library/python
