@@ -406,6 +406,54 @@ jobs:
             echo "rotated=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Seed the just-rotated base version into GHCR so the PR smoke build can
+      # resolve `FROM ${REMOTE_CR}/<base>:<new-version>` instead of failing
+      # fail-closed on an unseeded base. rotate-versions.sh has already written
+      # the new tag into <container>/config.yaml base_image_cache on disk; the
+      # daily sync-base-images job runs against master (pre-bump) and never seeds
+      # the new version until merge — so without this a base-image version-bump
+      # PR can never get a green build (the validation gap behind the spurious
+      # "Build failed after dep update" auto-issues). Gated on rotated==true:
+      # only retention / latest_per_major containers reach here.
+      - name: Log in to GitHub Container Registry
+        if: steps.rotate.outputs.rotated == 'true' && steps.env_check.outputs.is_local_test != 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.rotate.outputs.rotated == 'true' && steps.env_check.outputs.is_local_test != 'true'
+        continue-on-error: true
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Seed rotated base image to GHCR
+        if: steps.rotate.outputs.rotated == 'true' && steps.env_check.outputs.is_local_test != 'true'
+        # A transient seed flake must not block PR creation — the post-merge
+        # master sync remains the backstop (build fails as it does today, no worse).
+        continue-on-error: true
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          CONTAINER: ${{ steps.resolve.outputs.container_name }}
+        run: |
+          set -euo pipefail
+          source ./helpers/base-cache-utils.sh
+          # config.yaml base_image_cache already carries the new tag (rotate step).
+          # skip_present=true → only the genuinely-new tag is pulled from docker.io;
+          # already-mirrored bases are skipped (no extra rate-limit pressure).
+          v=$(./make version "$CONTAINER" 2>/dev/null || echo "latest")
+          [[ -z "$v" || "$v" == "unknown" ]] && v="latest"
+          containers_json=$(jq -nc --arg c "$CONTAINER" '[$c]')
+          versions_json=$(jq -nc --arg c "$CONTAINER" --arg v "$v" '{($c): $v}')
+          images=$(collect_all_cache_images "$containers_json" "$versions_json" "$OWNER")
+          sync_base_images_to_ghcr "$images" docker.io true
+
       - name: Close duplicate PRs
         id: close_duplicates
         uses: ./.github/actions/close-duplicate-prs
