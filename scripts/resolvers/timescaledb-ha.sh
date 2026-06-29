@@ -88,8 +88,15 @@ main() {
     # and fall through to the ceiling-only degrade path.
     # A non-empty response that has no tags for PG_MAJOR indicates an unknown/
     # unsupported major — that is a configuration error, not a transient outage.
+    # Use a here-string, NOT `echo "$ha_tags" | grep -q`: under `set -o pipefail`,
+    # `grep -q` exits at the first match and closes the pipe, so under scheduler
+    # pressure (e.g. CI `bats --jobs`) `echo` can take a SIGPIPE; pipefail then
+    # propagates that as a pipeline failure, flipping this to false even when tags
+    # ARE present. That mis-routed the resolver to the "empty HA response" branch
+    # ~10% of the time under load (#823). A here-string is a single command — no
+    # pipe, no SIGPIPE, no pipefail interaction.
     local ha_has_any_tags=false
-    if echo "$ha_tags" | grep -qE "^pg[0-9]+\.[0-9]+-ts[0-9]+"; then
+    if grep -qE "^pg[0-9]+\.[0-9]+-ts[0-9]+" <<< "$ha_tags"; then
         ha_has_any_tags=true
     fi
 
