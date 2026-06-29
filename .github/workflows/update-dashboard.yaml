@@ -88,14 +88,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore build lineage cache
-        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build-lineage
           key: build-lineage-never-exact-match
           restore-keys: build-lineage-
 
       - name: Restore Trivy scan history cache
-        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .trivy-scan-history
           key: trivy-scan-history-never-exact-match
@@ -500,7 +500,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore GHCR per-arch manifest cache
-        uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.ghcr-cache/perarch
           key: ghcr-perarch-never-exact-match
@@ -623,21 +623,21 @@ jobs:
 
       - name: Save updated lineage cache (preserves stats history)
         if: always()
-        uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build-lineage
           key: build-lineage-${{ github.run_id }}
 
       - name: Save hydrated Trivy scan history cache (#352, distinct key from cache-lineage)
         if: always()
-        uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .trivy-scan-history
           key: trivy-scan-history-dashboard-${{ github.run_id }}
 
       - name: Save GHCR per-arch manifest cache
         if: always()
-        uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.ghcr-cache/perarch
           key: ghcr-perarch-${{ github.run_id }}
