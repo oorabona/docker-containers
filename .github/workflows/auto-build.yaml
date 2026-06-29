@@ -1198,6 +1198,14 @@ jobs:
             }
           }
 
+      - name: Setup bats
+        if: steps.build.outcome == 'success' && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64' && inputs.run_tests == true
+        # Advisory like the test step it feeds: a bats-install hiccup must not
+        # hard-fail the build (the inline install it replaced was absorbed by the
+        # test step's own continue-on-error).
+        continue-on-error: true
+        uses: ./.github/actions/setup-bats
+
       - name: Run bats tests (Linux)
         if: steps.build.outcome == 'success' && matrix.build.os != 'windows' && matrix.build.build_flavor == 'base' && matrix.arch == 'amd64' && inputs.run_tests == true
         timeout-minutes: 5
@@ -1205,13 +1213,6 @@ jobs:
         shell: bash
         run: |
           if [[ -f "${{ matrix.build.container }}/tests/test-runner-linux.bats" ]]; then
-            # Install bats from pinned GitHub release
-            if ! command -v bats &>/dev/null; then
-              BATS_VERSION=1.11.1
-              curl -sL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" -o /tmp/bats.tar.gz
-              tar -xzf /tmp/bats.tar.gz -C /tmp
-              sudo "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
-            fi
             bats "${{ matrix.build.container }}/tests/test-runner-linux.bats"
           fi
 
@@ -2497,6 +2498,13 @@ jobs:
           ghcr_login() { printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; }
           retry_with_backoff 3 5 ghcr_login
 
+      - name: Setup bats
+        if: matrix.build.build_flavor == 'base' || matrix.build.build_flavor == ''
+        # Advisory like the bake test step it feeds (continue-on-error below):
+        # a bats-install hiccup must not hard-fail the build.
+        continue-on-error: true
+        uses: ./.github/actions/setup-bats
+
       - name: Run bats tests (bake)
         if: matrix.build.build_flavor == 'base' || matrix.build.build_flavor == ''
         # Advisory, matching the legacy flat-matrix bats step: a test result is
@@ -2517,13 +2525,6 @@ jobs:
           if [[ ! -f "${container}/tests/test-runner-linux.bats" ]]; then
             echo "::notice::No Linux bats for ${container}; skipping"
             exit 0
-          fi
-          # Install pinned bats (mirror build-and-push)
-          if ! command -v bats &>/dev/null; then
-            BATS_VERSION=1.11.1
-            curl -sL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" -o /tmp/bats.tar.gz
-            tar -xzf /tmp/bats.tar.gz -C /tmp
-            sudo "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
           fi
           # Point integration tests (openresty) at this run's published per-arch ref.
           # No eager pull: openresty's test `docker run`s it (auto-pull on demand);
