@@ -1,0 +1,19 @@
+name: Setup Bats
+description: >
+  Install a pinned bats-core via the official bats-core/bats-action. This is the
+  single source of truth for the bats version across the unit-tests and
+  container-test jobs (previously: apt in unit-tests, an inline 1.11.1 tarball in
+  auto-build). Helper libs (support/assert/detik/file) are intentionally NOT
+  installed — this repo's bats tests are plain (no `load bats-support`). The
+  action pin below is tracked by Dependabot (this dir is listed in
+  .github/dependabot.yml), so version bumps arrive as reviewed PRs.
+runs:
+  using: composite
+  steps:
+    - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+      with:
+        bats-version: "1.13.0"
+        support-install: "false"
+        assert-install: "false"
+        detik-install: "false"
+        file-install: "false"

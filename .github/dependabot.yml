@@ -16,6 +16,7 @@ updates:
       - "/.github/actions/docker-login"
       - "/.github/actions/preflight-buildkit"
       - "/.github/actions/retry-run"
+      - "/.github/actions/setup-bats"
       - "/.github/actions/setup-github-cli"
     schedule:
       interval: "weekly"

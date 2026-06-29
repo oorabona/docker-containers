@@ -36,11 +36,11 @@ jobs:
           yq --version
 
       - name: Install bats
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bats
-          bats --version
+        uses: ./.github/actions/setup-bats
+
+      - name: Show bats version
+        shell: bash
+        run: bats --version
 
       - name: Run unit tests
         shell: bash
