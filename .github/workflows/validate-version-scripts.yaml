@@ -25,6 +25,20 @@ on:
 
 permissions:
   contents: read
+
+# Authenticate the GitHub API calls that version.sh makes (github-runner/vector/
+# web-shell resolve versions from GitHub). This job tests EVERY version.sh with
+# build_all_retained, so unauthenticated it exhausts the 60 req/hr limit and a
+# GitHub-API version.sh comes back empty (rate-limit flake, #831).
+#
+# SECURITY: this job runs on `pull_request` and executes the PR's own version.sh
+# code, so the token must NOT be exposed to untrusted fork PRs. Provide it only
+# for non-PR events (workflow_dispatch) and SAME-REPO PRs (bot / write-access
+# contributors — where the flake actually occurs); fork PRs get an empty string
+# and stay unauthenticated. Same trust guard the repo uses for use_base_cache.
+env:
+  GITHUB_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.GITHUB_TOKEN || '' }}
+
 jobs:
   validate-version-scripts:
     runs-on: ubuntu-latest
@@ -106,10 +120,16 @@ jobs:
         uses: ./.github/actions/check-upstream-versions
         with:
           container: ${{ steps.test-upstream.outputs.first_container }}
+          # Inherits the fork-guarded value from the workflow-level env above
+          # (empty on untrusted fork PRs).
+          github_token: ${{ env.GITHUB_TOKEN }}
 
       - name: Test upstream monitoring action (all containers)
         if: github.event.inputs.container == '' && steps.detect-containers.outputs.count > 1
         uses: ./.github/actions/check-upstream-versions
+        with:
+          # Inherits the fork-guarded value from the workflow-level env above.
+          github_token: ${{ env.GITHUB_TOKEN }}
 
       - name: Display test results
         run: |

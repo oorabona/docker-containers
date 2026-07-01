@@ -6,6 +6,14 @@ inputs:
     description: 'Container name to check (optional, checks all if empty)'
     required: false
     default: ''
+  github_token:
+    description: >
+      Token for authenticated GitHub API calls made by version.sh scripts
+      (github-runner/vector/web-shell resolve versions from GitHub — the shared
+      helpers use this only when set). Passing it raises the API limit from
+      60 to 1000+ req/hr and avoids rate-limit "empty version" flakes. Optional.
+    required: false
+    default: ''
 
 outputs:
   containers_with_updates:
@@ -32,6 +40,10 @@ runs:
     - name: Check upstream versions
       id: check-versions
       shell: bash
+      env:
+        # Consumed by version.sh's GitHub helpers (latest-github-release/tag)
+        # only when non-empty; empty = unauthenticated (previous behaviour).
+        GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -e
         
