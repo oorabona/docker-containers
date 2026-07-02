@@ -39,3 +39,19 @@ Build status will be available in GitHub Actions after merge.
 - Variant: 2.334.0-windows-ltsc2022, base mcr.microsoft.com/windows/server:ltsc2022
   Old digest: sha256:b6754104e49ebec66426295546ef858206d6ccd9f5c7d1ccd992e24b2f75d9fb
   New digest: sha256:cb330037cc8e00785a8fe1066ea701e8fa0f370263dcc5d179118d75e0f568e8
+
+<!-- drift-content-hash: 4d3e043f60e577ec run:28571961595 -->
+## base-digest-drift (2026-07-02)
+
+- Variant: 2.333.1-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
+  New digest: sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+- Variant: 2.333.1, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
+  New digest: sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+- Variant: 2.334.0-dev, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
+  New digest: sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+- Variant: 2.334.0, base ghcr.io/oorabona/library/ubuntu:24.04
+  Old digest: sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
+  New digest: sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
