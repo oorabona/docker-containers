@@ -40,6 +40,7 @@ jobs:
         uses: ./.github/actions/check-upstream-versions
         with:
           container: ${{ github.event.inputs.container }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Summary
         run: |
@@ -441,6 +442,8 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           CONTAINER: ${{ steps.resolve.outputs.container_name }}
+          # Authenticate the `./make version` GitHub API call below (#831).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
@@ -865,6 +868,9 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           SYNC_MANIFEST_OUT: base-sync-manifest/base-sync-manifest.jsonl
+          # Authenticate the `./make version` GitHub API calls in the loop below
+          # (github-runner/vector/web-shell resolve from GitHub) — see #831.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source ./helpers/base-cache-utils.sh
