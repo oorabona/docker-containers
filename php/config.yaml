@@ -5,8 +5,6 @@ base_image: "${REMOTE_CR}/library/php:${VERSION}"
 base_image_cache:
   - source: library/php
     tags_from_versions: true
-  - source: library/composer
-    tags: ["${COMPOSER_VERSION}"]
 build_args:
   COMPOSER_VERSION: "2.10.2"
   APCU_VERSION: "5.1.28"
