@@ -76,7 +76,7 @@ is_valid_tag() {
   local valid_tags="$2"
 
   # Direct match
-  if echo "$valid_tags" | grep -qxF "$tag"; then
+  if grep -qxF "$tag" <<< "$valid_tags"; then
     return 0
   fi
 
@@ -84,7 +84,7 @@ is_valid_tag() {
   local base_tag
   base_tag="${tag%-amd64}"
   base_tag="${base_tag%-arm64}"
-  if [[ "$base_tag" != "$tag" ]] && echo "$valid_tags" | grep -qxF "$base_tag"; then
+  if [[ "$base_tag" != "$tag" ]] && grep -qxF "$base_tag" <<< "$valid_tags"; then
     return 0
   fi
 
@@ -247,7 +247,7 @@ purge_ghcr() {
     while IFS='|' read -r version_id digest tags; do
       [[ -z "$version_id" ]] && continue
 
-      if [[ -n "$protected_digests" ]] && echo "$protected_digests" | grep -qxF "$digest"; then
+      if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
         echo "  ✓ Keep (tags: $tags) — digest is manifest child" >&2
         kept=$((kept + 1))
       else
@@ -274,7 +274,7 @@ purge_ghcr() {
       [[ -z "$version_id" ]] && continue
       [[ -n "$tags" ]] && continue
 
-      if [[ -n "$protected_digests" ]] && echo "$protected_digests" | grep -qxF "$digest"; then
+      if [[ -n "$protected_digests" ]] && grep -qxF "$digest" <<< "$protected_digests"; then
         kept=$((kept + 1))
       else
         echo "  ✗ Orphan (digest: ${digest:0:19}...)" >&2

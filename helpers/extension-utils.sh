@@ -211,8 +211,8 @@ _image_registry_probe_3state() {
     # "docker: command not found" or "docker-credential-desktop: executable file
     # not found in PATH", which would mis-classify an infra failure as ABSENT and
     # silently drop retained versions from the artifact.
-    if echo "$_probe_stderr" | grep -qiE \
-        'manifest unknown|name unknown|repository name not known|no such manifest'; then
+    if grep -qiE \
+        'manifest unknown|name unknown|repository name not known|no such manifest' <<< "$_probe_stderr"; then
         if command -v skopeo &>/dev/null; then
             local _skopeo_stderr
             local _skopeo_rc=0
@@ -222,8 +222,8 @@ _image_registry_probe_3state() {
             fi
             # skopeo also non-zero; if skopeo's error is NOT a definitive not-found,
             # escalate to ERROR to avoid discarding the version on ambiguous signal.
-            if ! echo "$_skopeo_stderr" | grep -qiE \
-                'manifest unknown|name unknown|repository name not known|no such manifest|MANIFEST_UNKNOWN'; then
+            if ! grep -qiE \
+                'manifest unknown|name unknown|repository name not known|no such manifest|MANIFEST_UNKNOWN' <<< "$_skopeo_stderr"; then
                 return 2  # ERROR (docker said not-found but skopeo is ambiguous)
             fi
         fi
@@ -1162,7 +1162,7 @@ compute_affected_flavors() {
             [[ -z "$changed_ext" ]] && continue
 
             # Check if this extension is in the flavor
-            if ! echo "$flavor_exts" | grep -qFx "$changed_ext"; then
+            if ! grep -qFx "$changed_ext" <<< "$flavor_exts"; then
                 continue
             fi
 

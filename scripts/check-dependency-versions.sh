@@ -149,7 +149,7 @@ preflight_check() {
     local missing=0
     while IFS= read -r arg; do
         [[ -z "$arg" ]] && continue
-        if ! echo "$dep_sources" | grep -qx "$arg"; then
+        if ! grep -qx "$arg" <<< "$dep_sources"; then
             log_error "[${container}] build_arg '${arg}' has no dependency_sources entry (INV-05)"
             missing=$((missing + 1))
         fi
