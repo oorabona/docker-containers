@@ -104,7 +104,7 @@ detect_dep_bump() {
     # Upstream-monitor label format: automation,<container>,dependencies,<minor|major|patch>-update
     # The container name appears as a bare label (e.g. "sslh"), not "sslh-update".
     if [[ -n "$PR_LABELS" ]]; then
-        if echo "$PR_LABELS" | grep -q "automation"; then
+        if grep -q "automation" <<< "$PR_LABELS"; then
             local label_container=""
             local re_update='^[^-]+-update$'
             while IFS= read -r label; do
@@ -280,7 +280,7 @@ get_log_excerpt() {
             --repo "$GITHUB_REPOSITORY" \
             --job "$job_id" \
             --log-failed 2>&1 | tail -30); then
-        echo "$excerpt" | head -50
+        head -50 <<< "$excerpt"
     else
         local reason="$excerpt"
         echo "(log excerpt unavailable: ${reason:-unknown error})"
@@ -762,7 +762,7 @@ find_or_create_issue() {
         if [[ -n "$candidate" ]]; then
             # Prefer a match that references the same PR if available
             if [[ -n "$PR_NUMBER" ]]; then
-                if echo "$search_output" | grep -q "PR #${PR_NUMBER}\|Refs #${PR_NUMBER}\|(#${PR_NUMBER})"; then
+                if grep -q "PR #${PR_NUMBER}\|Refs #${PR_NUMBER}\|(#${PR_NUMBER})" <<< "$search_output"; then
                     existing_number="$candidate"
                 else
                     existing_number="$candidate"

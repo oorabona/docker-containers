@@ -342,7 +342,7 @@ detect_major_version() {
         local full_version
         full_version=$("$version_script" 2>/dev/null | head -1)
         # Extract major version (first number before dot or dash)
-        echo "$full_version" | grep -oE '^[0-9]+' | head -1
+        grep -oE '^[0-9]+' <<< "$full_version" | head -1
     else
         log_error "Cannot detect version. Use --major-version or ensure version.sh exists."
         exit 1
@@ -911,7 +911,7 @@ _reuse_ref_is_multiarch() {
     if [[ "$_rc" -ne 0 ]]; then
         return 2
     fi
-    if echo "$_out" | grep -q "linux/amd64" && echo "$_out" | grep -q "linux/arm64"; then
+    if grep -q "linux/amd64" <<< "$_out" && grep -q "linux/arm64" <<< "$_out"; then
         return 0
     fi
     return 1
@@ -1378,8 +1378,8 @@ _image_present_3state() {
     # "docker: command not found" or "docker-credential-desktop: executable file
     # not found in PATH", which would mis-classify an infra failure as ABSENT and
     # silently drop retained versions from the artifact.
-    if echo "$_probe_stderr" | grep -qiE \
-        'manifest unknown|name unknown|repository name not known|no such manifest'; then
+    if grep -qiE \
+        'manifest unknown|name unknown|repository name not known|no such manifest' <<< "$_probe_stderr"; then
         # docker returned a definitive not-found — check skopeo for a second opinion
         # only when available, to confirm and not flip to ERROR on a skopeo transient.
         if command -v skopeo &>/dev/null; then
@@ -1391,8 +1391,8 @@ _image_present_3state() {
             fi
             # skopeo also returned non-zero; if skopeo's error is transient (not a
             # definitive not-found), escalate to ERROR to avoid discarding the version.
-            if ! echo "$_skopeo_stderr" | grep -qiE \
-                'manifest unknown|name unknown|repository name not known|no such manifest|MANIFEST_UNKNOWN'; then
+            if ! grep -qiE \
+                'manifest unknown|name unknown|repository name not known|no such manifest|MANIFEST_UNKNOWN' <<< "$_skopeo_stderr"; then
                 return 2  # ERROR (docker said not-found but skopeo is ambiguous)
             fi
         fi
@@ -2182,8 +2182,8 @@ finalize_multiarch_manifests() {
                 _ext_failed=true
                 break
             fi
-            if ! echo "$_inspect_out" | grep -q "linux/amd64" || \
-               ! echo "$_inspect_out" | grep -q "linux/arm64"; then
+            if ! grep -q "linux/amd64" <<< "$_inspect_out" || \
+               ! grep -q "linux/arm64" <<< "$_inspect_out"; then
                 if [[ "$ver" == "$ceiling" ]]; then
                     log_error "$ext $ver pg${major_ver} (ceiling): created manifest does not cover both linux/amd64 and linux/arm64 — fatal"
                     _ext_failed=true
