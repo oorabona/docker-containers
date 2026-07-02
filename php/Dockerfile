@@ -1,11 +1,24 @@
 ARG REMOTE_CR=ghcr.io/oorabona
 ARG VERSION
-ARG COMPOSER_VERSION
-FROM ${REMOTE_CR}/library/composer:${COMPOSER_VERSION} AS composer
-ARG REMOTE_CR
 FROM ${REMOTE_CR}/library/php:${VERSION} AS php
 
-COPY --from=composer /usr/bin/composer /usr/bin/composer
+# Composer: install the official phar from its GitHub release (the version
+# SSOT upstream-monitor tracks), cross-verified against the per-version
+# sha256sum published by getcomposer.org. Two independent channels — a
+# tampered artifact on either host fails the check. This previously pulled
+# docker.io's library/composer image just to COPY out /usr/bin/composer, but
+# that image's tags lag GitHub releases, so a bumped COMPOSER_VERSION broke
+# the GHCR base-cache sync (composer 2.10.2 existed upstream but not yet on
+# Docker Hub). Self-updates with the arg: both URLs are versioned.
+ARG COMPOSER_VERSION
+RUN set -eux \
+    && apk add --no-cache ca-certificates \
+    && wget -qO /usr/bin/composer "https://github.com/composer/composer/releases/download/${COMPOSER_VERSION}/composer.phar" \
+    && wget -qO /tmp/composer.sha256sum "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar.sha256sum" \
+    && printf '%s  /usr/bin/composer\n' "$(cut -d' ' -f1 /tmp/composer.sha256sum)" | sha256sum -c - \
+    && chmod +x /usr/bin/composer \
+    && rm -f /tmp/composer.sha256sum \
+    && composer --version
 
 ARG APCU_VERSION
 
