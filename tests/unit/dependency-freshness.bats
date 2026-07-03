@@ -366,6 +366,123 @@ SH
     jq -e '.latest == "1.0.0-r1" and .query_failed == false' "$result_file" >/dev/null
 }
 
+@test "enrich_changelog resets APK image platform and index state per container in one shell" {
+    local first_changelog second_changelog first_index second_index fakebin docker_log download_log
+    first_changelog="${TEST_TEMP_DIR}/first.changelog.json"
+    second_changelog="${TEST_TEMP_DIR}/second.changelog.json"
+    first_index="${TEST_TEMP_DIR}/first.APKINDEX.tar.gz"
+    second_index="${TEST_TEMP_DIR}/second.APKINDEX.tar.gz"
+    fakebin="${TEST_TEMP_DIR}/bin"
+    docker_log="${TEST_TEMP_DIR}/docker.log"
+    download_log="${TEST_TEMP_DIR}/downloads.log"
+
+    write_apk_index_tarball "$first_index" $'P:widget\nV:1.0.0-r0\n\n'
+    write_apk_index_tarball "$second_index" $'P:widget\nV:2.0.0-r0\n\n'
+
+    mkdir -p "$fakebin"
+    cat > "${fakebin}/docker" <<'SH'
+#!/bin/bash
+image_ref=""
+for arg in "$@"; do
+    case "$arg" in
+        ghcr.io/example/first:latest|ghcr.io/example/second:latest)
+            image_ref="$arg"
+            ;;
+    esac
+done
+printf '%s\n' "$image_ref" >> "$DOCKER_LOG"
+case "$image_ref" in
+    ghcr.io/example/first:latest)
+        printf '%s\n' "https://dl-cdn.alpinelinux.org/alpine/v3.20/main"
+        ;;
+    ghcr.io/example/second:latest)
+        printf '%s\n' "https://dl-cdn.alpinelinux.org/alpine/v3.21/main"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+SH
+    chmod +x "${fakebin}/docker"
+
+    cat > "$first_changelog" <<'JSON'
+{
+  "generated_at": "2026-07-03T00:00:00Z",
+  "summary": { "added": 0, "removed": 0, "updated": 1 },
+  "changes": [
+    { "type": "updated", "name": "widget", "pkg_type": "apk", "from": "0.9.0-r0", "to": "1.0.0-r0" }
+  ]
+}
+JSON
+
+    cat > "${TEST_TEMP_DIR}/first.json" <<'JSON'
+{
+  "images": { "ghcr": "ghcr.io/example/first:latest" },
+  "platform": "linux/amd64"
+}
+JSON
+
+    cat > "$second_changelog" <<'JSON'
+{
+  "generated_at": "2026-07-03T00:00:00Z",
+  "summary": { "added": 0, "removed": 0, "updated": 1 },
+  "changes": [
+    { "type": "updated", "name": "widget", "pkg_type": "apk", "from": "1.9.0-r0", "to": "2.0.0-r0" }
+  ]
+}
+JSON
+
+    cat > "${TEST_TEMP_DIR}/second.json" <<'JSON'
+{
+  "images": { "ghcr": "ghcr.io/example/second:latest" },
+  "platform": "linux/arm64"
+}
+JSON
+
+    run env \
+        PATH="${fakebin}:$PATH" \
+        DOCKER_LOG="$docker_log" \
+        DOWNLOAD_LOG="$download_log" \
+        FIRST_INDEX="$first_index" \
+        SECOND_INDEX="$second_index" \
+        DEPENDENCY_FRESHNESS_APK_REPOSITORY_ALLOW_REGEX='^https://dl-cdn\.alpinelinux\.org/alpine/' \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        bash -c '
+          source "$1"
+          source "$2"
+          _freshness_http_download() {
+            printf "%s\n" "$1" >> "$DOWNLOAD_LOG"
+            case "$1" in
+              */v3.20/main/x86_64/APKINDEX.tar.gz) cp "$FIRST_INDEX" "$2" ;;
+              */v3.21/main/aarch64/APKINDEX.tar.gz) cp "$SECOND_INDEX" "$2" ;;
+              *) return 1 ;;
+            esac
+          }
+          enrich_changelog "$3"
+          enrich_changelog "$4"
+        ' _ "$RESOLVER" "$SBOM_UTILS" "$first_changelog" "$second_changelog"
+
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      .changes[]
+      | select(.name == "widget")
+      | .latest == "1.0.0-r0"
+        and .freshness == "up-to-date"
+        and .capped_by == null
+    ' "$first_changelog" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "widget")
+      | .latest == "2.0.0-r0"
+        and .freshness == "up-to-date"
+        and .capped_by == null
+    ' "$second_changelog" >/dev/null
+    grep -q '^ghcr.io/example/first:latest$' "$docker_log"
+    grep -q '^ghcr.io/example/second:latest$' "$docker_log"
+    grep -q '/v3.20/main/x86_64/APKINDEX.tar.gz$' "$download_log"
+    grep -q '/v3.21/main/aarch64/APKINDEX.tar.gz$' "$download_log"
+}
+
 @test "apk version comparison fallback follows Alpine suffix ordering" {
     run bash -c 'source "$1"; _freshness_apk_version_gt "1.0.0" "1.0.0_rc1"' _ "$RESOLVER"
     [[ "$status" -eq 0 ]]
@@ -511,6 +628,65 @@ JSON
     ' _ "$RESOLVER" "$gem_batch" "$gem_out"
     [[ "$status" -eq 0 ]]
     jq -e 'length == 1 and .[0].parent == "good-gem" and .[0].child == "child"' "$gem_out" >/dev/null
+}
+
+@test "malformed nested npm and gem constraint sections do not discard valid parents" {
+    local npm_batch gem_batch npm_out gem_out
+    npm_out="${TEST_TEMP_DIR}/nested-npm-constraints.json"
+    gem_out="${TEST_TEMP_DIR}/nested-gem-constraints.json"
+    npm_batch='[
+      {"pkg_type":"npm","name":"bad-parent","installed":"1.0.0"},
+      {"pkg_type":"npm","name":"good-parent","installed":"1.0.0"}
+    ]'
+    gem_batch='[
+      {"pkg_type":"gem","name":"bad-gem","installed":"1.0.0"},
+      {"pkg_type":"gem","name":"good-gem","installed":"1.0.0"}
+    ]'
+
+    cat > "$FIXTURE" <<'JSON'
+{
+  "manifests": {
+    "npm": {
+      "bad-parent@1.0.0": { "dependencies": "not-an-object" },
+      "good-parent@1.0.0": { "dependencies": { "child": "^1.0.0" } }
+    },
+    "gem": {
+      "bad-gem": [
+        { "number": "1.0.0", "dependencies": { "runtime": "not-an-array" } }
+      ],
+      "good-gem": [
+        { "number": "1.0.0", "dependencies": { "runtime": [{ "name": "child", "requirements": "~> 2.0" }] } }
+      ]
+    }
+  }
+}
+JSON
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        bash -c 'source "$1"; _freshness_npm_constraints_for_batch "$2" > "$3"' \
+        _ "$RESOLVER" "$npm_batch" "$npm_out"
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      length == 1
+      and .[0].parent == "good-parent"
+      and .[0].child == "child"
+      and .[0].range == "^1.0.0"
+    ' "$npm_out" >/dev/null
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        bash -c 'source "$1"; _freshness_gem_constraints_for_batch "$2" > "$3"' \
+        _ "$RESOLVER" "$gem_batch" "$gem_out"
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      length == 1
+      and .[0].parent == "good-gem"
+      and .[0].child == "child"
+      and .[0].range == "~> 2.0"
+    ' "$gem_out" >/dev/null
 }
 
 @test "constraint manifest fetching supports bounded parallel workers" {

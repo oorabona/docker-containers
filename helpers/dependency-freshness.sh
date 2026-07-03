@@ -234,6 +234,12 @@ declare -gA _FRESHNESS_APK_PACKAGES=()
 declare -g _FRESHNESS_APK_INDEX_LOADED=0
 declare -g _FRESHNESS_APK_INDEX_FAILED=0
 
+_freshness_reset_apk_state() {
+    declare -gA _FRESHNESS_APK_PACKAGES=()
+    _FRESHNESS_APK_INDEX_LOADED=0
+    _FRESHNESS_APK_INDEX_FAILED=0
+}
+
 _freshness_apk_arch() {
     if [[ -n "${DEPENDENCY_FRESHNESS_APK_ARCH:-${_DEPENDENCY_FRESHNESS_APK_ARCH:-}}" ]]; then
         printf '%s' "${DEPENDENCY_FRESHNESS_APK_ARCH:-${_DEPENDENCY_FRESHNESS_APK_ARCH:-}}"
@@ -664,7 +670,7 @@ _freshness_constraint_manifest_worker() {
                 --argjson manifest "$payload" \
                 '
                 ["dependencies", "optionalDependencies", "peerDependencies"][] as $section
-                | ($manifest[$section] // {})
+                | (($manifest[$section] // {}) | if type == "object" then . else {} end)
                 | to_entries[]
                 | {
                     pkg_type: "npm",
@@ -684,7 +690,7 @@ _freshness_constraint_manifest_worker() {
                 ($versions // [])
                 | map(select((.number // "") == $parent_version))
                 | first // empty
-                | (.dependencies.runtime // [])
+                | ((.dependencies // {}) | if type == "object" then . else {} end | (.runtime // []) | if type == "array" then . else [] end)
                 | .[]
                 | {
                     pkg_type: "gem",

@@ -356,15 +356,19 @@ enrich_changelog() {
         fi
     fi
 
-    local lineage_file
+    _freshness_reset_apk_state
+
+    local lineage_file lineage_image_ref lineage_platform
     lineage_file="${changelog_file%.changelog.json}.json"
     if [[ -f "$lineage_file" ]]; then
-        if [[ -z "${DEPENDENCY_FRESHNESS_IMAGE_REF:-}" ]]; then
-            DEPENDENCY_FRESHNESS_IMAGE_REF=$(jq -r '.images.ghcr // .images.dockerhub // empty' "$lineage_file" 2>/dev/null || true)
+        lineage_image_ref=$(jq -r '.images.ghcr // .images.dockerhub // empty' "$lineage_file" 2>/dev/null || true)
+        if [[ -n "$lineage_image_ref" ]]; then
+            DEPENDENCY_FRESHNESS_IMAGE_REF="$lineage_image_ref"
             export DEPENDENCY_FRESHNESS_IMAGE_REF
         fi
-        if [[ -z "${DEPENDENCY_FRESHNESS_PLATFORM:-}" ]]; then
-            DEPENDENCY_FRESHNESS_PLATFORM=$(jq -r '.platform // empty' "$lineage_file" 2>/dev/null || true)
+        lineage_platform=$(jq -r '.platform // empty' "$lineage_file" 2>/dev/null || true)
+        if [[ -n "$lineage_platform" ]]; then
+            DEPENDENCY_FRESHNESS_PLATFORM="$lineage_platform"
             export DEPENDENCY_FRESHNESS_PLATFORM
         fi
     fi
