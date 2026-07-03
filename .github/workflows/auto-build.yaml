@@ -3937,7 +3937,7 @@ jobs:
             else
               if compare_sboms "$sbom_file" "$cached_sbom" \
                     ".build-lineage/${container_tag}.changelog.json"; then
-                enrich_changelog ".build-lineage/${container_tag}.changelog.json" \
+                enrich_changelog ".build-lineage/${container_tag}.changelog.json" "$sbom_file" \
                   || echo "::warning::dependency freshness enrichment failed for $container_tag"
               else
                 # Source is valid JSON but compare failed — most likely cause is a

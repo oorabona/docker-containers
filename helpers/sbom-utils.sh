@@ -276,10 +276,39 @@ _enrich_changelog_add_enrichment() {
         }]'
 }
 
+_enrich_changelog_constraint_source() {
+    local current_sbom_file="$1"
+    local fallback_json="$2"
+
+    if [[ -n "$current_sbom_file" && -f "$current_sbom_file" ]] \
+        && jq -e '(.packages // empty | type) == "array"' "$current_sbom_file" >/dev/null 2>&1; then
+        if jq -c '
+            [
+                .packages // []
+                | .[]
+                | select(.name != null and .versionInfo != null)
+                | (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref
+                | {
+                    pkg_type: (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end),
+                    name: .name,
+                    installed: .versionInfo
+                  }
+                | select(.pkg_type == "npm" or .pkg_type == "gem")
+            ]
+            | unique_by([.pkg_type, .name, .installed])
+        ' "$current_sbom_file"; then
+            return 0
+        fi
+    fi
+
+    printf '%s\n' "$fallback_json"
+}
+
 # Enrich compare_sboms output with latest-version and freshness metadata.
-# Usage: enrich_changelog <changelog_file>
+# Usage: enrich_changelog <changelog_file> [current_sbom_file]
 enrich_changelog() {
     local changelog_file="$1"
+    local current_sbom_file="${2:-}"
 
     if [[ ! -f "$changelog_file" ]]; then
         log_warning "Changelog not found for freshness enrichment: $changelog_file"
@@ -313,7 +342,7 @@ enrich_changelog() {
         fi
     fi
 
-    local eligible_json eligible_count queries_json latest_results
+    local eligible_json eligible_count queries_json latest_results constraint_source_json
     eligible_json=$(jq -c '
         [
             .changes[]?
@@ -330,10 +359,11 @@ enrich_changelog() {
 
     queries_json=$(jq -c 'unique_by([.pkg_type, .name])' <<< "$eligible_json")
     latest_results=$(_enrich_changelog_latest_results "$queries_json" 2>/dev/null || jq -cn '[]')
+    constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json")
 
     local npm_constraints gem_constraints
-    npm_constraints=$(_freshness_constraints_for_batch npm "$eligible_json" 2>/dev/null || jq -cn '[]')
-    gem_constraints=$(_freshness_constraints_for_batch gem "$eligible_json" 2>/dev/null || jq -cn '[]')
+    npm_constraints=$(_freshness_constraints_for_batch npm "$constraint_source_json" || jq -cn '[]')
+    gem_constraints=$(_freshness_constraints_for_batch gem "$constraint_source_json" || jq -cn '[]')
 
     local enrichments row pkg_type name installed resolver latest_record latest query_failed freshness capped_by constraints
     enrichments="[]"
@@ -393,14 +423,18 @@ enrich_changelog() {
             end
           ))
     ' "$changelog_file" > "$tmp_file"; then
-        mv "$tmp_file" "$changelog_file"
-        log_info "Dependency freshness enriched: $changelog_file"
+        if mv "$tmp_file" "$changelog_file"; then
+            log_info "Dependency freshness enriched: $changelog_file"
+            return 0
+        fi
+        rm -f "$tmp_file"
+        log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
+        return 1
     else
         rm -f "$tmp_file"
         log_warning "Dependency freshness enrichment failed; leaving changelog unchanged: $changelog_file"
+        return 1
     fi
-
-    return 0
 }
 
 # Append build metadata to history file (keeps last N entries)
