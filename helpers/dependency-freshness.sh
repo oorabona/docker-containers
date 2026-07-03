@@ -250,7 +250,9 @@ _freshness_npm() {
 
     local encoded body latest
     encoded=$(_freshness_urlencode "$name")
-    if ! body=$(_freshness_http_get "https://registry.npmjs.org/${encoded}/latest"); then
+    if ! body=$(_freshness_http_get \
+        "https://registry.npmjs.org/${encoded}/latest" \
+        "${DEPENDENCY_FRESHNESS_NPM_JSON_MAX_BYTES:-10485760}"); then
         _freshness_json_failure
         return 0
     fi
@@ -270,7 +272,9 @@ _freshness_gem() {
 
     local encoded body latest
     encoded=$(_freshness_urlencode "$name")
-    if ! body=$(_freshness_http_get "https://rubygems.org/api/v1/versions/${encoded}/latest.json"); then
+    if ! body=$(_freshness_http_get \
+        "https://rubygems.org/api/v1/versions/${encoded}/latest.json" \
+        "${DEPENDENCY_FRESHNESS_GEM_JSON_MAX_BYTES:-10485760}"); then
         _freshness_json_failure
         return 0
     fi
