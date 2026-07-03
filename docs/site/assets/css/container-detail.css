@@ -685,15 +685,10 @@
       color: var(--color-dep-badge-ok-fg);
       border: 1px solid var(--color-dep-badge-ok-border);
     }
-    .changelog-freshness-capped {
+    .changelog-freshness-update-available {
       background: var(--color-dep-badge-warning-bg);
       color: var(--color-dep-badge-warning-fg);
       border: 1px solid var(--color-dep-badge-warning-border);
-    }
-    .changelog-freshness-constraint-not-detected {
-      background: var(--color-dep-badge-neutral-bg);
-      color: var(--color-dep-badge-neutral-fg);
-      border: 1px solid var(--color-dep-badge-neutral-border);
     }
     .changelog-freshness-query-failed {
       background: var(--color-badge-removed-bg);

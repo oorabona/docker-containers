@@ -253,12 +253,9 @@ _enrich_changelog_add_enrichment() {
     local installed="$4"
     local latest="$5"
     local freshness="$6"
-    local capped_by="$7"
     local latest_is_null=false
-    local capped_is_null=false
 
     [[ -z "$latest" || "$latest" == "null" ]] && latest_is_null=true
-    [[ -z "$capped_by" || "$capped_by" == "null" ]] && capped_is_null=true
 
     jq -cn \
         --argjson enrichments "$enrichments_json" \
@@ -267,75 +264,21 @@ _enrich_changelog_add_enrichment() {
         --arg installed "$installed" \
         --arg latest "$latest" \
         --arg freshness "$freshness" \
-        --arg capped_by "$capped_by" \
         --argjson latest_is_null "$latest_is_null" \
-        --argjson capped_is_null "$capped_is_null" \
         '$enrichments + [{
             pkg_type: $pkg_type,
             name: $name,
             installed: $installed,
             latest: (if $latest_is_null then null else $latest end),
-            freshness: $freshness,
-            capped_by: (if $capped_is_null then null else $capped_by end)
+            freshness: $freshness
         }]'
-}
-
-_enrich_changelog_constraint_source() {
-    local current_sbom_file="$1"
-    local fallback_json="$2"
-    local pkg_type="$3"
-
-    if [[ -n "$current_sbom_file" && -f "$current_sbom_file" ]] \
-        && jq -e '(.packages // empty | type) == "array"' "$current_sbom_file" >/dev/null 2>&1; then
-        if jq -c --arg pkg_type "$pkg_type" '
-            [
-                .packages // []
-                | .[]
-                | select(.name != null and .versionInfo != null)
-                | (.externalRefs // [] | map(select(.referenceCategory == "PACKAGE-MANAGER")) | first // null) as $ref
-                | {
-                    pkg_type: (if $ref then ($ref.referenceLocator // "" | ltrimstr("pkg:") | split("/")[0] // "other" | if . == "" then "other" else . end) else "other" end),
-                    name: .name,
-                    installed: .versionInfo
-                  }
-                | select(.pkg_type == $pkg_type)
-            ]
-            | unique_by([.pkg_type, .name, .installed])
-        ' "$current_sbom_file"; then
-            return 0
-        fi
-    fi
-
-    jq -c --arg pkg_type "$pkg_type" '
-        [.[] | select(.pkg_type == $pkg_type)]
-        | unique_by([.pkg_type, .name, .installed])
-    ' <<< "$fallback_json"
-}
-
-_enrich_changelog_constraints_for_ecosystem() {
-    local pkg_type="$1"
-    local source_json="$2"
-    local constraints
-
-    if ! constraints=$(_freshness_constraints_for_batch "$pkg_type" "$source_json"); then
-        log_warning "Dependency freshness ${pkg_type} constraint batch failed; capping checks may be incomplete"
-        jq -cn '[]'
-        return 0
-    fi
-    if ! jq -e 'type == "array"' <<< "$constraints" >/dev/null 2>&1; then
-        log_warning "Dependency freshness ${pkg_type} constraint batch returned malformed JSON; capping checks may be incomplete"
-        jq -cn '[]'
-        return 0
-    fi
-
-    printf '%s\n' "$constraints"
 }
 
 # Enrich compare_sboms output with latest-version and freshness metadata.
 # Usage: enrich_changelog <changelog_file> [current_sbom_file]
 enrich_changelog() {
     local changelog_file="$1"
-    local current_sbom_file="${2:-}"
+    : "${2:-}"
 
     if [[ ! -f "$changelog_file" ]]; then
         log_warning "Changelog not found for freshness enrichment: $changelog_file"
@@ -357,6 +300,7 @@ enrich_changelog() {
     fi
 
     _freshness_reset_apk_state
+    unset DEPENDENCY_FRESHNESS_IMAGE_REF DEPENDENCY_FRESHNESS_PLATFORM
 
     local lineage_file lineage_image_ref lineage_platform
     lineage_file="${changelog_file%.changelog.json}.json"
@@ -397,21 +341,7 @@ enrich_changelog() {
         latest_results="[]"
     fi
 
-    local npm_constraints gem_constraints npm_changed_count gem_changed_count constraint_source_json
-    npm_constraints="[]"
-    gem_constraints="[]"
-    npm_changed_count=$(jq '[.[] | select(.pkg_type == "npm")] | length' <<< "$eligible_json")
-    gem_changed_count=$(jq '[.[] | select(.pkg_type == "gem")] | length' <<< "$eligible_json")
-    if (( npm_changed_count > 0 )); then
-        constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json" npm)
-        npm_constraints=$(_enrich_changelog_constraints_for_ecosystem npm "$constraint_source_json")
-    fi
-    if (( gem_changed_count > 0 )); then
-        constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json" gem)
-        gem_constraints=$(_enrich_changelog_constraints_for_ecosystem gem "$constraint_source_json")
-    fi
-
-    local enrichments row pkg_type name installed resolver latest_record latest query_failed freshness capped_by constraints
+    local enrichments row pkg_type name installed resolver latest_record latest query_failed freshness
     enrichments="[]"
     while IFS= read -r row; do
         pkg_type=$(jq -r '.pkg_type' <<< "$row")
@@ -425,7 +355,6 @@ enrich_changelog() {
         latest=$(jq -r '.latest // "null"' <<< "$latest_record")
         query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record")
         freshness="not-computed"
-        capped_by="null"
 
         if [[ -z "$resolver" ]]; then
             freshness="not-computed"
@@ -433,21 +362,14 @@ enrich_changelog() {
             freshness="query-failed"
         elif [[ "$latest" != "null" && "$installed" == "$latest" ]]; then
             freshness="up-to-date"
-        elif [[ "$pkg_type" == "npm" || "$pkg_type" == "gem" ]]; then
-            constraints="$npm_constraints"
-            [[ "$pkg_type" == "gem" ]] && constraints="$gem_constraints"
-            if capped_by=$(_freshness_find_capping_constraint "$pkg_type" "$name" "$installed" "$latest" "$constraints" 2>/dev/null); then
-                freshness="capped"
-            else
-                freshness="constraint-not-detected"
-                capped_by="null"
-            fi
+        elif [[ "$latest" != "null" ]]; then
+            freshness="update-available"
         else
-            freshness="not-computed"
+            freshness="query-failed"
         fi
 
         enrichments=$(_enrich_changelog_add_enrichment \
-            "$enrichments" "$pkg_type" "$name" "$installed" "$latest" "$freshness" "$capped_by")
+            "$enrichments" "$pkg_type" "$name" "$installed" "$latest" "$freshness")
     done < <(jq -c '.[]' <<< "$eligible_json")
 
     local tmp_file
@@ -457,7 +379,7 @@ enrich_changelog() {
         ($enrichments
             | map({
                 key: ([.pkg_type, .name, .installed] | @json),
-                value: {latest, freshness, capped_by}
+                value: {latest, freshness}
               })
             | from_entries) as $enrichment_map
         | .changes = ((.changes // []) | map(

@@ -498,12 +498,9 @@
       if (freshness === 'up-to-date') {
         icon.className = 'ti ti-circle-check';
         label = 'Latest version is installed';
-      } else if (freshness === 'capped') {
-        icon.className = 'ti ti-info-circle';
-        label = change.capped_by ? ('Latest constrained by ' + change.capped_by) : 'Latest constrained by dependency requirements';
-      } else if (freshness === 'constraint-not-detected') {
-        icon.className = 'ti ti-dots-circle-horizontal';
-        label = "No constraining dependency found in this build's package set";
+      } else if (freshness === 'update-available') {
+        icon.className = 'ti ti-arrow-up-circle';
+        label = change.latest ? ('Update available: latest is ' + change.latest) : 'Update available';
       } else if (freshness === 'query-failed') {
         icon.className = 'ti ti-alert-triangle';
         label = 'Latest version check failed';
