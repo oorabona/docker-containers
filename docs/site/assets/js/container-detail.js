@@ -487,6 +487,41 @@
       });
     }
 
+    function createFreshnessBadge(change) {
+      var freshness = change.freshness || 'not-computed';
+      var badge = document.createElement('span');
+      var icon = document.createElement('i');
+      badge.className = 'changelog-freshness-badge changelog-freshness-' + freshness;
+      badge.style.marginLeft = '0.4rem';
+      badge.style.verticalAlign = 'middle';
+      badge.style.whiteSpace = 'nowrap';
+      icon.setAttribute('aria-hidden', 'true');
+
+      if (freshness === 'up-to-date') {
+        icon.className = 'ti ti-circle-check';
+        badge.title = 'Up to date';
+      } else if (freshness === 'capped') {
+        icon.className = 'ti ti-info-circle';
+        badge.title = change.capped_by ? ('Latest constrained by ' + change.capped_by) : 'Latest constrained by dependency requirements';
+      } else if (freshness === 'constraint-not-detected') {
+        icon.className = 'ti ti-dots-circle-horizontal';
+        badge.title = "No constraining dependency found in this build's package set";
+        badge.style.opacity = '0.6';
+      } else {
+        return null;
+      }
+
+      badge.appendChild(icon);
+      return badge;
+    }
+
+    function latestLabel(change) {
+      if (change.type === 'removed') return '---';
+      if (change.latest) return change.latest;
+      if (change.freshness === 'query-failed') return 'unknown';
+      return '---';
+    }
+
     function updateChangelogSection(variantEl) {
       var section = document.getElementById('changelog-section');
       if (!section) return;
@@ -514,7 +549,7 @@
 
         var thead = document.createElement('thead');
         var headerRow = document.createElement('tr');
-        ['Type', 'Package', 'Previous', 'Current'].forEach(function(h) {
+        ['Type', 'Package', 'Previous', 'Current', 'Latest available'].forEach(function(h) {
           var th = document.createElement('th');
           th.textContent = h;
           headerRow.appendChild(th);
@@ -546,8 +581,18 @@
 
           var tdTo = document.createElement('td');
           tdTo.className = 'changelog-version changelog-version-new';
-          tdTo.textContent = change.to || (change.type === 'added' ? change.version : '---');
+          var currentVersion = document.createElement('span');
+          currentVersion.textContent = change.to || (change.type === 'added' ? change.version : '---');
+          tdTo.appendChild(currentVersion);
+          var freshnessBadge = createFreshnessBadge(change);
+          if (freshnessBadge) tdTo.appendChild(freshnessBadge);
           tr.appendChild(tdTo);
+
+          var tdLatest = document.createElement('td');
+          tdLatest.className = 'changelog-version changelog-version-latest';
+          tdLatest.textContent = latestLabel(change);
+          if (change.freshness === 'query-failed') tdLatest.title = 'query failed';
+          tr.appendChild(tdLatest);
 
           tbody.appendChild(tr);
         });
