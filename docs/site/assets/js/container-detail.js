@@ -491,26 +491,28 @@
       var freshness = change.freshness || 'not-computed';
       var badge = document.createElement('span');
       var icon = document.createElement('i');
+      var label = '';
       badge.className = 'changelog-freshness-badge changelog-freshness-' + freshness;
-      badge.style.marginLeft = '0.4rem';
-      badge.style.verticalAlign = 'middle';
-      badge.style.whiteSpace = 'nowrap';
       icon.setAttribute('aria-hidden', 'true');
 
       if (freshness === 'up-to-date') {
         icon.className = 'ti ti-circle-check';
-        badge.title = 'Up to date';
+        label = 'Latest version is installed';
       } else if (freshness === 'capped') {
         icon.className = 'ti ti-info-circle';
-        badge.title = change.capped_by ? ('Latest constrained by ' + change.capped_by) : 'Latest constrained by dependency requirements';
+        label = change.capped_by ? ('Latest constrained by ' + change.capped_by) : 'Latest constrained by dependency requirements';
       } else if (freshness === 'constraint-not-detected') {
         icon.className = 'ti ti-dots-circle-horizontal';
-        badge.title = "No constraining dependency found in this build's package set";
-        badge.style.opacity = '0.6';
+        label = "No constraining dependency found in this build's package set";
+      } else if (freshness === 'query-failed') {
+        icon.className = 'ti ti-alert-triangle';
+        label = 'Latest version check failed';
       } else {
         return null;
       }
 
+      badge.title = label;
+      badge.setAttribute('aria-label', label);
       badge.appendChild(icon);
       return badge;
     }

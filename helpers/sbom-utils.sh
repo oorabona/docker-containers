@@ -203,9 +203,13 @@ _enrich_changelog_latest_results() {
     local queries_json="$1"
     local helper="${_DEPENDENCY_FRESHNESS_HELPER:-${_SBOM_UTILS_DIR}/dependency-freshness.sh}"
     local concurrency="${DEPENDENCY_FRESHNESS_CONCURRENCY:-4}"
+    local max_concurrency=16
     local non_apk_encoded apk_encoded non_apk_results apk_results
 
     [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || concurrency=4
+    if (( concurrency > max_concurrency )); then
+        concurrency="$max_concurrency"
+    fi
     non_apk_results="[]"
     apk_results="[]"
 
@@ -279,10 +283,11 @@ _enrich_changelog_add_enrichment() {
 _enrich_changelog_constraint_source() {
     local current_sbom_file="$1"
     local fallback_json="$2"
+    local pkg_type="$3"
 
     if [[ -n "$current_sbom_file" && -f "$current_sbom_file" ]] \
         && jq -e '(.packages // empty | type) == "array"' "$current_sbom_file" >/dev/null 2>&1; then
-        if jq -c '
+        if jq -c --arg pkg_type "$pkg_type" '
             [
                 .packages // []
                 | .[]
@@ -293,7 +298,7 @@ _enrich_changelog_constraint_source() {
                     name: .name,
                     installed: .versionInfo
                   }
-                | select(.pkg_type == "npm" or .pkg_type == "gem")
+                | select(.pkg_type == $pkg_type)
             ]
             | unique_by([.pkg_type, .name, .installed])
         ' "$current_sbom_file"; then
@@ -301,7 +306,29 @@ _enrich_changelog_constraint_source() {
         fi
     fi
 
-    printf '%s\n' "$fallback_json"
+    jq -c --arg pkg_type "$pkg_type" '
+        [.[] | select(.pkg_type == $pkg_type)]
+        | unique_by([.pkg_type, .name, .installed])
+    ' <<< "$fallback_json"
+}
+
+_enrich_changelog_constraints_for_ecosystem() {
+    local pkg_type="$1"
+    local source_json="$2"
+    local constraints
+
+    if ! constraints=$(_freshness_constraints_for_batch "$pkg_type" "$source_json"); then
+        log_warning "Dependency freshness ${pkg_type} constraint batch failed; capping checks may be incomplete"
+        jq -cn '[]'
+        return 0
+    fi
+    if ! jq -e 'type == "array"' <<< "$constraints" >/dev/null 2>&1; then
+        log_warning "Dependency freshness ${pkg_type} constraint batch returned malformed JSON; capping checks may be incomplete"
+        jq -cn '[]'
+        return 0
+    fi
+
+    printf '%s\n' "$constraints"
 }
 
 # Enrich compare_sboms output with latest-version and freshness metadata.
@@ -342,7 +369,7 @@ enrich_changelog() {
         fi
     fi
 
-    local eligible_json eligible_count queries_json latest_results constraint_source_json
+    local eligible_json eligible_count queries_json latest_results
     eligible_json=$(jq -c '
         [
             .changes[]?
@@ -358,12 +385,27 @@ enrich_changelog() {
     fi
 
     queries_json=$(jq -c 'unique_by([.pkg_type, .name])' <<< "$eligible_json")
-    latest_results=$(_enrich_changelog_latest_results "$queries_json" 2>/dev/null || jq -cn '[]')
-    constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json")
+    if ! latest_results=$(_enrich_changelog_latest_results "$queries_json"); then
+        log_warning "Dependency freshness latest-version batch failed; marking affected checks as query-failed"
+        latest_results="[]"
+    elif ! jq -e 'type == "array"' <<< "$latest_results" >/dev/null 2>&1; then
+        log_warning "Dependency freshness latest-version batch returned malformed JSON; marking affected checks as query-failed"
+        latest_results="[]"
+    fi
 
-    local npm_constraints gem_constraints
-    npm_constraints=$(_freshness_constraints_for_batch npm "$constraint_source_json" || jq -cn '[]')
-    gem_constraints=$(_freshness_constraints_for_batch gem "$constraint_source_json" || jq -cn '[]')
+    local npm_constraints gem_constraints npm_changed_count gem_changed_count constraint_source_json
+    npm_constraints="[]"
+    gem_constraints="[]"
+    npm_changed_count=$(jq '[.[] | select(.pkg_type == "npm")] | length' <<< "$eligible_json")
+    gem_changed_count=$(jq '[.[] | select(.pkg_type == "gem")] | length' <<< "$eligible_json")
+    if (( npm_changed_count > 0 )); then
+        constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json" npm)
+        npm_constraints=$(_enrich_changelog_constraints_for_ecosystem npm "$constraint_source_json")
+    fi
+    if (( gem_changed_count > 0 )); then
+        constraint_source_json=$(_enrich_changelog_constraint_source "$current_sbom_file" "$eligible_json" gem)
+        gem_constraints=$(_enrich_changelog_constraints_for_ecosystem gem "$constraint_source_json")
+    fi
 
     local enrichments row pkg_type name installed resolver latest_record latest query_failed freshness capped_by constraints
     enrichments="[]"
@@ -374,10 +416,10 @@ enrich_changelog() {
         resolver=$(_freshness_resolver_for "$pkg_type")
 
         latest_record=$(jq -c --arg pkg_type "$pkg_type" --arg name "$name" '
-            map(select(.pkg_type == $pkg_type and .name == $name)) | first // {latest:null, query_failed:false}
+            map(select(.pkg_type == $pkg_type and .name == $name)) | first // {latest:null, query_failed:true}
         ' <<< "$latest_results")
         latest=$(jq -r '.latest // "null"' <<< "$latest_record")
-        query_failed=$(jq -r '.query_failed // false' <<< "$latest_record")
+        query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record")
         freshness="not-computed"
         capped_by="null"
 

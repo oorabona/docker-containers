@@ -40,6 +40,18 @@ _freshness_regex_escape() {
     sed -e 's/[][(){}.^$*+?|\\]/\\&/g' <<< "${1:-}"
 }
 
+_freshness_gha_escape() {
+    local value="${1:-}"
+    value="${value//'%'/'%25'}"
+    value="${value//$'\r'/'%0D'}"
+    value="${value//$'\n'/'%0A'}"
+    printf '%s' "$value"
+}
+
+_freshness_warn() {
+    printf '::warning::dependency freshness: %s\n' "$(_freshness_gha_escape "$*")" >&2
+}
+
 _freshness_normalize_name() {
     local pkg_type="$1"
     local name="$2"
@@ -79,29 +91,29 @@ _freshness_fixture_latest() {
 
 _freshness_http_get() {
     local url="$1"
+    local max_filesize="${2:-}"
     local body_file status
     body_file=$(mktemp)
+    local curl_args=(
+        -sS -L
+        --connect-timeout 5
+        --max-time 5
+        -H "Accept: application/json"
+        -o "$body_file"
+        -w '%{http_code}'
+    )
+    if [[ -n "$max_filesize" ]]; then
+        curl_args+=(--max-filesize "$max_filesize")
+    fi
 
     status=$(
-        curl -sS -L \
-            --connect-timeout 5 \
-            --max-time 5 \
-            -H "Accept: application/json" \
-            -o "$body_file" \
-            -w '%{http_code}' \
-            "$url" 2>/dev/null || printf '000'
+        curl "${curl_args[@]}" "$url" 2>/dev/null || printf '000'
     )
 
     if [[ "$status" == "429" ]]; then
         sleep "${DEPENDENCY_FRESHNESS_429_BACKOFF_SECONDS:-2}"
         status=$(
-            curl -sS -L \
-                --connect-timeout 5 \
-                --max-time 5 \
-                -H "Accept: application/json" \
-                -o "$body_file" \
-                -w '%{http_code}' \
-                "$url" 2>/dev/null || printf '000'
+            curl "${curl_args[@]}" "$url" 2>/dev/null || printf '000'
         )
     fi
 
@@ -195,7 +207,9 @@ _freshness_pypi() {
 
     local encoded body latest
     encoded=$(_freshness_urlencode "$name")
-    if ! body=$(_freshness_http_get "https://pypi.org/pypi/${encoded}/json"); then
+    if ! body=$(_freshness_http_get \
+        "https://pypi.org/pypi/${encoded}/json" \
+        "${DEPENDENCY_FRESHNESS_PYPI_JSON_MAX_BYTES:-10485760}"); then
         _freshness_json_failure
         return 0
     fi
@@ -291,7 +305,7 @@ _freshness_apk_index_urls() {
 _freshness_apk_version_gt() {
     local candidate="$1"
     local current="$2"
-    local result
+    local result py_status
 
     [[ -n "$candidate" ]] || return 1
     [[ -n "$current" ]] || return 0
@@ -302,9 +316,152 @@ _freshness_apk_version_gt() {
         [[ "$result" == "<" || "$result" == "=" ]] && return 1
     fi
 
-    if command -v dpkg >/dev/null 2>&1; then
-        dpkg --compare-versions "$candidate" gt "$current" 2>/dev/null && return 0
+    if command -v python3 >/dev/null 2>&1; then
+        py_status=0
+        python3 - "$candidate" "$current" <<'PY' || py_status=$?
+import re
+import sys
+
+TOKEN_INITIAL_DIGIT = 0
+TOKEN_DIGIT = 1
+TOKEN_LETTER = 2
+TOKEN_SUFFIX = 3
+TOKEN_SUFFIX_NO = 4
+TOKEN_COMMIT_HASH = 5
+TOKEN_REVISION_NO = 6
+TOKEN_END = 7
+TOKEN_INVALID = 8
+
+SUFFIX_INVALID = 0
+SUFFIX_NONE = 5
+SUFFIXES = {
+    "alpha": 1,
+    "beta": 2,
+    "pre": 3,
+    "rc": 4,
+    "": SUFFIX_NONE,
+    "cvs": 6,
+    "svn": 7,
+    "git": 8,
+    "hg": 9,
+    "p": 10,
+}
+
+
+def _digit_token(token, value, pos):
+    if not value:
+        return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+    return {"token": token, "value": value, "number": int(value), "suffix": SUFFIX_INVALID, "pos": pos}
+
+
+def first_token(version):
+    match = re.match(r"[0-9]+", version)
+    if not match:
+        return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": 0}
+    return _digit_token(TOKEN_INITIAL_DIGIT, match.group(0), match.end())
+
+
+def next_token(version, prev):
+    pos = prev["pos"]
+    prev_token = prev["token"]
+    if pos >= len(version):
+        return {"token": TOKEN_END, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+
+    ch = version[pos]
+    if "a" <= ch <= "z":
+        if prev_token > TOKEN_DIGIT:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        return {"token": TOKEN_LETTER, "value": ch, "number": ord(ch), "suffix": SUFFIX_INVALID, "pos": pos + 1}
+
+    if ch == ".":
+        if prev_token > TOKEN_DIGIT:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        pos += 1
+        ch = version[pos] if pos < len(version) else ""
+
+    if ch.isdigit():
+        if prev_token in (TOKEN_INITIAL_DIGIT, TOKEN_DIGIT):
+            token = TOKEN_DIGIT
+        elif prev_token == TOKEN_SUFFIX:
+            token = TOKEN_SUFFIX_NO
+        else:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        match = re.match(r"[0-9]+", version[pos:])
+        value = match.group(0) if match else ""
+        return _digit_token(token, value, pos + len(value))
+
+    if ch == "_":
+        if prev_token > TOKEN_SUFFIX_NO:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        match = re.match(r"[a-z]+", version[pos + 1:])
+        value = match.group(0) if match else ""
+        suffix = SUFFIXES.get(value, SUFFIX_INVALID)
+        if suffix == SUFFIX_INVALID:
+            return {"token": TOKEN_INVALID, "value": value, "number": 0, "suffix": suffix, "pos": pos}
+        return {"token": TOKEN_SUFFIX, "value": value, "number": suffix, "suffix": suffix, "pos": pos + 1 + len(value)}
+
+    if ch == "~":
+        if prev_token >= TOKEN_COMMIT_HASH:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        match = re.match(r"[0-9A-Fa-f]+", version[pos + 1:])
+        value = match.group(0) if match else ""
+        if not value:
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        return {"token": TOKEN_COMMIT_HASH, "value": value, "number": 0, "suffix": SUFFIX_INVALID, "pos": pos + 1 + len(value)}
+
+    if ch == "-":
+        if prev_token >= TOKEN_REVISION_NO or not version.startswith("-r", pos):
+            return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+        pos += 2
+        match = re.match(r"[0-9]+", version[pos:])
+        value = match.group(0) if match else ""
+        return _digit_token(TOKEN_REVISION_NO, value, pos + len(value))
+
+    return {"token": TOKEN_INVALID, "value": "", "number": 0, "suffix": SUFFIX_INVALID, "pos": pos}
+
+
+def token_cmp(left, right):
+    token = left["token"]
+    if token == TOKEN_DIGIT and (left["value"].startswith("0") or right["value"].startswith("0")):
+        return (left["value"] > right["value"]) - (left["value"] < right["value"])
+    if token in (TOKEN_INITIAL_DIGIT, TOKEN_DIGIT, TOKEN_SUFFIX_NO, TOKEN_REVISION_NO):
+        return (left["number"] > right["number"]) - (left["number"] < right["number"])
+    if token == TOKEN_LETTER:
+        return (left["number"] > right["number"]) - (left["number"] < right["number"])
+    if token == TOKEN_SUFFIX:
+        return (left["suffix"] > right["suffix"]) - (left["suffix"] < right["suffix"])
+    return (left["value"] > right["value"]) - (left["value"] < right["value"])
+
+
+def apk_compare(left_version, right_version):
+    left = first_token(left_version)
+    right = first_token(right_version)
+    while left["token"] == right["token"] and left["token"] < TOKEN_END:
+        result = token_cmp(left, right)
+        if result:
+            return result
+        left = next_token(left_version, left)
+        right = next_token(right_version, right)
+
+    if left["token"] == right["token"]:
+        return 0
+    if left["token"] == TOKEN_SUFFIX and left["suffix"] < SUFFIX_NONE:
+        return -1
+    if right["token"] == TOKEN_SUFFIX and right["suffix"] < SUFFIX_NONE:
         return 1
+    if left["token"] > right["token"]:
+        return -1
+    if right["token"] > left["token"]:
+        return 1
+    return 0
+
+
+sys.exit(0 if apk_compare(sys.argv[1], sys.argv[2]) > 0 else 1)
+PY
+        case "$py_status" in
+            0) return 0 ;;
+            1) return 1 ;;
+        esac
     fi
 
     [[ "$(printf '%s\n%s\n' "$current" "$candidate" | sort -V | tail -n 1)" == "$candidate" && "$candidate" != "$current" ]]
@@ -442,7 +599,9 @@ _freshness_fetch_gem_versions() {
     fi
 
     encoded=$(_freshness_urlencode "$name")
-    if ! body=$(_freshness_http_get "https://rubygems.org/api/v1/versions/${encoded}.json"); then
+    if ! body=$(_freshness_http_get \
+        "https://rubygems.org/api/v1/versions/${encoded}.json" \
+        "${DEPENDENCY_FRESHNESS_RUBYGEMS_VERSIONS_MAX_BYTES:-10485760}"); then
         return 1
     fi
     printf '%s\n' "$body"
@@ -450,7 +609,11 @@ _freshness_fetch_gem_versions() {
 
 _freshness_concurrency() {
     local concurrency="${DEPENDENCY_FRESHNESS_CONCURRENCY:-4}"
+    local max_concurrency=16
     [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || concurrency=4
+    if (( concurrency > max_concurrency )); then
+        concurrency="$max_concurrency"
+    fi
     printf '%s\n' "$concurrency"
 }
 
@@ -474,12 +637,14 @@ _freshness_constraint_manifest_worker() {
         npm)
             expected_type="object"
             if ! payload=$(_freshness_fetch_npm_manifest "$name" "$version" 2>/dev/null); then
+                _freshness_warn "failed to fetch npm parent manifest for ${name}@${version}; constraint checks may be incomplete"
                 return 0
             fi
             ;;
         gem)
             expected_type="array"
             if ! payload=$(_freshness_fetch_gem_versions "$name" 2>/dev/null); then
+                _freshness_warn "failed to fetch RubyGems parent versions for ${name}@${version}; constraint checks may be incomplete"
                 return 0
             fi
             ;;
@@ -487,7 +652,7 @@ _freshness_constraint_manifest_worker() {
     esac
 
     if ! _freshness_json_is_type "$payload" "$expected_type"; then
-        printf 'WARN: skipping malformed %s constraint response for %s@%s\n' "$pkg_type" "$name" "$version" >&2
+        _freshness_warn "skipping malformed ${pkg_type} constraint response for ${name}@${version}; constraint checks may be incomplete"
         return 0
     fi
 
@@ -497,14 +662,38 @@ _freshness_constraint_manifest_worker() {
                 --arg parent "$name" \
                 --arg parent_version "$version" \
                 --argjson manifest "$payload" \
-                '{parent:$parent, parent_version:$parent_version, manifest:$manifest}'
+                '
+                ["dependencies", "optionalDependencies", "peerDependencies"][] as $section
+                | ($manifest[$section] // {})
+                | to_entries[]
+                | {
+                    pkg_type: "npm",
+                    child: (.key | ascii_downcase),
+                    parent: $parent,
+                    parent_version: $parent_version,
+                    range: (.value | tostring)
+                  }
+                '
             ;;
         gem)
             jq -cn \
                 --arg parent "$name" \
                 --arg parent_version "$version" \
                 --argjson versions "$payload" \
-                '{parent:$parent, parent_version:$parent_version, versions:$versions}'
+                '
+                ($versions // [])
+                | map(select((.number // "") == $parent_version))
+                | first // empty
+                | (.dependencies.runtime // [])
+                | .[]
+                | {
+                    pkg_type: "gem",
+                    child: ((.name // "") | ascii_downcase),
+                    parent: $parent,
+                    parent_version: $parent_version,
+                    range: ((.requirements // .requirement // "") | tostring)
+                  }
+                '
             ;;
     esac
 }
@@ -513,7 +702,7 @@ _freshness_constraint_worker_results() {
     local pkg_type="$1"
     local changes_json="$2"
     local helper="${_DEPENDENCY_FRESHNESS_HELPER:-${BASH_SOURCE[0]}}"
-    local concurrency encoded
+    local concurrency encoded tmpdir input_file result
 
     concurrency=$(_freshness_concurrency)
     encoded=$(jq -r --arg pkg_type "$pkg_type" '
@@ -528,16 +717,42 @@ _freshness_constraint_worker_results() {
         return 0
     fi
 
+    tmpdir=$(mktemp -d)
+    input_file="${tmpdir}/workers.tsv"
+    printf '%s\n' "$encoded" | awk 'NF { print NR "\t" $0 }' > "$input_file"
+
     if (( concurrency > 1 )); then
-        printf '%s\n' "$encoded" \
-            | xargs -r -n1 -P "$concurrency" bash "$helper" __constraint_worker "$pkg_type" \
-            | jq -s '.'
+        if ! xargs -r -n2 -P "$concurrency" bash -c '
+            helper="$1"
+            pkg_type="$2"
+            tmpdir="$3"
+            index="$4"
+            encoded="$5"
+            bash "$helper" __constraint_worker "$pkg_type" "$encoded" > "${tmpdir}/${index}.jsonl"
+        ' _ "$helper" "$pkg_type" "$tmpdir" < "$input_file"; then
+            rm -rf "$tmpdir"
+            return 1
+        fi
     else
-        while IFS= read -r row; do
+        while IFS=$'\t' read -r index row; do
             [[ -n "$row" ]] || continue
-            _freshness_constraint_manifest_worker "$pkg_type" "$row"
-        done <<< "$encoded" | jq -s '.'
+            if ! _freshness_constraint_manifest_worker "$pkg_type" "$row" > "${tmpdir}/${index}.jsonl"; then
+                rm -rf "$tmpdir"
+                return 1
+            fi
+        done < "$input_file"
     fi
+
+    if ! result=$(find "$tmpdir" -maxdepth 1 -type f -name '*.jsonl' -print \
+        | sort -V \
+        | xargs -r cat \
+        | jq -s '.'); then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    rm -rf "$tmpdir"
+    printf '%s\n' "$result"
 }
 
 _freshness_constraints_for_batch() {
@@ -553,49 +768,12 @@ _freshness_constraints_for_batch() {
 
 _freshness_npm_constraints_for_batch() {
     local changes_json="$1"
-    local manifests
-    manifests=$(_freshness_constraint_worker_results npm "$changes_json")
-
-    jq -cn --argjson manifests "$manifests" '
-        [
-            $manifests[] as $m
-            | (($m.manifest.dependencies // {}) + ($m.manifest.peerDependencies // {})) as $deps
-            | $deps
-            | to_entries[]
-            | {
-                pkg_type: "npm",
-                child: (.key | ascii_downcase),
-                parent: $m.parent,
-                parent_version: $m.parent_version,
-                range: (.value | tostring)
-              }
-        ]
-    '
+    _freshness_constraint_worker_results npm "$changes_json"
 }
 
 _freshness_gem_constraints_for_batch() {
     local changes_json="$1"
-    local manifests
-    manifests=$(_freshness_constraint_worker_results gem "$changes_json")
-
-    jq -cn --argjson manifests "$manifests" '
-        [
-            $manifests[] as $m
-            | ($m.versions // [])
-            | map(select((.number // "") == $m.parent_version))
-            | first // null
-            | select(. != null)
-            | (.dependencies.runtime // [])
-            | .[]
-            | {
-                pkg_type: "gem",
-                child: ((.name // "") | ascii_downcase),
-                parent: $m.parent,
-                parent_version: $m.parent_version,
-                range: ((.requirements // .requirement // "") | tostring)
-              }
-        ]
-    '
+    _freshness_constraint_worker_results gem "$changes_json"
 }
 
 _freshness_semver_parts() {
@@ -606,12 +784,49 @@ _freshness_semver_parts() {
     prerelease=""
     [[ "$version" == *-* ]] && prerelease="${version#*-}"
 
-    local a b c _
-    IFS='.' read -r a b c _ <<< "$core"
+    local -a parts
+    local a b c part
+    IFS='.' read -r -a parts <<< "$core"
+    [[ "${#parts[@]}" -gt 0 ]] || return 1
+    for part in "${parts[@]}"; do
+        [[ "$part" =~ ^[0-9]+$ ]] || return 1
+    done
+    a="${parts[0]}"
+    b="${parts[1]:-0}"
+    c="${parts[2]:-0}"
     [[ "$a" =~ ^[0-9]+$ ]] || return 1
     [[ "${b:-0}" =~ ^[0-9]+$ ]] || return 1
     [[ "${c:-0}" =~ ^[0-9]+$ ]] || return 1
     printf '%s\t%s\t%s\t%s\n' "$a" "${b:-0}" "${c:-0}" "$prerelease"
+}
+
+_freshness_semver_core_parts() {
+    local version="${1#v}"
+    local core part
+    local -a parts
+
+    version="${version%%+*}"
+    core="${version%%-*}"
+    IFS='.' read -r -a parts <<< "$core"
+    [[ "${#parts[@]}" -gt 0 ]] || return 1
+    for part in "${parts[@]}"; do
+        [[ "$part" =~ ^[0-9]+$ ]] || return 1
+    done
+    printf '%s\n' "${parts[*]}"
+}
+
+_freshness_semver_core_tuple() {
+    local a b c _
+    IFS=$'\t' read -r a b c _ < <(_freshness_semver_parts "$1") || return 1
+    printf '%s.%s.%s\n' "$a" "$b" "$c"
+}
+
+_freshness_semver_prerelease() {
+    local version="${1#v}"
+    version="${version%%+*}"
+    if [[ "$version" == *-* ]]; then
+        printf '%s' "${version#*-}"
+    fi
 }
 
 _freshness_semver_prerelease_cmp() {
@@ -654,17 +869,25 @@ _freshness_semver_prerelease_cmp() {
 _freshness_semver_cmp() {
     local left="$1"
     local right="$2"
-    local la lb lc lp ra rb rc rp pre_cmp
-    IFS=$'\t' read -r la lb lc lp < <(_freshness_semver_parts "$left") || return 2
-    IFS=$'\t' read -r ra rb rc rp < <(_freshness_semver_parts "$right") || return 2
+    local left_core right_core lp rp pre_cmp max i li ri
+    local -a left_parts right_parts
 
-    if (( la < ra )); then echo -1; return 0; fi
-    if (( la > ra )); then echo 1; return 0; fi
-    if (( lb < rb )); then echo -1; return 0; fi
-    if (( lb > rb )); then echo 1; return 0; fi
-    if (( lc < rc )); then echo -1; return 0; fi
-    if (( lc > rc )); then echo 1; return 0; fi
+    left_core=$(_freshness_semver_core_parts "$left") || return 2
+    right_core=$(_freshness_semver_core_parts "$right") || return 2
+    IFS=' ' read -r -a left_parts <<< "$left_core"
+    IFS=' ' read -r -a right_parts <<< "$right_core"
 
+    max="${#left_parts[@]}"
+    (( ${#right_parts[@]} > max )) && max="${#right_parts[@]}"
+    for (( i=0; i<max; i++ )); do
+        li="${left_parts[$i]:-0}"
+        ri="${right_parts[$i]:-0}"
+        if (( 10#$li < 10#$ri )); then echo -1; return 0; fi
+        if (( 10#$li > 10#$ri )); then echo 1; return 0; fi
+    done
+
+    lp=$(_freshness_semver_prerelease "$left")
+    rp=$(_freshness_semver_prerelease "$right")
     pre_cmp=$(_freshness_semver_prerelease_cmp "$lp" "$rp") || return 2
     echo "$pre_cmp"
 }
@@ -823,6 +1046,51 @@ _freshness_npm_upper_for_caret_bound() {
     fi
 }
 
+_freshness_npm_bound_mentions_prerelease_tuple() {
+    local bound="$1"
+    local version_core="$2"
+    local bound_core
+
+    bound="${bound#v}"
+    bound="${bound%%+*}"
+    [[ "$bound" == *-* ]] || return 1
+    bound_core=$(_freshness_semver_core_tuple "$bound") || return 1
+    [[ "$bound_core" == "$version_core" ]]
+}
+
+_freshness_npm_conj_allows_prerelease() {
+    local range="$1"
+    local version="$2"
+    local prerelease version_core token lower upper bound
+
+    prerelease=$(_freshness_semver_prerelease "$version")
+    [[ -n "$prerelease" ]] || return 0
+    version_core=$(_freshness_semver_core_tuple "$version") || return 1
+
+    if [[ "$range" =~ ^([^[:space:]]+)[[:space:]]+-[[:space:]]+([^[:space:]]+)$ ]]; then
+        lower="${BASH_REMATCH[1]}"
+        upper="${BASH_REMATCH[2]}"
+        _freshness_npm_bound_mentions_prerelease_tuple "$lower" "$version_core" && return 0
+        _freshness_npm_bound_mentions_prerelease_tuple "$upper" "$version_core" && return 0
+        return 1
+    fi
+
+    for token in $range; do
+        [[ -n "$token" ]] || continue
+        case "$token" in
+            ^*) bound="${token#^}" ;;
+            "~"*) bound="${token#\~}" ;;
+            ">="*|"<="*) bound="${token:2}" ;;
+            ">"*|"<"*) bound="${token:1}" ;;
+            "="*) bound="${token#=}" ;;
+            *) bound="$token" ;;
+        esac
+        _freshness_npm_bound_mentions_prerelease_tuple "$bound" "$version_core" && return 0
+    done
+
+    return 1
+}
+
 _freshness_npm_token_includes() {
     local token="$1"
     local version="$2"
@@ -868,6 +1136,7 @@ _freshness_npm_range_conj_includes() {
     range="${range//,/ }"
     range=$(sed -E 's/([<>=~^]=?|=)[[:space:]]+/\1/g; s/[[:space:]]+/ /g; s/^ //; s/ $//' <<< "$range")
     [[ -n "$range" ]] || return 1
+    _freshness_npm_conj_allows_prerelease "$range" "$version" || return 1
 
     if [[ "$range" =~ ^([^[:space:]]+)[[:space:]]+-[[:space:]]+([^[:space:]]+)$ ]]; then
         lower="${BASH_REMATCH[1]}"
@@ -884,6 +1153,62 @@ _freshness_npm_range_conj_includes() {
 }
 
 declare -g _FRESHNESS_NODE_SEMVER_AVAILABLE=""
+declare -g _FRESHNESS_NPX_SEMVER_AVAILABLE=""
+declare -g _FRESHNESS_NPX_SEMVER_VERSION="7.7.2"
+
+_freshness_npx_semver_cache_dir() {
+    local cache_dir="${DEPENDENCY_FRESHNESS_NPX_CACHE:-}"
+
+    if [[ -z "$cache_dir" ]]; then
+        cache_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dependency-freshness-npx-cache"
+    fi
+    mkdir -p "$cache_dir" 2>/dev/null || return 1
+    printf '%s\n' "$cache_dir"
+}
+
+_freshness_npx_semver_available() {
+    local cache_dir
+
+    if [[ "${DEPENDENCY_FRESHNESS_DISABLE_NPX_SEMVER:-}" == "1" ]]; then
+        _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+        return 1
+    fi
+
+    if [[ -z "${_FRESHNESS_NPX_SEMVER_AVAILABLE:-}" ]]; then
+        if command -v npx >/dev/null 2>&1 \
+            && cache_dir=$(_freshness_npx_semver_cache_dir) \
+            && env -u FORCE_COLOR NO_COLOR=1 npx --yes \
+                --cache "$cache_dir" \
+                --loglevel=error \
+                "semver@${_FRESHNESS_NPX_SEMVER_VERSION}" \
+                1.0.0 -r '>=1.0.0' >/dev/null 2>&1; then
+            _FRESHNESS_NPX_SEMVER_AVAILABLE=1
+        else
+            _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+        fi
+    fi
+    [[ "$_FRESHNESS_NPX_SEMVER_AVAILABLE" == "1" ]]
+}
+
+_freshness_npx_semver_satisfies() {
+    local range="$1"
+    local version="$2"
+    local cache_dir status
+
+    cache_dir=$(_freshness_npx_semver_cache_dir) || return 2
+    status=0
+    env -u FORCE_COLOR NO_COLOR=1 npx --yes \
+        --cache "$cache_dir" \
+        --loglevel=error \
+        "semver@${_FRESHNESS_NPX_SEMVER_VERSION}" \
+        "$version" -r "$range" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
 _freshness_node_semver_available() {
     if [[ -z "${_FRESHNESS_NODE_SEMVER_AVAILABLE:-}" ]]; then
         if command -v node >/dev/null 2>&1 \
@@ -902,6 +1227,13 @@ _freshness_npm_range_includes() {
     local part status
 
     [[ -n "$range" && -n "$version" ]] || return 1
+    if _freshness_npx_semver_available; then
+        status=0
+        _freshness_npx_semver_satisfies "$range" "$version" || status=$?
+        [[ "$status" -eq 0 ]] && return 0
+        [[ "$status" -eq 1 ]] && return 1
+    fi
+
     if _freshness_node_semver_available; then
         status=0
         node -e 'try { const semver = require("semver"); process.exit(semver.satisfies(process.argv[1], process.argv[2]) ? 0 : 1); } catch (e) { process.exit(2); }' "$version" "$range" || status=$?

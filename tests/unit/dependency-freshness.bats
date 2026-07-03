@@ -13,6 +13,7 @@ setup() {
     CURRENT_SBOM="${TEST_TEMP_DIR}/current.sbom.json"
     FIXTURE="${TEST_TEMP_DIR}/freshness-fixture.json"
     CALL_LOG="${TEST_TEMP_DIR}/calls.log"
+    export DEPENDENCY_FRESHNESS_DISABLE_NPX_SEMVER=1
 }
 
 teardown() {
@@ -87,7 +88,12 @@ assert_range_includes() {
     local range="$2"
     local version="$3"
 
-    run bash -c 'source "$1"; _freshness_range_includes "$2" "$3" "$4"' \
+    run bash -c '
+        source "$1"
+        _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+        _FRESHNESS_NODE_SEMVER_AVAILABLE=0
+        _freshness_range_includes "$2" "$3" "$4"
+    ' \
         _ "$RESOLVER" "$pkg_type" "$range" "$version"
     [[ "$status" -eq 0 ]]
 }
@@ -97,7 +103,12 @@ assert_range_excludes() {
     local range="$2"
     local version="$3"
 
-    run bash -c 'source "$1"; _freshness_range_includes "$2" "$3" "$4"' \
+    run bash -c '
+        source "$1"
+        _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+        _FRESHNESS_NODE_SEMVER_AVAILABLE=0
+        _freshness_range_includes "$2" "$3" "$4"
+    ' \
         _ "$RESOLVER" "$pkg_type" "$range" "$version"
     [[ "$status" -ne 0 ]]
 }
@@ -259,6 +270,28 @@ JSON
     [[ "$output" == "-1" ]]
 }
 
+@test "npm fallback excludes prereleases unless the range names the same prerelease tuple" {
+    run bash -c '
+      source "$1"
+      _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+      _FRESHNESS_NODE_SEMVER_AVAILABLE=0
+      _freshness_range_includes npm "^1.2.3" "1.3.0-beta"
+    ' _ "$RESOLVER"
+    [[ "$status" -ne 0 ]]
+
+    run bash -c '
+      source "$1"
+      _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+      _FRESHNESS_NODE_SEMVER_AVAILABLE=0
+      _freshness_range_includes npm "^1.2.3-beta.1" "1.2.3-beta.2"
+    ' _ "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+
+    run bash -c 'source "$1"; _freshness_semver_cmp "1.2.3.4" "1.2.3.3"' _ "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "1" ]]
+}
+
 @test "apk repository discovery overrides image entrypoint" {
     local fakebin docker_args
     fakebin="${TEST_TEMP_DIR}/bin"
@@ -333,6 +366,17 @@ SH
     jq -e '.latest == "1.0.0-r1" and .query_failed == false' "$result_file" >/dev/null
 }
 
+@test "apk version comparison fallback follows Alpine suffix ordering" {
+    run bash -c 'source "$1"; _freshness_apk_version_gt "1.0.0" "1.0.0_rc1"' _ "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+
+    run bash -c 'source "$1"; _freshness_apk_version_gt "1.0.0_rc1" "1.0.0"' _ "$RESOLVER"
+    [[ "$status" -ne 0 ]]
+
+    run bash -c 'source "$1"; _freshness_apk_version_gt "1.0.0_p1" "1.0.0"' _ "$RESOLVER"
+    [[ "$status" -eq 0 ]]
+}
+
 @test "deb packages are marked not-computed instead of querying Debian source packages" {
     cat > "$CHANGELOG" <<'JSON'
 {
@@ -358,6 +402,71 @@ JSON
         and .capped_by == null
     ' "$CHANGELOG" >/dev/null
     [[ ! -f "$CALL_LOG" ]] || ! grep -q '^latest deb libssl3$' "$CALL_LOG"
+}
+
+@test "PyPI-only changelog does not trigger npm or gem constraint manifest fetches" {
+    cat > "$CHANGELOG" <<'JSON'
+{
+  "generated_at": "2026-07-03T00:00:00Z",
+  "summary": { "added": 0, "removed": 0, "updated": 1 },
+  "changes": [
+    { "type": "updated", "name": "requests", "pkg_type": "pypi", "from": "2.32.0", "to": "2.32.3" }
+  ]
+}
+JSON
+
+    cat > "$CURRENT_SBOM" <<'JSON'
+{
+  "packages": [
+    {
+      "name": "npm-parent",
+      "versionInfo": "1.0.0",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceLocator": "pkg:npm/npm-parent@1.0.0" }
+      ]
+    },
+    {
+      "name": "gem-parent",
+      "versionInfo": "1.0.0",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceLocator": "pkg:gem/gem-parent@1.0.0" }
+      ]
+    }
+  ]
+}
+JSON
+
+    cat > "$FIXTURE" <<'JSON'
+{
+  "latest": {
+    "pypi": {
+      "requests": { "latest": "2.32.3" }
+    }
+  },
+  "manifests": {
+    "npm": {
+      "npm-parent@1.0.0": { "dependencies": { "requests": "^1.0.0" } }
+    },
+    "gem": {
+      "gem-parent": [
+        { "number": "1.0.0", "dependencies": { "runtime": [{ "name": "requests", "requirements": "~> 1.0" }] } }
+      ]
+    }
+  }
+}
+JSON
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CALL_LOG="$CALL_LOG" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=8 \
+        bash -c 'source "$1"; source "$2"; enrich_changelog "$3" "$4"' \
+        _ "$RESOLVER" "$SBOM_UTILS" "$CHANGELOG" "$CURRENT_SBOM"
+
+    [[ "$status" -eq 0 ]]
+    grep -q '^latest pypi requests$' "$CALL_LOG"
+    ! grep -q '^manifest npm ' "$CALL_LOG"
+    ! grep -q '^manifest gem ' "$CALL_LOG"
 }
 
 @test "malformed npm and gem constraint responses do not discard valid rows" {
@@ -434,6 +543,88 @@ JSON
       length == 2
       and ([.[].child] | sort) == ["child-a", "child-b"]
     ' "$out" >/dev/null
+}
+
+@test "parallel constraint workers emit compact rows rather than full manifests" {
+    local batch out large out_bytes
+    out="${TEST_TEMP_DIR}/compact-constraints.json"
+    large="$(head -c 70000 /dev/zero | tr '\0' x)"
+    batch='[
+      {"pkg_type":"npm","name":"parent-a","installed":"1.0.0"},
+      {"pkg_type":"npm","name":"parent-b","installed":"1.0.0"}
+    ]'
+
+    jq -n --arg blob "$large" '
+      {
+        manifests: {
+          npm: {
+            "parent-a@1.0.0": { dependencies: { "child-a": "^1.0.0" }, dist: { blob: $blob } },
+            "parent-b@1.0.0": { dependencies: { "child-b": "^2.0.0" }, dist: { blob: $blob } }
+          }
+        }
+      }
+    ' > "$FIXTURE"
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=2 \
+        bash -c 'source "$1"; _freshness_constraints_for_batch npm "$2" > "$3"' \
+        _ "$RESOLVER" "$batch" "$out"
+
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      length == 2
+      and all(.[]; has("manifest") | not)
+      and all(.[]; has("versions") | not)
+      and ([.[].child] | sort) == ["child-a", "child-b"]
+    ' "$out" >/dev/null
+    out_bytes=$(wc -c < "$out")
+    [[ "$out_bytes" -lt 1000 ]]
+}
+
+@test "npm constraint extraction keeps all ranges across dependency sections" {
+    local batch out constraints
+    out="${TEST_TEMP_DIR}/multi-section-constraints.json"
+    batch='[
+      {"pkg_type":"npm","name":"parent","installed":"1.0.0"}
+    ]'
+
+    cat > "$FIXTURE" <<'JSON'
+{
+  "manifests": {
+    "npm": {
+      "parent@1.0.0": {
+        "dependencies": { "child": ">=1.0.0" },
+        "optionalDependencies": { "child": "~1.2.0" },
+        "peerDependencies": { "child": "^1.0.0" }
+      }
+    }
+  }
+}
+JSON
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        bash -c 'source "$1"; _freshness_npm_constraints_for_batch "$2" > "$3"' \
+        _ "$RESOLVER" "$batch" "$out"
+
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      length == 3
+      and all(.[]; .child == "child" and .parent == "parent")
+      and ([.[].range] | sort) == [">=1.0.0", "^1.0.0", "~1.2.0"]
+    ' "$out" >/dev/null
+
+    constraints=$(cat "$out")
+    run bash -c '
+      source "$1"
+      _FRESHNESS_NPX_SEMVER_AVAILABLE=0
+      _FRESHNESS_NODE_SEMVER_AVAILABLE=0
+      _freshness_find_capping_constraint npm child 1.2.5 2.0.0 "$2"
+    ' _ "$RESOLVER" "$constraints"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == "parent ~1.2.0" ]]
 }
 
 @test "enrich_changelog returns nonzero when final changelog write fails" {
