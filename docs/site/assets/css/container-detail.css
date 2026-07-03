@@ -667,6 +667,34 @@
       color: var(--detail-text-muted);
     }
     .changelog-version-new { color: var(--color-badge-added-fg); }
+    .changelog-freshness-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1rem;
+      height: 1.1rem;
+      margin-left: 0.4rem;
+      border-radius: 999px;
+      vertical-align: middle;
+      white-space: nowrap;
+      font-size: 0.75rem;
+      line-height: 1;
+    }
+    .changelog-freshness-up-to-date {
+      background: var(--color-dep-badge-ok-bg);
+      color: var(--color-dep-badge-ok-fg);
+      border: 1px solid var(--color-dep-badge-ok-border);
+    }
+    .changelog-freshness-update-available {
+      background: var(--color-dep-badge-warning-bg);
+      color: var(--color-dep-badge-warning-fg);
+      border: 1px solid var(--color-dep-badge-warning-border);
+    }
+    .changelog-freshness-query-failed {
+      background: var(--color-badge-removed-bg);
+      color: var(--color-badge-removed-fg);
+      border: 1px solid var(--color-badge-removed-border);
+    }
 
     /* ============================================================
        BUILD HISTORY (inside disclosure body)

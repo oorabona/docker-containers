@@ -199,6 +199,250 @@ compare_sboms() {
     log_info "Changelog: +$added -$removed ~$updated"
 }
 
+_enrich_changelog_latest_results() {
+    local queries_json="$1"
+    local helper="${_DEPENDENCY_FRESHNESS_HELPER:-${_SBOM_UTILS_DIR}/dependency-freshness.sh}"
+    local concurrency="${DEPENDENCY_FRESHNESS_CONCURRENCY:-4}"
+    local max_concurrency=16
+    local non_apk_encoded apk_encoded non_apk_results apk_results
+
+    [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || concurrency=4
+    if (( concurrency > max_concurrency )); then
+        concurrency="$max_concurrency"
+    fi
+    non_apk_results="[]"
+    apk_results="[]"
+
+    non_apk_encoded=$(jq -r '.[] | select(.pkg_type != "apk") | @base64' <<< "$queries_json")
+    if [[ -n "$non_apk_encoded" ]]; then
+        if (( concurrency > 1 )); then
+            non_apk_results=$(
+                printf '%s\n' "$non_apk_encoded" \
+                    | xargs -r -n1 -P "$concurrency" bash "$helper" __latest_worker \
+                    | jq -s '.'
+            )
+        else
+            non_apk_results=$(
+                while IFS= read -r encoded; do
+                    [[ -n "$encoded" ]] || continue
+                    bash "$helper" __latest_worker "$encoded"
+                done <<< "$non_apk_encoded" | jq -s '.'
+            )
+        fi
+    fi
+
+    # apk must run in the current shell so all package lookups share the same
+    # APKINDEX map; worker-per-package would accidentally download per package.
+    apk_encoded=$(jq -r '.[] | select(.pkg_type == "apk") | @base64' <<< "$queries_json")
+    if [[ -n "$apk_encoded" ]]; then
+        apk_results=$(
+            while IFS= read -r encoded; do
+                [[ -n "$encoded" ]] || continue
+                _freshness_latest_worker "$encoded"
+            done <<< "$apk_encoded" | jq -s '.'
+        )
+    fi
+
+    jq -cn --argjson non_apk "$non_apk_results" --argjson apk "$apk_results" '$non_apk + $apk'
+}
+
+_enrich_changelog_add_enrichment() {
+    local enrichments_json="$1"
+    local pkg_type="$2"
+    local name="$3"
+    local installed="$4"
+    local latest="$5"
+    local freshness="$6"
+    local latest_is_null=false
+
+    [[ -z "$latest" || "$latest" == "null" ]] && latest_is_null=true
+
+    jq -cn \
+        --argjson enrichments "$enrichments_json" \
+        --arg pkg_type "$pkg_type" \
+        --arg name "$name" \
+        --arg installed "$installed" \
+        --arg latest "$latest" \
+        --arg freshness "$freshness" \
+        --argjson latest_is_null "$latest_is_null" \
+        '$enrichments + [{
+            pkg_type: $pkg_type,
+            name: $name,
+            installed: $installed,
+            latest: (if $latest_is_null then null else $latest end),
+            freshness: $freshness
+        }]'
+}
+
+# Enrich compare_sboms output with latest-version and freshness metadata.
+# Usage: enrich_changelog <changelog_file> [current_sbom_file]
+enrich_changelog() {
+    local changelog_file="$1"
+    : "${2:-}"
+
+    if [[ ! -f "$changelog_file" ]]; then
+        log_warning "Changelog not found for freshness enrichment: $changelog_file"
+        return 0
+    fi
+    if ! jq -e '(.changes // empty | type) == "array"' "$changelog_file" >/dev/null 2>&1; then
+        log_warning "Changelog has no changes[] array; skipping freshness enrichment: $changelog_file"
+        return 0
+    fi
+
+    if ! declare -F _freshness_resolver_for >/dev/null 2>&1; then
+        if [[ -f "${_SBOM_UTILS_DIR}/dependency-freshness.sh" ]]; then
+            # shellcheck source=helpers/dependency-freshness.sh
+            source "${_SBOM_UTILS_DIR}/dependency-freshness.sh"
+        else
+            log_warning "dependency-freshness helper unavailable; skipping enrichment"
+            return 0
+        fi
+    fi
+
+    _freshness_reset_apk_state
+    unset DEPENDENCY_FRESHNESS_IMAGE_REF DEPENDENCY_FRESHNESS_PLATFORM
+
+    local lineage_file lineage_image_ref lineage_platform
+    lineage_file="${changelog_file%.changelog.json}.json"
+    if [[ -f "$lineage_file" ]]; then
+        lineage_image_ref=$(jq -r '.images.ghcr // .images.dockerhub // empty' "$lineage_file" 2>/dev/null || true)
+        if [[ -n "$lineage_image_ref" ]]; then
+            DEPENDENCY_FRESHNESS_IMAGE_REF="$lineage_image_ref"
+            export DEPENDENCY_FRESHNESS_IMAGE_REF
+        fi
+        lineage_platform=$(jq -r '.platform // empty' "$lineage_file" 2>/dev/null || true)
+        if [[ -n "$lineage_platform" ]]; then
+            DEPENDENCY_FRESHNESS_PLATFORM="$lineage_platform"
+            export DEPENDENCY_FRESHNESS_PLATFORM
+        fi
+    fi
+
+    local eligible_json eligible_count queries_json latest_results
+    local max_queries_raw max_queries query_count skipped_count skipped_queries_json skipped_results_json
+    eligible_json=$(jq -c '
+        [
+            .changes[]?
+            | select(.type == "updated" or .type == "added")
+            | select(.pkg_type != null and .name != null)
+            | {pkg_type, name, installed: (.to // .version // null)}
+            | select(.installed != null)
+        ]
+    ' "$changelog_file")
+    eligible_count=$(jq 'length' <<< "$eligible_json")
+    if [[ "$eligible_count" -eq 0 ]]; then
+        return 0
+    fi
+
+    queries_json=$(jq -c 'sort_by([.pkg_type, .name]) | unique_by([.pkg_type, .name])' <<< "$eligible_json")
+    query_count=$(jq 'length' <<< "$queries_json")
+    max_queries_raw="${DEPENDENCY_FRESHNESS_MAX_QUERIES:-200}"
+    if [[ "$max_queries_raw" =~ ^[0-9]+$ ]]; then
+        max_queries=$((10#$max_queries_raw))
+    else
+        max_queries=200
+    fi
+    skipped_results_json="[]"
+    if (( query_count > max_queries )); then
+        skipped_count=$((query_count - max_queries))
+        skipped_queries_json=$(jq -c --argjson max "$max_queries" '.[$max:]' <<< "$queries_json")
+        skipped_results_json=$(jq -c '
+            map({
+                pkg_type,
+                name,
+                latest: null,
+                query_failed: false,
+                skipped: true
+            })
+        ' <<< "$skipped_queries_json")
+        queries_json=$(jq -c --argjson max "$max_queries" '.[0:$max]' <<< "$queries_json")
+        log_warning "Dependency freshness query cap reached: checking ${max_queries} of ${query_count} unique packages; skipped ${skipped_count} packages as not-computed (set DEPENDENCY_FRESHNESS_MAX_QUERIES to adjust)"
+    fi
+
+    if ! latest_results=$(_enrich_changelog_latest_results "$queries_json"); then
+        log_warning "Dependency freshness latest-version batch failed; marking affected checks as query-failed"
+        latest_results="[]"
+    elif ! jq -e 'type == "array"' <<< "$latest_results" >/dev/null 2>&1; then
+        log_warning "Dependency freshness latest-version batch returned malformed JSON; marking affected checks as query-failed"
+        latest_results="[]"
+    fi
+    latest_results=$(jq -cn --argjson latest "$latest_results" --argjson skipped "$skipped_results_json" '$latest + $skipped')
+
+    local enrichments row pkg_type name installed resolver latest_record latest query_failed skipped freshness version_gt_status
+    enrichments="[]"
+    while IFS= read -r row; do
+        pkg_type=$(jq -r '.pkg_type' <<< "$row")
+        name=$(jq -r '.name' <<< "$row")
+        installed=$(jq -r '.installed' <<< "$row")
+        resolver=$(_freshness_resolver_for "$pkg_type")
+
+        latest_record=$(jq -c --arg pkg_type "$pkg_type" --arg name "$name" '
+            map(select(.pkg_type == $pkg_type and .name == $name)) | first // {latest:null, query_failed:true}
+        ' <<< "$latest_results")
+        latest=$(jq -r '.latest // "null"' <<< "$latest_record")
+        query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record")
+        skipped=$(jq -r 'if has("skipped") then .skipped else false end' <<< "$latest_record")
+        freshness="not-computed"
+
+        if [[ -z "$resolver" ]]; then
+            freshness="not-computed"
+        elif [[ "$skipped" == "true" ]]; then
+            freshness="not-computed"
+        elif [[ "$query_failed" == "true" ]]; then
+            freshness="query-failed"
+        elif [[ "$latest" != "null" && "$installed" == "$latest" ]]; then
+            freshness="up-to-date"
+        elif [[ "$latest" != "null" ]]; then
+            if _freshness_version_gt "$pkg_type" "$latest" "$installed"; then
+                freshness="update-available"
+            else
+                version_gt_status=$?
+                if [[ "$version_gt_status" -eq 2 ]]; then
+                    freshness="not-computed"
+                else
+                    freshness="up-to-date"
+                fi
+            fi
+        else
+            freshness="query-failed"
+        fi
+
+        enrichments=$(_enrich_changelog_add_enrichment \
+            "$enrichments" "$pkg_type" "$name" "$installed" "$latest" "$freshness")
+    done < <(jq -c '.[]' <<< "$eligible_json")
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    if jq --argjson enrichments "$enrichments" '
+        def installed_version: .to // .version;
+        ($enrichments
+            | map({
+                key: ([.pkg_type, .name, .installed] | @json),
+                value: {latest, freshness}
+              })
+            | from_entries) as $enrichment_map
+        | .changes = ((.changes // []) | map(
+            if (.type == "updated" or .type == "added") then
+                ([.pkg_type, .name, installed_version] | @json) as $key
+                | if $enrichment_map[$key] then . + $enrichment_map[$key] else . end
+            else
+                .
+            end
+          ))
+    ' "$changelog_file" > "$tmp_file"; then
+        if mv "$tmp_file" "$changelog_file"; then
+            log_info "Dependency freshness enriched: $changelog_file"
+            return 0
+        fi
+        rm -f "$tmp_file"
+        log_warning "Dependency freshness enrichment failed while writing changelog: $changelog_file"
+        return 1
+    else
+        rm -f "$tmp_file"
+        log_warning "Dependency freshness enrichment failed; leaving changelog unchanged: $changelog_file"
+        return 1
+    fi
+}
+
 # Append build metadata to history file (keeps last N entries)
 # Usage: append_build_history <lineage_file> <sbom_summary_json> <history_file> [max_entries] [changelog_file]
 # lineage_file: build lineage JSON with built_at, version, build_digest

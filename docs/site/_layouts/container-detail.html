@@ -808,7 +808,7 @@
                           {%- if _svv.build_args %} data-build-args="{{ _svv.build_args | jsonify | escape }}"{% endif -%}
                           {%- if _svv.sbom_summary %} data-sbom-summary='{{ _svv.sbom_summary | jsonify }}'{% endif -%}
                           {%- if _svv.sbom_packages %} data-sbom-packages='{{ _svv.sbom_packages | jsonify }}'{% endif -%}
-                          {%- if _svv.changelog %} data-changelog='{{ _svv.changelog | jsonify }}'{% endif -%}
+                          {%- if _svv.changelog %} data-changelog='{{ _svv.changelog | jsonify | escape }}'{% endif -%}
                           {%- if _svv.build_history %} data-build-history='{{ _svv.build_history | jsonify }}'{% endif -%}
                           {%- if _svv.attestation_url %} data-attestation-url="{{ _svv.attestation_url }}"{% endif -%}
                           {%- if _svv.attestation_id %} data-attestation-id="{{ _svv.attestation_id }}"{% endif -%}
@@ -864,7 +864,7 @@
                                   {%- if variant.build_args %} data-build-args="{{ variant.build_args | jsonify | escape }}"{% endif -%}
                                   {%- if variant.sbom_summary %} data-sbom-summary='{{ variant.sbom_summary | jsonify }}'{% endif -%}
                                   {%- if variant.sbom_packages %} data-sbom-packages='{{ variant.sbom_packages | jsonify }}'{% endif -%}
-                                  {%- if variant.changelog %} data-changelog='{{ variant.changelog | jsonify }}'{% endif -%}
+                                  {%- if variant.changelog %} data-changelog='{{ variant.changelog | jsonify | escape }}'{% endif -%}
                                   {%- if variant.build_history %} data-build-history='{{ variant.build_history | jsonify }}'{% endif -%}
                                   {%- if variant.attestation_url %} data-attestation-url="{{ variant.attestation_url }}"{% endif -%}
                                   {%- if variant.attestation_id %} data-attestation-id="{{ variant.attestation_id }}"{% endif -%}
@@ -1015,7 +1015,7 @@
           <div id="sbom-data-carrier" style="display:none;"
                {% if page.sbom_summary %}data-sbom-summary='{{ page.sbom_summary | jsonify }}'{% endif %}
                {% if page.sbom_packages %}data-sbom-packages='{{ page.sbom_packages | jsonify }}'{% endif %}
-               {% if page.changelog %}data-changelog='{{ page.changelog | jsonify }}'{% endif %}
+               {% if page.changelog %}data-changelog='{{ page.changelog | jsonify | escape }}'{% endif %}
                {% if page.build_history %}data-build-history='{{ page.build_history | jsonify }}'{% endif %}>
           </div>
           {% endif %}

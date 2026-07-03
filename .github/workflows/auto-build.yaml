@@ -3903,6 +3903,7 @@ jobs:
         id: process-sboms
         run: |
           source helpers/sbom-utils.sh
+          source helpers/dependency-freshness.sh
 
           if [[ ! -d ".build-lineage-sbom-artifacts" ]]; then
             echo "No SBOM artifacts found — skipping processing"
@@ -3936,7 +3937,8 @@ jobs:
             else
               if compare_sboms "$sbom_file" "$cached_sbom" \
                     ".build-lineage/${container_tag}.changelog.json"; then
-                : # success path; compare_ok stays true
+                enrich_changelog ".build-lineage/${container_tag}.changelog.json" "$sbom_file" \
+                  || echo "::warning::dependency freshness enrichment failed for $container_tag"
               else
                 # Source is valid JSON but compare failed — most likely cause is a
                 # malformed cached SBOM. Self-heal by replacing the cache; this lets
