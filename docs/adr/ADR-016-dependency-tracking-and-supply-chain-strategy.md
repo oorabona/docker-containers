@@ -1,4 +1,4 @@
-# ADR-014: Dependency Tracking & Supply-Chain Strategy
+# ADR-016: Dependency Tracking & Supply-Chain Strategy
 
 - **Status:** Accepted
 - **Date:** 2026-06-20

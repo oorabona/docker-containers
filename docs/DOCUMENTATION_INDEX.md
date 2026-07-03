@@ -31,6 +31,7 @@
 | [ADR-013](adr/ADR-013-dependency-ordered-builds.md) | Dependency-ordered container builds (bake engine) |
 | [ADR-014](adr/ADR-014-postbuild-supply-chain-convergence.md) | Post-build supply-chain convergence |
 | [ADR-015](adr/ADR-015-postgres-final-build-to-bake.md) | postgres final build → bake (extension-container framework) |
+| [ADR-016](adr/ADR-016-dependency-tracking-and-supply-chain-strategy.md) | Dependency tracking & supply-chain strategy |
 
 ## Container Documentation
 
