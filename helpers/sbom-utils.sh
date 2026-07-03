@@ -318,6 +318,7 @@ enrich_changelog() {
     fi
 
     local eligible_json eligible_count queries_json latest_results
+    local max_queries_raw max_queries query_count skipped_count skipped_queries_json skipped_results_json
     eligible_json=$(jq -c '
         [
             .changes[]?
@@ -332,7 +333,31 @@ enrich_changelog() {
         return 0
     fi
 
-    queries_json=$(jq -c 'unique_by([.pkg_type, .name])' <<< "$eligible_json")
+    queries_json=$(jq -c 'sort_by([.pkg_type, .name]) | unique_by([.pkg_type, .name])' <<< "$eligible_json")
+    query_count=$(jq 'length' <<< "$queries_json")
+    max_queries_raw="${DEPENDENCY_FRESHNESS_MAX_QUERIES:-200}"
+    if [[ "$max_queries_raw" =~ ^[0-9]+$ ]]; then
+        max_queries=$((10#$max_queries_raw))
+    else
+        max_queries=200
+    fi
+    skipped_results_json="[]"
+    if (( query_count > max_queries )); then
+        skipped_count=$((query_count - max_queries))
+        skipped_queries_json=$(jq -c --argjson max "$max_queries" '.[$max:]' <<< "$queries_json")
+        skipped_results_json=$(jq -c '
+            map({
+                pkg_type,
+                name,
+                latest: null,
+                query_failed: false,
+                skipped: true
+            })
+        ' <<< "$skipped_queries_json")
+        queries_json=$(jq -c --argjson max "$max_queries" '.[0:$max]' <<< "$queries_json")
+        log_warning "Dependency freshness query cap reached: checking ${max_queries} of ${query_count} unique packages; skipped ${skipped_count} packages as not-computed (set DEPENDENCY_FRESHNESS_MAX_QUERIES to adjust)"
+    fi
+
     if ! latest_results=$(_enrich_changelog_latest_results "$queries_json"); then
         log_warning "Dependency freshness latest-version batch failed; marking affected checks as query-failed"
         latest_results="[]"
@@ -340,8 +365,9 @@ enrich_changelog() {
         log_warning "Dependency freshness latest-version batch returned malformed JSON; marking affected checks as query-failed"
         latest_results="[]"
     fi
+    latest_results=$(jq -cn --argjson latest "$latest_results" --argjson skipped "$skipped_results_json" '$latest + $skipped')
 
-    local enrichments row pkg_type name installed resolver latest_record latest query_failed freshness
+    local enrichments row pkg_type name installed resolver latest_record latest query_failed skipped freshness version_gt_status
     enrichments="[]"
     while IFS= read -r row; do
         pkg_type=$(jq -r '.pkg_type' <<< "$row")
@@ -354,16 +380,28 @@ enrich_changelog() {
         ' <<< "$latest_results")
         latest=$(jq -r '.latest // "null"' <<< "$latest_record")
         query_failed=$(jq -r 'if has("query_failed") then .query_failed else true end' <<< "$latest_record")
+        skipped=$(jq -r 'if has("skipped") then .skipped else false end' <<< "$latest_record")
         freshness="not-computed"
 
         if [[ -z "$resolver" ]]; then
+            freshness="not-computed"
+        elif [[ "$skipped" == "true" ]]; then
             freshness="not-computed"
         elif [[ "$query_failed" == "true" ]]; then
             freshness="query-failed"
         elif [[ "$latest" != "null" && "$installed" == "$latest" ]]; then
             freshness="up-to-date"
         elif [[ "$latest" != "null" ]]; then
-            freshness="update-available"
+            if _freshness_version_gt "$pkg_type" "$latest" "$installed"; then
+                freshness="update-available"
+            else
+                version_gt_status=$?
+                if [[ "$version_gt_status" -eq 2 ]]; then
+                    freshness="not-computed"
+                else
+                    freshness="up-to-date"
+                fi
+            fi
         else
             freshness="query-failed"
         fi

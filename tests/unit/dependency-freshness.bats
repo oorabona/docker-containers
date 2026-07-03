@@ -127,6 +127,150 @@ write_apk_index_tarball() {
     [[ "$(grep -c '^latest npm dupe$' "$CALL_LOG")" -eq 1 ]]
 }
 
+@test "enrich_changelog marks update-available only when latest is greater than installed" {
+    cat > "$CHANGELOG" <<'JSON'
+{
+  "generated_at": "2026-07-03T00:00:00Z",
+  "summary": { "added": 0, "removed": 0, "updated": 6 },
+  "changes": [
+    { "type": "updated", "name": "regressed", "pkg_type": "npm", "from": "2.9.0", "to": "3.0.0" },
+    { "type": "updated", "name": "advanced", "pkg_type": "gem", "from": "1.1.0", "to": "1.2.0" },
+    { "type": "updated", "name": "equal", "pkg_type": "pypi", "from": "4.5.5", "to": "4.5.6" },
+    { "type": "updated", "name": "suffix", "pkg_type": "npm", "from": "1.2.2", "to": "1.2.3-beta.1" },
+    { "type": "updated", "name": "apk-regressed", "pkg_type": "apk", "from": "2.9.0-r0", "to": "3.0.0-r0" },
+    { "type": "updated", "name": "unparseable", "pkg_type": "npm", "from": "older", "to": "release-candidate" }
+  ]
+}
+JSON
+
+    cat > "$FIXTURE" <<'JSON'
+{
+  "latest": {
+    "npm": {
+      "regressed": { "latest": "2.0.0" },
+      "suffix": { "latest": "1.2.4-beta.1" },
+      "unparseable": { "latest": "2.0.0" }
+    },
+    "gem": {
+      "advanced": { "latest": "1.3.0" }
+    },
+    "pypi": {
+      "equal": { "latest": "4.5.6" }
+    },
+    "apk": {
+      "apk-regressed": { "latest": "2.0.0-r0" }
+    }
+  }
+}
+JSON
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        bash -c 'source "$1"; source "$2"; enrich_changelog "$3"' \
+        _ "$RESOLVER" "$SBOM_UTILS" "$CHANGELOG"
+
+    [[ "$status" -eq 0 ]]
+    jq -e '
+      .changes[]
+      | select(.name == "regressed")
+      | .latest == "2.0.0"
+        and .freshness == "up-to-date"
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "advanced")
+      | .latest == "1.3.0"
+        and .freshness == "update-available"
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "equal")
+      | .latest == "4.5.6"
+        and .freshness == "up-to-date"
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "suffix")
+      | .latest == "1.2.4-beta.1"
+        and .freshness == "update-available"
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "apk-regressed")
+      | .latest == "2.0.0-r0"
+        and .freshness == "up-to-date"
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      .changes[]
+      | select(.name == "unparseable")
+      | .latest == "2.0.0"
+        and .freshness == "not-computed"
+    ' "$CHANGELOG" >/dev/null
+}
+
+@test "enrich_changelog caps total latest-version queries and marks skipped packages not-computed" {
+    local warning_log
+    warning_log="${TEST_TEMP_DIR}/warnings.log"
+
+    cat > "$CHANGELOG" <<'JSON'
+{
+  "generated_at": "2026-07-03T00:00:00Z",
+  "summary": { "added": 0, "removed": 0, "updated": 4 },
+  "changes": [
+    { "type": "updated", "name": "zeta", "pkg_type": "npm", "from": "1.0.0", "to": "1.1.0" },
+    { "type": "updated", "name": "beta", "pkg_type": "npm", "from": "1.0.0", "to": "1.1.0" },
+    { "type": "updated", "name": "alpha", "pkg_type": "npm", "from": "1.0.0", "to": "1.1.0" },
+    { "type": "updated", "name": "gamma", "pkg_type": "npm", "from": "1.0.0", "to": "1.1.0" }
+  ]
+}
+JSON
+
+    cat > "$FIXTURE" <<'JSON'
+{
+  "latest": {
+    "npm": {
+      "alpha": { "latest": "2.0.0" },
+      "beta": { "latest": "2.0.0" },
+      "gamma": { "latest": "2.0.0" },
+      "zeta": { "latest": "2.0.0" }
+    }
+  }
+}
+JSON
+
+    run env \
+        _DEPENDENCY_FRESHNESS_FIXTURE="$FIXTURE" \
+        DEPENDENCY_FRESHNESS_CALL_LOG="$CALL_LOG" \
+        DEPENDENCY_FRESHNESS_CONCURRENCY=1 \
+        DEPENDENCY_FRESHNESS_MAX_QUERIES=2 \
+        bash -c 'source "$1"; source "$2"; enrich_changelog "$3" 2>"$4"' \
+        _ "$RESOLVER" "$SBOM_UTILS" "$CHANGELOG" "$warning_log"
+
+    [[ "$status" -eq 0 ]]
+    grep -q '^latest npm alpha$' "$CALL_LOG"
+    grep -q '^latest npm beta$' "$CALL_LOG"
+    if grep -q '^latest npm gamma$' "$CALL_LOG"; then
+        fail "gamma should have been skipped by the freshness query cap"
+    fi
+    if grep -q '^latest npm zeta$' "$CALL_LOG"; then
+        fail "zeta should have been skipped by the freshness query cap"
+    fi
+    jq -e '
+      [.changes[]
+       | select(.name == "alpha" or .name == "beta")
+       | .latest == "2.0.0" and .freshness == "update-available"]
+      | all
+    ' "$CHANGELOG" >/dev/null
+    jq -e '
+      [.changes[]
+       | select(.name == "gamma" or .name == "zeta")
+       | .latest == null and .freshness == "not-computed"]
+      | all
+    ' "$CHANGELOG" >/dev/null
+    grep -q 'Dependency freshness query cap reached: checking 2 of 4 unique packages; skipped 2 packages as not-computed' "$warning_log"
+}
+
 @test "apk repository discovery copies repositories without running image code" {
     local fakebin docker_args repos_file
     fakebin="${TEST_TEMP_DIR}/bin"
@@ -174,7 +318,9 @@ SH
     grep -q '^create --platform linux/amd64 example:test$' "$docker_args"
     grep -q '^cp created-container:/etc/apk/repositories ' "$docker_args"
     grep -q '^rm created-container$' "$docker_args"
-    ! grep -q '^run ' "$docker_args"
+    if grep -q '^run ' "$docker_args"; then
+        fail "docker run should not be used for APK repository discovery"
+    fi
 }
 
 @test "apk repository URLs skip tagged repositories and reject untrusted fetch targets" {
@@ -256,7 +402,9 @@ SH
 
     [[ "$status" -eq 0 ]]
     jq -e '.latest == "1.0.0-r0" and .query_failed == false' "$result_file" >/dev/null
-    ! grep -q '/edge/main/' "$download_log"
+    if grep -q '/edge/main/' "$download_log"; then
+        fail "tagged APK repositories should not be downloaded"
+    fi
 }
 
 @test "enrich_changelog resets APK image platform and index state per container in one shell" {
@@ -526,7 +674,9 @@ JSON
       | .latest == null
         and .freshness == "not-computed"
     ' "$CHANGELOG" >/dev/null
-    [[ ! -f "$CALL_LOG" ]] || ! grep -q '^latest deb libssl3$' "$CALL_LOG"
+    if [[ -f "$CALL_LOG" ]] && grep -q '^latest deb libssl3$' "$CALL_LOG"; then
+        fail "deb packages should not be queried for dependency freshness"
+    fi
 }
 
 @test "PyPI-only changelog resolves only the changed PyPI package" {
@@ -559,8 +709,12 @@ JSON
 
     [[ "$status" -eq 0 ]]
     grep -q '^latest pypi requests$' "$CALL_LOG"
-    ! grep -q '^latest npm ' "$CALL_LOG"
-    ! grep -q '^latest gem ' "$CALL_LOG"
+    if grep -q '^latest npm ' "$CALL_LOG"; then
+        fail "PyPI-only changelog should not query npm"
+    fi
+    if grep -q '^latest gem ' "$CALL_LOG"; then
+        fail "PyPI-only changelog should not query gem"
+    fi
 }
 
 @test "container detail layout escapes changelog JSON data attributes" {
@@ -568,7 +722,9 @@ JSON
     layout="${PROJECT_ROOT}/docs/site/_layouts/container-detail.html"
 
     [[ "$(grep -c "data-changelog='{{ .* | jsonify | escape }}" "$layout")" -eq 3 ]]
-    ! grep -q "data-changelog='{{ .* | jsonify }}'" "$layout"
+    if grep -q "data-changelog='{{ .* | jsonify }}'" "$layout"; then
+        fail "changelog JSON data attributes should be escaped"
+    fi
 }
 
 @test "enrich_changelog returns nonzero when final changelog write fails" {
