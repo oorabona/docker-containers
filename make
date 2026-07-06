@@ -91,14 +91,10 @@ list_containers() {
 check_updates_current_blocks_latest() {
   local current_version=$1
   local latest_version=$2
-  local compare_rc
+  local compare_current=$current_version
+  local compare_latest=$latest_version
 
-  version_is_greater "$current_version" "$latest_version"
-  compare_rc=$?
-  if [ "$compare_rc" -eq 0 ]; then
-    return 0
-  fi
-  if [ "$compare_rc" -ne 2 ]; then
+  if ! command -v dpkg >/dev/null 2>&1; then
     return 1
   fi
 
@@ -108,23 +104,20 @@ check_updates_current_blocks_latest() {
 
   # Unknown flags in some older version.sh files fall through to the normal
   # latest-version lookup. Require an explicit image-like source to opt in.
-  if [[ -z "$numeric_alias_image" || -z "$numeric_alias_pattern" || "$numeric_alias_image" != */* ]]; then
-    return 1
+  if [[ -n "$numeric_alias_image" && -n "$numeric_alias_pattern" && "$numeric_alias_image" == */* ]]; then
+    local current_numeric_alias latest_numeric_alias
+    current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
+    latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
+
+    if [[ -z "$current_numeric_alias" || -z "$latest_numeric_alias" ]]; then
+      return 1
+    fi
+
+    compare_current=$current_numeric_alias
+    compare_latest=$latest_numeric_alias
   fi
 
-  local current_numeric_alias latest_numeric_alias
-  current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n') || return 1
-  latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n') || return 1
-
-  if [[ -z "$current_numeric_alias" || -z "$latest_numeric_alias" ]]; then
-    return 1
-  fi
-
-  if version_is_greater "$current_numeric_alias" "$latest_numeric_alias"; then
-    return 0
-  fi
-
-  return 1
+  dpkg --compare-versions "$compare_current" gt "$compare_latest" 2>/dev/null
 }
 
 # Show project-internal dependency graph for a container

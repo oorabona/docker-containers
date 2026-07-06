@@ -834,7 +834,7 @@ EOF
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
-    # Accepted fleet-safe fallback: any non-numeric-tuple-affecting suffix change is an update, not ordered -rN magnitude semantics.
+    # dpkg compares Debian-style revision suffixes numerically, so r1 is a real update over r0.
     create_default_check_updates_fixture "1.2.3-r0" "1.2.3-r1" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
 
     run run_check_updates ansible
@@ -844,6 +844,21 @@ EOF
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ "$update_available" == "true" ]]
     [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: revision-suffix downgrade is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.2.3-r10" "1.2.3-r2" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
 }
 
 @test "check_updates default path: ansible downgrade regression is not an update" {
