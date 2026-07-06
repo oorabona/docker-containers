@@ -782,6 +782,39 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
+@test "check_updates default path: digit-leading versions skip numeric alias probes" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    call_log="${TEST_DIR}/numeric-alias-calls.log"
+
+    printf '#!/bin/bash\n' > ansible/version.sh
+    printf 'CALL_LOG=%q\n' "$call_log" >> ansible/version.sh
+    cat >> ansible/version.sh <<'EOF'
+REGISTRY_PATTERN='^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$'
+if [[ "${1:-}" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi
+if [[ "${1:-}" == "--numeric-alias-image" || "${1:-}" == "--numeric-alias-pattern" ]]; then
+    printf '%s\n' "$1" >> "$CALL_LOG"
+    echo "unexpected numeric alias probe" >&2
+    exit 77
+fi
+echo "1.1.0-ubuntu"
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+    if [[ -s "$call_log" ]]; then
+        fail "numeric alias flags should not be invoked for digit-leading versions"
+    fi
+}
+
 @test "check_updates default path: v-prefixed versions flag genuine upgrades" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -914,11 +947,11 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
-@test "check_updates default path: unparseable versions without numeric alias remain permissive" {
+@test "check_updates default path: testing and stable labels without numeric alias remain permissive" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
-    create_default_check_updates_fixture "stable" "testing" "^(stable|testing)$"
+    create_default_check_updates_fixture "testing" "stable" "^(stable|testing)$"
 
     run run_check_updates ansible
     [ "$status" -eq 0 ]

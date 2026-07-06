@@ -91,11 +91,25 @@ list_containers() {
 check_updates_current_blocks_latest() {
   local current_version=$1
   local latest_version=$2
-  local compare_current=$current_version
-  local compare_latest=$latest_version
+  local normalized_current=$current_version
+  local normalized_latest=$latest_version
 
   if ! command -v dpkg >/dev/null 2>&1; then
     return 1
+  fi
+
+  case "$normalized_current" in
+    v*) normalized_current=${normalized_current#v} ;;
+    V*) normalized_current=${normalized_current#V} ;;
+  esac
+  case "$normalized_latest" in
+    v*) normalized_latest=${normalized_latest#v} ;;
+    V*) normalized_latest=${normalized_latest#V} ;;
+  esac
+
+  if [[ "$normalized_current" =~ ^[0-9] && "$normalized_latest" =~ ^[0-9] ]]; then
+    dpkg --compare-versions "$normalized_current" gt "$normalized_latest" 2>/dev/null
+    return $?
   fi
 
   local numeric_alias_image numeric_alias_pattern
@@ -113,11 +127,15 @@ check_updates_current_blocks_latest() {
       return 1
     fi
 
-    compare_current=$current_numeric_alias
-    compare_latest=$latest_numeric_alias
+    if [[ ! "$current_numeric_alias" =~ ^[0-9] || ! "$latest_numeric_alias" =~ ^[0-9] ]]; then
+      return 1
+    fi
+
+    dpkg --compare-versions "$current_numeric_alias" gt "$latest_numeric_alias" 2>/dev/null
+    return $?
   fi
 
-  dpkg --compare-versions "$compare_current" gt "$compare_latest" 2>/dev/null
+  return 1
 }
 
 # Show project-internal dependency graph for a container
