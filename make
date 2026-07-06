@@ -17,6 +17,7 @@ export DOCKEROPTS="${DOCKEROPTS:-}"
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 source "$(dirname "$0")/helpers/registry-utils.sh"
+source "$(dirname "$0")/helpers/version-utils.sh"
 source "$(dirname "$0")/helpers/sbom-utils.sh"
 source "$(dirname "$0")/helpers/dependency-graph.sh"
 
@@ -85,6 +86,56 @@ list_containers() {
   for target in $targets ; do
     echo "$target"
   done
+}
+
+check_updates_current_blocks_latest() {
+  local current_version=$1
+  local latest_version=$2
+  local normalized_current=$current_version
+  local normalized_latest=$latest_version
+
+  if ! command -v dpkg >/dev/null 2>&1; then
+    return 1
+  fi
+
+  case "$normalized_current" in
+    v*) normalized_current=${normalized_current#v} ;;
+    V*) normalized_current=${normalized_current#V} ;;
+  esac
+  case "$normalized_latest" in
+    v*) normalized_latest=${normalized_latest#v} ;;
+    V*) normalized_latest=${normalized_latest#V} ;;
+  esac
+
+  if [[ "$normalized_current" =~ ^[0-9] && "$normalized_latest" =~ ^[0-9] ]]; then
+    dpkg --compare-versions "$normalized_current" gt "$normalized_latest" 2>/dev/null
+    return $?
+  fi
+
+  local numeric_alias_image numeric_alias_pattern
+  numeric_alias_image=$(./version.sh --numeric-alias-image 2>/dev/null | head -1 | tr -d '\n' || true)
+  numeric_alias_pattern=$(./version.sh --numeric-alias-pattern 2>/dev/null | head -1 | tr -d '\n' || true)
+
+  # Unknown flags in some older version.sh files fall through to the normal
+  # latest-version lookup. Require an explicit image-like source to opt in.
+  if [[ -n "$numeric_alias_image" && -n "$numeric_alias_pattern" && "$numeric_alias_image" == */* ]]; then
+    local current_numeric_alias latest_numeric_alias
+    current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
+    latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n' || true)
+
+    if [[ -z "$current_numeric_alias" || -z "$latest_numeric_alias" ]]; then
+      return 1
+    fi
+
+    if [[ ! "$current_numeric_alias" =~ ^[0-9] || ! "$latest_numeric_alias" =~ ^[0-9] ]]; then
+      return 1
+    fi
+
+    dpkg --compare-versions "$current_numeric_alias" gt "$latest_numeric_alias" 2>/dev/null
+    return $?
+  fi
+
+  return 1
 }
 
 # Show project-internal dependency graph for a container
@@ -517,14 +568,18 @@ check_updates() {
         local update_available="false"
         local status="up_to_date"
 
-        if [ "$current_version" = "no-published-version" ]; then
+        if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
           if [ -n "$latest_version" ]; then
             update_available="true"
             status="new-container"
           fi
-        elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
-          update_available="true"
-          status="update-available"
+        elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
+          if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
+            :
+          else
+            update_available="true"
+            status="update-available"
+          fi
         fi
 
         # Build per-major JSON entry.
@@ -570,14 +625,18 @@ check_updates() {
     local update_available="false"
     local status="up_to_date"
 
-    if [ "$current_version" = "no-published-version" ]; then
+    if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
         status="new-container"
       fi
-    elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
-      update_available="true"
-      status="update-available"
+    elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
+      if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
+        :
+      else
+        update_available="true"
+        status="update-available"
+      fi
     fi
 
     # Build JSON object for this container

@@ -8,6 +8,16 @@ if [ "$1" = "--registry-pattern" ]; then
     exit 0
 fi
 
+if [ "$1" = "--numeric-alias-image" ]; then
+    echo "library/debian"
+    exit 0
+fi
+
+if [ "$1" = "--numeric-alias-pattern" ]; then
+    echo "^[0-9]+$"
+    exit 0
+fi
+
 # Debian tags are plain codenames (trixie/bookworm/bullseye) — no suffix.
 if [ "$1" = "--tag-suffix" ]; then
     echo ""

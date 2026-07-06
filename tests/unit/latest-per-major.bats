@@ -414,8 +414,20 @@ EOF
     printf '#!/bin/bash\n' > helpers/latest-docker-tag
     printf '# Args: <image> <pattern>\n' >> helpers/latest-docker-tag
     printf 'pattern="$2"\n' >> helpers/latest-docker-tag
-    printf 'if echo "$pattern" | grep -qE "^\\^7"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
-    printf 'if echo "$pattern" | grep -qE "^\\^6"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^7"; then\n' >> helpers/latest-docker-tag
+    if [[ "$mock_ghcr_7" == "__EMPTY_FAILURE__" ]]; then
+        printf '  exit 1\n' >> helpers/latest-docker-tag
+    else
+        printf '  echo "%s"; exit 0\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
+    fi
+    printf 'fi\n' >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^6"; then\n' >> helpers/latest-docker-tag
+    if [[ "$mock_ghcr_6" == "__EMPTY_FAILURE__" ]]; then
+        printf '  exit 1\n' >> helpers/latest-docker-tag
+    else
+        printf '  echo "%s"; exit 0\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
+    fi
+    printf 'fi\n' >> helpers/latest-docker-tag
     printf 'exit 1\n' >> helpers/latest-docker-tag
     chmod +x helpers/latest-docker-tag
 
@@ -456,6 +468,7 @@ EOF
 EOF
 
     cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
 
     # Copy make to $TEST_DIR so `./make check-updates` runs with TEST_DIR as $(dirname $0).
     # This ensures `source "$(dirname "$0")/helpers/..."` resolves to the TEST_DIR stubs.
@@ -469,6 +482,196 @@ run_check_updates() {
     local container="${1:-wordpress}"
     # Suppress docker-compose availability check errors from make
     ./make check-updates "$container" 2>/dev/null
+}
+
+create_default_check_updates_fixture() {
+    local mock_current="${1:-1.0.0-ubuntu}"
+    local mock_latest="${2:-2.0.0-ubuntu}"
+    local registry_pattern="${3:-^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$}"
+
+    mkdir -p ansible helpers scripts
+
+    cat > ansible/variants.yaml <<'EOF'
+build:
+  requires_extensions: false
+versions:
+  - tag: 1.0.0-ubuntu
+EOF
+
+    printf '#!/bin/bash\n' > ansible/version.sh
+    printf "REGISTRY_PATTERN='%s'\n" "$registry_pattern" >> ansible/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi\n' >> ansible/version.sh
+    printf 'echo "%s"\n' "$mock_latest" >> ansible/version.sh
+    chmod +x ansible/version.sh
+
+    printf '#!/bin/bash\n' > helpers/latest-docker-tag
+    if [[ "$mock_current" == "__NO_PUBLISHED__" ]]; then
+        printf 'echo "no-published-version"\n' >> helpers/latest-docker-tag
+        printf 'exit 0\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_current" == "__EMPTY_FAILURE__" ]]; then
+        printf 'exit 1\n' >> helpers/latest-docker-tag
+    else
+        printf 'echo "%s"\n' "$mock_current" >> helpers/latest-docker-tag
+        printf 'exit 0\n' >> helpers/latest-docker-tag
+    fi
+    chmod +x helpers/latest-docker-tag
+
+    cat > helpers/logging.sh <<'EOF'
+log_error()   { echo "ERROR: $*" >&2; }
+log_warning() { echo "WARN: $*"  >&2; }
+log_info()    { echo "INFO: $*"  >&2; }
+log_success() { :; }
+log_help()    { :; }
+export DOCKER="${DOCKER:-docker}"
+export SKOPEO="${SKOPEO:-skopeo}"
+EOF
+
+    cat > helpers/registry-utils.sh <<'EOF'
+list_containers() {
+    find "${1:-.}" -maxdepth 1 -mindepth 1 -type d \
+        ! -name '.*' ! -name 'helpers' ! -name 'scripts' ! -name 'bin' \
+        2>/dev/null | xargs -I{} basename {} 2>/dev/null
+}
+has_dockerfile()  { return 0; }
+EOF
+
+    cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    cat > scripts/check-version.sh <<'EOF'
+get_build_version() { echo "${2:-latest}"; return 0; }
+EOF
+
+    cat > scripts/build-container.sh <<'EOF'
+EOF
+    cat > scripts/push-container.sh <<'EOF'
+EOF
+
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+
+    cp "$ORIG_DIR/make" ./make
+    chmod +x ./make
+}
+
+create_debian_check_updates_fixture() {
+    local mock_current="${1:-trixie}"
+    local mock_latest="${2:-bookworm}"
+
+    mkdir -p debian helpers scripts bin
+
+    cat > debian/variants.yaml <<'EOF'
+build:
+  requires_extensions: false
+versions:
+  - tag: trixie
+EOF
+
+    printf '#!/bin/bash\n' > debian/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "^(trixie|bookworm|bullseye)$"; exit 0; fi\n' >> debian/version.sh
+    printf 'if [[ "$1" == "--numeric-alias-image" ]]; then echo "library/debian"; exit 0; fi\n' >> debian/version.sh
+    printf 'if [[ "$1" == "--numeric-alias-pattern" ]]; then echo "^[0-9]+$"; exit 0; fi\n' >> debian/version.sh
+    printf 'echo "%s"\n' "$mock_latest" >> debian/version.sh
+    chmod +x debian/version.sh
+
+    cp "$ORIG_DIR/helpers/docker-tag" helpers/docker-tag
+    chmod +x helpers/docker-tag
+    ln -sf docker-tag helpers/latest-docker-tag
+
+    printf '#!/bin/bash\n' > bin/docker
+    printf 'set -euo pipefail\n' >> bin/docker
+    printf 'MOCK_CURRENT=%q\n' "$mock_current" >> bin/docker
+    cat >> bin/docker <<'EOF'
+if [[ "${1:-}" != "run" ]]; then
+    exit 99
+fi
+shift
+
+if [[ "${1:-}" == "--rm" ]]; then
+    shift
+fi
+
+shift # skopeo image
+command="${1:-}"
+shift
+
+case "$command" in
+    list-tags)
+        ref="${1:-}"
+        case "$ref" in
+            docker://ghcr.io/oorabona/debian)
+                printf '{"Repository":"ghcr.io/oorabona/debian","Tags":["%s"]}\n' "$MOCK_CURRENT"
+                ;;
+            docker://library/debian)
+                printf '{"Repository":"library/debian","Tags":["11","12","13","12.14","bookworm","trixie","bullseye"]}\n'
+                ;;
+            *)
+                exit 41
+                ;;
+        esac
+        ;;
+    inspect)
+        if [[ "${1:-}" == "--format" ]]; then
+            shift 2
+        fi
+        ref="${1:-}"
+        case "$ref" in
+            docker://library/debian:trixie|docker://library/debian:13)
+                echo "sha256:thirteen"
+                ;;
+            docker://library/debian:bookworm|docker://library/debian:12)
+                echo "sha256:twelve"
+                ;;
+            docker://library/debian:bullseye|docker://library/debian:11)
+                echo "sha256:eleven"
+                ;;
+            *)
+                exit 42
+                ;;
+        esac
+        ;;
+    *)
+        exit 98
+        ;;
+esac
+EOF
+    chmod +x bin/docker
+    export PATH="$TEST_DIR/bin:$PATH"
+
+    cat > helpers/logging.sh <<'EOF'
+log_error()   { echo "ERROR: $*" >&2; }
+log_warning() { echo "WARN: $*"  >&2; }
+log_info()    { echo "INFO: $*"  >&2; }
+log_success() { :; }
+log_help()    { :; }
+export DOCKER="${DOCKER:-docker}"
+export SKOPEO="${SKOPEO:-skopeo}"
+EOF
+
+    cat > helpers/registry-utils.sh <<'EOF'
+list_containers() {
+    find "${1:-.}" -maxdepth 1 -mindepth 1 -type d \
+        ! -name '.*' ! -name 'helpers' ! -name 'scripts' ! -name 'bin' \
+        2>/dev/null | xargs -I{} basename {} 2>/dev/null
+}
+has_dockerfile()  { return 0; }
+EOF
+
+    cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    cat > scripts/check-version.sh <<'EOF'
+get_build_version() { echo "${2:-latest}"; return 0; }
+EOF
+
+    cat > scripts/build-container.sh <<'EOF'
+EOF
+    cat > scripts/push-container.sh <<'EOF'
+EOF
+
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+
+    cp "$ORIG_DIR/make" ./make
+    chmod +x ./make
 }
 
 @test "check_updates multi-entry: emits one entry per retained major for latest_per_major container" {
@@ -528,6 +731,267 @@ run_check_updates() {
     update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
     [[ "$update_7" == "false" ]]
     [[ "$update_6" == "false" ]]
+}
+
+@test "check_updates multi-entry: downgrade in latest_per_major path is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # GHCR already has 6.9.5-alpine, but upstream resolution reports older 6.9.4-alpine.
+    create_check_updates_fixture "7.0.0-alpine" "6.9.5-alpine" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
+    [[ "$update_6" == "false" ]]
+    [[ "$status_6" == "up_to_date" ]]
+}
+
+@test "check_updates multi-entry: accepted empty current_version ambiguity reports new-container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
+    create_check_updates_fixture "7.0.0-alpine" "__EMPTY_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    current_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .current_version')
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
+    [[ -z "$current_6" ]]
+    [[ "$update_6" == "true" ]]
+    [[ "$status_6" == "new-container" ]]
+}
+
+@test "check_updates default path: genuine newer latest is an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: digit-leading versions skip numeric alias probes" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+    call_log="${TEST_DIR}/numeric-alias-calls.log"
+
+    printf '#!/bin/bash\n' > ansible/version.sh
+    printf 'CALL_LOG=%q\n' "$call_log" >> ansible/version.sh
+    cat >> ansible/version.sh <<'EOF'
+REGISTRY_PATTERN='^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$'
+if [[ "${1:-}" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi
+if [[ "${1:-}" == "--numeric-alias-image" || "${1:-}" == "--numeric-alias-pattern" ]]; then
+    printf '%s\n' "$1" >> "$CALL_LOG"
+    echo "unexpected numeric alias probe" >&2
+    exit 77
+fi
+echo "1.1.0-ubuntu"
+EOF
+    chmod +x ansible/version.sh
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+    if [[ -s "$call_log" ]]; then
+        fail "numeric alias flags should not be invoked for digit-leading versions"
+    fi
+}
+
+@test "check_updates default path: v-prefixed versions flag genuine upgrades" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "v2.6.17-alpine" "v2.6.18-alpine" "^v[0-9]+\.[0-9]+\.[0-9]+-alpine$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: v-prefixed downgrades are not updates" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "v2.6.17-alpine" "v2.6.16-alpine" "^v[0-9]+\.[0-9]+\.[0-9]+-alpine$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: accepted empty current_version ambiguity reports new-container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
+    create_default_check_updates_fixture "__EMPTY_FAILURE__" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ -z "$current_version" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "new-container" ]]
+}
+
+@test "check_updates default path: same numeric tuple with different suffix is an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # dpkg compares Debian-style revision suffixes numerically, so r1 is a real update over r0.
+    create_default_check_updates_fixture "1.2.3-r0" "1.2.3-r1" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: revision-suffix downgrade is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.2.3-r10" "1.2.3-r2" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: ansible downgrade regression is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "14.1.0-ubuntu" "14.0.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: debian codename downgrade is blocked through numeric alias digests" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    latest_version=$(echo "$output" | jq -r '.[0].latest_version')
+    [[ "$current_version" == "trixie" ]]
+    [[ "$latest_version" == "bookworm" ]]
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: debian codename upgrade remains an update through numeric alias digests" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "bookworm" "trixie"
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    latest_version=$(echo "$output" | jq -r '.[0].latest_version')
+    [[ "$current_version" == "bookworm" ]]
+    [[ "$latest_version" == "trixie" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: testing and stable labels without numeric alias remain permissive" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "testing" "stable" "^(stable|testing)$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: equal versions are not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "14.1.0-ubuntu" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: no published version remains a new container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__NO_PUBLISHED__" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$current_version" == "no-published-version" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "new-container" ]]
 }
 
 # ----------------------------------------------------------------
