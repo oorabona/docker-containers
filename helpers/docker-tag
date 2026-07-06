@@ -151,7 +151,7 @@ function resolve-numeric-alias() {
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
 
-    candidate_digest=$(docker-tag-digest "$image" "$candidate" 30) || return 1
+    candidate_digest=$(docker-tag-digest "$image" "$candidate" 30) || continue
     if [[ "$candidate_digest" == "$target_digest" ]]; then
       printf '%s\n' "$candidate"
       return 0
