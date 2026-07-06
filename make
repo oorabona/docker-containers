@@ -17,6 +17,7 @@ export DOCKEROPTS="${DOCKEROPTS:-}"
 # Source shared logging utilities
 source "$(dirname "$0")/helpers/logging.sh"
 source "$(dirname "$0")/helpers/registry-utils.sh"
+source "$(dirname "$0")/helpers/version-utils.sh"
 source "$(dirname "$0")/helpers/sbom-utils.sh"
 source "$(dirname "$0")/helpers/dependency-graph.sh"
 
@@ -522,7 +523,7 @@ check_updates() {
             update_available="true"
             status="new-container"
           fi
-        elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
+        elif [ -n "$latest_version" ] && version_is_greater "$latest_version" "$current_version"; then
           update_available="true"
           status="update-available"
         fi
@@ -575,7 +576,7 @@ check_updates() {
         update_available="true"
         status="new-container"
       fi
-    elif [ "$current_version" != "$latest_version" ] && [ -n "$latest_version" ]; then
+    elif [ -n "$latest_version" ] && version_is_greater "$latest_version" "$current_version"; then
       update_available="true"
       status="update-available"
     fi

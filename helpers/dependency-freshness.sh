@@ -11,6 +11,10 @@
 set -euo pipefail
 
 _DEPENDENCY_FRESHNESS_HELPER="${BASH_SOURCE[0]}"
+_DEPENDENCY_FRESHNESS_DIR="$(cd "$(dirname "${_DEPENDENCY_FRESHNESS_HELPER}")" && pwd)"
+
+# shellcheck source=./version-utils.sh
+source "${_DEPENDENCY_FRESHNESS_DIR}/version-utils.sh"
 
 _freshness_resolver_for() {
     case "${1:-}" in
@@ -60,61 +64,8 @@ _freshness_normalize_name() {
     esac
 }
 
-_freshness_numeric_tuple() {
-    local version="$1"
-    if [[ "$version" =~ ^([0-9]+([.][0-9]+)*) ]]; then
-        printf '%s\n' "${BASH_REMATCH[1]}"
-        return 0
-    fi
-    return 1
-}
-
-_freshness_normalize_numeric_component() {
-    local component="$1"
-    while [[ "$component" == 0* && "$component" != "0" ]]; do
-        component="${component#0}"
-    done
-    printf '%s\n' "$component"
-}
-
 _freshness_numeric_version_gt() {
-    local candidate="$1"
-    local current="$2"
-    local candidate_tuple current_tuple candidate_part current_part index max_parts
-    local -a candidate_parts current_parts
-
-    [[ -n "$candidate" && -n "$current" ]] || return 2
-    candidate_tuple=$(_freshness_numeric_tuple "$candidate") || return 2
-    current_tuple=$(_freshness_numeric_tuple "$current") || return 2
-
-    local IFS=.
-    read -r -a candidate_parts <<< "$candidate_tuple"
-    read -r -a current_parts <<< "$current_tuple"
-
-    max_parts="${#candidate_parts[@]}"
-    if (( ${#current_parts[@]} > max_parts )); then
-        max_parts="${#current_parts[@]}"
-    fi
-
-    for ((index = 0; index < max_parts; index++)); do
-        candidate_part=$(_freshness_normalize_numeric_component "${candidate_parts[index]:-0}")
-        current_part=$(_freshness_normalize_numeric_component "${current_parts[index]:-0}")
-
-        if (( ${#candidate_part} > ${#current_part} )); then
-            return 0
-        fi
-        if (( ${#candidate_part} < ${#current_part} )); then
-            return 1
-        fi
-        if [[ "$candidate_part" > "$current_part" ]]; then
-            return 0
-        fi
-        if [[ "$candidate_part" < "$current_part" ]]; then
-            return 1
-        fi
-    done
-
-    return 1
+    version_is_greater "$1" "$2"
 }
 
 _freshness_version_gt() {

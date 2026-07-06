@@ -456,6 +456,7 @@ EOF
 EOF
 
     cp "$ORIG_DIR/helpers/variant-utils.sh" helpers/
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
 
     # Copy make to $TEST_DIR so `./make check-updates` runs with TEST_DIR as $(dirname $0).
     # This ensures `source "$(dirname "$0")/helpers/..."` resolves to the TEST_DIR stubs.
@@ -469,6 +470,73 @@ run_check_updates() {
     local container="${1:-wordpress}"
     # Suppress docker-compose availability check errors from make
     ./make check-updates "$container" 2>/dev/null
+}
+
+create_default_check_updates_fixture() {
+    local mock_current="${1:-1.0.0-ubuntu}"
+    local mock_latest="${2:-2.0.0-ubuntu}"
+    local registry_pattern="${3:-^[0-9]+\.[0-9]+(\.[0-9]+)?-ubuntu$}"
+
+    mkdir -p ansible helpers scripts
+
+    cat > ansible/variants.yaml <<'EOF'
+build:
+  requires_extensions: false
+versions:
+  - tag: 1.0.0-ubuntu
+EOF
+
+    printf '#!/bin/bash\n' > ansible/version.sh
+    printf "REGISTRY_PATTERN='%s'\n" "$registry_pattern" >> ansible/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "$REGISTRY_PATTERN"; exit 0; fi\n' >> ansible/version.sh
+    printf 'echo "%s"\n' "$mock_latest" >> ansible/version.sh
+    chmod +x ansible/version.sh
+
+    printf '#!/bin/bash\n' > helpers/latest-docker-tag
+    if [[ "$mock_current" == "__NO_PUBLISHED__" ]]; then
+        printf 'echo "no-published-version"\n' >> helpers/latest-docker-tag
+        printf 'exit 0\n' >> helpers/latest-docker-tag
+    else
+        printf 'echo "%s"\n' "$mock_current" >> helpers/latest-docker-tag
+        printf 'exit 0\n' >> helpers/latest-docker-tag
+    fi
+    chmod +x helpers/latest-docker-tag
+
+    cat > helpers/logging.sh <<'EOF'
+log_error()   { echo "ERROR: $*" >&2; }
+log_warning() { echo "WARN: $*"  >&2; }
+log_info()    { echo "INFO: $*"  >&2; }
+log_success() { :; }
+log_help()    { :; }
+export DOCKER="${DOCKER:-docker}"
+export SKOPEO="${SKOPEO:-skopeo}"
+EOF
+
+    cat > helpers/registry-utils.sh <<'EOF'
+list_containers() {
+    find "${1:-.}" -maxdepth 1 -mindepth 1 -type d \
+        ! -name '.*' ! -name 'helpers' ! -name 'scripts' ! -name 'bin' \
+        2>/dev/null | xargs -I{} basename {} 2>/dev/null
+}
+has_dockerfile()  { return 0; }
+EOF
+
+    cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    cat > scripts/check-version.sh <<'EOF'
+get_build_version() { echo "${2:-latest}"; return 0; }
+EOF
+
+    cat > scripts/build-container.sh <<'EOF'
+EOF
+    cat > scripts/push-container.sh <<'EOF'
+EOF
+
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+
+    cp "$ORIG_DIR/make" ./make
+    chmod +x ./make
 }
 
 @test "check_updates multi-entry: emits one entry per retained major for latest_per_major container" {
@@ -528,6 +596,84 @@ run_check_updates() {
     update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
     [[ "$update_7" == "false" ]]
     [[ "$update_6" == "false" ]]
+}
+
+@test "check_updates multi-entry: downgrade in latest_per_major path is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # GHCR already has 6.9.5-alpine, but upstream resolution reports older 6.9.4-alpine.
+    create_check_updates_fixture "7.0.0-alpine" "6.9.5-alpine" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
+    [[ "$update_6" == "false" ]]
+    [[ "$status_6" == "up_to_date" ]]
+}
+
+@test "check_updates default path: genuine newer latest is an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: ansible downgrade regression is not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "14.1.0-ubuntu" "14.0.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: equal versions are not an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "14.1.0-ubuntu" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: no published version remains a new container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__NO_PUBLISHED__" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$current_version" == "no-published-version" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "new-container" ]]
 }
 
 # ----------------------------------------------------------------
