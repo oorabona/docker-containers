@@ -414,8 +414,20 @@ EOF
     printf '#!/bin/bash\n' > helpers/latest-docker-tag
     printf '# Args: <image> <pattern>\n' >> helpers/latest-docker-tag
     printf 'pattern="$2"\n' >> helpers/latest-docker-tag
-    printf 'if echo "$pattern" | grep -qE "^\\^7"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
-    printf 'if echo "$pattern" | grep -qE "^\\^6"; then echo "%s"; exit 0; fi\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^7"; then\n' >> helpers/latest-docker-tag
+    if [[ "$mock_ghcr_7" == "__EMPTY_FAILURE__" ]]; then
+        printf '  exit 1\n' >> helpers/latest-docker-tag
+    else
+        printf '  echo "%s"; exit 0\n' "${mock_ghcr_7}" >> helpers/latest-docker-tag
+    fi
+    printf 'fi\n' >> helpers/latest-docker-tag
+    printf 'if echo "$pattern" | grep -qE "^\\^6"; then\n' >> helpers/latest-docker-tag
+    if [[ "$mock_ghcr_6" == "__EMPTY_FAILURE__" ]]; then
+        printf '  exit 1\n' >> helpers/latest-docker-tag
+    else
+        printf '  echo "%s"; exit 0\n' "${mock_ghcr_6}" >> helpers/latest-docker-tag
+    fi
+    printf 'fi\n' >> helpers/latest-docker-tag
     printf 'exit 1\n' >> helpers/latest-docker-tag
     chmod +x helpers/latest-docker-tag
 
@@ -496,6 +508,8 @@ EOF
     if [[ "$mock_current" == "__NO_PUBLISHED__" ]]; then
         printf 'echo "no-published-version"\n' >> helpers/latest-docker-tag
         printf 'exit 0\n' >> helpers/latest-docker-tag
+    elif [[ "$mock_current" == "__EMPTY_FAILURE__" ]]; then
+        printf 'exit 1\n' >> helpers/latest-docker-tag
     else
         printf 'echo "%s"\n' "$mock_current" >> helpers/latest-docker-tag
         printf 'exit 0\n' >> helpers/latest-docker-tag
@@ -614,11 +628,75 @@ EOF
     [[ "$status_6" == "up_to_date" ]]
 }
 
+@test "check_updates multi-entry: empty published version is a new container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_check_updates_fixture "7.0.0-alpine" "__EMPTY_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
+
+    run run_check_updates wordpress
+    [ "$status" -eq 0 ]
+
+    current_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .current_version')
+    update_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .update_available')
+    status_6=$(echo "$output" | jq -r '.[] | select(.major_line == "6") | .status')
+    [[ -z "$current_6" ]]
+    [[ "$update_6" == "true" ]]
+    [[ "$status_6" == "new-container" ]]
+}
+
 @test "check_updates default path: genuine newer latest is an update" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
     create_default_check_updates_fixture "1.0.0-ubuntu" "1.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: non-numeric-leading versions still flag string changes" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "v2.6.17-alpine" "v2.6.18-alpine" "^v[0-9]+\.[0-9]+\.[0-9]+-alpine$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: empty published version is a new container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "__EMPTY_FAILURE__" "14.1.0-ubuntu"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ -z "$current_version" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "new-container" ]]
+}
+
+@test "check_updates default path: same numeric tuple with different suffix is an update" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "1.2.3-r0" "1.2.3-r1" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
 
     run run_check_updates ansible
     [ "$status" -eq 0 ]

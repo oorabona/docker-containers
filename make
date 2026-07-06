@@ -518,14 +518,18 @@ check_updates() {
         local update_available="false"
         local status="up_to_date"
 
-        if [ "$current_version" = "no-published-version" ]; then
+        if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
           if [ -n "$latest_version" ]; then
             update_available="true"
             status="new-container"
           fi
-        elif [ -n "$latest_version" ] && version_is_greater "$latest_version" "$current_version"; then
-          update_available="true"
-          status="update-available"
+        elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
+          if version_is_greater "$current_version" "$latest_version"; then
+            :
+          else
+            update_available="true"
+            status="update-available"
+          fi
         fi
 
         # Build per-major JSON entry.
@@ -571,14 +575,18 @@ check_updates() {
     local update_available="false"
     local status="up_to_date"
 
-    if [ "$current_version" = "no-published-version" ]; then
+    if [ -z "$current_version" ] || [ "$current_version" = "no-published-version" ]; then
       if [ -n "$latest_version" ]; then
         update_available="true"
         status="new-container"
       fi
-    elif [ -n "$latest_version" ] && version_is_greater "$latest_version" "$current_version"; then
-      update_available="true"
-      status="update-available"
+    elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
+      if version_is_greater "$current_version" "$latest_version"; then
+        :
+      else
+        update_available="true"
+        status="update-available"
+      fi
     fi
 
     # Build JSON object for this container
