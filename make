@@ -88,6 +88,45 @@ list_containers() {
   done
 }
 
+check_updates_current_blocks_latest() {
+  local current_version=$1
+  local latest_version=$2
+  local compare_rc
+
+  version_is_greater "$current_version" "$latest_version"
+  compare_rc=$?
+  if [ "$compare_rc" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$compare_rc" -ne 2 ]; then
+    return 1
+  fi
+
+  local numeric_alias_image numeric_alias_pattern
+  numeric_alias_image=$(./version.sh --numeric-alias-image 2>/dev/null | head -1 | tr -d '\n' || true)
+  numeric_alias_pattern=$(./version.sh --numeric-alias-pattern 2>/dev/null | head -1 | tr -d '\n' || true)
+
+  # Unknown flags in some older version.sh files fall through to the normal
+  # latest-version lookup. Require an explicit image-like source to opt in.
+  if [[ -z "$numeric_alias_image" || -z "$numeric_alias_pattern" || "$numeric_alias_image" != */* ]]; then
+    return 1
+  fi
+
+  local current_numeric_alias latest_numeric_alias
+  current_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$current_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n') || return 1
+  latest_numeric_alias=$(../helpers/docker-tag resolve-numeric-alias "$numeric_alias_image" "$latest_version" "$numeric_alias_pattern" 2>/dev/null | head -1 | tr -d '\n') || return 1
+
+  if [[ -z "$current_numeric_alias" || -z "$latest_numeric_alias" ]]; then
+    return 1
+  fi
+
+  if version_is_greater "$current_numeric_alias" "$latest_numeric_alias"; then
+    return 0
+  fi
+
+  return 1
+}
+
 # Show project-internal dependency graph for a container
 list_deps() {
   local container="${1:-}"
@@ -524,7 +563,7 @@ check_updates() {
             status="new-container"
           fi
         elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
-          if version_is_greater "$current_version" "$latest_version"; then
+          if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
             :
           else
             update_available="true"
@@ -581,7 +620,7 @@ check_updates() {
         status="new-container"
       fi
     elif [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
-      if version_is_greater "$current_version" "$latest_version"; then
+      if check_updates_current_blocks_latest "$current_version" "$latest_version"; then
         :
       else
         update_available="true"

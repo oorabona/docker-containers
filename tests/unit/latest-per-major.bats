@@ -553,6 +553,127 @@ EOF
     chmod +x ./make
 }
 
+create_debian_check_updates_fixture() {
+    local mock_current="${1:-trixie}"
+    local mock_latest="${2:-bookworm}"
+
+    mkdir -p debian helpers scripts bin
+
+    cat > debian/variants.yaml <<'EOF'
+build:
+  requires_extensions: false
+versions:
+  - tag: trixie
+EOF
+
+    printf '#!/bin/bash\n' > debian/version.sh
+    printf 'if [[ "$1" == "--registry-pattern" ]]; then echo "^(trixie|bookworm|bullseye)$"; exit 0; fi\n' >> debian/version.sh
+    printf 'if [[ "$1" == "--numeric-alias-image" ]]; then echo "library/debian"; exit 0; fi\n' >> debian/version.sh
+    printf 'if [[ "$1" == "--numeric-alias-pattern" ]]; then echo "^[0-9]+$"; exit 0; fi\n' >> debian/version.sh
+    printf 'echo "%s"\n' "$mock_latest" >> debian/version.sh
+    chmod +x debian/version.sh
+
+    cp "$ORIG_DIR/helpers/docker-tag" helpers/docker-tag
+    chmod +x helpers/docker-tag
+    ln -sf docker-tag helpers/latest-docker-tag
+
+    printf '#!/bin/bash\n' > bin/docker
+    printf 'set -euo pipefail\n' >> bin/docker
+    printf 'MOCK_CURRENT=%q\n' "$mock_current" >> bin/docker
+    cat >> bin/docker <<'EOF'
+if [[ "${1:-}" != "run" ]]; then
+    exit 99
+fi
+shift
+
+if [[ "${1:-}" == "--rm" ]]; then
+    shift
+fi
+
+shift # skopeo image
+command="${1:-}"
+shift
+
+case "$command" in
+    list-tags)
+        ref="${1:-}"
+        case "$ref" in
+            docker://ghcr.io/oorabona/debian)
+                printf '{"Repository":"ghcr.io/oorabona/debian","Tags":["%s"]}\n' "$MOCK_CURRENT"
+                ;;
+            docker://library/debian)
+                printf '{"Repository":"library/debian","Tags":["11","12","13","12.14","bookworm","trixie","bullseye"]}\n'
+                ;;
+            *)
+                exit 41
+                ;;
+        esac
+        ;;
+    inspect)
+        if [[ "${1:-}" == "--format" ]]; then
+            shift 2
+        fi
+        ref="${1:-}"
+        case "$ref" in
+            docker://library/debian:trixie|docker://library/debian:13)
+                echo "sha256:thirteen"
+                ;;
+            docker://library/debian:bookworm|docker://library/debian:12)
+                echo "sha256:twelve"
+                ;;
+            docker://library/debian:bullseye|docker://library/debian:11)
+                echo "sha256:eleven"
+                ;;
+            *)
+                exit 42
+                ;;
+        esac
+        ;;
+    *)
+        exit 98
+        ;;
+esac
+EOF
+    chmod +x bin/docker
+    export PATH="$TEST_DIR/bin:$PATH"
+
+    cat > helpers/logging.sh <<'EOF'
+log_error()   { echo "ERROR: $*" >&2; }
+log_warning() { echo "WARN: $*"  >&2; }
+log_info()    { echo "INFO: $*"  >&2; }
+log_success() { :; }
+log_help()    { :; }
+export DOCKER="${DOCKER:-docker}"
+export SKOPEO="${SKOPEO:-skopeo}"
+EOF
+
+    cat > helpers/registry-utils.sh <<'EOF'
+list_containers() {
+    find "${1:-.}" -maxdepth 1 -mindepth 1 -type d \
+        ! -name '.*' ! -name 'helpers' ! -name 'scripts' ! -name 'bin' \
+        2>/dev/null | xargs -I{} basename {} 2>/dev/null
+}
+has_dockerfile()  { return 0; }
+EOF
+
+    cat > helpers/sbom-utils.sh <<'EOF'
+EOF
+
+    cat > scripts/check-version.sh <<'EOF'
+get_build_version() { echo "${2:-latest}"; return 0; }
+EOF
+
+    cat > scripts/build-container.sh <<'EOF'
+EOF
+    cat > scripts/push-container.sh <<'EOF'
+EOF
+
+    cp "$ORIG_DIR/helpers/version-utils.sh" helpers/
+
+    cp "$ORIG_DIR/make" ./make
+    chmod +x ./make
+}
+
 @test "check_updates multi-entry: emits one entry per retained major for latest_per_major container" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
@@ -738,6 +859,59 @@ EOF
     status_value=$(echo "$output" | jq -r '.[0].status')
     [[ "$update_available" == "false" ]]
     [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: debian codename downgrade is blocked through numeric alias digests" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "trixie" "bookworm"
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    latest_version=$(echo "$output" | jq -r '.[0].latest_version')
+    [[ "$current_version" == "trixie" ]]
+    [[ "$latest_version" == "bookworm" ]]
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: debian codename upgrade remains an update through numeric alias digests" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_debian_check_updates_fixture "bookworm" "trixie"
+
+    run run_check_updates debian
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    current_version=$(echo "$output" | jq -r '.[0].current_version')
+    latest_version=$(echo "$output" | jq -r '.[0].latest_version')
+    [[ "$current_version" == "bookworm" ]]
+    [[ "$latest_version" == "trixie" ]]
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
+}
+
+@test "check_updates default path: unparseable versions without numeric alias remain permissive" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    create_default_check_updates_fixture "stable" "testing" "^(stable|testing)$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "true" ]]
+    [[ "$status_value" == "update-available" ]]
 }
 
 @test "check_updates default path: equal versions are not an update" {
