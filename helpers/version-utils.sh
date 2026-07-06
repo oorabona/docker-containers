@@ -7,7 +7,7 @@ DEFAULT_VERSION_PATTERN='^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-
 
 _version_numeric_tuple() {
     local version="$1"
-    if [[ "$version" =~ ^([0-9]+([.][0-9]+)*) ]]; then
+    if [[ "$version" =~ ^[vV]?([0-9]+([.][0-9]+)*) ]]; then
         printf '%s\n' "${BASH_REMATCH[1]}"
         return 0
     fi

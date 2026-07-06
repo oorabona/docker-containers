@@ -628,10 +628,11 @@ EOF
     [[ "$status_6" == "up_to_date" ]]
 }
 
-@test "check_updates multi-entry: empty published version is a new container" {
+@test "check_updates multi-entry: accepted empty current_version ambiguity reports new-container" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
+    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
     create_check_updates_fixture "7.0.0-alpine" "__EMPTY_FAILURE__" "7.0.0-alpine" "6.9.4-alpine"
 
     run run_check_updates wordpress
@@ -660,7 +661,7 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
-@test "check_updates default path: non-numeric-leading versions still flag string changes" {
+@test "check_updates default path: v-prefixed versions flag genuine upgrades" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
@@ -675,10 +676,26 @@ EOF
     [[ "$status_value" == "update-available" ]]
 }
 
-@test "check_updates default path: empty published version is a new container" {
+@test "check_updates default path: v-prefixed downgrades are not updates" {
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
+    create_default_check_updates_fixture "v2.6.17-alpine" "v2.6.16-alpine" "^v[0-9]+\.[0-9]+\.[0-9]+-alpine$"
+
+    run run_check_updates ansible
+    [ "$status" -eq 0 ]
+
+    update_available=$(echo "$output" | jq -r '.[0].update_available')
+    status_value=$(echo "$output" | jq -r '.[0].status')
+    [[ "$update_available" == "false" ]]
+    [[ "$status_value" == "up_to_date" ]]
+}
+
+@test "check_updates default path: accepted empty current_version ambiguity reports new-container" {
+    if ! command -v yq &>/dev/null; then skip "yq not available"; fi
+    if ! command -v jq &>/dev/null; then skip "jq not available"; fi
+
+    # Accepted pre-existing ambiguity: Docker/GHCR/skopeo/rate-limit helper failures and genuinely unpublished containers both yield empty current_version; status is cosmetic, not a fully reasoned contract.
     create_default_check_updates_fixture "__EMPTY_FAILURE__" "14.1.0-ubuntu"
 
     run run_check_updates ansible
@@ -696,6 +713,7 @@ EOF
     if ! command -v yq &>/dev/null; then skip "yq not available"; fi
     if ! command -v jq &>/dev/null; then skip "jq not available"; fi
 
+    # Accepted fleet-safe fallback: any non-numeric-tuple-affecting suffix change is an update, not ordered -rN magnitude semantics.
     create_default_check_updates_fixture "1.2.3-r0" "1.2.3-r1" "^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$"
 
     run run_check_updates ansible

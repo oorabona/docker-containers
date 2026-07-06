@@ -15,6 +15,16 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "version_is_greater: v-prefixed version upgrade is greater" {
+    run version_is_greater "v2.6.18-alpine" "v2.6.17-alpine"
+    [ "$status" -eq 0 ]
+}
+
+@test "version_is_greater: v-prefixed version downgrade is not greater" {
+    run version_is_greater "v2.6.17-alpine" "v2.6.18-alpine"
+    [ "$status" -eq 1 ]
+}
+
 @test "version_is_greater: ansible downgrade regression is not greater" {
     run version_is_greater "14.0.0-ubuntu" "14.1.0-ubuntu"
     [ "$status" -eq 1 ]
