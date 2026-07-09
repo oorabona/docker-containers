@@ -7,7 +7,7 @@ base_image_cache:
     tags: ["latest"]
 build_args:
   OS_VERSION: "latest"
-  PYASN1_VERSION: "0.6.3"
+  PYASN1_VERSION: "0.6.4"
   PARAMIKO_VERSION: "5.0.0"
   CFFI_VERSION: "2.1.0"
   CRYPTOGRAPHY_VERSION: "49.0.0"
