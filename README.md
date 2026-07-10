@@ -23,6 +23,7 @@ Production-ready Docker images with **zero-touch upstream monitoring** — when 
 | [jekyll](jekyll/) | Static site generator | — |
 | [openvpn](openvpn/) | VPN server | — |
 | [sslh](sslh/) | SSL/SSH port multiplexer | — |
+| [tor](tor/) | Tor SOCKS proxy — relay, exit, bridge, hidden-service | default, monitoring |
 
 All images are published to [GHCR](https://github.com/oorabona?tab=packages) and [Docker Hub](https://hub.docker.com/u/oorabona).
 
