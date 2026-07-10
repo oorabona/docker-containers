@@ -7,12 +7,16 @@ setup() {
     ENTRYPOINT="${PROJECT_ROOT}/tor/entrypoint.sh"
     INTERNAL_GENERATED_DIR="/tmp/tor"
     INTERNAL_GENERATED_MARKER="${INTERNAL_GENERATED_DIR}/.tor-entrypoint-bats"
+    INTERNAL_GENERATED_LOCK="/var/tmp/tor-entrypoint-bats.lock"
     SLEEP_PID=""
+
+    exec {INTERNAL_GENERATED_LOCK_FD}>"$INTERNAL_GENERATED_LOCK"
+    flock "$INTERNAL_GENERATED_LOCK_FD"
 
     if [[ -e "$INTERNAL_GENERATED_DIR" && ! -f "$INTERNAL_GENERATED_MARKER" ]]; then
         skip "${INTERNAL_GENERATED_DIR} exists and is not owned by this test"
     fi
-    rm -rf "$INTERNAL_GENERATED_DIR"
+    remove_internal_generated_dir
     mkdir -p "$INTERNAL_GENERATED_DIR"
     touch "$INTERNAL_GENERATED_MARKER"
 }
@@ -23,9 +27,26 @@ teardown() {
         wait "$SLEEP_PID" 2>/dev/null || true
     fi
     if [[ -f "${INTERNAL_GENERATED_MARKER:-}" ]]; then
-        rm -rf "$INTERNAL_GENERATED_DIR"
+        remove_internal_generated_dir
     fi
     rm -rf "$TEST_TEMP_DIR"
+    if [[ -n "${INTERNAL_GENERATED_LOCK_FD:-}" ]]; then
+        flock -u "$INTERNAL_GENERATED_LOCK_FD" 2>/dev/null || true
+        exec {INTERNAL_GENERATED_LOCK_FD}>&-
+    fi
+}
+
+remove_internal_generated_dir() {
+    local attempt
+
+    for attempt in 1 2 3 4 5; do
+        rm -rf "$INTERNAL_GENERATED_DIR"
+        [[ ! -e "$INTERNAL_GENERATED_DIR" ]] && return 0
+        sleep 0.1
+    done
+
+    echo "failed to remove ${INTERNAL_GENERATED_DIR}" >&2
+    return 1
 }
 
 write_fake_runtime_commands() {
