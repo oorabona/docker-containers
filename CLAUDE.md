@@ -93,6 +93,7 @@ Other workflows in `.github/workflows/`: `recreate-manifests`, `update-dashboard
 
 ## Important Notes
 
+- **When adding a new container, update the root `README.md`'s container table** (`## What's in the box`) — easy to forget since it's not part of any build/test path
 - Always return to root directory before running `./make`
 - Dashboard auto-generated from `.build-lineage/` JSON — don't edit `docs/site/_data/containers.yml` manually
 - Version scripts must handle network failures gracefully
