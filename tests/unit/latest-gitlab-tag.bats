@@ -92,6 +92,10 @@ case "$mode" in
         emit_headers "HTTP/2 200"
         printf '[{"name":"tor-0.4.9|11"}]\n'
         ;;
+    space_tag)
+        emit_headers "HTTP/2 200"
+        printf '[{"name":"release v1.9.0 with space"},{"name":"release v1.10.0 with space"}]\n'
+        ;;
     paginate)
         if [[ "$url" == *"page=2"* ]]; then
             emit_headers "HTTP/2 200"
@@ -240,6 +244,26 @@ last_output_line() {
     [[ "$output" == *"Extracted version '0.4.9|11' is not a safe normalized version"* ]]
 }
 
+@test "tag names with spaces are preserved for raw and both output" {
+    write_fake_curl space_tag
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^release v[0-9]+\.[0-9]+\.[0-9]+ with space$' \
+        --version-extract '^release v([0-9]+\.[0-9]+\.[0-9]+) with space$' \
+        --output raw
+
+    [ "$status" -eq 0 ]
+    [ "$(last_output_line)" = "release v1.10.0 with space" ]
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^release v[0-9]+\.[0-9]+\.[0-9]+ with space$' \
+        --version-extract '^release v([0-9]+\.[0-9]+\.[0-9]+) with space$' \
+        --output both
+
+    [ "$status" -eq 0 ]
+    [ "$(last_output_line)" = $'1.10.0\trelease v1.10.0 with space' ]
+}
+
 @test "pagination follows GitLab Link header until a matching stable tag is found" {
     write_fake_curl paginate
 
@@ -325,6 +349,23 @@ last_output_line() {
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"GITLAB_TOKEN must not contain double quotes or control characters"* ]]
+    [ ! -e "$FAKE_CURL_URL_LOG" ]
+}
+
+@test "GitLab token rejects literal backslash escapes before curl config is written" {
+    write_fake_curl happy
+    export GITLAB_TOKEN='bad\ntoken'
+    FAKE_CURL_CONFIG_PATH_LOG="${TEST_TEMP_DIR}/curl-config-path.log"
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+    GITLAB_API_URL="https://gitlab.torproject.org/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GITLAB_TOKEN must not contain double quotes or control characters; backslashes are also rejected"* ]]
+    [ ! -e "$FAKE_CURL_CONFIG_PATH_LOG" ]
     [ ! -e "$FAKE_CURL_URL_LOG" ]
 }
 

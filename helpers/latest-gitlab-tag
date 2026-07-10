@@ -92,8 +92,8 @@ _gitlab_token_host_allowed() {
 }
 
 _validate_gitlab_token_for_curl_config() {
-    if [[ "${GITLAB_TOKEN:-}" == *\"* || "${GITLAB_TOKEN:-}" =~ [[:cntrl:]] ]]; then
-        echo "::error::latest-gitlab-tag: GITLAB_TOKEN must not contain double quotes or control characters" >&2
+    if [[ "${GITLAB_TOKEN:-}" == *\"* || "${GITLAB_TOKEN:-}" == *\\* || "${GITLAB_TOKEN:-}" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-gitlab-tag: GITLAB_TOKEN must not contain double quotes or control characters; backslashes are also rejected" >&2
         return 1
     fi
 }
@@ -325,6 +325,7 @@ latest-gitlab-tag() {
     fi
 
     local versions_with_tags=""
+    local candidate_separator=$'\t'
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
         if [[ "$tag" =~ $version_extract ]]; then
@@ -333,7 +334,7 @@ latest-gitlab-tag() {
                 echo "::error::latest-gitlab-tag: version-extract regex matched tag '$(_gha_escape "${tag}")' but produced no capture — verify the regex has exactly one parenthesized capture group" >&2
                 return 1
             fi
-            versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
+            versions_with_tags="${versions_with_tags}${extracted}${candidate_separator}${tag}"$'\n'
         else
             log_info "version_extract '$(_gha_escape "${version_extract}")' did not match tag '$(_gha_escape "${tag}")' — skipping" >&2
         fi
@@ -345,11 +346,10 @@ latest-gitlab-tag() {
     fi
 
     local best_line
-    best_line=$(echo "$versions_with_tags" | sort -t' ' -k1,1 --version-sort | tail -1)
+    best_line=$(echo "$versions_with_tags" | sort -t "$candidate_separator" -k1,1 --version-sort | tail -1)
 
     local best_version best_raw_tag
-    best_version=$(echo "$best_line" | awk '{print $1}')
-    best_raw_tag=$(echo "$best_line" | awk '{print $2}')
+    IFS=$'\t' read -r best_version best_raw_tag <<< "$best_line"
 
     if [[ -z "$best_version" ]]; then
         log_error "Failed to determine best version for $(_gha_escape "${project_path}")" >&2
