@@ -353,6 +353,10 @@ main() {
         exec "$@"
     fi
 
+    if [[ $# -gt 0 && "${1:0:1}" == "-" ]]; then
+        exec tor "$@"
+    fi
+
     if [[ "${1:-}" == "tor" ]]; then
         shift
     fi

@@ -26,6 +26,7 @@ source "$SCRIPT_DIR/logging.sh"
 
 GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.torproject.org/api/v4}"
 PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+SAFE_VERSION_REGEX='^[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
 _gitlab_api_curl_cfg=""
 
 _gitlab_api_cleanup_curl_config() {
@@ -298,11 +299,20 @@ latest-gitlab-tag() {
     fi
 
     local filtered_tags
-    filtered_tags=$(echo "$all_tags" | grep -E "$tag_filter" || true)
-    if [[ -z "$filtered_tags" ]]; then
-        log_error "No tags match tag_filter '$(_gha_escape "${tag_filter}")' for $(_gha_escape "${project_path}")" >&2
-        return 1
-    fi
+    local grep_rc=0
+    filtered_tags=$(printf '%s\n' "$all_tags" | grep -E -- "$tag_filter" 2>&1) || grep_rc=$?
+    case "$grep_rc" in
+        0)
+            ;;
+        1)
+            log_error "No tags match tag_filter '$(_gha_escape "${tag_filter}")' for $(_gha_escape "${project_path}")" >&2
+            return 1
+            ;;
+        *)
+            log_error "tag_filter regex '$(_gha_escape "${tag_filter}")' failed for $(_gha_escape "${project_path}"): $(_gha_escape "${filtered_tags}")" >&2
+            return 1
+            ;;
+    esac
 
     if [[ "$include_prerelease" != "true" ]]; then
         local no_prerelease
@@ -345,8 +355,8 @@ latest-gitlab-tag() {
         log_error "Failed to determine best version for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
-    if [[ ! "$best_version" =~ ^[0-9] ]]; then
-        log_error "Extracted version '$(_gha_escape "${best_version}")' does not start with a digit — aborting" >&2
+    if [[ ! "$best_version" =~ $SAFE_VERSION_REGEX ]]; then
+        log_error "Extracted version '$(_gha_escape "${best_version}")' is not a safe normalized version — expected digits separated by dots with optional windows/linux/darwin/macos/alpine dot labels" >&2
         return 1
     fi
 

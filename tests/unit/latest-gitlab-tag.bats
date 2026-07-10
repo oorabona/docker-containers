@@ -84,6 +84,14 @@ case "$mode" in
         emit_headers "HTTP/2 200"
         printf '[{"name":"obfs4proxy-0.0.14"},{"name":"lyrebird-0.8.0"},{"name":"lyrebird-0.8.1"}]\n'
         ;;
+    flag_pattern)
+        emit_headers "HTTP/2 200"
+        printf '[{"name":"tor-0.4.9.12-rc"},{"name":"tor-0.4.9.11"}]\n'
+        ;;
+    unsafe_version)
+        emit_headers "HTTP/2 200"
+        printf '[{"name":"tor-0.4.9|11"}]\n'
+        ;;
     paginate)
         if [[ "$url" == *"page=2"* ]]; then
             emit_headers "HTTP/2 200"
@@ -195,6 +203,41 @@ last_output_line() {
 
     [ "$status" -eq 0 ]
     [ "$(last_output_line)" = "lyrebird-0.8.1" ]
+}
+
+@test "tag_filter starting with dash is treated as a regex pattern" {
+    write_fake_curl flag_pattern
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '-rc$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)-rc$' \
+        --include-prerelease
+
+    [ "$status" -eq 0 ]
+    [ "$(last_output_line)" = "0.4.9.12" ]
+}
+
+@test "malformed tag_filter regex fails loudly instead of no-match fallback" {
+    write_fake_curl happy
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '[' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"tag_filter regex '[' failed"* ]]
+    [[ "$output" != *"No tags match tag_filter"* ]]
+}
+
+@test "unsafe extracted version is rejected before output" {
+    write_fake_curl unsafe_version
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-' \
+        --version-extract '^tor-(.*)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Extracted version '0.4.9|11' is not a safe normalized version"* ]]
 }
 
 @test "pagination follows GitLab Link header until a matching stable tag is found" {

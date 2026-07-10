@@ -85,6 +85,11 @@ if [[ "${1:-}" == "--hash-password" ]]; then
     exit 0
 fi
 
+if [[ "${1:-}" == "--version" ]]; then
+    printf 'Tor version 0.4.9.11.\n'
+    exit 0
+fi
+
 torrc=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -186,6 +191,21 @@ write_healthcheck_pid_file() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"SOCKS_PORT must not contain control characters"* ]]
     [[ "$output" != *"INJECTION_CANARY_COOKIEAUTH_0"* ]]
+}
+
+@test "flag-first invocation passes directly to tor without generated torrc" {
+    write_fake_runtime_commands
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        SOCKS_PORT="not-a-port" \
+        "$ENTRYPOINT" --version
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "Tor version 0.4.9.11." ]
+    [ ! -e "${INTERNAL_GENERATED_DIR}/torrc" ]
 }
 
 @test "whitespace-only mounted torrc is treated as inactive and secure simple torrc is generated" {
@@ -410,17 +430,18 @@ write_healthcheck_pid_file() {
     grep -qx 'nc -z ::1 19050' "$FAKE_NC_LOG"
 }
 
-@test "healthcheck nc dependency is explicit or documented" {
+@test "healthcheck nc dependency is explicit" {
     if awk '
         /apk add --no-cache/ { capture = 1 }
-        capture && /netcat|nmap-ncat|busybox-extras/ { found = 1 }
+        capture && /(^|[[:space:]])(busybox|netcat|nmap-ncat|busybox-extras)([[:space:]]|\\|$)/ { found = 1 }
         capture && /;/ { capture = 0 }
         END { exit found ? 0 : 1 }
     ' "${PROJECT_ROOT}/tor/Dockerfile"; then
         return 0
     fi
 
-    grep -Eq 'BusyBox.*(/usr/bin/nc| nc)' "${PROJECT_ROOT}/tor/Dockerfile"
+    echo "tor/Dockerfile must explicitly install the package that provides nc"
+    return 1
 }
 
 @test "README documents variant pipeline build for monitoring flavor" {

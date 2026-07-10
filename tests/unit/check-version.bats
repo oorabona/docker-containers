@@ -368,3 +368,38 @@ EOF
     grep -qx 'GITLAB_API_URL=https://gitlab-api.example:8443/api/v4' "$TEST_TEMP_DIR/gitlab-helper.log"
     grep -q -- '--output both' "$TEST_TEMP_DIR/gitlab-helper.log"
 }
+
+@test "check-dependency-versions includes latest-gitlab-tag failure reason" {
+    mkdir -p "$TEST_TEMP_DIR/scripts" "$TEST_TEMP_DIR/helpers" "$TEST_TEMP_DIR/tor"
+    cp "$SCRIPTS_DIR/check-dependency-versions.sh" "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh"
+    cp "$HELPERS_DIR/logging.sh" "$TEST_TEMP_DIR/helpers/logging.sh"
+
+    cat > "$TEST_TEMP_DIR/helpers/latest-gitlab-tag" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "latest-gitlab-tag: tag_filter regex '[' failed: grep: Invalid regular expression" >&2
+exit 1
+EOF
+    chmod +x "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh" "$TEST_TEMP_DIR/helpers/latest-gitlab-tag"
+
+    cat > "$TEST_TEMP_DIR/tor/config.yaml" <<'EOF'
+build_args:
+  LYREBIRD_VERSION: "0.8.1"
+dependency_sources:
+  LYREBIRD_VERSION:
+    lifecycle: tracked
+    type: gitlab-tags
+    project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
+    tag_filter: "["
+    version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
+EOF
+
+    run "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh" tor --json
+
+    [ "$status" -eq 0 ]
+    local json_output
+    json_output=$(printf '%s\n' "$output" | awk 'found || $0 == "[" { found = 1; print }')
+    echo "$json_output" | jq -e '.[0].errors[0] | contains("GitLab tag API error for tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird")' >/dev/null
+    echo "$json_output" | jq -e '.[0].errors[0] | contains("tag_filter regex")' >/dev/null
+    echo "$json_output" | jq -e '.[0].errors[0] | contains("Invalid regular expression")' >/dev/null
+}

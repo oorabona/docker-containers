@@ -43,6 +43,17 @@ _gha_escape() {
     printf '%s' "$s"
 }
 
+compact_helper_error() {
+    local message="$1"
+
+    message=$(printf '%s' "$message" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g; s/[[:space:]]+/ /g; s/^ //; s/ $//')
+    if [[ -z "$message" ]]; then
+        message="helper exited without stderr"
+    fi
+
+    printf '%s' "$message"
+}
+
 normalize_gitlab_host() {
     local host="$1"
 
@@ -397,13 +408,22 @@ check_container_deps() {
                     continue
                 }
 
+                local gitlab_helper_stderr
+                gitlab_helper_stderr=$(mktemp)
                 _gl_both=$(GITLAB_API_URL="$gitlab_api_url" "$PROJECT_ROOT/helpers/latest-gitlab-tag" "$project_path" \
                     --tag-filter "$tag_filter" \
                     --version-extract "$version_extract" \
-                    --output both 2>/dev/null) || {
-                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitLab tag API error for ${project_path}" '. + [$msg]')
+                    --output both 2>"$gitlab_helper_stderr") || {
+                    local gitlab_helper_error gitlab_helper_stderr_text=""
+                    if [[ -r "$gitlab_helper_stderr" ]]; then
+                        gitlab_helper_stderr_text=$(<"$gitlab_helper_stderr")
+                    fi
+                    gitlab_helper_error=$(compact_helper_error "$gitlab_helper_stderr_text")
+                    rm -f "$gitlab_helper_stderr"
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitLab tag API error for ${project_path}: ${gitlab_helper_error}" '. + [$msg]')
                     continue
                 }
+                rm -f "$gitlab_helper_stderr"
                 latest_version="${_gl_both%%$'\t'*}"
                 latest_raw_tag="${_gl_both##*$'\t'}"
                 unset _gl_both

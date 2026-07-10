@@ -39,6 +39,7 @@ RUN set -eu; \
     nyx_installed_version=""; \
     apk add --no-cache \
         bash \
+        busybox \
         ca-certificates \
         curl \
         lyrebird \
@@ -95,8 +96,8 @@ USER tor
 
 EXPOSE 9050 9001
 
-# Alpine base BusyBox installs /usr/bin/nc via /etc/busybox-paths.d/busybox;
-# the healthcheck uses that applet for the local SOCKS probe.
+# The explicit busybox package provides /usr/bin/nc via
+# /etc/busybox-paths.d/busybox for the local SOCKS probe.
 HEALTHCHECK --interval=30s --timeout=20s --start-period=90s --retries=3 \
     CMD pid_file="/var/lib/tor/tor.pid"; \
         pid=""; \
