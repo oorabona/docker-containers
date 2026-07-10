@@ -417,7 +417,20 @@ runs:
               if [[ ! "$file" =~ / ]]; then
                 continue
               fi
-              
+
+              # Docs/metadata never affect build inputs — mirrors this workflow's
+              # own trigger-path exclusions. Without this, a per-container README
+              # bundled into a wider diff (e.g. via the coverage-checkpoint
+              # baseline window) wrongly queues that container for a rebuild.
+              # LAST_REBUILD.md is the one exception: it's an explicit
+              # rebuild-signal marker consumed by the smart-rebuild digest.
+              case "$file" in
+                */LAST_REBUILD.md) ;;
+                *.md|*/README*|*/LICENSE*|*/CHANGELOG*|*/docs/*|*/tests/*)
+                  continue
+                  ;;
+              esac
+
               # Extract the top-level directory from the file path
               container="${file%%/*}"
               
