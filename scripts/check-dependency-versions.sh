@@ -43,6 +43,24 @@ _gha_escape() {
     printf '%s' "$s"
 }
 
+normalize_gitlab_host() {
+    local host="$1"
+
+    host="${host#https://}"
+    host="${host#http://}"
+    host="${host%/}"
+
+    [[ "$host" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || return 1
+    printf '%s' "$host"
+}
+
+gitlab_api_url_from_host() {
+    local host
+
+    host=$(normalize_gitlab_host "$1") || return 1
+    printf 'https://%s/api/v4' "$host"
+}
+
 # Classify semver change type between two versions
 # Returns: major, minor, patch, or unknown
 classify_version_change() {
@@ -81,6 +99,7 @@ build_source_url() {
     local source="$2"
     local version="$3"
     local raw_tag="${4:-}"
+    local source_host="${5:-}"
 
     case "$type" in
         github-release)
@@ -98,12 +117,17 @@ build_source_url() {
             ;;
         gitlab-tags)
             local project_path_web
+            local web_host
+            web_host=$(normalize_gitlab_host "${source_host:-gitlab.torproject.org}") || {
+                echo ""
+                return
+            }
             project_path_web="${source//%2F/\/}"
             project_path_web="${project_path_web//%2f/\/}"
             if [[ -n "$raw_tag" ]]; then
-                echo "https://gitlab.torproject.org/${project_path_web}/-/tags/${raw_tag}"
+                echo "https://${web_host}/${project_path_web}/-/tags/${raw_tag}"
             else
-                echo "https://gitlab.torproject.org/${project_path_web}/-/tags/v${version}"
+                echo "https://${web_host}/${project_path_web}/-/tags/v${version}"
             fi
             ;;
         pypi)
@@ -293,6 +317,7 @@ check_container_deps() {
         local latest_version=""
         local source_ref=""
         local latest_raw_tag=""  # raw tag for github-tag type (used in URL builder)
+        local source_web_host=""
 
         case "$dep_type" in
             github-release)
@@ -346,10 +371,12 @@ check_container_deps() {
                 unset _gh_both
                 ;;
             gitlab-tags)
-                local project_path tag_filter version_extract
+                local project_path tag_filter version_extract web_host api_host gitlab_api_url
                 project_path=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].project_path // ""' "$config")
                 tag_filter=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
                 version_extract=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
+                web_host=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].web_host // "gitlab.torproject.org"' "$config")
+                api_host=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].api_host // "gitlab.torproject.org"' "$config")
                 source_ref="$project_path"
 
                 if [[ -z "$project_path" ]]; then
@@ -360,8 +387,16 @@ check_container_deps() {
                     errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags type requires tag_filter and version_extract" '. + [$msg]')
                     continue
                 fi
+                source_web_host=$(normalize_gitlab_host "$web_host") || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags web_host is invalid: ${web_host}" '. + [$msg]')
+                    continue
+                }
+                gitlab_api_url=$(gitlab_api_url_from_host "$api_host") || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags api_host is invalid: ${api_host}" '. + [$msg]')
+                    continue
+                }
 
-                _gl_both=$("$PROJECT_ROOT/helpers/latest-gitlab-tag" "$project_path" \
+                _gl_both=$(GITLAB_API_URL="$gitlab_api_url" "$PROJECT_ROOT/helpers/latest-gitlab-tag" "$project_path" \
                     --tag-filter "$tag_filter" \
                     --version-extract "$version_extract" \
                     --output both 2>/dev/null) || {
@@ -416,7 +451,7 @@ check_container_deps() {
             local change_type
             change_type=$(classify_version_change "$current_version" "$latest_version")
             local source_url
-            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag")
+            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag" "$source_web_host")
 
             updates_json=$(echo "$updates_json" | jq \
                 --arg name "$dep_name" \

@@ -21,6 +21,141 @@ die() {
     exit 1
 }
 
+reject_control_chars() {
+    local name="$1"
+    local value="$2"
+
+    if [[ "$value" =~ [[:cntrl:]] ]]; then
+        die "${name} must not contain control characters"
+    fi
+}
+
+validate_port() {
+    local name="$1"
+    local value="$2"
+    local number
+
+    reject_control_chars "$name" "$value"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "${name} must be an integer port from 1 to 65535"
+    [[ "${#value}" -le 5 ]] || die "${name} must be an integer port from 1 to 65535"
+
+    number=$((10#$value))
+    (( number >= 1 && number <= 65535 )) || die "${name} must be an integer port from 1 to 65535"
+}
+
+is_ipv4_address() {
+    awk -v ip="$1" '
+        BEGIN {
+            n = split(ip, parts, ".")
+            if (n != 4) exit 1
+            for (i = 1; i <= n; i++) {
+                if (parts[i] !~ /^[0-9]+$/) exit 1
+                if (parts[i] < 0 || parts[i] > 255) exit 1
+            }
+        }
+    '
+}
+
+is_ipv6_address() {
+    [[ "$1" == *:* ]] || return 1
+    [[ "$1" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+    [[ "$1" != *:::* ]] || return 1
+
+    awk -v ip="$1" '
+        function valid_ipv4(value, parts, n, i) {
+            n = split(value, parts, ".")
+            if (n != 4) return 0
+            for (i = 1; i <= n; i++) {
+                if (parts[i] !~ /^[0-9]+$/) return 0
+                if (parts[i] < 0 || parts[i] > 255) return 0
+            }
+            return 1
+        }
+
+        BEGIN {
+            tmp = ip
+            if (gsub(/::/, "::", tmp) > 1) exit 1
+            if (ip ~ /^:[^:]/ || ip ~ /[^:]:$/) exit 1
+
+            compressed = index(ip, "::") > 0
+            n = split(ip, parts, ":")
+            groups = 0
+            for (i = 1; i <= n; i++) {
+                if (parts[i] == "") continue
+                if (parts[i] ~ /\./) {
+                    if (i != n || !valid_ipv4(parts[i])) exit 1
+                    groups += 2
+                    continue
+                }
+                if (parts[i] !~ /^[0-9A-Fa-f]{1,4}$/) exit 1
+                groups++
+            }
+
+            if (compressed) {
+                if (groups >= 8) exit 1
+            } else if (groups != 8) {
+                exit 1
+            }
+        }
+    '
+}
+
+validate_bind_address() {
+    local name="$1"
+    local value="$2"
+
+    reject_control_chars "$name" "$value"
+    if is_ipv4_address "$value" || is_ipv6_address "$value"; then
+        return 0
+    fi
+
+    die "${name} must be a plain IPv4 or IPv6 address"
+}
+
+validate_tor_path() {
+    local name="$1"
+    local value="$2"
+
+    reject_control_chars "$name" "$value"
+    [[ "$value" == /* ]] || die "${name} must be an absolute path"
+    [[ "$value" =~ ^/[A-Za-z0-9._/@:+-]*$ ]] || die "${name} contains unsupported path characters"
+}
+
+validate_country_list() {
+    local name="$1"
+    local raw="$2"
+    local item seen=false
+    local -a parts
+
+    [[ -z "$raw" ]] && return 0
+    reject_control_chars "$name" "$raw"
+
+    IFS=',' read -r -a parts <<< "$raw"
+    for item in "${parts[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ -z "$item" ]] && continue
+        [[ "$item" =~ ^[A-Za-z]{2}$ ]] || die "${name} must be a comma-separated list of two-letter country codes"
+        seen=true
+    done
+
+    [[ "$seen" == "true" ]] || die "${name} must contain at least one two-letter country code"
+}
+
+validate_torrc_env() {
+    local socks_bind="${SOCKS_BIND:-0.0.0.0}"
+    local socks_port="${SOCKS_PORT:-9050}"
+    local control_bind="${CONTROL_PORT_BIND:-127.0.0.1}"
+    [[ -n "$control_bind" ]] || control_bind="127.0.0.1"
+
+    validate_tor_path "DATA_DIR" "$DATA_DIR"
+    validate_bind_address "SOCKS_BIND" "$socks_bind"
+    validate_port "SOCKS_PORT" "$socks_port"
+    validate_bind_address "CONTROL_PORT_BIND" "$control_bind"
+    validate_port "CONTROL_PORT" "$CONTROL_PORT"
+    validate_country_list "EXIT_NODES" "${EXIT_NODES:-}"
+    validate_country_list "EXCLUDE_EXIT_NODES" "${EXCLUDE_EXIT_NODES:-}"
+}
+
 ensure_runtime_dirs() {
     mkdir -p "$GENERATED_DIR" "$DATA_DIR"
 
@@ -38,7 +173,15 @@ ensure_runtime_dirs() {
 }
 
 custom_torrc_active() {
-    [[ -s "$TORRC_PATH" ]]
+    [[ -e "$TORRC_PATH" ]] || return 1
+
+    if grep -qE '^[[:space:]]*[^#[:space:]]' "$TORRC_PATH"; then
+        return 0
+    fi
+
+    local rc=$?
+    [[ "$rc" -eq 2 ]] && die "could not read TORRC_PATH: ${TORRC_PATH}"
+    return 1
 }
 
 non_default_simple_env_present() {
@@ -48,6 +191,7 @@ non_default_simple_env_present() {
     [[ -n "${EXCLUDE_EXIT_NODES:-}" ]] && return 0
     [[ -n "${PASSWORD_FILE:-}" ]] && return 0
     [[ "${CONTROL_PORT_BIND:-127.0.0.1}" != "127.0.0.1" ]] && return 0
+    [[ "${CONTROL_PORT:-9051}" != "9051" ]] && return 0
     return 1
 }
 
@@ -64,26 +208,51 @@ render_country_list() {
     printf '%s' "$out"
 }
 
-control_password_hash() {
+is_loopback_bind() {
+    [[ "$1" == "127.0.0.1" || "$1" == "::1" ]]
+}
+
+require_control_auth() {
     local bind_addr="$1"
     local password_file="${PASSWORD_FILE:-}"
 
-    if [[ -n "$password_file" ]]; then
-        [[ -r "$password_file" ]] || die "PASSWORD_FILE is set but is not readable: ${password_file}"
-
-        local control_password hashed_password
-        IFS= read -r control_password < "$password_file" || true
-        [[ -n "$control_password" ]] || die "PASSWORD_FILE is empty: ${password_file}"
-
-        hashed_password=$(tor --hash-password "$control_password" | awk '/^16:/ {print; exit}')
-        unset control_password
-        [[ -n "$hashed_password" ]] || die "failed to hash control password from PASSWORD_FILE"
-        printf '%s' "$hashed_password"
-        return
-    fi
-
-    if [[ "$bind_addr" != "127.0.0.1" ]]; then
+    if [[ -z "$password_file" ]] && ! is_loopback_bind "$bind_addr"; then
         die "CONTROL_PORT_BIND=${bind_addr} requires a readable PASSWORD_FILE; refusing unauthenticated non-loopback control port"
+    fi
+}
+
+CONTROL_PASSWORD_HASH=""
+
+load_control_password_hash() {
+    local password_file="${PASSWORD_FILE:-}"
+    local control_password hashed_password
+
+    CONTROL_PASSWORD_HASH=""
+    [[ -n "$password_file" ]] || return 0
+
+    [[ -r "$password_file" ]] || die "PASSWORD_FILE is set but is not readable: ${password_file}"
+
+    IFS= read -r control_password < "$password_file" || true
+    [[ -n "$control_password" ]] || die "PASSWORD_FILE is empty: ${password_file}"
+
+    if ! hashed_password=$(tor --hash-password "$control_password" | awk '/^16:/ {print; exit}'); then
+        unset control_password
+        die "failed to hash control password from PASSWORD_FILE"
+    fi
+    unset control_password
+
+    [[ -n "$hashed_password" ]] || die "failed to hash control password from PASSWORD_FILE"
+    CONTROL_PASSWORD_HASH="$hashed_password"
+}
+
+format_tor_endpoint() {
+    local bind_addr="$1"
+    local port="$2"
+
+    if [[ "$bind_addr" == *:* ]]; then
+        printf '[%s]:%s' "$bind_addr" "$port"
+    else
+        printf '%s:%s' "$bind_addr" "$port"
     fi
 }
 
@@ -101,20 +270,24 @@ write_simple_torrc() {
     local control_bind="${CONTROL_PORT_BIND:-127.0.0.1}"
     [[ -n "$control_bind" ]] || control_bind="127.0.0.1"
 
-    local hashed_password=""
-    hashed_password=$(control_password_hash "$control_bind")
+    require_control_auth "$control_bind"
+    load_control_password_hash
+
+    local socks_endpoint control_endpoint
+    socks_endpoint=$(format_tor_endpoint "$socks_bind" "$socks_port")
+    control_endpoint=$(format_tor_endpoint "$control_bind" "$CONTROL_PORT")
 
     {
         echo "DataDirectory ${DATA_DIR}"
         echo "PidFile ${DATA_DIR}/tor.pid"
         echo "RunAsDaemon 0"
         echo "Log notice stdout"
-        echo "SocksPort ${socks_bind}:${socks_port}"
-        echo "ControlPort ${control_bind}:${CONTROL_PORT}"
+        echo "SocksPort ${socks_endpoint}"
+        echo "ControlPort ${control_endpoint}"
         echo "CookieAuthentication 1"
         echo "CookieAuthFile ${DATA_DIR}/control_auth_cookie"
-        if [[ -n "$hashed_password" ]]; then
-            echo "HashedControlPassword ${hashed_password}"
+        if [[ -n "$CONTROL_PASSWORD_HASH" ]]; then
+            echo "HashedControlPassword ${CONTROL_PASSWORD_HASH}"
         fi
 
         if [[ -n "${EXIT_NODES:-}" ]]; then
@@ -154,6 +327,7 @@ main() {
         shift
     fi
 
+    validate_torrc_env
     ensure_runtime_dirs "$@"
 
     if custom_torrc_active; then

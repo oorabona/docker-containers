@@ -39,8 +39,17 @@ _gitlab_project_api_path() {
     local project_path="$1"
 
     if [[ "$project_path" == *%2F* || "$project_path" == *%2f* ]]; then
+        if [[ ! "$project_path" =~ ^[A-Za-z0-9._-]+(%2[Ff][A-Za-z0-9._-]+)*$ ]]; then
+            log_error "latest-gitlab-tag: encoded project path may contain only alphanumerics, '.', '_', '-', and '%2F' separators" >&2
+            return 1
+        fi
         printf '%s' "$project_path"
         return
+    fi
+
+    if [[ ! "$project_path" =~ ^[A-Za-z0-9._/-]+$ || "$project_path" == /* || "$project_path" == */ || "$project_path" == *//* ]]; then
+        log_error "latest-gitlab-tag: project path may contain only alphanumerics, '.', '_', '-', and '/' separators" >&2
+        return 1
     fi
 
     jq -rn --arg path "$project_path" '$path | @uri'
@@ -49,7 +58,9 @@ _gitlab_project_api_path() {
 _gitlab_api_tags() {
     local project_path="$1"
     local encoded_project
-    encoded_project=$(_gitlab_project_api_path "$project_path")
+    if ! encoded_project=$(_gitlab_project_api_path "$project_path"); then
+        return 1
+    fi
 
     local curl_args=(--proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 30)
     local curl_cfg=""

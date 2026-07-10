@@ -47,6 +47,10 @@ done
 : "${header_file:?missing -D header file}"
 : "${url:?missing url}"
 
+if [[ -n "${FAKE_CURL_URL_LOG:-}" ]]; then
+    printf '%s\n' "$url" >> "$FAKE_CURL_URL_LOG"
+fi
+
 emit_headers() {
     printf '%s\n' "$1" > "$header_file"
 }
@@ -88,7 +92,7 @@ EOF
 }
 
 run_helper() {
-    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" \
+    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" FAKE_CURL_URL_LOG="${FAKE_CURL_URL_LOG:-}" \
         "$HELPER" "$@"
 }
 
@@ -106,6 +110,43 @@ last_output_line() {
 
     [ "$status" -eq 0 ]
     [ "$(last_output_line)" = $'0.4.9.11\ttor-0.4.9.11' ]
+}
+
+@test "plain project path is encoded in the GitLab API URL" {
+    write_fake_curl happy
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+    [ "$(head -n 1 "$FAKE_CURL_URL_LOG")" = "https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?order_by=version&sort=desc&per_page=100" ]
+}
+
+@test "pre-encoded project path is passed through in the GitLab API URL" {
+    write_fake_curl happy
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+
+    run run_helper "tpo%2Fcore%2Ftor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+    [ "$(head -n 1 "$FAKE_CURL_URL_LOG")" = "https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?order_by=version&sort=desc&per_page=100" ]
+}
+
+@test "pre-encoded project path rejects raw slash mixed with %2F" {
+    write_fake_curl happy
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+
+    run run_helper "tpo%2Fcore/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"encoded project path may contain only"* ]]
+    [ ! -s "$FAKE_CURL_URL_LOG" ]
 }
 
 @test "prerelease tags are excluded by default" {

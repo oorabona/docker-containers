@@ -6,15 +6,17 @@ load "../test_helper"
 
 # Source the script functions in a way that handles $(dirname "$0") issue
 source_version_script() {
-    pushd "$SCRIPTS_DIR" > /dev/null 2>&1
+    pushd "$SCRIPTS_DIR" > /dev/null 2>&1 || return
+    # shellcheck disable=SC1091
     source "./check-version.sh"
-    popd > /dev/null 2>&1
+    popd > /dev/null 2>&1 || return
 }
 
 setup() {
     setup_temp_dir
 
     # Source logging first (dependency)
+    # shellcheck disable=SC1091
     source "$HELPERS_DIR/logging.sh"
 
     # Save original PATH
@@ -260,4 +262,109 @@ EOF
 
     # Should fail since version.sh returned non-zero
     [ "$status" -eq 1 ]
+}
+
+# =============================================================================
+# check-dependency-versions gitlab-tags coverage
+# =============================================================================
+
+write_gitlab_url_capture_curl() {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+header_file=""
+url=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -D)
+            header_file="$2"
+            shift 2
+            ;;
+        --connect-timeout|--max-time|--proto|--proto-redir|--config)
+            shift 2
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            url="$1"
+            shift
+            ;;
+    esac
+done
+
+: "${header_file:?missing -D header file}"
+: "${url:?missing url}"
+
+printf 'HTTP/2 200\n' > "$header_file"
+printf '%s\n' "$url" >> "${GITLAB_URL_LOG:?}"
+printf '[{"name":"tor-0.4.9.10"},{"name":"tor-0.4.9.11"}]\n'
+EOF
+    chmod +x "$TEST_TEMP_DIR/bin/curl"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+@test "latest-gitlab-tag builds the same encoded API URL for plain and pre-encoded project paths" {
+    write_gitlab_url_capture_curl
+    export GITLAB_URL_LOG="$TEST_TEMP_DIR/gitlab-urls.log"
+    export GITLAB_API_URL="https://gitlab.example/api/v4"
+
+    run "$HELPERS_DIR/latest-gitlab-tag" "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+
+    run "$HELPERS_DIR/latest-gitlab-tag" "tpo%2Fcore%2Ftor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+
+    mapfile -t urls < "$GITLAB_URL_LOG"
+    [ "${urls[0]}" = "https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?order_by=version&sort=desc&per_page=100" ]
+    [ "${urls[1]}" = "https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?order_by=version&sort=desc&per_page=100" ]
+}
+
+@test "check-dependency-versions dispatches gitlab-tags through latest-gitlab-tag with configured hosts" {
+    mkdir -p "$TEST_TEMP_DIR/scripts" "$TEST_TEMP_DIR/helpers" "$TEST_TEMP_DIR/tor"
+    cp "$SCRIPTS_DIR/check-dependency-versions.sh" "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh"
+    cp "$HELPERS_DIR/logging.sh" "$TEST_TEMP_DIR/helpers/logging.sh"
+
+    cat > "$TEST_TEMP_DIR/helpers/latest-gitlab-tag" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'GITLAB_API_URL=%s\n' "\${GITLAB_API_URL:-}" >> "$TEST_TEMP_DIR/gitlab-helper.log"
+printf 'ARGS=%s\n' "\$*" >> "$TEST_TEMP_DIR/gitlab-helper.log"
+printf '0.8.2\tlyrebird-0.8.2\n'
+EOF
+    chmod +x "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh" "$TEST_TEMP_DIR/helpers/latest-gitlab-tag"
+
+    cat > "$TEST_TEMP_DIR/tor/config.yaml" <<'EOF'
+build_args:
+  LYREBIRD_VERSION: "0.8.1"
+dependency_sources:
+  LYREBIRD_VERSION:
+    lifecycle: tracked
+    type: gitlab-tags
+    web_host: gitlab.example
+    api_host: gitlab-api.example:8443
+    project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
+    tag_filter: "^lyrebird-[0-9]+\\.[0-9]+\\.[0-9]+$"
+    version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
+EOF
+
+    run "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh" tor --json
+
+    [ "$status" -eq 0 ]
+    local json_output
+    json_output=$(printf '%s\n' "$output" | awk 'found || $0 == "[" { found = 1; print }')
+    echo "$json_output" | jq -e '.[0].updates[0].name == "LYREBIRD_VERSION"' >/dev/null
+    echo "$json_output" | jq -e '.[0].updates[0].latest == "0.8.2"' >/dev/null
+    echo "$json_output" | jq -e '.[0].updates[0].source_url == "https://gitlab.example/tpo/anti-censorship/pluggable-transports/lyrebird/-/tags/lyrebird-0.8.2"' >/dev/null
+    grep -qx 'GITLAB_API_URL=https://gitlab-api.example:8443/api/v4' "$TEST_TEMP_DIR/gitlab-helper.log"
+    grep -q -- '--output both' "$TEST_TEMP_DIR/gitlab-helper.log"
 }

@@ -49,7 +49,7 @@ The `h` means hostname resolution happens through Tor. Many clients using plain 
 
 ### Simple Environment Path
 
-The image generates a minimal torrc when `/etc/tor/torrc` is absent or empty.
+The image generates a minimal torrc when `/etc/tor/torrc` is absent, empty, or contains only whitespace/comments.
 
 | Variable | Default | Effect |
 |---|---:|---|
@@ -59,9 +59,12 @@ The image generates a minimal torrc when `/etc/tor/torrc` is absent or empty.
 | `EXCLUDE_EXIT_NODES` | unset | Comma-separated country codes to avoid |
 | `PASSWORD_FILE` | unset | Optional Docker-secret file for external control authentication |
 | `CONTROL_PORT_BIND` | `127.0.0.1` | Control port bind address; non-loopback requires `PASSWORD_FILE` |
+| `CONTROL_PORT` | `9051` | Control port listen port |
 | `CHECK` | `false` | When true, healthcheck verifies Tor exit status through check.torproject.org |
 
 Default control access uses `CookieAuthentication 1` and binds `ControlPort 127.0.0.1:9051`. The image does not expose the control port.
+
+The default liveness healthcheck uses `nc -z` and only confirms that the SOCKS listener is open. Set `CHECK=true` when readiness must confirm that Tor has bootstrapped a circuit; otherwise `depends_on: service_healthy` can unblock dependents before Tor can route traffic.
 
 ### Mounted torrc Path
 
@@ -77,7 +80,7 @@ docker run -d \
   ghcr.io/oorabona/tor:latest
 ```
 
-When `/etc/tor/torrc` is non-empty, it owns Tor's behavior-affecting configuration. The container supplies only `DataDirectory`, `PidFile`, and `Log` through Tor's defaults file. If simple environment variables are also set, startup logs a warning because those variables have no effect in this mode.
+When `/etc/tor/torrc` contains at least one non-comment directive, it owns Tor's behavior-affecting configuration. The container supplies only `DataDirectory`, `PidFile`, and `Log` through Tor's defaults file. If simple environment variables are also set, startup logs a warning because those variables have no effect in this mode.
 
 ## Relay Example
 
@@ -118,6 +121,8 @@ Nyx runs as the `tor` user and reads `/var/lib/tor/control_auth_cookie`; no pass
 - hidden-service private keys and `.onion` address continuity
 
 The entrypoint warns when a mounted torrc defines `HiddenServiceDir` or `ORPort` and `/var/lib/tor` does not look like a mounted volume. This is a best-effort heuristic; the absence of the warning is not proof that persistence is configured correctly.
+
+Named Docker volumes are prepared by the root-to-`tor` startup path. If `/var/lib/tor` is a bind mount and the container is not started with `--user 0`, pre-own the host directory as uid `100` so the `tor` user can write it.
 
 ## Security
 

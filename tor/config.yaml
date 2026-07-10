@@ -16,17 +16,15 @@ dependency_sources:
     lifecycle: untracked
     reason: "Base image tag fallback, not a version to track"
   TOR_VERSION:
-    monitor: true
-    lifecycle: tracked
-    type: gitlab-tags
-    project_path: tpo%2Fcore%2Ftor
-    tag_filter: "^tor-[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"
-    version_extract: "^tor-([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)$"
-    reason: "Tor stable tags on gitlab.torproject.org; strips the tor- prefix"
+    monitor: false
+    lifecycle: untracked
+    reason: "Primary image version is resolved by tor/version.sh; this build arg verifies the installed Alpine tor package and OCI label"
   LYREBIRD_VERSION:
     monitor: true
     lifecycle: tracked
     type: gitlab-tags
+    web_host: gitlab.torproject.org
+    api_host: gitlab.torproject.org
     project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
     tag_filter: "^lyrebird-[0-9]+\\.[0-9]+\\.[0-9]+$"
     version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
