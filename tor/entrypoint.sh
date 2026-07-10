@@ -149,7 +149,8 @@ reject_sensitive_data_dir() {
     local -a denied_paths=(
         /
         /etc
-        /var
+        /var/lib
+        /tmp
         /usr
         /bin
         /sbin

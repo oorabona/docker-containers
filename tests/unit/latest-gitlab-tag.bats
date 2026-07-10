@@ -63,6 +63,9 @@ if [[ -n "${FAKE_CURL_CONFIG_LOG:-}" ]]; then
         printf 'CONFIG:\n' >> "$FAKE_CURL_CONFIG_LOG"
     fi
 fi
+if [[ -n "${FAKE_CURL_CONFIG_PATH_LOG:-}" && -n "$config_file" ]]; then
+    printf '%s\n' "$config_file" >> "$FAKE_CURL_CONFIG_PATH_LOG"
+fi
 
 emit_headers() {
     printf '%s\n' "$1" > "$header_file"
@@ -96,6 +99,10 @@ Link: <https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?p
 Link: <https://evil.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?page=2>; rel="next"'
         printf '[{"name":"tor-0.5.0.0-alpha-dev"}]\n'
         ;;
+    terminate)
+        kill -TERM "$PPID"
+        exit 143
+        ;;
     fail)
         exit 22
         ;;
@@ -110,7 +117,7 @@ EOF
 }
 
 run_helper() {
-    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" FAKE_CURL_URL_LOG="${FAKE_CURL_URL_LOG:-}" FAKE_CURL_CONFIG_LOG="${FAKE_CURL_CONFIG_LOG:-}" \
+    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" FAKE_CURL_URL_LOG="${FAKE_CURL_URL_LOG:-}" FAKE_CURL_CONFIG_LOG="${FAKE_CURL_CONFIG_LOG:-}" FAKE_CURL_CONFIG_PATH_LOG="${FAKE_CURL_CONFIG_PATH_LOG:-}" \
         "$HELPER" "$@"
 }
 
@@ -228,11 +235,24 @@ last_output_line() {
         --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
 
     [ "$status" -eq 0 ]
+    [[ "$output" != *"unbound variable"* ]]
     grep -q 'CONFIG:header = "PRIVATE-TOKEN: secret";' "$FAKE_CURL_CONFIG_LOG"
 }
 
-@test "GitLab token curl config has EXIT cleanup trap" {
-    grep -Fq "trap 'rm -f \"\$curl_cfg\"' EXIT" "$HELPER"
+@test "GitLab token curl config is cleaned on interruption" {
+    write_fake_curl terminate
+    export GITLAB_TOKEN="secret"
+    FAKE_CURL_CONFIG_PATH_LOG="${TEST_TEMP_DIR}/curl-config-path.log"
+    GITLAB_API_URL="https://gitlab.torproject.org/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -ne 0 ]
+    config_path="$(head -n 1 "$FAKE_CURL_CONFIG_PATH_LOG")"
+    [ -n "$config_path" ]
+    [ ! -e "$config_path" ]
 }
 
 @test "GitLab token rejects curl config quote injection before curl" {

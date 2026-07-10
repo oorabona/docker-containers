@@ -170,14 +170,10 @@ Relay mode still does not need extra Linux capabilities when using an unprivileg
 
 ## Building
 
+Build all variants, including the monitoring flavor, through the normal variant pipeline:
+
 ```bash
 ./make build tor
-```
-
-Build the monitoring flavor through the normal variant pipeline:
-
-```bash
-./make build tor latest monitoring
 ```
 
 ## License

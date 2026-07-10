@@ -26,6 +26,21 @@ source "$SCRIPT_DIR/logging.sh"
 
 GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.torproject.org/api/v4}"
 PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+_gitlab_api_curl_cfg=""
+
+_gitlab_api_cleanup_curl_config() {
+    if [[ -n "${_gitlab_api_curl_cfg:-}" ]]; then
+        rm -f "$_gitlab_api_curl_cfg"
+        _gitlab_api_curl_cfg=""
+    fi
+}
+
+_gitlab_api_signal_cleanup() {
+    local status="$1"
+
+    _gitlab_api_cleanup_curl_config
+    exit "$status"
+}
 
 _gha_escape() {
     local s="$1"
@@ -119,14 +134,15 @@ _gitlab_api_tags() {
     fi
 
     local curl_args=(--proto '=https' --proto-redir '=https' -fsS --connect-timeout 10 --max-time 30)
-    local curl_cfg=""
     if [[ -n "${GITLAB_TOKEN:-}" ]] && _gitlab_token_host_allowed "$api_host"; then
         _validate_gitlab_token_for_curl_config || return 1
-        curl_cfg=$(mktemp)
-        trap 'rm -f "$curl_cfg"' EXIT
-        chmod 600 "$curl_cfg"
-        printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$curl_cfg"
-        curl_args+=(--config "$curl_cfg")
+        _gitlab_api_curl_cfg=$(mktemp)
+        trap _gitlab_api_cleanup_curl_config EXIT
+        trap '_gitlab_api_signal_cleanup 130' INT
+        trap '_gitlab_api_signal_cleanup 143' TERM
+        chmod 600 "$_gitlab_api_curl_cfg"
+        printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$_gitlab_api_curl_cfg"
+        curl_args+=(--config "$_gitlab_api_curl_cfg")
     fi
 
     local url="${GITLAB_API_URL}/projects/${encoded_project}/repository/tags?order_by=version&sort=desc&per_page=100"
@@ -141,14 +157,16 @@ _gitlab_api_tags() {
 
         local body
         if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
-            rm -f "$hdr_file" "$curl_cfg"
+            rm -f "$hdr_file"
+            _gitlab_api_cleanup_curl_config
             echo "::error::latest-gitlab-tag: GitLab API request failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
             return 1
         fi
 
         local page_tags
         if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
-            rm -f "$hdr_file" "$curl_cfg"
+            rm -f "$hdr_file"
+            _gitlab_api_cleanup_curl_config
             echo "::error::latest-gitlab-tag: invalid JSON on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
             return 1
         fi
@@ -166,11 +184,13 @@ _gitlab_api_tags() {
         if [[ -n "$next_url" ]]; then
             local next_origin
             if ! next_origin=$(_url_origin "GitLab pagination URL" "$next_url"); then
-                rm -f "$hdr_file" "$curl_cfg"
+                rm -f "$hdr_file"
+                _gitlab_api_cleanup_curl_config
                 return 1
             fi
             if [[ "$next_origin" != "$allowed_origin" ]]; then
-                rm -f "$hdr_file" "$curl_cfg"
+                rm -f "$hdr_file"
+                _gitlab_api_cleanup_curl_config
                 echo "::error::latest-gitlab-tag: refusing cross-origin GitLab pagination URL for $(_gha_escape "${project_path}") (expected origin $(_gha_escape "${allowed_origin}"), got $(_gha_escape "${next_origin}"))" >&2
                 return 1
             fi
@@ -179,12 +199,14 @@ _gitlab_api_tags() {
     done
 
     if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
-        rm -f "$hdr_file" "$curl_cfg"
+        rm -f "$hdr_file"
+        _gitlab_api_cleanup_curl_config
         echo "::error::latest-gitlab-tag: pagination bound reached (max_pages=$(_gha_escape "${max_pages}")) but more pages exist for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
 
-    rm -f "$hdr_file" "$curl_cfg"
+    rm -f "$hdr_file"
+    _gitlab_api_cleanup_curl_config
 
     if [[ "$tags_emitted" -eq 0 ]]; then
         echo "::error::latest-gitlab-tag: no tags returned for $(_gha_escape "${project_path}")" >&2

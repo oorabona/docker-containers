@@ -3,7 +3,7 @@
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-    TEST_TEMP_DIR="$(mktemp -d /tmp/tor-entrypoint-bats.XXXXXX)"
+    TEST_TEMP_DIR="$(mktemp -d /var/tmp/tor-entrypoint-bats.XXXXXX)"
     ENTRYPOINT="${PROJECT_ROOT}/tor/entrypoint.sh"
     INTERNAL_GENERATED_DIR="/tmp/tor"
     INTERNAL_GENERATED_MARKER="${INTERNAL_GENERATED_DIR}/.tor-entrypoint-bats"
@@ -208,15 +208,21 @@ write_healthcheck_pid_file() {
 @test "runtime path validation rejects sensitive descendants but allows tor data descendants" {
     local rejected
 
-    for rejected in /etc/ssl /root/.ssh /var/lib; do
+    for rejected in /etc/ssl /root/.ssh /tmp /tmp/tor-data /var/lib /var/lib/other-service; do
         run bash -c 'source "$1"; DATA_DIR="$2"; validate_runtime_paths' _ "$ENTRYPOINT" "$rejected"
         [ "$status" -ne 0 ]
         [[ "$output" == *"DATA_DIR must not be a sensitive system path"* ]]
     done
 
-    run bash -c 'source "$1"; DATA_DIR="/var/lib/tor/custom"; validate_runtime_paths' _ "$ENTRYPOINT"
+    run bash -c 'source "$1"; DATA_DIR="/var"; validate_runtime_paths' _ "$ENTRYPOINT"
 
-    [ "$status" -eq 0 ]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"DATA_DIR must not be a parent of sensitive system path: /var/lib"* ]]
+
+    for allowed in /var/lib/tor /var/lib/tor/custom /var/tmp/tor-data; do
+        run bash -c 'source "$1"; DATA_DIR="$2"; validate_runtime_paths' _ "$ENTRYPOINT" "$allowed"
+        [ "$status" -eq 0 ]
+    done
 }
 
 @test "generated torrc path is internal and written with restrictive permissions" {
@@ -340,4 +346,22 @@ write_healthcheck_pid_file() {
 
     [ "$status" -eq 0 ]
     grep -qx 'nc -z ::1 19050' "$FAKE_NC_LOG"
+}
+
+@test "healthcheck nc dependency is explicit or documented" {
+    if awk '
+        /apk add --no-cache/ { capture = 1 }
+        capture && /netcat|nmap-ncat|busybox-extras/ { found = 1 }
+        capture && /;/ { capture = 0 }
+        END { exit found ? 0 : 1 }
+    ' "${PROJECT_ROOT}/tor/Dockerfile"; then
+        return 0
+    fi
+
+    grep -Eq 'BusyBox.*(/usr/bin/nc| nc)' "${PROJECT_ROOT}/tor/Dockerfile"
+}
+
+@test "README documents variant pipeline build for monitoring flavor" {
+    grep -Fq './make build tor' "${PROJECT_ROOT}/tor/README.md"
+    ! grep -Fq './make build tor latest monitoring' "${PROJECT_ROOT}/tor/README.md"
 }
