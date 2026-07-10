@@ -48,6 +48,31 @@ case "${1:-}" in
 esac
 EOF
 
+    cat > "${TEST_TEMP_DIR}/bin/mkdir" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        /var/lib/tor|/var/lib/tor/)
+            ;;
+        *)
+            args+=("$arg")
+            ;;
+    esac
+done
+
+if ((${#args[@]} == 0)); then
+    exit 0
+fi
+if ((${#args[@]} == 1)) && [[ "${args[0]}" == "-p" ]]; then
+    exit 0
+fi
+
+exec /bin/mkdir "${args[@]}"
+EOF
+
     cat > "${TEST_TEMP_DIR}/bin/tor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -79,7 +104,7 @@ if [[ -n "$torrc" && -f "$torrc" ]] && grep -qx 'CookieAuthentication 0' "$torrc
 fi
 EOF
 
-    chmod +x "${TEST_TEMP_DIR}/bin/id" "${TEST_TEMP_DIR}/bin/tor"
+    chmod +x "${TEST_TEMP_DIR}/bin/id" "${TEST_TEMP_DIR}/bin/mkdir" "${TEST_TEMP_DIR}/bin/tor"
     export PATH="${TEST_TEMP_DIR}/bin:$PATH"
 }
 
@@ -122,7 +147,17 @@ printf 'curl %s\n' "$*" >> "${FAKE_CURL_LOG:?}"
 printf '{"IsTor":true}\n'
 EOF
 
-    chmod +x "${TEST_TEMP_DIR}/bin/nc" "${TEST_TEMP_DIR}/bin/curl"
+    cat > "${TEST_TEMP_DIR}/bin/pgrep" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${FAKE_PGREP_LOG:-}" ]]; then
+    printf 'pgrep %s\n' "$*" >> "$FAKE_PGREP_LOG"
+fi
+exit "${FAKE_PGREP_STATUS:-0}"
+EOF
+
+    chmod +x "${TEST_TEMP_DIR}/bin/nc" "${TEST_TEMP_DIR}/bin/curl" "${TEST_TEMP_DIR}/bin/pgrep"
     export PATH="${TEST_TEMP_DIR}/bin:$PATH"
 }
 
@@ -180,49 +215,36 @@ write_healthcheck_pid_file() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"custom ${TEST_TEMP_DIR}/torrc is active"* ]]
     [[ "$output" == *"TOR_STUB_CONFIG=${TEST_TEMP_DIR}/torrc"* ]]
-    grep -qx 'DataDirectory '"${TEST_TEMP_DIR}"'/data' "${INTERNAL_GENERATED_DIR}/defaults-torrc"
+    grep -qx 'DataDirectory /var/lib/tor' "${INTERNAL_GENERATED_DIR}/defaults-torrc"
 }
 
-@test "runtime path validation rejects sensitive DATA_DIR paths before directory ownership changes" {
+@test "DATA_DIR environment value is ignored and internal path is retained" {
+    local configured
+
+    for configured in /etc/ssl /root/.ssh /tmp /var/tmp/tor-data /var/lib/tor/custom; do
+        run env DATA_DIR="$configured" bash -c 'source "$1"; printf "%s\n" "$DATA_DIR"' _ "$ENTRYPOINT"
+        [ "$status" -eq 0 ]
+        [ "$output" = "/var/lib/tor" ]
+    done
+}
+
+@test "generated torrc uses internal DATA_DIR even when env var is set" {
     write_fake_runtime_commands
 
     run env \
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
-        DATA_DIR="/" \
+        DATA_DIR="/etc/ssl" \
         "$ENTRYPOINT"
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"DATA_DIR must not be the filesystem root"* ]]
-
-    run env \
-        PATH="$PATH" \
-        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
-        DATA_DIR="/etc" \
-        "$ENTRYPOINT"
-
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"DATA_DIR must not be a sensitive system path: /etc"* ]]
-}
-
-@test "runtime path validation rejects sensitive descendants but allows tor data descendants" {
-    local rejected
-
-    for rejected in /etc/ssl /root/.ssh /tmp /tmp/tor-data /var/lib /var/lib/other-service; do
-        run bash -c 'source "$1"; DATA_DIR="$2"; validate_runtime_paths' _ "$ENTRYPOINT" "$rejected"
-        [ "$status" -ne 0 ]
-        [[ "$output" == *"DATA_DIR must not be a sensitive system path"* ]]
-    done
-
-    run bash -c 'source "$1"; DATA_DIR="/var"; validate_runtime_paths' _ "$ENTRYPOINT"
-
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"DATA_DIR must not be a parent of sensitive system path: /var/lib"* ]]
-
-    for allowed in /var/lib/tor /var/lib/tor/custom /var/tmp/tor-data; do
-        run bash -c 'source "$1"; DATA_DIR="$2"; validate_runtime_paths' _ "$ENTRYPOINT" "$allowed"
-        [ "$status" -eq 0 ]
-    done
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+    grep -qx 'DataDirectory /var/lib/tor' "${INTERNAL_GENERATED_DIR}/torrc"
+    grep -qx 'PidFile /var/lib/tor/tor.pid' "${INTERNAL_GENERATED_DIR}/torrc"
+    grep -qx 'CookieAuthFile /var/lib/tor/control_auth_cookie' "${INTERNAL_GENERATED_DIR}/torrc"
+    if grep -Fq '/etc/ssl' "${INTERNAL_GENERATED_DIR}/torrc"; then
+        return 1
+    fi
 }
 
 @test "generated torrc path is internal and written with restrictive permissions" {
@@ -241,6 +263,7 @@ write_healthcheck_pid_file() {
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+    grep -qx 'DataDirectory /var/lib/tor' "${INTERNAL_GENERATED_DIR}/torrc"
     grep -qx 'HashedControlPassword 16:FAKE_HASH' "${INTERNAL_GENERATED_DIR}/torrc"
     [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}/torrc")" = "600" ]
     [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}")" = "700" ]
@@ -263,6 +286,23 @@ write_healthcheck_pid_file() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
     grep -qx "HashedControlPassword ${hashed_password}" "${INTERNAL_GENERATED_DIR}/torrc"
+    [ ! -e "$FAKE_TOR_HASH_LOG" ]
+}
+
+@test "invalid pre-hashed PASSWORD_FILE is rejected before invoking hash helper" {
+    write_fake_runtime_commands
+    printf '16:0\n' > "${TEST_TEMP_DIR}/control-password"
+    export FAKE_TOR_HASH_LOG="${TEST_TEMP_DIR}/hash.log"
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        PASSWORD_FILE="${TEST_TEMP_DIR}/control-password" \
+        FAKE_TOR_HASH_LOG="$FAKE_TOR_HASH_LOG" \
+        "$ENTRYPOINT"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"PASSWORD_FILE contains invalid pre-hashed Tor control password; expected 16: followed by 58 hexadecimal digits"* ]]
     [ ! -e "$FAKE_TOR_HASH_LOG" ]
 }
 
@@ -303,6 +343,28 @@ write_healthcheck_pid_file() {
 
     [ "$status" -eq 0 ]
     [ ! -e "$FAKE_NC_LOG" ]
+}
+
+@test "healthcheck ignores DATA_DIR environment for pid file path" {
+    write_fake_healthcheck_commands
+    write_healthcheck_pid_file
+    local healthcheck
+    healthcheck="$(dockerfile_healthcheck_command)"
+    export FAKE_NC_LOG="${TEST_TEMP_DIR}/nc.log"
+    export FAKE_NC_STATUS=0
+    export FAKE_CURL_LOG="${TEST_TEMP_DIR}/curl.log"
+    export FAKE_PGREP_LOG="${TEST_TEMP_DIR}/pgrep.log"
+
+    run env \
+        PATH="$PATH" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        TORRC_PATH="${TEST_TEMP_DIR}/missing-torrc" \
+        CHECK=false \
+        FAKE_PGREP_LOG="$FAKE_PGREP_LOG" \
+        sh -c "$healthcheck"
+
+    [ "$status" -eq 0 ]
+    grep -qx 'pgrep -x tor' "$FAKE_PGREP_LOG"
 }
 
 @test "healthcheck probes SOCKS for simple env-driven configuration" {

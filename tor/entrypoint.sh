@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 TORRC_PATH="${TORRC_PATH:-/etc/tor/torrc}"
-DATA_DIR="${DATA_DIR:-/var/lib/tor}"
+readonly DATA_DIR="/var/lib/tor"
 readonly GENERATED_DIR="/tmp/tor"
 readonly GENERATED_TORRC="${GENERATED_DIR}/torrc"
 readonly DEFAULTS_TORRC="${GENERATED_DIR}/defaults-torrc"
@@ -124,60 +124,6 @@ validate_bind_address() {
     die "${name} must be a plain IPv4 or IPv6 address"
 }
 
-validate_tor_path() {
-    local name="$1"
-    local value="$2"
-    local segment trimmed
-    local -a segments
-
-    reject_control_chars "$name" "$value"
-    [[ "$value" == /* ]] || die "${name} must be an absolute path"
-    [[ "$value" != "/" ]] || die "${name} must not be the filesystem root"
-    [[ "$value" =~ ^/[A-Za-z0-9._@:+-]+(/[A-Za-z0-9._@:+-]+)*/?$ ]] || die "${name} contains unsupported path characters"
-
-    trimmed="${value%/}"
-    IFS='/' read -r -a segments <<< "${trimmed#/}"
-    for segment in "${segments[@]}"; do
-        [[ "$segment" != "." && "$segment" != ".." ]] || die "${name} must not contain . or .. path segments"
-    done
-}
-
-reject_sensitive_data_dir() {
-    local value="${1%/}"
-    local denied
-    local allowed_data_dir="/var/lib/tor"
-    local -a denied_paths=(
-        /
-        /etc
-        /var/lib
-        /tmp
-        /usr
-        /bin
-        /sbin
-        /lib
-        /lib64
-        /proc
-        /sys
-        /dev
-        /root
-        /boot
-        /home
-    )
-
-    if [[ "$value" == "$allowed_data_dir" || "$value" == "$allowed_data_dir"/* ]]; then
-        return 0
-    fi
-
-    for denied in "${denied_paths[@]}"; do
-        if [[ "$value" == "$denied" || "$value" == "$denied"/* ]]; then
-            die "DATA_DIR must not be a sensitive system path: ${denied}"
-        fi
-        if [[ "$denied" == "$value"/* ]]; then
-            die "DATA_DIR must not be a parent of sensitive system path: ${denied}"
-        fi
-    done
-}
-
 validate_country_list() {
     local name="$1"
     local raw="$2"
@@ -210,11 +156,6 @@ validate_torrc_env() {
     validate_port "CONTROL_PORT" "$CONTROL_PORT"
     validate_country_list "EXIT_NODES" "${EXIT_NODES:-}"
     validate_country_list "EXCLUDE_EXIT_NODES" "${EXCLUDE_EXIT_NODES:-}"
-}
-
-validate_runtime_paths() {
-    validate_tor_path "DATA_DIR" "$DATA_DIR"
-    reject_sensitive_data_dir "$DATA_DIR"
 }
 
 ensure_runtime_dirs() {
@@ -303,7 +244,8 @@ load_control_password_hash() {
     IFS= read -r control_password < "$password_file" || true
     [[ -n "$control_password" ]] || die "PASSWORD_FILE is empty: ${password_file}"
 
-    if [[ "$control_password" =~ ^16:[0-9A-Fa-f]+$ ]]; then
+    if [[ "$control_password" == 16:* ]]; then
+        [[ "$control_password" =~ ^16:[0-9A-Fa-f]{58}$ ]] || die "PASSWORD_FILE contains invalid pre-hashed Tor control password; expected 16: followed by 58 hexadecimal digits"
         CONTROL_PASSWORD_HASH="$control_password"
         unset control_password
         return 0
@@ -415,7 +357,6 @@ main() {
         shift
     fi
 
-    validate_runtime_paths
     ensure_runtime_dirs "$@"
 
     if custom_torrc_active; then

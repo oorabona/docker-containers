@@ -98,7 +98,7 @@ EXPOSE 9050 9001
 # Alpine base BusyBox installs /usr/bin/nc via /etc/busybox-paths.d/busybox;
 # the healthcheck uses that applet for the local SOCKS probe.
 HEALTHCHECK --interval=30s --timeout=20s --start-period=90s --retries=3 \
-    CMD pid_file="${DATA_DIR:-/var/lib/tor}/tor.pid"; \
+    CMD pid_file="/var/lib/tor/tor.pid"; \
         pid=""; \
         [ -s "$pid_file" ] && pid="$(cat "$pid_file" 2>/dev/null || true)"; \
         case "$pid" in ""|*[!0-9]*) tor_alive=false ;; *) kill -0 "$pid" 2>/dev/null && tor_alive=true || tor_alive=false ;; esac; \

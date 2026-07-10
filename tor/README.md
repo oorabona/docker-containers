@@ -76,7 +76,7 @@ The default healthcheck first verifies that the Tor process is alive. For the ge
 
 ### Opt-In External Control
 
-For password-authenticated external control, set `PASSWORD_FILE` to a Docker secret and bind `CONTROL_PORT_BIND` deliberately. The recommended secret content is a pre-hashed Tor control password in `16:<hex>` `HashedControlPassword` format, generated outside the container, for example with `tor --hash-password` on a trusted host or a throwaway container. The entrypoint uses that value directly and never handles the plaintext.
+For password-authenticated external control, set `PASSWORD_FILE` to a Docker secret and bind `CONTROL_PORT_BIND` deliberately. The recommended secret content is a pre-hashed Tor control password in `16:<58 hex characters>` `HashedControlPassword` format, generated outside the container, for example with `tor --hash-password` on a trusted host or a throwaway container. The entrypoint uses that value directly and never handles the plaintext.
 
 For compatibility, `PASSWORD_FILE` may also contain a plaintext password. In that path the entrypoint hashes it at startup with `tor --hash-password`; Tor does not provide stdin or file input for this operation, so the plaintext is briefly visible in that helper process's argv inside the container PID namespace.
 
@@ -133,6 +133,8 @@ Nyx runs as the `tor` user and reads `/var/lib/tor/control_auth_cookie`; no pass
 - relay fingerprint continuity
 - bridge identity continuity
 - hidden-service private keys and `.onion` address continuity
+
+The data directory is fixed at `/var/lib/tor`; persist it by mounting a named volume or bind mount at that path.
 
 The entrypoint warns when a mounted torrc defines `HiddenServiceDir` or `ORPort` and `/var/lib/tor` does not look like a mounted volume. This is a best-effort heuristic; the absence of the warning is not proof that persistence is configured correctly.
 
