@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+
+# Resolve the latest upstream GitLab git tag matching a filter regex, then
+# extract a normalized version string using a capture-group regex.
+#
+# Mirrors helpers/latest-github-tag's CLI contract:
+#   latest-gitlab-tag <project-path> \
+#       --tag-filter REGEX \
+#       --version-extract REGEX \
+#       [--include-prerelease] \
+#       [--output version|raw|both]
+#
+# Output:
+#   version: normalized version string
+#   raw:     matching raw git tag
+#   both:    VERSION<TAB>RAW_TAG
+#
+# Exit 1 on no matching tag, API error, empty result, or extract failure.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./logging.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/logging.sh"
+
+GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.torproject.org/api/v4}"
+PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+
+_gha_escape() {
+    local s="$1"
+    s="${s//%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
+
+_gitlab_project_api_path() {
+    local project_path="$1"
+
+    if [[ "$project_path" == *%2F* || "$project_path" == *%2f* ]]; then
+        printf '%s' "$project_path"
+        return
+    fi
+
+    jq -rn --arg path "$project_path" '$path | @uri'
+}
+
+_gitlab_api_tags() {
+    local project_path="$1"
+    local encoded_project
+    encoded_project=$(_gitlab_project_api_path "$project_path")
+
+    local curl_args=(--proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 30)
+    local curl_cfg=""
+    if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+        curl_cfg=$(mktemp)
+        chmod 600 "$curl_cfg"
+        printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$curl_cfg"
+        curl_args+=(--config "$curl_cfg")
+    fi
+
+    local url="${GITLAB_API_URL}/projects/${encoded_project}/repository/tags?order_by=version&sort=desc&per_page=100"
+    local max_pages=20
+    local pages_fetched=0
+    local tags_emitted=0
+    local hdr_file
+    hdr_file=$(mktemp)
+
+    while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
+        pages_fetched=$((pages_fetched + 1))
+
+        local body
+        if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
+            rm -f "$hdr_file" "$curl_cfg"
+            echo "::error::latest-gitlab-tag: GitLab API request failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
+            return 1
+        fi
+
+        local page_tags
+        if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
+            rm -f "$hdr_file" "$curl_cfg"
+            echo "::error::latest-gitlab-tag: invalid JSON on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
+            return 1
+        fi
+
+        if [[ -n "$page_tags" ]]; then
+            printf '%s\n' "$page_tags"
+            tags_emitted=$((tags_emitted + 1))
+        fi
+
+        local next_url
+        next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+            | grep -o '<[^>]*>; rel="next"' \
+            | sed 's/^<//; s/>; rel="next"//' \
+            | head -1 || true)
+        url="$next_url"
+    done
+
+    if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
+        rm -f "$hdr_file" "$curl_cfg"
+        echo "::error::latest-gitlab-tag: pagination bound reached (max_pages=$(_gha_escape "${max_pages}")) but more pages exist for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+
+    rm -f "$hdr_file" "$curl_cfg"
+
+    if [[ "$tags_emitted" -eq 0 ]]; then
+        echo "::error::latest-gitlab-tag: no tags returned for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+}
+
+latest-gitlab-tag() {
+    local project_path=""
+    local tag_filter=""
+    local version_extract=""
+    local include_prerelease=false
+    local output_mode="version"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag-filter)
+                tag_filter="${2:-}"
+                shift 2
+                ;;
+            --version-extract)
+                version_extract="${2:-}"
+                shift 2
+                ;;
+            --include-prerelease)
+                include_prerelease=true
+                shift
+                ;;
+            --output)
+                output_mode="${2:-}"
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1" >&2
+                log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                return 1
+                ;;
+            *)
+                if [[ -z "$project_path" ]]; then
+                    project_path="$1"
+                else
+                    log_error "Unexpected argument: $1" >&2
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$project_path" ]]; then
+        log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX" >&2
+        return 1
+    fi
+    if [[ -z "$tag_filter" ]]; then
+        log_error "latest-gitlab-tag: --tag-filter is required" >&2
+        return 1
+    fi
+    if [[ -z "$version_extract" ]]; then
+        log_error "latest-gitlab-tag: --version-extract is required" >&2
+        return 1
+    fi
+
+    log_info "Fetching GitLab tags for ${project_path}..." >&2
+    local all_tags
+    all_tags=$(_gitlab_api_tags "$project_path") || {
+        log_error "Failed to fetch GitLab tags for ${project_path}" >&2
+        return 1
+    }
+
+    if [[ -z "$all_tags" ]]; then
+        log_error "No tags returned for ${project_path}" >&2
+        return 1
+    fi
+
+    local filtered_tags
+    filtered_tags=$(echo "$all_tags" | grep -E "$tag_filter" || true)
+    if [[ -z "$filtered_tags" ]]; then
+        log_error "No tags match tag_filter '${tag_filter}' for ${project_path}" >&2
+        return 1
+    fi
+
+    if [[ "$include_prerelease" != "true" ]]; then
+        local no_prerelease
+        no_prerelease=$(echo "$filtered_tags" | grep -v -i -E -- "$PRERELEASE_EXCLUDE_REGEX" || true)
+        if [[ -z "$no_prerelease" ]]; then
+            log_error "All matching tags for ${project_path} are pre-releases — none passed exclusion filter" >&2
+            return 1
+        fi
+        filtered_tags="$no_prerelease"
+    fi
+
+    local versions_with_tags=""
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if [[ "$tag" =~ $version_extract ]]; then
+            local extracted="${BASH_REMATCH[1]-}"
+            if [[ -z "$extracted" ]]; then
+                echo "::error::latest-gitlab-tag: version-extract regex matched tag '$(_gha_escape "${tag}")' but produced no capture — verify the regex has exactly one parenthesized capture group" >&2
+                return 1
+            fi
+            versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
+        else
+            log_info "version_extract '${version_extract}' did not match tag '${tag}' — skipping" >&2
+        fi
+    done <<< "$filtered_tags"
+
+    if [[ -z "$versions_with_tags" ]]; then
+        log_error "version_extract '${version_extract}' produced no results for ${project_path}" >&2
+        return 1
+    fi
+
+    local best_line
+    best_line=$(echo "$versions_with_tags" | sort -t' ' -k1,1 --version-sort | tail -1)
+
+    local best_version best_raw_tag
+    best_version=$(echo "$best_line" | awk '{print $1}')
+    best_raw_tag=$(echo "$best_line" | awk '{print $2}')
+
+    if [[ -z "$best_version" ]]; then
+        log_error "Failed to determine best version for ${project_path}" >&2
+        return 1
+    fi
+    if [[ ! "$best_version" =~ ^[0-9] ]]; then
+        log_error "Extracted version '${best_version}' does not start with a digit — aborting" >&2
+        return 1
+    fi
+
+    case "$output_mode" in
+        version)
+            echo "$best_version"
+            ;;
+        raw)
+            if [[ -z "$best_raw_tag" ]]; then
+                log_error "No raw tag captured for ${project_path}" >&2
+                return 1
+            fi
+            echo "$best_raw_tag"
+            ;;
+        both)
+            if [[ -z "$best_raw_tag" ]]; then
+                log_error "No raw tag captured for ${project_path}" >&2
+                return 1
+            fi
+            printf '%s\t%s\n' "$best_version" "$best_raw_tag"
+            ;;
+        *)
+            log_error "Unknown --output mode '${output_mode}': use 'version', 'raw', or 'both'" >&2
+            return 1
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-gitlab-tag "$@"
+fi

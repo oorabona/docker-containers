@@ -24,6 +24,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=../helpers/logging.sh
+# shellcheck disable=SC1091
 source "$PROJECT_ROOT/helpers/logging.sh"
 
 # Named constant: days before supported_until to emit a ::warning:: countdown
@@ -92,6 +94,16 @@ build_source_url() {
                 echo "https://github.com/${source}/tree/${raw_tag}"
             else
                 echo "https://github.com/${source}/tree/v${version}"
+            fi
+            ;;
+        gitlab-tags)
+            local project_path_web
+            project_path_web="${source//%2F/\/}"
+            project_path_web="${project_path_web//%2f/\/}"
+            if [[ -n "$raw_tag" ]]; then
+                echo "https://gitlab.torproject.org/${project_path_web}/-/tags/${raw_tag}"
+            else
+                echo "https://gitlab.torproject.org/${project_path_web}/-/tags/v${version}"
             fi
             ;;
         pypi)
@@ -332,6 +344,33 @@ check_container_deps() {
                 latest_version="${_gh_both%%$'\t'*}"
                 latest_raw_tag="${_gh_both##*$'\t'}"
                 unset _gh_both
+                ;;
+            gitlab-tags)
+                local project_path tag_filter version_extract
+                project_path=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].project_path // ""' "$config")
+                tag_filter=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
+                version_extract=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
+                source_ref="$project_path"
+
+                if [[ -z "$project_path" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags type missing project_path:" '. + [$msg]')
+                    continue
+                fi
+                if [[ -z "$tag_filter" || -z "$version_extract" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags type requires tag_filter and version_extract" '. + [$msg]')
+                    continue
+                fi
+
+                _gl_both=$("$PROJECT_ROOT/helpers/latest-gitlab-tag" "$project_path" \
+                    --tag-filter "$tag_filter" \
+                    --version-extract "$version_extract" \
+                    --output both 2>/dev/null) || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitLab tag API error for ${project_path}" '. + [$msg]')
+                    continue
+                }
+                latest_version="${_gl_both%%$'\t'*}"
+                latest_raw_tag="${_gl_both##*$'\t'}"
+                unset _gl_both
                 ;;
             pypi)
                 local package

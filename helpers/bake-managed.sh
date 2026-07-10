@@ -41,7 +41,7 @@ source "${_BM_SCRIPT_DIR}/logging.sh"
 # operators and tests to expand the set without code changes.
 # ---------------------------------------------------------------------------
 bake_managed_containers() {
-    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres}"
+    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres tor}"
 }
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,43 @@
+# Tor container configuration
+# Base image and third-party dependency versions
+
+base_image: "${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}"
+base_image_cache:
+  - source: library/alpine
+    tags: ["latest"]
+build_args:
+  OS_IMAGE_TAG: "latest"
+  TOR_VERSION: "0.4.9.11"
+  LYREBIRD_VERSION: "0.8.1"
+  NYX_VERSION: "2.1.0"
+dependency_sources:
+  OS_IMAGE_TAG:
+    monitor: false
+    lifecycle: untracked
+    reason: "Base image tag fallback, not a version to track"
+  TOR_VERSION:
+    monitor: true
+    lifecycle: tracked
+    type: gitlab-tags
+    project_path: tpo%2Fcore%2Ftor
+    tag_filter: "^tor-[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"
+    version_extract: "^tor-([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)$"
+    reason: "Tor stable tags on gitlab.torproject.org; strips the tor- prefix"
+  LYREBIRD_VERSION:
+    monitor: true
+    lifecycle: tracked
+    type: gitlab-tags
+    project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
+    tag_filter: "^lyrebird-[0-9]+\\.[0-9]+\\.[0-9]+$"
+    version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
+    reason: "Lyrebird tags on gitlab.torproject.org; excludes legacy obfs4proxy tags"
+  NYX_VERSION:
+    monitor: true
+    lifecycle: tracked
+    type: pypi
+    package: nyx
+    reason: "Nyx monitoring flavor dependency from PyPI"
+value_proposition: >-
+  Tor SOCKS proxy with relay, bridge, pluggable transport, hidden-service, and
+  optional Nyx monitoring support. Multi-arch, SBOM-attested, daily upstream
+  monitoring.
