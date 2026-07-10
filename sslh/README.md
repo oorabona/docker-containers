@@ -16,6 +16,16 @@
 - **Auto-updated** — CI tracks [yrutschle/sslh](https://github.com/yrutschle/sslh) releases
 - **SBOM + attestation** — every image ships with a Sigstore-signed SPDX
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/sslh:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Platforms
 - **amd64** - x86_64 systems
 - **arm64** - ARM 64-bit systems

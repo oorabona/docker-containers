@@ -18,6 +18,16 @@ This is a simple `Alpine` based container with `OpenVPN` built from sources.
 - Dependant library `pkcs11-helper` built from sources
 - Embed `Google Authenticator` support
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/openvpn:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Usage
 
 ### Docker

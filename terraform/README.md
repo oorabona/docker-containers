@@ -6,6 +6,16 @@ Enterprise-grade Terraform container with comprehensive DevOps tooling for multi
 [![GHCR](https://img.shields.io/badge/GHCR-oorabona%2Fterraform-blue)](https://ghcr.io/oorabona/terraform)
 [![Build](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml/badge.svg)](https://github.com/oorabona/docker-containers/actions/workflows/auto-build.yaml)
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/terraform:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Quick Start
 
 ```bash

@@ -24,6 +24,16 @@ This image fills a different gap:
 
 **Use the official image when:** you have a Kubernetes cluster and want to use ARC.
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/github-runner:2.332.0 --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Quick Start
 
 ```bash

@@ -16,6 +16,16 @@ This image packages [Vector](https://vector.dev/) as a minimal, production-harde
 - **Automated upstream tracking.** The upstream-monitor workflow checks the Vector GitHub release feed daily and opens a PR when a new version is available, keeping the image current without manual intervention.
 - **Common sink/source coverage.** Supports Docker log collection, syslog, file tailing, Prometheus scrape, and OpenTelemetry out of the box. Pairs directly with the `oorabona/postgres:<version>-full-alpine` flavor (TimescaleDB + ParadeDB) for a complete vendor-free log/metrics store — see the PostgreSQL sink example below.
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/vector:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Quick Start
 
 ```bash
