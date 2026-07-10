@@ -86,14 +86,12 @@ classify_version_change() {
 }
 
 # Build source URL for a dependency update
-# Args: type source version [raw_tag]
-#   raw_tag: optional 4th argument for github-tag type.
+# Args: type source version [raw_tag] [source_host]
+#   raw_tag: optional 4th argument for github-tag and gitlab-tags types.
 #     For github-release: raw_tag unused; v${version} path is always correct.
 #     For github-tag: use /tree/${raw_tag} (the git ref always resolves; no
 #       dependence on a release being published). Falls back to v${version}
 #       when raw_tag is empty.
-#     Assumption: raw_tag values from the upstream API are simple [-.\w]+ shaped
-#       (e.g. "openssl-3.5.6", "pcre2-10.47") — no URL-special chars in practice.
 build_source_url() {
     local type="$1"
     local source="$2"
@@ -117,6 +115,7 @@ build_source_url() {
             ;;
         gitlab-tags)
             local project_path_web
+            local tag_segment
             local web_host
             web_host=$(normalize_gitlab_host "${source_host:-gitlab.torproject.org}") || {
                 echo ""
@@ -125,9 +124,11 @@ build_source_url() {
             project_path_web="${source//%2F/\/}"
             project_path_web="${project_path_web//%2f/\/}"
             if [[ -n "$raw_tag" ]]; then
-                echo "https://${web_host}/${project_path_web}/-/tags/${raw_tag}"
+                tag_segment=$(jq -rn --arg segment "$raw_tag" '$segment | @uri')
+                echo "https://${web_host}/${project_path_web}/-/tags/${tag_segment}"
             else
-                echo "https://${web_host}/${project_path_web}/-/tags/v${version}"
+                tag_segment=$(jq -rn --arg segment "v${version}" '$segment | @uri')
+                echo "https://${web_host}/${project_path_web}/-/tags/${tag_segment}"
             fi
             ;;
         pypi)

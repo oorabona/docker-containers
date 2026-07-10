@@ -70,7 +70,7 @@ RUN set -eu; \
     } > /usr/local/share/tor/package-versions.env; \
     : > /etc/tor/torrc; \
     chown -R tor:tor /etc/tor /var/lib/tor /tmp/tor /usr/local/share/tor; \
-    chmod 0700 /var/lib/tor
+    chmod 0700 /var/lib/tor /tmp/tor
 
 COPY --chown=tor:tor --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
@@ -92,13 +92,27 @@ USER tor
 EXPOSE 9050 9001
 
 HEALTHCHECK --interval=30s --timeout=20s --start-period=90s --retries=3 \
-    CMD socks_bind="${SOCKS_BIND:-0.0.0.0}"; \
-        if [ "$socks_bind" = "0.0.0.0" ] || [ "$socks_bind" = "::" ]; then socks_host="127.0.0.1"; else socks_host="$socks_bind"; fi; \
-        case "$socks_host" in *:*) socks_endpoint="[${socks_host}]:${SOCKS_PORT:-9050}" ;; *) socks_endpoint="${socks_host}:${SOCKS_PORT:-9050}" ;; esac; \
-        if [ "${CHECK:-false}" = "true" ]; then \
-            curl -fsS --max-time 20 --socks5-hostname "$socks_endpoint" https://check.torproject.org/api/ip | grep -q '"IsTor":true'; \
-        else \
-            nc -z "$socks_host" "${SOCKS_PORT:-9050}"; \
+    CMD pid_file="${DATA_DIR:-/var/lib/tor}/tor.pid"; \
+        pid=""; \
+        [ -s "$pid_file" ] && pid="$(cat "$pid_file" 2>/dev/null || true)"; \
+        case "$pid" in ""|*[!0-9]*) tor_alive=false ;; *) kill -0 "$pid" 2>/dev/null && tor_alive=true || tor_alive=false ;; esac; \
+        if [ "$tor_alive" != "true" ]; then \
+            if command -v pgrep >/dev/null 2>&1; then pgrep -x tor >/dev/null || exit 1; \
+            elif command -v pidof >/dev/null 2>&1; then pidof tor >/dev/null || exit 1; \
+            else exit 1; fi; \
+        fi; \
+        torrc_path="${TORRC_PATH:-/etc/tor/torrc}"; \
+        simple_torrc=true; \
+        if [ -e "$torrc_path" ] && grep -qE '^[[:space:]]*[^#[:space:]]' "$torrc_path"; then simple_torrc=false; fi; \
+        if [ "$simple_torrc" = "true" ] || [ "${CHECK:-false}" = "true" ]; then \
+            socks_bind="${SOCKS_BIND:-0.0.0.0}"; \
+            if [ "$socks_bind" = "0.0.0.0" ] || [ "$socks_bind" = "::" ]; then socks_host="127.0.0.1"; else socks_host="$socks_bind"; fi; \
+            case "$socks_host" in *:*) socks_endpoint="[${socks_host}]:${SOCKS_PORT:-9050}" ;; *) socks_endpoint="${socks_host}:${SOCKS_PORT:-9050}" ;; esac; \
+            if [ "${CHECK:-false}" = "true" ]; then \
+                curl -fsS --max-time 20 --socks5-hostname "$socks_endpoint" https://check.torproject.org/api/ip | grep -q '"IsTor":true'; \
+            else \
+                nc -z "$socks_host" "${SOCKS_PORT:-9050}"; \
+            fi; \
         fi
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]

@@ -3,9 +3,9 @@ set -Eeuo pipefail
 
 TORRC_PATH="${TORRC_PATH:-/etc/tor/torrc}"
 DATA_DIR="${DATA_DIR:-/var/lib/tor}"
-GENERATED_DIR="${GENERATED_DIR:-/tmp/tor}"
-GENERATED_TORRC="${GENERATED_TORRC:-${GENERATED_DIR}/torrc}"
-DEFAULTS_TORRC="${DEFAULTS_TORRC:-${GENERATED_DIR}/defaults-torrc}"
+readonly GENERATED_DIR="/tmp/tor"
+readonly GENERATED_TORRC="${GENERATED_DIR}/torrc"
+readonly DEFAULTS_TORRC="${GENERATED_DIR}/defaults-torrc"
 CONTROL_PORT="${CONTROL_PORT:-9051}"
 
 log() {
@@ -130,6 +130,36 @@ validate_tor_path() {
     done
 }
 
+reject_sensitive_data_dir() {
+    local value="${1%/}"
+    local denied
+    local -a denied_paths=(
+        /
+        /etc
+        /var
+        /usr
+        /bin
+        /sbin
+        /lib
+        /lib64
+        /proc
+        /sys
+        /dev
+        /root
+        /boot
+        /home
+    )
+
+    for denied in "${denied_paths[@]}"; do
+        if [[ "$value" == "$denied" ]]; then
+            die "DATA_DIR must not be a sensitive system path: ${denied}"
+        fi
+        if [[ "$denied" == "$value"/* ]]; then
+            die "DATA_DIR must not be a parent of sensitive system path: ${denied}"
+        fi
+    done
+}
+
 validate_country_list() {
     local name="$1"
     local raw="$2"
@@ -166,7 +196,7 @@ validate_torrc_env() {
 
 validate_runtime_paths() {
     validate_tor_path "DATA_DIR" "$DATA_DIR"
-    validate_tor_path "GENERATED_DIR" "$GENERATED_DIR"
+    reject_sensitive_data_dir "$DATA_DIR"
 }
 
 ensure_runtime_dirs() {
@@ -174,8 +204,14 @@ ensure_runtime_dirs() {
 
     if [[ "$(id -u)" == "0" ]]; then
         chown -R tor:tor "$GENERATED_DIR" "$DATA_DIR"
-        chmod 0700 "$DATA_DIR"
+        chmod 0700 "$GENERATED_DIR" "$DATA_DIR"
         exec su-exec tor "$0" "$@"
+    fi
+
+    if [[ -w "$GENERATED_DIR" ]]; then
+        chmod 0700 "$GENERATED_DIR" 2>/dev/null || warn "could not chmod ${GENERATED_DIR}; generated torrc files may not be private"
+    else
+        warn "${GENERATED_DIR} is not writable by $(id -un); generated torrc cannot be written"
     fi
 
     if [[ -w "$DATA_DIR" ]]; then
@@ -248,6 +284,10 @@ load_control_password_hash() {
     IFS= read -r control_password < "$password_file" || true
     [[ -n "$control_password" ]] || die "PASSWORD_FILE is empty: ${password_file}"
 
+    # tor(1) documents --hash-password PASSWORD, with no stdin or file input for
+    # this operation. The plaintext is briefly visible in the hash helper's argv
+    # to processes sharing the container PID namespace; Docker's default
+    # per-container PID namespace limits that residual exposure.
     if ! hashed_password=$(tor --hash-password "$control_password" | awk '/^16:/ {print; exit}'); then
         unset control_password
         die "failed to hash control password from PASSWORD_FILE"
@@ -270,11 +310,16 @@ format_tor_endpoint() {
 }
 
 write_plumbing_defaults() {
-    cat > "$DEFAULTS_TORRC" <<EOF
+    rm -f "$DEFAULTS_TORRC"
+    (
+        umask 077
+        cat > "$DEFAULTS_TORRC" <<EOF
 DataDirectory ${DATA_DIR}
 PidFile ${DATA_DIR}/tor.pid
 Log notice stdout
 EOF
+    )
+    chmod 0600 "$DEFAULTS_TORRC"
 }
 
 write_simple_torrc() {
@@ -290,31 +335,36 @@ write_simple_torrc() {
     socks_endpoint=$(format_tor_endpoint "$socks_bind" "$socks_port")
     control_endpoint=$(format_tor_endpoint "$control_bind" "$CONTROL_PORT")
 
-    {
-        echo "DataDirectory ${DATA_DIR}"
-        echo "PidFile ${DATA_DIR}/tor.pid"
-        echo "RunAsDaemon 0"
-        echo "Log notice stdout"
-        echo "SocksPort ${socks_endpoint}"
-        echo "ControlPort ${control_endpoint}"
-        echo "CookieAuthentication 1"
-        echo "CookieAuthFile ${DATA_DIR}/control_auth_cookie"
-        if [[ -n "$CONTROL_PASSWORD_HASH" ]]; then
-            echo "HashedControlPassword ${CONTROL_PASSWORD_HASH}"
-        fi
+    rm -f "$GENERATED_TORRC"
+    (
+        umask 077
+        {
+            echo "DataDirectory ${DATA_DIR}"
+            echo "PidFile ${DATA_DIR}/tor.pid"
+            echo "RunAsDaemon 0"
+            echo "Log notice stdout"
+            echo "SocksPort ${socks_endpoint}"
+            echo "ControlPort ${control_endpoint}"
+            echo "CookieAuthentication 1"
+            echo "CookieAuthFile ${DATA_DIR}/control_auth_cookie"
+            if [[ -n "$CONTROL_PASSWORD_HASH" ]]; then
+                echo "HashedControlPassword ${CONTROL_PASSWORD_HASH}"
+            fi
 
-        if [[ -n "${EXIT_NODES:-}" ]]; then
-            local exit_nodes
-            exit_nodes=$(render_country_list "$EXIT_NODES")
-            [[ -n "$exit_nodes" ]] && echo "ExitNodes ${exit_nodes}"
-        fi
+            if [[ -n "${EXIT_NODES:-}" ]]; then
+                local exit_nodes
+                exit_nodes=$(render_country_list "$EXIT_NODES")
+                [[ -n "$exit_nodes" ]] && echo "ExitNodes ${exit_nodes}"
+            fi
 
-        if [[ -n "${EXCLUDE_EXIT_NODES:-}" ]]; then
-            local exclude_exit_nodes
-            exclude_exit_nodes=$(render_country_list "$EXCLUDE_EXIT_NODES")
-            [[ -n "$exclude_exit_nodes" ]] && echo "ExcludeExitNodes ${exclude_exit_nodes}"
-        fi
-    } > "$GENERATED_TORRC"
+            if [[ -n "${EXCLUDE_EXIT_NODES:-}" ]]; then
+                local exclude_exit_nodes
+                exclude_exit_nodes=$(render_country_list "$EXCLUDE_EXIT_NODES")
+                [[ -n "$exclude_exit_nodes" ]] && echo "ExcludeExitNodes ${exclude_exit_nodes}"
+            fi
+        } > "$GENERATED_TORRC"
+    )
+    chmod 0600 "$GENERATED_TORRC"
 }
 
 warn_if_identity_not_persistent() {

@@ -27,6 +27,12 @@ Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, 
 - `latest`, `0.4.9.11-alpine` - Tor + Lyrebird
 - `latest-monitoring`, `0.4.9.11-alpine-monitoring` - Tor + Lyrebird + Nyx + py3-stem
 
+## Versioning
+
+Tor, Lyrebird, and Nyx are installed from Alpine packages. The image records the actual installed package versions in `/usr/local/share/tor/package-versions.env`.
+
+Lyrebird and Nyx remain tracked against upstream releases as an advisory traceability signal. A PR such as `LYREBIRD_VERSION: 0.8.1 -> 0.9.0` means upstream released a new version and Alpine should be checked; merging that PR updates the declared signal, but the running image changes only after Alpine repackages and the image is rebuilt.
+
 ## Basic SOCKS Proxy
 
 ```bash
@@ -64,7 +70,7 @@ The image generates a minimal torrc when `/etc/tor/torrc` is absent, empty, or c
 
 Default control access uses `CookieAuthentication 1` and binds `ControlPort 127.0.0.1:9051`. The image does not expose the control port.
 
-The default liveness healthcheck uses `nc -z` and only confirms that the SOCKS listener is open. Set `CHECK=true` when readiness must confirm that Tor has bootstrapped a circuit; otherwise `depends_on: service_healthy` can unblock dependents before Tor can route traffic.
+The default healthcheck first verifies that the Tor process is alive. For the generated simple torrc path it also confirms the configured SOCKS listener is open; for mounted torrc deployments it does not assume SOCKS exists. Set `CHECK=true` only when readiness must confirm a working SOCKS circuit through check.torproject.org.
 
 ### Mounted torrc Path
 

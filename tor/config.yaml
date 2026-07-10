@@ -28,13 +28,13 @@ dependency_sources:
     project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
     tag_filter: "^lyrebird-[0-9]+\\.[0-9]+\\.[0-9]+$"
     version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
-    reason: "Lyrebird tags on gitlab.torproject.org; excludes legacy obfs4proxy tags"
+    reason: "Advisory upstream-release tracking for Lyrebird on gitlab.torproject.org; the Dockerfile installs Alpine's lyrebird package, so a merged bump PR updates this declared signal for traceability and does not change the built image until Alpine repackages"
   NYX_VERSION:
     monitor: true
     lifecycle: tracked
     type: pypi
     package: nyx
-    reason: "Nyx monitoring flavor dependency from PyPI"
+    reason: "Advisory upstream-release tracking for Nyx on PyPI; the monitoring flavor installs Alpine's nyx package, so a merged bump PR updates this declared signal for traceability and does not change the built image until Alpine repackages"
 value_proposition: >-
   Tor SOCKS proxy with relay, bridge, pluggable transport, hidden-service, and
   optional Nyx monitoring support. Multi-arch, SBOM-attested, daily upstream

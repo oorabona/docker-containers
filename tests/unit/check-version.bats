@@ -339,7 +339,7 @@ EOF
 set -euo pipefail
 printf 'GITLAB_API_URL=%s\n' "\${GITLAB_API_URL:-}" >> "$TEST_TEMP_DIR/gitlab-helper.log"
 printf 'ARGS=%s\n' "\$*" >> "$TEST_TEMP_DIR/gitlab-helper.log"
-printf '0.8.2\tlyrebird-0.8.2\n'
+printf '0.8.2\tlyrebird/0.8.2+meta\n'
 EOF
     chmod +x "$TEST_TEMP_DIR/scripts/check-dependency-versions.sh" "$TEST_TEMP_DIR/helpers/latest-gitlab-tag"
 
@@ -364,7 +364,7 @@ EOF
     json_output=$(printf '%s\n' "$output" | awk 'found || $0 == "[" { found = 1; print }')
     echo "$json_output" | jq -e '.[0].updates[0].name == "LYREBIRD_VERSION"' >/dev/null
     echo "$json_output" | jq -e '.[0].updates[0].latest == "0.8.2"' >/dev/null
-    echo "$json_output" | jq -e '.[0].updates[0].source_url == "https://gitlab.example/tpo/anti-censorship/pluggable-transports/lyrebird/-/tags/lyrebird-0.8.2"' >/dev/null
+    echo "$json_output" | jq -e '.[0].updates[0].source_url == "https://gitlab.example/tpo/anti-censorship/pluggable-transports/lyrebird/-/tags/lyrebird%2F0.8.2%2Bmeta"' >/dev/null
     grep -qx 'GITLAB_API_URL=https://gitlab-api.example:8443/api/v4' "$TEST_TEMP_DIR/gitlab-helper.log"
     grep -q -- '--output both' "$TEST_TEMP_DIR/gitlab-helper.log"
 }

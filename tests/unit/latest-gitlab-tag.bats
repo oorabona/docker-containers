@@ -24,6 +24,7 @@ set -euo pipefail
 
 mode="${FAKE_CURL_MODE:?}"
 header_file=""
+config_file=""
 url=""
 
 while [[ $# -gt 0 ]]; do
@@ -32,7 +33,11 @@ while [[ $# -gt 0 ]]; do
             header_file="$2"
             shift 2
             ;;
-        --connect-timeout|--max-time|--proto|--proto-redir|--config)
+        --config)
+            config_file="$2"
+            shift 2
+            ;;
+        --connect-timeout|--max-time|--proto|--proto-redir)
             shift 2
             ;;
         -*)
@@ -50,6 +55,13 @@ done
 
 if [[ -n "${FAKE_CURL_URL_LOG:-}" ]]; then
     printf '%s\n' "$url" >> "$FAKE_CURL_URL_LOG"
+fi
+if [[ -n "${FAKE_CURL_CONFIG_LOG:-}" ]]; then
+    if [[ -n "$config_file" ]]; then
+        printf 'CONFIG:%s\n' "$(tr '\n' ';' < "$config_file")" >> "$FAKE_CURL_CONFIG_LOG"
+    else
+        printf 'CONFIG:\n' >> "$FAKE_CURL_CONFIG_LOG"
+    fi
 fi
 
 emit_headers() {
@@ -98,7 +110,7 @@ EOF
 }
 
 run_helper() {
-    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" FAKE_CURL_URL_LOG="${FAKE_CURL_URL_LOG:-}" \
+    env PATH="$PATH" GITLAB_API_URL="$GITLAB_API_URL" FAKE_CURL_MODE="${FAKE_CURL_MODE:-}" FAKE_CURL_URL_LOG="${FAKE_CURL_URL_LOG:-}" FAKE_CURL_CONFIG_LOG="${FAKE_CURL_CONFIG_LOG:-}" \
         "$HELPER" "$@"
 }
 
@@ -205,6 +217,34 @@ last_output_line() {
     [ "$status" -ne 0 ]
 }
 
+@test "GitLab token is attached only for the default allowed API host" {
+    write_fake_curl happy
+    export GITLAB_TOKEN="secret"
+    FAKE_CURL_CONFIG_LOG="${TEST_TEMP_DIR}/curl-config.log"
+    GITLAB_API_URL="https://gitlab.torproject.org/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+    grep -q 'CONFIG:header = "PRIVATE-TOKEN: secret";' "$FAKE_CURL_CONFIG_LOG"
+}
+
+@test "GitLab token is withheld for custom API hosts" {
+    write_fake_curl happy
+    export GITLAB_TOKEN="secret"
+    FAKE_CURL_CONFIG_LOG="${TEST_TEMP_DIR}/curl-config.log"
+    GITLAB_API_URL="https://gitlab.example/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 0 ]
+    grep -qx 'CONFIG:' "$FAKE_CURL_CONFIG_LOG"
+}
+
 @test "missing tag_filter fails closed" {
     write_fake_curl happy
 
@@ -223,6 +263,35 @@ last_output_line() {
 
     [ "$status" -eq 1 ]
     [[ "$output" == *"--version-extract is required"* ]]
+}
+
+@test "missing option values fail with usage errors" {
+    run "$HELPER" "tpo/core/tor" --tag-filter
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--tag-filter requires a value"* ]]
+    [[ "$output" == *"Usage: latest-gitlab-tag"* ]]
+
+    run "$HELPER" "tpo/core/tor" --tag-filter '^tor-' --version-extract
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--version-extract requires a value"* ]]
+    [[ "$output" == *"Usage: latest-gitlab-tag"* ]]
+
+    run "$HELPER" "tpo/core/tor" --tag-filter '^tor-' --version-extract '^tor-(.*)$' --output
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--output requires a value"* ]]
+    [[ "$output" == *"Usage: latest-gitlab-tag"* ]]
+}
+
+@test "logged dynamic values escape embedded newlines" {
+    write_fake_curl happy
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter $'does-not-match\n::error::forged' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"does-not-match%0A::error::forged"* ]]
+    [[ "$output" != *$'does-not-match\n::error::forged'* ]]
 }
 
 @test "GitLab API failure exits 1" {

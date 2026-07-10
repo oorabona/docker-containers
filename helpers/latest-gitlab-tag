@@ -52,6 +52,29 @@ _url_origin() {
     return 1
 }
 
+_url_host_from_origin() {
+    local origin="$1"
+    local authority host_port host
+
+    authority="${origin#*://}"
+    host_port="${authority##*@}"
+    if [[ "$host_port" == \[*\]* ]]; then
+        host="${host_port#\[}"
+        host="${host%%\]*}"
+    else
+        host="${host_port%%:*}"
+    fi
+
+    [[ -n "$host" ]] || return 1
+    printf '%s' "${host,,}"
+}
+
+_gitlab_token_host_allowed() {
+    local host="$1"
+
+    [[ "$host" == "gitlab.torproject.org" ]]
+}
+
 _gitlab_project_api_path() {
     local project_path="$1"
 
@@ -74,8 +97,12 @@ _gitlab_project_api_path() {
 
 _gitlab_api_tags() {
     local project_path="$1"
-    local allowed_origin
+    local allowed_origin api_host
     if ! allowed_origin=$(_url_origin "GITLAB_API_URL" "$GITLAB_API_URL"); then
+        return 1
+    fi
+    if ! api_host=$(_url_host_from_origin "$allowed_origin"); then
+        echo "::error::latest-gitlab-tag: GITLAB_API_URL must include a host" >&2
         return 1
     fi
 
@@ -86,7 +113,7 @@ _gitlab_api_tags() {
 
     local curl_args=(--proto '=https' --proto-redir '=https' -fsS --connect-timeout 10 --max-time 30)
     local curl_cfg=""
-    if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+    if [[ -n "${GITLAB_TOKEN:-}" ]] && _gitlab_token_host_allowed "$api_host"; then
         curl_cfg=$(mktemp)
         chmod 600 "$curl_cfg"
         printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$curl_cfg"
@@ -166,10 +193,20 @@ latest-gitlab-tag() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tag-filter)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --tag-filter requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
                 tag_filter="${2:-}"
                 shift 2
                 ;;
             --version-extract)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --version-extract requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
                 version_extract="${2:-}"
                 shift 2
                 ;;
@@ -178,11 +215,16 @@ latest-gitlab-tag() {
                 shift
                 ;;
             --output)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --output requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
                 output_mode="${2:-}"
                 shift 2
                 ;;
             -*)
-                log_error "Unknown option: $1" >&2
+                log_error "Unknown option: $(_gha_escape "$1")" >&2
                 log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
                 return 1
                 ;;
@@ -190,7 +232,7 @@ latest-gitlab-tag() {
                 if [[ -z "$project_path" ]]; then
                     project_path="$1"
                 else
-                    log_error "Unexpected argument: $1" >&2
+                    log_error "Unexpected argument: $(_gha_escape "$1")" >&2
                     return 1
                 fi
                 shift
@@ -210,23 +252,24 @@ latest-gitlab-tag() {
         log_error "latest-gitlab-tag: --version-extract is required" >&2
         return 1
     fi
+    _gitlab_project_api_path "$project_path" >/dev/null || return 1
 
-    log_info "Fetching GitLab tags for ${project_path}..." >&2
+    log_info "Fetching GitLab tags for $(_gha_escape "${project_path}")..." >&2
     local all_tags
     all_tags=$(_gitlab_api_tags "$project_path") || {
-        log_error "Failed to fetch GitLab tags for ${project_path}" >&2
+        log_error "Failed to fetch GitLab tags for $(_gha_escape "${project_path}")" >&2
         return 1
     }
 
     if [[ -z "$all_tags" ]]; then
-        log_error "No tags returned for ${project_path}" >&2
+        log_error "No tags returned for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
 
     local filtered_tags
     filtered_tags=$(echo "$all_tags" | grep -E "$tag_filter" || true)
     if [[ -z "$filtered_tags" ]]; then
-        log_error "No tags match tag_filter '${tag_filter}' for ${project_path}" >&2
+        log_error "No tags match tag_filter '$(_gha_escape "${tag_filter}")' for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
 
@@ -234,7 +277,7 @@ latest-gitlab-tag() {
         local no_prerelease
         no_prerelease=$(echo "$filtered_tags" | grep -v -i -E -- "$PRERELEASE_EXCLUDE_REGEX" || true)
         if [[ -z "$no_prerelease" ]]; then
-            log_error "All matching tags for ${project_path} are pre-releases — none passed exclusion filter" >&2
+            log_error "All matching tags for $(_gha_escape "${project_path}") are pre-releases — none passed exclusion filter" >&2
             return 1
         fi
         filtered_tags="$no_prerelease"
@@ -251,12 +294,12 @@ latest-gitlab-tag() {
             fi
             versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
         else
-            log_info "version_extract '${version_extract}' did not match tag '${tag}' — skipping" >&2
+            log_info "version_extract '$(_gha_escape "${version_extract}")' did not match tag '$(_gha_escape "${tag}")' — skipping" >&2
         fi
     done <<< "$filtered_tags"
 
     if [[ -z "$versions_with_tags" ]]; then
-        log_error "version_extract '${version_extract}' produced no results for ${project_path}" >&2
+        log_error "version_extract '$(_gha_escape "${version_extract}")' produced no results for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
 
@@ -268,11 +311,11 @@ latest-gitlab-tag() {
     best_raw_tag=$(echo "$best_line" | awk '{print $2}')
 
     if [[ -z "$best_version" ]]; then
-        log_error "Failed to determine best version for ${project_path}" >&2
+        log_error "Failed to determine best version for $(_gha_escape "${project_path}")" >&2
         return 1
     fi
     if [[ ! "$best_version" =~ ^[0-9] ]]; then
-        log_error "Extracted version '${best_version}' does not start with a digit — aborting" >&2
+        log_error "Extracted version '$(_gha_escape "${best_version}")' does not start with a digit — aborting" >&2
         return 1
     fi
 
@@ -282,20 +325,20 @@ latest-gitlab-tag() {
             ;;
         raw)
             if [[ -z "$best_raw_tag" ]]; then
-                log_error "No raw tag captured for ${project_path}" >&2
+                log_error "No raw tag captured for $(_gha_escape "${project_path}")" >&2
                 return 1
             fi
             echo "$best_raw_tag"
             ;;
         both)
             if [[ -z "$best_raw_tag" ]]; then
-                log_error "No raw tag captured for ${project_path}" >&2
+                log_error "No raw tag captured for $(_gha_escape "${project_path}")" >&2
                 return 1
             fi
             printf '%s\t%s\n' "$best_version" "$best_raw_tag"
             ;;
         *)
-            log_error "Unknown --output mode '${output_mode}': use 'version', 'raw', or 'both'" >&2
+            log_error "Unknown --output mode '$(_gha_escape "${output_mode}")': use 'version', 'raw', or 'both'" >&2
             return 1
             ;;
     esac

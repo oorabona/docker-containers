@@ -5,9 +5,26 @@ setup() {
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
     TEST_TEMP_DIR="$(mktemp -d)"
     ENTRYPOINT="${PROJECT_ROOT}/tor/entrypoint.sh"
+    INTERNAL_GENERATED_DIR="/tmp/tor"
+    INTERNAL_GENERATED_MARKER="${INTERNAL_GENERATED_DIR}/.tor-entrypoint-bats"
+    SLEEP_PID=""
+
+    if [[ -e "$INTERNAL_GENERATED_DIR" && ! -f "$INTERNAL_GENERATED_MARKER" ]]; then
+        skip "${INTERNAL_GENERATED_DIR} exists and is not owned by this test"
+    fi
+    rm -rf "$INTERNAL_GENERATED_DIR"
+    mkdir -p "$INTERNAL_GENERATED_DIR"
+    touch "$INTERNAL_GENERATED_MARKER"
 }
 
 teardown() {
+    if [[ -n "${SLEEP_PID:-}" ]]; then
+        kill "$SLEEP_PID" 2>/dev/null || true
+        wait "$SLEEP_PID" 2>/dev/null || true
+    fi
+    if [[ -f "${INTERNAL_GENERATED_MARKER:-}" ]]; then
+        rm -rf "$INTERNAL_GENERATED_DIR"
+    fi
     rm -rf "$TEST_TEMP_DIR"
 }
 
@@ -68,10 +85,49 @@ run_entrypoint() {
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
         DATA_DIR="${TEST_TEMP_DIR}/data" \
-        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
-        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
-        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
         "$ENTRYPOINT" "$@"
+}
+
+dockerfile_healthcheck_command() {
+    awk '
+        /^HEALTHCHECK / { capture = 1; next }
+        capture && /^ENTRYPOINT / { exit }
+        capture {
+            sub(/^[[:space:]]*CMD /, "")
+            sub(/[[:space:]]*\\$/, "")
+            print
+        }
+    ' "${PROJECT_ROOT}/tor/Dockerfile" | tr '\n' ' '
+}
+
+write_fake_healthcheck_commands() {
+    mkdir -p "${TEST_TEMP_DIR}/bin"
+
+    cat > "${TEST_TEMP_DIR}/bin/nc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'nc %s\n' "$*" >> "${FAKE_NC_LOG:?}"
+exit "${FAKE_NC_STATUS:-0}"
+EOF
+
+    cat > "${TEST_TEMP_DIR}/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'curl %s\n' "$*" >> "${FAKE_CURL_LOG:?}"
+printf '{"IsTor":true}\n'
+EOF
+
+    chmod +x "${TEST_TEMP_DIR}/bin/nc" "${TEST_TEMP_DIR}/bin/curl"
+    export PATH="${TEST_TEMP_DIR}/bin:$PATH"
+}
+
+write_healthcheck_pid_file() {
+    mkdir -p "${TEST_TEMP_DIR}/data"
+    sleep 60 &
+    SLEEP_PID="$!"
+    printf '%s\n' "$SLEEP_PID" > "${TEST_TEMP_DIR}/data/tor.pid"
 }
 
 @test "entrypoint rejects exact SOCKS_PORT newline injection payload before torrc generation" {
@@ -86,9 +142,6 @@ run_entrypoint() {
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
         DATA_DIR="${TEST_TEMP_DIR}/data" \
-        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
-        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
-        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
         SOCKS_PORT=$'9050\nControlPort 0.0.0.0:9051\nCookieAuthentication 0' \
         "$ENTRYPOINT"
 
@@ -104,10 +157,10 @@ run_entrypoint() {
     run run_entrypoint
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"TOR_STUB_CONFIG=${TEST_TEMP_DIR}/generated/torrc"* ]]
-    grep -qx 'SocksPort 0.0.0.0:9050' "${TEST_TEMP_DIR}/generated/torrc"
-    grep -qx 'ControlPort 127.0.0.1:9051' "${TEST_TEMP_DIR}/generated/torrc"
-    grep -qx 'CookieAuthentication 1' "${TEST_TEMP_DIR}/generated/torrc"
+    [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+    grep -qx 'SocksPort 0.0.0.0:9050' "${INTERNAL_GENERATED_DIR}/torrc"
+    grep -qx 'ControlPort 127.0.0.1:9051' "${INTERNAL_GENERATED_DIR}/torrc"
+    grep -qx 'CookieAuthentication 1' "${INTERNAL_GENERATED_DIR}/torrc"
 }
 
 @test "custom torrc ignores invalid simple-env SOCKS_PORT" {
@@ -118,28 +171,22 @@ run_entrypoint() {
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
         DATA_DIR="${TEST_TEMP_DIR}/data" \
-        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
-        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
-        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
         SOCKS_PORT="not-a-port" \
         "$ENTRYPOINT"
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"custom ${TEST_TEMP_DIR}/torrc is active"* ]]
     [[ "$output" == *"TOR_STUB_CONFIG=${TEST_TEMP_DIR}/torrc"* ]]
-    grep -qx 'DataDirectory '"${TEST_TEMP_DIR}"'/data' "${TEST_TEMP_DIR}/generated/defaults-torrc"
+    grep -qx 'DataDirectory '"${TEST_TEMP_DIR}"'/data' "${INTERNAL_GENERATED_DIR}/defaults-torrc"
 }
 
-@test "runtime path validation rejects filesystem root before directory ownership changes" {
+@test "runtime path validation rejects sensitive DATA_DIR paths before directory ownership changes" {
     write_fake_runtime_commands
 
     run env \
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
         DATA_DIR="/" \
-        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
-        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
-        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
         "$ENTRYPOINT"
 
     [ "$status" -ne 0 ]
@@ -148,12 +195,72 @@ run_entrypoint() {
     run env \
         PATH="$PATH" \
         TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
-        DATA_DIR="${TEST_TEMP_DIR}/data" \
-        GENERATED_DIR="/" \
-        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
-        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
+        DATA_DIR="/etc" \
         "$ENTRYPOINT"
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"GENERATED_DIR must not be the filesystem root"* ]]
+    [[ "$output" == *"DATA_DIR must not be a sensitive system path: /etc"* ]]
+}
+
+@test "generated torrc path is internal and written with restrictive permissions" {
+    write_fake_runtime_commands
+    printf 'secret\n' > "${TEST_TEMP_DIR}/control-password"
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        GENERATED_DIR="/" \
+        GENERATED_TORRC="/etc/torrc" \
+        DEFAULTS_TORRC="/etc/defaults-torrc" \
+        PASSWORD_FILE="${TEST_TEMP_DIR}/control-password" \
+        "$ENTRYPOINT"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+    grep -qx 'HashedControlPassword 16:FAKE_HASH' "${INTERNAL_GENERATED_DIR}/torrc"
+    [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}/torrc")" = "600" ]
+    [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}")" = "700" ]
+}
+
+@test "healthcheck accepts custom torrc with SocksPort disabled without probing SOCKS" {
+    write_fake_healthcheck_commands
+    write_healthcheck_pid_file
+    printf 'SocksPort 0\n' > "${TEST_TEMP_DIR}/torrc"
+    local healthcheck
+    healthcheck="$(dockerfile_healthcheck_command)"
+    export FAKE_NC_LOG="${TEST_TEMP_DIR}/nc.log"
+    export FAKE_NC_STATUS=99
+    export FAKE_CURL_LOG="${TEST_TEMP_DIR}/curl.log"
+
+    run env \
+        PATH="$PATH" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        CHECK=false \
+        sh -c "$healthcheck"
+
+    [ "$status" -eq 0 ]
+    [ ! -e "$FAKE_NC_LOG" ]
+}
+
+@test "healthcheck probes SOCKS for simple env-driven configuration" {
+    write_fake_healthcheck_commands
+    write_healthcheck_pid_file
+    local healthcheck
+    healthcheck="$(dockerfile_healthcheck_command)"
+    export FAKE_NC_LOG="${TEST_TEMP_DIR}/nc.log"
+    export FAKE_NC_STATUS=0
+    export FAKE_CURL_LOG="${TEST_TEMP_DIR}/curl.log"
+
+    run env \
+        PATH="$PATH" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        TORRC_PATH="${TEST_TEMP_DIR}/missing-torrc" \
+        SOCKS_PORT=19050 \
+        CHECK=false \
+        sh -c "$healthcheck"
+
+    [ "$status" -eq 0 ]
+    grep -qx 'nc -z 127.0.0.1 19050' "$FAKE_NC_LOG"
 }
