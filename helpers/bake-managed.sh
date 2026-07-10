@@ -13,7 +13,7 @@
 #
 # The bake-managed set defaults to:
 #   github-runner web-shell wordpress debian vector jekyll ansible
-#   sslh openvpn php openresty terraform postgres
+#   sslh openvpn php openresty terraform postgres tor
 # Override at any time via BAKE_MANAGED_CONTAINERS env (space-separated).
 #
 # Requirements: bash 4+, jq
@@ -41,7 +41,7 @@ source "${_BM_SCRIPT_DIR}/logging.sh"
 # operators and tests to expand the set without code changes.
 # ---------------------------------------------------------------------------
 bake_managed_containers() {
-    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres}"
+    echo "${BAKE_MANAGED_CONTAINERS:-github-runner web-shell wordpress debian vector jekyll ansible sslh openvpn php openresty terraform postgres tor}"
 }
 
 # ---------------------------------------------------------------------------

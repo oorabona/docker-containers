@@ -28,6 +28,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./logging.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/logging.sh"
 
 # GitHub API base URL (supports GitHub Enterprise via GITHUB_API_URL)
@@ -35,6 +37,7 @@ GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
 
 # Default pre-release exclusion regex (case-insensitive match on tag name)
 PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+SAFE_VERSION_REGEX='^[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
 
 # Escape dynamic strings for GHA workflow-commands (::warning::/::error::).
 # Per GHA spec: % → %25, CR → %0D, LF → %0A.
@@ -44,6 +47,13 @@ _gha_escape() {
     s="${s//$'\r'/%0D}"
     s="${s//$'\n'/%0A}"
     printf '%s' "$s"
+}
+
+_validate_github_token_for_curl_config() {
+    if [[ "${GITHUB_TOKEN:-}" == *\"* || "${GITHUB_TOKEN:-}" == *\\* || "${GITHUB_TOKEN:-}" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-github-tag: GITHUB_TOKEN must not contain double quotes or control characters; backslashes are also rejected" >&2
+        return 1
+    fi
 }
 
 _gh_api_tags() {
@@ -73,6 +83,7 @@ _gh_api_tags() {
         -H "Accept: application/vnd.github+json")
     local curl_cfg=""
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        _validate_github_token_for_curl_config || return 1
         curl_cfg=$(mktemp)
         chmod 600 "$curl_cfg"
         printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" > "$curl_cfg"
@@ -250,12 +261,20 @@ latest-github-tag() {
 
     # 1. Apply tag_filter (anchored ERE via grep -E)
     local filtered_tags
-    filtered_tags=$(echo "$all_tags" | grep -E "$tag_filter" || true)
-
-    if [[ -z "$filtered_tags" ]]; then
-        log_error "No tags match tag_filter '${tag_filter}' for ${repo}" >&2
-        return 1
-    fi
+    local grep_rc=0
+    filtered_tags=$(printf '%s\n' "$all_tags" | grep -E -- "$tag_filter" 2>&1) || grep_rc=$?
+    case "$grep_rc" in
+        0)
+            ;;
+        1)
+            log_error "No tags match tag_filter '${tag_filter}' for ${repo}" >&2
+            return 1
+            ;;
+        *)
+            log_error "tag_filter regex '${tag_filter}' failed for ${repo}: ${filtered_tags}" >&2
+            return 1
+            ;;
+    esac
 
     # 2. Exclude pre-releases (unless overridden)
     if [[ "$include_prerelease" != "true" ]]; then
@@ -269,8 +288,9 @@ latest-github-tag() {
     fi
 
     # 3. Extract versions using version_extract (capture group 1)
-    #    Build a sortable list: <extracted_version> <raw_tag>
+    #    Build a sortable list: <extracted_version><TAB><raw_tag>
     local versions_with_tags=""
+    local candidate_separator=$'\t'
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
         # Use bash regex match to extract capture group 1.
@@ -284,7 +304,7 @@ latest-github-tag() {
                 echo "::error::latest-github-tag: version-extract regex matched tag '$(_gha_escape "${tag}")' but produced no capture — verify the regex has exactly one parenthesized capture group" >&2
                 return 1
             fi
-            versions_with_tags="${versions_with_tags}${extracted} ${tag}"$'\n'
+            versions_with_tags="${versions_with_tags}${extracted}${candidate_separator}${tag}"$'\n'
         else
             log_info "version_extract '${version_extract}' did not match tag '${tag}' — skipping" >&2
         fi
@@ -299,21 +319,20 @@ latest-github-tag() {
     #    Use sort -t. -k1,1n -k2,2n -k3,3n on the version part (first field)
     local best_line
     best_line=$(echo "$versions_with_tags" | \
-        sort -t' ' -k1,1 --version-sort | \
+        sort -t "$candidate_separator" -k1,1 --version-sort | \
         tail -1)
 
     local best_version best_raw_tag
-    best_version=$(echo "$best_line" | awk '{print $1}')
-    best_raw_tag=$(echo "$best_line" | awk '{print $2}')
+    IFS=$'\t' read -r best_version best_raw_tag <<< "$best_line"
 
     if [[ -z "$best_version" ]]; then
         log_error "Failed to determine best version for ${repo}" >&2
         return 1
     fi
 
-    # 5. Validate: must start with a digit
-    if [[ ! "$best_version" =~ ^[0-9] ]]; then
-        log_error "Extracted version '${best_version}' does not start with a digit — aborting" >&2
+    # 5. Validate: emitted versions must remain safe for downstream automation.
+    if [[ ! "$best_version" =~ $SAFE_VERSION_REGEX ]]; then
+        log_error "Extracted version '${best_version}' is not a safe normalized version — expected digits separated by dots with optional windows/linux/darwin/macos/alpine dot labels" >&2
         return 1
     fi
 

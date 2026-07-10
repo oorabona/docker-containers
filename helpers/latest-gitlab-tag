@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+
+# Resolve the latest upstream GitLab git tag matching a filter regex, then
+# extract a normalized version string using a capture-group regex.
+#
+# Mirrors helpers/latest-github-tag's CLI contract:
+#   latest-gitlab-tag <project-path> \
+#       --tag-filter REGEX \
+#       --version-extract REGEX \
+#       [--include-prerelease] \
+#       [--output version|raw|both]
+#
+# Output:
+#   version: normalized version string
+#   raw:     matching raw git tag
+#   both:    VERSION<TAB>RAW_TAG
+#
+# Exit 1 on no matching tag, API error, empty result, or extract failure.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./logging.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/logging.sh"
+
+GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.torproject.org/api/v4}"
+PRERELEASE_EXCLUDE_REGEX='-rc|-alpha|-beta|-dev|-pre'
+SAFE_VERSION_REGEX='^[0-9]+(\.([0-9]+|windows|linux|darwin|macos|alpine))*$'
+_gitlab_api_curl_cfg=""
+
+_gitlab_api_cleanup_curl_config() {
+    if [[ -n "${_gitlab_api_curl_cfg:-}" ]]; then
+        rm -f "$_gitlab_api_curl_cfg"
+        _gitlab_api_curl_cfg=""
+    fi
+}
+
+_gitlab_api_signal_cleanup() {
+    local status="$1"
+
+    _gitlab_api_cleanup_curl_config
+    exit "$status"
+}
+
+_gha_escape() {
+    local s="$1"
+    s="${s//%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
+
+_url_origin() {
+    local name="$1"
+    local url="$2"
+
+    if [[ "$url" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-gitlab-tag: $(_gha_escape "${name}") must not contain control characters" >&2
+        return 1
+    fi
+    if [[ "$url" =~ ^([A-Za-z][A-Za-z0-9+.-]*://[^/?#]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    echo "::error::latest-gitlab-tag: $(_gha_escape "${name}") must be an absolute URL with scheme and host" >&2
+    return 1
+}
+
+_url_host_from_origin() {
+    local origin="$1"
+    local authority host_port host
+
+    authority="${origin#*://}"
+    host_port="${authority##*@}"
+    if [[ "$host_port" == \[*\]* ]]; then
+        host="${host_port#\[}"
+        host="${host%%\]*}"
+    else
+        host="${host_port%%:*}"
+    fi
+
+    [[ -n "$host" ]] || return 1
+    printf '%s' "${host,,}"
+}
+
+_gitlab_token_host_allowed() {
+    local host="$1"
+
+    [[ "$host" == "gitlab.torproject.org" ]]
+}
+
+_validate_gitlab_token_for_curl_config() {
+    if [[ "${GITLAB_TOKEN:-}" == *\"* || "${GITLAB_TOKEN:-}" == *\\* || "${GITLAB_TOKEN:-}" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-gitlab-tag: GITLAB_TOKEN must not contain double quotes or control characters; backslashes are also rejected" >&2
+        return 1
+    fi
+}
+
+_gitlab_project_api_path() {
+    local project_path="$1"
+
+    if [[ "$project_path" == *%2F* || "$project_path" == *%2f* ]]; then
+        if [[ ! "$project_path" =~ ^[A-Za-z0-9._-]+(%2[Ff][A-Za-z0-9._-]+)*$ ]]; then
+            log_error "latest-gitlab-tag: encoded project path may contain only alphanumerics, '.', '_', '-', and '%2F' separators" >&2
+            return 1
+        fi
+        printf '%s' "$project_path"
+        return
+    fi
+
+    if [[ ! "$project_path" =~ ^[A-Za-z0-9._/-]+$ || "$project_path" == /* || "$project_path" == */ || "$project_path" == *//* ]]; then
+        log_error "latest-gitlab-tag: project path may contain only alphanumerics, '.', '_', '-', and '/' separators" >&2
+        return 1
+    fi
+
+    jq -rn --arg path "$project_path" '$path | @uri'
+}
+
+_gitlab_api_tags() {
+    local project_path="$1"
+    local allowed_origin api_host
+    if ! allowed_origin=$(_url_origin "GITLAB_API_URL" "$GITLAB_API_URL"); then
+        return 1
+    fi
+    if ! api_host=$(_url_host_from_origin "$allowed_origin"); then
+        echo "::error::latest-gitlab-tag: GITLAB_API_URL must include a host" >&2
+        return 1
+    fi
+
+    local encoded_project
+    if ! encoded_project=$(_gitlab_project_api_path "$project_path"); then
+        return 1
+    fi
+
+    local curl_args=(--proto '=https' --proto-redir '=https' -fsS --connect-timeout 10 --max-time 30)
+    if [[ -n "${GITLAB_TOKEN:-}" ]] && _gitlab_token_host_allowed "$api_host"; then
+        _validate_gitlab_token_for_curl_config || return 1
+        _gitlab_api_curl_cfg=$(mktemp)
+        trap _gitlab_api_cleanup_curl_config EXIT
+        trap '_gitlab_api_signal_cleanup 130' INT
+        trap '_gitlab_api_signal_cleanup 143' TERM
+        chmod 600 "$_gitlab_api_curl_cfg"
+        printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$_gitlab_api_curl_cfg"
+        curl_args+=(--config "$_gitlab_api_curl_cfg")
+    fi
+
+    local url="${GITLAB_API_URL}/projects/${encoded_project}/repository/tags?order_by=version&sort=desc&per_page=100"
+    local max_pages=20
+    local pages_fetched=0
+    local tags_emitted=0
+    local hdr_file
+    hdr_file=$(mktemp)
+
+    while [[ -n "$url" && "$pages_fetched" -lt "$max_pages" ]]; do
+        pages_fetched=$((pages_fetched + 1))
+
+        local body
+        if ! body=$(curl "${curl_args[@]}" -D "$hdr_file" "$url" 2>/dev/null); then
+            rm -f "$hdr_file"
+            _gitlab_api_cleanup_curl_config
+            echo "::error::latest-gitlab-tag: GitLab API request failed on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
+            return 1
+        fi
+
+        local page_tags
+        if ! page_tags=$(printf '%s\n' "$body" | jq -r '.[].name' 2>/dev/null); then
+            rm -f "$hdr_file"
+            _gitlab_api_cleanup_curl_config
+            echo "::error::latest-gitlab-tag: invalid JSON on page $(_gha_escape "${pages_fetched}") for $(_gha_escape "${project_path}")" >&2
+            return 1
+        fi
+
+        if [[ -n "$page_tags" ]]; then
+            printf '%s\n' "$page_tags"
+            tags_emitted=$((tags_emitted + 1))
+        fi
+
+        local next_url
+        next_url=$(grep -i '^[Ll]ink:' "$hdr_file" \
+            | grep -o '<[^>]*>; rel="next"' \
+            | sed 's/^<//; s/>; rel="next"//' \
+            | head -1 || true)
+        if [[ -n "$next_url" ]]; then
+            local next_origin
+            if ! next_origin=$(_url_origin "GitLab pagination URL" "$next_url"); then
+                rm -f "$hdr_file"
+                _gitlab_api_cleanup_curl_config
+                return 1
+            fi
+            if [[ "$next_origin" != "$allowed_origin" ]]; then
+                rm -f "$hdr_file"
+                _gitlab_api_cleanup_curl_config
+                echo "::error::latest-gitlab-tag: refusing cross-origin GitLab pagination URL for $(_gha_escape "${project_path}") (expected origin $(_gha_escape "${allowed_origin}"), got $(_gha_escape "${next_origin}"))" >&2
+                return 1
+            fi
+        fi
+        url="$next_url"
+    done
+
+    if [[ "$pages_fetched" -ge "$max_pages" && -n "$url" ]]; then
+        rm -f "$hdr_file"
+        _gitlab_api_cleanup_curl_config
+        echo "::error::latest-gitlab-tag: pagination bound reached (max_pages=$(_gha_escape "${max_pages}")) but more pages exist for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+
+    rm -f "$hdr_file"
+    _gitlab_api_cleanup_curl_config
+
+    if [[ "$tags_emitted" -eq 0 ]]; then
+        echo "::error::latest-gitlab-tag: no tags returned for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+}
+
+latest-gitlab-tag() {
+    local project_path=""
+    local tag_filter=""
+    local version_extract=""
+    local include_prerelease=false
+    local output_mode="version"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag-filter)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --tag-filter requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
+                tag_filter="${2:-}"
+                shift 2
+                ;;
+            --version-extract)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --version-extract requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
+                version_extract="${2:-}"
+                shift 2
+                ;;
+            --include-prerelease)
+                include_prerelease=true
+                shift
+                ;;
+            --output)
+                if [[ $# -lt 2 ]]; then
+                    log_error "latest-gitlab-tag: --output requires a value" >&2
+                    log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                    return 1
+                fi
+                output_mode="${2:-}"
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $(_gha_escape "$1")" >&2
+                log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX [--output version|raw|both]" >&2
+                return 1
+                ;;
+            *)
+                if [[ -z "$project_path" ]]; then
+                    project_path="$1"
+                else
+                    log_error "Unexpected argument: $(_gha_escape "$1")" >&2
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$project_path" ]]; then
+        log_error "Usage: latest-gitlab-tag <project-path> --tag-filter REGEX --version-extract REGEX" >&2
+        return 1
+    fi
+    if [[ -z "$tag_filter" ]]; then
+        log_error "latest-gitlab-tag: --tag-filter is required" >&2
+        return 1
+    fi
+    if [[ -z "$version_extract" ]]; then
+        log_error "latest-gitlab-tag: --version-extract is required" >&2
+        return 1
+    fi
+    _gitlab_project_api_path "$project_path" >/dev/null || return 1
+
+    log_info "Fetching GitLab tags for $(_gha_escape "${project_path}")..." >&2
+    local all_tags
+    all_tags=$(_gitlab_api_tags "$project_path") || {
+        log_error "Failed to fetch GitLab tags for $(_gha_escape "${project_path}")" >&2
+        return 1
+    }
+
+    if [[ -z "$all_tags" ]]; then
+        log_error "No tags returned for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+
+    local filtered_tags
+    local grep_rc=0
+    filtered_tags=$(printf '%s\n' "$all_tags" | grep -E -- "$tag_filter" 2>&1) || grep_rc=$?
+    case "$grep_rc" in
+        0)
+            ;;
+        1)
+            log_error "No tags match tag_filter '$(_gha_escape "${tag_filter}")' for $(_gha_escape "${project_path}")" >&2
+            return 1
+            ;;
+        *)
+            log_error "tag_filter regex '$(_gha_escape "${tag_filter}")' failed for $(_gha_escape "${project_path}"): $(_gha_escape "${filtered_tags}")" >&2
+            return 1
+            ;;
+    esac
+
+    if [[ "$include_prerelease" != "true" ]]; then
+        local no_prerelease
+        no_prerelease=$(echo "$filtered_tags" | grep -v -i -E -- "$PRERELEASE_EXCLUDE_REGEX" || true)
+        if [[ -z "$no_prerelease" ]]; then
+            log_error "All matching tags for $(_gha_escape "${project_path}") are pre-releases — none passed exclusion filter" >&2
+            return 1
+        fi
+        filtered_tags="$no_prerelease"
+    fi
+
+    local versions_with_tags=""
+    local candidate_separator=$'\t'
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        if [[ "$tag" =~ $version_extract ]]; then
+            local extracted="${BASH_REMATCH[1]-}"
+            if [[ -z "$extracted" ]]; then
+                echo "::error::latest-gitlab-tag: version-extract regex matched tag '$(_gha_escape "${tag}")' but produced no capture — verify the regex has exactly one parenthesized capture group" >&2
+                return 1
+            fi
+            versions_with_tags="${versions_with_tags}${extracted}${candidate_separator}${tag}"$'\n'
+        else
+            log_info "version_extract '$(_gha_escape "${version_extract}")' did not match tag '$(_gha_escape "${tag}")' — skipping" >&2
+        fi
+    done <<< "$filtered_tags"
+
+    if [[ -z "$versions_with_tags" ]]; then
+        log_error "version_extract '$(_gha_escape "${version_extract}")' produced no results for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+
+    local best_line
+    best_line=$(echo "$versions_with_tags" | sort -t "$candidate_separator" -k1,1 --version-sort | tail -1)
+
+    local best_version best_raw_tag
+    IFS=$'\t' read -r best_version best_raw_tag <<< "$best_line"
+
+    if [[ -z "$best_version" ]]; then
+        log_error "Failed to determine best version for $(_gha_escape "${project_path}")" >&2
+        return 1
+    fi
+    if [[ ! "$best_version" =~ $SAFE_VERSION_REGEX ]]; then
+        log_error "Extracted version '$(_gha_escape "${best_version}")' is not a safe normalized version — expected digits separated by dots with optional windows/linux/darwin/macos/alpine dot labels" >&2
+        return 1
+    fi
+
+    case "$output_mode" in
+        version)
+            echo "$best_version"
+            ;;
+        raw)
+            if [[ -z "$best_raw_tag" ]]; then
+                log_error "No raw tag captured for $(_gha_escape "${project_path}")" >&2
+                return 1
+            fi
+            echo "$best_raw_tag"
+            ;;
+        both)
+            if [[ -z "$best_raw_tag" ]]; then
+                log_error "No raw tag captured for $(_gha_escape "${project_path}")" >&2
+                return 1
+            fi
+            printf '%s\t%s\n' "$best_version" "$best_raw_tag"
+            ;;
+        *)
+            log_error "Unknown --output mode '$(_gha_escape "${output_mode}")': use 'version', 'raw', or 'both'" >&2
+            return 1
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    latest-gitlab-tag "$@"
+fi

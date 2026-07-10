@@ -24,6 +24,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=../helpers/logging.sh
+# shellcheck disable=SC1091
 source "$PROJECT_ROOT/helpers/logging.sh"
 
 # Named constant: days before supported_until to emit a ::warning:: countdown
@@ -39,6 +41,35 @@ _gha_escape() {
     s="${s//$'\r'/%0D}"
     s="${s//$'\n'/%0A}"
     printf '%s' "$s"
+}
+
+compact_helper_error() {
+    local message="$1"
+
+    message=$(printf '%s' "$message" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g; s/[[:space:]]+/ /g; s/^ //; s/ $//')
+    if [[ -z "$message" ]]; then
+        message="helper exited without stderr"
+    fi
+
+    printf '%s' "$message"
+}
+
+normalize_gitlab_host() {
+    local host="$1"
+
+    host="${host#https://}"
+    host="${host#http://}"
+    host="${host%/}"
+
+    [[ "$host" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || return 1
+    printf '%s' "$host"
+}
+
+gitlab_api_url_from_host() {
+    local host
+
+    host=$(normalize_gitlab_host "$1") || return 1
+    printf 'https://%s/api/v4' "$host"
 }
 
 # Classify semver change type between two versions
@@ -66,19 +97,18 @@ classify_version_change() {
 }
 
 # Build source URL for a dependency update
-# Args: type source version [raw_tag]
-#   raw_tag: optional 4th argument for github-tag type.
+# Args: type source version [raw_tag] [source_host]
+#   raw_tag: optional 4th argument for github-tag and gitlab-tags types.
 #     For github-release: raw_tag unused; v${version} path is always correct.
 #     For github-tag: use /tree/${raw_tag} (the git ref always resolves; no
 #       dependence on a release being published). Falls back to v${version}
 #       when raw_tag is empty.
-#     Assumption: raw_tag values from the upstream API are simple [-.\w]+ shaped
-#       (e.g. "openssl-3.5.6", "pcre2-10.47") — no URL-special chars in practice.
 build_source_url() {
     local type="$1"
     local source="$2"
     local version="$3"
     local raw_tag="${4:-}"
+    local source_host="${5:-}"
 
     case "$type" in
         github-release)
@@ -92,6 +122,24 @@ build_source_url() {
                 echo "https://github.com/${source}/tree/${raw_tag}"
             else
                 echo "https://github.com/${source}/tree/v${version}"
+            fi
+            ;;
+        gitlab-tags)
+            local project_path_web
+            local tag_segment
+            local web_host
+            web_host=$(normalize_gitlab_host "${source_host:-gitlab.torproject.org}") || {
+                echo ""
+                return
+            }
+            project_path_web="${source//%2F/\/}"
+            project_path_web="${project_path_web//%2f/\/}"
+            if [[ -n "$raw_tag" ]]; then
+                tag_segment=$(jq -rn --arg segment "$raw_tag" '$segment | @uri')
+                echo "https://${web_host}/${project_path_web}/-/tags/${tag_segment}"
+            else
+                tag_segment=$(jq -rn --arg segment "v${version}" '$segment | @uri')
+                echo "https://${web_host}/${project_path_web}/-/tags/${tag_segment}"
             fi
             ;;
         pypi)
@@ -281,6 +329,7 @@ check_container_deps() {
         local latest_version=""
         local source_ref=""
         local latest_raw_tag=""  # raw tag for github-tag type (used in URL builder)
+        local source_web_host=""
 
         case "$dep_type" in
             github-release)
@@ -333,6 +382,52 @@ check_container_deps() {
                 latest_raw_tag="${_gh_both##*$'\t'}"
                 unset _gh_both
                 ;;
+            gitlab-tags)
+                local project_path tag_filter version_extract web_host api_host gitlab_api_url
+                project_path=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].project_path // ""' "$config")
+                tag_filter=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
+                version_extract=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
+                web_host=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].web_host // "gitlab.torproject.org"' "$config")
+                api_host=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].api_host // "gitlab.torproject.org"' "$config")
+                source_ref="$project_path"
+
+                if [[ -z "$project_path" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags type missing project_path:" '. + [$msg]')
+                    continue
+                fi
+                if [[ -z "$tag_filter" || -z "$version_extract" ]]; then
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags type requires tag_filter and version_extract" '. + [$msg]')
+                    continue
+                fi
+                source_web_host=$(normalize_gitlab_host "$web_host") || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags web_host is invalid: ${web_host}" '. + [$msg]')
+                    continue
+                }
+                gitlab_api_url=$(gitlab_api_url_from_host "$api_host") || {
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: gitlab-tags api_host is invalid: ${api_host}" '. + [$msg]')
+                    continue
+                }
+
+                local gitlab_helper_stderr
+                gitlab_helper_stderr=$(mktemp)
+                _gl_both=$(GITLAB_API_URL="$gitlab_api_url" "$PROJECT_ROOT/helpers/latest-gitlab-tag" "$project_path" \
+                    --tag-filter "$tag_filter" \
+                    --version-extract "$version_extract" \
+                    --output both 2>"$gitlab_helper_stderr") || {
+                    local gitlab_helper_error gitlab_helper_stderr_text=""
+                    if [[ -r "$gitlab_helper_stderr" ]]; then
+                        gitlab_helper_stderr_text=$(<"$gitlab_helper_stderr")
+                    fi
+                    gitlab_helper_error=$(compact_helper_error "$gitlab_helper_stderr_text")
+                    rm -f "$gitlab_helper_stderr"
+                    errors_json=$(echo "$errors_json" | jq --arg msg "${dep_name}: GitLab tag API error for ${project_path}: ${gitlab_helper_error}" '. + [$msg]')
+                    continue
+                }
+                rm -f "$gitlab_helper_stderr"
+                latest_version="${_gl_both%%$'\t'*}"
+                latest_raw_tag="${_gl_both##*$'\t'}"
+                unset _gl_both
+                ;;
             pypi)
                 local package
                 package=$(YQ_DEP="$dep_name" yq -r '.dependency_sources[strenv(YQ_DEP)].package // ""' "$config")
@@ -377,7 +472,7 @@ check_container_deps() {
             local change_type
             change_type=$(classify_version_change "$current_version" "$latest_version")
             local source_url
-            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag")
+            source_url=$(build_source_url "$dep_type" "$source_ref" "$latest_version" "$latest_raw_tag" "$source_web_host")
 
             updates_json=$(echo "$updates_json" | jq \
                 --arg name "$dep_name" \

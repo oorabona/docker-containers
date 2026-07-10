@@ -1,0 +1,41 @@
+# Tor container configuration
+# Base image and third-party dependency versions
+
+base_image: "${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}"
+base_image_cache:
+  - source: library/alpine
+    tags: ["latest"]
+build_args:
+  OS_IMAGE_TAG: "latest"
+  TOR_VERSION: "0.4.9.11"
+  LYREBIRD_VERSION: "0.8.1"
+  NYX_VERSION: "2.1.0"
+dependency_sources:
+  OS_IMAGE_TAG:
+    monitor: false
+    lifecycle: untracked
+    reason: "Base image tag fallback, not a version to track"
+  TOR_VERSION:
+    monitor: false
+    lifecycle: untracked
+    reason: "Discovery-anchor default only, not automatically kept current. Primary image version discovery is resolved by tor/version.sh, but the discovered, actually installed Alpine tor package in /usr/local/share/tor/package-versions.env and the image SBOM is the ground truth for what runs."
+  LYREBIRD_VERSION:
+    monitor: true
+    lifecycle: tracked
+    type: gitlab-tags
+    web_host: gitlab.torproject.org
+    api_host: gitlab.torproject.org
+    project_path: tpo%2Fanti-censorship%2Fpluggable-transports%2Flyrebird
+    tag_filter: "^lyrebird-[0-9]+\\.[0-9]+\\.[0-9]+$"
+    version_extract: "^lyrebird-([0-9]+\\.[0-9]+\\.[0-9]+)$"
+    reason: "Advisory upstream-release tracking for Lyrebird on gitlab.torproject.org; the Dockerfile installs Alpine's lyrebird package, so a merged bump PR updates this declared signal for traceability and does not change the built image until Alpine repackages"
+  NYX_VERSION:
+    monitor: true
+    lifecycle: tracked
+    type: pypi
+    package: nyx
+    reason: "Advisory upstream-release tracking for Nyx on PyPI; the monitoring flavor installs Alpine's nyx package, so a merged bump PR updates this declared signal for traceability and does not change the built image until Alpine repackages"
+value_proposition: >-
+  Tor SOCKS proxy with relay, bridge, pluggable transport, hidden-service, and
+  optional Nyx monitoring support. Multi-arch, SBOM-attested, daily upstream
+  monitoring.

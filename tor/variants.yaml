@@ -1,0 +1,23 @@
+# Tor Container Variants
+# Defines default and monitoring image variants.
+#
+# Tags:
+#   ghcr.io/oorabona/tor:0.4.9.11-alpine
+#   ghcr.io/oorabona/tor:0.4.9.11-alpine-monitoring
+
+build:
+  requires_extensions: false
+  version_retention: 3
+
+versions:
+  - tag: 0.4.9.11-alpine
+    variants:
+      - name: default
+        suffix: ""
+        flavor: default
+        description: "Tor + Lyrebird SOCKS proxy, relay, bridge, and hidden-service support"
+        default: true
+      - name: monitoring
+        suffix: "-monitoring"
+        flavor: monitoring
+        description: "Default Tor image plus Nyx and py3-stem for in-container monitoring"

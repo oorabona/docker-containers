@@ -11,6 +11,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./logging.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/logging.sh"
 
 # GitHub API base URL (supports GitHub Enterprise via GITHUB_API_URL)
@@ -151,13 +153,21 @@ latest-github-release() {
     # Apply tag_pattern extraction if specified (custom user pattern wins)
     if [[ -n "$tag_pattern" ]]; then
         local extracted
-        extracted=$(echo "$version" | grep -oP "$tag_pattern" || true)
-        if [[ -n "$extracted" ]]; then
-            version="$extracted"
-        else
-            log_error "Tag pattern '${tag_pattern}' did not match version '${version}'"
-            return 1
-        fi
+        local grep_rc=0
+        extracted=$(printf '%s\n' "$version" | grep -oP -- "$tag_pattern" 2>&1) || grep_rc=$?
+        case "$grep_rc" in
+            0)
+                version="$extracted"
+                ;;
+            1)
+                log_error "Tag pattern '${tag_pattern}' did not match version '${version}'"
+                return 1
+                ;;
+            *)
+                log_error "Tag pattern '${tag_pattern}' failed for version '${version}': ${extracted}"
+                return 1
+                ;;
+        esac
     else
         # Default: strip non-digit prefix (e.g., "jq-", "v") to normalize
         # "jq-1.8.1" → "1.8.1", "v7.5.1" → "7.5.1", "1.7.1" → "1.7.1"

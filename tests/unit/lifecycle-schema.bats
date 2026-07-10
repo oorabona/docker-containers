@@ -5,7 +5,7 @@
 # AC-1  every dependency_sources entry has a valid lifecycle:
 # AC-2  schema test green (valid lifecycle + required fields per lifecycle)
 # AC-14 lifecycle: REQUIRED on every entry; no implicit default
-# AC-17 type: github-tag requires both tag_filter: and version_extract:
+# AC-17 type: github-tag/gitlab-tags requires tag_filter: and version_extract:
 # AC-18 tracked/stable-pin/eol-migrate require type: + per-type locator
 # AC-19 every stable-pin entry declares supported_until_source:
 #
@@ -264,10 +264,10 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T1 AC-18: per-type locator check (repo/package/gem)
+# T1 AC-18: per-type locator check (repo/project_path/package/gem)
 # ---------------------------------------------------------------------------
 
-@test "each type has the required locator (github-tag/release=repo, pypi=package, rubygems=gem)" {
+@test "each type has the required locator (github-tag/release=repo, gitlab-tags=project_path, pypi=package, rubygems=gem)" {
     local bad=0
     local bad_list=""
 
@@ -294,6 +294,14 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
                     if [[ -z "$repo" || "$repo" == "null" ]]; then
                         bad=$((bad + 1))
                         bad_list="${bad_list}\n  ${container}/${dep}: type=${t} missing repo:"
+                    fi
+                    ;;
+                gitlab-tags)
+                    local project_path
+                    project_path=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].project_path // ""' "$config")
+                    if [[ -z "$project_path" || "$project_path" == "null" ]]; then
+                        bad=$((bad + 1))
+                        bad_list="${bad_list}\n  ${container}/${dep}: type=gitlab-tags missing project_path:"
                     fi
                     ;;
                 pypi)
@@ -323,10 +331,10 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
 }
 
 # ---------------------------------------------------------------------------
-# T14 AC-17: github-tag type requires tag_filter: and version_extract:
+# T14 AC-17: github-tag/gitlab-tags types require tag_filter: and version_extract:
 # ---------------------------------------------------------------------------
 
-@test "github-tag entries declare both tag_filter and version_extract" {
+@test "github-tag and gitlab-tags entries declare both tag_filter and version_extract" {
     local missing=0
     local missing_list=""
 
@@ -344,24 +352,24 @@ VALID_LIFECYCLES="tracked stable-pin eol-migrate untracked"
             [[ -z "$dep" ]] && continue
             local t
             t=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].type // ""' "$config")
-            if [[ "$t" == "github-tag" ]]; then
+            if [[ "$t" == "github-tag" || "$t" == "gitlab-tags" ]]; then
                 local tf ve
                 tf=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].tag_filter // ""' "$config")
                 ve=$(YQ_DEP="$dep" yq -r '.dependency_sources[strenv(YQ_DEP)].version_extract // ""' "$config")
                 if [[ -z "$tf" || "$tf" == "null" ]]; then
                     missing=$((missing + 1))
-                    missing_list="${missing_list}\n  ${container}/${dep}: missing tag_filter"
+                    missing_list="${missing_list}\n  ${container}/${dep}: type=${t} missing tag_filter"
                 fi
                 if [[ -z "$ve" || "$ve" == "null" ]]; then
                     missing=$((missing + 1))
-                    missing_list="${missing_list}\n  ${container}/${dep}: missing version_extract"
+                    missing_list="${missing_list}\n  ${container}/${dep}: type=${t} missing version_extract"
                 fi
             fi
         done <<< "$dep_names"
     done
 
     if [[ "$missing" -gt 0 ]]; then
-        echo "FAIL: $missing github-tag entries missing tag_filter/version_extract:${missing_list}"
+        echo "FAIL: $missing github-tag/gitlab-tags entries missing tag_filter/version_extract:${missing_list}"
         return 1
     fi
 }
