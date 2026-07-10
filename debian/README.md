@@ -24,6 +24,16 @@ A small, opinionated Debian base built `FROM debian:trixie` (Debian 13) with the
 - **Automated Builds**: Integrated with upstream monitoring for version updates
 - **Clean Base**: Perfect starting point for custom applications
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/debian:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Usage
 
 ### With Docker Compose

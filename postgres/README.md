@@ -6,6 +6,16 @@
 
 Production-ready PostgreSQL containers with multiple **flavors** optimized for different workloads: AI/RAG, analytics, or general purpose. Built on Alpine Linux with pre-compiled extensions.
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/postgres:17-alpine --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Quick Start
 
 ```bash

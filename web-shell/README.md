@@ -6,6 +6,16 @@
 
 Secure browser-based terminal built on our [Debian](../debian/) base image with [ttyd](https://github.com/tsl0922/ttyd) for web terminal access. Includes common DevOps and hosting tools, optional SSH server, and flexible authentication options.
 
+## Verify this image
+
+Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
+
+```bash
+gh attestation verify oci://ghcr.io/oorabona/web-shell:latest --owner oorabona
+```
+
+Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, upstream dependency tracking) → <https://oorabona.github.io/docker-containers/verify-images/>
+
 ## Quick Start
 
 ```bash
