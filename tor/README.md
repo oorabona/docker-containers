@@ -38,10 +38,12 @@ Lyrebird and Nyx remain tracked against upstream releases as an advisory traceab
 ```bash
 docker run -d \
   --name tor \
-  -p 9050:9050 \
+  -p 127.0.0.1:9050:9050 \
   -v tor-data:/var/lib/tor \
   ghcr.io/oorabona/tor:latest
 ```
+
+This publishes SOCKS on host loopback only. Broader host-interface exposure should be an explicit operator choice, paired with appropriate network controls.
 
 Use `socks5h://`, not plain `socks5://`, when the client supports it:
 
@@ -63,7 +65,7 @@ The image generates a minimal torrc when `/etc/tor/torrc` is absent, empty, or c
 | `SOCKS_PORT` | `9050` | SOCKS listen port |
 | `EXIT_NODES` | unset | Comma-separated country codes rendered as Tor `{cc}` entries |
 | `EXCLUDE_EXIT_NODES` | unset | Comma-separated country codes to avoid |
-| `PASSWORD_FILE` | unset | Optional Docker-secret file for external control authentication |
+| `PASSWORD_FILE` | unset | Optional Docker-secret file for external control authentication, pre-hashed or plaintext |
 | `CONTROL_PORT_BIND` | `127.0.0.1` | Control port bind address; non-loopback requires `PASSWORD_FILE` |
 | `CONTROL_PORT` | `9051` | Control port listen port |
 | `CHECK` | `false` | When true, healthcheck verifies Tor exit status through check.torproject.org |
@@ -72,6 +74,12 @@ Default control access uses `CookieAuthentication 1` and binds `ControlPort 127.
 
 The default healthcheck first verifies that the Tor process is alive. For the generated simple torrc path it also confirms the configured SOCKS listener is open; for mounted torrc deployments it does not assume SOCKS exists. Set `CHECK=true` only when readiness must confirm a working SOCKS circuit through check.torproject.org.
 
+### Opt-In External Control
+
+For password-authenticated external control, set `PASSWORD_FILE` to a Docker secret and bind `CONTROL_PORT_BIND` deliberately. The recommended secret content is a pre-hashed Tor control password in `16:<hex>` `HashedControlPassword` format, generated outside the container, for example with `tor --hash-password` on a trusted host or a throwaway container. The entrypoint uses that value directly and never handles the plaintext.
+
+For compatibility, `PASSWORD_FILE` may also contain a plaintext password. In that path the entrypoint hashes it at startup with `tor --hash-password`; Tor does not provide stdin or file input for this operation, so the plaintext is briefly visible in that helper process's argv inside the container PID namespace.
+
 ### Mounted torrc Path
 
 For relay, bridge, exit, and hidden-service deployments, mount a full torrc:
@@ -79,7 +87,7 @@ For relay, bridge, exit, and hidden-service deployments, mount a full torrc:
 ```bash
 docker run -d \
   --name tor-relay \
-  -p 9050:9050 \
+  -p 127.0.0.1:9050:9050 \
   -p 9001:9001 \
   -v "$PWD/torrc:/etc/tor/torrc:ro" \
   -v tor-data:/var/lib/tor \
@@ -109,7 +117,7 @@ Run the monitoring tag, then attach Nyx from inside the container:
 ```bash
 docker run -d \
   --name tor \
-  -p 9050:9050 \
+  -p 127.0.0.1:9050:9050 \
   -v tor-data:/var/lib/tor \
   ghcr.io/oorabona/tor:latest-monitoring
 
@@ -149,7 +157,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "9050:9050"
+      - "127.0.0.1:9050:9050"
     volumes:
       - tor-data:/var/lib/tor
     restart: unless-stopped

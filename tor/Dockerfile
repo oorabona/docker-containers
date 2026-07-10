@@ -4,6 +4,10 @@ ARG OS_IMAGE_TAG=latest
 FROM ${REMOTE_CR}/library/alpine:${OS_IMAGE_TAG}
 
 ARG FLAVOR=default
+# Discovery-anchor default only: Alpine's installed package version recorded
+# in /usr/local/share/tor/package-versions.env and the image SBOM is the
+# ground truth for what runs. This static value is not auto-refreshed because
+# retained rebuilds install from Alpine's rolling repositories.
 ARG TOR_VERSION
 ARG LYREBIRD_VERSION
 ARG NYX_VERSION
@@ -106,7 +110,7 @@ HEALTHCHECK --interval=30s --timeout=20s --start-period=90s --retries=3 \
         if [ -e "$torrc_path" ] && grep -qE '^[[:space:]]*[^#[:space:]]' "$torrc_path"; then simple_torrc=false; fi; \
         if [ "$simple_torrc" = "true" ] || [ "${CHECK:-false}" = "true" ]; then \
             socks_bind="${SOCKS_BIND:-0.0.0.0}"; \
-            if [ "$socks_bind" = "0.0.0.0" ] || [ "$socks_bind" = "::" ]; then socks_host="127.0.0.1"; else socks_host="$socks_bind"; fi; \
+            if [ "$socks_bind" = "0.0.0.0" ]; then socks_host="127.0.0.1"; elif [ "$socks_bind" = "::" ]; then socks_host="::1"; else socks_host="$socks_bind"; fi; \
             case "$socks_host" in *:*) socks_endpoint="[${socks_host}]:${SOCKS_PORT:-9050}" ;; *) socks_endpoint="${socks_host}:${SOCKS_PORT:-9050}" ;; esac; \
             if [ "${CHECK:-false}" = "true" ]; then \
                 curl -fsS --max-time 20 --socks5-hostname "$socks_endpoint" https://check.torproject.org/api/ip | grep -q '"IsTor":true'; \

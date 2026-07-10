@@ -231,6 +231,40 @@ last_output_line() {
     grep -q 'CONFIG:header = "PRIVATE-TOKEN: secret";' "$FAKE_CURL_CONFIG_LOG"
 }
 
+@test "GitLab token curl config has EXIT cleanup trap" {
+    grep -Fq "trap 'rm -f \"\$curl_cfg\"' EXIT" "$HELPER"
+}
+
+@test "GitLab token rejects curl config quote injection before curl" {
+    write_fake_curl happy
+    export GITLAB_TOKEN='bad"token'
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+    GITLAB_API_URL="https://gitlab.torproject.org/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GITLAB_TOKEN must not contain double quotes or control characters"* ]]
+    [ ! -e "$FAKE_CURL_URL_LOG" ]
+}
+
+@test "GitLab token rejects control characters before curl" {
+    write_fake_curl happy
+    export GITLAB_TOKEN=$'bad\ntoken'
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+    GITLAB_API_URL="https://gitlab.torproject.org/api/v4"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GITLAB_TOKEN must not contain double quotes or control characters"* ]]
+    [ ! -e "$FAKE_CURL_URL_LOG" ]
+}
+
 @test "GitLab token is withheld for custom API hosts" {
     write_fake_curl happy
     export GITLAB_TOKEN="secret"

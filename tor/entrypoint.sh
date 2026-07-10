@@ -57,11 +57,23 @@ is_ipv4_address() {
 }
 
 is_ipv6_address() {
-    [[ "$1" == *:* ]] || return 1
-    [[ "$1" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
-    [[ "$1" != *:::* ]] || return 1
+    local value="$1"
+    local ipv4_tail ipv6_prefix
 
-    awk -v ip="$1" '
+    [[ "$value" == *:* ]] || return 1
+    [[ "$value" != *:::* ]] || return 1
+
+    if [[ "$value" == *.* ]]; then
+        ipv4_tail="${value##*:}"
+        ipv6_prefix="${value%:*}"
+        [[ "$ipv4_tail" != "$value" ]] || return 1
+        [[ "$ipv6_prefix" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+        is_ipv4_address "$ipv4_tail" || return 1
+    else
+        [[ "$value" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+    fi
+
+    awk -v ip="$value" '
         function valid_ipv4(value, parts, n, i) {
             n = split(value, parts, ".")
             if (n != 4) return 0
@@ -133,6 +145,7 @@ validate_tor_path() {
 reject_sensitive_data_dir() {
     local value="${1%/}"
     local denied
+    local allowed_data_dir="/var/lib/tor"
     local -a denied_paths=(
         /
         /etc
@@ -150,8 +163,12 @@ reject_sensitive_data_dir() {
         /home
     )
 
+    if [[ "$value" == "$allowed_data_dir" || "$value" == "$allowed_data_dir"/* ]]; then
+        return 0
+    fi
+
     for denied in "${denied_paths[@]}"; do
-        if [[ "$value" == "$denied" ]]; then
+        if [[ "$value" == "$denied" || "$value" == "$denied"/* ]]; then
             die "DATA_DIR must not be a sensitive system path: ${denied}"
         fi
         if [[ "$denied" == "$value"/* ]]; then
@@ -226,10 +243,11 @@ custom_torrc_active() {
 
     if grep -qE '^[[:space:]]*[^#[:space:]]' "$TORRC_PATH"; then
         return 0
+    else
+        local rc=$?
+        [[ "$rc" -eq 2 ]] && die "could not read TORRC_PATH: ${TORRC_PATH}"
     fi
 
-    local rc=$?
-    [[ "$rc" -eq 2 ]] && die "could not read TORRC_PATH: ${TORRC_PATH}"
     return 1
 }
 
@@ -283,6 +301,12 @@ load_control_password_hash() {
 
     IFS= read -r control_password < "$password_file" || true
     [[ -n "$control_password" ]] || die "PASSWORD_FILE is empty: ${password_file}"
+
+    if [[ "$control_password" =~ ^16:[0-9A-Fa-f]+$ ]]; then
+        CONTROL_PASSWORD_HASH="$control_password"
+        unset control_password
+        return 0
+    fi
 
     # tor(1) documents --hash-password PASSWORD, with no stdin or file input for
     # this operation. The plaintext is briefly visible in the hash helper's argv
@@ -407,4 +431,6 @@ main() {
     exec tor -f "$GENERATED_TORRC" "$@"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

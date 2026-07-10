@@ -75,6 +75,13 @@ _gitlab_token_host_allowed() {
     [[ "$host" == "gitlab.torproject.org" ]]
 }
 
+_validate_gitlab_token_for_curl_config() {
+    if [[ "${GITLAB_TOKEN:-}" == *\"* || "${GITLAB_TOKEN:-}" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-gitlab-tag: GITLAB_TOKEN must not contain double quotes or control characters" >&2
+        return 1
+    fi
+}
+
 _gitlab_project_api_path() {
     local project_path="$1"
 
@@ -114,7 +121,9 @@ _gitlab_api_tags() {
     local curl_args=(--proto '=https' --proto-redir '=https' -fsS --connect-timeout 10 --max-time 30)
     local curl_cfg=""
     if [[ -n "${GITLAB_TOKEN:-}" ]] && _gitlab_token_host_allowed "$api_host"; then
+        _validate_gitlab_token_for_curl_config || return 1
         curl_cfg=$(mktemp)
+        trap 'rm -f "$curl_cfg"' EXIT
         chmod 600 "$curl_cfg"
         printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" > "$curl_cfg"
         curl_args+=(--config "$curl_cfg")

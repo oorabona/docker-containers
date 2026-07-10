@@ -3,7 +3,7 @@
 setup() {
     TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
     PROJECT_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-    TEST_TEMP_DIR="$(mktemp -d)"
+    TEST_TEMP_DIR="$(mktemp -d /tmp/tor-entrypoint-bats.XXXXXX)"
     ENTRYPOINT="${PROJECT_ROOT}/tor/entrypoint.sh"
     INTERNAL_GENERATED_DIR="/tmp/tor"
     INTERNAL_GENERATED_MARKER="${INTERNAL_GENERATED_DIR}/.tor-entrypoint-bats"
@@ -53,6 +53,9 @@ EOF
 set -euo pipefail
 
 if [[ "${1:-}" == "--hash-password" ]]; then
+    if [[ -n "${FAKE_TOR_HASH_LOG:-}" ]]; then
+        printf '%s\n' "$*" >> "$FAKE_TOR_HASH_LOG"
+    fi
     printf '16:FAKE_HASH\n'
     exit 0
 fi
@@ -202,6 +205,20 @@ write_healthcheck_pid_file() {
     [[ "$output" == *"DATA_DIR must not be a sensitive system path: /etc"* ]]
 }
 
+@test "runtime path validation rejects sensitive descendants but allows tor data descendants" {
+    local rejected
+
+    for rejected in /etc/ssl /root/.ssh /var/lib; do
+        run bash -c 'source "$1"; DATA_DIR="$2"; validate_runtime_paths' _ "$ENTRYPOINT" "$rejected"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"DATA_DIR must not be a sensitive system path"* ]]
+    done
+
+    run bash -c 'source "$1"; DATA_DIR="/var/lib/tor/custom"; validate_runtime_paths' _ "$ENTRYPOINT"
+
+    [ "$status" -eq 0 ]
+}
+
 @test "generated torrc path is internal and written with restrictive permissions" {
     write_fake_runtime_commands
     printf 'secret\n' > "${TEST_TEMP_DIR}/control-password"
@@ -221,6 +238,44 @@ write_healthcheck_pid_file() {
     grep -qx 'HashedControlPassword 16:FAKE_HASH' "${INTERNAL_GENERATED_DIR}/torrc"
     [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}/torrc")" = "600" ]
     [ "$(stat -c '%a' "${INTERNAL_GENERATED_DIR}")" = "700" ]
+}
+
+@test "pre-hashed PASSWORD_FILE is used directly without invoking hash helper" {
+    write_fake_runtime_commands
+    local hashed_password="16:0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    printf '%s\n' "$hashed_password" > "${TEST_TEMP_DIR}/control-password"
+    export FAKE_TOR_HASH_LOG="${TEST_TEMP_DIR}/hash.log"
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        PASSWORD_FILE="${TEST_TEMP_DIR}/control-password" \
+        FAKE_TOR_HASH_LOG="$FAKE_TOR_HASH_LOG" \
+        "$ENTRYPOINT"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+    grep -qx "HashedControlPassword ${hashed_password}" "${INTERNAL_GENERATED_DIR}/torrc"
+    [ ! -e "$FAKE_TOR_HASH_LOG" ]
+}
+
+@test "unreadable custom torrc fails loudly instead of falling back to generated defaults" {
+    write_fake_runtime_commands
+    printf 'SocksPort 127.0.0.1:19050\n' > "${TEST_TEMP_DIR}/torrc"
+    chmod 000 "${TEST_TEMP_DIR}/torrc"
+
+    run run_entrypoint
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"could not read TORRC_PATH: ${TEST_TEMP_DIR}/torrc"* ]]
+    [[ "$output" != *"TOR_STUB_CONFIG=${INTERNAL_GENERATED_DIR}/torrc"* ]]
+}
+
+@test "validate_bind_address accepts IPv4-mapped IPv6 address" {
+    run bash -c 'source "$1"; validate_bind_address SOCKS_BIND "::ffff:192.0.2.1"' _ "$ENTRYPOINT"
+
+    [ "$status" -eq 0 ]
 }
 
 @test "healthcheck accepts custom torrc with SocksPort disabled without probing SOCKS" {
@@ -263,4 +318,26 @@ write_healthcheck_pid_file() {
 
     [ "$status" -eq 0 ]
     grep -qx 'nc -z 127.0.0.1 19050' "$FAKE_NC_LOG"
+}
+
+@test "healthcheck probes IPv6 loopback for IPv6 wildcard SOCKS bind" {
+    write_fake_healthcheck_commands
+    write_healthcheck_pid_file
+    local healthcheck
+    healthcheck="$(dockerfile_healthcheck_command)"
+    export FAKE_NC_LOG="${TEST_TEMP_DIR}/nc.log"
+    export FAKE_NC_STATUS=0
+    export FAKE_CURL_LOG="${TEST_TEMP_DIR}/curl.log"
+
+    run env \
+        PATH="$PATH" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        TORRC_PATH="${TEST_TEMP_DIR}/missing-torrc" \
+        SOCKS_BIND="::" \
+        SOCKS_PORT=19050 \
+        CHECK=false \
+        sh -c "$healthcheck"
+
+    [ "$status" -eq 0 ]
+    grep -qx 'nc -z ::1 19050' "$FAKE_NC_LOG"
 }

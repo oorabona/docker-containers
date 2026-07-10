@@ -18,7 +18,7 @@ dependency_sources:
   TOR_VERSION:
     monitor: false
     lifecycle: untracked
-    reason: "Primary image version is resolved by tor/version.sh; this build arg records the declared target while Dockerfile build logs and package-versions.env record the installed Alpine tor package"
+    reason: "Discovery-anchor default only, not automatically kept current. Primary image version discovery is resolved by tor/version.sh, but the discovered, actually installed Alpine tor package in /usr/local/share/tor/package-versions.env and the image SBOM is the ground truth for what runs."
   LYREBIRD_VERSION:
     monitor: true
     lifecycle: tracked
