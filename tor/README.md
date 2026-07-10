@@ -7,6 +7,19 @@
 
 Tor with a secure default control-port setup: SOCKS on 9050, cookie authentication for local control, Lyrebird for pluggable transports, and an optional Nyx monitoring flavor.
 
+## Why this image
+
+The Tor Docker landscape already has several images, each making a different trade-off:
+
+| Image | Strength | Gap |
+|---|---|---|
+| [dperson/torproxy](https://hub.docker.com/r/dperson/torproxy) | Most widely pulled | Unmaintained since 2021 |
+| [peterdavehello/tor-socks-proxy](https://hub.docker.com/r/peterdavehello/tor-socks-proxy) | Actively updated | No arm64 on `latest`; a healthcheck bug has been open since 2023 |
+| [dockur/tor](https://github.com/dockur/tor) | Full feature breadth — relay, exit, bridge, hidden-service, Lyrebird, Nyx | No SBOM/CVE scanning; ships `PASSWORD=password` as a control-port default, and its own compose example maps that port to the host |
+| [leplusorg/docker-tor](https://github.com/leplusorg/docker-tor) | Clear supply-chain documentation | Deliberately SOCKS5-only — no relay, bridge, or hidden-service support |
+
+This image is the combination none of them cover: dockur's feature breadth, wrapped in this fleet's supply-chain pipeline (multi-arch builds, a Sigstore-attested SBOM, a Trivy scan on every image, daily upstream version tracking) — with a control port that is loopback-bound and cookie-authenticated by default, never a shipped password.
+
 ## Verify this image
 
 Every build ships a Sigstore-signed SBOM and a full Trivy scan — verify them yourself, no login required:
@@ -26,6 +39,10 @@ Full walkthrough (SBOM payload, Trivy findings, multi-arch manifest inspection, 
 
 - `latest`, `0.4.9.11-alpine` - Tor + Lyrebird
 - `latest-monitoring`, `0.4.9.11-alpine-monitoring` - Tor + Lyrebird + Nyx + py3-stem
+
+**Lyrebird** is the Tor Project's pluggable-transport binary, the maintained successor to `obfs4proxy`. It disguises Tor traffic as something else — plain-looking TLS, depending on the transport — so a bridge stays usable on networks where Tor's normal traffic pattern is blocked or fingerprinted. It's installed in every tag; it does nothing unless a mounted torrc sets a `ClientTransportPlugin` or `ServerTransportPlugin` line.
+
+**Nyx** is a terminal UI for a running Tor process — live bandwidth graphs, circuit and connection listings, log tailing — talking to Tor over the control port via the Python `stem` library. It's the standard monitor endorsed by the Tor Project and the only widely known tool of its kind, but it's effectively dormant upstream: no PyPI release since 2019, no GitHub commit since 2022 (`stem`, its own dependency, last changed in 2024). It stays in this fleet as an opt-in flavor rather than the default for that reason — Alpine still packages and patches it, this pipeline's own Trivy scan covers it on every build regardless of upstream release cadence, and it's only reachable via `docker exec`, never a network-exposed service.
 
 ## Versioning
 
@@ -80,6 +97,28 @@ For password-authenticated external control, set `PASSWORD_FILE` to a Docker sec
 
 For compatibility, `PASSWORD_FILE` may also contain a plaintext password. In that path the entrypoint hashes it at startup with `tor --hash-password`; Tor does not provide stdin or file input for this operation, so the plaintext is briefly visible in that helper process's argv inside the container PID namespace.
 
+**Generating the password file (one-shot):**
+
+```bash
+# One-shot: hash a password using the same image, nothing persists
+docker run --rm ghcr.io/oorabona/tor:latest \
+  tor --hash-password 'correct horse battery staple' \
+  | awk '/^16:/ {print; exit}' > control_password_hash
+
+# Long-running container: opt in to external control with that hash
+docker run -d \
+  --name tor \
+  -p 127.0.0.1:9050:9050 \
+  -p 127.0.0.1:9051:9051 \
+  -v "$PWD/control_password_hash:/run/secrets/tor_control_password:ro" \
+  -e PASSWORD_FILE=/run/secrets/tor_control_password \
+  -e CONTROL_PORT_BIND=0.0.0.0 \
+  -v tor-data:/var/lib/tor \
+  ghcr.io/oorabona/tor:latest
+```
+
+`CONTROL_PORT_BIND=0.0.0.0` is the address Tor binds *inside* the container — Docker can only forward a published port to an address the process is actually listening on there. The `-p 127.0.0.1:9051:9051` publish is what actually restricts host reachability to loopback; without `PASSWORD_FILE` set, the entrypoint refuses to start rather than open an unauthenticated control port on anything wider than the container's own loopback.
+
 ### Mounted torrc Path
 
 For relay, bridge, exit, and hidden-service deployments, mount a full torrc:
@@ -124,7 +163,32 @@ docker run -d \
 docker exec -it tor nyx
 ```
 
-Nyx runs as the `tor` user and reads `/var/lib/tor/control_auth_cookie`; no password is generated or printed in the default path.
+Or with Compose:
+
+```yaml
+services:
+  tor:
+    image: ghcr.io/oorabona/tor:latest-monitoring
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:9050:9050"
+    volumes:
+      - tor-data:/var/lib/tor
+    restart: unless-stopped
+
+volumes:
+  tor-data:
+```
+
+```bash
+docker compose up -d
+docker compose exec tor nyx
+```
+
+Nyx runs as the `tor` user and reads `/var/lib/tor/control_auth_cookie`; no password is generated or printed in the default path. It's a terminal application, not a background metrics exporter — there is no dashboard or scrape endpoint to point Prometheus at. Each `nyx` session is a live, interactive view for as long as the terminal stays attached.
 
 ## Persistence
 
