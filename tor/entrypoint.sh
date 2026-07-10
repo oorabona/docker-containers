@@ -115,10 +115,19 @@ validate_bind_address() {
 validate_tor_path() {
     local name="$1"
     local value="$2"
+    local segment trimmed
+    local -a segments
 
     reject_control_chars "$name" "$value"
     [[ "$value" == /* ]] || die "${name} must be an absolute path"
-    [[ "$value" =~ ^/[A-Za-z0-9._/@:+-]*$ ]] || die "${name} contains unsupported path characters"
+    [[ "$value" != "/" ]] || die "${name} must not be the filesystem root"
+    [[ "$value" =~ ^/[A-Za-z0-9._@:+-]+(/[A-Za-z0-9._@:+-]+)*/?$ ]] || die "${name} contains unsupported path characters"
+
+    trimmed="${value%/}"
+    IFS='/' read -r -a segments <<< "${trimmed#/}"
+    for segment in "${segments[@]}"; do
+        [[ "$segment" != "." && "$segment" != ".." ]] || die "${name} must not contain . or .. path segments"
+    done
 }
 
 validate_country_list() {
@@ -147,13 +156,17 @@ validate_torrc_env() {
     local control_bind="${CONTROL_PORT_BIND:-127.0.0.1}"
     [[ -n "$control_bind" ]] || control_bind="127.0.0.1"
 
-    validate_tor_path "DATA_DIR" "$DATA_DIR"
     validate_bind_address "SOCKS_BIND" "$socks_bind"
     validate_port "SOCKS_PORT" "$socks_port"
     validate_bind_address "CONTROL_PORT_BIND" "$control_bind"
     validate_port "CONTROL_PORT" "$CONTROL_PORT"
     validate_country_list "EXIT_NODES" "${EXIT_NODES:-}"
     validate_country_list "EXCLUDE_EXIT_NODES" "${EXCLUDE_EXIT_NODES:-}"
+}
+
+validate_runtime_paths() {
+    validate_tor_path "DATA_DIR" "$DATA_DIR"
+    validate_tor_path "GENERATED_DIR" "$GENERATED_DIR"
 }
 
 ensure_runtime_dirs() {
@@ -327,7 +340,7 @@ main() {
         shift
     fi
 
-    validate_torrc_env
+    validate_runtime_paths
     ensure_runtime_dirs "$@"
 
     if custom_torrc_active; then
@@ -339,6 +352,7 @@ main() {
         exec tor -f "$TORRC_PATH" --defaults-torrc "$DEFAULTS_TORRC" "$@"
     fi
 
+    validate_torrc_env
     write_simple_torrc
     exec tor -f "$GENERATED_TORRC" "$@"
 }

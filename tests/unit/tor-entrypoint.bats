@@ -109,3 +109,51 @@ run_entrypoint() {
     grep -qx 'ControlPort 127.0.0.1:9051' "${TEST_TEMP_DIR}/generated/torrc"
     grep -qx 'CookieAuthentication 1' "${TEST_TEMP_DIR}/generated/torrc"
 }
+
+@test "custom torrc ignores invalid simple-env SOCKS_PORT" {
+    write_fake_runtime_commands
+    printf 'SocksPort 127.0.0.1:19050\n' > "${TEST_TEMP_DIR}/torrc"
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
+        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
+        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
+        SOCKS_PORT="not-a-port" \
+        "$ENTRYPOINT"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"custom ${TEST_TEMP_DIR}/torrc is active"* ]]
+    [[ "$output" == *"TOR_STUB_CONFIG=${TEST_TEMP_DIR}/torrc"* ]]
+    grep -qx 'DataDirectory '"${TEST_TEMP_DIR}"'/data' "${TEST_TEMP_DIR}/generated/defaults-torrc"
+}
+
+@test "runtime path validation rejects filesystem root before directory ownership changes" {
+    write_fake_runtime_commands
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="/" \
+        GENERATED_DIR="${TEST_TEMP_DIR}/generated" \
+        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
+        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
+        "$ENTRYPOINT"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"DATA_DIR must not be the filesystem root"* ]]
+
+    run env \
+        PATH="$PATH" \
+        TORRC_PATH="${TEST_TEMP_DIR}/torrc" \
+        DATA_DIR="${TEST_TEMP_DIR}/data" \
+        GENERATED_DIR="/" \
+        GENERATED_TORRC="${TEST_TEMP_DIR}/generated/torrc" \
+        DEFAULTS_TORRC="${TEST_TEMP_DIR}/generated/defaults-torrc" \
+        "$ENTRYPOINT"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"GENERATED_DIR must not be the filesystem root"* ]]
+}

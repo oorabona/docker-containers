@@ -18,7 +18,7 @@ dependency_sources:
   TOR_VERSION:
     monitor: false
     lifecycle: untracked
-    reason: "Primary image version is resolved by tor/version.sh; this build arg verifies the installed Alpine tor package and OCI label"
+    reason: "Primary image version is resolved by tor/version.sh; this build arg records the declared target while Dockerfile build logs and package-versions.env record the installed Alpine tor package"
   LYREBIRD_VERSION:
     monitor: true
     lifecycle: tracked

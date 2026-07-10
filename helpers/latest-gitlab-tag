@@ -35,6 +35,23 @@ _gha_escape() {
     printf '%s' "$s"
 }
 
+_url_origin() {
+    local name="$1"
+    local url="$2"
+
+    if [[ "$url" =~ [[:cntrl:]] ]]; then
+        echo "::error::latest-gitlab-tag: $(_gha_escape "${name}") must not contain control characters" >&2
+        return 1
+    fi
+    if [[ "$url" =~ ^([A-Za-z][A-Za-z0-9+.-]*://[^/?#]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    echo "::error::latest-gitlab-tag: $(_gha_escape "${name}") must be an absolute URL with scheme and host" >&2
+    return 1
+}
+
 _gitlab_project_api_path() {
     local project_path="$1"
 
@@ -57,12 +74,17 @@ _gitlab_project_api_path() {
 
 _gitlab_api_tags() {
     local project_path="$1"
+    local allowed_origin
+    if ! allowed_origin=$(_url_origin "GITLAB_API_URL" "$GITLAB_API_URL"); then
+        return 1
+    fi
+
     local encoded_project
     if ! encoded_project=$(_gitlab_project_api_path "$project_path"); then
         return 1
     fi
 
-    local curl_args=(--proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 30)
+    local curl_args=(--proto '=https' --proto-redir '=https' -fsS --connect-timeout 10 --max-time 30)
     local curl_cfg=""
     if [[ -n "${GITLAB_TOKEN:-}" ]]; then
         curl_cfg=$(mktemp)
@@ -105,6 +127,18 @@ _gitlab_api_tags() {
             | grep -o '<[^>]*>; rel="next"' \
             | sed 's/^<//; s/>; rel="next"//' \
             | head -1 || true)
+        if [[ -n "$next_url" ]]; then
+            local next_origin
+            if ! next_origin=$(_url_origin "GitLab pagination URL" "$next_url"); then
+                rm -f "$hdr_file" "$curl_cfg"
+                return 1
+            fi
+            if [[ "$next_origin" != "$allowed_origin" ]]; then
+                rm -f "$hdr_file" "$curl_cfg"
+                echo "::error::latest-gitlab-tag: refusing cross-origin GitLab pagination URL for $(_gha_escape "${project_path}") (expected origin $(_gha_escape "${allowed_origin}"), got $(_gha_escape "${next_origin}"))" >&2
+                return 1
+            fi
+        fi
         url="$next_url"
     done
 

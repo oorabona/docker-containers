@@ -11,6 +11,7 @@ setup() {
 teardown() {
     rm -rf "$TEST_TEMP_DIR"
     unset GITLAB_API_URL
+    unset GITLAB_TOKEN
 }
 
 write_fake_curl() {
@@ -77,6 +78,11 @@ case "$mode" in
 Link: <https://gitlab.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?page=2>; rel="next"'
             printf '[{"name":"tor-0.5.0.0-alpha-dev"}]\n'
         fi
+        ;;
+    cross_origin_paginate)
+        emit_headers 'HTTP/2 200
+Link: <https://evil.example/api/v4/projects/tpo%2Fcore%2Ftor/repository/tags?page=2>; rel="next"'
+        printf '[{"name":"tor-0.5.0.0-alpha-dev"}]\n'
         ;;
     fail)
         exit 22
@@ -181,6 +187,22 @@ last_output_line() {
 
     [ "$status" -eq 0 ]
     [ "$(last_output_line)" = "0.4.9.11" ]
+}
+
+@test "pagination rejects cross-origin Link header before following it" {
+    write_fake_curl cross_origin_paginate
+    export GITLAB_TOKEN="secret"
+    FAKE_CURL_URL_LOG="${TEST_TEMP_DIR}/urls.log"
+
+    run run_helper "tpo/core/tor" \
+        --tag-filter '^tor-[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        --version-extract '^tor-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$'
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing cross-origin GitLab pagination URL"* ]]
+    [ "$(wc -l < "$FAKE_CURL_URL_LOG")" -eq 1 ]
+    run grep -q 'evil.example' "$FAKE_CURL_URL_LOG"
+    [ "$status" -ne 0 ]
 }
 
 @test "missing tag_filter fails closed" {
