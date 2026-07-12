@@ -15,7 +15,7 @@ on:
         required: false
         type: string
         default: 'Manual update'
-  # Daily refresh — guarantees stats-history snapshot lands every day,
+  # Daily refresh — attempts a best-effort stats-history snapshot every day,
   # even when upstream-monitor finds no updates (quiet days).
   # Runs after upstream-monitor (06:00 UTC) so any same-day dep updates are reflected.
   schedule:
@@ -31,13 +31,18 @@ on:
       - "*.md"
       - "*/README.md"
       - "generate-dashboard.sh"
+      - "scripts/snapshot-stats.sh"
+      - "scripts/commit-stats-snapshot.sh"
+      # Bot stats commits use GITHUB_TOKEN and cannot retrigger workflows.
+      - "stats/**"
       - ".github/workflows/update-dashboard.yaml"
 
   # Fires once after each Auto Build & Push completion on master.
-  # Combined with `concurrency.cancel-in-progress: true` below, a batch of
-  # parallel auto-builds collapses to a single dashboard deploy: each new
-  # auto-build completion supersedes any in-flight update-dashboard run,
-  # so only the LAST one in the batch actually deploys.
+  # Combined with `build`'s job-level `concurrency.cancel-in-progress: true`
+  # below, a batch of parallel auto-builds collapses to a single dashboard
+  # build: each new auto-build completion supersedes any in-flight build job,
+  # so only the LAST one in the batch actually proceeds to deploy (`deploy`
+  # itself never cancels a peer — see its own concurrency note).
   # The build/deploy `if:` clauses below add per-event filters so that
   # PR-triggered Auto Build runs (smoke builds, no GHCR push) do not
   # cause a stale-data Pages redeploy that could cancel a real one.
@@ -55,15 +60,14 @@ permissions:
   pages: write
   security-events: read   # gh api code-scanning/alerts for trust-strip trivy_summary
 
-# Allow only one concurrent deployment. With cancel-in-progress: true, a batch of parallel
-# auto-build completions collapses to a single dashboard deploy — each successive workflow_run
-# event supersedes any in-flight run so only the last one in the batch actually deploys.
-# Side effect for `workflow_call` callers (`upstream-monitor`, `recreate-manifests`):
-# their dashboard step may be terminated mid-flight by a later auto-build completion.
-# Acceptable by design — the later run redeploys with fresher data.
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+# NOTE: no workflow-level `concurrency` block. GitHub Actions concurrency
+# groups are scoped by NAME across the whole repository, not per workflow
+# file — a workflow-level group here would cancel the ENTIRE run (all jobs,
+# unconditionally) whenever a newer run shares the group, which would also
+# kill commit-stats-snapshot (an unrelated job below) mid-persist even on
+# triggers that can't themselves run that job. The "pages" group is scoped to
+# just the `build` and `deploy` jobs below instead — the collapse-redundant-
+# rebuilds behavior they need — so it can never reach commit-stats-snapshot.
 
 jobs:
   # Build job with integrated dashboard generation
@@ -80,6 +84,23 @@ jobs:
        github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Allow only one concurrent build. With cancel-in-progress: true, a batch of parallel
+    # auto-build completions collapses to a single dashboard build — each successive workflow_run
+    # event supersedes any in-flight build so only the last one in the batch actually proceeds.
+    # Side effect for `workflow_call` callers (`upstream-monitor`, `recreate-manifests`):
+    # this job may be terminated mid-flight by a later auto-build completion.
+    # Acceptable by design — the later run rebuilds with fresher data; a build has no
+    # side effects yet, so cancelling it wastes nothing already published.
+    #
+    # Deliberately a SEPARATE group from `deploy`'s below, not shared: sharing one
+    # "pages" group across build+deploy meant an unrelated newer build starting could
+    # cancel an in-flight DEPLOY (concurrency groups don't distinguish job identity,
+    # only the group string) — killing an already-ready publish and leaving the site
+    # stale until the newer run's own build+deploy fully completes. Job-scoped (not
+    # workflow-level) so it can never reach the unrelated commit-stats-snapshot job.
+    concurrency:
+      group: "pages-build"
+      cancel-in-progress: true
     steps:
 
       - name: Checkout
@@ -485,10 +506,17 @@ jobs:
           chmod +x scripts/enrich-lineage.sh
           ./scripts/enrich-lineage.sh --owner "${{ github.repository_owner }}"
 
-      - name: Snapshot pull/star counts (idempotent per day)
-        run: |
-          chmod +x scripts/snapshot-stats.sh
-          ./scripts/snapshot-stats.sh
+      # No inline stats-snapshot step here (deliberate — see #876 hardening):
+      # the trend sparkline reads stats/dockerhub-pull-history.jsonl straight
+      # from this job's checkout, which already reflects whatever the
+      # separate commit-stats-snapshot job last actually committed — a single
+      # source of truth. An inline local-only fetch here would append a row
+      # this job never commits, letting this build's rendered trend show a
+      # DIFFERENT pull_count for today than what commit-stats-snapshot later
+      # persists to git (two independent Docker Hub fetches, no ordering
+      # guarantee between them) — a real inconsistency, not just staleness.
+      # Current-count display is unaffected: it's a separate live API call
+      # (get_dockerhub_stats), not sourced from this file at all.
 
       - name: Audit base image cache coverage (non-blocking)
         run: |
@@ -511,11 +539,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GHCR_CACHE_DIR: ${{ github.workspace }}/.ghcr-cache
           DASHBOARD_TRACE: ${{ (contains(github.event.inputs.trigger_reason, 'TRACE') || contains(inputs.trigger_reason, 'TRACE')) && '1' || '' }}
+          # Untrusted free-text input (workflow_dispatch/workflow_call caller-supplied) —
+          # passed via env:, never interpolated directly into the run: script, so it
+          # can't break out of quoting and execute commands on the runner.
+          TRIGGER_REASON: ${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}
         run: |
           chmod +x generate-dashboard.sh
 
           # Set environment variables for dashboard context
-          export UPDATE_REASON="${{ github.event.inputs.trigger_reason || inputs.trigger_reason || 'Automated update' }}"
+          # Strip control characters (the caller-supplied part of TRIGGER_REASON
+          # is untrusted free text) so it can't spoof extra log lines or GHA
+          # workflow-command annotations via an embedded newline.
+          export UPDATE_REASON="$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]')"
           export GITHUB_EVENT_NAME="${{ github.event_name }}"
 
           echo "🚀 Generating dashboard data with context:"
@@ -621,7 +656,7 @@ jobs:
             gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/$id" || true
           done
 
-      - name: Save updated lineage cache (preserves stats history)
+      - name: Save updated lineage cache (best-effort stats history carry-forward)
         if: always()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -647,6 +682,76 @@ jobs:
         with:
           path: ./_site
 
+  commit-stats-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Own concurrency group, with a name that can never collide with the
+    # `pages` group used by `build`/`deploy` (GitHub Actions concurrency
+    # groups are scoped by name across the whole repo, not per job or per
+    # workflow file — a shared name would let an unrelated Pages run cancel
+    # this job mid-flight even on triggers that can't themselves run it).
+    # cancel-in-progress: false means an in-progress run of THIS job is never
+    # killed by a newer trigger — it queues instead. GitHub keeps at most one
+    # PENDING run per group by default (not `queue: max`): if several
+    # triggers arrive in a burst while one run is executing, only the LATEST
+    # pending one survives to actually run once the current run finishes,
+    # not all of them in sequence. That's fine here — the script is fully
+    # idempotent (skips containers already recorded today) and retries
+    # internally, so a coalesced run reconciles the same "what's still
+    # missing today" state any of the superseded ones would have. The
+    # trade-off is fewer independent retry attempts across a burst, not a
+    # correctness gap — this design already accepts same-day recovery isn't
+    # guaranteed (see the header comment in commit-stats-snapshot.sh).
+    concurrency:
+      group: commit-stats-snapshot
+      cancel-in-progress: false
+    # Deliberately excludes workflow_call — recreate-manifests.yaml (the only
+    # current workflow_call caller) grants only contents: read and cannot safely
+    # be assumed to propagate contents: write through a reusable-workflow call.
+    # Direct invocations are the best-effort persistence attempts for this job:
+    # schedule, push, workflow_dispatch on master, and filtered workflow_run. A
+    # missed cron attempt is commonly recovered by the same day's post-build
+    # workflow_run with a fresh checkout and retry loop. The narrow irrecoverable
+    # data-loss case is a UTC day with zero container builds, where the schedule
+    # is the only invocation and all 3 persistence attempts are exhausted before
+    # midnight — and now visible: the script exits non-zero when it ends with
+    # anything still missing, rather than always reporting success.
+    # A successful push also self-triggers a follow-up dashboard build (see the
+    # script's own `gh workflow run` call) so the deployed trend does not have
+    # to wait for the next independent trigger — needs `actions: write` below.
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_branch == 'master')
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: 'refs/heads/master'
+          persist-credentials: false
+
+      - name: Restore build lineage cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build-lineage
+          key: build-lineage-never-exact-match
+          restore-keys: build-lineage-
+
+      - name: Commit stats snapshot (non-blocking)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/commit-stats-snapshot.sh
+          ./scripts/commit-stats-snapshot.sh
+
   # Deployment job - only deploy from main/master branch or manual dispatch
   deploy:
     environment:
@@ -655,12 +760,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
+    # Own group, deliberately separate from `build`'s "pages-build" — see the
+    # note on that job for why they must not share a name. cancel-in-progress:
+    # false here (unlike build) because a deploy in progress has already
+    # started publishing; killing it mid-flight can leave Pages in a partial
+    # state for no benefit. A newer deploy queues behind it instead — deploys
+    # are quick, and GitHub Pages' own environment concurrency additionally
+    # serializes them, so the wait is short and this never piles up under
+    # normal batching (superseded builds get cancelled before their deploy
+    # is even eligible to run, since `needs: build` requires success).
+    concurrency:
+      group: "pages-deploy"
+      cancel-in-progress: false
     # Only deploy if:
     # 1. Triggered by push to master branch, OR
     # 2. Manually dispatched from workflow_dispatch, OR
     # 3. Daily schedule cron (so a 7am cron always reaches Pages and isn't
     #    just a build-and-discard — otherwise it could cancel a real deploy
-    #    via the shared `pages` concurrency group), OR
+    #    via the `pages-build` concurrency group), OR
     # 4. Called from workflow_call but NOT from a pull request context, OR
     # 5. Triggered by a successful Auto Build & Push completion on master,
     #    excluding PR-triggered upstream runs (smoke builds, stale data risk)
@@ -679,26 +796,30 @@ jobs:
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
       - name: Create workflow summary
+        env:
+          TRIGGER_REASON: ${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}
         run: |
-          echo "# 📊 Dashboard & Jekyll Site Deployed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Site URL** | [${{ steps.deployment.outputs.page_url }}](${{ steps.deployment.outputs.page_url }}) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Dashboard** | [${{ steps.deployment.outputs.page_url }}dashboard/](${{ steps.deployment.outputs.page_url }}dashboard/) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "# 📊 Dashboard & Jekyll Site Deployed"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Site URL** | [${{ steps.deployment.outputs.page_url }}](${{ steps.deployment.outputs.page_url }}) |"
+            echo "| **Dashboard** | [${{ steps.deployment.outputs.page_url }}dashboard/](${{ steps.deployment.outputs.page_url }}dashboard/) |"
+            echo "| **Trigger** | \`${{ github.event_name }}\` |"
 
-          if [ "${{ github.event_name }}" != "push" ]; then
-            echo "| **Reason** | \`${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}\` |" >> $GITHUB_STEP_SUMMARY
-          fi
+            if [ "${{ github.event_name }}" != "push" ]; then
+              printf '| **Reason** | `%s` |\n' "$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')"
+            fi
 
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🌟 Live Site Features" >> $GITHUB_STEP_SUMMARY
-          echo "- 📊 **Interactive Dashboard**: Real-time container status" >> $GITHUB_STEP_SUMMARY
-          echo "- 📚 **Documentation Hub**: Complete guides and APIs" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔄 **Workflow Integration**: Direct links to GitHub Actions" >> $GITHUB_STEP_SUMMARY
-          echo "- 📱 **Mobile Friendly**: Responsive Jekyll theme" >> $GITHUB_STEP_SUMMARY
-          echo "- 🎨 **Professional Design**: GitHub's official Minima theme" >> $GITHUB_STEP_SUMMARY
+            echo ""
+            echo "### 🌟 Live Site Features"
+            echo "- 📊 **Interactive Dashboard**: Real-time container status"
+            echo "- 📚 **Documentation Hub**: Complete guides and APIs"
+            echo "- 🔄 **Workflow Integration**: Direct links to GitHub Actions"
+            echo "- 📱 **Mobile Friendly**: Responsive Jekyll theme"
+            echo "- 🎨 **Professional Design**: GitHub's official Minima theme"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Summary for skipped deployments (PR contexts)
   deploy-skipped:
@@ -709,23 +830,27 @@ jobs:
     if: github.event_name == 'workflow_call' && github.ref != 'refs/heads/master'
     steps:
       - name: Create skipped deployment summary
+        env:
+          TRIGGER_REASON: ${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}
         run: |
-          echo "# 📊 Dashboard Generated (Deployment Skipped)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Status** | Dashboard built, deployment skipped |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Reason** | \`${{ github.event.inputs.trigger_reason || inputs.trigger_reason }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### ℹ️ Deployment Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "GitHub Pages deployment only occurs from the \`master\` branch due to environment protection rules." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**✅ What was completed:**" >> $GITHUB_STEP_SUMMARY
-          echo "- 📊 Dashboard content generated successfully" >> $GITHUB_STEP_SUMMARY
-          echo "- 🏗️ Jekyll site built and validated" >> $GITHUB_STEP_SUMMARY
-          echo "- 📦 Deployment artifact prepared" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**🚀 Next steps:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Dashboard will be deployed automatically when changes are merged to \`master\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "# 📊 Dashboard Generated (Deployment Skipped)"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Trigger** | \`${{ github.event_name }}\` |"
+            echo "| **Branch** | \`${{ github.ref_name }}\` |"
+            echo "| **Status** | Dashboard built, deployment skipped |"
+            printf '| **Reason** | `%s` |\n' "$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')"
+            echo ""
+            echo "### ℹ️ Deployment Skipped"
+            echo "GitHub Pages deployment only occurs from the \`master\` branch due to environment protection rules."
+            echo ""
+            echo "**✅ What was completed:**"
+            echo "- 📊 Dashboard content generated successfully"
+            echo "- 🏗️ Jekyll site built and validated"
+            echo "- 📦 Deployment artifact prepared"
+            echo ""
+            echo "**🚀 Next steps:**"
+            echo "- Dashboard will be deployed automatically when changes are merged to \`master\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -86,6 +86,7 @@ on:
       - '!test-harness/**'                      # Test fixtures
       - '!test-logs/**'                         # Generated test logs
       - '!archive/**'                           # Archived containers
+      - '!stats/**'                             # Docker Hub stats snapshots
       - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
       - '!**/README*'                           # README without .md suffix
       - '!**/LICENSE*'                          # License files
@@ -114,6 +115,7 @@ on:
       - '!test-harness/**'                      # Test fixtures
       - '!test-logs/**'                         # Generated test logs
       - '!archive/**'                           # Archived containers
+      - '!stats/**'                             # Docker Hub stats snapshots
       - '!**/*.md'                              # Markdown anywhere — READMEs, ADRs, notes (never a build input)
       - '!**/README*'                           # README without .md suffix
       - '!**/LICENSE*'                          # License files
