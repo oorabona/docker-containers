@@ -1655,7 +1655,10 @@ generate_data() {
             ')
         container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '
             . + {pull_trend: $pt} + (
-                ($pt | length) as $n
+                (
+                    $pt | map(select((.pull_count | isinfinite or isnan) | not))
+                ) as $pt
+                | ($pt | length) as $n
                 | if $n > 1 then
                     ($pt | map(.pull_count)) as $counts
                     | ($counts | min) as $tmin

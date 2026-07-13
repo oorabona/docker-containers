@@ -394,6 +394,90 @@ EOF
     echo "$container_json" | jq -e 'has("pull_trend_svg_dots") | not' >/dev/null
 }
 
+@test "a non-finite pull_count (1e999) is excluded from SVG coordinates but preserved in the raw pull_trend (regression lock)" {
+    make_fixture_container glitchy
+    cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
+{"date":"2026-08-01","container":"glitchy","pull_count":100}
+{"date":"2026-08-02","container":"glitchy","pull_count":1e999}
+{"date":"2026-08-03","container":"glitchy","pull_count":210}
+{"date":"2026-08-04","container":"glitchy","pull_count":480}
+{"date":"2026-08-05","container":"glitchy","pull_count":75}
+EOF
+    reset_trend_cache
+    capture_container_page
+
+    generate_data >/dev/null
+
+    local container_json points dots
+    container_json=$(cat "$TEST_DIR/captured-glitchy.json")
+
+    # The raw field is untouched: all 5 rows survive, including the
+    # non-finite one, so the page still carries the data for transparency.
+    echo "$container_json" | jq -e '(.pull_trend | length) == 5' >/dev/null
+
+    # But the derived SVG fields only see the 4 finite rows.
+    echo "$container_json" | jq -e '.pull_trend_days == 4' >/dev/null
+    echo "$container_json" | jq -e '.pull_trend_first == 100 and .pull_trend_last == 75' >/dev/null
+
+    points=$(echo "$container_json" | jq -r '.pull_trend_svg_points')
+    dots=$(echo "$container_json" | jq -r '.pull_trend_svg_dots')
+
+    # This is the exact bug this test locks: jq serializes Infinity/NaN to
+    # JSON `null`, so an unfiltered non-finite row produced invalid SVG
+    # ("60,null" / cy="null"). Assert no literal null anywhere, and that the
+    # bounds check passes for the REMAINING finite count (4), not the
+    # original row count (5).
+    ! grep -q 'null' <<< "$points"
+    ! grep -q 'null' <<< "$dots"
+    assert_svg_points_in_bounds "$points" 4
+    assert_svg_dots_match_points "$dots" "$points" 4
+}
+
+@test "all pull_counts non-finite produces no sparkline fields, matching the existing graceful zero/one-point fallback" {
+    make_fixture_container voidy
+    cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
+{"date":"2026-09-01","container":"voidy","pull_count":1e999}
+{"date":"2026-09-02","container":"voidy","pull_count":-1e999}
+EOF
+    reset_trend_cache
+    capture_container_page
+
+    generate_data >/dev/null
+
+    local container_json
+    container_json=$(cat "$TEST_DIR/captured-voidy.json")
+
+    # Raw data still carries both non-finite rows.
+    echo "$container_json" | jq -e '(.pull_trend | length) == 2' >/dev/null
+
+    # Filtering drops both rows to 0 finite points, so no derived fields —
+    # same graceful fallback as the existing 0/1-point cases.
+    echo "$container_json" | jq -e 'has("pull_trend_svg_points") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_svg_dots") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_first") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_last") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_days") | not' >/dev/null
+}
+
+@test "one finite point remaining after filtering a non-finite row produces no sparkline fields (single-point fallback)" {
+    make_fixture_container solo
+    cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
+{"date":"2026-10-01","container":"solo","pull_count":50}
+{"date":"2026-10-02","container":"solo","pull_count":1e999}
+EOF
+    reset_trend_cache
+    capture_container_page
+
+    generate_data >/dev/null
+
+    local container_json
+    container_json=$(cat "$TEST_DIR/captured-solo.json")
+
+    echo "$container_json" | jq -e '(.pull_trend | length) == 2' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_svg_points") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_svg_dots") | not' >/dev/null
+}
+
 @test "container detail template renders the sparkline from a pre-computed jq string, never a Liquid loop (regression lock for #876)" {
     layout="$ORIG_DIR/docs/site/_layouts/container-detail.html"
     gate_line=$(grep -n 'if page.pull_trend_svg_points' "$layout" | head -1 | cut -d: -f1)
