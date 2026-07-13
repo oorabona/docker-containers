@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-  echo "::error::scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it resets the worktree and rewrites origin" >&2
+  echo "::error::scripts/commit-stats-snapshot.sh is CI-only; refusing to run outside GitHub Actions because it opens and auto-merges stats PRs" >&2
   exit 2
 fi
 
@@ -13,40 +13,54 @@ fi
 # network access at all, and the reverse holds too: collection never has these
 # push credentials in scope.
 #
-# Hardcoded origin/master targets are safe because update-dashboard.yaml
-# pins this job's checkout to refs/heads/master.
+# Hardcoded origin/master targets are safe because update-dashboard.yaml pins
+# this job's checkout to refs/heads/master and each run pushes a unique PR
+# branch named from the workflow run id, workflow attempt, and local retry
+# attempt.
 #
-# On a lost push race, retry_cleanup resets the worktree to origin/master.
-# The initial persist-job checkout can also be newer than the collect-job
-# checkout that produced the downloaded artifact. In both cases, a candidate
-# copy of what collection produced is merged into the current worktree instead
-# of overwriting it, preserving whatever a concurrent run's own successful
-# push may have already added.
+# On every persist attempt, the worktree is reset to freshly-fetched
+# origin/master before the immutable candidate copy of what collection produced
+# is merged in. That preserves whatever a concurrent run's own successful PR
+# may have already added while still carrying this run's candidate forward after
+# a stale PR, transient git/GitHub failure, or retry.
 #
-# The run FAILS (exit 1) whenever it ends without a successful push. This
+# The run FAILS (exit 1) whenever it ends without a fully merged PR. This
 # job has no downstream dependents (deploy only needs build), so failing it
 # is isolated and visible rather than a silent, permanently-green job that
 # would otherwise mask a real regression (revoked token scope, branch
 # protection change) behind routine warning text.
 #
-# No explicit follow-up dispatch: the calling workflow authenticates this
-# push with a GitHub App installation token (required to satisfy master's
-# branch protection — PR-only changes, verified signatures, status checks —
-# which GITHUB_TOKEN categorically cannot). Unlike GITHUB_TOKEN, an
-# App-token-authored push DOES trigger downstream workflow events, and
-# `stats/**` is already in update-dashboard.yaml's own push path filter —
-# so a successful push here naturally retriggers the dashboard build.
+# No explicit follow-up dispatch: the calling workflow authenticates the PR
+# branch push and PR merge with a GitHub App installation token. Unlike
+# GITHUB_TOKEN, App-token-authored PRs and squash-merge pushes DO trigger
+# downstream workflow events; `stats/**` is already in update-dashboard.yaml's
+# own push path filter, so a successful squash merge naturally retriggers the
+# dashboard build.
 
 STATS_FILE="stats/dockerhub-pull-history.jsonl"
 # Floor predates this JSONL dashboard history and rejects absurdly old
 # candidate rows. Already-committed rows before this floor are still preserved
 # verbatim by merge_candidate_into_worktree's raw-line path.
 STATS_DATE_FLOOR="2020-01-01"
+STATS_PERSIST_MAX_ATTEMPTS=3
+# Three consecutive PR view failures tolerates a brief GitHub API/CLI hiccup
+# across multiple polls while bounding time spent on an unknowable PR state.
+STATS_PR_VIEW_MAX_FAILURES="${STATS_PR_VIEW_MAX_FAILURES:-3}"
+STATS_PR_MIN_MERGE_WAIT_SECONDS="${STATS_PR_MIN_MERGE_WAIT_SECONDS:-30}"
 
 push_token="${STATS_PUSH_TOKEN:-}"
 github_repository="${GITHUB_REPOSITORY:-}"
+stats_pr_branch="${STATS_PR_BRANCH:-}"
 safe_origin_url=""
 origin_restore_needed=false
+
+if [[ -z "$stats_pr_branch" && -n "${GITHUB_RUN_ID:-}" ]]; then
+  if [[ -n "${GITHUB_RUN_ATTEMPT:-}" ]]; then
+    stats_pr_branch="bot/stats-snapshot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+  else
+    stats_pr_branch="bot/stats-snapshot-${GITHUB_RUN_ID}"
+  fi
+fi
 
 if [[ -n "$github_repository" ]]; then
   safe_origin_url="https://github.com/${github_repository}.git"
@@ -178,7 +192,7 @@ merge_candidate_into_worktree() {
   # row instead of letting an untrusted candidate win by default. Malformed or
   # otherwise unrecognized nonblank lines already in committed stats history
   # are preserved verbatim, but candidate-only raw lines are dropped before
-  # this privileged signed push path can trust them.
+  # this privileged signed PR path can trust them.
   #
   # Known accepted limitation: this union merge cannot represent an intentional
   # manual deletion/correction of a row racing a stale collect artifact with the
@@ -265,7 +279,7 @@ merge_candidate_into_worktree() {
               | if .candidate_raw_counts[$line] > (.stats_raw_counts[$line] // 0) then
                   . as $state
                   | (
-                      "::warning::Dropping nonconforming candidate-only stats line before signed push"
+                      "::warning::Dropping nonconforming candidate-only stats line before signed PR"
                       | stderr
                     )
                   | $state
@@ -393,46 +407,372 @@ compute_still_missing_after_reconcile() {
   esac
 }
 
+delete_remote_pr_branch() {
+  local branch="$1"
+
+  if [[ -z "$branch" ]]; then
+    return 0
+  fi
+
+  if ! git push origin --delete "$branch" >/dev/null 2>&1; then
+    echo "::warning::Could not delete stale stats snapshot branch $branch after failure"
+    return 1
+  fi
+
+  return 0
+}
+
+cleanup_failed_pr() {
+  local pr_number="$1"
+  local pr_branch="$2"
+  local remote_branch_maybe_pushed="$3"
+
+  if [[ -n "$pr_number" ]]; then
+    if ! gh pr close "$pr_number" --delete-branch 2>&1; then
+      echo "::warning::Could not close stale stats snapshot PR #$pr_number or delete branch $pr_branch after failure"
+      if [[ "$remote_branch_maybe_pushed" == "true" ]]; then
+        delete_remote_pr_branch "$pr_branch" || true
+      fi
+    fi
+    return 0
+  fi
+
+  if [[ "$remote_branch_maybe_pushed" == "true" ]]; then
+    delete_remote_pr_branch "$pr_branch" || true
+  fi
+}
+
+parse_created_pr_number() {
+  local pr_branch="$1"
+  local pr_create_output="$2"
+  local parsed_number
+
+  parsed_number=$(printf '%s\n' "$pr_create_output" | sed -nE 's#.*github.com/[^[:space:]]+/pull/([0-9]+).*#\1#p' | tail -1)
+  if [[ "$parsed_number" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$parsed_number"
+    return 0
+  fi
+
+  if parsed_number=$(gh pr view "$pr_branch" --json number --jq '.number' 2>&1) && [[ "$parsed_number" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$parsed_number"
+    return 0
+  fi
+
+  echo "::warning::Could not determine stats snapshot PR number after creation" >&2
+  return 1
+}
+
+wait_for_pr_merge() {
+  local pr_number="$1"
+  local deadline_epoch="$2"
+  local poll_seconds="$3"
+  local max_query_failures="$4"
+  local consecutive_query_failures=0
+  local now_epoch pr_view remaining_seconds sleep_seconds state merged_at
+
+  while true; do
+    if ! now_epoch=$(date +%s); then
+      echo "::warning::Could not read wall-clock time while waiting for stats snapshot PR #$pr_number"
+      return 1
+    fi
+    remaining_seconds=$((deadline_epoch - now_epoch))
+    if ((remaining_seconds <= 0)); then
+      echo "::warning::Timed out waiting for stats snapshot PR #$pr_number to merge"
+      return 1
+    fi
+
+    if ! pr_view=$(gh pr view "$pr_number" --json state,mergedAt --jq '[.state, (.mergedAt // "")] | @tsv' 2>&1); then
+      consecutive_query_failures=$((consecutive_query_failures + 1))
+      printf '%s\n' "$pr_view" >&2
+      if ((consecutive_query_failures >= max_query_failures)); then
+        echo "::warning::Could not inspect stats snapshot PR #$pr_number merge state after $consecutive_query_failures consecutive attempt(s)"
+        return 1
+      fi
+      echo "::warning::Could not inspect stats snapshot PR #$pr_number merge state (attempt $consecutive_query_failures/$max_query_failures); continuing within the remaining wait budget"
+    else
+      consecutive_query_failures=0
+
+      IFS=$'\t' read -r state merged_at <<< "$pr_view"
+      if [[ "$state" == "MERGED" || -n "${merged_at:-}" ]]; then
+        echo "::notice::Stats snapshot PR #$pr_number merged"
+        return 0
+      fi
+
+      if [[ "$state" == "CLOSED" ]]; then
+        echo "::warning::Stats snapshot PR #$pr_number closed without merging"
+        return 1
+      fi
+    fi
+
+    if ! now_epoch=$(date +%s); then
+      echo "::warning::Could not read wall-clock time while waiting for stats snapshot PR #$pr_number"
+      return 1
+    fi
+    remaining_seconds=$((deadline_epoch - now_epoch))
+    if ((remaining_seconds <= 0)); then
+      echo "::warning::Timed out waiting for stats snapshot PR #$pr_number to merge"
+      return 1
+    fi
+
+    sleep_seconds="$poll_seconds"
+    if ((sleep_seconds > remaining_seconds)); then
+      sleep_seconds="$remaining_seconds"
+    fi
+    if ! sleep "$sleep_seconds"; then
+      echo "::warning::Stats snapshot PR merge polling sleep failed"
+      return 1
+    fi
+  done
+}
+
+validate_pr_budget_config() {
+  local total_budget_seconds="$1"
+  local min_wait_seconds="$2"
+  local poll_seconds="$3"
+  local max_query_failures="$4"
+
+  if ! [[ "$total_budget_seconds" =~ ^[0-9]+$ ]] ||
+      ! [[ "$min_wait_seconds" =~ ^[0-9]+$ ]] ||
+      ! [[ "$poll_seconds" =~ ^[0-9]+$ ]] ||
+      ! [[ "$max_query_failures" =~ ^[0-9]+$ ]] ||
+      [[ "$poll_seconds" -eq 0 ]] ||
+      [[ "$max_query_failures" -eq 0 ]]; then
+    echo "::warning::Invalid stats PR merge polling configuration"
+    return 1
+  fi
+}
+
+remaining_pr_budget_seconds() {
+  local deadline_epoch="$1"
+  local now_epoch
+
+  if ! now_epoch=$(date +%s); then
+    echo "::warning::Could not read wall-clock time for stats snapshot PR budget" >&2
+    printf '0\n'
+    return 1
+  fi
+
+  if ((now_epoch >= deadline_epoch)); then
+    printf '0\n'
+  else
+    printf '%s\n' "$((deadline_epoch - now_epoch))"
+  fi
+}
+
 sleep_before_retry() {
   local attempt="$1"
+  local deadline_epoch="$2"
+  local remaining_seconds sleep_seconds
 
-  if [[ "$attempt" -lt 3 ]]; then
-    if ! sleep $((attempt * 5)); then
+  if [[ "$attempt" -lt "$STATS_PERSIST_MAX_ATTEMPTS" ]]; then
+    if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
+      remaining_seconds=0
+    fi
+    if ((remaining_seconds <= 0)); then
+      return 0
+    fi
+
+    sleep_seconds=$((attempt * 5))
+    if ((sleep_seconds > remaining_seconds)); then
+      sleep_seconds="$remaining_seconds"
+    fi
+
+    if ! sleep "$sleep_seconds"; then
       echo "::warning::Stats snapshot retry sleep failed after attempt $attempt"
     fi
   fi
 }
 
-retry_cleanup() {
+reset_worktree_to_fresh_master() {
   local attempt="$1"
-  local committed="$2"
-  local reset_failed=false
 
-  if [[ "$committed" == "true" ]]; then
-    if ! git reset --hard HEAD~1; then
-      echo "::warning::Could not discard failed stats commit on attempt $attempt"
-      reset_failed=true
-    fi
-  fi
-
-  if ! git fetch origin master; then
-    echo "::warning::Could not fetch origin/master after stats snapshot attempt $attempt"
+  if ! git fetch --force origin refs/heads/master:refs/remotes/origin/master; then
+    echo "::warning::Could not fetch origin/master before stats snapshot attempt $attempt"
+    return 1
   fi
 
   if ! git reset --hard origin/master; then
-    echo "::warning::Could not reset stats snapshot worktree after attempt $attempt"
-    reset_failed=true
+    echo "::warning::Could not reset stats snapshot worktree before attempt $attempt"
+    return 1
   fi
+}
 
-  if [[ "$reset_failed" == "true" ]]; then
+ensure_stats_snapshot_pr() {
+  local pr_branch="$1"
+  local pr_create_output
+  local pr_number
+
+  if ! pr_create_output=$(gh pr create \
+      --base master \
+      --head "$pr_branch" \
+      --title "chore(stats): daily Docker Hub pull-count snapshot" \
+      --body "Automated Docker Hub pull-count snapshot for this workflow run." 2>&1); then
+    printf '%s\n' "$pr_create_output" >&2
+    echo "::warning::Could not create stats snapshot PR from $pr_branch" >&2
+    if pr_number=$(parse_created_pr_number "$pr_branch" "$pr_create_output"); then
+      echo "::notice::Using existing stats snapshot PR #$pr_number for $pr_branch" >&2
+      printf '%s\n' "$pr_number"
+      return 0
+    fi
+    return 1
+  fi
+  printf '%s\n' "$pr_create_output" >&2
+
+  if ! pr_number=$(parse_created_pr_number "$pr_branch" "$pr_create_output"); then
+    return 1
+  fi
+  printf '%s\n' "$pr_number"
+}
+
+persist_stats_snapshot_via_pr() {
+  # The surrounding GitHub Actions job has a 45-minute hard timeout. This
+  # function enforces one shared 35-minute wall-clock budget across all retry
+  # attempts (legacy STATS_PR_MERGE_TIMEOUT_SECONDS still overrides the default)
+  # so cleanup and output emission run before the job-level timeout can kill us.
+  local total_budget_seconds="${STATS_PR_TOTAL_BUDGET_SECONDS:-${STATS_PR_MERGE_TIMEOUT_SECONDS:-2100}}"
+  local min_wait_seconds="$STATS_PR_MIN_MERGE_WAIT_SECONDS"
+  local poll_seconds="${STATS_PR_MERGE_POLL_SECONDS:-10}"
+  local max_query_failures="$STATS_PR_VIEW_MAX_FAILURES"
+  local attempt attempt_pr_branch attempt_pr_number attempt_remote_branch_maybe_pushed
+  local deadline_epoch diff_status head_commit remaining_seconds start_epoch
+  local attempts_remaining attempt_wait_epoch now_epoch_for_attempt_cap
+
+  if [[ -z "$stats_pr_branch" ]]; then
+    echo "::warning::GITHUB_RUN_ID or STATS_PR_BRANCH is required to name the stats snapshot PR branch"
     return 1
   fi
 
-  if ! merge_candidate_into_worktree; then
+  if ! validate_pr_budget_config "$total_budget_seconds" "$min_wait_seconds" "$poll_seconds" "$max_query_failures"; then
     return 1
   fi
 
-  sleep_before_retry "$attempt"
+  if ! start_epoch=$(date +%s); then
+    echo "::warning::Could not read wall-clock time before stats snapshot PR attempts"
+    return 1
+  fi
+  deadline_epoch=$((start_epoch + total_budget_seconds))
+
+  for ((attempt = 1; attempt <= STATS_PERSIST_MAX_ATTEMPTS; attempt++)); do
+    if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
+      remaining_seconds=0
+    fi
+    if ((remaining_seconds < min_wait_seconds)); then
+      echo "::warning::Not enough stats PR budget remains before attempt $attempt (${remaining_seconds}s left, need at least ${min_wait_seconds}s)"
+      return 1
+    fi
+
+    attempt_pr_branch="${stats_pr_branch}-attempt-${attempt}"
+    attempt_pr_number=""
+    attempt_remote_branch_maybe_pushed=false
+
+    if ! reset_worktree_to_fresh_master "$attempt"; then
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! merge_candidate_into_worktree; then
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if git diff --quiet HEAD -- "$STATS_FILE"; then
+      return 0
+    else
+      diff_status=$?
+      if [[ "$diff_status" -gt 1 ]]; then
+        echo "::warning::Could not inspect stats snapshot diff on attempt $attempt"
+        sleep_before_retry "$attempt" "$deadline_epoch"
+        continue
+      fi
+    fi
+
+    if ! validate_stats_file_jsonl; then
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! git checkout -B "$attempt_pr_branch"; then
+      echo "::warning::Could not create or reset stats snapshot branch $attempt_pr_branch on attempt $attempt"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! git add "$STATS_FILE"; then
+      echo "::warning::Could not stage stats snapshot on attempt $attempt"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! git commit -m "chore(stats): daily Docker Hub pull-count snapshot" -- "$STATS_FILE"; then
+      echo "::warning::Could not commit stats snapshot on attempt $attempt"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! head_commit=$(git rev-parse HEAD); then
+      echo "::warning::Could not resolve stats snapshot head commit on attempt $attempt"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! git push --force origin "HEAD:${attempt_pr_branch}"; then
+      echo "::warning::Could not push stats snapshot branch $attempt_pr_branch on attempt $attempt"
+      cleanup_failed_pr "" "$attempt_pr_branch" true
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+    attempt_remote_branch_maybe_pushed=true
+
+    if ! attempt_pr_number=$(ensure_stats_snapshot_pr "$attempt_pr_branch"); then
+      cleanup_failed_pr "" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    if ! sleep 2; then
+      echo "::warning::Stats snapshot PR label delay failed on attempt $attempt"
+    elif ! gh pr edit "$attempt_pr_number" --add-label "automation" 2>&1; then
+      echo "::warning::Failed to apply automation label to stats snapshot PR #${attempt_pr_number}; PR created successfully — continuing"
+    fi
+
+    if gh pr merge "$attempt_pr_number" --squash --auto --delete-branch --match-head-commit "$head_commit" 2>&1; then
+      echo "::notice::Auto-merge enabled for stats snapshot PR #$attempt_pr_number"
+    else
+      echo "::warning::Failed to enable auto-merge for stats snapshot PR #$attempt_pr_number on attempt $attempt"
+      cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+      sleep_before_retry "$attempt" "$deadline_epoch"
+      continue
+    fi
+
+    # Cap THIS attempt's own wait to a fair share of whatever budget remains,
+    # not the full shared deadline — otherwise a single blocked/conflicted PR
+    # (the most likely trigger for a retry at all, since it happens exactly
+    # when a sibling stats PR merges first) can burn the entire budget on one
+    # wait, leaving nothing for the attempts that exist specifically to
+    # recover from that case. Recomputed fresh each attempt (not a fixed
+    # 1/max_attempts of the original total) so an attempt that fails fast
+    # doesn't shrink what's available to the ones after it.
+    attempts_remaining=$((STATS_PERSIST_MAX_ATTEMPTS - attempt + 1))
+    if ! remaining_seconds=$(remaining_pr_budget_seconds "$deadline_epoch"); then
+      remaining_seconds=0
+    fi
+    if ! now_epoch_for_attempt_cap=$(date +%s); then
+      now_epoch_for_attempt_cap="$deadline_epoch"
+    fi
+    attempt_wait_epoch=$((now_epoch_for_attempt_cap + remaining_seconds / attempts_remaining))
+    if ((attempt_wait_epoch > deadline_epoch)); then
+      attempt_wait_epoch="$deadline_epoch"
+    fi
+
+    if wait_for_pr_merge "$attempt_pr_number" "$attempt_wait_epoch" "$poll_seconds" "$max_query_failures"; then
+      return 0
+    fi
+
+    cleanup_failed_pr "$attempt_pr_number" "$attempt_pr_branch" "$attempt_remote_branch_maybe_pushed"
+    sleep_before_retry "$attempt" "$deadline_epoch"
+  done
+
+  return 1
 }
 
 # Deliberately no local `git config user.name/email` here — the calling
@@ -442,6 +782,7 @@ retry_cleanup() {
 # name the GPG key doesn't sign for, defeating the "required_signatures"
 # branch protection rule this job depends on.
 if [[ -n "$push_token" && -n "$github_repository" ]]; then
+  export GH_TOKEN="$push_token"
   origin_restore_needed=true
   if ! git remote set-url origin "https://x-access-token:${push_token}@github.com/${github_repository}.git"; then
     echo "::warning::Could not configure authenticated origin remote for stats snapshot"
@@ -451,56 +792,8 @@ else
 fi
 
 persisted=false
-if merge_candidate_into_worktree; then
-  for attempt in 1 2 3; do
-    if git diff --quiet HEAD -- "$STATS_FILE"; then
-      persisted=true
-      break
-    else
-      diff_status=$?
-      if [[ "$diff_status" -gt 1 ]]; then
-        echo "::warning::Could not inspect stats snapshot diff on attempt $attempt"
-        if ! retry_cleanup "$attempt" "false"; then
-          break
-        fi
-        continue
-      fi
-    fi
-
-    if ! validate_stats_file_jsonl; then
-      if ! retry_cleanup "$attempt" "false"; then
-        break
-      fi
-      continue
-    fi
-
-    if ! git add "$STATS_FILE"; then
-      echo "::warning::Could not stage stats snapshot on attempt $attempt"
-      if ! retry_cleanup "$attempt" "false"; then
-        break
-      fi
-      continue
-    fi
-
-    if ! git commit -m "chore(stats): daily Docker Hub pull-count snapshot" -- "$STATS_FILE"; then
-      echo "::warning::Could not commit stats snapshot on attempt $attempt"
-      if ! retry_cleanup "$attempt" "false"; then
-        break
-      fi
-      continue
-    fi
-
-    if git push origin master; then
-      persisted=true
-      break
-    fi
-
-    # Lost the race (or lack permission) — discard this attempt and retry
-    # clean, re-merging this run's own candidate data back in afterward.
-    if ! retry_cleanup "$attempt" "true"; then
-      break
-    fi
-  done
+if persist_stats_snapshot_via_pr; then
+  persisted=true
 fi
 
 emit_persisted_output "$persisted"
@@ -514,7 +807,7 @@ fi
 emit_still_missing_after_reconcile_output "$still_missing_after_reconcile"
 
 if [[ "$persisted" != "true" ]]; then
-  echo "::error::Could not persist stats snapshot this run — another same-day direct trigger may still cover it"
+  echo "::error::Could not persist stats snapshot this run — another same-day trigger may still cover it"
   exit 1
 fi
 
