@@ -230,6 +230,9 @@
                               stroke-width="2"
                               stroke-linecap="round"
                               stroke-linejoin="round" />
+                    {%- if page.pull_trend_svg_dots -%}
+                      <g fill="currentColor">{{ page.pull_trend_svg_dots }}</g>
+                    {%- endif -%}
                   </svg>
                 {%- endif -%}
               </span>

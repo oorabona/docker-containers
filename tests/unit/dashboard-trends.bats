@@ -84,6 +84,36 @@ assert_svg_points_in_bounds() {
     done
 }
 
+# Asserts pull_trend_svg_dots contains exactly $n "<circle .../>" elements
+# and that each circle's cx/cy attributes match the corresponding "x,y" pair
+# (same order) in the pull_trend_svg_points string — i.e. the hover-tooltip
+# dots line up with the polyline they annotate (#884).
+assert_svg_dots_match_points() {
+    local dots="$1" points="$2" n="$3"
+    local circle_count
+    circle_count=$(grep -o '<circle ' <<< "$dots" | wc -l)
+    [ "$circle_count" -eq "$n" ]
+
+    local -a circle_tags point_pairs
+    mapfile -t circle_tags < <(grep -oE '<circle[^>]*>' <<< "$dots")
+    read -r -a point_pairs <<< "$points"
+    [ "${#circle_tags[@]}" -eq "${#point_pairs[@]}" ] || return 1
+
+    local idx pair x y cx cy tag
+    for idx in "${!point_pairs[@]}"; do
+        pair="${point_pairs[$idx]}"
+        x="${pair%,*}"
+        y="${pair#*,}"
+        tag="${circle_tags[$idx]}"
+        [[ "$tag" =~ cx=\"([0-9]+)\" ]] || return 1
+        cx="${BASH_REMATCH[1]}"
+        [[ "$tag" =~ cy=\"([0-9]+)\" ]] || return 1
+        cy="${BASH_REMATCH[1]}"
+        [ "$cx" = "$x" ] || return 1
+        [ "$cy" = "$y" ] || return 1
+    done
+}
+
 # Captures the exact container_json generate_data() builds (after the
 # pull_trend/jq step) instead of letting generate_container_page write it
 # to disk and discard the in-memory value.
@@ -259,6 +289,55 @@ EOF
     assert_svg_points_in_bounds "$points" 5
 }
 
+@test "pull_trend_svg_dots has one <circle> per data point, cx/cy matching pull_trend_svg_points, and correct per-point <title> text (#884 hover tooltips)" {
+    make_fixture_container widget
+    cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
+{"date":"2026-04-01","container":"widget","pull_count":100}
+{"date":"2026-04-02","container":"widget","pull_count":340}
+{"date":"2026-04-03","container":"widget","pull_count":210}
+{"date":"2026-04-04","container":"widget","pull_count":480}
+{"date":"2026-04-05","container":"widget","pull_count":75}
+EOF
+    reset_trend_cache
+    capture_container_page
+
+    generate_data >/dev/null
+
+    local container_json points dots
+    container_json=$(cat "$TEST_DIR/captured-widget.json")
+    echo "$container_json" | jq -e 'has("pull_trend_svg_dots")' >/dev/null
+
+    points=$(echo "$container_json" | jq -r '.pull_trend_svg_points')
+    dots=$(echo "$container_json" | jq -r '.pull_trend_svg_dots')
+    assert_svg_dots_match_points "$dots" "$points" 5
+
+    # Spot check the <title> text on the first and fourth points.
+    grep -q '<title>2026-04-01: 100 pulls</title>' <<< "$dots"
+    grep -q '<title>2026-04-04: 480 pulls</title>' <<< "$dots"
+}
+
+@test "pull_trend_svg_dots HTML-escapes date values in <title>, never passes them through raw" {
+    make_fixture_container leaky
+    cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
+{"date":"2026-07-01<script>alert(1)</script>","container":"leaky","pull_count":10}
+{"date":"2026-07-02","container":"leaky","pull_count":20}
+EOF
+    reset_trend_cache
+    capture_container_page
+
+    generate_data >/dev/null
+
+    local container_json dots
+    container_json=$(cat "$TEST_DIR/captured-leaky.json")
+    dots=$(echo "$container_json" | jq -r '.pull_trend_svg_dots')
+
+    # load_dockerhub_pull_trends only type-checks .date as a string (no
+    # content validation), so a hostile/malformed date value CAN reach this
+    # jq filter — @html must escape it, never interpolate it raw.
+    grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' <<< "$dots"
+    ! grep -q '<script>' <<< "$dots"
+}
+
 @test "flat pull trend (all pull_counts identical) produces y=14 for every point" {
     make_fixture_container steady
     cat > "$TEST_DIR/stats/dockerhub-pull-history.jsonl" <<'EOF'
@@ -297,6 +376,7 @@ EOF
     container_json=$(cat "$TEST_DIR/captured-newcomer.json")
     echo "$container_json" | jq -e '.pull_trend == [{"date":"2026-06-01","pull_count":42}]' >/dev/null
     echo "$container_json" | jq -e 'has("pull_trend_svg_points") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_svg_dots") | not' >/dev/null
 }
 
 @test "zero data points (no history) produces no pull_trend_svg_points field" {
@@ -311,6 +391,7 @@ EOF
     container_json=$(cat "$TEST_DIR/captured-ghostly.json")
     echo "$container_json" | jq -e '.pull_trend == []' >/dev/null
     echo "$container_json" | jq -e 'has("pull_trend_svg_points") | not' >/dev/null
+    echo "$container_json" | jq -e 'has("pull_trend_svg_dots") | not' >/dev/null
 }
 
 @test "container detail template renders the sparkline from a pre-computed jq string, never a Liquid loop (regression lock for #876)" {
@@ -336,4 +417,11 @@ EOF
     grep -q '<title id="pull-trend-title-' <<< "$pulls_block"
     grep -q 'polyline points="{{ page.pull_trend_svg_points }}"' <<< "$pulls_block"
     grep -q 'recorded days' <<< "$pulls_block"
+
+    # #884 hover tooltips: the pre-computed <circle>/<title> markup must be
+    # gated behind its own presence check and interpolated as a single
+    # pre-computed string, same discipline as pull_trend_svg_points above —
+    # never rebuilt as a Liquid loop.
+    grep -q 'if page.pull_trend_svg_dots' <<< "$pulls_block"
+    grep -q '{{ page.pull_trend_svg_dots }}' <<< "$pulls_block"
 }

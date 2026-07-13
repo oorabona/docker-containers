@@ -1671,11 +1671,19 @@ generate_data() {
                               else 26 - (((($pt[$i].pull_count) - $tmin) * 24 / $trange) | floor)
                               end
                             ) as $y
-                          | "\($x),\($y)"
+                          | {x: $x, y: $y, date: $pt[$i].date, pull_count: $pt[$i].pull_count}
                         ]
-                      ) as $pairs
+                      ) as $points
                     | {
-                        pull_trend_svg_points: ($pairs | join(" ")),
+                        pull_trend_svg_points: ($points | map("\(.x),\(.y)") | join(" ")),
+                        pull_trend_svg_dots: (
+                          $points
+                          | map(
+                              (@html "\(.date): \(.pull_count) pulls") as $label
+                              | "<circle class=\"pull-trend-dot\" cx=\"\(.x)\" cy=\"\(.y)\" r=\"2\"><title>\($label)</title></circle>"
+                            )
+                          | join("")
+                        ),
                         pull_trend_first: $pt[0].pull_count,
                         pull_trend_last: $pt[-1].pull_count,
                         pull_trend_days: $n
