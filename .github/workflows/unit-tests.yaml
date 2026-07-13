@@ -3,6 +3,12 @@ name: Unit Tests
 on:
   pull_request:
   push:
+    # stats/** is a pure data file (Docker Hub pull-count history) with no
+    # code implications — excluded so the daily App-token-authenticated
+    # stats commit (which, unlike GITHUB_TOKEN, DOES retrigger workflow push
+    # events) doesn't fan out into a full unit-test run for no reason.
+    paths-ignore:
+      - "stats/**"
   workflow_dispatch:
 
 permissions:

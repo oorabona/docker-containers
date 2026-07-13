@@ -32,8 +32,12 @@ on:
       - "*/README.md"
       - "generate-dashboard.sh"
       - "scripts/snapshot-stats.sh"
+      - "scripts/collect-stats-snapshot.sh"
       - "scripts/commit-stats-snapshot.sh"
-      # Bot stats commits use GITHUB_TOKEN and cannot retrigger workflows.
+      # Bot stats commits are authenticated with a GitHub App token (needed
+      # to satisfy master's branch protection), which — unlike GITHUB_TOKEN —
+      # DOES retrigger workflow push events, so this path naturally covers
+      # the daily stats commit too.
       - "stats/**"
       - ".github/workflows/update-dashboard.yaml"
 
@@ -682,43 +686,25 @@ jobs:
         with:
           path: ./_site
 
-  commit-stats-snapshot:
+  collect-stats-snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Own concurrency group, with a name that can never collide with the
-    # `pages` group used by `build`/`deploy` (GitHub Actions concurrency
-    # groups are scoped by name across the whole repo, not per job or per
-    # workflow file — a shared name would let an unrelated Pages run cancel
-    # this job mid-flight even on triggers that can't themselves run it).
-    # cancel-in-progress: false means an in-progress run of THIS job is never
-    # killed by a newer trigger — it queues instead. GitHub keeps at most one
-    # PENDING run per group by default (not `queue: max`): if several
-    # triggers arrive in a burst while one run is executing, only the LATEST
-    # pending one survives to actually run once the current run finishes,
-    # not all of them in sequence. That's fine here — the script is fully
-    # idempotent (skips containers already recorded today) and retries
-    # internally, so a coalesced run reconciles the same "what's still
-    # missing today" state any of the superseded ones would have. The
-    # trade-off is fewer independent retry attempts across a burst, not a
-    # correctness gap — this design already accepts same-day recovery isn't
-    # guaranteed (see the header comment in commit-stats-snapshot.sh).
+    outputs:
+      still_missing: ${{ steps.collect.outputs.still_missing }}
+    # Serialize only collection. GitHub Actions keeps at most one pending job
+    # per group; if a newer trigger drops an older pending collect job, that
+    # dropped job has not fetched Docker Hub or uploaded an artifact yet, so
+    # there is no collected data to orphan. Completed collect jobs hand real
+    # candidate artifacts to commit-stats-snapshot, which is intentionally not
+    # serialized below.
     concurrency:
-      group: commit-stats-snapshot
+      group: collect-stats-snapshot
       cancel-in-progress: false
     # Deliberately excludes workflow_call — recreate-manifests.yaml (the only
     # current workflow_call caller) grants only contents: read and cannot safely
-    # be assumed to propagate contents: write through a reusable-workflow call.
-    # Direct invocations are the best-effort persistence attempts for this job:
-    # schedule, push, workflow_dispatch on master, and filtered workflow_run. A
-    # missed cron attempt is commonly recovered by the same day's post-build
-    # workflow_run with a fresh checkout and retry loop. The narrow irrecoverable
-    # data-loss case is a UTC day with zero container builds, where the schedule
-    # is the only invocation and all 3 persistence attempts are exhausted before
-    # midnight — and now visible: the script exits non-zero when it ends with
-    # anything still missing, rather than always reporting success.
-    # A successful push also self-triggers a follow-up dashboard build (see the
-    # script's own `gh workflow run` call) so the deployed trend does not have
-    # to wait for the next independent trigger — needs `actions: write` below.
+    # be assumed to propagate stats-persist permissions through a reusable-
+    # workflow call. Direct invocations are the best-effort persistence attempts:
+    # schedule, push, workflow_dispatch on master, and filtered workflow_run.
     if: |
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
@@ -728,8 +714,72 @@ jobs:
        github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_branch == 'master')
     permissions:
-      contents: write
-      actions: write
+      actions: read           # Required by actions/upload-artifact and actions/cache (artifact + cache restore steps below)
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: 'refs/heads/master'
+          persist-credentials: false
+
+      - name: Restore build lineage cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .build-lineage
+          key: build-lineage-never-exact-match
+          restore-keys: build-lineage-
+
+      - name: Collect stats snapshot (non-blocking)
+        id: collect
+        run: |
+          chmod +x scripts/collect-stats-snapshot.sh
+          ./scripts/collect-stats-snapshot.sh
+
+      - name: Upload stats candidate artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4
+        with:
+          name: dockerhub-stats-candidate
+          path: stats/dockerhub-pull-history.jsonl
+          if-no-files-found: error
+          overwrite: true
+
+  commit-stats-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: collect-stats-snapshot
+    # Deliberately no job-level concurrency block here. Once collection has
+    # succeeded, this run owns a real stats candidate artifact; allowing
+    # GitHub Actions to drop a queued commit job would orphan fetched data.
+    # Parallel commit jobs are expected: scripts/commit-stats-snapshot.sh
+    # merges each candidate into a fresh origin/master checkout and retries
+    # lost push races without clobbering concurrent rows.
+    # Mirrors collect-stats-snapshot's trigger filter and explicitly checks the
+    # needed job result because a job-level `if:` overrides Actions' implicit
+    # "all needs succeeded" guard. A missed cron attempt is commonly recovered
+    # by the same day's post-build workflow_run with a fresh checkout and retry
+    # loop. The narrow irrecoverable data-loss case is a UTC day with zero
+    # container builds, where the schedule is the only invocation and all 3
+    # persistence attempts are exhausted before midnight — and now visible: the
+    # script exits non-zero when it ends with anything still missing, rather
+    # than always reporting success.
+    # A successful push here is authored by the App token below, not
+    # GITHUB_TOKEN — unlike GITHUB_TOKEN, an App-token push DOES trigger
+    # downstream workflow events, and `stats/**` is already in this
+    # workflow's own push path filter, so it naturally retriggers a fresh
+    # dashboard build with no explicit dispatch needed.
+    if: |
+      needs.collect-stats-snapshot.result == 'success' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event != 'pull_request' &&
+        github.event.workflow_run.head_branch == 'master'))
+    permissions:
+      actions: read           # Required by actions/download-artifact (stats candidate artifact below)
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -737,20 +787,74 @@ jobs:
           ref: 'refs/heads/master'
           persist-credentials: false
 
-      - name: Restore build lineage cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download stats candidate artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v4
         with:
-          path: .build-lineage
-          key: build-lineage-never-exact-match
-          restore-keys: build-lineage-
+          name: dockerhub-stats-candidate
+          path: .dockerhub-stats-candidate
+
+      - name: Restore downloaded stats candidate
+        id: stats-candidate
+        run: |
+          set -euo pipefail
+          candidate_file=".dockerhub-stats-candidate/dockerhub-pull-history.jsonl"
+          if [[ ! -f "$candidate_file" ]]; then
+            candidate_file=".dockerhub-stats-candidate/stats/dockerhub-pull-history.jsonl"
+          fi
+          if [[ ! -f "$candidate_file" ]]; then
+            echo "::error::Downloaded stats candidate artifact did not contain dockerhub-pull-history.jsonl"
+            exit 1
+          fi
+          printf 'candidate_source_file=%s\n' "$candidate_file" >> "$GITHUB_OUTPUT"
+
+      # master requires: PR-only changes, verified commit signatures, and the
+      # unit-tests status check — none of which a direct GITHUB_TOKEN push can
+      # satisfy. The existing bot App (already used for the same reason in
+      # upstream-monitor.yaml) is registered as a ruleset bypass actor for
+      # this repo specifically; its token plus a GPG-signed commit is what
+      # actually lets this job land on master directly. Deliberate deferral:
+      # a no-op candidate still mints this short-lived, contents:write token
+      # inside the isolated commit job. Earlier hardening keeps the token
+      # unreachable by unrelated code, so splitting "needs commit?" across an
+      # extra pre-auth boundary is not justified by the residual exposure.
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          # Scoped down to exactly what this job needs — without this, the
+          # token defaults to every permission the App is installed with
+          # (used more broadly by upstream-monitor.yaml), which is an
+          # unnecessarily large grant for a job that only pushes one file,
+          # especially since this App is also a ruleset-bypass actor.
+          permission-contents: write
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_committer_name: Olivier ORABONA
+          git_committer_email: oorabona@users.noreply.github.com
 
       - name: Commit stats snapshot (non-blocking)
+        id: persist
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          CANDIDATE_SOURCE_FILE: ${{ steps.stats-candidate.outputs.candidate_source_file }}
+          STATS_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           chmod +x scripts/commit-stats-snapshot.sh
           ./scripts/commit-stats-snapshot.sh
+
+      - name: Fail if stats snapshot did not fully persist
+        if: steps.persist.outputs.still_missing_after_reconcile == 'true' || steps.persist.outputs.persisted != 'true'
+        run: |
+          echo "::error::Stats snapshot did not fully persist this run (collection still_missing=${{ needs.collect-stats-snapshot.outputs.still_missing }}, reconciled still_missing=${{ steps.persist.outputs.still_missing_after_reconcile }}, persist persisted=${{ steps.persist.outputs.persisted }}) — another same-day direct trigger may still cover it"
+          exit 1
 
   # Deployment job - only deploy from main/master branch or manual dispatch
   deploy:
