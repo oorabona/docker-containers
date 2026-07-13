@@ -1653,7 +1653,37 @@ generate_data() {
                 .pull_count = strenv(PC) | .pull_count_formatted = strenv(PCF) | .star_count = strenv(SC2) |
                 .size_amd64 = strenv(SA) | .size_arm64 = strenv(SR)
             ')
-        container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '. + {pull_trend: $pt}')
+        container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '
+            . + {pull_trend: $pt} + (
+                ($pt | length) as $n
+                | if $n > 1 then
+                    ($pt | map(.pull_count)) as $counts
+                    | ($counts | min) as $tmin
+                    | ($counts | max) as $tmax
+                    | ($tmax - $tmin) as $trange
+                    | ($n - 1) as $denom
+                    | (
+                        [
+                          range(0; $n) as $i
+                          | (((($i * 116) / $denom) | floor) + 2) as $x
+                          | (
+                              if $trange == 0 then 14
+                              else 26 - (((($pt[$i].pull_count) - $tmin) * 24 / $trange) | floor)
+                              end
+                            ) as $y
+                          | "\($x),\($y)"
+                        ]
+                      ) as $pairs
+                    | {
+                        pull_trend_svg_points: ($pairs | join(" ")),
+                        pull_trend_first: $pt[0].pull_count,
+                        pull_trend_last: $pt[-1].pull_count,
+                        pull_trend_days: $n
+                      }
+                  else {}
+                  end
+            )
+        ')
 
         # Add container-level build args from lineage
         local lineage_args_json
