@@ -1186,6 +1186,57 @@ format_number() {
     fi
 }
 
+# Cached Docker Hub pull-count trend data, keyed by container name.
+declare -g DOCKERHUB_PULL_TRENDS_CACHE=""
+
+load_dockerhub_pull_trends() {
+    if [[ -n "${DOCKERHUB_PULL_TRENDS_CACHE:-}" ]]; then
+        echo "$DOCKERHUB_PULL_TRENDS_CACHE"
+        return
+    fi
+
+    local history_file="$SCRIPT_DIR/stats/dockerhub-pull-history.jsonl"
+    if [[ ! -f "$history_file" ]]; then
+        DOCKERHUB_PULL_TRENDS_CACHE="{}"
+        echo "$DOCKERHUB_PULL_TRENDS_CACHE"
+        return
+    fi
+
+    DOCKERHUB_PULL_TRENDS_CACHE=$(jq -Rn '
+        [
+          inputs
+          | (try fromjson catch empty)
+          | select((.date? | type) == "string")
+          | select((.container? | type) == "string")
+          | select(has("pull_count"))
+          | (.pull_count | tonumber?) as $pull_count
+          | select($pull_count != null)
+          | {date: .date, container: .container, pull_count: $pull_count}
+        ] as $rows
+        | reduce $rows[] as $row ({}; .[$row.container + "\u0000" + $row.date] = $row)
+        | [.[]]
+        | sort_by(.container, .date)
+        | group_by(.container)
+        | map({
+            key: .[0].container,
+            value: (.[-30:] | map({date, pull_count}))
+          })
+        | from_entries
+    ' "$history_file" 2>/dev/null || echo "{}")
+
+    echo "$DOCKERHUB_PULL_TRENDS_CACHE"
+}
+
+get_dockerhub_pull_trend() {
+    local container="$1"
+    local trends="${DOCKERHUB_PULL_TRENDS_CACHE:-}"
+    if [[ -z "$trends" ]]; then
+        trends=$(load_dockerhub_pull_trends)
+        DOCKERHUB_PULL_TRENDS_CACHE="$trends"
+    fi
+    jq -c --arg container "$container" '.[$container] // []' <<< "$trends"
+}
+
 # Get GHCR image sizes formatted for dashboard (MB suffix)
 # Usage: get_ghcr_sizes <image> [tag]
 # Output: "amd64:84.0MB arm64:81.5MB"
@@ -1506,6 +1557,7 @@ generate_data() {
 
     # Pre-populate build status cache (once, before the loop)
     populate_container_build_status_cache
+    load_dockerhub_pull_trends >/dev/null
 
     local total=0 up_to_date=0 updates_available=0
     local all_containers_json="[]"
@@ -1556,11 +1608,12 @@ generate_data() {
         esac
 
         # Get Docker Hub stats (pulls and stars)
-        local dockerhub_stats pull_count pull_count_formatted star_count
+        local dockerhub_stats pull_count pull_count_formatted star_count pull_trend_json
         dockerhub_stats=$(get_dockerhub_stats "oorabona" "$container")
         pull_count=$(echo "$dockerhub_stats" | grep -oP 'pulls:\K[0-9]+')
         star_count=$(echo "$dockerhub_stats" | grep -oP 'stars:\K[0-9]+')
         pull_count_formatted=$(format_number "$pull_count")
+        pull_trend_json=$(get_dockerhub_pull_trend "$container")
 
         # Get image sizes (only if published)
         local sizes_amd64="" sizes_arm64=""
@@ -1600,6 +1653,7 @@ generate_data() {
                 .pull_count = strenv(PC) | .pull_count_formatted = strenv(PCF) | .star_count = strenv(SC2) |
                 .size_amd64 = strenv(SA) | .size_arm64 = strenv(SR)
             ')
+        container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '. + {pull_trend: $pt}')
 
         # Add container-level build args from lineage
         local lineage_args_json

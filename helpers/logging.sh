@@ -25,24 +25,33 @@ if [[ -z "${SKOPEO:-}" ]]; then
 fi
 
 # Logging functions
+#
+# printf with %b/%s (not echo -e) -- %b interprets backslash escapes ONLY in
+# the fixed color-code literals below (safe, no dynamic content), while %s
+# passes "$*" through with NO escape reinterpretation. echo -e would
+# reinterpret any backslash escape sequence present in "$*" itself -- e.g. a
+# literal six-character "backslash u 0 0 1 b" (the JSON escape spelling of
+# the 0x1B control byte) surviving from an external, untrusted response a
+# caller logs verbatim -- turning it into a real control byte and letting
+# untrusted text inject terminal/log control sequences.
 log_success() {
-    echo -e "${GREEN}✅ $*${NC}" >&2
+    printf '%b%s%b\n' "${GREEN}✅ " "$*" "${NC}" >&2
 }
 
 log_error() {
-    echo -e "${RED}❌ $*${NC}" >&2
+    printf '%b%s%b\n' "${RED}❌ " "$*" "${NC}" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}⚠️  $*${NC}" >&2
+    printf '%b%s%b\n' "${YELLOW}⚠️  " "$*" "${NC}" >&2
 }
 
 log_info() {
-    echo -e "${BLUE}ℹ️  $*${NC}" >&2
+    printf '%b%s%b\n' "${BLUE}ℹ️  " "$*" "${NC}" >&2
 }
 
 log_step() {
-    echo -e "${BLUE}🔵 $*${NC}" >&2
+    printf '%b%s%b\n' "${BLUE}🔵 " "$*" "${NC}" >&2
 }
 
 # Helper for help text formatting (from make script)
