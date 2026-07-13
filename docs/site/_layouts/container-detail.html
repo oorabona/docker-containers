@@ -210,40 +210,11 @@
           {%- endif -%}
           <section id="container-stats" class="stats-strip" aria-label="Container statistics">
             {%- if page.pull_count_formatted or page.pull_count -%}
-            {%- assign _pull_trend_size = 0 -%}
-            {%- if page.pull_trend -%}
-              {%- assign _pull_trend_size = page.pull_trend.size -%}
-            {%- endif -%}
             <div class="stat">
               <span class="eyebrow">PULLS</span>
               <span class="value">
                 {{ page.pull_count_formatted | default: page.pull_count | default: "0" }}
-                {%- if _pull_trend_size > 1 -%}
-                  {%- assign _trend_first = page.pull_trend | first -%}
-                  {%- assign _trend_last = page.pull_trend | last -%}
-                  {%- assign _trend_min = _trend_first.pull_count | plus: 0 -%}
-                  {%- assign _trend_max = _trend_first.pull_count | plus: 0 -%}
-                  {%- for _trend_point in page.pull_trend -%}
-                    {%- assign _trend_count = _trend_point.pull_count | plus: 0 -%}
-                    {%- if _trend_count < _trend_min -%}{%- assign _trend_min = _trend_count -%}{%- endif -%}
-                    {%- if _trend_count > _trend_max -%}{%- assign _trend_max = _trend_count -%}{%- endif -%}
-                  {%- endfor -%}
-                  {%- assign _trend_range = _trend_max | minus: _trend_min -%}
-                  {%- assign _trend_denominator = _pull_trend_size | minus: 1 -%}
-                  {%- capture _trend_svg_points -%}
-                    {%- for _trend_point in page.pull_trend -%}
-                      {%- assign _trend_count = _trend_point.pull_count | plus: 0 -%}
-                      {%- assign _trend_x = forloop.index0 | times: 116 | divided_by: _trend_denominator | plus: 2 -%}
-                      {%- if _trend_range == 0 -%}
-                        {%- assign _trend_y = 14 -%}
-                      {%- else -%}
-                        {%- assign _trend_delta = _trend_count | minus: _trend_min -%}
-                        {%- assign _trend_y_offset = _trend_delta | times: 24 | divided_by: _trend_range -%}
-                        {%- assign _trend_y = 26 | minus: _trend_y_offset -%}
-                      {%- endif -%}
-                      {{ _trend_x }},{{ _trend_y }}{% unless forloop.last %} {% endunless %}
-                    {%- endfor -%}
-                  {%- endcapture -%}
+                {%- if page.pull_trend_svg_points -%}
                   <svg class="pull-trend-sparkline"
                        width="120"
                        height="28"
@@ -252,8 +223,8 @@
                        aria-labelledby="pull-trend-title-{{ page.name | slugify }}"
                        focusable="false"
                        style="display:inline-block;vertical-align:middle;margin-left:8px;overflow:visible">
-                    <title id="pull-trend-title-{{ page.name | slugify }}">{{ _trend_first.pull_count }} to {{ _trend_last.pull_count }} pulls across {{ _pull_trend_size }} recorded days</title>
-                    <polyline points="{{ _trend_svg_points | strip }}"
+                    <title id="pull-trend-title-{{ page.name | slugify }}">{{ page.pull_trend_first }} to {{ page.pull_trend_last }} pulls across {{ page.pull_trend_days }} recorded days</title>
+                    <polyline points="{{ page.pull_trend_svg_points }}"
                               fill="none"
                               stroke="currentColor"
                               stroke-width="2"
