@@ -554,8 +554,10 @@ jobs:
           # Strip control characters (the caller-supplied part of TRIGGER_REASON
           # is untrusted free text) so it can't spoof extra log lines or GHA
           # workflow-command annotations via an embedded newline.
-          export UPDATE_REASON="$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]')"
-          export GITHUB_EVENT_NAME="${{ github.event_name }}"
+          UPDATE_REASON="$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]')"
+          export UPDATE_REASON
+          GITHUB_EVENT_NAME="${{ github.event_name }}"
+          export GITHUB_EVENT_NAME
 
           echo "🚀 Generating dashboard data with context:"
           echo "  - Trigger: $GITHUB_EVENT_NAME"
@@ -746,7 +748,11 @@ jobs:
 
   commit-stats-snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # This job's 45-minute timeout is the hard ceiling. The persist script keeps
+    # its own single shared PR budget to 35 minutes total across all retries,
+    # leaving roughly 10 minutes for checkout, artifact download, GPG/App-token
+    # setup, final output handling, and the explicit failure step below.
+    timeout-minutes: 45
     needs: collect-stats-snapshot
     # Deliberately no job-level concurrency block here. Once collection has
     # succeeded, this run owns a real stats candidate artifact; allowing
@@ -807,28 +813,25 @@ jobs:
           fi
           printf 'candidate_source_file=%s\n' "$candidate_file" >> "$GITHUB_OUTPUT"
 
-      # master requires: PR-only changes, verified commit signatures, and the
-      # unit-tests status check — none of which a direct GITHUB_TOKEN push can
-      # satisfy. The existing bot App (already used for the same reason in
-      # upstream-monitor.yaml) is registered as a ruleset bypass actor for
-      # this repo specifically; its token plus a GPG-signed commit is what
-      # actually lets this job land on master directly. Deliberate deferral:
-      # a no-op candidate still mints this short-lived, contents:write token
-      # inside the isolated commit job. Earlier hardening keeps the token
-      # unreachable by unrelated code, so splitting "needs commit?" across an
-      # extra pre-auth boundary is not justified by the residual exposure.
+      # master requires PR-only changes, verified commit signatures, and the
+      # unit-tests status check. Scope the App token to the two operations this
+      # path needs: pushing the PR branch and creating/updating/merging the PR.
+      # GitHub's PR label endpoint accepts pull-requests:write, so no separate
+      # issues scope is granted for the best-effort automation label.
+      #
+      # Deliberate #876 deferral, raised again in gate round 2: the token is
+      # still minted before commit-stats-snapshot proves there is work to
+      # persist. Splitting the no-op diff check into a separate read-only step
+      # is a larger restructure for a narrow exposure-window reduction on this
+      # already-scoped, short-lived token.
       - name: Generate App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-          # Scoped down to exactly what this job needs — without this, the
-          # token defaults to every permission the App is installed with
-          # (used more broadly by upstream-monitor.yaml), which is an
-          # unnecessarily large grant for a job that only pushes one file,
-          # especially since this App is also a ruleset-bypass actor.
           permission-contents: write
+          permission-pull-requests: write
 
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
@@ -845,6 +848,7 @@ jobs:
         env:
           CANDIDATE_SOURCE_FILE: ${{ steps.stats-candidate.outputs.candidate_source_file }}
           STATS_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STATS_PR_BRANCH: bot/stats-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           chmod +x scripts/commit-stats-snapshot.sh
@@ -852,8 +856,15 @@ jobs:
 
       - name: Fail if stats snapshot did not fully persist
         if: steps.persist.outputs.still_missing_after_reconcile == 'true' || steps.persist.outputs.persisted != 'true'
+        env:
+          COLLECT_STILL_MISSING: ${{ needs.collect-stats-snapshot.outputs.still_missing }}
+          RECONCILED_STILL_MISSING: ${{ steps.persist.outputs.still_missing_after_reconcile }}
+          PERSISTED: ${{ steps.persist.outputs.persisted }}
         run: |
-          echo "::error::Stats snapshot did not fully persist this run (collection still_missing=${{ needs.collect-stats-snapshot.outputs.still_missing }}, reconciled still_missing=${{ steps.persist.outputs.still_missing_after_reconcile }}, persist persisted=${{ steps.persist.outputs.persisted }}) — another same-day direct trigger may still cover it"
+          printf '%s%s%s\n' \
+            "::error::Stats snapshot did not fully persist this run " \
+            "(collection still_missing=${COLLECT_STILL_MISSING}, reconciled still_missing=${RECONCILED_STILL_MISSING}, " \
+            "persist persisted=${PERSISTED}) — another same-day trigger may still cover it"
           exit 1
 
   # Deployment job - only deploy from main/master branch or manual dispatch
@@ -913,7 +924,8 @@ jobs:
             echo "| **Trigger** | \`${{ github.event_name }}\` |"
 
             if [ "${{ github.event_name }}" != "push" ]; then
-              printf '| **Reason** | `%s` |\n' "$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')"
+              reason=$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')
+              printf "| **Reason** | \`%s\` |\n" "$reason"
             fi
 
             echo ""
@@ -945,7 +957,8 @@ jobs:
             echo "| **Trigger** | \`${{ github.event_name }}\` |"
             echo "| **Branch** | \`${{ github.ref_name }}\` |"
             echo "| **Status** | Dashboard built, deployment skipped |"
-            printf '| **Reason** | `%s` |\n' "$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')"
+            reason=$(printf '%s' "$TRIGGER_REASON" | tr -d '[:cntrl:]' | tr '`' "'" | sed 's/|/\\|/g')
+            printf "| **Reason** | \`%s\` |\n" "$reason"
             echo ""
             echo "### ℹ️ Deployment Skipped"
             echo "GitHub Pages deployment only occurs from the \`master\` branch due to environment protection rules."

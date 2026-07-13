@@ -178,22 +178,25 @@ extract_step_run() {
     [[ "$normalized_if" != *"github.event_name == 'workflow_dispatch' ||"* ]]
 }
 
-@test "update-dashboard commit stats job authenticates with a scoped App token and signs commits" {
-    # master's ruleset requires PR-only changes and verified signatures — a
-    # direct GITHUB_TOKEN push can satisfy neither, so this job must mint an
-    # App token (scoped down to just contents:write) and import a GPG key
-    # before the push happens. No actions:write: unlike GITHUB_TOKEN, an
-    # App-token push retriggers this same workflow via its own push path
-    # filter, so there is no explicit follow-up dispatch to authorize.
+@test "update-dashboard commit stats job scopes its App token and signs commits" {
     job_block="$(extract_job_block "commit-stats-snapshot")"
     permissions_block="$(extract_job_permissions "commit-stats-snapshot")"
+    token_block="$(extract_step_block "Generate App token")"
+    commit_script="$(cat "$SCRIPTS_DIR/commit-stats-snapshot.sh")"
 
+    [[ "$job_block" == *"timeout-minutes: 45"* ]]
+    [[ "$commit_script" == *'STATS_PR_MERGE_TIMEOUT_SECONDS:-2100'* ]]
     [[ "$permissions_block" == *"contents: read"* ]]
     [[ "$permissions_block" != *"contents: write"* ]]
     [[ "$permissions_block" == *"actions: read"* ]]
     [[ "$permissions_block" != *"actions: write"* ]]
     [[ "$job_block" == *"create-github-app-token"* ]]
-    [[ "$job_block" == *"permission-contents: write"* ]]
+    [[ "$token_block" == *"permission-contents: write"* ]]
+    [[ "$token_block" == *"permission-pull-requests: write"* ]]
+    [[ "$(printf '%s\n' "$token_block" | grep -cF "permission-")" -eq 2 ]]
+    [[ "$token_block" != *"permission-issues:"* ]]
+    [[ "$token_block" != *"permission-administration:"* ]]
+    [[ "$job_block" == *"STATS_PR_BRANCH: bot/stats-snapshot-\${{ github.run_id }}-\${{ github.run_attempt }}"* ]]
     [[ "$job_block" == *"ghaction-import-gpg"* ]]
     [[ "$job_block" == *"git_commit_gpgsign: true"* ]]
 }
