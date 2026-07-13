@@ -335,7 +335,8 @@ EOF
     # content validation), so a hostile/malformed date value CAN reach this
     # jq filter — @html must escape it, never interpolate it raw.
     grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' <<< "$dots"
-    ! grep -q '<script>' <<< "$dots"
+    run grep -q '<script>' <<< "$dots"
+    [ "$status" -ne 0 ]
 }
 
 @test "flat pull trend (all pull_counts identical) produces y=14 for every point" {
@@ -427,8 +428,10 @@ EOF
     # ("60,null" / cy="null"). Assert no literal null anywhere, and that the
     # bounds check passes for the REMAINING finite count (4), not the
     # original row count (5).
-    ! grep -q 'null' <<< "$points"
-    ! grep -q 'null' <<< "$dots"
+    run grep -q 'null' <<< "$points"
+    [ "$status" -ne 0 ]
+    run grep -q 'null' <<< "$dots"
+    [ "$status" -ne 0 ]
     assert_svg_points_in_bounds "$points" 4
     assert_svg_dots_match_points "$dots" "$points" 4
 }
@@ -495,8 +498,10 @@ EOF
     # ran together into garbage numbers. The fix moved ALL coordinate math
     # into jq (join(" ") is reliable); Liquid now only interpolates one
     # pre-computed string. Guard against regressing back to loop-based math.
-    ! grep -qE '\{%-?\s*for ' <<< "$pulls_block"
-    ! grep -q 'forloop' <<< "$pulls_block"
+    run grep -qE '\{%-?\s*for ' <<< "$pulls_block"
+    [ "$status" -ne 0 ]
+    run grep -q 'forloop' <<< "$pulls_block"
+    [ "$status" -ne 0 ]
 
     grep -q '<title id="pull-trend-title-' <<< "$pulls_block"
     grep -q 'polyline points="{{ page.pull_trend_svg_points }}"' <<< "$pulls_block"
