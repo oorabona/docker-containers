@@ -1655,7 +1655,14 @@ generate_data() {
             ')
         container_json=$(echo "$container_json" | jq --argjson pt "$pull_trend_json" '
             . + {pull_trend: $pt} + (
-                ($pt | length) as $n
+                (
+                    $pt
+                    | map(select(
+                        (.pull_count | type) == "number"
+                        and ((.pull_count | isinfinite or isnan) | not)
+                      ))
+                ) as $pt
+                | ($pt | length) as $n
                 | if $n > 1 then
                     ($pt | map(.pull_count)) as $counts
                     | ($counts | min) as $tmin
@@ -1671,15 +1678,39 @@ generate_data() {
                               else 26 - (((($pt[$i].pull_count) - $tmin) * 24 / $trange) | floor)
                               end
                             ) as $y
-                          | "\($x),\($y)"
+                          | {x: $x, y: $y, date: $pt[$i].date, pull_count: $pt[$i].pull_count}
                         ]
-                      ) as $pairs
-                    | {
-                        pull_trend_svg_points: ($pairs | join(" ")),
-                        pull_trend_first: $pt[0].pull_count,
-                        pull_trend_last: $pt[-1].pull_count,
-                        pull_trend_days: $n
-                      }
+                      ) as $points
+                    # Validate the OUTPUT, not just the input: whatever
+                    # combination of extreme-but-individually-finite values
+                    # or intermediate overflow produced a bad coordinate,
+                    # this is the one check that catches all of it. Never
+                    # emit a partially-valid sparkline — fall back to no
+                    # sparkline, same as the existing 0/1-point case.
+                    | (
+                        $points
+                        | all(
+                            ((.x | isinfinite or isnan) | not) and (.x >= 0) and (.x <= 120)
+                            and ((.y | isinfinite or isnan) | not) and (.y >= 0) and (.y <= 28)
+                          )
+                      ) as $points_valid
+                    | if $points_valid then
+                        {
+                            pull_trend_svg_points: ($points | map("\(.x),\(.y)") | join(" ")),
+                            pull_trend_svg_dots: (
+                              $points
+                              | map(
+                                  (@html "\(.date): \(.pull_count) pulls") as $label
+                                  | "<circle class=\"pull-trend-dot\" cx=\"\(.x)\" cy=\"\(.y)\" r=\"2\"><title>\($label)</title></circle>"
+                                )
+                              | join("")
+                            ),
+                            pull_trend_first: $pt[0].pull_count,
+                            pull_trend_last: $pt[-1].pull_count,
+                            pull_trend_days: $n
+                          }
+                      else {}
+                      end
                   else {}
                   end
             )
