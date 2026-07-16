@@ -40,6 +40,17 @@ services:
     tmpfs:
       - /tmp
       - /run
+    # Compose-level override: the image's own HEALTHCHECK is invisible to
+    # `depends_on: condition: service_healthy` — attestation-enabled pushes
+    # force OCI mediatype, and the Docker-only Healthcheck field isn't
+    # interpreted by OCI-schema-conformant readers (see #900). Mirrors the
+    # image's Dockerfile HEALTHCHECK exactly.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7681/token"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     networks:
