@@ -57,13 +57,18 @@ EXPOSE 7681
 # SSH (non-standard port to avoid conflicts)
 EXPOSE 2222
 
-# No -f: ttyd's auth check (Basic credential or proxy header, both supported
-# via TTYD_CREDENTIAL/TTYD_AUTH_HEADER) applies to every path including
-# /token, so an authenticated deployment would fail a -f probe on a 401/407
-# it never should have seen. Without -f, curl succeeds on any completed HTTP
-# response and only fails on a genuine connection problem — which is what a
-# liveness check should assert, auth state aside.
+# /token is the documented readiness endpoint (README, test.sh) — it proves
+# ttyd can actually issue a token, not just that something answers on the
+# port. -f can't be used as-is: ttyd's auth check (Basic credential or proxy
+# header, via TTYD_CREDENTIAL/TTYD_AUTH_HEADER) applies to every path
+# including /token, so a configured deployment legitimately gets 401/407
+# there, and -f would fail the probe on that expected response. Instead,
+# read the status explicitly and accept only the codes that mean "ttyd is
+# up and behaving correctly" (200 unauthenticated, 401/407 correctly
+# enforcing configured auth) — genuine failures (5xx, anything else) still
+# fail the check. -o /dev/null keeps the token body itself out of health
+# logs regardless of which code comes back.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -sS -o /dev/null http://localhost:7681/
+    CMD code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:7681/token)"; case "$code" in 200|401|407) exit 0 ;; *) exit 1 ;; esac
 
 ENTRYPOINT ["entrypoint.sh"]

@@ -44,11 +44,18 @@ services:
     # into the published config for attestation-enabled pushes (see #900),
     # so `depends_on: condition: service_healthy` has nothing to read
     # without this override. Mirrors the image's Dockerfile HEALTHCHECK
-    # exactly — no -f, since ttyd's auth check (Basic/proxy-header, when
-    # TTYD_CREDENTIAL/TTYD_AUTH_HEADER is set) applies to every path, and
-    # -f would fail this probe on a 401/407 that isn't a liveness problem.
+    # exactly — /token is the documented readiness endpoint; the explicit
+    # status check accepts 200/401/407 (ttyd up, auth enforced correctly
+    # if configured) and rejects everything else, including 5xx.
     healthcheck:
-      test: ["CMD", "curl", "-sS", "-o", "/dev/null", "http://localhost:7681/"]
+      # $$ (not $): Compose interpolates bare $var in this file itself before
+      # the command ever reaches the container's shell — unescaped, "$code"
+      # silently becomes an empty string here instead of a runtime variable.
+      test:
+        - CMD-SHELL
+        - >-
+          code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:7681/token);
+          case "$$code" in 200|401|407) exit 0 ;; *) exit 1 ;; esac
       interval: 30s
       timeout: 10s
       start_period: 10s
