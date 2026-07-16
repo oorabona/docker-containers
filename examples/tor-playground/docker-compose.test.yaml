@@ -8,5 +8,5 @@ services:
     # Compose merges list-type keys by concatenation, not replacement, by
     # default — a plain `ports: []` here would be a no-op and the base
     # file's publish would survive untouched. `!override` forces an actual
-    # replacement (Compose v2.24+).
+    # replacement (Compose v2.24.4+).
     ports: !override []
