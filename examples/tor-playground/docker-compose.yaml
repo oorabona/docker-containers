@@ -1,0 +1,38 @@
+# Tor SOCKS proxy with Nyx control-port access
+#
+# A single tor container running the monitoring flavor, with EXIT_NODES set
+# as a playground default. See the blog post's torrc section for what
+# this restriction actually does (and why pairing it with StrictNodes,
+# which Tor's manual says applies only to ExcludeNodes, does nothing).
+# Meant as a hands-on companion to the "Tor control port" blog post —
+# spin it up, attach Nyx, and try SIGNAL NEWNYM / GETINFO circuit-status
+# yourself.
+#
+# Usage:
+#   cd examples/tor-playground
+#   docker compose up -d
+#   docker compose exec tor nyx
+#
+# Production notes:
+#   - This stack intentionally keeps the control port loopback-only and
+#     cookie-authenticated (the container's secure-by-default posture).
+#     Opening it up externally needs PASSWORD_FILE — see tor/README.md.
+#   - EXIT_NODES here is a playground choice, not a requirement.
+
+services:
+  tor:
+    image: ghcr.io/oorabona/tor:latest-monitoring
+    environment:
+      EXIT_NODES: US
+    ports:
+      - "127.0.0.1:9050:9050"
+    volumes:
+      - tor-data:/var/lib/tor
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  tor-data:

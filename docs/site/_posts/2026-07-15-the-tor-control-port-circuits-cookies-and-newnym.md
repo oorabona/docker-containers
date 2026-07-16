@@ -1,0 +1,173 @@
+---
+layout: post
+title: "The Tor control port: circuits, cookies, and NEWNYM"
+description: "Most people only ever talk to Tor through its SOCKS port. There's a second port that lets you ask Tor questions and give it orders — including \"get me a new circuit.\" A hands-on tour of the control protocol, using our tor container as a playground."
+date: 2026-07-15 06:00:00 +0000
+tags: [tor, networking, security, docker, tutorial]
+---
+
+If you've used Tor at all, you've used its SOCKS port: point a client at `127.0.0.1:9050`, and your traffic comes out the other end of a three-hop circuit. That's the whole interaction most people ever have with it. But Tor exposes a second port that has nothing to do with carrying traffic — it's a command channel. You can ask it questions ("what circuits are open right now?") and give it orders ("throw away the current one and build a new one"). That second port is what this post is about, using our [`tor` container](https://github.com/oorabona/docker-containers/tree/master/tor) as a place to actually try it rather than just read about it.
+
+## Two ports, two jobs
+
+The **SOCKS port** (9050 by default) is where your traffic goes in. Whatever you point at it — a browser, `curl`, an app — gets proxied out through a Tor circuit. It doesn't understand commands; it only understands connections.
+
+The **control port** (9051 by default) is a completely separate listener with a completely different job: it speaks a line-based text protocol that lets a client — a script, a monitoring tool, an interactive console — inspect and steer the running Tor process. Circuit status, bandwidth stats, log events, and the command we care about here, `SIGNAL NEWNYM`, all go through this port. Nothing you send it ever touches your anonymized traffic; it's a management interface, not a proxy.
+
+Our container starts both by default. The control port, specifically, starts bound to loopback only — which is deliberate, and worth understanding before you go looking for how to open it up.
+
+## Auth: cookie vs password
+
+Anyone who can talk to the control port can tell your Tor process what to do — including asking it to hand over a lot of information about your circuits. So the control port requires authentication before it'll accept anything past `AUTHENTICATE`.
+
+Tor supports two authentication methods, and the container defaults to the one that needs no configuration:
+
+- **Cookie authentication** (the default here): Tor writes a random cookie file to disk (`/var/lib/tor/control_auth_cookie`) that only processes with filesystem access to the container can read. Authenticating means reading that file and presenting its contents. There's no password to set, lose, or leak into a shell history — but it only makes sense when the client and the control port are on the same trust boundary, which is exactly the loopback-only default.
+- **Password authentication**: you set a password (as a pre-hashed value or, less ideally, plaintext) via a `PASSWORD_FILE`, and clients authenticate with it. This is what you need if the control port has to be reachable from *outside* the container.
+
+For everything in this post, you don't need to touch either setting — cookie auth on loopback is exactly what you want for talking to your own container from inside it.
+
+One important scope note: the fail-closed behavior — refusing to start rather than bind an unauthenticated control port to a non-loopback address without `PASSWORD_FILE` — only applies to the container's *generated* torrc (the one built from `EXIT_NODES`, `CONTROL_PORT_BIND`, and friends). The moment you mount your own `torrc` (see the next two sections), that file is executed as-is — the entrypoint doesn't inspect or validate it for auth directives, so an unauthenticated `ControlPort 0.0.0.0:9051` in a custom torrc *will* start. That's on you to get right, same as running Tor directly: see [Tor's own manual](https://manpages.debian.org/unstable/tor/tor.1.en.html) for `HashedControlPassword`/`CookieAuthentication`.
+
+## The control protocol, briefly
+
+The control protocol is plain text, one command per line, closer in spirit to SMTP than to anything binary. A session looks like this:
+
+```
+AUTHENTICATE 2A3B4C...
+250 OK
+SIGNAL NEWNYM
+250 OK
+GETINFO circuit-status
+250+circuit-status=
+4 BUILT ...
+.
+250 OK
+```
+
+Responses start with a three-digit status code (`250` means success), and multi-line responses use a continuation marker ending in a bare `.`. You'll only need three commands for what follows: `AUTHENTICATE` to get past the front door, `SIGNAL` to send Tor a directive, and `GETINFO` to ask it a question. The full command set is documented in Tor's [control-spec](https://github.com/torproject/torspec/blob/main/control-spec.txt) if you want to go further than this post does.
+
+## What NEWNYM actually does
+
+A Tor circuit, for ordinary web traffic, is three relays: a **guard** (entry), a **middle**, and an **exit** — your traffic's actual path only exists for the lifetime of that circuit, and only the guard ever sees your real IP.
+
+`SIGNAL NEWNYM` tells Tor: stop reusing existing circuits for *new* connections, and clear the client-side DNS cache. It's worth being precise about what that does and doesn't do:
+
+- It does **not** tear down circuits that are already carrying an open connection — those keep running until they close naturally.
+- It marks current circuits "dirty" for future streams, so the *next* connection you open won't reuse one of those — it lands on either a freshly built circuit or an already-built clean one from Tor's own pre-built pool, and either way, the middle and exit are chosen again rather than inherited from the circuit you just marked dirty. That's not a guarantee the exit itself changes — the same relay can still be picked again — just that it's a fresh selection, not a holdover.
+- The **guard relay is the one thing that deliberately doesn't rotate on NEWNYM.** Tor picks a small set of guards and sticks with them for weeks at a time by design — that's a defense against certain long-term correlation and guard-discovery attacks, not a limitation. If you're expecting NEWNYM to change *everything* about your circuit and it doesn't, this is why: the part most people actually notice change is the exit IP, because the exit is what a destination server sees — though even that isn't guaranteed to differ every single time (see the walkthrough below).
+- Tor enforces roughly a 10-second cooldown between NEWNYM signals — hammering it doesn't get you a new circuit any faster.
+
+There's also a torrc setting, `MaxCircuitDirtiness` (600 seconds by default), that automates the circuit-retirement half of what NEWNYM does manually: after that many seconds, a circuit stops being handed out to new streams on its own — the same "dirty" mechanism, just time-triggered instead of on-demand. It's not a full equivalent, though: it's only documented as governing circuit age, not the DNS-cache clear that's also part of what `SIGNAL NEWNYM` does.
+
+## Steering exit country via torrc
+
+NEWNYM gets you *a* new circuit, but not a *chosen* one. If you want to constrain where the exit relay is, that's a different, complementary directive — and our container has a shortcut for the common case.
+
+Worth being upfront about before reaching for it: restricting exit selection is a real anonymity trade-off, not a free knob. Tor's own manual frames node-selection options this way for a reason — narrowing your exit pool to one country makes your traffic's exit point more predictable and easier to correlate against than Tor's full relay diversity gives you by default. Fine for testing and for a local playground; think twice before carrying it into anything privacy-sensitive.
+
+Two environment variables map straight to Tor's country-based exit filtering:
+
+```bash
+docker run -d --name tor \
+  -e EXIT_NODES=US \
+  -p 127.0.0.1:9050:9050 \
+  ghcr.io/oorabona/tor:latest
+```
+
+`EXIT_NODES=US` becomes `ExitNodes {US}` in the generated torrc; `EXCLUDE_EXIT_NODES=CN,RU` becomes `ExcludeExitNodes {CN},{RU}`. Both accept comma-separated country codes.
+
+That covers "restrict exit selection to these countries," and it's worth being precise about what that restriction actually means — `ExitNodes` isn't a soft hint Tor is free to override to keep things working. Tor's own manual warns the opposite: narrow it too far and things can break outright rather than silently fall back — "if none of the exits you list allows traffic on port 80 or 443, you won't be able to browse the web." The one thing it doesn't constrain is circuit *type*: connections that aren't carrying traffic outside the Tor network at all (hidden-service connections, directory fetches, relay self-tests) aren't exit circuits, so they're unaffected by `ExitNodes` regardless of country.
+
+`StrictNodes` doesn't factor into any of this, in either direction — Tor's manual is explicit that it "applies to neither ExcludeExitNodes nor to ExitNodes, nor to MiddleNodes." It only hardens `ExcludeNodes` — excluding relays anywhere in the path, not just the exit, which also has no environment-variable shortcut. Relay and hidden-service configuration don't either. For any of that, you supply your own `torrc` instead:
+
+```bash
+docker run -d --name tor \
+  -p 127.0.0.1:9050:9050 \
+  -v "$PWD/torrc:/etc/tor/torrc:ro" \
+  ghcr.io/oorabona/tor:latest
+```
+
+**The gotcha**: the moment the container detects a non-empty custom `torrc`, it treats that file as the *complete* configuration and ignores every simple environment variable — `EXIT_NODES` included — logging a warning rather than silently merging the two. That also means the SOCKS/control-port setup the generated torrc normally gives you for free is gone unless you write it yourself. A working custom torrc that still gets you SOCKS, a cookie-authenticated loopback control port, *and* hard-excludes a couple of countries anywhere in the circuit looks like this:
+
+```
+# torrc
+SocksPort 0.0.0.0:9050
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control_auth_cookie
+ExcludeNodes {CN},{RU}
+StrictNodes 1
+```
+
+Drop the `EXIT_NODES`/`EXCLUDE_EXIT_NODES` env vars once you do this — they're ignored anyway, and leaving them set is just noise that no longer does anything.
+
+## Playground walkthrough
+
+Time to actually do this. There's a ready-to-run [`tor-playground`](https://github.com/oorabona/docker-containers/tree/master/examples/tor-playground) example in the project repo — it's exactly the setup below, already wired with `EXIT_NODES=US` and the monitoring flavor, so you don't have to copy commands out of a blog post one at a time:
+
+```bash
+git clone https://github.com/oorabona/docker-containers.git
+cd docker-containers/examples/tor-playground
+docker compose up -d
+docker compose exec tor nyx
+```
+
+Or, if you'd rather not clone the repo, the same thing as a standalone `docker run`:
+
+```bash
+docker run -d --name tor \
+  -e EXIT_NODES=US \
+  -p 127.0.0.1:9050:9050 \
+  -v tor-data:/var/lib/tor \
+  ghcr.io/oorabona/tor:latest-monitoring
+
+docker exec -it tor nyx
+```
+
+Nyx's main screen shows live bandwidth, connections, and log lines — useful, but not what we're after. Get to the **interpreter** panel (Nyx's raw-controller access, built on Stem) by pressing `m` for the page menu and selecting *Interpreter* — if your Nyx version lays its menu out differently, press `h` on any page for the full, current keybinding reference. Once you're there, you can type control-protocol commands directly and see the response inline:
+
+```
+SIGNAL NEWNYM
+250 OK
+```
+
+Check what changed:
+
+```
+GETINFO circuit-status
+```
+
+`circuit-status` is worth poking at, but NEWNYM only marks *existing* circuits dirty for future streams — it doesn't force an immediate rebuild, so re-reading the table right after sending the signal isn't a reliable way to see the effect. What is reliable: open a genuinely *new* connection and see what circuit it lands on. Check the exit IP through the SOCKS proxy, send NEWNYM, then open a fresh connection and check again:
+
+```bash
+curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+# send SIGNAL NEWNYM via nyx, then open a NEW connection (the check above
+# used the pre-NEWNYM circuit) to see what circuit it lands on:
+curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+```
+
+That endpoint returns a small JSON body (`{"IsTor":true,"IP":"..."}`) — it confirms `IsTor` and the exit `IP`, not country, so it can't directly confirm `EXIT_NODES=US` landed you on a US relay (that needs a separate IP-geolocation lookup). And getting the same exit IP twice in a row occasionally is normal — exit selection is weighted, not round-robin — so a repeated IP isn't by itself a sign NEWNYM didn't work; what matters is that the *new* connection was free to land on a different circuit than the old one.
+
+## Scripted alternative
+
+Nyx is convenient, but everything above is just text over a socket, which means it's trivial to script without any extra tooling — useful if you want to trigger a circuit rotation from a cron job or a CI step rather than a human at a terminal. If you followed the `tor-playground` / `docker compose` path above, use `docker compose exec` (a container started via Compose isn't actually named `tor` unless you pin `container_name`, so bare `docker exec tor ...` won't find it):
+
+```bash
+COOKIE=$(docker compose exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
+printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc -w 15 127.0.0.1 9051
+```
+
+If you used the standalone `docker run --name tor` command instead, swap `docker compose exec -T tor` for plain `docker exec tor`/`docker exec -i tor` — that path really did name the container `tor`.
+
+The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -v -tx1 | tr -d ' \n'` if you don't have `xxd` handy — the `-v` matters, without it `od` silently collapses repeated identical lines instead of printing them) — ordinary host tooling, not something you need to hope is in the container. The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than baked into an `sh -c "..."` string, so the cookie — the control port's actual secret — never shows up in a process listing inside the container. `-w 15` bounds how long `nc` waits for the connection and final reads — the busybox `nc` in this image supports it directly, and testing it against a connection that accepts but never responds confirms it: the command reliably terminates, though empirically closer to twice the given value (connect and final-read each get their own window) than exactly 15s. Either way, a control port that accepts the connection but never closes cleanly can't hang the command forever.
+
+## When you'd actually reach for this
+
+NEWNYM is not an "instant new identity" button, and treating it like one is the most common misunderstanding about it. The guard doesn't rotate; a destination that's tracking you by anything other than IP won't be fooled; and existing connections don't get torn down. What it's actually good for is more specific:
+
+- **Testing** — verifying your app behaves correctly across different exit IPs, or across different exit countries with `EXIT_NODES`.
+- **Troubleshooting a bad relay** — if a circuit is timing out or an exit is blocked by your destination, NEWNYM gets you off it without restarting the whole container.
+- **Automated rotation** — the scripted version above, wired into whatever needs a fresh circuit on a schedule, rather than waiting out `MaxCircuitDirtiness`.
+
+For anything more elaborate than that — building your own control logic around circuit selection — [Stem](https://stem.torproject.org/) (the Python library Nyx itself is built on) is the next step past raw `nc` commands.
