@@ -5,7 +5,7 @@ A single [tor](../../tor/) container (monitoring flavor) for trying out the cont
 ## When to use this
 
 - Learning the Tor control protocol (`AUTHENTICATE`, `SIGNAL`, `GETINFO`) without touching a production setup
-- Trying `SIGNAL NEWNYM` and watching circuits rotate in Nyx
+- Trying `SIGNAL NEWNYM` and seeing how a new connection's circuit differs in Nyx
 - Testing an app's behavior across different exit countries via `EXIT_NODES`
 
 ## Quick start
@@ -45,7 +45,7 @@ The container only does what only it can do — read the cookie file, reach the 
 ## Notes
 
 - The control port stays loopback-only and cookie-authenticated — this playground doesn't open external control access. See [tor/README.md](../../tor/README.md#opt-in-external-control) for that.
-- `EXIT_NODES=US` is a playground choice so the exit-country effect is easy to observe; drop or change it freely.
+- `EXIT_NODES=US` is a playground default, not something this stack proves from the outside on its own (see the note above) — drop or change it freely.
 
 ## Testing
 
