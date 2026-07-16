@@ -1,8 +1,10 @@
 # Tor SOCKS proxy with Nyx control-port access
 #
 # A single tor container running the monitoring flavor, with EXIT_NODES set
-# as a playground default (a preference, not a hard guarantee — pair with
-# StrictNodes in a mounted torrc if you need one). Meant as a hands-on
+# as a playground default — always a preference, not a hard guarantee;
+# Tor's own manual is explicit that StrictNodes does not apply to
+# ExitNodes/ExcludeExitNodes, only to ExcludeNodes, so there's no torrc
+# knob that turns EXIT_NODES into a hard requirement. Meant as a hands-on
 # companion to the "Tor control port" blog post — spin it up, attach Nyx,
 # and try SIGNAL NEWNYM / GETINFO circuit-status yourself.
 #

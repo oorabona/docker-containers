@@ -23,9 +23,11 @@ Anyone who can talk to the control port can tell your Tor process what to do —
 Tor supports two authentication methods, and the container defaults to the one that needs no configuration:
 
 - **Cookie authentication** (the default here): Tor writes a random cookie file to disk (`/var/lib/tor/control_auth_cookie`) that only processes with filesystem access to the container can read. Authenticating means reading that file and presenting its contents. There's no password to set, lose, or leak into a shell history — but it only makes sense when the client and the control port are on the same trust boundary, which is exactly the loopback-only default.
-- **Password authentication**: you set a password (as a pre-hashed value or, less ideally, plaintext) via a `PASSWORD_FILE`, and clients authenticate with it. This is what you need if the control port has to be reachable from *outside* the container — and the entrypoint enforces that ordering: if you try to bind the control port to a non-loopback address without also providing a password, Tor refuses to start rather than come up with an unauthenticated control port sitting on a real network interface. That's a fail-closed default, not an oversight.
+- **Password authentication**: you set a password (as a pre-hashed value or, less ideally, plaintext) via a `PASSWORD_FILE`, and clients authenticate with it. This is what you need if the control port has to be reachable from *outside* the container.
 
 For everything in this post, you don't need to touch either setting — cookie auth on loopback is exactly what you want for talking to your own container from inside it.
+
+One important scope note: the fail-closed behavior — refusing to start rather than bind an unauthenticated control port to a non-loopback address without `PASSWORD_FILE` — only applies to the container's *generated* torrc (the one built from `EXIT_NODES`, `CONTROL_PORT_BIND`, and friends). The moment you mount your own `torrc` (see the next two sections), that file is executed as-is — the entrypoint doesn't inspect or validate it for auth directives, so an unauthenticated `ControlPort 0.0.0.0:9051` in a custom torrc *will* start. That's on you to get right, same as running Tor directly: see [Tor's own manual](https://manpages.debian.org/unstable/tor/tor.1.en.html) for `HashedControlPassword`/`CookieAuthentication`.
 
 ## The control protocol, briefly
 
@@ -73,7 +75,9 @@ docker run -d --name tor \
 
 `EXIT_NODES=US` becomes `ExitNodes {US}` in the generated torrc; `EXCLUDE_EXIT_NODES=CN,RU` becomes `ExcludeExitNodes {CN},{RU}`. Both accept comma-separated country codes.
 
-That covers "prefer/avoid these countries," which is most of what people actually want. If you need more — `StrictNodes` (hard-fail instead of falling back when your preferred exits are unreachable), `ExcludeNodes` (excluding relays anywhere in the path, not just the exit), relay or hidden-service configuration — none of that has an environment-variable shortcut. You supply your own `torrc` instead:
+That covers "prefer/avoid these countries," which is most of what people actually want — and it's worth being precise that it *is* only a preference. Tor's own manual is explicit that `StrictNodes` — the option that turns a preference into a hard requirement — applies to `ExcludeNodes` alone: "StrictNodes applies to neither ExcludeExitNodes nor to ExitNodes, nor to MiddleNodes." There's no built-in torrc knob that makes `ExitNodes`/`EXIT_NODES` a guarantee; Tor reserves the right to fall back rather than fail if none of your preferred exits are reachable. If a workflow genuinely needs a hard guarantee on exit country, that has to be enforced outside Tor's own preference system (checking the exit IP after the fact and reconnecting if it's wrong, for instance) — a bigger topic than this post covers.
+
+What `StrictNodes` *does* harden is `ExcludeNodes` — excluding relays anywhere in the path, not just the exit, which also has no environment-variable shortcut. Relay and hidden-service configuration don't either. For any of that, you supply your own `torrc` instead:
 
 ```bash
 docker run -d --name tor \
@@ -81,15 +85,19 @@ docker run -d --name tor \
   ghcr.io/oorabona/tor:latest
 ```
 
-**The gotcha**: the moment the container detects a non-empty custom `torrc`, it treats that file as the *complete* configuration and ignores every simple environment variable — `EXIT_NODES` included — logging a warning rather than silently merging the two. If you're mounting a custom torrc for one specific directive, anything you were setting via env vars needs to move into that file too, or it stops applying. Going from `EXIT_NODES=US` to a custom file that also wants `StrictNodes` means writing both directives yourself:
+**The gotcha**: the moment the container detects a non-empty custom `torrc`, it treats that file as the *complete* configuration and ignores every simple environment variable — `EXIT_NODES` included — logging a warning rather than silently merging the two. That also means the SOCKS/control-port setup the generated torrc normally gives you for free is gone unless you write it yourself. A working custom torrc that still gets you SOCKS, a cookie-authenticated loopback control port, *and* hard-excludes a couple of countries anywhere in the circuit looks like this:
 
 ```
 # torrc
-ExitNodes {US}
+SocksPort 0.0.0.0:9050
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control_auth_cookie
+ExcludeNodes {CN},{RU}
 StrictNodes 1
 ```
 
-Drop the `EXIT_NODES` env var once you do this — it's ignored anyway, and leaving it set is just noise that no longer does anything.
+Drop the `EXIT_NODES`/`EXCLUDE_EXIT_NODES` env vars once you do this — they're ignored anyway, and leaving them set is just noise that no longer does anything.
 
 ## Playground walkthrough
 
