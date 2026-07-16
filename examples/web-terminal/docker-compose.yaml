@@ -46,7 +46,11 @@ services:
     # interpreted by OCI-schema-conformant readers (see #900). Mirrors the
     # image's Dockerfile HEALTHCHECK exactly.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:7681/token"]
+      # -o /dev/null: the token endpoint's response body is a live auth
+      # token — Docker stores healthcheck output in the container's health
+      # log, readable via `docker inspect`, so only the status code (not
+      # the body) should ever land there.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:7681/token"]
       interval: 30s
       timeout: 10s
       start_period: 10s

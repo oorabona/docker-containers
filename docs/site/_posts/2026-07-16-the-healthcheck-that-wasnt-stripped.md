@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "The healthcheck that wasn't stripped"
-description: "Every pushed image's HEALTHCHECK was invisible to docker inspect, despite every Dockerfile declaring one correctly. The obvious explanation — BuildKit strips it — turned out to be wrong. What's actually happening is more interesting, and it's not a bug."
+description: "Every bake-built image's HEALTHCHECK was invisible to docker inspect, despite every Dockerfile declaring one correctly. The obvious explanation — BuildKit strips it — turned out to be wrong. What's actually happening is more interesting, and it's not a bug."
 date: 2026-07-16 06:00:00 +0000
 tags: [docker, oci, supply-chain, debugging, lessons-learned]
 ---
@@ -10,7 +10,7 @@ tags: [docker, oci, supply-chain, debugging, lessons-learned]
 
 ## The hypothesis, and why it looked right
 
-Every image in this fleet gets pushed the same way: `docker buildx bake --push`, on the `docker-container` driver. Nothing in that command asks for attestations — but that's not the same as attestations being off. BuildKit adds a minimal provenance attestation to every push by default on this driver, no flag required. That default is the kind of thing that changes how an image gets packaged under the hood — new manifests, new mediatypes, new layers of indirection. "One of those side effects is eating the Healthcheck field" was a completely reasonable first guess, and it fit the evidence: `sslh`, built through the identical pipeline, showed the exact same symptom. Fleet-wide, one shared cause, a shape I'd seen before in this codebase.
+Every Linux image in this fleet gets pushed the same way: `docker buildx bake --push`, on the `docker-container` driver. (Windows builds are the one exception — buildx bake doesn't support them, so they go through a separate `--load` + plain `docker push` path that, as I'd later confirm, doesn't pick up default attestations at all.) Nothing in the bake command asks for attestations — but that's not the same as attestations being off. BuildKit adds a minimal provenance attestation to every push by default on this driver, no flag required. That default is the kind of thing that changes how an image gets packaged under the hood — new manifests, new mediatypes, new layers of indirection. "One of those side effects is eating the Healthcheck field" was a completely reasonable first guess, and it fit the evidence: `sslh`, built through the identical pipeline, showed the exact same symptom. Fleet-wide across every Linux image, one shared cause, a shape I'd seen before in this codebase.
 
 ## The test that said otherwise
 
@@ -28,9 +28,9 @@ A provenance attestation is itself a small manifest, and it has to live somewher
 
 `Healthcheck` isn't entirely absent from the OCI spec, either — [config.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/config.md) lists it as an optional property, but marks it *reserved*, and the [compatibility matrix](https://github.com/opencontainers/image-spec/blob/v1.1.1/media-types.md) is blunter about what that means in practice: "`.config.Healthcheck`: only present in Docker, and reserved in OCI." The name is in the schema; the semantics aren't — nothing in the spec tells a reader what to *do* with that field, so a spec-conformant reader is free to carry it through without ever acting on it. Any tool that treats OCI as the format of record and Docker's `Healthcheck` as an out-of-scope Docker-ism — skopeo's normalized inspect, containerd, and by the same mechanism other spec-conformant runtimes — has no obligation to wire it up. Silently. The bytes are still sitting in the JSON; nothing downstream is required to look for them. The instruction survives only as a cosmetic string in the image's build history, which nothing reads at runtime.
 
-That's also the answer to the question the opening symptom actually asked: the container wasn't showing `starting` or `unhealthy`, it was showing nothing, because the Docker daemon itself instantiates a container's healthcheck from the same OCI-schema-shaped config it just pulled — it doesn't reach into `history[].created_by` to recover a field the manifest it's holding doesn't declare. So this isn't only an inspection-tooling blind spot. The container genuinely never gets a healthcheck wired up at all.
+That's also the answer to the question the opening symptom actually asked: the container wasn't showing `starting` or `unhealthy`, it was showing nothing, because the Docker daemon itself instantiates a container's healthcheck from the same OCI-schema-shaped config it just pulled — it doesn't reach into `history[].created_by` to recover behavior for a field its own schema never gave semantics to. So this isn't only an inspection-tooling blind spot. The container genuinely never gets a healthcheck wired up at all.
 
-Nothing was stripped. A schema-conformant reader was doing exactly what a schema-conformant reader should do with a field outside the schema: ignore it.
+Nothing was stripped. A schema-conformant reader was doing exactly what a schema-conformant reader should do with a field the schema reserves but never defines: ignore it.
 
 ## Confirming there's no third option
 

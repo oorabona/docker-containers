@@ -58,6 +58,6 @@ EXPOSE 7681
 EXPOSE 2222
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:7681/token
+    CMD curl -fsS -o /dev/null http://localhost:7681/token
 
 ENTRYPOINT ["entrypoint.sh"]
