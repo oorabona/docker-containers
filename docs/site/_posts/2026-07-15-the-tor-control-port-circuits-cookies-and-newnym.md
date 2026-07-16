@@ -38,8 +38,8 @@ SIGNAL NEWNYM
 250 OK
 GETINFO circuit-status
 250+circuit-status=
-  4 BUILT ...
-  .
+4 BUILT ...
+.
 250 OK
 ```
 
@@ -127,15 +127,16 @@ Check what changed:
 GETINFO circuit-status
 ```
 
-You'll see new circuit IDs after the signal — same guard as before, different middle and exit. If you want to see the effect from the outside rather than just the circuit table, check the exit IP through the SOCKS proxy before and after:
+`circuit-status` is worth poking at, but NEWNYM only marks *existing* circuits dirty for future streams — it doesn't force an immediate rebuild, so re-reading the table right after sending the signal isn't a reliable way to see the effect. What is reliable: open a genuinely *new* connection and see what circuit it lands on. Check the exit IP through the SOCKS proxy, send NEWNYM, then open a fresh connection and check again:
 
 ```bash
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
-# send SIGNAL NEWNYM via nyx, wait a few seconds, then:
+# send SIGNAL NEWNYM via nyx, then open a NEW connection (the check above
+# reused the old one) to see what circuit it lands on:
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
 ```
 
-That endpoint returns a small JSON body (`{"IsTor":true,"IP":"..."}`) — the `IP` field is what to diff between the two calls. With `EXIT_NODES=US` set, both requests should report a US exit — just not necessarily a *different* IP every time. Exit selection is weighted, not round-robin, so getting the same exit twice in a row occasionally is normal, not a sign NEWNYM didn't work; the circuit ID from `GETINFO circuit-status` is the reliable signal that a new circuit was actually built.
+That endpoint returns a small JSON body (`{"IsTor":true,"IP":"..."}`) — it confirms `IsTor` and the exit `IP`, not country, so it can't directly confirm `EXIT_NODES=US` landed you on a US relay (that needs a separate IP-geolocation lookup). And getting the same exit IP twice in a row occasionally is normal — exit selection is weighted, not round-robin — so a repeated IP isn't by itself a sign NEWNYM didn't work; what matters is that the *new* connection was free to land on a different circuit than the old one.
 
 ## Scripted alternative
 
@@ -143,10 +144,10 @@ Nyx is convenient, but everything above is just text over a socket, which means 
 
 ```bash
 COOKIE=$(docker exec tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
-docker exec tor sh -c "printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' '$COOKIE' | nc 127.0.0.1 9051"
+printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker exec -i tor nc 127.0.0.1 9051
 ```
 
-The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -tx1 | tr -d ' \n'` if you don't have `xxd` handy) — ordinary host tooling, not something you need to hope is in the container.
+The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -tx1 | tr -d ' \n'` if you don't have `xxd` handy) — ordinary host tooling, not something you need to hope is in the container. The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than baked into an `sh -c "..."` string, so the cookie — the control port's actual secret — never shows up in a process listing inside the container.
 
 ## When you'd actually reach for this
 

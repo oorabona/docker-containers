@@ -19,7 +19,6 @@
 services:
   tor:
     image: ghcr.io/oorabona/tor:latest-monitoring
-    container_name: tor
     environment:
       EXIT_NODES: US
     ports:

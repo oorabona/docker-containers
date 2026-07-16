@@ -26,7 +26,8 @@ echo "  Waiting for a Tor circuit through the SOCKS proxy..."
 elapsed=0
 response=""
 while [ $elapsed -lt $TIMEOUT ]; do
-    response=$(curl -fsS --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip 2>/dev/null || echo "")
+    response=$(curl -fsS --connect-timeout 10 --max-time 20 \
+        --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip 2>/dev/null || echo "")
     echo "$response" | grep -q '"IsTor":true' && break
     sleep 3
     elapsed=$((elapsed + 3))
@@ -38,16 +39,26 @@ if ! echo "$response" | grep -q '"IsTor":true'; then
 fi
 echo "  OK SOCKS proxy is carrying traffic through Tor"
 
-# Test: the scripted control-port path from the README/blog post actually works
+# Test: the scripted control-port path from the README/blog post actually works.
+# The cookie never becomes part of a docker/container argv (visible via `ps`
+# in either namespace while the command runs) — it's piped in as stdin to a
+# bare `nc`, not interpolated into an `sh -c "..."` string.
 echo "  Checking control-port NEWNYM signal..."
 cookie=$(docker compose -f "$COMPOSE_FILE" exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
-signal_response=$(docker compose -f "$COMPOSE_FILE" exec -T tor sh -c \
-    "printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' '$cookie' | nc 127.0.0.1 9051" 2>/dev/null || echo "")
-ok_count=$(echo "$signal_response" | grep -c '^250')
-if [ "$ok_count" -ge 2 ]; then
-    echo "  OK Control port authenticated and accepted SIGNAL NEWNYM ($ok_count '250' responses)"
+signal_response=$(
+    printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$cookie" \
+        | docker compose -f "$COMPOSE_FILE" exec -T tor nc 127.0.0.1 9051 2>/dev/null || echo ""
+)
+mapfile -t reply_lines < <(printf '%s' "$signal_response" | tr -d '\r')
+# Each line sent gets exactly one reply line in order — line 1 is
+# AUTHENTICATE's response, line 2 is SIGNAL NEWNYM's. Checking their exact
+# content (not just "at least N '250' lines somewhere in the output")
+# means AUTHENTICATE succeeding while SIGNAL itself fails can't slip
+# through as a pass.
+if [ "${reply_lines[0]:-}" = "250 OK" ] && [ "${reply_lines[1]:-}" = "250 OK" ]; then
+    echo "  OK Control port authenticated and accepted SIGNAL NEWNYM"
 else
-    echo "  FAIL: expected at least 2 '250' responses (AUTHENTICATE + SIGNAL), got $ok_count (response: $signal_response)"
+    echo "  FAIL: expected '250 OK' for both AUTHENTICATE and SIGNAL NEWNYM, got: ${reply_lines[*]:-<empty>} (raw: $signal_response)"
     exit 1
 fi
 

@@ -61,6 +61,6 @@ All examples include:
 - Dropped Linux capabilities
 - `no-new-privileges` security option
 - Non-root users for application processes
-- Network isolation (frontend/backend separation)
+- Network isolation (frontend/backend separation) for multi-service stacks — single-container examples like `tor-playground` have nothing to isolate from and use the default Compose network
 
 **For production:** Replace default passwords, add TLS certificates, and restrict network access.
