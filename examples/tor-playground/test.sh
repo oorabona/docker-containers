@@ -11,10 +11,10 @@ TIMEOUT=120
 # directory — confirmed, cleanup only ever tears down this project's own
 # resources. The PID alone isn't unique across separate PID namespaces
 # that might share one Docker daemon (containerized CI running several
-# jobs against the same daemon, for instance), so it's paired with a
-# random suffix and the current time — collision there would let one
-# run's `down -v` tear down another's resources.
-PROJECT="tor-playground-test-$$-${RANDOM}-$(date +%s)"
+# jobs against the same daemon, for instance); pairing it with 8 random
+# bytes (not bash's 15-bit $RANDOM) makes an actual collision the kind of
+# thing that doesn't happen in practice, not just "unlikely."
+PROJECT="tor-playground-test-$$-$(head -c8 /dev/urandom | xxd -p | tr -d '\n')"
 
 compose() {
     docker compose -p "$PROJECT" -f "$COMPOSE_FILE" -f "$TEST_OVERRIDE" "$@"
@@ -28,6 +28,15 @@ trap cleanup EXIT
 
 if ! command -v xxd >/dev/null 2>&1; then
     echo "  FAIL: 'xxd' is required on the host to run this test (hex-encodes the control cookie)"
+    exit 1
+fi
+
+# The test override needs !override (Compose 2.24.4+) to actually clear the
+# base file's port publish — on anything older, `compose up` below fails
+# with a confusing YAML-merge error instead of a clear version message.
+compose_version=$(docker compose version --short 2>/dev/null || echo "0")
+if [ "$(printf '%s\n%s\n' "2.24.4" "$compose_version" | sort -V | head -1)" != "2.24.4" ]; then
+    echo "  FAIL: Docker Compose 2.24.4+ is required (found: ${compose_version:-unknown}) — this test's override uses the !override YAML merge tag"
     exit 1
 fi
 
@@ -69,7 +78,7 @@ echo "  Checking control-port NEWNYM signal..."
 cookie=$(compose exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
 signal_response=$(
     printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$cookie" \
-        | compose exec -T tor nc 127.0.0.1 9051 2>/dev/null || echo ""
+        | compose exec -T tor nc -w 15 127.0.0.1 9051 2>/dev/null || echo ""
 )
 mapfile -t reply_lines < <(printf '%s' "$signal_response" | tr -d '\r')
 # Each line sent gets exactly one reply line in order — line 1 is

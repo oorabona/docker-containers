@@ -8,6 +8,8 @@ A single [tor](../../tor/) container (monitoring flavor) for trying out the cont
 - Trying `SIGNAL NEWNYM` and seeing how a new connection's circuit differs in Nyx
 - Testing an app's behavior across different exit countries via `EXIT_NODES`
 
+Restricting exit-node selection (as this stack's `EXIT_NODES=US` default does) narrows the pool of relays your traffic can exit through — useful for testing, but it's a real anonymity trade-off, not a free knob: a smaller, more predictable exit set is easier to correlate against than Tor's full relay diversity. Fine for a local playground; think twice before carrying the same setting into anything privacy-sensitive.
+
 ## Quick start
 
 ```bash
@@ -27,7 +29,7 @@ GETINFO circuit-status
 ```bash
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
 # send SIGNAL NEWNYM via nyx, then open a NEW connection (the check above
-# reused the old one) to see what circuit it lands on:
+# used the pre-NEWNYM circuit) to see what circuit it lands on:
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
 ```
 
@@ -37,10 +39,10 @@ That endpoint only confirms `IsTor` and the exit `IP`, not country — `EXIT_NOD
 
 ```bash
 COOKIE=$(docker compose exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
-printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc 127.0.0.1 9051
+printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc -w 15 127.0.0.1 9051
 ```
 
-The container only does what only it can do — read the cookie file, reach the loopback-only control port. Hex-encoding happens on your own machine (`xxd -p`, or `od -An -tx1 | tr -d ' \n'` if you don't have `xxd`). The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than embedded in the command itself, so the cookie is never visible in a process listing inside the container.
+The container only does what only it can do — read the cookie file, reach the loopback-only control port. Hex-encoding happens on your own machine (`xxd -p`, or `od -An -v -tx1 | tr -d ' \n'` if you don't have `xxd` — the `-v` matters, without it `od` silently collapses repeated identical lines with a `*` instead of printing them). The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than embedded in the command itself, so the cookie is never visible in a process listing inside the container. `-w 15` bounds how long `nc` waits — the busybox `nc` in this image supports it as "timeout for connects and final net reads" — so a control port that accepts the connection but never closes cleanly can't hang the command indefinitely.
 
 ## Notes
 

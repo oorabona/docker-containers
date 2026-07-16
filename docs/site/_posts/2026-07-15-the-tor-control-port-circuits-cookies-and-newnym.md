@@ -64,6 +64,8 @@ There's also a torrc setting, `MaxCircuitDirtiness` (600 seconds by default), th
 
 NEWNYM gets you *a* new circuit, but not a *chosen* one. If you want to constrain where the exit relay is, that's a different, complementary directive — and our container has a shortcut for the common case.
 
+Worth being upfront about before reaching for it: restricting exit selection is a real anonymity trade-off, not a free knob. Tor's own manual frames node-selection options this way for a reason — narrowing your exit pool to one country makes your traffic's exit point more predictable and easier to correlate against than Tor's full relay diversity gives you by default. Fine for testing and for a local playground; think twice before carrying it into anything privacy-sensitive.
+
 Two environment variables map straight to Tor's country-based exit filtering:
 
 ```bash
@@ -141,7 +143,7 @@ GETINFO circuit-status
 ```bash
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
 # send SIGNAL NEWNYM via nyx, then open a NEW connection (the check above
-# reused the old one) to see what circuit it lands on:
+# used the pre-NEWNYM circuit) to see what circuit it lands on:
 curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
 ```
 
@@ -153,12 +155,12 @@ Nyx is convenient, but everything above is just text over a socket, which means 
 
 ```bash
 COOKIE=$(docker compose exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
-printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc 127.0.0.1 9051
+printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc -w 15 127.0.0.1 9051
 ```
 
 If you used the standalone `docker run --name tor` command instead, swap `docker compose exec -T tor` for plain `docker exec tor`/`docker exec -i tor` — that path really did name the container `tor`.
 
-The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -tx1 | tr -d ' \n'` if you don't have `xxd` handy) — ordinary host tooling, not something you need to hope is in the container. The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than baked into an `sh -c "..."` string, so the cookie — the control port's actual secret — never shows up in a process listing inside the container.
+The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -v -tx1 | tr -d ' \n'` if you don't have `xxd` handy — the `-v` matters, without it `od` silently collapses repeated identical lines instead of printing them) — ordinary host tooling, not something you need to hope is in the container. The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than baked into an `sh -c "..."` string, so the cookie — the control port's actual secret — never shows up in a process listing inside the container. `-w 15` bounds how long `nc` waits for the connection and final reads — the busybox `nc` in this image supports it directly — so a control port that accepts the connection but never closes cleanly can't hang the command forever.
 
 ## When you'd actually reach for this
 
