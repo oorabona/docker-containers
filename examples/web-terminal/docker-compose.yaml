@@ -47,13 +47,20 @@ services:
     # hit. Mirrors the image's Dockerfile HEALTHCHECK exactly.
     healthcheck:
       # $$ (not $): Compose interpolates bare $var in this file itself before
-      # the command ever reaches the container's shell — unescaped, "$code"
-      # silently becomes an empty string here instead of a runtime variable.
+      # the command ever reaches the container's shell — unescaped, a bare
+      # $-variable here silently becomes an empty string instead of a
+      # runtime one. This stack doesn't set TTYD_PORT/TLS/CREDENTIAL, but
+      # the check still reads them so it keeps matching the Dockerfile's
+      # own HEALTHCHECK if that ever changes.
       test:
         - CMD-SHELL
         - >-
-          code=$$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' http://localhost:7681/token);
-          case "$$code" in 200|401|407) exit 0 ;; *) exit 1 ;; esac
+          port="$${TTYD_PORT:-7681}"; proto=http;
+          [ -f "$${TTYD_SSL_CERT:-}" ] && [ -f "$${TTYD_SSL_KEY:-}" ] && proto=https;
+          set --;
+          [ -n "$${TTYD_CREDENTIAL:-}" ] && set -- -u "$$TTYD_CREDENTIAL";
+          [ -n "$${TTYD_AUTH_HEADER:-}" ] && set -- -H "$${TTYD_AUTH_HEADER}:healthcheck";
+          curl -fsk --noproxy '*' "$$@" -o /dev/null "$$proto://localhost:$$port/token"
       interval: 30s
       timeout: 10s
       start_period: 10s

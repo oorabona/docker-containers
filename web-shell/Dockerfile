@@ -59,22 +59,20 @@ EXPOSE 2222
 
 # /token is the documented readiness endpoint (README, test.sh) — it proves
 # ttyd can actually issue a token, not just that something answers on the
-# port. -f can't be used as-is: ttyd's auth check (Basic credential or proxy
-# header, via TTYD_CREDENTIAL/TTYD_AUTH_HEADER) applies to every path
-# including /token, so a configured deployment legitimately gets 401/407
-# there, and -f would fail the probe on that expected response. Instead,
-# read the status explicitly and accept only the codes that mean "ttyd is
-# up and behaving correctly" (200 unauthenticated, 401/407 correctly
-# enforcing configured auth) — genuine failures (5xx, anything else) still
-# fail the check. -o /dev/null keeps the token body itself out of health
-# logs regardless of which code comes back. --noproxy '*' stops an
-# http_proxy/ALL_PROXY env var from turning a proxy 407 into a false
-# "healthy" without ever reaching ttyd. Port and TLS mode follow the same
-# TTYD_PORT/TTYD_SSL_CERT/TTYD_SSL_KEY entrypoint.sh already reads, so a
-# non-default deployment doesn't probe the wrong port or scheme; -k skips
-# cert validation since ttyd's own TLS setup is typically self-signed and
-# this is a liveness check, not a trust check.
+# port. ttyd's auth check (Basic credential or proxy header) applies to
+# every path including /token, so an unauthenticated probe against a
+# configured deployment gets a 401/407 that proves nothing about /token
+# itself — a broken token handler behind a *working* auth gate would look
+# identical. Rather than accept that as a proxy for "healthy", authenticate
+# for real: entrypoint.sh's own TTYD_CREDENTIAL/TTYD_AUTH_HEADER are
+# available here too, so pass them through and require an actual 200.
+# --noproxy '*' stops an http_proxy/ALL_PROXY env var from routing the
+# probe through a proxy that never reaches ttyd at all. Port and TLS mode
+# follow the same TTYD_PORT/TTYD_SSL_CERT/TTYD_SSL_KEY entrypoint.sh reads,
+# so a non-default deployment doesn't probe the wrong port or scheme; -k
+# skips cert validation since ttyd's own TLS setup is typically
+# self-signed and this is a liveness check, not a trust check.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; code="$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' "$proto://localhost:$port/token")"; case "$code" in 200|401|407) exit 0 ;; *) exit 1 ;; esac
+    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_CREDENTIAL:-}" ] && set -- -u "$TTYD_CREDENTIAL"; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- -H "${TTYD_AUTH_HEADER}:healthcheck"; curl -fsk --noproxy '*' "$@" -o /dev/null "$proto://localhost:$port/token"
 
 ENTRYPOINT ["entrypoint.sh"]
