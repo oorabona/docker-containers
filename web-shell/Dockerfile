@@ -64,22 +64,27 @@ EXPOSE 2222
 # configured deployment gets a 401/407 that proves nothing about /token
 # itself — a broken token handler behind a *working* auth gate would look
 # identical. entrypoint.sh's own TTYD_CREDENTIAL/TTYD_AUTH_HEADER are
-# available here too, so pass BOTH through if both are set (ttyd's own
-# check_auth() evaluates auth_header first and never reaches credential
-# when both are configured, so the extra -u is harmless, not wrong).
+# available here too, so this authenticates for real — but TTYD_CREDENTIAL
+# goes to curl via -K (a config file on stdin), never as a -u argv value:
+# this image's whole purpose is giving a user a shell, and healthcheck
+# argv is readable by anyone in the same container via `ps`/`/proc`, so a
+# real Basic-auth secret can't go on the command line. TTYD_AUTH_HEADER's
+# value here is a fixed, non-secret placeholder (ttyd only checks the
+# header's presence, not its content), so it's fine as a normal -H arg.
 # --noproxy '*' stops an http_proxy/ALL_PROXY env var from routing the
 # probe through a proxy that never reaches ttyd at all. Port and TLS mode
 # follow the same TTYD_PORT/TTYD_SSL_CERT/TTYD_SSL_KEY entrypoint.sh
-# reads, so a non-default deployment doesn't probe the wrong port or
-# scheme; -k skips cert validation since ttyd's own TLS setup is
-# typically self-signed and this is a liveness check, not a trust check.
-# A bare status check isn't enough — curl succeeds on any <400 response,
-# and a redirect or unrelated 2xx would pass without proving token
-# issuance works — so the body has to actually contain "token" (same
-# check test.sh already makes), piped straight into grep so the token
-# value itself (a live credential when TTYD_CREDENTIAL is configured)
-# never becomes healthcheck output that `docker inspect` can surface.
+# reads; -k skips cert validation since ttyd's own TLS setup is typically
+# self-signed and this is a liveness check, not a trust check. -S prints
+# curl's own connection/TLS error text on a genuine transport failure —
+# safe, it never includes the credential — so a broken port/TLS/proxy
+# config is still diagnosable from `docker inspect`'s health log. A plain
+# status check isn't enough either: curl without -f treats any completed
+# response as success, so status and body are both checked explicitly —
+# exactly 200, and the body actually contains "token" (same content
+# test.sh already checks) — with the body itself never printed, only
+# matched, so the live credential can't leak into that log via output.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_CREDENTIAL:-}" ] && set -- "$@" -u "$TTYD_CREDENTIAL"; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- "$@" -H "${TTYD_AUTH_HEADER}:healthcheck"; curl -sk --noproxy '*' "$@" "$proto://localhost:$port/token" | grep -q '"token"'
+    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- "$@" -H "${TTYD_AUTH_HEADER}:healthcheck"; curl_cfg=""; [ -n "${TTYD_CREDENTIAL:-}" ] && curl_cfg="user = \"${TTYD_CREDENTIAL}\""; out="$(printf '%s\n' "$curl_cfg" | curl -sSk --noproxy '*' -K - "$@" -w 'HTTPSTATUS:%{http_code}' "$proto://localhost:$port/token")"; case "$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
 
 ENTRYPOINT ["entrypoint.sh"]
