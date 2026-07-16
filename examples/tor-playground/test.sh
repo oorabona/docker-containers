@@ -3,21 +3,21 @@
 set -euo pipefail
 
 COMPOSE_FILE="$(dirname "$0")/docker-compose.yaml"
+TEST_OVERRIDE="$(dirname "$0")/docker-compose.test.yaml"
 TIMEOUT=120
 # A dedicated Compose project, not the directory-derived default: running
 # this test must never touch a reader's own already-running `docker compose
 # up -d` playground session (or its `tor-data` volume) in the same
 # directory — confirmed, cleanup only ever tears down this project's own
-# resources. It does NOT make the test itself runnable alongside a
-# reader's session, though: docker-compose.yaml still publishes a fixed
-# host port (127.0.0.1:9050), which is global regardless of Compose
-# project, so `compose up -d` here will fail to bind if a reader's own
-# instance already holds it — harmlessly (this script exits non-zero,
-# their stack stays untouched), just not concurrently runnable.
-PROJECT="tor-playground-test-$$"
+# resources. The PID alone isn't unique across separate PID namespaces
+# that might share one Docker daemon (containerized CI running several
+# jobs against the same daemon, for instance), so it's paired with a
+# random suffix and the current time — collision there would let one
+# run's `down -v` tear down another's resources.
+PROJECT="tor-playground-test-$$-${RANDOM}-$(date +%s)"
 
 compose() {
-    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" -f "$TEST_OVERRIDE" "$@"
 }
 
 cleanup() {
@@ -40,10 +40,11 @@ echo "  Confirming nyx is present (monitoring flavor smoke check)..."
 compose exec -T tor nyx --version >/dev/null
 
 # The SOCKS and control-port checks below run curl/nc *inside* the
-# container via `compose exec`, not against the host-published port — this
-# stack's published 127.0.0.1:9050 is for a reader pointing their own
-# tools at it, not something this test needs to depend on. It means the
-# test can't collide with anything already bound to 9050 on the host.
+# container via `compose exec`, not against a host-published port — and
+# thanks to TEST_OVERRIDE clearing the port publish entirely, `compose up
+# -d` above didn't need host port 9050 either. The whole test run is free
+# of any host-port dependency, so it can't collide with a reader's own
+# playground session, local Tor, or anything else already bound to 9050.
 echo "  Waiting for a Tor circuit through the SOCKS proxy..."
 start=$SECONDS
 response=""

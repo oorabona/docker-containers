@@ -1,0 +1,12 @@
+# Test-only override: clears the host port publish from docker-compose.yaml.
+# Every check test.sh runs goes through `docker compose exec` (inside the
+# container's own network namespace), so the test never needs a host port
+# at all — this lets `docker compose up -d` succeed even when a reader's
+# own playground session (or anything else) already holds 127.0.0.1:9050.
+services:
+  tor:
+    # Compose merges list-type keys by concatenation, not replacement, by
+    # default — a plain `ports: []` here would be a no-op and the base
+    # file's publish would survive untouched. `!override` forces an actual
+    # replacement (Compose v2.24+).
+    ports: !override []
