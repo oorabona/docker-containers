@@ -58,9 +58,9 @@ services:
           port="$${TTYD_PORT:-7681}"; proto=http;
           [ -f "$${TTYD_SSL_CERT:-}" ] && [ -f "$${TTYD_SSL_KEY:-}" ] && proto=https;
           set --;
-          [ -n "$${TTYD_CREDENTIAL:-}" ] && set -- -u "$$TTYD_CREDENTIAL";
-          [ -n "$${TTYD_AUTH_HEADER:-}" ] && set -- -H "$${TTYD_AUTH_HEADER}:healthcheck";
-          curl -fsk --noproxy '*' "$$@" -o /dev/null "$$proto://localhost:$$port/token"
+          [ -n "$${TTYD_CREDENTIAL:-}" ] && set -- "$$@" -u "$$TTYD_CREDENTIAL";
+          [ -n "$${TTYD_AUTH_HEADER:-}" ] && set -- "$$@" -H "$${TTYD_AUTH_HEADER}:healthcheck";
+          curl -sk --noproxy '*' "$$@" "$$proto://localhost:$$port/token" | grep -q '"token"'
       interval: 30s
       timeout: 10s
       start_period: 10s
