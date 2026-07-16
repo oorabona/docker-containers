@@ -40,11 +40,14 @@ services:
     tmpfs:
       - /tmp
       - /run
-    # Compose-level override: the image's own HEALTHCHECK is invisible to
-    # `depends_on: condition: service_healthy` on an attestation-enabled
-    # pull (see #900) — the bytes are there, Compose's own image-parsing
-    # path just doesn't surface them, the same gap several other tools
-    # hit. Mirrors the image's Dockerfile HEALTHCHECK exactly.
+    # Compose-level override: on real Docker Engine this is redundant —
+    # the image's own HEALTHCHECK resolves fine. On a Podman-backed
+    # Compose (podman-compose, or `docker compose` aliased to Podman —
+    # e.g. rootless dev boxes, RHEL/Fedora hosts), Podman's own image
+    # config type has no Healthcheck field to read at all, so
+    # `depends_on: condition: service_healthy` would never resolve
+    # without this override (see #900). Mirrors the image's Dockerfile
+    # HEALTHCHECK exactly, so it stays a no-op duplicate on Docker.
     healthcheck:
       # $$ (not $): Compose interpolates bare $var in this file itself before
       # the command ever reaches the container's shell — unescaped, a bare
