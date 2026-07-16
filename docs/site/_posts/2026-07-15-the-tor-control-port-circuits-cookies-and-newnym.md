@@ -81,6 +81,7 @@ What `StrictNodes` *does* harden is `ExcludeNodes` — excluding relays anywhere
 
 ```bash
 docker run -d --name tor \
+  -p 127.0.0.1:9050:9050 \
   -v "$PWD/torrc:/etc/tor/torrc:ro" \
   ghcr.io/oorabona/tor:latest
 ```
@@ -148,12 +149,14 @@ That endpoint returns a small JSON body (`{"IsTor":true,"IP":"..."}`) — it con
 
 ## Scripted alternative
 
-Nyx is convenient, but everything above is just text over a socket, which means it's trivial to script without any extra tooling — useful if you want to trigger a circuit rotation from a cron job or a CI step rather than a human at a terminal:
+Nyx is convenient, but everything above is just text over a socket, which means it's trivial to script without any extra tooling — useful if you want to trigger a circuit rotation from a cron job or a CI step rather than a human at a terminal. If you followed the `tor-playground` / `docker compose` path above, use `docker compose exec` (a container started via Compose isn't actually named `tor` unless you pin `container_name`, so bare `docker exec tor ...` won't find it):
 
 ```bash
-COOKIE=$(docker exec tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
-printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker exec -i tor nc 127.0.0.1 9051
+COOKIE=$(docker compose exec -T tor cat /var/lib/tor/control_auth_cookie | xxd -p | tr -d '\n')
+printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$COOKIE" | docker compose exec -T tor nc 127.0.0.1 9051
 ```
+
+If you used the standalone `docker run --name tor` command instead, swap `docker compose exec -T tor` for plain `docker exec tor`/`docker exec -i tor` — that path really did name the container `tor`.
 
 The cookie file is raw bytes, but `AUTHENTICATE` wants it as a hex string. Rather than lean on whichever hex tool happens to be compiled into this particular image's busybox build, split the work at the boundary that actually matters: the container does only what only it *can* do — `cat` the cookie out, and, in the second command, talk to the loopback-only control port with `nc`. Turning those bytes into hex happens on your own machine with `xxd` (or `od -An -tx1 | tr -d ' \n'` if you don't have `xxd` handy) — ordinary host tooling, not something you need to hope is in the container. The `AUTHENTICATE`/`SIGNAL` line is piped into `nc` as stdin rather than baked into an `sh -c "..."` string, so the cookie — the control port's actual secret — never shows up in a process listing inside the container.
 
