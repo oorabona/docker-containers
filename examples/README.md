@@ -1,6 +1,6 @@
 # Stack Examples
 
-Ready-to-run Docker Compose stacks combining multiple containers from this project. Each example represents a typical deployment pattern — a "pod" that can be deployed independently.
+Ready-to-run Docker Compose stacks built from containers in this project. Most combine multiple containers into a deployment pattern — a "pod" that can be deployed independently — but a few wrap a single container for hands-on exploration of something that's easier to learn by doing than reading.
 
 ## Stacks
 
@@ -12,6 +12,7 @@ Ready-to-run Docker Compose stacks combining multiple containers from this proje
 | [php-app-stack](php-app-stack/) | OpenResty + PHP-FPM + PostgreSQL | Custom PHP application |
 | [web-terminal](web-terminal/) | OpenResty + Web Shell | Secure browser-based terminal |
 | [observability-stack](observability-stack/) | PostgreSQL + Vector + Grafana | Monitoring and log aggregation |
+| [tor-playground](tor-playground/) | Tor (monitoring flavor) | Hands-on Tor control port, Nyx, `SIGNAL NEWNYM` |
 
 ## Usage
 
