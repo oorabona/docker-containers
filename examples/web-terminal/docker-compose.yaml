@@ -40,13 +40,11 @@ services:
     tmpfs:
       - /tmp
       - /run
-    # Compose-level override: the image's own HEALTHCHECK doesn't survive
-    # into the published config for attestation-enabled pushes (see #900),
-    # so `depends_on: condition: service_healthy` has nothing to read
-    # without this override. Mirrors the image's Dockerfile HEALTHCHECK
-    # exactly — /token is the documented readiness endpoint; the explicit
-    # status check accepts 200/401/407 (ttyd up, auth enforced correctly
-    # if configured) and rejects everything else, including 5xx.
+    # Compose-level override: the image's own HEALTHCHECK is invisible to
+    # `depends_on: condition: service_healthy` on an attestation-enabled
+    # pull (see #900) — the bytes are there, Compose's own image-parsing
+    # path just doesn't surface them, the same gap several other tools
+    # hit. Mirrors the image's Dockerfile HEALTHCHECK exactly.
     healthcheck:
       # $$ (not $): Compose interpolates bare $var in this file itself before
       # the command ever reaches the container's shell — unescaped, "$code"
@@ -54,7 +52,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:7681/token);
+          code=$$(curl -sk --noproxy '*' -o /dev/null -w '%{http_code}' http://localhost:7681/token);
           case "$$code" in 200|401|407) exit 0 ;; *) exit 1 ;; esac
       interval: 30s
       timeout: 10s
