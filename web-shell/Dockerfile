@@ -84,7 +84,12 @@ EXPOSE 2222
 # exactly 200, and the body actually contains "token" (same content
 # test.sh already checks) — with the body itself never printed, only
 # matched, so the live credential can't leak into that log via output.
+# The credential is escaped for curl's -K config quoting (backslash
+# first, then double-quote) before being embedded in `user = "..."` — a
+# generated secret containing either character would otherwise be
+# silently truncated or mangled by curl's own config parser, sending the
+# wrong password and marking a working container unhealthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- "$@" -H "${TTYD_AUTH_HEADER}:healthcheck"; curl_cfg=""; [ -n "${TTYD_CREDENTIAL:-}" ] && curl_cfg="user = \"${TTYD_CREDENTIAL}\""; out="$(printf '%s\n' "$curl_cfg" | curl -sSk --noproxy '*' -K - "$@" -w 'HTTPSTATUS:%{http_code}' "$proto://localhost:$port/token")"; case "$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
+    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- "$@" -H "${TTYD_AUTH_HEADER}:healthcheck"; curl_cfg=""; if [ -n "${TTYD_CREDENTIAL:-}" ]; then esc_cred="$(printf '%s' "$TTYD_CREDENTIAL" | sed 's/\\/\\\\/g; s/"/\\"/g')"; curl_cfg="user = \"${esc_cred}\""; fi; out="$(printf '%s\n' "$curl_cfg" | curl -sSk --noproxy '*' -K - "$@" -w 'HTTPSTATUS:%{http_code}' "$proto://localhost:$port/token")"; case "$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
 
 ENTRYPOINT ["entrypoint.sh"]

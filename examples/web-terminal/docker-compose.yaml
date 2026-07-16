@@ -57,7 +57,10 @@ services:
       # own HEALTHCHECK if that ever changes.
       # TTYD_CREDENTIAL goes to curl via -K (stdin config), never as -u argv —
       # this image gives users a shell, and healthcheck argv is readable by
-      # anyone in the same container via `ps`/`/proc`.
+      # anyone in the same container via `ps`/`/proc`. sed-escaped (backslash
+      # first, then double-quote) before embedding in `user = "..."` — a
+      # generated secret containing either character would otherwise be
+      # silently mangled by curl's own config-file parser.
       test:
         - CMD-SHELL
         - >-
@@ -66,7 +69,10 @@ services:
           set --;
           [ -n "$${TTYD_AUTH_HEADER:-}" ] && set -- "$$@" -H "$${TTYD_AUTH_HEADER}:healthcheck";
           curl_cfg="";
-          [ -n "$${TTYD_CREDENTIAL:-}" ] && curl_cfg="user = \"$${TTYD_CREDENTIAL}\"";
+          if [ -n "$${TTYD_CREDENTIAL:-}" ]; then
+          esc_cred="$$(printf '%s' "$$TTYD_CREDENTIAL" | sed 's/\\/\\\\/g; s/"/\\"/g')";
+          curl_cfg="user = \"$${esc_cred}\"";
+          fi;
           url="$$proto://localhost:$$port/token";
           out="$$(printf '%s\n' "$$curl_cfg" | curl -sSk --noproxy '*' -K - "$$@" -w 'HTTPSTATUS:%{http_code}' "$$url")";
           case "$$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
