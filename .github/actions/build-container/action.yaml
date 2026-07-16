@@ -533,6 +533,35 @@ runs:
           echo "::notice::Build skipped for $container:$current_tag (image already published with matching digest)"
         fi
 
+    # A `docker buildx build --load` leaves the built image in two places at
+    # once: BuildKit's own build cache AND the local Docker daemon's image
+    # store. Trivy's scan then makes a THIRD copy, re-exporting the
+    # daemon-loaded image to a tarball to scan it — on a large image this can
+    # exhaust the runner's ~14GB disk before Trivy even starts (#894). This
+    # only prunes BuildKit's own build cache, not the daemon-loaded image
+    # Trivy is about to scan or the one the later push steps use — those
+    # come from the Docker daemon's image store, a separate thing buildx's
+    # cache prune never touches (confirmed: the push steps below use plain
+    # `docker push`, not buildx, so nothing downstream needs this cache).
+    #
+    # `--all` wipes the WHOLE builder's cache, not just this build's layers —
+    # fine today because this composite action has exactly one call site in
+    # the whole repo (auto-build.yaml), one build per job. If it's ever
+    # invoked more than once within the same job (building multiple variants
+    # sequentially on one runner, say), a full wipe here would cold-bust
+    # cache the next invocation was counting on reusing — revisit with a
+    # bounded `--keep-storage` instead of `--all` if that ever happens.
+    #
+    # This cleanup is disk hygiene, not something the build's success should
+    # ever hinge on — the `|| echo` fallback and continue-on-error below
+    # (matching the Trivy steps' own advisory pattern in this same file)
+    # keep a prune failure from blocking the scan and push steps that follow.
+    - name: Free BuildKit build cache before vulnerability scan
+      if: ${{ runner.os != 'Windows' && steps.build.outputs.image_loaded == 'true' && inputs.scan_vulnerabilities == 'true' }}
+      shell: bash
+      run: docker buildx prune -f --all || echo "::warning::BuildKit cache prune failed — continuing, this step is best-effort disk hygiene, not a build gate"
+      continue-on-error: true  # Disk cleanup is advisory — don't block scan/push on it
+
     # Security Scanning with Trivy
     # Note: Image is tagged as ghcr.io/owner/container:version by the build step
     # trivy-action manages its own DB cache (cache-trivy-YYYY-MM-DD) — no project-level wrapper needed.
