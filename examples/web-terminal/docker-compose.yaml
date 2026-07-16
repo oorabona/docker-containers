@@ -40,17 +40,15 @@ services:
     tmpfs:
       - /tmp
       - /run
-    # Compose-level override: the image's own HEALTHCHECK is invisible to
-    # `depends_on: condition: service_healthy` — attestation-enabled pushes
-    # force OCI mediatype, and the Docker-only Healthcheck field isn't
-    # interpreted by OCI-schema-conformant readers (see #900). Mirrors the
-    # image's Dockerfile HEALTHCHECK exactly.
+    # Compose-level override: the image's own HEALTHCHECK doesn't survive
+    # into the published config for attestation-enabled pushes (see #900),
+    # so `depends_on: condition: service_healthy` has nothing to read
+    # without this override. Mirrors the image's Dockerfile HEALTHCHECK
+    # exactly — no -f, since ttyd's auth check (Basic/proxy-header, when
+    # TTYD_CREDENTIAL/TTYD_AUTH_HEADER is set) applies to every path, and
+    # -f would fail this probe on a 401/407 that isn't a liveness problem.
     healthcheck:
-      # -o /dev/null: the token endpoint's response body is a live auth
-      # token — Docker stores healthcheck output in the container's health
-      # log, readable via `docker inspect`, so only the status code (not
-      # the body) should ever land there.
-      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:7681/token"]
+      test: ["CMD", "curl", "-sS", "-o", "/dev/null", "http://localhost:7681/"]
       interval: 30s
       timeout: 10s
       start_period: 10s

@@ -57,7 +57,13 @@ EXPOSE 7681
 # SSH (non-standard port to avoid conflicts)
 EXPOSE 2222
 
+# No -f: ttyd's auth check (Basic credential or proxy header, both supported
+# via TTYD_CREDENTIAL/TTYD_AUTH_HEADER) applies to every path including
+# /token, so an authenticated deployment would fail a -f probe on a 401/407
+# it never should have seen. Without -f, curl succeeds on any completed HTTP
+# response and only fails on a genuine connection problem — which is what a
+# liveness check should assert, auth state aside.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -fsS -o /dev/null http://localhost:7681/token
+    CMD curl -sS -o /dev/null http://localhost:7681/
 
 ENTRYPOINT ["entrypoint.sh"]
