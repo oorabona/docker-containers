@@ -110,9 +110,15 @@ signal_response=$(
 )
 # A plain read loop, not `mapfile` (bash 4+ only — macOS's stock
 # /bin/bash is still 3.2), so this stays portable to the same bash
-# version every other example's test.sh already assumes.
+# version every other example's test.sh already assumes. The `||
+# [ -n "$line" ]` matters: $(...) strips ALL trailing newlines, and Tor's
+# QUIT isn't documented as guaranteeing a reply of its own — if SIGNAL
+# NEWNYM's "250 OK" ends up as the final, non-newline-terminated line,
+# a bare `while read` silently drops it (read returns false at EOF even
+# with real data in $line), turning a genuinely successful exchange into
+# a false test failure.
 reply_lines=()
-while IFS= read -r line; do
+while IFS= read -r line || [ -n "$line" ]; do
     reply_lines+=("$line")
 done < <(printf '%s' "$signal_response" | tr -d '\r')
 # Each line sent gets exactly one reply line in order — line 1 is
