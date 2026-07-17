@@ -10,10 +10,23 @@ services:
     image: ${DOCKER_REGISTRY:-}openvpn:${TAG:-latest}
     ports:
       - "1194:1194/udp"
-    # Required capabilities for VPN
+    # Capabilities. NET_ADMIN creates the tun device and configures the routes
+    # and firewall rules (openvpn's UDP transport uses ordinary sockets, so
+    # NET_RAW is not needed — matching this image's own hardening writeup).
+    # SETUID/SETGID let openvpn drop to the unprivileged nobody/nogroup its
+    # server.conf specifies (`user nobody` / `group nogroup`, with persist-tun/
+    # persist-key) once the tunnel is up. Under cap_drop: ALL the drop can't
+    # complete without them, and openvpn treats a failed privilege drop as
+    # fatal — so a config with `user`/`group` won't start at all without these
+    # caps. (Setuid mechanic verified: `su` to nobody under cap_drop: ALL fails
+    # with only NET_ADMIN ["can't set groups"] and succeeds with SETUID/SETGID.
+    # openvpn's own end-to-end drop needs a live tunnel with a real tun device
+    # and a user/group server.conf; the CI e2e only boots the image and checks
+    # `openvpn --version`, so it does not by itself exercise the drop.)
     cap_add:
       - NET_ADMIN
-      - NET_RAW
+      - SETUID
+      - SETGID
     cap_drop:
       - ALL
     security_opt:
@@ -25,6 +38,12 @@ services:
       - net.ipv4.conf.all.forwarding=1
       - net.ipv6.conf.all.disable_ipv6=0
       - net.ipv6.conf.all.forwarding=1
+    # Bootstrap the empty volume once: `AUTO_INSTALL=y docker compose up -d`
+    # generates the PKI + server.conf. Heads-up on the entrypoint's lifecycle
+    # (tracked in #912): with a config already present, AUTO_INSTALL=y re-runs
+    # setup and AUTO_INSTALL unset/n opens an interactive management menu instead
+    # of starting — so this installer does not support a clean unattended restart
+    # loop out of the box. See openvpn/README.md "Lifecycle" and #912.
     environment:
       - AUTO_INSTALL=${AUTO_INSTALL:-n}
       - AUTO_START=${AUTO_START:-y}
