@@ -116,7 +116,16 @@ test_container() {
             run_opts="$run_opts -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test -e POSTGRES_DB=test"
             ;;
         openvpn)
-            run_opts="$run_opts --cap-add NET_ADMIN --device /dev/net/tun:/dev/net/tun"
+            # Run under the shipped hardened profile so the e2e actually exercises
+            # the privilege drop: cap_drop:ALL + NET_ADMIN (tun/routes) + SETUID/SETGID
+            # (the drop to nobody). AUTO_INSTALL/AUTO_START generate the config and
+            # start the server; ENDPOINT is pinned so the installer never reaches out
+            # for public-IP detection. openvpn/test.sh asserts the daemon runs as nobody.
+            run_opts="$run_opts --cap-drop ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID"
+            run_opts="$run_opts --security-opt no-new-privileges --device /dev/net/tun:/dev/net/tun"
+            run_opts="$run_opts --sysctl net.ipv4.ip_forward=1 --sysctl net.ipv4.conf.all.forwarding=1"
+            run_opts="$run_opts --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1"
+            run_opts="$run_opts -e AUTO_INSTALL=y -e AUTO_START=y -e ENDPOINT=127.0.0.1"
             ;;
         ansible|debian)
             # These need a command to stay running
