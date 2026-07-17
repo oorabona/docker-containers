@@ -57,7 +57,39 @@ EXPOSE 7681
 # SSH (non-standard port to avoid conflicts)
 EXPOSE 2222
 
+# /token is the documented readiness endpoint (README, test.sh) — it proves
+# ttyd can actually issue a token, not just that something answers on the
+# port. ttyd's auth check (Basic credential or proxy header) applies to
+# every path including /token, so an unauthenticated probe against a
+# configured deployment gets a 401/407 that proves nothing about /token
+# itself — a broken token handler behind a *working* auth gate would look
+# identical. entrypoint.sh's own TTYD_CREDENTIAL/TTYD_AUTH_HEADER are
+# available here too, so this authenticates for real — but TTYD_CREDENTIAL
+# goes to curl via -K (a config file on stdin), never as a -u argv value:
+# this image's whole purpose is giving a user a shell, and healthcheck
+# argv is readable by anyone in the same container via `ps`/`/proc`, so a
+# real Basic-auth secret can't go on the command line. TTYD_AUTH_HEADER's
+# value here is a fixed, non-secret placeholder (ttyd only checks the
+# header's presence, not its content), so it's fine as a normal -H arg.
+# --noproxy '*' stops an http_proxy/ALL_PROXY env var from routing the
+# probe through a proxy that never reaches ttyd at all. Port and TLS mode
+# follow the same TTYD_PORT/TTYD_SSL_CERT/TTYD_SSL_KEY entrypoint.sh
+# reads; -k skips cert validation since ttyd's own TLS setup is typically
+# self-signed and this is a liveness check, not a trust check. -S prints
+# curl's own connection/TLS error text on a genuine transport failure —
+# safe, it never includes the credential — so a broken port/TLS/proxy
+# config is still diagnosable from `docker inspect`'s health log. A plain
+# status check isn't enough either: curl without -f treats any completed
+# response as success, so status and body are both checked explicitly —
+# exactly 200, and the body actually contains "token" (same content
+# test.sh already checks) — with the body itself never printed, only
+# matched, so the live credential can't leak into that log via output.
+# The credential is escaped for curl's -K config quoting (backslash
+# first, then double-quote) before being embedded in `user = "..."` — a
+# generated secret containing either character would otherwise be
+# silently truncated or mangled by curl's own config parser, sending the
+# wrong password and marking a working container unhealthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:7681/token
+    CMD port="${TTYD_PORT:-7681}"; proto=http; [ -f "${TTYD_SSL_CERT:-}" ] && [ -f "${TTYD_SSL_KEY:-}" ] && proto=https; set --; [ -n "${TTYD_AUTH_HEADER:-}" ] && set -- "$@" -H "${TTYD_AUTH_HEADER}:healthcheck"; curl_cfg=""; if [ -n "${TTYD_CREDENTIAL:-}" ]; then esc_cred="$(printf '%s' "$TTYD_CREDENTIAL" | sed 's/\\/\\\\/g; s/"/\\"/g')"; curl_cfg="user = \"${esc_cred}\""; fi; out="$(printf '%s\n' "$curl_cfg" | curl -sSk --noproxy '*' -K - "$@" -w 'HTTPSTATUS:%{http_code}' "$proto://localhost:$port/token")"; case "$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
 
 ENTRYPOINT ["entrypoint.sh"]

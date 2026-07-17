@@ -40,6 +40,46 @@ services:
     tmpfs:
       - /tmp
       - /run
+    # Compose-level override: on real Docker Engine this is redundant —
+    # the image's own HEALTHCHECK resolves fine. On a Podman-backed
+    # Compose (podman-compose, or `docker compose` aliased to Podman —
+    # e.g. rootless dev boxes, RHEL/Fedora hosts), Podman's own image
+    # config type has no Healthcheck field to read at all, so
+    # `depends_on: condition: service_healthy` would never resolve
+    # without this override (see #900). Mirrors the image's Dockerfile
+    # HEALTHCHECK exactly, so it stays a no-op duplicate on Docker.
+    healthcheck:
+      # $$ (not $): Compose interpolates bare $var in this file itself before
+      # the command ever reaches the container's shell — unescaped, a bare
+      # $-variable here silently becomes an empty string instead of a
+      # runtime one. This stack doesn't set TTYD_PORT/TLS/CREDENTIAL, but
+      # the check still reads them so it keeps matching the Dockerfile's
+      # own HEALTHCHECK if that ever changes.
+      # TTYD_CREDENTIAL goes to curl via -K (stdin config), never as -u argv —
+      # this image gives users a shell, and healthcheck argv is readable by
+      # anyone in the same container via `ps`/`/proc`. sed-escaped (backslash
+      # first, then double-quote) before embedding in `user = "..."` — a
+      # generated secret containing either character would otherwise be
+      # silently mangled by curl's own config-file parser.
+      test:
+        - CMD-SHELL
+        - >-
+          port="$${TTYD_PORT:-7681}"; proto=http;
+          [ -f "$${TTYD_SSL_CERT:-}" ] && [ -f "$${TTYD_SSL_KEY:-}" ] && proto=https;
+          set --;
+          [ -n "$${TTYD_AUTH_HEADER:-}" ] && set -- "$$@" -H "$${TTYD_AUTH_HEADER}:healthcheck";
+          curl_cfg="";
+          if [ -n "$${TTYD_CREDENTIAL:-}" ]; then
+          esc_cred="$$(printf '%s' "$$TTYD_CREDENTIAL" | sed 's/\\/\\\\/g; s/"/\\"/g')";
+          curl_cfg="user = \"$${esc_cred}\"";
+          fi;
+          url="$$proto://localhost:$$port/token";
+          out="$$(printf '%s\n' "$$curl_cfg" | curl -sSk --noproxy '*' -K - "$$@" -w 'HTTPSTATUS:%{http_code}' "$$url")";
+          case "$$out" in *'"token"'*'HTTPSTATUS:200') exit 0 ;; *) exit 1 ;; esac
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     networks:
