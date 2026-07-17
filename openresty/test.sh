@@ -18,13 +18,15 @@ echo "  ✅ Nginx config syntax OK"
 echo "  Checking OpenResty version..."
 docker exec "$CONTAINER_NAME" nginx -v 2>&1 || true
 
-# Test HTTP response (optional - may not have curl)
-echo "  Testing HTTP endpoint..."
-if docker exec "$CONTAINER_NAME" which curl &>/dev/null; then
-    response=$(docker exec "$CONTAINER_NAME" curl -s -o /dev/null -w "%{http_code}" "http://localhost/" 2>/dev/null) || response="N/A"
-    echo "  HTTP status: $response"
+# Test HTTP response on the non-privileged port the non-root default server
+# listens on. Uses busybox wget (curl is not in the runtime image) and asserts
+# a successful response, so this actually protects the :8080 port contract.
+echo "  Testing HTTP endpoint on :8080..."
+if docker exec "$CONTAINER_NAME" wget -q -O /dev/null "http://localhost:8080/"; then
+    echo "  ✅ HTTP endpoint responding on :8080"
 else
-    echo "  (curl not available, skipping HTTP test)"
+    echo "  ❌ HTTP endpoint did not respond on :8080"
+    exit 1
 fi
 
 # Test Lua module availability (optional)

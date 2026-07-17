@@ -36,7 +36,7 @@ Each stack is designed as an independent unit that maps to a Kubernetes pod:
 wordpress-stack    wordpress-sqlite   wordpress-composer   php-app-stack
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   ┌──────────────┐
 │  OpenResty   │  │  OpenResty   │  │  OpenResty   │   │  OpenResty   │
-│  :8080→:80   │  │  :8080→:80   │  │  :8080→:80   │   │  :8080→:80   │
+│  :8080→:8080 │  │  :8080→:8080 │  │  :8080→:8080 │   │  :8080→:8080 │
 ├──────────────┤  ├──────────────┤  ├──────────────┤   ├──────────────┤
 │  WordPress   │  │  WordPress   │  │  PHP-FPM     │   │  PHP-FPM     │
 │  (PHP-FPM)   │  │  (SQLite)    │  │  (Composer)  │   │  :9000       │

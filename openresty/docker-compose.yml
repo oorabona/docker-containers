@@ -7,24 +7,62 @@ services:
         RESTY_IMAGE_TAG: ${RESTY_IMAGE_TAG:-latest}
     image: ${DOCKER_REGISTRY:-}openresty:${TAG:-latest}
     container_name: openresty
+    # Container listens on 8080 (HTTP); 8443 is the conventional non-root
+    # HTTPS port — the image runs fully as the non-root nginx user and can't
+    # bind a privileged port. TLS is opt-in: no cert is baked in, so add a
+    # `listen 8443 ssl;` server and mount a cert to use 8443. Map to whatever
+    # host ports you like.
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:8080"   # HTTP (the stock config's only listener)
+      - "8443:8443"   # HTTPS — opt-in; nothing listens here until you add TLS
+    networks:
+      - web
+    # Security hardening — immutable rootfs, non-root user, zero capabilities.
+    # The non-root image needs no capabilities at all (the old NET_BIND_SERVICE
+    # add is gone).
+    read_only: true
     volumes:
       - ./conf.d:/usr/local/openresty/nginx/conf/conf.d:ro
       - ./lua:/usr/local/openresty/lualib/app:ro
-    networks:
-      - web
-    # Security hardening
-    read_only: true
-    tmpfs:
-      - /var/run/openresty
-      - /var/cache/nginx
-      - /tmp
+      # nginx (non-root) writes its pid/cache/temp files below. A tmpfs mounted
+      # over these image-created dirs is not reliably writable by a non-root
+      # user with the short-form `tmpfs:` list (it can't set a mode), so use the
+      # long-form and pin an octal `mode: 01777` — validated to let uid 101
+      # write under read_only.
+      - type: tmpfs
+        target: /var/run/openresty
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /var/cache/nginx
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /usr/local/openresty/nginx/client_body_temp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /usr/local/openresty/nginx/proxy_temp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /usr/local/openresty/nginx/fastcgi_temp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /usr/local/openresty/nginx/uwsgi_temp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /usr/local/openresty/nginx/scgi_temp
+        tmpfs:
+          mode: 01777
     cap_drop:
       - ALL
-    cap_add:
-      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
 

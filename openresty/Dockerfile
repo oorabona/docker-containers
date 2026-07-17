@@ -270,28 +270,75 @@ LABEL luarocks_version="${LUAROCKS_VERSION}"
 # Add additional binaries into PATH for convenience
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
 
-# Create nginx user for running worker processes
-# Master process runs as root (required for binding to ports 80/443)
-# Worker processes drop to nginx user (standard nginx security model)
+# Run fully as a non-root user (nginx, uid 101) — master and workers alike.
+# Because a non-root master cannot bind a privileged port, the stock config's
+# default server is moved from :80 to :8080 (matching the upstream
+# nginx-unprivileged image); no capability or sysctl is needed, so the image
+# stays compatible with `cap_drop: ALL` and `no-new-privileges`. Operators who
+# mount their own config must likewise listen on a port >= 1024.
 RUN addgroup -g 101 -S nginx \
     && adduser -S -D -H -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx \
     && mkdir -p /var/cache/nginx /var/log/nginx \
+    # nginx creates its scratch dirs under the prefix at startup; a non-root
+    # master can't mkdir them in the root-owned prefix, so pre-create + chown.
+    && mkdir -p /usr/local/openresty/nginx/client_body_temp \
+               /usr/local/openresty/nginx/proxy_temp \
+               /usr/local/openresty/nginx/fastcgi_temp \
+               /usr/local/openresty/nginx/uwsgi_temp \
+               /usr/local/openresty/nginx/scgi_temp \
+    # conf.d is the documented drop-in dir for extra server blocks; create it so
+    # the stock config's include (added below) has somewhere to look.
+    && mkdir -p /usr/local/openresty/nginx/conf/conf.d \
     && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /var/run/openresty \
-    && chown -R nginx:nginx /usr/local/openresty/nginx/logs
+    && chown -R nginx:nginx /usr/local/openresty/nginx/logs \
+                            /usr/local/openresty/nginx/client_body_temp \
+                            /usr/local/openresty/nginx/proxy_temp \
+                            /usr/local/openresty/nginx/fastcgi_temp \
+                            /usr/local/openresty/nginx/uwsgi_temp \
+                            /usr/local/openresty/nginx/scgi_temp \
+    # Move the stock default server off the privileged port so the bare image
+    # serves as non-root out of the box, and point the pid at /var/run/openresty
+    # instead of the prefix's logs/nginx.pid — /var/run/openresty is a natural
+    # tmpfs mount point, so a read-only-rootfs deployment only has to tmpfs that
+    # one dir (and the cache/temp dirs) for the pid to land somewhere writable.
+    && sed -i \
+        -e 's/listen[[:space:]]\{1,\}80;/listen       8080;/' \
+        -e 's|^#\{0,1\}pid[[:space:]].*|pid /var/run/openresty/nginx.pid;|' \
+        -e '/^http {/a\    include conf.d/*.conf;' \
+        /usr/local/openresty/nginx/conf/nginx.conf \
+    # Fail the build loudly if an upstream nginx.conf format change ever makes a
+    # rewrite a no-op — otherwise the image would silently ship a non-root
+    # server still trying to bind :80, or a pid in an unwritable path. The
+    # negative assertion also catches any OTHER active privileged listener the
+    # rewrite didn't cover (e.g. `listen [::]:80;`, `listen 443 ssl;`).
+    && grep -qE '^[[:space:]]+listen[[:space:]]+8080;' /usr/local/openresty/nginx/conf/nginx.conf \
+    && grep -qx 'pid /var/run/openresty/nginx.pid;' /usr/local/openresty/nginx/conf/nginx.conf \
+    && grep -qF 'include conf.d/*.conf;' /usr/local/openresty/nginx/conf/nginx.conf \
+    && ! grep -qE '^[[:space:]]*listen[[:space:]]+(\[::\]:)?(80|443)([[:space:];]|$)' \
+        /usr/local/openresty/nginx/conf/nginx.conf
 
 # Add healthcheck to verify OpenResty is responding. Uses busybox wget (present
-# in the alpine base; curl is not installed at runtime) against `/`, which the
+# in the alpine base; curl is not installed at runtime) against `/` on the
+# non-privileged :8080 the non-root default server now listens on, which the
 # stock OpenResty config serves with 200 — `/nginx_status` is only available when
 # the user adds a stub_status location (see README), so it can't be the default
 # probe target.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD wget -q -O /dev/null http://localhost/ || exit 1
+    CMD wget -q -O /dev/null http://localhost:8080/ || exit 1
 
 LABEL org.opencontainers.image.title="OpenResty" \
       org.opencontainers.image.description="OpenResty (Nginx + Lua) with LuaRocks and custom modules" \
       org.opencontainers.image.source="https://github.com/oorabona/docker-containers" \
       org.opencontainers.image.vendor="oorabona" \
       org.opencontainers.image.licenses="MIT"
+
+# 8080 = HTTP, 8443 = the conventional non-root HTTPS port (a non-root master
+# can't bind 443 any more than 80). No cert is baked in, so TLS is opt-in:
+# mount a cert and add a `listen 8443 ssl;` server to your config.
+EXPOSE 8080 8443
+
+# Drop to the unprivileged nginx user for the whole runtime (master included).
+USER nginx
 
 CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
 
