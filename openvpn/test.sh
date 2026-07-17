@@ -90,25 +90,19 @@ assert_daemon_dropped() {
 }
 
 # Classify a container that exited before the drop could be verified. A failed
-# privilege drop (missing SETUID/SETGID) is a HARD failure — that is exactly the
-# regression this test exists to catch. A first-run install that could not fetch
-# EasyRSA from GitHub (this image downloads it at runtime) is an infrastructure /
-# network problem, not a privilege regression, so it SKIPs loudly rather than
-# reporting a false red. Anything else fails, so unknown breakage is never hidden.
+# privilege drop (missing SETUID/SETGID) is called out specifically — that is the
+# regression this test exists to catch — but every early exit is a HARD failure.
+# EasyRSA is baked into the image (#918), so first-run install no longer depends
+# on the network; a "Could not download EasyRSA" here means the baked copy/extract
+# failed, which must fail the test rather than be skipped as an infra blip.
 classify_exit_and_leave() {
     if printf '%s\n' "$last_logs" | grep -qiE 'set(gid|uid|groups).*failed|Operation not permitted'; then
         echo "  ❌ openvpn aborted on its privilege drop — the reduced capability profile is broken"
-        printf '%s\n' "$last_logs" | tail -30
-        exit 1
-    elif printf '%s\n' "$last_logs" | grep -qiE 'Could not download EasyRSA|wget:|curl:|Could not resolve|Temporary failure in name resolution|api\.github\.com'; then
-        echo "  ⚠️  SKIPPED: first-run install could not fetch EasyRSA from GitHub (network / rate-limit)."
-        echo "  ⚠️  The openvpn privilege drop was NOT verified this run — infrastructure issue, not a regression."
-        exit 0
     else
-        echo "  ❌ container exited before the openvpn daemon started (cause unclear)"
-        printf '%s\n' "$last_logs" | tail -40
-        exit 1
+        echo "  ❌ container exited before the openvpn daemon started"
     fi
+    printf '%s\n' "$last_logs" | tail -40
+    exit 1
 }
 
 drop_deadline=$((SECONDS + 150))

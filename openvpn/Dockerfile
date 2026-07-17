@@ -12,6 +12,12 @@ ARG NPROC
 # Validate required build args
 RUN : "${VERSION:?required}" "${PKCS11_HELPER_VERSION:?required}" "${EASYRSA_VERSION:?required}" "${NPROC:?required}"
 
+# EasyRSA release signing key (Eric F Crist, the EasyRSA maintainer; fingerprint
+# 6F40 5682 1152 F03B 6B24 F2FC F848 9F83 9D73 67F3). Vendored as the trust
+# anchor so the build can verify the fetched EasyRSA tarball's GPG signature
+# (#918). Key rotation/expiry is monitored separately (#921).
+COPY easyrsa-signing-key.asc /usr/local/share/easyrsa/easyrsa-signing-key.asc
+
 # Testing: pamtester is only available in edge, not for now.
 # Use UPSTREAM_VERSION for downloads if provided, otherwise fall back to VERSION
 RUN set -ex \
@@ -64,6 +70,50 @@ RUN set -ex \
     && cd /usr/local/bin \
     && curl -sSL https://raw.githubusercontent.com/oorabona/scripts/3be0f6fe14bfe139068257410454fdd9a704d156/openvpn/setup.sh --output ovpn \
     && chmod +x ovpn \
+    # Bake EasyRSA at build time so first-run setup is hermetic (#918): fetch the
+    # pinned tarball and its GPG signature and verify it against the vendored
+    # EasyRSA maintainer key. The key is imported into a throwaway keyring holding
+    # only it (asserted by fingerprint), so `gpg --verify` accepts only its
+    # signatures. The archive is then checked to be the requested version with an
+    # executable easyrsa, and the installer's one GitHub wget is rewritten to a cp
+    # of the baked file. By design the image is pinned to its baked EASYRSA_VERSION:
+    # a runtime override / "Update EasyRSA" to another version fails closed (baked
+    # file absent) — update by rebuilding, not at runtime. Only the key is pinned
+    # (the .sig is fetched per build); key rotation/expiry is watched in #921.
+    && apk add --no-cache --virtual .gpg-deps gnupg \
+    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+        "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz" \
+        --output "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" \
+    && curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+        "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+        --output "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+    && GNUPGHOME="$(mktemp -d)" && export GNUPGHOME \
+    && gpg --batch --import /usr/local/share/easyrsa/easyrsa-signing-key.asc \
+    # The throwaway keyring must hold EXACTLY the one expected key, so
+    # `gpg --verify` can only accept that key's signatures (a vendored file with a
+    # second key would otherwise widen trust silently).
+    && [ "$(gpg --batch --list-keys --with-colons | grep -c '^pub:')" = "1" ] \
+    && [ "$(gpg --batch --list-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')" = "6F4056821152F03B6B24F2FCF8489F839D7367F3" ] \
+    && gpg --batch --verify "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" \
+    && rm -rf "$GNUPGHOME" "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz.sig" \
+    && unset GNUPGHOME \
+    && apk del .gpg-deps \
+    # The signature covers the tarball bytes, so its top-level EasyRSA-<ver>/ dir is
+    # authenticated: require it to equal the requested version (blocks a replayed
+    # older signed release served from this version's URL). Then extract the way the
+    # installer will (--strip-components=1) and require an executable easyrsa.
+    && [ "$(tar tzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" 2>/dev/null | head -1)" = "EasyRSA-${EASYRSA_VERSION}/" ] \
+    && rm -rf /tmp/erverify && mkdir -p /tmp/erverify \
+    && tar xzf "/usr/local/share/easyrsa/EasyRSA-${EASYRSA_VERSION}.tgz" --strip-components=1 -C /tmp/erverify \
+    && test -x /tmp/erverify/easyrsa \
+    && rm -rf /tmp/erverify \
+    # Assert the pinned installer still resolves its EasyRSA version from
+    # EASYRSA_VERSION, so the version-specific baked file matches what its cp asks
+    # for (else a future installer bump could request an unbaked version).
+    && grep -qF 'LATEST_EASYRSA_VERSION=$EASYRSA_VERSION' ovpn \
+    && sed -i 's#wget -O ~/easy-rsa.tgz https://github.com/OpenVPN/easy-rsa/releases/download/.*EasyRSA-.*\.tgz#cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz#' ovpn \
+    && grep -qF 'cp /usr/local/share/easyrsa/EasyRSA-${version}.tgz ~/easy-rsa.tgz' ovpn \
+    && ! grep -qE 'releases/download/[^ ]*EasyRSA' ovpn \
     && rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 
 LABEL org.opencontainers.image.title="OpenVPN" \
