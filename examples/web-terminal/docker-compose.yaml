@@ -36,10 +36,34 @@ services:
       SHELL_USER: debian
       SHELL_PASSWORD: shell_secret_change_me
     # No port exposure — only accessible through OpenResty
-    # Note: not read_only — entrypoint needs write access to /etc/shadow (chpasswd)
+    # Note: not read_only — the entrypoint's chpasswd writes /etc/shadow at
+    # startup, which a read-only rootfs would block (can't tmpfs-mask /etc
+    # without losing the base contents). tmpfs for the writable runtime dirs.
     tmpfs:
       - /tmp
       - /run
+    # Drop every capability, add back only the four this ttyd-only stack needs
+    # (each verified empirically against the real image, not guessed):
+    #   SETUID + SETGID — ttyd runs `su - $SHELL_USER` per browser session;
+    #                     root needs both to switch uid/gid under no-new-privileges
+    #   CHOWN           — the startup chpasswd's PAM path writes /etc/shadow via
+    #                     temp-file + rename and sets ownership on it
+    #   KILL            — ttyd stays root but its per-session shell runs as the
+    #                     (different-uid) shell user; on browser close ttyd signals
+    #                     that child to reap it, which root cannot do across uids
+    #                     without CAP_KILL — omitting it leaks an orphaned shell
+    #                     per session
+    # Deliberately omitted because this stack is ttyd-only: DAC_OVERRIDE + FOWNER,
+    # which the SSH_PUBLIC_KEY / ENABLE_SSH paths need (root writes an .ssh dir
+    # into the shell user's own home and chmods it), plus sshd's own SYS_CHROOT /
+    # AUDIT_WRITE. Add those only if you layer SSH onto this example.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - KILL
     # Compose-level override: on real Docker Engine this is redundant —
     # the image's own HEALTHCHECK resolves fine. On a Podman-backed
     # Compose (podman-compose, or `docker compose` aliased to Podman —
