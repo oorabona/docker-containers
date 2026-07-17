@@ -140,6 +140,8 @@ OpenVPN server with easy-rsa PKI management.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OS` | `other` | Client OS type |
+| `AUTO_INSTALL` | `n` | `y` runs a non-interactive install (generates PKI + `server.conf`) when no config exists; unset with a config present opens an interactive menu instead of starting |
+| `AUTO_START` | `n` | `y` starts the OpenVPN server after install (required for the server to run on this Alpine image) |
 
 ### Ports
 
@@ -150,12 +152,28 @@ OpenVPN server with easy-rsa PKI management.
 ### Usage
 
 ```bash
-# Run OpenVPN server
-docker run -d --cap-add=NET_ADMIN \
+# Run OpenVPN server. NET_ADMIN sets up the tunnel; SETUID/SETGID let openvpn
+# drop to the unprivileged nobody user its config specifies (NET_RAW is not
+# needed — the UDP transport uses ordinary sockets). This is a bootstrap-and-run
+# invocation: AUTO_INSTALL=y generates the config on an empty volume, AUTO_START=y
+# starts the server. The installer has no clean unattended restart (AUTO_INSTALL=y
+# re-runs setup; unset opens a management menu) — see openvpn/README.md
+# "Lifecycle" and issue #912 before running it as a persistent service.
+docker run -d \
+  --cap-drop=ALL \
+  --cap-add=NET_ADMIN --cap-add=SETUID --cap-add=SETGID \
+  --security-opt no-new-privileges \
+  --device=/dev/net/tun \
+  -e AUTO_INSTALL=y -e AUTO_START=y \
   -v openvpn-data:/etc/openvpn \
   -p 1194:1194/udp \
   ghcr.io/oorabona/openvpn:latest
 ```
+
+> The capability set above covers the default port (1194). Add `NET_BIND_SERVICE`
+> only if openvpn is configured to bind an **internal** port below 1024 — under
+> `cap_drop: ALL` the initial root bind otherwise lacks the privileged-port
+> capability. Mapping a privileged host port to 1194 needs nothing extra.
 
 ---
 
